@@ -158,7 +158,7 @@ test('klauro analyze auto-attaches to the bound account project (.klaurorc proje
     const afterSecond = JSON.parse(projectsAfterSecond.body).projects.find((p: { id: string }) => p.id === project.id);
     assert.equal(afterSecond.analysis_id, first.analysis_id);
 
-    // Coordination with auto-WAS: attaching should mark the workspace dirty
+    // Coordination with auto-rebuilt workspace-level CAS: attaching should mark the workspace dirty
     // for a rebuild (account-workspace-analysis.ts hooks analysis_id->project
     // resolution — findProjectsByAnalysisId — which only works once attached).
     await waitFor(async () => {

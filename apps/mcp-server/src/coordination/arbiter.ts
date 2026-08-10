@@ -1,6 +1,6 @@
 /**
  * Pure arbitration for a new WorkClaim against the active-claim set (§WS-C).
- * No IO: every input (active claims, CAS edges, WAS capabilities) is passed
+ * No IO: every input (active claims, CAS edges, workspace-level-CAS capabilities) is passed
  * in by the caller.
  */
 
@@ -44,8 +44,8 @@ function blastRadius(symbols: string[], casEdges: CasEdgeRef[]): Set<string> {
  * Arbitrate a new claim against the currently-active claim set.
  *
  * Overlap checks, in priority order:
- * 1. capability-name match against another active claim, or against a WAS
- *    capability already covered by an active claim → `duplicate`.
+ * 1. capability-name match against another active claim, or against a
+ *    workspace-level-CAS capability already covered by an active claim → `duplicate`.
  * 2. path-prefix intersection → `conflict` (kind: 'path').
  * 3. symbol-set intersection → `conflict` (kind: 'symbol').
  * 4. blast-radius intersection (via CAS edges) → `conflict` (kind: 'blast_radius').
@@ -74,7 +74,7 @@ export function arbitrate(
         };
       }
     }
-    // Also treat matching a known WAS capability name as duplicate evidence
+    // Also treat matching a known workspace-level-CAS capability name as duplicate evidence
     // when some other active claim's intent/capability resolves to it.
     const matchedWas = wasCapabilities.find((c) => c.name === newClaim.scope.capability);
     if (matchedWas) {

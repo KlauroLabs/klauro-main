@@ -378,18 +378,18 @@ export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefi
 // blocks, queues, gates, or throws. Callers use it exactly like `checkEditLock`
 // (surface the findings, proceed regardless).
 //
-// CROSS-REPO (WAS) LAYER (§4.2/§4.3/§7 SPEC-COORDINATION-FABRIC-V2): CAS
+// CROSS-REPO (workspace-level CAS) LAYER (§4.2/§4.3/§7 SPEC-COORDINATION-FABRIC-V2): CAS
 // blast-radius is single-repo. But a fleet works a WORKSPACE: agent A edits a
 // shared type/lib in one repo, agent B edits its consumer in ANOTHER repo —
-// only the workspace analysis (WAS) sees that cross-deployable link and the
+// only the workspace-level CAS sees that cross-deployable link and the
 // frozen cross-repo contract surface. CAS-only collision detection is blind to
-// exactly the fleet-scale collisions that matter most. When a WAS graph is
+// exactly the fleet-scale collisions that matter most. When a workspace-level CAS graph is
 // available for the claim's workspace, `computeAdvisoryOverlap` also folds in
-// two cross-repo signals, REUSING the WAS machinery (never reinventing it):
+// two cross-repo signals, REUSING the workspace-level-CAS machinery (never reinventing it):
 //   (a) SHARED-CODE ROLLUP (`was.shared_code_rollup`): a claim touching a
 //       shared-library symbol (its `consumed_surface` / per-symbol
 //       `blast_radius`) overlaps any other claim touching a CONSUMER deployable
-//       of that symbol — the cross-repo shared-code blast radius the WAS builds.
+//       of that symbol — the cross-repo shared-code blast radius the workspace-level CAS builds.
 //   (b) FROZEN/SHARED CROSS-REPO CONTRACTS (`was.interfaces` + `was.links`): a
 //       claim touching one side of a cross-repo interface link (provided
 //       route/message/db surface) overlaps another claim touching the linked
@@ -400,7 +400,7 @@ export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefi
 // facts — a symbol, path, or contract BOTH claims literally or structurally
 // touch RIGHT NOW. Git history carries a different, complementary signal:
 // files that have HISTORICALLY changed together, even when nothing in today's
-// CAS/WAS connects them (a config file and the code that reads it; a schema
+// CAS (repo- or workspace-level) connects them (a config file and the code that reads it; a schema
 // and its migration; parallel-language twins with no shared symbol). When a
 // `CoChangeIndex` (packages/analyzer-core/.../co-change-index.ts — top-K
 // Laplace-smoothed conditional co-change probabilities per file) is supplied,
@@ -409,10 +409,10 @@ export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefi
 // and checks it against every other active claim's ACTUAL paths (and vice
 // versa). A hit is reported with reason 'predicted-co-change' and a
 // `prediction` field carrying the probability — ADVISORY ONLY, and clearly
-// labeled AS a prediction (never conflated with the CAS/WAS "this literally
+// labeled AS a prediction (never conflated with the CAS (repo- or workspace-level) "this literally
 // overlaps" findings above) so a peer agent can weigh and ignore it freely.
 //
-// GRACEFULLY DEGRADING (WAS -> CAS -> string, never throw): when no WAS graph
+// GRACEFULLY DEGRADING (workspace-level CAS -> CAS -> string, never throw): when no workspace-level CAS graph
 // is passed, the cross-repo layer is simply skipped and the result is the
 // CAS-backed set below. When no CAS is available either (`cas` undefined / an
 // empty nodes+edges set — the common case for a logical workspace id with no
@@ -426,7 +426,7 @@ export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefi
  *  local-store's path-only `EditLockConflict`: it adds the overlapping SYMBOLS,
  *  the overlap REASON, and (for cross-repo overlap) the shared workspace
  *  surface, so callers can distinguish a literal path/symbol clash from a
- *  call-graph blast-radius reach or a cross-repo (WAS) dependency. */
+ *  call-graph blast-radius reach or a cross-repo (workspace-level-CAS) dependency. */
 export interface AdvisoryOverlapFinding {
   /** The already-active claim whose footprint overlaps the proposed one. */
   agent_id: string;
@@ -445,9 +445,9 @@ export interface AdvisoryOverlapFinding {
    *                      signal a file/path-only scan cannot see.
    *  - 'cross-repo-shared-code' : both claims touch a shared library symbol
    *                      (one the lib, the other a cross-repo consumer of it),
-   *                      via the WAS shared_code_rollup blast radius.
+   *                      via the workspace-level CAS's shared_code_rollup blast radius.
    *  - 'cross-repo-contract'    : both claims touch two ends of a frozen/shared
-   *                      cross-repo interface link (WAS interfaces + links).
+   *                      cross-repo interface link (workspace-level CAS interfaces + links).
    *  - 'predicted-co-change'    : NOT a present-tense fact — git history says
    *                      a file either claim touches has historically
    *                      co-changed with a file the other touches, above the
@@ -462,7 +462,7 @@ export interface AdvisoryOverlapFinding {
   /** True when the finding came from the CAS (reason 'blast-radius' or 'symbol')
    *  — visible only because the single-repo analysis was consulted. */
   cas_derived: boolean;
-  /** True when the finding came from the WAS (a 'cross-repo-*' reason) — visible
+  /** True when the finding came from the workspace-level CAS (a 'cross-repo-*' reason) — visible
    *  only because the WORKSPACE analysis was consulted (cross-repo blindness a
    *  single-repo CAS cannot see). */
   was_derived: boolean;
@@ -506,18 +506,18 @@ const REASON_RANK: Record<AdvisoryOverlapFinding['reason'], number> = {
 };
 
 /**
- * CAS+WAS-backed advisory overlap between a proposed claim and the active
+ * CAS-backed advisory overlap (repo- and workspace-level) between a proposed claim and the active
  * claims. Same-repo overlap reuses `partitionTasks`' blast-radius machinery;
- * cross-repo overlap reuses the WAS `shared_code_rollup` + `interfaces`/`links`
+ * cross-repo overlap reuses the workspace-level CAS's `shared_code_rollup` + `interfaces`/`links`
  * (see the section header).
  *
  * Pure and non-blocking: returns findings, never throws — any internal failure
  * degrades to fewer findings (awareness is best-effort, never a gate).
- * Degrades WAS -> CAS -> string:
+ * Degrades workspace-level CAS -> CAS -> string:
  *  - Pass a real `PartitionCas` (server.ts builds one via `partitionCasForPath`)
  *    for same-repo blast-radius/symbol awareness; `undefined`/empty CAS degrades
  *    to literal symbol/path overlap.
- *  - Pass a WAS graph (server.ts resolves one via `resolveWorkspaceAnalysisForPaths`)
+ *  - Pass a workspace-level CAS graph (server.ts resolves one via `resolveWorkspaceAnalysisForPaths`)
  *    for cross-repo shared-code + contract awareness; omit it to skip that layer.
  */
 export function computeAdvisoryOverlap(
@@ -608,7 +608,7 @@ export function computeAdvisoryOverlap(
     // Same-repo layer failed — cross-repo layer below still runs.
   }
 
-  // ---- Cross-repo layer: WAS shared-code rollup + contract links ----
+  // ---- Cross-repo layer: workspace-level-CAS shared-code rollup + contract links ----
   if (was) {
     try {
       for (const f of computeCrossRepoOverlap(proposal, [...byClaimId.values()], was)) {
@@ -637,15 +637,15 @@ export function computeAdvisoryOverlap(
 }
 
 /**
- * Cross-repo (WAS) overlap: does the proposed claim share a WORKSPACE surface
+ * Cross-repo (workspace-level-CAS) overlap: does the proposed claim share a WORKSPACE surface
  * with any other active claim that a single-repo CAS cannot see? Two signals,
- * both read straight off the persisted WAS graph:
+ * both read straight off the persisted workspace-level CAS graph:
  *
  *  (a) shared_code_rollup — a shared library and its cross-repo consumers. If
  *      the proposed claim touches a shared symbol (or the lib itself) and
  *      another claim touches a CONSUMER of that symbol (or the lib), they
  *      collide across repos. `blast_radius[].symbol -> consumer_deployable_ids`
- *      is exactly the WAS's own cross-deployable dependency index.
+ *      is exactly the workspace-level CAS's own cross-deployable dependency index.
  *  (b) interfaces + links — a frozen/shared cross-repo contract. Each `link`
  *      ties a provider interface to a consumer interface across two codebases;
  *      if the proposed claim touches one interface's refs and another claim
@@ -653,7 +653,7 @@ export function computeAdvisoryOverlap(
  *      same cross-repo contract.
  *
  * Matching against a claim's footprint is deliberately tolerant (symbol-name OR
- * path-substring), mirroring the WAS's own evidence granularity — the WAS
+ * path-substring), mirroring the workspace-level CAS's own evidence granularity — it
  * records symbol names and file/path hints, not CAS node ids.
  */
 function computeCrossRepoOverlap(
@@ -667,7 +667,7 @@ function computeCrossRepoOverlap(
 
   // A claim "touches" a surface token when the token matches one of its symbols
   // exactly, or appears as a substring of one of its paths (or vice-versa) —
-  // the WAS surface is name/path-shaped, not a CAS node id.
+  // the workspace-level-CAS surface is name/path-shaped, not a CAS node id.
   const claimTouches = (claim: WorkClaim | AdvisoryClaimProposal, token: string): boolean => {
     if (!token) return false;
     const syms = 'symbols' in claim ? (claim.symbols ?? []) : (claim as WorkClaim).scope.symbols ?? [];
@@ -781,7 +781,7 @@ function computeCrossRepoOverlap(
  * actual paths)? Checked both directions because either agent's history-based
  * expansion could be the one that reveals the coupling.
  *
- * Deliberately narrow scope vs. the CAS/WAS layers above: this never expands
+ * Deliberately narrow scope vs. the CAS layers above (repo- and workspace-level): this never expands
  * BOTH sides' footprints simultaneously and intersects the two predicted
  * sets — that would compound two probabilistic expansions into a much
  * noisier, harder-to-explain finding. Anchoring one side to ACTUAL claimed

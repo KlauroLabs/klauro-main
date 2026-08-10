@@ -16,7 +16,7 @@
 
 Today, building a large feature or migration is single-piece flow: one engineer (or one
 agent), one branch, serialized steps, merged at the end. Klauro's bet is that a codebase
-Klauro has deeply analyzed — CAS graph, WAS composition, conceptual layer (capability → flow
+Klauro has deeply analyzed — CAS graph, workspace-level composition, conceptual layer (capability → flow
 → step → function) — can support the opposite: **decompose an entire project's scope into a
 work-DAG, hand disjoint pieces to a fleet of 100-200 agents running concurrently, and have
 the combined output integrate cleanly** — not because a human pre-assigned every symbol (that
@@ -42,7 +42,7 @@ structural understanding:
    proceeds on a stale foundation (producing garbage).
 
 Klauro's answer to all three is the same: **coordinate on the graph, not on the text.** The
-CAS/WAS graph plus the conceptual layer is what lets the fabric know, structurally, whether
+CAS graph plus the conceptual layer is what lets the fabric know, structurally, whether
 two agents' scopes actually overlap — a capability incumbents (git, editors, generic
 multi-agent harnesses) structurally cannot offer, because they do not have the graph.
 
@@ -56,7 +56,7 @@ multi-agent harnesses) structurally cannot offer, because they do not have the g
   system; the same machinery, pointed at a *proposed* change, should be able to project which
   existing flows/steps are touched and which new ones need to be created. This projection
   step does not exist yet.
-- **Source of the DAG's edges: the CAS/WAS graph's dependency edges.** Step B depends on Step
+- **Source of the DAG's edges: the CAS graph's dependency edges.** Step B depends on Step
   A if A's output (per the I/L/S/O contract) is B's input, or if B calls a function A is
   changing the signature of. This is mechanically derivable from existing `calls`/`imports`/
   `references` edges plus the flow-step I/L/S/O contracts — the derivation logic for
@@ -77,7 +77,7 @@ This part rests on real, shipped mechanism (`docs/SPEC-COORDINATION-FABRIC-V2.md
 proven at N=64 same-machine processes in `docs/FABRIC-FLEET-PROVEN.md`):
 
 - **Awareness, not locking, is the default.** Every agent in the fleet sees who else is
-  active, on what, with what intent, and the CAS/WAS blast radius of their in-flight change —
+  active, on what, with what intent, and the CAS blast radius of their in-flight change —
   without requesting anything. This is what makes 100-200-way concurrency conceivable at all:
   the fabric does not serialize the common case, it makes the common (disjoint) case free and
   the rare (overlapping) case visible.

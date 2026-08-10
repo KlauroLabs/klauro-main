@@ -186,7 +186,7 @@ function unsupportedEnumeratedDetail(
  * THE shared unsupported-marketing-language lint (project tier AND workspace
  * tier reuse this — never fork the list). Returns the distinct marketing
  * matches in `description` that are NOT legitimized by the supplied grounding
- * tokens/vocabulary. Exported so the WAS narrative/product-value gate applies
+ * tokens/vocabulary. Exported so the workspace-level-CAS narrative/product-value gate applies
  * the exact same mechanism as the element-description gate.
  */
 export function ungroundedMarketingMatches(

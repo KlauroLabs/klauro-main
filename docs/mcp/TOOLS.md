@@ -473,7 +473,7 @@ Discover deterministic links across analyzed repositories.
 
 ### `run_workspace_analysis`
 
-Build and persist a WAS-compliant Workspace analysis from completed CAS analyses only. Workspace analysis is generated after repo/project analysis; it composes projects, deployables, interfaces, runtime topology, deployable links, data-flow paths, unmatched interfaces, deterministic insights, health, risk, activity, telemetry, workspace domains, and AI-required narrative without reading source code in the workspace layer. When `workspace_root` is provided, `.klauroignore`, `.klaurorc` `source.exclude`, and explicit `exclude` patterns are applied before WAS input selection so intentionally ignored folders do not become projects, deployables, or links.
+Build and persist a workspace-level CAS (a parent CAS composing its member repos' CAS analyses) from completed CAS analyses only. Workspace analysis is generated after repo/project analysis; it composes projects, deployables, interfaces, runtime topology, deployable links, data-flow paths, unmatched interfaces, deterministic insights, health, risk, activity, telemetry, workspace domains, and AI-required narrative without reading source code in the workspace layer. When `workspace_root` is provided, `.klauroignore`, `.klaurorc` `source.exclude`, and explicit `exclude` patterns are applied before workspace-level CAS input selection so intentionally ignored folders do not become projects, deployables, or links.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -481,24 +481,24 @@ Build and persist a WAS-compliant Workspace analysis from completed CAS analyses
 | `paths` | string[] | no | Analyzed project paths to include. Omit to use all analyzed repositories |
 | `workspace_root` | string | no | Workspace folder used to select analyzed repos under the root and apply local `.klaurorc` / `.klauroignore` policy |
 | `exclude` | string[] | no | Additional workspace exclude patterns, e.g. `["desktop-tray/**", "archives/**"]` |
-| `ai_enrichment` | boolean | no | Defaults to `true`. Set `false` for fast deterministic WAS generation; narrative is marked AI-required degraded until refreshed |
+| `ai_enrichment` | boolean | no | Defaults to `true`. Set `false` for fast deterministic workspace-level CAS generation; narrative is marked AI-required degraded until refreshed |
 
-**Returns:** Save metadata, compact WAS summary, applied input policy, skipped inputs with reasons, and next MCP calls. Agents should retrieve needed slices with `get_workspace_analysis` or `get_workspace_agent_context`; this tool does not dump the full WAS artifact.
+**Returns:** Save metadata, compact workspace-level-CAS summary, applied input policy, skipped inputs with reasons, and next MCP calls. Agents should retrieve needed slices with `get_workspace_analysis` or `get_workspace_agent_context`; this tool does not dump the full workspace-level CAS artifact.
 
 ### `resolve_workspace_analysis`
 
-Find the best persisted WAS analysis for a local path or set of paths. Use this before cross-repo work when the agent has a workspace folder but does not know the Workspace analysis id.
+Find the best persisted workspace-level CAS for a local path or set of paths. Use this before cross-repo work when the agent has a workspace folder but does not know the Workspace analysis id.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | no | Workspace, repo, or subfolder path to resolve |
-| `paths` | string[] | no | Optional set of repo/workspace paths to match against WAS inputs |
+| `paths` | string[] | no | Optional set of repo/workspace paths to match against workspace-level CAS inputs |
 
 **Returns:** Selected Workspace analysis id/name, composition, health, freshness, alternatives, and recommended next MCP calls.
 
 ### `get_workspace_summary`
 
-Return a compact human/agent summary from WAS.
+Return a compact human/agent summary from the workspace-level CAS.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -508,18 +508,18 @@ Return a compact human/agent summary from WAS.
 
 ### `get_workspace_analysis`
 
-Load a persisted WAS-compliant Workspace analysis by id or name.
+Load a persisted workspace-level CAS by id or name.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `analysis_id_or_name` | string | yes | Workspace analysis id or name |
 | `detail_level` | string | no | `overview`, `connections`, `evidence`, or `full`. Defaults to `overview` |
 
-**Returns:** At `overview`, a compact repo/app map with composition classification, health, activity, telemetry, risks, capabilities, workflows, environments, simple sync/async/passive/stream connections, major external dependencies, and isolated deployables. `composition.kind` tells clients whether the workspace is primarily an `interconnected-system`, `composed-application-architecture`, `hybrid-system-and-architecture`, `library-collection`, or `disconnected-collection`; `recommended_primary_view` tells agents/UI whether to prefer a system map, architecture map, both, or inventory. External dependencies include `usage` (`source-backed`, `topology-only`, or `declared`) and `used`; agents should treat `topology-only` Redis/Postgres/MinIO/etc. as provisioned/wired infrastructure, not source-proven usage. Isolated deployables include a reason category (`validated-standalone`, `weak-cas-signal`, `unresolved-candidate`, or `no-evidence`) so agents do not confuse valid standalone surfaces with possible analysis gaps. Deeper levels add links, runtime evidence, interfaces, unmatched surfaces, validation, Terraform/Docker/Compose/CI infrastructure details, or the complete graph. At `full` (and `evidence`) detail, the graph also carries `shared_code_rollup` (`WorkspaceSharedCodeRollup[]`, not a separate tool) — cross-deployable shared-library rollups built from `libs/*`-style code recognized in deployable detection, composed from SDK-install links + CAS import specifiers: for each shared library, its consumer deployables, the consumed-symbol surface, and per-symbol blast radius, so a monorepo's `libs/`/shared-package surfaces are queryable instead of structurally invisible to WAS.
+**Returns:** At `overview`, a compact repo/app map with composition classification, health, activity, telemetry, risks, capabilities, workflows, environments, simple sync/async/passive/stream connections, major external dependencies, and isolated deployables. `composition.kind` tells clients whether the workspace is primarily an `interconnected-system`, `composed-application-architecture`, `hybrid-system-and-architecture`, `library-collection`, or `disconnected-collection`; `recommended_primary_view` tells agents/UI whether to prefer a system map, architecture map, both, or inventory. External dependencies include `usage` (`source-backed`, `topology-only`, or `declared`) and `used`; agents should treat `topology-only` Redis/Postgres/MinIO/etc. as provisioned/wired infrastructure, not source-proven usage. Isolated deployables include a reason category (`validated-standalone`, `weak-cas-signal`, `unresolved-candidate`, or `no-evidence`) so agents do not confuse valid standalone surfaces with possible analysis gaps. Deeper levels add links, runtime evidence, interfaces, unmatched surfaces, validation, Terraform/Docker/Compose/CI infrastructure details, or the complete graph. At `full` (and `evidence`) detail, the graph also carries `shared_code_rollup` (`WorkspaceSharedCodeRollup[]`, not a separate tool) — cross-deployable shared-library rollups built from `libs/*`-style code recognized in deployable detection, composed from SDK-install links + CAS import specifiers: for each shared library, its consumer deployables, the consumed-symbol surface, and per-symbol blast radius, so a monorepo's `libs/`/shared-package surfaces are queryable instead of structurally invisible to the workspace-level CAS.
 
 ### `get_workspace_agent_context`
 
-Load a compact WAS-backed context for cross-repo agent work. This is the preferred agent entrypoint after `run_workspace_analysis` when a task spans multiple repos, apps, deployables, SDKs, messages, runtime dependencies, or infrastructure.
+Load a compact workspace-level-CAS-backed context for cross-repo agent work. This is the preferred agent entrypoint after `run_workspace_analysis` when a task spans multiple repos, apps, deployables, SDKs, messages, runtime dependencies, or infrastructure.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -530,7 +530,7 @@ Load a compact WAS-backed context for cross-repo agent work. This is the preferr
 
 ### `get_workspace_freshness`
 
-Check whether a persisted WAS is current against its input CAS analyses.
+Check whether a persisted workspace-level CAS is current against its input CAS analyses.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -540,13 +540,13 @@ Check whether a persisted WAS is current against its input CAS analyses.
 
 ### `validate_was_contract`
 
-Score a persisted WAS for required sections, freshness, required AI enrichment, and relationship evidence readiness.
+Score a persisted workspace-level CAS for required sections, freshness, required AI enrichment, and relationship evidence readiness.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `analysis_id_or_name` | string | yes | Workspace analysis id or name |
 
-**Returns:** Pass/warn status, score, missing sections, AI enrichment status, freshness, and embedded WAS validation.
+**Returns:** Pass/warn status, score, missing sections, AI enrichment status, freshness, and embedded workspace-level-CAS validation.
 
 ### `get_workspace_health`
 
@@ -598,7 +598,7 @@ Return whole-workspace entity concepts and entity paths assembled from repo-leve
 
 ### `get_workspace_workflow`
 
-Return a specific WAS workflow with deployables, interfaces, evidence, and repo-level drilldown calls.
+Return a specific workspace-level-CAS workflow with deployables, interfaces, evidence, and repo-level drilldown calls.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -609,7 +609,7 @@ Return a specific WAS workflow with deployables, interfaces, evidence, and repo-
 
 ### `list_workspace_analyses`
 
-List persisted WAS-compliant Workspace analyses.
+List persisted workspace-level CAS analyses.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -619,11 +619,11 @@ List persisted WAS-compliant Workspace analyses.
 
 ### `run_cross_codebase_analysis`
 
-Deprecated name for `run_workspace_analysis`. Same behavior and parameters -- builds a WAS-compliant Workspace analysis from completed CAS outputs. Kept for backward compatibility; prefer `run_workspace_analysis`.
+Deprecated name for `run_workspace_analysis`. Same behavior and parameters -- builds a workspace-level CAS from completed CAS outputs. Kept for backward compatibility; prefer `run_workspace_analysis`.
 
 ### `get_cross_codebase_analysis`
 
-Deprecated name for `get_workspace_analysis`. Same behavior and parameters -- loads a persisted WAS-compliant Workspace analysis by id or name. Kept for backward compatibility; prefer `get_workspace_analysis`.
+Deprecated name for `get_workspace_analysis`. Same behavior and parameters -- loads a persisted workspace-level CAS by id or name. Kept for backward compatibility; prefer `get_workspace_analysis`.
 
 ### `list_cross_codebase_analyses`
 
@@ -737,10 +737,10 @@ Task-scoped context for agents. Use this after `get_agent_start_context` when an
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context alongside repo CAS context |
+| `workspace_analysis_id` | string | no | Optional workspace-level CAS id/name to include compact workspace context alongside repo CAS context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, `success_criteria`, or `response_profile` |
 
-**Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, optional WAS `workspace_context`, runtime-backed `operational_priorities` for debug/runtime/production-symptom tasks when telemetry exists, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, an `execution_brief` plus `execution_brief.capsule` for token-minimal first implementation, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+**Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, optional workspace-level-CAS `workspace_context`, runtime-backed `operational_priorities` for debug/runtime/production-symptom tasks when telemetry exists, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, an `execution_brief` plus `execution_brief.capsule` for token-minimal first implementation, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
 
 Set `task.response_profile` to `capsule-only` when an agent needs the smallest useful starting context. It returns only the `K15` context capsule, `K5` execution capsule, selected target, first files, token estimate, and expansion rule. Set `first-turn` when the agent needs compact JSON fields in addition to the capsules. `K5` includes exact file paths, read/edit role sigils, file-scoped operations for direct-patch work, proof requirements, negative constraints, preservation rules, validation, and stop cues. `K15` is the compact agent context language for orientation, selected node, default extension restoration, role-grouped file dictionary, idioms, reuse, risk, validation, and expansion rules. Set `minimal` when the agent needs compact architecture/risk/test context, or omit it for the full agent context. For edit/debug tasks where token savings matter, agents should read `context_capsule` / `context_capsule.capsule` for orientation, execute `execution_capsule` / `capsule` before opening any other files, then fall back to `first-turn` or full workbench only if the capsules are ambiguous.
 
@@ -766,7 +766,7 @@ Task-scoped agent context with top-level idiom context for clients that want rep
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context |
+| `workspace_analysis_id` | string | no | Optional workspace-level CAS id/name to include compact workspace context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
 **Returns:** The normal agent context plus top-level `idiom_context` with selected idioms, local examples, do/avoid guidance, validation instructions, and likely violations.
@@ -778,7 +778,7 @@ Product-level agent workspace for a task. Use this before broad source explorati
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context |
+| `workspace_analysis_id` | string | no | Optional workspace-level CAS id/name to include compact workspace context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `instructions`, `success_criteria`, `change_type`, `files`, `diff_text`, or `plan_text` |
 
 **Returns:** Orientation, target resolution, file-read plan, validation plan, repo-local agent rules, `signal_quality`, evidence policy, stop conditions, and next MCP calls. `signal_quality` tells the agent when tests, patterns, idioms, invariants, purpose confidence, or analyzer coverage are thin so the context is treated as guidance instead of complete truth.
@@ -790,7 +790,7 @@ Before an agent edits or presents a plan, evaluate whether the proposed change f
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `workspace_analysis_id` | string | no | Optional WAS id/name for cross-repo blast-radius context |
+| `workspace_analysis_id` | string | no | Optional workspace-level CAS id/name for cross-repo blast-radius context |
 | `target` | string | no | Node id, file path, or natural language target |
 | `plan_text` | string | no | Agent plan text to evaluate |
 | `diff_text` | string | no | Unified diff to evaluate |

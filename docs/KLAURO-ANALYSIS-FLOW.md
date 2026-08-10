@@ -27,7 +27,7 @@ Examples:
 - a new workspace is created from a folder that contains multiple repos;
 - a greenfield proposal or empty-folder build creates its first real files.
 
-The result is a normal Klauro CAS or WAS output. The installed client discovers, filters, hashes, packages, uploads, and watches source. All analysis phases run in Klauro-hosted services, including parsing, framework semantics, graph construction, comprehension, embeddings, validation, persistence, and AI enrichment. The implementation split is not exposed as separate products.
+The result is a normal Klauro CAS output — a repo-level CAS, or a workspace-level CAS composed of sub-CAS nodes. The installed client discovers, filters, hashes, packages, uploads, and watches source. All analysis phases run in Klauro-hosted services, including parsing, framework semantics, graph construction, comprehension, embeddings, validation, persistence, and AI enrichment. The implementation split is not exposed as separate products.
 
 ### Warm Understanding
 
@@ -40,7 +40,7 @@ Examples:
 - an agent asks for idioms, invariants, tests, risks, capabilities, entities, call chains, or workspace relationships;
 - a teammate asks what changed between analyzed revisions.
 
-Warm queries should avoid broad source rediscovery. They should retrieve the smallest useful slice of CAS/WAS, plus follow-up tool calls for drilldown.
+Warm queries should avoid broad source rediscovery. They should retrieve the smallest useful slice of the CAS (repo- or workspace-level), plus follow-up tool calls for drilldown.
 
 The hosted storage contract is section-oriented. Identity and summary queries
 do not download graph-scale collections; graph, call, test, runtime, quality,
@@ -69,7 +69,7 @@ The MCP must treat in-flight context as advisory but actionable:
 - identify likely merge conflicts before Git sees them;
 - show which capabilities, entities, routes, tests, files, contracts, and workspace links are being touched;
 - allow teams to filter in-flight work by branch, author, agent, confidence, recency, or status;
-- keep durable CAS/WAS separate from provisional facts while allowing both to inform agent contexts.
+- keep the durable CAS (repo- or workspace-level) separate from provisional facts while allowing both to inform agent contexts.
 
 ## Product Tracks
 
@@ -77,7 +77,7 @@ Every Klauro-aware agent session should be able to reason over three tracks:
 
 | Track | Meaning | Product Role |
 | --- | --- | --- |
-| Durable analyzed track | Selected branch or committed tree that Klauro has accepted as project/workspace truth | UI default, baseline CAS/WAS, normal MCP orientation |
+| Durable analyzed track | Selected branch or committed tree that Klauro has accepted as project/workspace truth | UI default, baseline CAS (repo- or workspace-level), normal MCP orientation |
 | In-flight track | Provisional local/branch/session changes that have been analyzed but not accepted as durable truth | Deduplication, soft merge, overlap detection, active collaboration |
 | Incoming track | Remote analyzed revisions that exist but are not in the user's current checkout | Pull/rebase awareness, conflict avoidance, branch drift detection |
 
@@ -89,7 +89,7 @@ The MCP should expose the unified Klauro picture without forcing agents to under
 
 Before editing, a agent context should include:
 
-- durable target context from CAS/WAS;
+- durable target context from the CAS (repo- or workspace-level);
 - relevant in-flight overlaps and adjacent work;
 - incoming analyzed changes that may affect the task;
 - repo-local idioms, invariants, tests, risks, and expected validation;
@@ -128,7 +128,7 @@ The gauntlet must test Klauro the way customers use Klauro.
 
 It should exercise:
 
-1. **Cold product analysis:** initialize a real repo or workspace, submit or connect source, generate CAS/WAS, and verify accurate descriptions, capabilities, entities, architecture, risks, idioms, and MCP readiness.
+1. **Cold product analysis:** initialize a real repo or workspace, submit or connect source, generate the CAS (repo- or workspace-level), and verify accurate descriptions, capabilities, entities, architecture, risks, idioms, and MCP readiness.
 2. **Warm understanding:** query the already-analyzed project through MCP and verify that agents get compact, useful context without rediscovering the source tree.
 3. **In-flight analysis:** make realistic uncommitted or branch changes, publish/analyze them as in-flight Klauro context, and verify that MCP agent contexts explain impact, risk, tests, idioms, and overlap.
 4. **Collaboration collision:** create two simultaneous agents or branches that target adjacent or overlapping behavior. Klauro must warn about duplicate work, conflicting files/contracts/migrations, and likely merge pressure before commit.

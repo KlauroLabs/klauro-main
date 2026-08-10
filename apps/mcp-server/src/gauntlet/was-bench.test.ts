@@ -4,7 +4,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { runWasCrossRepoBench } from './was-bench';
 
-// Camp-C / WAS: cross-repo comprehension. Klauro fuses a client fetch in one repo
+// Camp-C / workspace-level CAS: cross-repo comprehension. Klauro fuses a client fetch in one repo
 // to the server route in another; single-repo indexers (scip/stack-graphs/
 // embeddings/codebase-memory) cannot see across repos.
 const ROOT = path.resolve(__dirname, '../../fixtures/was-bench');

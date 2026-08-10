@@ -40,7 +40,7 @@ export interface WorkspaceFact {
   name: string;
   repos: RepoFact[];
   total_nodes: number;
-  /** Repo names declared by the WAS that we could not match to a stored CAS. */
+  /** Repo names declared by the workspace-level CAS that we could not match to a stored CAS. */
   unresolved: string[];
   /** The workspace-analysis file this was derived from. */
   source_file: string;
@@ -97,7 +97,7 @@ function workspaceAnalysesDir(): string {
   return path.join(os.homedir(), '.klauro', 'analyses', 'workspace-analyses');
 }
 
-/** Strip a product prefix from a WAS-declared member name to match a stored CAS. */
+/** Strip a product prefix from a workspace-level-CAS-declared member name to match a stored CAS. */
 function candidateRepoNames(member: string, product: string): string[] {
   const names = new Set<string>([member]);
   const prefix = `${product}-`;

@@ -10,7 +10,7 @@
  * BLACKBOX RULE: this file calls analyzeForBench() (./product-analysis.ts) for
  * per-repo CAS and buildCrossCodebaseSystemGraph() (../cross-codebase-analysis.ts,
  * a pure function over already-produced CAS outputs, not an engine internal) for
- * per-workspace WAS. It never imports createOrchestrator/orchestrateAnalysis/
+ * per-workspace CAS composition (workspace-level). It never imports createOrchestrator/orchestrateAnalysis/
  * analyzeProject, and never sets an AI/model env var.
  *
  * Run: npx tsx apps/mcp-server/src/gauntlet/corpus-sweep.ts
@@ -119,7 +119,7 @@ async function discover(
 
     if (subProjectCount >= 3) {
       // Workspace root: >=3 sub-project manifests. Record it; do not recurse
-      // further (its sub-projects are covered by the WAS run over this workspace).
+      // further (its sub-projects are covered by the workspace-level-CAS run over this workspace).
       workspaces.push({ dirPath: dir, name: path.basename(dir), manifests: ownManifests });
       return;
     }
@@ -237,7 +237,7 @@ async function analyzeWorkspace(dirPath: string, name: string, subDirNames: stri
     const repositories: CrossCodebaseInput[] = [];
     // Analyze each sub-repo once via the blackbox product call, capturing both
     // the per-repo CAS metrics (for the report) and the CAS itself (to fuse
-    // into the WAS graph) from the same call — no redundant re-analysis.
+    // into the workspace-level CAS graph) from the same call — no redundant re-analysis.
     for (const sub of subDirNames) {
       const repoPath = path.join(dirPath, sub);
       const projStart = Date.now();

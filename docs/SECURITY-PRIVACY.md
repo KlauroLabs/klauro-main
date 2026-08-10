@@ -11,7 +11,7 @@ Everything below is verified against the current code. Implemented behavior and 
 
 The customer product path is account-gated. The local connector can keep a
 lightweight deterministic cache and in-flight context for MCP, but
-shared CAS/WAS analysis, hosted AI enrichment, telemetry correlation, and
+shared CAS analysis (repo- and workspace-level), hosted AI enrichment, telemetry correlation, and
 durable history live in the Klauro service. Local developer-only full analysis
 exists for Klauro engineering and self-hosted evaluation, but it is not the
 commercial default.

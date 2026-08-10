@@ -7,7 +7,7 @@ import { buildCrossCodebaseSystemGraph, enrichWorkspaceAnalysisNarrative, worksp
 import type { AccountStore } from './account-store';
 
 /**
- * Server-side auto-refreshed Workspace Analysis (WAS) for an account
+ * Server-side auto-refreshed workspace-level CAS for an account
  * workspace. This is the account-API sibling of the local CLI's
  * `run_workspace_analysis` MCP tool: instead of an agent supplying local repo
  * paths, membership is the account workspace's OWN project records (never a
@@ -34,7 +34,7 @@ import type { AccountStore } from './account-store';
 const DEFAULT_DEBOUNCE_MS = 3000;
 
 /**
- * Terminal-honest AI narrative enrichment state for a persisted WAS record.
+ * Terminal-honest AI narrative enrichment state for a persisted workspace-level-CAS record.
  * 'pending' only ever appears in the FIRST (deterministic) persist of a
  * rebuild — every rebuild ends by re-persisting with a terminal status
  * ('ai' | 'degraded' | 'skipped' | 'error'), so a record can never look
@@ -58,7 +58,7 @@ interface WorkspaceAnalysisRecord {
   /** Linear, bounded digest of the member CAS revisions used for this build. */
   input_signature?: string;
   graph: CrossCodebaseSystemGraph;
-  /** Absent on records persisted before enrichment was attached to server-side WAS rebuilds. */
+  /** Absent on records persisted before enrichment was attached to server-side workspace-level-CAS rebuilds. */
   enrichment?: WorkspaceAnalysisEnrichment;
 }
 
@@ -145,7 +145,7 @@ export class AccountWorkspaceAnalysisScheduler {
       // A project may land while this rebuild is running. Its debounce callback
       // then joins the in-flight promise, but the change is still dirty and
       // must be consumed by a follow-up rebuild. Returning here used to strand
-      // that dirty bit forever, so a fully persisted WAS reported `pending`
+      // that dirty bit forever, so a fully persisted workspace-level CAS reported `pending`
       // indefinitely. Coalesce all such arrivals into one next run.
       if (this.dirty.has(workspaceId) || this.forceRequested.has(workspaceId)) return this.rebuild(workspaceId);
       return this.load(workspaceId);
@@ -225,7 +225,7 @@ export class AccountWorkspaceAnalysisScheduler {
     };
     await fs.ensureDir(this.storeDir);
     // Persist the deterministic build FIRST (progressive availability — the
-    // WAS sibling of the project L0->L5 ladder): readers get the structural
+    // workspace-level-CAS sibling of the project L0->L5 ladder): readers get the structural
     // facts immediately while the AI narrative pass runs below; a second
     // persist then attaches the enriched (or error-stamped) narrative. This
     // whole method already runs in the background (debounced timer or the
@@ -243,7 +243,7 @@ export class AccountWorkspaceAnalysisScheduler {
     // primitive the analysis store already uses) closes that window.
     await writeJsonAtomic(this.recordPath(workspaceId), record);
 
-    // Project analyses publish progressively. Building the structural WAS from
+    // Project analyses publish progressively. Building the structural workspace-level CAS from
     // L0-L4 facts is useful immediately, but enriching it before every member's
     // L5 state settles wastes provider calls and produces a narrative over a
     // transient subset. The final project-layer notification changes the input
@@ -268,7 +268,7 @@ export class AccountWorkspaceAnalysisScheduler {
     // AI workspace narrative enrichment — the SAME pass the run_workspace_analysis
     // MCP tool attaches (enrichWorkspaceAnalysisNarrative), using the ai-service
     // provider chain (DeepInfra -> local -> OpenRouter) already configured on
-    // this host. Without this pass the server-side auto-WAS ships an
+    // this host. Without this pass the server-side auto-built workspace-level CAS ships an
     // 'ai-required-degraded' narrative with empty description forever.
     try {
       record.graph = await enrichWorkspaceAnalysisNarrative(graph);

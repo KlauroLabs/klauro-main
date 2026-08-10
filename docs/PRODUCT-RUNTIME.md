@@ -9,7 +9,7 @@ experience one Klauro analysis flow.
 | Path | Purpose | Weight expectation |
 | --- | --- | --- |
 | Thin local client / MCP | Account-gated agent entrypoint, commit/source packaging, in-flight context packaging, cache lookup, compact agent-context retrieval | Small, fast, near-idle when unused |
-| Hosted analyzer workers | Shared project CAS/WAS analysis, language/framework/library analyzers, AI enrichment, embeddings, telemetry correlation, commit history | Heavy, server-side, horizontally scalable |
+| Hosted analyzer workers | Shared project CAS analysis (repo- and workspace-level), language/framework/library analyzers, AI enrichment, embeddings, telemetry correlation, commit history | Heavy, server-side, horizontally scalable |
 | Gauntlet / evaluation tooling | Competitor benchmarks, copied repos, live trials, 100-repo proof, quality reports | Heavy by design, never shipped as product runtime |
 
 ## Source Handling
@@ -27,7 +27,7 @@ local CLI submissions.
 Both hosted paths converge to the same project state:
 
 ```text
-project + selected branch + commit SHA/source revision -> shared CAS/WAS analysis
+project + selected branch + commit SHA/source revision -> shared CAS analysis (repo- and workspace-level)
 ```
 
 Connecting a Git provider is automation and verification, not a different
@@ -102,7 +102,7 @@ Not allowed locally in the product path:
 - workspace narrative generation
 - local model inference
 - embedding-heavy semantic enrichment
-- authoritative CAS/WAS generation as the default customer flow
+- authoritative CAS generation (repo- and workspace-level) as the default customer flow
 
 ## Runtime Budgets
 
@@ -152,7 +152,7 @@ The npm `files` allowlist in `apps/mcp-server/package.json` enforces this direct
 
 Local storage is a cache, not the product database.
 
-Default local storage lives under `~/.klauro/analyses` unless `KLAURO_STORAGE_PATH` is set. CAS/WAS artifacts should be compressed, and MCP/API callers should retrieve targeted slices rather than whole analysis blobs. Generated gauntlet/proof artifacts are intentionally separate from durable product analyses and should be prunable.
+Default local storage lives under `~/.klauro/analyses` unless `KLAURO_STORAGE_PATH` is set. CAS artifacts (repo- and workspace-level) should be compressed, and MCP/API callers should retrieve targeted slices rather than whole analysis blobs. Generated gauntlet/proof artifacts are intentionally separate from durable product analyses and should be prunable.
 
 Recommended cleanup for generated proof artifacts:
 
@@ -171,7 +171,7 @@ The default customer shape should be:
 2. Sign in to Klauro.
 3. Run `klauro init` in any folder, pick the selected branch, and either connect a Git provider or submit committed local source.
 4. Register it with Claude/Codex/Cursor or another MCP-capable agent.
-5. The hosted service analyzes selected-branch commits and produces shared CAS/WAS for the team.
+5. The hosted service analyzes selected-branch commits and produces a shared CAS (repo- and workspace-level) for the team.
 6. The local client can separately prepare in-flight context for active human or agent work.
 7. Hosted analyzers generate merged task context, AI descriptions, embeddings, and telemetry overlays.
 8. Local agents query compact agent contexts, idioms, risks, tests, flows, and workspace edges from cache or remote.

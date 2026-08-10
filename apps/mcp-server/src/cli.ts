@@ -530,7 +530,7 @@ async function main(): Promise<void> {
   }
 
   // "account-workspace-*" (not "workspace-*") to avoid colliding with the
-  // pre-existing local cross-codebase WAS graph commands above
+  // pre-existing local cross-codebase workspace-level-CAS graph commands above
   // (workspace-analysis/-get/-list), which are a completely different concept
   // (a locally-saved multi-repo analysis graph, no server account involved).
   // These two talk to the hosted AccountStore workspace/project model

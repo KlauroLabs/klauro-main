@@ -94,7 +94,7 @@ AZURE_OPENAI_API_VERSION=2024-10-21
 
 DeepInfra is first-class but still uses the OpenAI-compatible client internally.
 Set `KLAURO_EXPECT_AI_PROVIDER=deepinfra` in CI or gauntlets when a hosted
-DeepInfra pass is required; WAS artifacts and reports expose `ai_enrichment`
+DeepInfra pass is required; workspace-level CAS artifacts and reports expose `ai_enrichment`
 metadata so deterministic fallback cannot be mistaken for hosted AI.
 
 AI enrichment is hosted-only in the product architecture. The local connector
@@ -102,7 +102,7 @@ does not use Ollama, LM Studio, local OpenAI-compatible servers, or in-process
 transformers models. Customers should not need model runtimes or provider API
 keys on their laptops.
 
-`AZURE_OPENAI_API_KEY` alone is not enough; Klauro needs the endpoint and deployment name to call Azure OpenAI. If no AI provider is configured, default CAS/WAS analysis must mark the system narrative and primary capability descriptions as degraded or failed with explicit provenance; deterministic text is not equivalent to the required AI enrichment.
+`AZURE_OPENAI_API_KEY` alone is not enough; Klauro needs the endpoint and deployment name to call Azure OpenAI. If no AI provider is configured, default CAS analysis (repo- or workspace-level) must mark the system narrative and primary capability descriptions as degraded or failed with explicit provenance; deterministic text is not equivalent to the required AI enrichment.
 
 ## Claude Code Configuration
 
@@ -159,7 +159,7 @@ Each analysis produces:
 - `{project-slug}/snapshots/` - Analysis snapshots for time-travel queries
 
 The MCP surface should retrieve targeted slices from this cache, not inject the
-entire CAS/WAS blob into an agent prompt. Local storage is a cache; hosted
+entire CAS blob (repo- or workspace-level) into an agent prompt. Local storage is a cache; hosted
 analyzer storage and retention are the durable commercial path.
 
 Snapshot retention is bounded for local development. By default Klauro keeps at

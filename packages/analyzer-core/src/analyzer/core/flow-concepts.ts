@@ -14,8 +14,8 @@ import { buildCronScheduleIndex, findCronSchedule } from './journey-builder';
 
 /**
  * FLOW CONCEPTS — the FLOW -> STEP tier of the conceptual understanding layer
- * (docs/SPEC-CONCEPTUAL-LAYER.md). Capabilities (already computed — CAS/WAS
- * product_map/system_capabilities) answer "what does it do". Flows answer
+ * (docs/SPEC-CONCEPTUAL-LAYER.md). Capabilities (already computed — CAS,
+ * repo- or workspace-level — product_map/system_capabilities) answer "what does it do". Flows answer
  * "how does a request/job move through it, step by step" — an ordered set of
  * semantic STEPS (Validate -> Charge -> Persist -> Notify), each carrying the
  * same I/L/S/O + Constraints contract used everywhere else in the product

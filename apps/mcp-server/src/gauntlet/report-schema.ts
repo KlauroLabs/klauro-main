@@ -143,7 +143,7 @@ export interface ScenarioSpec {
 /**
  * The scenario catalog. Every item the user enumerated is here, plus the
  * objective analysis-readiness gate. Cross-repo + workspace scenarios are the
- * differentiated ground (WAS) where Klauro's lead should be largest.
+ * differentiated ground (the workspace-level CAS) where Klauro's lead should be largest.
  */
 export const SCENARIOS: ScenarioSpec[] = [
   {

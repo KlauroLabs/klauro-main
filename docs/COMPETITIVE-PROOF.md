@@ -46,7 +46,7 @@ that codebase-memory's schema and tool surface structurally cannot answer.
   would use them.
 - **Fixtures:** the gauntlet's existing corpus — 34 framework-route fixtures
   spanning 30+ languages/frameworks, per-language who-calls fixtures, a
-  cross-repo (ui/api/worker) WAS fixture, ORM/DI/GraphQL/messaging/auth/
+  cross-repo (ui/api/worker) workspace-level-CAS fixture, ORM/DI/GraphQL/messaging/auth/
   telemetry/pattern/component-tree fixtures, and a before/after behavioral-diff
   fixture set (auth-removed, journey-broken, capability-added, plus a
   control-rename negative control). This machine also holds a corpus of
@@ -151,7 +151,7 @@ single-arm rule.
 
 92 scenarios measured this way: 33 framework-route cells, 13 ORM-relation
 fixtures, 8 DI-graph fixtures, 13 messaging-wiring fixtures, 15 route-auth
-fixtures, 8 telemetry-correlation fixtures, plus WAS cross-repo linking and
+fixtures, 8 telemetry-correlation fixtures, plus workspace-level-CAS cross-repo linking and
 component-tree render fixtures. **92 win / 0 tie / 0 loss.**
 
 Concrete token cost where a like-for-like comparison exists (Klauro's

@@ -39,7 +39,7 @@ to extend coverage — this is logged honestly as a gap, not hidden.
 - **0 crashed.** Every repo the harness pointed at, including a repo with zero
   build manifests anywhere (hoggan) and 89 GB / 62 GB-of-target zerac/poc,
   returned a CAS without throwing.
-- **3 of 3 workspaces graceful.** All three WAS runs (money, zerac, soon)
+- **3 of 3 workspaces graceful.** All three workspace-level CAS runs (money, zerac, soon)
   completed with 0 crashes and produced a workspace graph.
 - **2 of 5 no-manifest project targets are genuinely manifest-less at any
   depth** (cleanmusic, hoggan) **and 3 turned out to have manifests nested

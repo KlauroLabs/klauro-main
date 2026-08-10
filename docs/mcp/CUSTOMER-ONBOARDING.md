@@ -5,7 +5,7 @@ The first customer experience should prove value without asking the customer to 
 The customer is not choosing between separate "local" and "remote" products.
 They are using Klauro. A Klauro analysis can start from a connected Git repo, a
 local committed tree, a workspace folder, or in-flight branch/session work. The
-result should be one coherent CAS/WAS-backed experience for UI and MCP.
+result should be one coherent CAS-backed experience (repo- and workspace-level) for UI and MCP.
 
 ## First Ten Minutes
 
@@ -49,7 +49,7 @@ Hosted mode keeps the analyzer implementation off the customer machine.
 
 When a customer connects a Git provider repo to Klauro, Klauro's VPS/cloud does
 the full shared analysis from selected-branch pushed commits. The local MCP then
-gives agents that shared CAS/WAS context.
+gives agents that shared CAS context (repo- and workspace-level).
 
 When a customer starts from a local folder before connecting a repo, or for a
 local-only repo, the local client sends a filtered, compressed committed-source
@@ -71,7 +71,7 @@ Customers install the thin CLI/MCP client for agent access, account login,
 cache reads, committed-source submission, and in-flight analysis for active
 branch/session/working-tree work. Before uploading local source, customers can
 review the upload manifest. The analyzer implementation remains server-side
-where appropriate, and returned CAS/WAS context is cached so agents can work
+where appropriate, and returned CAS context (repo- and workspace-level) is cached so agents can work
 quickly after sync.
 
 In-flight analysis is provisional, not private by definition. Teams should be

@@ -1,20 +1,20 @@
 /**
- * FIRST-CLASS Workspace Analysis (WAS) bench — Camp C's biggest moat, benched as
+ * FIRST-CLASS workspace-level CAS bench — Camp C's biggest moat, benched as
  * its own taxonomy W1–W8 (NOT a single bullet).
  *
  * WHY out-of-category: Camp A/B and every serious competitor (scip, stack-graphs,
- * codebase-memory) index ONE repository. WAS understands a whole WORKSPACE
+ * codebase-memory) index ONE repository. The workspace-level CAS understands a whole WORKSPACE
  * (ui → api → worker → infra) as ONE product. There is no single-repo tool to
  * compare against; the win is EMISSION COVERAGE of cross-repo facts with provenance.
  *
- * This bench runs ONE real WAS: it analyzes each repo of a multi-repo fixture via
+ * This bench runs ONE real workspace-level CAS: it analyzes each repo of a multi-repo fixture via
  * the orchestrator, calls the REAL buildCrossCodebaseSystemGraph, then COUNTS the
  * emitted facts per W-group from the returned CrossCodebaseSystemGraph. Counts are
  * MEASURED, never hardcoded. A W-group that emits 0 on the fixture is recorded
  * honestly as 0.
  *
  * The W1–W8 taxonomy and its mapping to CrossCodebaseSystemGraph fields is the
- * "C10 — Workspace Analysis (WAS)" section of docs/CAMPS.md.
+ * "C10 — Workspace-Level CAS" section of docs/CAMPS.md.
  */
 
 import * as fs from 'fs-extra';
@@ -55,7 +55,7 @@ export interface CampWASReport {
   campABCannot: string;
 }
 
-/** The first-class WAS fixture: a real ui + api + worker workspace. */
+/** The first-class workspace-level-CAS fixture: a real ui + api + worker workspace. */
 const FIXTURE_DIR = path.resolve(
   __dirname,
   '..',
@@ -81,7 +81,7 @@ async function repoDirs(dir: string): Promise<string[]> {
   return out.sort();
 }
 
-/** Analyze every repo of the fixture and fuse them into one real WAS graph. */
+/** Analyze every repo of the fixture and fuse them into one real workspace-level CAS graph. */
 async function buildRealWorkspaceGraph(): Promise<{
   graph: CrossCodebaseSystemGraph;
   repos: number;

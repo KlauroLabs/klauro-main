@@ -203,7 +203,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   // fire-and-forget: must never delay server startup / port binding.
   void reapStaleAttemptRecordsOnStartup(dataDir);
   const accounts = new AccountStore(dataDir);
-  // Server-side auto-refreshed Workspace Analysis (WAS): rebuilds are
+  // Server-side auto-refreshed workspace-level CAS: rebuilds are
   // debounced/coalesced per account workspace and run async — see
   // account-workspace-analysis.ts. notifyProjectAnalysisLandedForAnalysisId
   // below is the shared trigger both /v1/analyze and reanalyze use.
@@ -472,7 +472,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           // seconds, and run the entire analysis server-side in the
           // background. The background continuation performs the exact same
           // post-analyze steps as the synchronous path below (revision append,
-          // account-project attach, audit log, WAS rebuild trigger); its
+          // account-project attach, audit log, workspace-level-CAS rebuild trigger); its
           // failures are logged + audited, never a hung/failed upload.
           if (!body.snapshot?.files?.length) {
             writeJson(response, 400, { status: 'error', error: 'Remote analyze requires a source snapshot with files' });
@@ -651,7 +651,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 displayName,
                 onPhase: (event) => {
                   // Progressive availability (task #112): attach the project +
-                  // notify WAS the moment L0 (the fast index/inventory
+                  // notify the workspace-level CAS the moment L0 (the fast index/inventory
                   // pre-pass) is persisted, not after the full deterministic
                   // pipeline finishes. This is what makes the web app show
                   // the project populating within seconds instead of after
@@ -1009,12 +1009,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           ...result,
           analysis_id: clientVisibleAnalysisId(body.analysis_id, result.analysis_id, authorization.clientId),
         });
-        // WAS AUTO-REBUILD REGRESSION FIX: /v1/analyze and /api/projects/:id/
+        // WORKSPACE-LEVEL-CAS AUTO-REBUILD REGRESSION FIX: /v1/analyze and /api/projects/:id/
         // reanalyze both call notifyProjectAnalysisLandedForAnalysisId after a
         // member CAS lands, but this route never did — so a workspace whose
         // members only ever get refreshed via incremental `sync_codebase_remote`
         // pushes (the common case once a project has an initial analysis_id)
-        // never marked its account workspace dirty, and the server-side WAS
+        // never marked its account workspace dirty, and the server-side workspace-level CAS
         // silently sat stale until someone manually hit POST
         // /api/workspaces/{id}/reanalyze. Same fire-and-forget contract as the
         // other two call sites: never blocks or affects this response.
@@ -2427,7 +2427,7 @@ async function handleAccountApi(
   // Change Activity feed for the Home frame: reverse-chronological events
   // across EVERY workspace this user belongs to. Built entirely from data
   // already persisted for other reasons (project revisions, reanalyze
-  // attempt sidecars, the server-side WAS record) — see
+  // attempt sidecars, the server-side workspace-level-CAS record) — see
   // collectAccountActivityEvents below — so an account with no analyses yet
   // honestly returns {events:[]}, never a fabricated placeholder.
   // §AUTH-LIFECYCLE — signed-in password change. Requires the current
@@ -2510,7 +2510,7 @@ async function handleAccountApi(
         // /api/workspaces/{id}/reanalyze uses, for the target workspace (whose
         // membership just grew) and, since this is a move rather than an
         // additive attach, for the source workspace too (whose membership just
-        // shrank and whose cached WAS is now stale). Idempotent re-attach is a
+        // shrank and whose cached workspace-level CAS is now stale). Idempotent re-attach is a
         // true no-op: no workspace's membership changed, so nothing is scheduled.
         if (!result.already_attached) {
           scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
@@ -2543,7 +2543,7 @@ async function handleAccountApi(
       // Membership is itself a workspace-analysis input change. When an
       // already-analyzed repository is attached, an unchanged follow-up push
       // may be legitimately reused and emit no new analysis landing event, so
-      // creation must schedule the WAS rebuild directly.
+      // creation must schedule the workspace-level-CAS rebuild directly.
       if (project.analysis_id) scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
       return {
         statusCode: 201,
@@ -2602,7 +2602,7 @@ async function handleAccountApi(
         member_project_names: record.member_project_names,
         // Terminal-honest AI narrative state ('ai' | 'degraded' | 'skipped' |
         // 'error' | 'pending'); absent on records persisted before enrichment
-        // was attached to server-side WAS rebuilds.
+        // was attached to server-side workspace-level-CAS rebuilds.
         enrichment: record.enrichment,
         analysis: record.graph,
         ...(workspaceLastAttempt ? { last_attempt: workspaceLastAttempt } : {}),
@@ -2612,7 +2612,7 @@ async function handleAccountApi(
 
   // Workspace-scoped Change Activity (the Workspace frame's sibling of
   // /api/account/activity above): same event sources, narrowed to this one
-  // workspace's own member projects + WAS rebuild history. Membership-gated
+  // workspace's own member projects + workspace-level-CAS rebuild history. Membership-gated
   // the same way GET .../analysis is — listProjects throws 404 for
   // non-members before any workspace-scoped data is touched.
   const workspaceActivityMatch = route.match(/^\/api\/workspaces\/([^/]+)\/activity$/);
@@ -2631,10 +2631,10 @@ async function handleAccountApi(
     return { statusCode: 200, body: { workspace_id: workspaceId, events: events.slice(0, limit), next_cursor: null } };
   }
 
-  // POST /api/workspaces/{id}/reanalyze — recompute the server-side WAS for
+  // POST /api/workspaces/{id}/reanalyze — recompute the server-side workspace-level CAS for
   // this workspace from the STORED member analyses, WITH the AI narrative
   // enrichment pass, and persist. Mirrors POST /api/projects/{id}/reanalyze:
-  // answer 202 immediately and run in the background (a multi-repo WAS build
+  // answer 202 immediately and run in the background (a multi-repo workspace-level-CAS build
   // + AI narrative can exceed the Cloudflare edge and client POST timeouts),
   // then let clients poll GET /api/workspaces/{id}/analysis for
   // status:'ready' + enrichment.status. This is the product surface for
@@ -2960,7 +2960,7 @@ async function handleAccountApi(
     const workspace = workspacePath(dataDir, project.analysis_id);
     const sectionsDasUnitId = url.searchParams.get('das_unit_id') || undefined;
 
-    // DAS-scoped sections (?das_unit_id=<id>): the scope used to be accepted
+    // Sub-CAS-node-scoped sections (?das_unit_id=<id>): the scope used to be accepted
     // and silently IGNORED here, so `?sections=comprehension&das_unit_id=X`
     // returned the whole repo's capability and flow set — flows whose own ids
     // name other deployables — while looking like a scoped answer. Slicing
@@ -3055,11 +3055,11 @@ async function handleAccountApi(
     };
   }
 
-  // DAS-scoped CAS remains a query response. Unscoped full-CAS access is an
+  // Sub-CAS-node-scoped CAS remains a query response. Unscoped full-CAS access is an
   // explicit compressed stream at /cas/export; normal MCP clients hydrate
   // named sections and never mirror the entire customer graph.
   //
-  // DAS-scoped variant (?das_unit_id=<id>): the web UI's deployable page was
+  // Sub-CAS-node-scoped variant (?das_unit_id=<id>): the web UI's deployable page was
   // approximating deployable-analysis.ts's phase-2 scoping (getCachedDeploy-
   // ableAnalyses / scopeCasToDasUnit) client-side because the real scoped
   // surface — already wired into 5 MCP tools via server.ts's
@@ -4250,7 +4250,7 @@ async function collectProjectActivityEvents(dataDir: string, project: AccountPro
 }
 
 /**
- * Change Activity events for one workspace's server-side WAS: 'workspace_rebuilt'
+ * Change Activity events for one workspace's server-side workspace-level CAS: 'workspace_rebuilt'
  * from the persisted WorkspaceAnalysisRecord (account-workspace-analysis.ts)
  * — at most ONE event since that store keeps only the latest rebuild, not a
  * history — plus an honest 'workspace_enrichment_degraded' negative event
@@ -4932,7 +4932,7 @@ function projectAttemptRecordPath(workspace: string): string {
   return path.join(workspace, '.reanalyze-attempt.json');
 }
 
-// Workspace (multi-repo WAS) reanalyze: no per-workspace CAS directory of our
+// Workspace (multi-repo, workspace-level CAS) reanalyze: no per-workspace CAS directory of our
 // own to piggyback on (see account-workspace-analysis.ts, out of scope here),
 // so the sidecar lives under its own directory keyed by workspace id.
 function workspaceAttemptRecordPath(dataDir: string, workspaceId: string): string {
@@ -4941,7 +4941,7 @@ function workspaceAttemptRecordPath(dataDir: string, workspaceId: string): strin
 
 // Shared background-rebuild trigger for POST /api/workspaces/{id}/reanalyze
 // AND the project-attach endpoint (both in handleAccountApi below): recomputes
-// the server-side WAS for `workspaceId` from the stored member analyses (with
+// the server-side workspace-level CAS for `workspaceId` from the stored member analyses (with
 // AI narrative enrichment) and persists it, answering the same
 // async-then-poll shape as POST /api/projects/{id}/reanalyze (see GET
 // /api/workspaces/{id}/analysis for status polling). Callers must already

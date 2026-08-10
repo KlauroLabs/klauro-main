@@ -6,7 +6,7 @@ import * as path from 'path';
 //
 // The incident this exists for: `analyzer_build` (base package version + git
 // sha of the WHOLE monorepo — see build-identity.ts) changes on EVERY commit,
-// including releases that only touch MCP tools or WAS/product-map code and
+// including releases that only touch MCP tools or workspace-level-CAS/product-map code and
 // never touch the parse/graph pipeline. Because `fullRebuildReasonForPreviousOutput`
 // forced a full rebuild whenever `analyzer_build` differed at all, every deploy
 // threw away the ENTIRE persisted CASOutput (parse results + every derived
@@ -31,7 +31,7 @@ import * as path from 'path';
 //    narrower / rarer event than "the monorepo git sha changed".
 //
 // When NEITHER fingerprint changes, the analyzer_build stamp is allowed to
-// differ (e.g. an MCP-tool-only or WAS-only release) without forcing a full
+// differ (e.g. an MCP-tool-only or workspace-level-CAS-only release) without forcing a full
 // rebuild — the ordinary file-diff-driven incremental path decides instead.
 //
 // Bundle channel: fingerprints are computed at BUILD time (see

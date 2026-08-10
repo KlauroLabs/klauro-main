@@ -115,7 +115,7 @@ test('workspace scheduler drains a project notification that arrives during an i
 });
 
 /**
- * Server-side auto-refreshed Workspace Analysis (WAS): pushing member project
+ * Server-side auto-refreshed workspace-level CAS: pushing member project
  * analyses for an account workspace should automatically (re)build a
  * workspace analysis from the STORED member CAS analyses — no separate
  * "run workspace analysis" call needed, matching the user's expectation that
@@ -246,8 +246,8 @@ test('workspace analysis auto-builds once from stored member analyses after a de
 
 /**
  * POST /api/workspaces/{id}/reanalyze — the product surface for refreshing a
- * server-side WAS WITH AI narrative enrichment. The live-prod gap this guards
- * against: auto-built WAS records shipped with workspace_narrative.source =
+ * server-side workspace-level CAS WITH AI narrative enrichment. The live-prod gap this guards
+ * against: auto-built workspace-level-CAS records shipped with workspace_narrative.source =
  * 'ai-required-degraded' (empty description) and there was NO endpoint to
  * re-run the workspace with enrichment attached. Asserts: (1) 202 accepted
  * immediately, (2) the rebuild runs in the background and persists a record
@@ -279,7 +279,7 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
   // Grounded-narrative mock: long enough (>=180 chars), concrete surfaces
   // (http/api/service/server/client/route), behavior verbs (routes/records/
   // returns/handles/provides/supports), and none of the ungrounded product
-  // frames the WAS quality gate rejects — so the real
+  // frames the workspace-level-CAS quality gate rejects — so the real
   // enrichWorkspaceAnalysisNarrative pass accepts it and stamps source 'ai'.
   const enrichedDescription = 'This workspace routes HTTP requests through the repo-reanalyze Python API service, records each request in the backend server, and returns computed handler results to the calling client. The API handles request processing, provides a single route surface, and supports the workspace backend behavior end to end.';
   const originalGenerate = aiService.generateComponentDescription;
@@ -400,13 +400,13 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
 });
 
 /**
- * WAS AUTO-REBUILD REGRESSION (fresh v1.0.126 self-analysis): a member CAS
+ * WORKSPACE-LEVEL-CAS AUTO-REBUILD REGRESSION (fresh v1.0.126 self-analysis): a member CAS
  * landed via `/v1/sync` (the incremental "dirty tree" push `sync_
  * codebase_remote` uses once a project already has an analysis_id — the
  * common case after the FIRST `/v1/analyze`) — but `notifyProjectAnalysisLanded`
  * was only ever wired into `/v1/analyze` and `/api/projects/:id/reanalyze`.
  * A workspace whose member is refreshed exclusively via `/v1/sync` after its
- * initial push therefore never got marked dirty, and the server-side WAS sat
+ * initial push therefore never got marked dirty, and the server-side workspace-level CAS sat
  * stale until someone manually called POST /api/workspaces/{id}/reanalyze.
  * This pins that `/v1/sync` ALSO triggers the debounced auto-rebuild, with no
  * manual reanalyze call anywhere in the test.
@@ -450,7 +450,7 @@ test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the
     }, token);
     assert.equal(projectRes.statusCode, 201);
 
-    // Attaching an already-analyzed project is itself a WAS input change and
+    // Attaching an already-analyzed project is itself a workspace-level-CAS input change and
     // now builds the initial workspace automatically.
     await waitFor(async () => {
       const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
@@ -493,8 +493,8 @@ test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the
 /**
  * Instant-degrade honesty (live "Clients" workspace regression): when the AI
  * layer short-circuits without a real model round-trip (feature-disabled canned
- * string / empty response), the WAS record must land in enrichment status
- * 'error' with the real cause — never a fake "rejected by the WAS quality gate"
+ * string / empty response), the workspace-level-CAS record must land in enrichment status
+ * 'error' with the real cause — never a fake "rejected by the workspace-level-CAS quality gate"
  * degrade produced in milliseconds without an attempt.
  */
 test('a short-circuited AI attempt persists an honest enrichment error, not a fake quality-gate degrade', async () => {

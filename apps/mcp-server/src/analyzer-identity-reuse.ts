@@ -22,7 +22,7 @@
  *    tree-sitter-ts-extraction-cache.ts), which still matches — so extraction
  *    is served from cache and the cost is the derived layers, not the parse.
  *  - BUILD tier (both fingerprints match, `analyzer_build` differs): an
- *    MCP-tool-only / WAS-only / marketing release that cannot change analysis
+ *    MCP-tool-only / workspace-level-CAS-only / marketing release that cannot change analysis
  *    output. REUSE — this is exactly the case stage fingerprints exist for,
  *    and re-analyzing here would make every deploy a cold rebuild for every
  *    project.

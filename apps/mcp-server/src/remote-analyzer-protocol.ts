@@ -130,7 +130,7 @@ export interface RemoteProjectRevisionsResponse {
  * GET /api/workspaces/{id}/activity ("Change Activity" panel in the Home +
  * Workspace Figma frames). Every event is derived from data ALREADY
  * persisted for other reasons (project revisions, reanalyze attempt
- * sidecars, the server-side WAS record) — there is no separate activity-log
+ * sidecars, the server-side workspace-level-CAS record) — there is no separate activity-log
  * writer, so this type is deliberately a thin projection, not a new store.
  */
 export interface AccountActivityEvent {

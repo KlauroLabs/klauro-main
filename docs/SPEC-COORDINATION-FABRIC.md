@@ -28,14 +28,14 @@
 ## 0. Thesis (why we are building this)
 
 Codebase intelligence is table stakes. Semantic understanding + capabilities differentiate.
-WAS (workspace-level, cross-repo understanding) separates us further. **Telemetry fused into
+The workspace-level CAS (cross-repo understanding, composed via sub-CAS nodes) separates us further. **Telemetry fused into
 the analysis** and **in-flight (uncommitted, cross-machine) change awareness** are the phase
 change: they turn Klauro from "better context for one agent" into **the shared world-model and
 coordination fabric for fleets of agents (and humans) working the same codebase at once.**
 
 The expensive problems of multi-agent development — duplicate work, merge conflicts, stale
 contracts, work stranded on a machine — are unsolved by every incumbent because they assume
-*committed code, one actor*. Klauro's three-tracks (working/committed/incoming) + WAS +
+*committed code, one actor*. Klauro's three-tracks (working/committed/incoming) + the workspace-level CAS +
 telemetry is the substrate to solve them. That is a new category: **multi-agent development
 coordination.** The understanding layers are the credibility and the on-ramp; the coordination
 layer is the company.
@@ -53,11 +53,11 @@ incoming + runtime as one model. Build toward that demo.
 ┌─ L5  COORDINATION FABRIC  (NET-NEW)  — claims, presence, conflict prevention, arbitration
 ├─ L4  IN-FLIGHT / CROSS-MACHINE       — working-tree + incoming work as first-class state
 ├─ L3  TELEMETRY FUSION                — runtime reality injected into the static model
-├─ L2  WAS (workspace)                 — the whole product as one graph, cross-repo seams
+├─ L2  WORKSPACE-LEVEL CAS             — the whole product as one graph, cross-repo seams
 └─ L1  CODEBASE INTELLIGENCE + SEMANTIC — CAS: structure + capabilities + comprehension
 ```
 
-- **L1–L2 are built** (CAS + WAS). L3 is **scaffolded**. L4 read-side is **built**, write/sync is **partial/missing**. L5 is **greenfield.**
+- **L1–L2 are built** (CAS + workspace-level CAS). L3 is **scaffolded**. L4 read-side is **built**, write/sync is **partial/missing**. L5 is **greenfield.**
 - Everything is exposed over MCP (the neutral, cross-vendor interface — a fleet of *any* agents
   coordinates through it). Keep it vendor-neutral; that neutrality is a structural moat the
   IDE incumbents cannot copy.
@@ -111,7 +111,7 @@ privacy gate), it covers the most common case, and it de-risks the demo (N agent
 | Capability | State | Anchor (extend, don't rebuild) |
 |---|---|---|
 | CAS structural + semantic + product map | ✅ built | `packages/analyzer-core` orchestrator; `apps/mcp-server/src/query.ts`; ~160 MCP tools |
-| WAS cross-repo graph | ✅ built | `apps/mcp-server/src/cross-codebase-analysis.ts` (`buildCrossCodebaseSystemGraph`, application/integration links, `data_flow_paths`, `unmatched_interfaces`) |
+| Workspace-level CAS cross-repo graph | ✅ built | `apps/mcp-server/src/cross-codebase-analysis.ts` (`buildCrossCodebaseSystemGraph`, application/integration links, `data_flow_paths`, `unmatched_interfaces`) |
 | Three-tracks (main/other-branch/in-flight) — READ | ✅ built | `apps/mcp-server/src/track.ts`; track-keyed `storage.ts`; `POST /v1/analyze-diff` in `remote-analyzer-service.ts` |
 | In-flight WORKING-TREE capture + cross-machine SYNC | ⚠️ partial | `remote-sync-client.ts`, `remote-source.ts` (`buildBranchDiffContext`); no multi-machine presence/merge |
 | Telemetry ingest/correlate/SDK | ⚠️ scaffolded | `runtime-contract.ts`, `runtime-sdk.ts`, `telemetry-ingestion.ts`, `runtime-simulation.ts`; MCP `ingest_telemetry`, `record_runtime_event`, `correlate_runtime_event`, `get_runtime_*` |
@@ -148,7 +148,7 @@ the moat. Without it, Klauro is a nicer conflict reporter. With it, it's the coo
     capability?}, intent: string, status: active|released|superseded|expired, created_at,
     ttl_ms, heartbeat_at, base_commit, branch }`.
   - `arbiter.ts` — on a new claim, compute **overlap** vs all active claims (path-prefix ∩,
-    symbol-set ∩, capability-name match against WAS `workspace_capabilities`, and blast-radius
+    symbol-set ∩, capability-name match against the workspace-level CAS's `workspace_capabilities`, and blast-radius
     intersection via CAS edges). Return `granted | conflict{with_claim, kind, evidence} |
     duplicate{existing_claim, their_in_flight_diff}`.
   - `presence.ts` — active agents in a workspace, heartbeats, TTL expiry, last-seen scope.
@@ -157,7 +157,7 @@ the moat. Without it, Klauro is a nicer conflict reporter. With it, it's the coo
 - **Consistency:** claims are last-writer-wins per `claim_id` with a monotonic `seq`; the
   active-set is derived. Arbitration is advisory-by-default (returns a verdict; the agent
   decides) with an optional strict mode (server refuses to grant an overlapping claim). Design
-  the arbitration as a pure function `arbitrate(newClaim, activeClaims, casEdges, wasGraph)` so
+  the arbitration as a pure function `arbitrate(newClaim, activeClaims, casEdges, workspaceGraph)` so
   it's unit-testable without transport.
 
 **WS-C-transport (real-time).** Agents must see each other in near-real-time.
@@ -175,7 +175,7 @@ the moat. Without it, Klauro is a nicer conflict reporter. With it, it's the coo
   with the first's in-flight diff attached; SSE delivered the presence delta to a third client.
 - No collision-prevention false-negative on the demo scenario (WS-DEMO).
 
-**Deps.** WS-B (in-flight diff to attach), WAS graph, CAS edges. **Tier.** `opus/careful` (protocol + consistency); `sonnet` for the HTTP glue.
+**Deps.** WS-B (in-flight diff to attach), workspace-level CAS graph, CAS edges. **Tier.** `opus/careful` (protocol + consistency); `sonnet` for the HTTP glue.
 
 ---
 
@@ -188,10 +188,10 @@ understanding layers pay off as coordination value.
 
 **Current.** Ingredients exist and are unused for this: `validate_agent_change`
 (`assess_change_risk`), cross-repo contract drift (`buildCrossRepoContractDrift` in `product.ts`),
-blast-radius via CAS edges, WAS capabilities. No engine composes them for multi-agent.
+blast-radius via CAS edges, workspace-level CAS capabilities. No engine composes them for multi-agent.
 
 **Build.** `apps/mcp-server/src/coordination/collision.ts`:
-1. **Duplicate-work detector** — new claim's `intent`/`capability` vs WAS `workspace_capabilities`
+1. **Duplicate-work detector** — new claim's `intent`/`capability` vs the workspace-level CAS's `workspace_capabilities`
    + other active claims. If an active claim (or a very-recent released one) already covers the
    same capability/entity-writes, flag `duplicate`.
 2. **Edit-overlap detector** — path ∩ and symbol ∩ across in-flight diffs of active agents
@@ -327,7 +327,7 @@ the live ingest path, not simulation.) **Deps.** none. **Tier.** `sonnet`.
 
 ---
 
-### WS-G — WAS Deepening
+### WS-G — Workspace-Level CAS Deepening
 
 **Goal.** Harden the least-contested ground (cross-repo) since that's the durable wedge.
 
@@ -451,7 +451,7 @@ All workspace+org scoped (WS-F).
 - **M1 (substrate):** WS-B in-flight capture+sync (self only) → WS-A telemetry fusion (parallel).
 - **M2 (the core):** WS-C coordination protocol + WS-D collision engine + WS-E MCP surface.
 - **M3 (prove):** WS-DEMO + WS-I (#80 + real-agent large-repo) + coordination bench.
-- **Continuous:** WS-H moat slices, WS-G WAS deepening, WS-J adoption polish — parallel, cheap models.
+- **Continuous:** WS-H moat slices, WS-G workspace-level-CAS deepening, WS-J adoption polish — parallel, cheap models.
 
 ## 6. Risks to build against (from the evaluation)
 

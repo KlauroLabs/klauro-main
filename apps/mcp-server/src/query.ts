@@ -3838,7 +3838,7 @@ export function getInterfaceSignature(
   const calleeLimit = opts.callee_limit && opts.callee_limit > 0 ? opts.callee_limit : 10;
   const UNCAPPED_COUNT_PROBE = 5000;
 
-  // -- project/workspace level: aggregate from WAS-adjacent CAS fields
+  // -- project/workspace level: aggregate from workspace-level-CAS-adjacent CAS fields
   // (product_map, exit_points, entry_points) rather than a single node. --
   const requestedLevel = opts.level && opts.level !== 'auto' ? opts.level : undefined;
   const isProjectTarget = requestedLevel === 'project' || requestedLevel === 'workspace'

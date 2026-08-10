@@ -72,8 +72,8 @@ hypothetical; it happened).
 ## 3. The substrate: the fabric is built ON the analysis — P0
 
 **This is the load-bearing claim of v3.** The fabric is not a coordination service that
-happens to sit next to an analyzer. It is a **consumer of a live, continuously-updated CAS/WAS
-that includes uncommitted work, attributed per participant.**
+happens to sit next to an analyzer. It is a **consumer of a live, continuously-updated CAS
+(repo- and workspace-level) that includes uncommitted work, attributed per participant.**
 
 ### 3.1 In-flight reanalysis (the substrate)
 
@@ -209,7 +209,7 @@ that behavior.
 
 ```
                     ┌───────────────────────────────────────┐
-                    │  LIVE ANALYSIS  (CAS/WAS)             │
+                    │  LIVE ANALYSIS  (CAS, repo+workspace)  │
    W0 substrate ──► │  committed  +  in-flight (per         │
                     │  participant, semantic, continuous)   │
                     └───────────────────┬───────────────────┘

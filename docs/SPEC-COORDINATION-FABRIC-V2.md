@@ -82,7 +82,7 @@ Three commitments make it an accelerant:
   fleet; symbol-level locks let N agents safely share one file (proven: P1 "disjoint symbols
   run free"). This is load-bearing — coarsen it and the fabric itself becomes the bottleneck.
 - **Redirect, don't block.** A conflicting agent must be handed DIFFERENT non-conflicting work
-  off the CAS/WAS graph, not parked in a queue. Block-time is the enemy; drive it toward zero.
+  off the CAS graph (workspace composition included, via sub-CAS nodes), not parked in a queue. Block-time is the enemy; drive it toward zero.
   (`redirect_hint` in P1 is the seed → must become real work-routing.)
 - **Proactive partitioning (the collision that never happens).** Given a task set + the graph,
   compute the maximally-parallel non-conflicting partition and assign it up front. This is the
@@ -94,7 +94,7 @@ Three commitments make it an accelerant:
 prevented." Defensive framing (prevent clobbers) is table stakes; the product is *safe
 concurrency at scale*. Every fabric change is judged by whether it lets more agents work
 productively at once, not merely whether it blocks the unsafe ones. New workstream **P6 —
-Work-partitioner/scheduler**: consumes pending tasks + CAS/WAS, emits disjoint parallel batches
+Work-partitioner/scheduler**: consumes pending tasks + the CAS graph, emits disjoint parallel batches
 + live redirect routing; and a **throughput bench** (agents-in-parallel, block-time, wall-clock
 vs serial) as the acceptance metric for the whole fabric.
 
@@ -106,7 +106,7 @@ resolution: **awareness is the core primitive; partitioning and enforcement are 
 layered on it that ALWAYS degrade back to "coordinate with full context," never "denied."**
 
 - **Every agent can always SEE the full picture**: who is working where, on what symbol/region,
-  with what INTENT, what is in-flight/uncommitted, and — via the CAS/WAS graph — the BLAST RADIUS
+  with what INTENT, what is in-flight/uncommitted, and — via the CAS graph — the BLAST RADIUS
   of a change (which other symbols/scopes it touches, and who is mid-change there). Awareness is
   never gated; only *edits* are coordinated.
 - **Fungible vs non-fungible work.** Redirect (§1.5) applies ONLY to fungible work ("pick a
@@ -139,7 +139,7 @@ to an OPT-IN tool for the rare genuine-exclusive case; it is NOT the coordinatio
 - **Conceptual conflicts** — two locally-valid changes that are jointly INCOHERENT. Invisible to
   git/linters/editors; they pass textual merge and break the system. **This is the fabric's
   crown-jewel value, and it is only detectable with code semantics + intent** — which only the
-  CAS/WAS + the coordination store provide. Examples:
+  The CAS graph + the coordination store provide. Examples:
   - Contract divergence: A changes a signature/type/nullability/return; B's concurrent change
     assumes the OLD contract. (CAS knows callers + types.)
   - Invariant conflict: A's intent establishes an invariant ("now idempotent / immutable / always
@@ -153,7 +153,7 @@ to an OPT-IN tool for the rare genuine-exclusive case; it is NOT the coordinatio
 2. **In-flight diff sharing** — each sees the others' uncommitted changes to overlapping code.
 3. **Duplicate-work detection** — overlapping intent+diff → "you're both doing X."
 4. **Conceptual-conflict detection (crown jewel)** — for agents whose scope/blast-radius
-   intersect, compare intents + in-flight diffs against the CAS/WAS graph to flag contract breaks,
+   intersect, compare intents + in-flight diffs against the CAS graph to flag contract breaks,
    invariant violations, structural divergence, behavior drift. Deterministic where possible
    (type/contract/caller changes), AI-interpreted for intent-level invariants.
 5. **Intent-aware merge (merge-as-art)** — when agents finish, produce a merge PLAN reconciled at
@@ -168,7 +168,7 @@ signals, not gate.
 
 ## 2. Design principles
 
-- **Coordinate on the graph, not the text.** Klauro already has the CAS/WAS symbol +
+- **Coordinate on the graph, not the text.** Klauro already has the CAS symbol +
   dependency graph. That is the unfair advantage: grant at the *symbol*, reserve the
   *blast radius*, freeze the *contract*. Competitors coordinating on files/lines
   structurally cannot. **The shared context is the substrate that makes fleet-scale
@@ -194,7 +194,7 @@ signals, not gate.
 
 | Dimension | v1 (today) | v2 (fleet-scale) |
 |---|---|---|
-| Conflict handling | Advisory `checkEditLock` (detection only) | **Awareness-first**: every agent always sees who holds what, with what intent, and full CAS/WAS blast-radius context (§1.6). **Enforced arbitration** (`arbitrate()`/`grant-manager.ts`: grant / queue / redirect, leases + heartbeats) exists as an **opt-in tool** (`claim_work`) for the rare genuine-exclusive case — it is a convenience layered on the awareness substrate, not the default gate on writes. |
+| Conflict handling | Advisory `checkEditLock` (detection only) | **Awareness-first**: every agent always sees who holds what, with what intent, and full CAS blast-radius context (§1.6). **Enforced arbitration** (`arbitrate()`/`grant-manager.ts`: grant / queue / redirect, leases + heartbeats) exists as an **opt-in tool** (`claim_work`) for the rare genuine-exclusive case — it is a convenience layered on the awareness substrate, not the default gate on writes. |
 | Claim origin | Predicted paths, declared up front | Claims (via the opt-in `claim_work` tool) are still declared up front today; write-hooked/emergent claim derivation (auto-announcing the actual file+symbol touched) remains a **P2 rollout item**, not yet built |
 | Granularity | File paths (`pathsOverlap`) | **Symbol/region**, when the opt-in grant tool is used — `claim_work` accepts `symbols`/`paths` and `grant-manager.ts` arbitrates at that granularity. Concurrent, non-exclusive work at file or symbol granularity needs no claim at all under the awareness-first model. |
 | Dependency awareness | Blast-radius *detected* in collision sweep | Blast-radius awareness is surfaced to every agent via `check_collision`/`claim_work` responses (holder + intent + lease status); a hard **reservation** of dependents' contract surface (P3) is a follow-on, not yet built |
@@ -215,7 +215,7 @@ signals, not gate.
 
 ### 4.2 Blast-radius reservations
 - Editing symbol X reserves X **and the contract surface of X's transitive dependents**
-  (from CAS call/import edges + WAS cross-deployable links — the shared-code rollup gives
+  (from CAS call/import edges + workspace-level cross-deployable links — the shared-code rollup gives
   the cross-deployable dependents). This prevents a fleet from concurrently editing a
   shared lib and its consumers into an inconsistent contract.
 
@@ -236,7 +236,7 @@ signals, not gate.
 ### 4.5 Conceptual-conflict detection (the crown jewel, §1.7)
 
 This is the mechanic that actually embodies the core model: comparing concurrent
-agents' intents + in-flight diffs against the CAS/WAS graph to flag JOINTLY
+agents' intents + in-flight diffs against the CAS graph to flag JOINTLY
 INCOHERENT changes (contract divergence, invariant conflicts, structural
 divergence, behavior drift) — the thing textual merge and linters structurally
 cannot see. As of this session, `apps/mcp-server/src/coordination/conceptual-conflict.ts`
@@ -299,13 +299,13 @@ and, increasingly, conceptual-conflict detection (§4.5) rather than grants.
    as of this doc's last edit) — verify current state before citing as shipped.
 5. **P5 — Cross-machine.** Lift all of the above onto the remote tier (Redis/WS fanout,
    durability) so fleets span machines, not just same-machine agents. Not yet built.
-6. **P6 — Work-partitioner/scheduler (§1.5).** Consumes pending tasks + CAS/WAS, emits
+6. **P6 — Work-partitioner/scheduler (§1.5).** Consumes pending tasks + the CAS graph, emits
    disjoint parallel batches + live redirect routing; throughput bench (agents-in-parallel,
    block-time, wall-clock vs serial) as acceptance metric. Not yet built.
 
 ## 7. Why this is defensible
 
-Every mechanic rides on the CAS/WAS graph. A coordination layer that grants at the symbol
+Every mechanic rides on the CAS graph. A coordination layer that grants at the symbol
 level, reserves the blast radius, and freezes contracts requires *understanding the code* —
 which requires the deep analysis nobody else has. File/line coordinators (git, editors,
 existing multi-agent harnesses) cannot offer the guarantee. The fabric's promise —

@@ -37,7 +37,7 @@ above.
 |---|---|---|---|---|---|---|
 | 1 | Terminal-node proximity → "why" | Yes — `terminal-signal.ts` is a real, carefully-tuned ranking engine (write>read weighting, user-facing multiplier, noise filters for HTTP verbs/lifecycle names/utility patterns, stage-decay for near-terminal business stages) | Partial — feeds into `get_product_map` domain/description inference and `get_user_journeys` terminal_entities, but the ranked signal itself (`ranked_entities`, `ranked_stages`, `ranked_capabilities` with scores) is **not exposed as its own MCP tool or field** | No — no tool description or server instruction tells an agent "terminal proximity is why this exists, query it directly" | **LATENT** | An agent asks "why does this module exist" and gets the actual ranked terminal-entity evidence with scores instead of inferring purpose from file names — turns "guess the domain" into "read the domain's proof" |
 | 2 | I/L/S/O universality (recursive interface signature) | Pieces yes (entry_points=I, exit_points=O, data_lineage external_recipients=S, callers/callees=L), unification no | **No** — four separate tools, four separate ID spaces, four separate call shapes; nothing joins them per-entity | No | **LATENT — the single biggest gap** | This is the thesis of the whole product (composable, recursive interface at every level) and it does not exist as a queryable object anywhere. See §2. |
-| 3 | CAS + WAS (the specs) | CAS: yes, mature (v1.11.0, `docs/cas/SPECIFICATION.md` + versioned RFPs v1.0–v1.10). WAS: yes, built (`cross-codebase-analysis.ts`) | CAS: yes, ~160 MCP tools. WAS: yes, `get_cross_codebase_analysis`, `get_cross_repo_contracts`, `get_workspace_*` | Partially — CAS is well-taught via `get_coding_context`/`resolve_agent_analysis` sequencing; WAS discovery is less taught (no single "start here for cross-repo" entry in server instructions comparable to CAS's) | **FULLY-CAPITALIZED (CAS) / LATENT (WAS onboarding)** | WAS is real infrastructure that agents underuse because nothing tells them it's there before they need cross-repo context |
+| 3 | CAS + its workspace-level composition (the specs) | CAS: yes, mature (v2.0.0, `docs/cas/SPECIFICATION.md` §0 + versioned RFPs v1.0–v1.10). Workspace-level composition: yes, built (`cross-codebase-analysis.ts`) | CAS: yes, ~160 MCP tools. Workspace-level composition: yes, `get_cross_codebase_analysis`, `get_cross_repo_contracts`, `get_workspace_*` | Partially — CAS is well-taught via `get_coding_context`/`resolve_agent_analysis` sequencing; workspace-level-composition discovery is less taught (no single "start here for cross-repo" entry in server instructions comparable to CAS's) | **FULLY-CAPITALIZED (CAS) / LATENT (workspace-level onboarding)** | Workspace-level composition is real infrastructure that agents underuse because nothing tells them it's there before they need cross-repo context |
 | 4 | Coordination fabric (in-flight) | Partially — claim/collision/presence primitives are coded (`apps/mcp-server/src/coordination/`), tools registered in `server.ts` (`claim_work`, `check_collision`, `heartbeat_work`, `release_work`, `get_active_agents`, `get_in_flight_changes`, `subscribe_workspace`) | **No, not from this session** — none of the 7 coordination tool names resolve via ToolSearch against the live connected `mcp__klauro__*` surface, despite being registered in source. Per the project's own spec (`SPEC-COORDINATION-FABRIC.md`), arbitration (L5) is explicitly marked "❌ greenfield," telemetry fusion (L3) "❌ missing," in-flight cross-machine sync (L4) "⚠️ partial" | Yes in the doc (`COORDINATION-FABRIC.md` teaches the protocol clearly), but moot if the tools aren't reachable | **MISSING (in practice) / LATENT (in code)** | Multi-agent collision prevention — the "fleet coordination" category thesis — is not yet something an agent using this deployed server can rely on |
 | 5 | Framework/paradigm detection + alignment | Yes — `get_paradigm_conformance` returned two paradigms at 100% adoption with real evidence files; `get_patterns` returned 21 patterns with instance counts; `get_architecture_context` gives inventory + decision matrix | Yes, well surfaced (3 distinct tools) | Yes — `get_coding_context` folds `related_patterns` and `layer_boundaries` into the single pre-edit call | **FULLY-CAPITALIZED**, with one caveat: **`get_architectural_conflicts` does not exist.** Conflict detection between paradigms/patterns (e.g., "these two modules disagree on layering") is not a tool | Agents currently get "here is the norm" but not "here is where the norm is actively fighting itself" |
 | 6 | Telemetry overlay + depth | Scaffolded — `runtime-contract.ts`, `runtime-sdk.ts`, `telemetry-ingestion.ts`, `correlate_runtime_event`, `get_runtime_observations` all exist and are callable | Yes as tools, but **empty on this repo**: `get_runtime_observations(source=all)` returned `ingested_count: 0, simulated_count: 0` — the fusion step (runtime reality merged into live CAS) is explicitly marked "❌ missing — needs L3 build" in the project's own spec | Tool exists, description is clear, but there is nothing to teach because there is no data path exercised in practice on real repos | **LATENT (scaffolded, not fused)** | "Which of these 40 similar-looking endpoints is the hot path in production" — impossible today; would be transformative for prioritization and blast-radius weighting |
@@ -157,7 +157,7 @@ needed, only a join layer):
 - `recursion.*` ← new, but mechanical: function nodes roll up into the
   file/module; modules into capabilities (`get_product_map.capabilities`
   already has `entities`/journeys links to walk); capabilities into the
-  project; projects into workspace via existing WAS cross-repo links
+  project; projects into workspace via existing workspace-level-CAS cross-repo links
 
 ### Agent superpowers this unlocks
 1. **Precise change-impact**: "If I change this function's output shape,
@@ -227,18 +227,18 @@ break anything downstream, and does it touch any external system?"
   (coordination) directly depends on it for collision/blast-radius
   detection.
 
-### Concept 3b — WAS onboarding (LATENT → capitalize)
+### Concept 3b — Workspace-level-CAS onboarding (LATENT → capitalize)
 - **Surface**: today an agent must already know to call
   `get_cross_codebase_analysis`; there's no equivalent of
-  `resolve_agent_analysis` that says "this is a monorepo/workspace, WAS is
-  available, call X first."
+  `resolve_agent_analysis` that says "this is a monorepo/workspace, its
+  workspace-level CAS is available, call X first."
 - **Teach**: extend `resolve_agent_analysis`'s response (it already
   returns `candidates` showing sibling analyses like `apps/mcp-server`,
   `packages/analyzer-core` in this very session) with an explicit
   `workspace_available: true` + `next_tool: "get_cross_codebase_analysis"`
   hint when multiple sibling analyses are detected under one root — which
   is exactly what happened in this audit (14 candidate paths returned,
-  no signal to reach for WAS).
+  no signal to reach for the workspace-level CAS).
 - **Effort**: low.
 
 ### Concept 4 — Coordination fabric (MISSING in practice → capitalize)
@@ -333,7 +333,7 @@ break anything downstream, and does it touch any external system?"
    highest strategic impact (the category-thesis feature) but blocked on
    diagnosing a reachability gap outside this audit's read-only scope;
    flag and escalate, don't estimate effort blind.
-4. **WAS onboarding hint (concept 3b)** — low effort, meaningful for
+4. **Workspace-level-CAS onboarding hint (concept 3b)** — low effort, meaningful for
    monorepo/workspace-heavy users (which includes Klauro's own repo).
 5. **`get_architectural_conflicts` (concept 5b)** — medium effort, real
    gap, but this repo's own paradigms are at 100% adoption so there's no

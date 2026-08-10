@@ -16,7 +16,7 @@
  * Klauro's REAL cross-repo contract capability (honest scope)
  * -----------------------------------------------------------
  *  - The SEAM (consumer fetch ↔ provider route, with method + endpoint) is real
- *    and was already proven by the WAS cross-repo link layer.
+ *    and was already proven by the workspace-level-CAS cross-repo link layer.
  *  - FIELD NAMES and FIELD TYPES come from data_entities, which the analyzer
  *    emits for class/model/entity declarations and DTO-like TypeScript
  *    interface/type shapes (the property type annotation is sourced from

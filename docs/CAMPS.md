@@ -65,8 +65,8 @@ emit *nothing* for any of it, by construction (they have no such abstraction).
 
 Camp C is NOT "frameworks." Frameworks are one of ~11 categories below. The authoritative
 surface is the set of deterministic, provenance-tagged fields the engine emits in
-`CASOutput` (`packages/analyzer-core/src/types/cas.types.ts`) plus the workspace (WAS)
-layer (`apps/mcp-server/src/cross-codebase-analysis.ts`). Every item is deterministic-first;
+`CASOutput` (`packages/analyzer-core/src/types/cas.types.ts`) plus the workspace-level
+CAS layer (`apps/mcp-server/src/cross-codebase-analysis.ts`). Every item is deterministic-first;
 AI is flavoring on top of real structure, never the categorizer.
 
 ### C1 — Product & domain understanding ("what is / why it exists")
@@ -132,9 +132,9 @@ AI is flavoring on top of real structure, never the categorizer.
   `fixtures`.
 - **Docs / TODOs** — `documentation_summary`, `todos_summary`.
 
-### C10 — Workspace Analysis (WAS) — cross-repo, FIRST-CLASS
+### C10 — Workspace-Level CAS — cross-repo, FIRST-CLASS
 **This is the single biggest moat.** Camp A/B and every serious competitor (scip,
-stack-graphs, codebase-memory) analyze **one repository**. WAS understands a whole
+stack-graphs, codebase-memory) analyze **one repository**. The workspace-level CAS understands a whole
 **workspace** — ui → api → worker → infra as *one product* — and is out-of-category by
 construction: there is no single-repo tool to even compare against. It is NOT a bullet; it
 is its own taxonomy. Source of truth: the `CrossCodebaseSystemGraph` / `WorkspaceAnalysisGraph`
@@ -167,7 +167,7 @@ is its own taxonomy. Source of truth: the `CrossCodebaseSystemGraph` / `Workspac
   plus the `summary` roll-up (codebases / applications / interfaces / links / capabilities /
   domains / entities counts).
 
-WAS benches in **emission-coverage** mode over a real multi-repo workspace (the win is that
+The workspace-level CAS benches in **emission-coverage** mode over a real multi-repo workspace (the win is that
 Klauro emits these cross-repo facts with provenance and **no single-repo tool produces any of
 them** — `campABCannot` = "operates on one repo; has no workspace/application/cross-repo-seam
 concept"), plus head-to-head where a workspace task can be posed (e.g. "which service calls
@@ -184,8 +184,8 @@ this endpoint" spanning repos).
    vs the competitor's F1 + tokens. Competitors score 0 (no such abstraction) → out-category
    win; where a compiler-accurate tool ties on who-calls, we tie at the ceiling + win tokens.
 2. **Differentiated-data dimensions** (no competitor produces them AT ALL — capabilities,
-   product map, journeys, paradigm conformance, lineage, behaviors, intent, idioms, WAS,
-   health/stability): the win is *emission coverage* — Klauro emits the structured fact with
+   product map, journeys, paradigm conformance, lineage, behaviors, intent, idioms, the
+   workspace-level CAS, health/stability): the win is *emission coverage* — Klauro emits the structured fact with
    provenance on a real repo; Camp A/B emit nothing. Measured by presence + count + evidence,
    not F1 (there is no competitor curve to score against).
 

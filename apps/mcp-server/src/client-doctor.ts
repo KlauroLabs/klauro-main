@@ -10,7 +10,7 @@ import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from './remote-analyzer-protocol';
  * environment-doctor.ts: that module inspects the DEVELOPER package layout
  * (scripts/environment-checks.mjs, dist/index.cjs bundle contents, local
  * analysis-heap/AI-provider/zstd settings) — none of which exists or applies
- * on a customer machine ("Analysis, CAS/WAS construction, graphs, proposals,
+ * on a customer machine ("Analysis, CAS construction (repo- and workspace-level), graphs, proposals,
  * embeddings, and AI execute only on Klauro infrastructure" — installed-cli.ts
  * usage text). Also lives outside cli.ts/installed-cli.ts, same reason as
  * self-update.ts: a module both entry points import cannot silently drift.

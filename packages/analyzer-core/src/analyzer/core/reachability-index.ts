@@ -6,8 +6,8 @@
  * per-query graph walk, at 50k-500k node scale. This is the standard
  * systemic alternative to the exhaustive-scan defect class: any consumer
  * that would otherwise re-scan the full edge list per query (the historical
- * instances: call-resolver quadratic fallback, telemetry CAS re-parse, WAS
- * lookup-map rebuild, partitioner one-hop edge scans) should consume this
+ * instances: call-resolver quadratic fallback, telemetry CAS re-parse,
+ * workspace-level-CAS lookup-map rebuild, partitioner one-hop edge scans) should consume this
  * index instead.
  *
  * Construction (build time, deterministic, pure):
@@ -512,7 +512,7 @@ export function callEdgePairs(cas: CallGraphLikeCas): EdgePair[] {
  * `cas.reachability_index` is built over (see buildReachabilityIndexFromCas)
  * and it is the single definition every consumer that follows or falls back
  * to that index must use identically: query.ts's traversal fallback and
- * deployable-analysis.ts's DAS closure both import this function rather than
+ * deployable-analysis.ts's sub-CAS-node closure both import this function rather than
  * re-deriving their own edge set, specifically so "index present" and "index
  * absent, fall back to traversal" never disagree (see
  * reachability-query.test.ts's parity proof).

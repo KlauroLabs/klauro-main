@@ -30,7 +30,7 @@ resolved.
 | `apps/app/README.md` | Legacy web app | stale by design | same as above |
 | `apps/marketing-site/README.md` | Marketing site | not reviewed | |
 | `docs/AI-PROVIDER.md` | AI provider setup | current | |
-| `docs/CAMPS.md` | Competitive doctrine (Camp A/B/C taxonomy) | current | matches live CAS/WAS field names verified against `cas.types.ts` and `cross-codebase-analysis.ts` |
+| `docs/CAMPS.md` | Competitive doctrine (Camp A/B/C taxonomy) | current | matches live CAS field names (repo- and workspace-level) verified against `cas.types.ts` and `cross-codebase-analysis.ts` |
 | `docs/COMPETITOR-SCORECARD.md` | Generated competitor benchmark scorecard | current (dated 2026-07-01) | generated artifact, regenerate rather than hand-edit |
 | `docs/KLAURO-ANALYSIS-FLOW.md` | Analysis flow model | current | |
 | `docs/KLAURO-PRODUCT-MODEL.md` | Authoritative product model | current | |
@@ -69,7 +69,7 @@ resolved.
 | `docs/mcp/TELEMETRY-INGESTION.md` | Telemetry ingestion shape | current | matches `ingest_telemetry` tool and `/v1/telemetry/ingest` route verified live |
 | `docs/mcp/TOOLS.md` | Full MCP tools reference | **fixed this pass** | documented 164 of 191 registered tools (verified via `grep -oP "registerTool\(\s*'\K[^']+"` against `server.ts`). Added the entire missing "Multi-Agent Coordination" section (`claim_work`, `release_work`, `heartbeat_work`, `get_active_agents`, `check_collision`, `get_in_flight_changes`, `subscribe_workspace`) with verified parameter/return shapes read directly from `server.ts`. Still missing (not added this pass, lower priority / already covered narratively elsewhere): `get_adrs`, `manage_adr`, `get_clones`, `get_communities`, `get_dead_code`, `get_cross_codebase_analysis`, `run_cross_codebase_analysis`, `list_cross_codebase_analyses`, `get_data_lineage`, `get_paradigm_conformance`, `get_product_map`, `get_user_journeys`, `diff_behavior`, `query_graph`, `get_greenfield_architecture_guidance`, `install_gauntlet_watcher`, `list_gauntlet_watchers`, `stop_gauntlet_watcher`, `run_incremental_gauntlet` — several of these (`get_user_journeys`, `get_paradigm_conformance`, `get_product_map`, `get_data_lineage`) are now covered narratively in the new `docs/COMPREHENSION-LAYER.md`, which points to them by name |
 | `docs/mcp/USAGE.md` | Usage guide (1028 lines) | not fully reviewed (large file, spot-checked) | |
-| `docs/was/SPECIFICATION.md` | WAS formal spec | not reviewed in depth | |
+| ~~`docs/was/SPECIFICATION.md`~~ | Deleted 2026-08-09 — merged into `docs/cas/SPECIFICATION.md` §0 (CAS v2.0.0's recursive workspace/sub-CAS-node model) | n/a | superseded, not a gap |
 | `infrastructure/vps/README.md` | VPS deployment | not reviewed | |
 | `legacy/database/typescript/README.md` | Legacy DB reference | correctly labeled legacy per root README | |
 | `packages/analyzer-core/src/analyzer/integration-summary.md` | Analyzer integration summary | not reviewed in depth | |
@@ -86,7 +86,7 @@ resolved.
 | Response budget / compact responses | Spec + partially implemented | `SPEC-RESPONSE-BUDGET.md`; `detail` param live on 3 of ~5 target tools | Not written as a standalone product doc this pass (lower priority than coordination/comprehension); recommend a short addendum to `docs/mcp/USAGE.md` once the remaining tools (`get_coding_context` caller/callee limits) land |
 | Distribution/install/update (`curl\|sh`, PowerShell, `klauro update`, `dist/latest.json`, `release.sh`, doctor mcp-registration check) | **Undocumented in any product doc** | scripts exist (`install.sh`, `install.ps1`, `release.sh`) and `mcp-registration-doctor.ts` exists and is wired into `environment-doctor.ts` | Not written this pass — flagged as the single highest-value doc still missing (see Recommendations) |
 | Comprehension layer (capabilities, journeys, flow graph, paradigm conformance, patterns, idioms, data lineage, etc. as one coherent story) | Partially, spread across `CAMPS.md` (competitive framing) and scattered `TOOLS.md` entries; no single "what tool for what understanding" map | `CAMPS.md` §C1-C11 | **Created** `docs/COMPREHENSION-LAYER.md` — maps every comprehension category to its CAS fields and MCP tools, verified each tool name against `server.ts` |
-| CAS/WAS spec currency | `docs/cas/SPECIFICATION.md` and `VERSIONING.md` current at 1.11.0; `docs/mcp/CAS-COVERAGE.md` was stale at "v1.9" | multiple | **Fixed** `CAS-COVERAGE.md` |
+| CAS spec currency (repo- and workspace-level) | `docs/cas/SPECIFICATION.md` and `VERSIONING.md` current at 1.11.0; `docs/mcp/CAS-COVERAGE.md` was stale at "v1.9" | multiple | **Fixed** `CAS-COVERAGE.md` |
 
 ## What was fixed this pass
 

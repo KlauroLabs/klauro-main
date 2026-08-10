@@ -29,7 +29,7 @@ editors, LSP-backed retrieval, codebase-memory-style tools) has the *substrate* 
 a call graph — but not the *concepts*. It cannot tell you a flow's constraints, a step's
 side-effects, or which capability a change touches, because it never computed those things in
 the first place. It coordinates on **files and lines**, the only vocabulary it has. Klauro
-computes the CAS (per-repo code semantics) and WAS (cross-repo/workspace semantics) graph, and
+computes the CAS (per-repo code semantics), recursively composed into a workspace-level CAS (cross-repo/workspace semantics) via sub-CAS nodes, and
 then goes one layer further: it computes the *concepts* the graph realizes — the human
 architect's mental model, kept linked back to concrete nodes — which is what makes the
 coordination fabric able to answer "will these two concurrent changes compose into something
@@ -68,8 +68,8 @@ not enough. The fabric has to reason about the graph, not the plan.
 
 ## 3. The moat
 
-The headline differentiator is the **conceptual understanding layer** computed over the CAS/WAS
-code-semantics graph (`docs/SPEC-CONCEPTUAL-LAYER.md`) — and everything else in this section,
+The headline differentiator is the **conceptual understanding layer** computed over the CAS
+code-semantics graph, workspace-level composition included, (`docs/SPEC-CONCEPTUAL-LAYER.md`) — and everything else in this section,
 including the coordination fabric, is its highest-leverage *application*, not a separate moat.
 
 - **The conceptual layer itself (the actual moat).** On top of the raw index (files, functions,
@@ -97,7 +97,7 @@ including the coordination fabric, is its highest-leverage *application*, not a 
   mutate," or "which capability does this change touch" — because they never computed a
   capability/flow/step abstraction over their graph in the first place. That gap is structural,
   not a missing feature they could bolt on next release; it requires the same deterministic,
-  fact-grounded analysis pipeline (CAS/WAS) the rest of this moat section is built on.
+  fact-grounded analysis pipeline (the CAS, workspace-level composition included) the rest of this moat section is built on.
 - **The coordination fabric now speaks the conceptual vocabulary — its highest-leverage
   application.** Agents no longer coordinate on "I'm editing lines 40-60" but on "I own the
   *Charge* step of the *Checkout* flow" — a `ConceptualCoordinate` (capability/flow/step/entities)
@@ -116,12 +116,12 @@ including the coordination fabric, is its highest-leverage *application*, not a 
   locks would have destroyed parallelism — two agents safely shared one file by holding disjoint
   *symbols*. That requires resolving a byte-range edit to a semantic node, which requires the CAS
   symbol index the conceptual layer sits on top of.
-- **Deployable/WAS understanding.** Knowing which parts of a monorepo are actually independent
+- **Deployable / workspace-level-CAS understanding.** Knowing which parts of a monorepo are actually independent
   ship units (not just folder-name guesses) requires reasoning over Dockerfiles, CI jobs,
   installer bundles, and import coupling across repos — the evidence-tiered system built and
   measured this session (`SPEC-DEPLOYABLE-DETECTION.md`), verified live on a real 89 GB / 33-repo
   workspace pass (`CORPUS-VALIDATION.md`).
-- **Cross-repo/workspace links (WAS).** Klauro's workspace analysis correctly detects internal
+- **Cross-repo/workspace links (workspace-level CAS).** Klauro's workspace analysis correctly detects internal
   shared-library consumption across repos where it exists (zerac: 123 cross-repo application
   links across 10 shared libs; soon: 142 links across 10+ libs) and correctly reports **nothing**
   where it doesn't (money: 0 links, 3 genuinely independent bots) — a real, verified positive
@@ -182,7 +182,7 @@ the same blackbox path a real client uses (`docs/CORPUS-VALIDATION.md`):
 ### Conceptual-conflict detection — catching what textual merge cannot
 
 The crown-jewel primitive (`SPEC-COORDINATION-FABRIC-V2.md` §1.7, §4.5): comparing two agents'
-concurrent intents and in-flight diffs against the CAS/WAS graph to flag jointly-incoherent
+concurrent intents and in-flight diffs against the CAS graph to flag jointly-incoherent
 changes — contract divergence, invariant violations, structural divergence, behavior drift —
 that pass a normal textual merge cleanly and break the system anyway. This is under active
 development (`apps/mcp-server/src/coordination/conceptual-conflict.ts`, with a companion test
@@ -201,8 +201,8 @@ file) and is flagged honestly below as in-progress, not shipped.
   `docs/SPEC-COORDINATION-FABRIC.md`).
 - **199 MCP tools registered** in the live server as of this working tree
   (`grep -c registerTool( apps/mcp-server/src/server.ts`, verified directly), spanning CAS
-  analysis (call graphs, entry/exit points, data lineage, routes, patterns, conventions), WAS
-  cross-repo analysis, the conceptual layer (`get_flow_concepts`), and the coordination-fabric
+  analysis (call graphs, entry/exit points, data lineage, routes, patterns, conventions),
+  workspace-level CAS cross-repo analysis, the conceptual layer (`get_flow_concepts`), and the coordination-fabric
   tool group (`claim_work`, `check_collision`, `heartbeat_work`, `release_work`,
   `get_active_agents`, `get_in_flight_changes`, `subscribe_workspace`). v1.0.11 shipped at 197;
   the delta is this session's in-progress work, not yet cut into a release (see §8 / CHANGELOG).

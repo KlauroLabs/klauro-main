@@ -27,9 +27,9 @@ work continues. It does not mean a smaller analysis.
 5. Reordering cannot change truth. The final CAS produced by progressive
    execution must be semantically equivalent to a clean complete execution for
    the same source revision and analyzer build.
-6. Workspace analysis begins only from completed member CAS revisions. WAS may
-   publish its own explicit intermediate layers, but it never fills missing
-   project facts by reading source or guessing.
+6. Workspace analysis begins only from completed member CAS revisions. The
+   workspace-level CAS may publish its own explicit intermediate layers, but
+   it never fills missing project facts by reading source or guessing.
 
 ## One Product, Split Execution
 
@@ -70,7 +70,7 @@ labels applied afterward.
 | S4 Deep intelligence | patterns, idioms, risks, invariants, architecture health, telemetry joins | S2 and S3 | independent partitions where possible |
 | S5 Narrative enrichment | system and primary-capability descriptions, then lazy element descriptions | evidence packets from S2-S4 | remote AI, parallel with unrelated deterministic work |
 | S6 Final validation | graph integrity, provenance, coverage, CAS contract, equivalence | all required stages | marks CAS complete |
-| W1 Workspace composition | WAS connections, capabilities, flows, entities, infrastructure, narrative | completed member CAS revisions | after S6 for every included member |
+| W1 Workspace composition | workspace-level CAS connections, capabilities, flows, entities, infrastructure, narrative | completed member CAS revisions | after S6 for every included member |
 
 The existing L0-L5 public vocabulary may remain for compatibility with stored
 analysis manifests, but its implementation must map to these real stage
@@ -115,7 +115,7 @@ checkpoints. L1-L4 cannot remain one atomic orchestration block.
 
 ## Logical CAS And Physical Storage
 
-CAS and WAS remain the complete logical contracts. Their physical persistence
+The CAS — repo-level and workspace-level alike — remains the complete logical contract. Its physical persistence
 is segmented by immutable analysis revision so ordinary MCP/API calls can read
 only the identity, graph, calls, facts, comprehension, tests, runtime, quality,
 or supplemental sections they require.
@@ -129,7 +129,7 @@ or supplemental sections they require.
   streamed export for compatibility, audit, and parity proof. It is not an
   interactive query transport.
 - Physical normalization or derived-view materialization may evolve without
-  changing CAS/WAS semantics. Golden hydration parity and byte-equivalent MCP
+  changing CAS semantics at any nesting level. Golden hydration parity and byte-equivalent MCP
   answers are release gates.
 
 The production runtime remains Node 22 LTS with TypeScript orchestration and
@@ -199,8 +199,8 @@ Measure four clocks independently:
 
 Record CPU time, wall time, peak RSS, bytes read, parse-cache hit rate, analyzer
 applicability and contribution, AI request count/latency, persisted bytes, and
-stage retries. Benchmarks cover cold, warm, incremental, in-flight, and WAS
-composition paths through the deployed customer API. A timing regression fails
+stage retries. Benchmarks cover cold, warm, incremental, in-flight, and
+workspace-level-CAS composition paths through the deployed customer API. A timing regression fails
 the benchmark. Production continues until S6 or an explicitly visible retryable
 failure; it never silently returns less analysis.
 

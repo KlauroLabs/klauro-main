@@ -10,7 +10,7 @@ import { CAS_VERSION, type CASOutput } from '../../types/cas.types';
  * parser-layer or derived-layer fingerprint changes, not only when target
  * files change — otherwise an engine/deriver fix is masked by cached derived
  * layers on unchanged files. But a whole-build version bump that touches
- * NEITHER layer (an MCP-tool-only or WAS-only release) must NOT force a full
+ * NEITHER layer (an MCP-tool-only or workspace-level-CAS-only release) must NOT force a full
  * rebuild — that was the live-incident bug (every deploy => cold whale
  * rebuild for every project) this scheme fixes.
  *
