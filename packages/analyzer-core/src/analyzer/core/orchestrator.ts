@@ -146,7 +146,9 @@ import {
   namingSubjectFromPath,
   stripSourceFileExtension,
   isPathDerivedCapabilityName,
-  isStoragePathToken
+  isStoragePathToken,
+  isMalformedCapabilityLabel,
+  collapseDuplicateAdjacentWords
 } from './capability-naming';
 import { CallChainAnalyzer } from './call-chain-analyzer';
 import { CapabilityDependencyBuilder } from './capability-dependency-builder';
@@ -2639,6 +2641,22 @@ export class AnalyzerOrchestrator {
           }
           output.product_map = buildProductMap(output);
         });
+      } else {
+        // DISABLED (no AI provider configured at all): no enrichment closure
+        // is ever registered above, so — unlike every other "comprehension
+        // didn't happen" outcome (recordComprehensionSkipped for the
+        // disabled-by-env/feature-disabled/budget-disabled/no-provider cases
+        // inside applyAIInterpretation, applyDeterministicCapabilityFallback
+        // for the AI-ran-but-empty case) — this raw deterministic candidate
+        // pool was shipping completely UNGATED: no hygiene check, no bare-
+        // noun repair, nothing. Measured live: a Rails operations SaaS
+        // analyzed under this exact condition produced 78 capabilities
+        // including a raw migration filename, a broken route-glob fragment,
+        // and a subject-duplicated name. Apply the same admission bar every
+        // other skip path already enforces before this ships.
+        this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
+        output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+        output.product_map = buildProductMap(output);
       }
     } else {
       // Pure annotation: AI ran inline exactly as before, nothing else changes.
@@ -8546,6 +8564,15 @@ export class AnalyzerOrchestrator {
     if (/\.(test|spec|stories|story)\.[a-z0-9]+$/.test(normalized)) return false;
     if (/(^|\/)test-[^/]+\.[a-z0-9]+$/.test(normalized)) return false;
     if (/^legacy\//.test(normalized)) return false;
+    // A database migration is a one-time schema-change artifact run by the
+    // framework's own migration runner (Rails' `db:migrate`, and analogous
+    // directory conventions in other stacks) — a framework ROLE identified by
+    // this universal directory convention, never by a word in its filename.
+    // It is not product behavior: two migrations touching the same table can
+    // even contradict each other over a schema's history. Excluding the
+    // convention directory (not a "migration" keyword) keeps this true for
+    // any migration file name, timestamped or not.
+    if (/(^|\/)db\/migrate(\/|$)/.test(normalized)) return false;
     return true;
   }
 
@@ -12485,10 +12512,11 @@ export class AnalyzerOrchestrator {
     // repaired or dropped here — same as the AI-catalog-item guard above,
     // just with `related_entities`/`operations` as the anchor evidence
     // instead of a catalog item's raw `entities` field.
-    const candidatesWithEntityAnchors = candidateSnapshot.map(capability =>
-      this.attachFallbackEntityAnchor(capability, dataEntities)
-    );
+    const candidatesWithEntityAnchors = candidateSnapshot
+      .map(capability => ({ ...capability, name: collapseDuplicateAdjacentWords(String(capability.name || '')) }))
+      .map(capability => this.attachFallbackEntityAnchor(capability, dataEntities));
     const validDeterministic = candidatesWithEntityAnchors
+      .filter(capability => !isMalformedCapabilityLabel(String(capability.name || '')))
       .filter(capability => !this.isRawCandidateLabelName(String(capability.name || ''), []))
       .map(capability => {
         const name = String(capability.name || '');
@@ -13788,6 +13816,27 @@ export class AnalyzerOrchestrator {
     for (const capability of systemCapabilities) {
       if (capability.description_source === 'ai' || capability.description_source === 'manual') continue;
       capability.description_generation = { status: 'ai_skipped', attempted: false, reason };
+    }
+    // HYGIENE GUARD, structure-only path: no AI pass is coming to notice a
+    // malformed or mechanically-raw label, so this path must apply the SAME
+    // admission bar applyDeterministicCapabilityFallback already applies
+    // when the AI catalog ran but returned nothing — otherwise "comprehension
+    // skipped" (no AI provider configured, or provider briefly unreachable)
+    // is a WORSE outcome than "comprehension unavailable": a raw structural
+    // dump reaches the customer as the product's answer for what it does.
+    // Evidence-required, never a cap on legitimate breadth: a name is only
+    // ever REMOVED for being unparseable (isMalformedCapabilityLabel) or
+    // mechanically raw (isRawCandidateLabelName), never for being one of
+    // many.
+    for (let index = systemCapabilities.length - 1; index >= 0; index--) {
+      // Collapse a naming-composition artifact ("job" kind token + "Job"
+      // subject token -> "Job Job") BEFORE the malformed/raw checks, so a
+      // capability that is otherwise fine only fails on the duplication.
+      const collapsedName = collapseDuplicateAdjacentWords(String(systemCapabilities[index].name || ''));
+      systemCapabilities[index].name = collapsedName;
+      if (isMalformedCapabilityLabel(collapsedName) || this.isRawCandidateLabelName(collapsedName, [])) {
+        systemCapabilities.splice(index, 1);
+      }
     }
     // BARE-NOUN GUARD, structure-only path: comprehension is being skipped
     // entirely (no AI pass is coming to overwrite the placeholder name), so a
@@ -24420,6 +24469,9 @@ export class AnalyzerOrchestrator {
     if (/\.(min|bundle)\.(js|css)$/.test(file)) return false;
     if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(file)) return false;
     if (/\.(test|spec|stories|story)\.[a-z0-9]+$/i.test(file)) return false;
+    // Same migration-directory-convention exclusion as isPrimaryProductPath —
+    // a schema-change script is framework role, not product behavior.
+    if (/(^|\/)db\/migrate(\/|$)/.test(file)) return false;
     if (this.isBundledFrontendNode(node, projectPath)) return false;
     return this.isBusinessOrDomainNode(node);
   }
@@ -24934,6 +24986,15 @@ export class AnalyzerOrchestrator {
       'demo', 'demos', 'sample', 'samples', 'example', 'examples',
       'anon', 'anonymous',
       'change', 'changes',
+      // Rails' own canonical RESTful controller-action vocabulary (every
+      // `resources :x` route generates exactly these seven action method
+      // names) — a framework-defined method ROLE, universal across every
+      // Rails app, the same reason 'create'/'update'/'change'/'down' are
+      // already filtered above. A bare action-method NAME is never a domain
+      // subject on its own; without these five the remaining two (destroy,
+      // index/show/new/edit missing) let unrelated controllers' `destroy`
+      // methods collapse into one cross-resource "destroy" domain group.
+      'index', 'show', 'new', 'edit', 'destroy', 'up',
       'rails', 'rack', 'rake', 'turbo', 'stimulus', 'sprockets', 'hotwire',
       'actiontext', 'activestorage', 'actioncable', 'actionmailer', 'actionpack',
       'activerecord', 'activejob', 'activemodel', 'activesupport', 'actionview',
@@ -24944,9 +25005,13 @@ export class AnalyzerOrchestrator {
   }
 
   private humanizeDomainKey(key: string): string {
-    return key
+    const humanized = key
       .replace(/[-_]/g, ' ')
       .replace(/\b\w/g, char => char.toUpperCase());
+    // A composed key (role-kind token + subject token) can stem to the same
+    // word twice ("job" kind + "ApplicationJob" subject -> "Job Job") — a
+    // pure naming-composition artifact, never an intentional repeated noun.
+    return collapseDuplicateAdjacentWords(humanized);
   }
 
   private domainVariantInSet(key: string, domains: Set<string>): boolean {
