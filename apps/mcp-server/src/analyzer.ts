@@ -1,5 +1,6 @@
 import { AnalyzerOrchestrator, type AnalysisProgressEvent } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
+import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 import { TypeScriptJavaScriptAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/python-analyzer';
@@ -1176,7 +1177,19 @@ export async function analyzeProjectDeferred(
   // deterministic-analysis slot another project's fast parse is waiting on)
   // + a catch so it can never crash.
   const enrichment = withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
+    // AI-CACHE VISIBILITY (task #132): the AI response cache is a long-lived
+    // process-wide singleton (packages/analyzer-core/src/ai/ai-cache.ts), so
+    // a single stats reading is meaningless — snapshot before/after THIS
+    // run's enrichment and diff, mirroring how the snapshot-reuse gate's
+    // `reuse_decision` always says why, not just whether.
+    const statsBefore = aiService.getCacheStats();
     await dedicatedOrch.enrichAnalysisAI(output);
+    const statsAfter = aiService.getCacheStats();
+    output.ai_cache_reuse = {
+      hits: Math.max(0, statsAfter.hits - statsBefore.hits),
+      misses: Math.max(0, statsAfter.misses - statsBefore.misses),
+      bypassed: process.env.KLAURO_FORCE_AI_REFRESH === '1',
+    };
     await saveAnalysis(projectPath, output);
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, output);
@@ -1243,6 +1256,26 @@ export async function analyzeProjectLayered(
   projectPath: string,
   displayName?: string,
   onProgress?: (event: AnalysisProgressEvent) => void,
+  /**
+   * `klauro analyze --force` (task #132), ROOT CAUSE FIX. The snapshot-reuse
+   * gate in remote-analyzer-service.ts's POST /v1/analyze wipes and rewrites
+   * the WORKSPACE directory (source files) before dispatching here — but the
+   * STORED ANALYSIS (previousOutput, read below) lives in a completely
+   * separate location keyed by a global index (storage.ts's
+   * resolveAnalysisFileForLoad reads getStoragePath()/index.analyses[...],
+   * never anything under the workspace directory), so the workspace wipe
+   * does NOT invalidate it. Without this flag, the warm/incremental branch
+   * below sees `hasCompletePrevious === true` (the untouched prior analysis)
+   * and — since the rewritten source is byte-identical — the incremental
+   * pass finds zero changes and returns the EXACT PREVIOUS CASOutput object
+   * verbatim, never calling analyzeProjectDeferred/orchestrateAnalysis at
+   * all. That is a second, independent silent-reuse path beyond the
+   * server's snapshot-identity gate this task started from: even after the
+   * gate correctly decides "do not reuse", this warm path quietly reused
+   * anyway. `forceFullRebuild: true` skips straight to the unconditional
+   * analyzeProjectDeferred (full) path.
+   */
+  forceFullRebuild?: boolean,
 ): Promise<LayeredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
@@ -1291,7 +1324,7 @@ export async function analyzeProjectLayered(
     // deferred pass on any doubt (no previous, L0-only stub, or incremental
     // throwing) so cold behavior is unchanged.
     const previous = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-    const hasCompletePrevious = Boolean(
+    const hasCompletePrevious = !forceFullRebuild && Boolean(
       previous && (previous.layers_ready?.complete ?? true) && (previous.nodes?.length ?? 0) > 0
     );
     let deferred: DeferredAnalysisResult;
@@ -2529,6 +2562,8 @@ interface WorkerLayeredRequest {
   projectPath: string;
   displayName?: string;
   env: Record<string, string>;
+  /** See RunLayeredAnalysisOptions.forceFullRebuild. */
+  forceFullRebuild?: boolean;
 }
 
 interface WorkerResultMessage<T = AnalysisRunSummary> {
@@ -2881,6 +2916,30 @@ export interface RunLayeredAnalysisOptions {
    *  result/error — callers use this purely for lifecycle bookkeeping
    *  (e.g. updating an attempt-record sidecar), never for the CAS itself. */
   onPhase?: (event: LayeredJobPhaseEvent) => void;
+  /**
+   * `klauro analyze --force` (task #132): bypass the AI response cache for
+   * this run, so every AI description/capability-name call is a forced miss
+   * and the fresh result overwrites whatever was cached. Threaded to the
+   * analysis worker as a per-job KLAURO_FORCE_AI_REFRESH env var (see
+   * dispatchLayeredWorkerJob / analysis-worker.ts's applyEnvSnapshot) rather
+   * than a parameter, because ai-cache.ts's AICache instance is a
+   * process-wide singleton with no per-call plumbing to every one of its
+   * dozens of get() call sites in ai-service.ts — the env var is read fresh
+   * on every AICache.get() instead.
+   */
+  forceAiRefresh?: boolean;
+  /**
+   * `klauro analyze --force` (task #132), root-cause structural fix: skips
+   * analyzeProjectLayered's warm/incremental shortcut so a full deterministic
+   * rebuild genuinely runs, instead of the incremental pass silently
+   * returning the untouched previous CASOutput verbatim when it (correctly,
+   * for the NON-forced case) detects the rewritten source as unchanged. See
+   * analyzeProjectLayered's `forceFullRebuild` parameter doc for the full
+   * mechanism. Always set together with forceAiRefresh by every caller in
+   * this codebase — kept as a separate field only because they bypass two
+   * genuinely different caches (structural warm-path vs. AI response cache).
+   */
+  forceFullRebuild?: boolean;
 }
 
 function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalysisOptions): Promise<LayeredRunSummary> {
@@ -2923,12 +2982,15 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
     }, Math.max(100, Math.min(30_000, Math.floor(stallMs / 4))));
     job.stallTimer.unref();
     handle.pending.set(id, job);
+    const envSnapshot = collectKlauroEnvSnapshot();
+    if (options.forceAiRefresh) envSnapshot.KLAURO_FORCE_AI_REFRESH = '1';
     const request: WorkerLayeredRequest = {
       type: 'layered',
       id,
       projectPath,
       displayName: options.displayName,
-      env: collectKlauroEnvSnapshot(),
+      env: envSnapshot,
+      forceFullRebuild: options.forceFullRebuild,
     };
     handle.child.send(request, (error) => {
       if (error) {
@@ -2995,30 +3057,44 @@ export async function runLayeredAnalysis(
     // In-process fallback (tests / KLAURO_ANALYSIS_IN_PROCESS=1): drive
     // analyzeProjectLayered directly in THIS process, still firing onPhase
     // for parity with the worker-dispatched path so callers don't need to
-    // special-case which mode they're in.
-    const layered = await analyzeProjectLayered(projectPath, options.displayName);
+    // special-case which mode they're in. There is no per-job worker/env-
+    // snapshot boundary here (this process IS the "worker"), so set/restore
+    // KLAURO_FORCE_AI_REFRESH directly around the ENTIRE pipeline — including
+    // the deferred AI enrichment this function awaits below via
+    // `deferred.enrichment` — not just the synchronous kickoff call, or the
+    // flag would be gone before enrichAnalysisAI (which runs in the
+    // background) ever reads it.
+    const previousForceAiRefresh = process.env.KLAURO_FORCE_AI_REFRESH;
+    if (options.forceAiRefresh) process.env.KLAURO_FORCE_AI_REFRESH = '1';
+    else delete process.env.KLAURO_FORCE_AI_REFRESH;
     try {
-      await layered.l0;
-      options.onPhase?.({ phase: 'l0', status: 'succeeded' });
-    } catch (error) {
-      options.onPhase?.({ phase: 'l0', status: 'failed', error: error instanceof Error ? error.message : String(error) });
+      const layered = await analyzeProjectLayered(projectPath, options.displayName, undefined, options.forceFullRebuild);
+      try {
+        await layered.l0;
+        options.onPhase?.({ phase: 'l0', status: 'succeeded' });
+      } catch (error) {
+        options.onPhase?.({ phase: 'l0', status: 'failed', error: error instanceof Error ? error.message : String(error) });
+      }
+      let deferred: DeferredAnalysisResult;
+      try {
+        deferred = await layered.rest;
+        options.onPhase?.({ phase: 'rest', status: 'succeeded' });
+      } catch (error) {
+        options.onPhase?.({ phase: 'rest', status: 'failed', error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
+      await deferred.enrichment.catch(() => undefined);
+      const aiEnrichment = deferred.output.ai_enrichment;
+      options.onPhase?.({
+        phase: 'enrichment',
+        status: aiEnrichment === 'error' ? 'failed' : 'succeeded',
+        error: aiEnrichment === 'error' ? deferred.output.ai_enrichment_error : undefined,
+      });
+      return summarizeLayeredAnalysis(projectPath, deferred.output);
+    } finally {
+      if (previousForceAiRefresh === undefined) delete process.env.KLAURO_FORCE_AI_REFRESH;
+      else process.env.KLAURO_FORCE_AI_REFRESH = previousForceAiRefresh;
     }
-    let deferred: DeferredAnalysisResult;
-    try {
-      deferred = await layered.rest;
-      options.onPhase?.({ phase: 'rest', status: 'succeeded' });
-    } catch (error) {
-      options.onPhase?.({ phase: 'rest', status: 'failed', error: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
-    await deferred.enrichment.catch(() => undefined);
-    const aiEnrichment = deferred.output.ai_enrichment;
-    options.onPhase?.({
-      phase: 'enrichment',
-      status: aiEnrichment === 'error' ? 'failed' : 'succeeded',
-      error: aiEnrichment === 'error' ? deferred.output.ai_enrichment_error : undefined,
-    });
-    return summarizeLayeredAnalysis(projectPath, deferred.output);
   }
   const run = workerJobChain.then(() => withOuterWorkerWatchdog(projectPath, () => dispatchLayeredWorkerJob(projectPath, options)));
   workerJobChain = run.catch(() => undefined);

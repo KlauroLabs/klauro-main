@@ -282,8 +282,16 @@ export function createServer(): McpServer {
 
   register('analyze_codebase', {
     description: 'Upload a filtered source snapshot for hosted Klauro analysis. No analyzer executes locally.',
-    inputSchema: { path: z.string() },
-  }, async ({ path }: any) => json(await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true })));
+    inputSchema: {
+      path: z.string(),
+      // task #132: mirrors `klauro analyze --force` — bypasses BOTH the
+      // server's snapshot/analyzer-identity reuse gate and the AI response
+      // cache, so a caller asking for a fresh analysis actually gets one
+      // (including regenerated AI names/descriptions), not a silent replay
+      // of a prior result.
+      force: z.boolean().optional().describe('Bypass the server\'s snapshot-reuse gate AND the AI response cache, forcing a genuinely fresh analysis even if the last uploaded snapshot is unchanged.'),
+    },
+  }, async ({ path, force }: any) => json(await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force) })));
 
   register('sync_codebase_remote', {
     description: 'Upload in-flight working-tree changes for hosted incremental analysis.',

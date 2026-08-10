@@ -38,6 +38,18 @@ export interface RemoteAnalyzeRequest {
    *  Completion is observed through the status and explicit export endpoints;
    *  uploads never hold the request open for a full CAS response. */
   async?: boolean;
+  /**
+   * `klauro analyze --force` (task #132). When true, the server MUST bypass
+   * BOTH: (1) the snapshot/analyzer-identity reuse gate — normally an
+   * unchanged snapshot+analyzer short-circuits to `reused: true` with no new
+   * work — and (2) the AI response cache, so re-run capability
+   * names/descriptions are freshly generated, not served from a cached
+   * entry keyed on scrubbed (path/timestamp-independent) content. Before
+   * this field existed, `--force` was parsed by the CLI and documented in
+   * its help text but never read anywhere, so it silently did nothing —
+   * every `--force` re-run still came back `reused: true`.
+   */
+  force?: boolean;
 }
 
 /** Immediate response to an `async: true` analyze push — the snapshot was
@@ -52,8 +64,10 @@ export interface RemoteAnalyzeAcceptedResponse {
   reused?: boolean;
   /** 'unchanged' = stored analysis served as-is. 'analyzer_upgrade' = the
    *  snapshot was unchanged but the analyzer that produced the stored analysis
-   *  is not this one, so it is being re-analyzed. */
-  analysis_type?: 'unchanged' | 'analyzer_upgrade';
+   *  is not this one, so it is being re-analyzed. 'forced' = the client passed
+   *  `--force`; the snapshot may well be unchanged but the reuse gate (and
+   *  the AI response cache) were bypassed deliberately. */
+  analysis_type?: 'unchanged' | 'analyzer_upgrade' | 'forced';
   /**
    * WHY this request was (or was not) served from the stored analysis. Always
    * present. `reused: true` with no reason is how "customers never receive
@@ -63,10 +77,14 @@ export interface RemoteAnalyzeAcceptedResponse {
   reuse_decision?: {
     reused: boolean;
     reason: string;
-    source: 'unchanged' | 'analyzer_upgrade' | 'source_changed';
+    source: 'unchanged' | 'analyzer_upgrade' | 'source_changed' | 'forced';
     /** Which identity tier decided it — see analyzer-identity-reuse.ts. */
     analyzer_identity_tier: 'parser' | 'derived' | 'build' | 'legacy-build' | 'match' | 'unknown' | 'in-flight';
     analyzer_build?: string;
+    /** Present (and true) only on `source: 'forced'`: the AI response cache
+     *  was ALSO bypassed for this run, not just the snapshot reuse gate —
+     *  see CASOutput.ai_cache_reuse for the resulting per-run hit/miss delta. */
+    ai_cache_bypassed?: boolean;
   };
 }
 

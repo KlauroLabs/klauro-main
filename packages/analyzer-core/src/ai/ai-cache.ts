@@ -174,12 +174,40 @@ export class AICache {
     }
   }
 
+  /**
+   * True when the CURRENT analysis run asked to bypass the AI response cache
+   * (task #132: `klauro analyze --force`). Read fresh on every call rather
+   * than cached on the instance — this is a per-project-analysis worker
+   * process (see apps/mcp-server/src/analysis-worker.ts's applyEnvSnapshot),
+   * jobs run strictly serially on it, and the env var is set/cleared per job,
+   * so `process.env` genuinely reflects "is THIS run forced" at call time.
+   * `this.cache` (the AICache instance) is itself a long-lived singleton
+   * shared across every job that worker ever handles — it must never bake in
+   * a bypass decision at construction time.
+   */
+  private isBypassActive(): boolean {
+    return process.env.KLAURO_FORCE_AI_REFRESH === '1';
+  }
+
   async get<T = any>(key: string): Promise<T | null> {
     this.stats.totalRequests++;
 
+    if (this.isBypassActive()) {
+      // A forced miss, not a real cache failure: still counted as a miss for
+      // hit-rate purposes (ai_cache_reuse's per-run delta relies on this), but
+      // skip reading Redis/fallback/disk entirely — reading first and then
+      // discarding the result would do the I/O for nothing and could still
+      // race a concurrent expiry/version check into logging a misleading
+      // "cache hit" debug line for a value the caller never sees.
+      this.stats.misses++;
+      this.updateHitRate();
+      this.logger.debug(`Cache bypassed (force) for key: ${key}`);
+      return null;
+    }
+
     try {
       const fullKey = this.generateKey(key);
-      
+
       // Try Redis first
       if (this.redis && await this.isRedisAvailable()) {
         const cached = await this.getFromRedis<T>(fullKey);
