@@ -167,18 +167,47 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
       // stylesheet outnumber a repo's real classes 40:1 (a benchmarked Spring Boot repo's stylesheet: 2543
       // selector "classes" vs 62 Java files) and skew every type==='class'
       // consumer. Nodes stay in the graph; only the label is honest.
-      const classLabel = LANGUAGE_SPECS[file.grammar]?.classNodeLabel || 'class';
-      for (const cls of extract.classes) {
-        const id = this.declId('class', file.relativePath, cls.name, cls.line);
-        const node = this.createNodeBuilder(id, cls.name, classLabel)
+      const spec = LANGUAGE_SPECS[file.grammar];
+      const classLabel = spec?.classNodeLabel || 'class';
+      if (spec?.aggregateClassNodes && extract.classes.length > 0) {
+        // One node per file instead of one per match: the label being honest
+        // (style_rule vs class) didn't fix the CARDINALITY problem — a single
+        // bundled stylesheet was still contributing thousands of graph nodes for
+        // zero downstream benefit (no consumer reads type==='style_rule'). The
+        // count is exact (rule_count), never truncated; sample_selectors is an
+        // explicitly-labeled preview, not the full enumeration.
+        const SAMPLE_SIZE = 20;
+        const id = this.declId('class', file.relativePath, '(aggregate)', 1);
+        const node = this.createNodeBuilder(id, file.relativePath.split('/').pop() || file.relativePath, classLabel)
           .withLevel(3, 'Class/Type')
           .withCategory('types', [`${file.grammar}-types`])
-          .withSource({ file: file.fullPath, line: cls.line })
-          .withMetadata({ language: file.grammar, attributes: { file: file.relativePath } })
+          .withSource({ file: file.fullPath, line: 1 })
+          .withMetadata({
+            language: file.grammar,
+            attributes: {
+              file: file.relativePath,
+              rule_count: extract.classes.length,
+              sample_selectors: extract.classes.slice(0, SAMPLE_SIZE).map(c => c.name),
+              sample_is_partial: extract.classes.length > SAMPLE_SIZE,
+            },
+          })
           .build();
-        node.qualified_name = `${file.relativePath}:${cls.name}`;
+        node.qualified_name = `${file.relativePath}:(aggregate)`;
         nodes.push(node);
         edges.push(this.createEdge(`${fileId}_contains_${id}`, fileId, id, 'contains'));
+      } else {
+        for (const cls of extract.classes) {
+          const id = this.declId('class', file.relativePath, cls.name, cls.line);
+          const node = this.createNodeBuilder(id, cls.name, classLabel)
+            .withLevel(3, 'Class/Type')
+            .withCategory('types', [`${file.grammar}-types`])
+            .withSource({ file: file.fullPath, line: cls.line })
+            .withMetadata({ language: file.grammar, attributes: { file: file.relativePath } })
+            .build();
+          node.qualified_name = `${file.relativePath}:${cls.name}`;
+          nodes.push(node);
+          edges.push(this.createEdge(`${fileId}_contains_${id}`, fileId, id, 'contains'));
+        }
       }
 
       const seenImport = new Set<string>();

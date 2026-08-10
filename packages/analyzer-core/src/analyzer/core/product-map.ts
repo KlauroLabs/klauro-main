@@ -40,6 +40,62 @@ function normalizeEntityName(name: string): string {
 }
 
 /**
+ * File-basename "stem" test evidence — the second, coarser leg of the tests
+ * cross-surface invariant, alongside the exact call-graph `tests`/`covers`
+ * edges `capabilityHasTestEvidence` already consults.
+ *
+ * WHY THIS EXISTS: on a real Java Spring repo (spring-petclinic-microservices)
+ * with 8 genuine JUnit test classes (VetResourceTest, PetResourceTest, ...),
+ * every capability/journey reported `tests_present: false` while
+ * orient_capsule.dimensions.tests (get_test_summary, reading `cas.test_suites`
+ * — the same robust discovery buildTestSummary now also reads, see
+ * orchestrator.ts's buildTestSummary doc comment) correctly reported 8. The
+ * cause: TestFrameworkAnalyzer's `tests`/`covers` edges require a literal
+ * call-graph path from test code to production code, which never exists for
+ * MockMvc/Supertest-style black-box tests — the test calls the mock
+ * framework, not the controller method, so the static call graph has nothing
+ * to walk. That is real analyzer behavior, not a bug to patch there; a
+ * VetResourceTest.java that black-box-tests VetResource.java is still real,
+ * honest test coverage, just evidenced by naming/co-location instead of a
+ * traced call. Stripping the common `Test(s)`/`Spec`/`spec` suffix from a
+ * test suite's file basename and matching it against a candidate file's own
+ * basename is the same "*Test.java exercises *.java" convention every JUnit/
+ * pytest/RSpec/xUnit project already relies on — structural, not a keyword
+ * or brand table.
+ */
+const TEST_FILE_SUFFIX = /(?:[._-]?(?:test|tests|spec|specs))$/i;
+
+function fileStem(filePath: string): string {
+  const base = filePath.replace(/\\/g, '/').split('/').pop() || filePath;
+  const withoutExt = base.replace(/\.[^.]+$/, '');
+  return withoutExt.replace(TEST_FILE_SUFFIX, '').toLowerCase();
+}
+
+function testedFileStems(testSuites: CASOutput['test_suites']): Set<string> {
+  const stems = new Set<string>();
+  for (const suite of testSuites || []) {
+    if (suite.file_path) stems.add(fileStem(suite.file_path));
+    for (const test of suite.tests || []) {
+      if (test.source?.file) stems.add(fileStem(test.source.file));
+    }
+  }
+  return stems;
+}
+
+function journeyHasFileTestEvidence(
+  journey: CASUserJourney,
+  testedStems: Set<string>,
+  nodesById: Map<string, { source?: { file?: string } }>
+): boolean {
+  if (testedStems.size === 0) return false;
+  const handlerNodeId = journey.entry?.handler_node_id || journey.entry_point_id;
+  const handlerFile = handlerNodeId ? nodesById.get(handlerNodeId)?.source?.file : undefined;
+  const candidateFiles = [handlerFile, ...journey.steps.map(step => nodesById.get(step.node_id)?.source?.file)]
+    .filter((file): file is string => Boolean(file));
+  return candidateFiles.some(file => testedStems.has(fileStem(file)));
+}
+
+/**
  * INVARIANT (2026-08-10 live comprehension audit): `description_source` and
  * the PRESENCE of `description` text must never disagree — a source can only
  * ever describe text that actually exists. This used to unconditionally
@@ -150,15 +206,30 @@ function journeyTouchedEntityNames(journey: CASUserJourney): Set<string> {
 function capabilityHasTestEvidence(
   capability: SystemCapability,
   journeys: CASUserJourney[],
-  capabilityEntities: Set<string>
+  capabilityEntities: Set<string>,
+  testedStems: Set<string>,
+  nodesById: Map<string, { source?: { file?: string } }>
 ): boolean {
   const entryPointIds = new Set(capability.operations.map(operation => operation.entry_point_id));
   return journeys.some(journey => {
-    if ((journey.tests_covering || []).length === 0) return false;
-    if (entryPointIds.has(journey.entry_point_id)) return true;
-    if (capabilityEntities.size === 0) return false;
-    for (const name of journeyTouchedEntityNames(journey)) {
-      if (capabilityEntities.has(name)) return true;
+    // Exact evidence: a traced call-graph path from test code to this
+    // journey's production code (TestFrameworkAnalyzer's `tests`/`covers`
+    // edges). Strongest signal when present, but absent by construction for
+    // any test that exercises its subject through a framework boundary
+    // (MockMvc, Supertest, ...) rather than a literal function call.
+    if ((journey.tests_covering || []).length > 0) {
+      if (entryPointIds.has(journey.entry_point_id)) return true;
+      if (capabilityEntities.size > 0) {
+        for (const name of journeyTouchedEntityNames(journey)) {
+          if (capabilityEntities.has(name)) return true;
+        }
+      }
+    }
+    // Coarser evidence: this journey's own entry point is anchored to the
+    // capability AND some test suite's file stem matches the journey's
+    // handler/step files (see journeyHasFileTestEvidence's doc comment).
+    if (entryPointIds.has(journey.entry_point_id) && journeyHasFileTestEvidence(journey, testedStems, nodesById)) {
+      return true;
     }
     return false;
   });
@@ -213,6 +284,8 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   const primaryNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyPrimaryEntityNames(journey)]));
   const entityNameById = new Map((cas.data_entities || []).map(entity => [entity.id, entity.name]));
   const capabilityOrder = new Map((cas.system_capabilities || []).map((capability, index) => [capability.name, index]));
+  const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
+  const testedStems = testedFileStems(cas.test_suites);
 
   const capabilities = (cas.system_capabilities || []).map(capability => {
     const entityNames = (capability.related_entities || []).map(reference => entityNameById.get(reference) || reference);
@@ -221,8 +294,9 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
       (a, b) => criticalityRank(a.criticality) - criticalityRank(b.criticality) || a.name.localeCompare(b.name)
     );
     const capabilityEntities = new Set(entityNames.map(normalizeEntityName));
-    const testsPresent = linked.some(journey => (journey.tests_covering || []).length > 0)
-      || capabilityHasTestEvidence(capability, journeys, capabilityEntities);
+    const testsPresent = linked.some(journey =>
+      (journey.tests_covering || []).length > 0 || journeyHasFileTestEvidence(journey, testedStems, nodesById)
+    ) || capabilityHasTestEvidence(capability, journeys, capabilityEntities, testedStems, nodesById);
     return {
       name: capability.name,
       description: capability.description,

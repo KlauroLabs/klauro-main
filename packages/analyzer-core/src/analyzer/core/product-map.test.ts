@@ -239,3 +239,77 @@ test('INVARIANT: tests_present never contradicts journeys.tests or health.tests 
   // "never contradict real evidence", not "always report true".
   assert.equal(capByName.get('Navigation Metadata')!.tests_present, false);
 });
+
+// Regression for the JVM/MockMvc-shaped contradiction found on
+// spring-petclinic-microservices (a real Java Spring repo, 8 genuine JUnit
+// test classes): orient_capsule.dimensions.tests (get_test_summary, backed by
+// cas.test_suites) correctly reported 8, while product_map.health.tests
+// reported 0/0/0 and every capability reported tests_present:false —
+// four surfaces, two answers, from one CAS. Root cause: TestFrameworkAnalyzer
+// only wires `tests`/`covers` EDGES when it can trace a literal call from
+// test code to production code; a MockMvc-style black-box test never makes
+// that call (it dispatches through the framework), so `journey.tests_covering`
+// stays empty even though a real *Test.java file exists and JavaAnalyzer
+// tagged its methods `category: 'test'`. cas.test_suites (buildTestSuites'
+// multi-fallback discovery, the same thing get_test_summary reads) still
+// finds it via file-naming convention. This test locks in that both
+// buildTestSummary (health.tests) and buildCapabilities (tests_present) now
+// derive from that same evidence instead of edges alone.
+test('INVARIANT: file-adjacency test evidence (no traced call edge) still satisfies tests_present, matching cas.test_suites', () => {
+  const cas = baseCas({
+    nodes: [
+      { id: 'ep1_node', type: 'controller', name: 'VetResource', source: { file: 'src/main/java/.../VetResource.java', line: 1 } },
+    ],
+    test_suites: [
+      {
+        id: 'suite_vet_resource_test',
+        name: 'VetResourceTest',
+        file_path: 'src/test/java/.../VetResourceTest.java',
+        test_type: 'integration',
+        framework: 'junit',
+        tests: [
+          {
+            id: 'test_should_get_a_list_of_vets',
+            name: 'shouldGetAListOfVets',
+            test_type: 'integration',
+            status: { skipped: false, focused: false, flaky: false },
+            source: { file: 'src/test/java/.../VetResourceTest.java', line: 49 },
+          },
+        ],
+      },
+    ],
+    system_capabilities: [
+      {
+        id: 'cap1',
+        name: 'View Vet Information',
+        description: 'x',
+        category: 'supporting',
+        criticality: 'medium',
+        operations: [{ entry_point_id: 'ep1', entry_point_type: 'http', action: 'get' }],
+        related_entities: [],
+      },
+    ],
+    data_entities: [],
+    user_journeys: [
+      {
+        id: 'journey_ep1',
+        name: 'Vets',
+        journey_kind: 'user-facing',
+        entry_point_id: 'ep1',
+        entry: { type: 'http', name: 'GET /vets', handler_node_id: 'ep1_node' },
+        steps: [],
+        terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
+        terminal_entities: [],
+        security_boundaries: [],
+        tests_covering: [], // no traced call edge — the MockMvc case
+        risk: 'low',
+        criticality: 'medium',
+        call_chain_ids: [],
+        exit_point_ids: [],
+      },
+    ],
+  } as any);
+
+  const map = buildProductMap(cas);
+  assert.equal(map.capabilities[0].tests_present, true);
+});
