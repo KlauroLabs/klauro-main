@@ -142,9 +142,16 @@ describe('L5 capability-description failures are contained (do not null the syst
     }
   });
 
-  it('still FAILS the analysis when the system description itself cannot be grounded', async () => {
-    // The no-deterministic-substitute doctrine for the system narrative is
-    // unchanged: containment applies to capabilities only.
+  // DEFECT (2026-08 blast-radius audit): this used to assert the system
+  // narrative's ungroundable text FAILED THE WHOLE ANALYSIS (a throw out of
+  // applyAIInterpretation). That throw is precisely the mechanism that wiped
+  // an entire already-AI-named capability catalog off a real analysis when
+  // only the system paragraph could not be grounded — see orchestrator.ts's
+  // system_description rejection block. The no-deterministic-substitute
+  // doctrine for the system narrative is UNCHANGED (it never ships fabricated
+  // text), but that failure is now CONTAINED to system.description alone —
+  // it no longer takes comprehension as a whole down with it.
+  it('degrades system.description (no fabricated substitute) but does not fail the analysis when the system narrative cannot be grounded', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
       system_description: 'A blazing-fast, best-in-class, revolutionary platform that seamlessly empowers everything.',
       domain: '',
@@ -152,16 +159,18 @@ describe('L5 capability-description failures are contained (do not null the syst
       capabilities: [],
     }));
     const purpose = freshPurpose();
-    let thrown: unknown;
     try {
       await withAiEnv(() => runInterpretation(purpose, [capability('cap_1', 'Analyze source repositories', 'Handles analysis.')]));
-    } catch (error) {
-      thrown = error;
     } finally {
       spy.mockRestore();
     }
-    expect(thrown).toBeInstanceOf(Error);
-    expect(String((thrown as Error).message)).toMatch(/system description/i);
+    // No fabricated substitute ships — the doctrine holds.
+    expect(purpose.inferred_description).toBeFalsy();
+    expect(purpose.description_generation?.status).toBe('ai_rejected');
+    // But the failure is visible and CONTAINED — never silent, never fatal.
+    expect(purpose.system_description_degradation).toBeDefined();
+    expect(typeof purpose.system_description_degradation.reason).toBe('string');
+    expect(['provider-unavailable', 'failed-grounding']).toContain(purpose.system_description_degradation.failure_class);
   });
 
   it('reports a total provider outage as provider-availability, not as a grounding failure', async () => {
