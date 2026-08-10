@@ -196,7 +196,9 @@ const USAGE_TEXT = [
   '                               --yes confirms uploading a root that looks like it contains several unrelated',
   '                               projects instead of one (no Git repo/manifest of its own, multiple nested repos',
   '                               beneath it) — without it this refuses (scripted) or prompts (interactive).',
+  '                               Alias: remote-analyze',
   '  remote-sync [path] [--yes]  Upload in-flight changes for hosted analysis',
+  '                               Alias: sync',
   '  upload-manifest [path]      Preview source files selected for upload',
   '  status [path] [--server-url URL]',
   '                               One-glance report: account, release, project connection, analysis, MCP',
@@ -578,6 +580,17 @@ async function main() {
         `Redeeming invalidates every existing session for the account.`,
       ].join('\n'),
       json);
+  }
+  // Reached only when `command` matched none of the branches above. Bare
+  // invocation (`command` defaults to 'help' when argv[2] is absent) and an
+  // explicit `klauro help` both fall through here too, and both should stay
+  // exit 0 — printing usage on request is not a failure. Anything else
+  // reaching this point is a typo'd/unrecognized command: printing the same
+  // usage text but exiting 0 (the previous behavior) made it indistinguishable
+  // from success to a script, e.g. `klauro definitely-not-a-command` could
+  // not be told apart from a real command by exit code alone.
+  if (command !== 'help') {
+    process.exitCode = 1;
   }
   printUsage();
 }
