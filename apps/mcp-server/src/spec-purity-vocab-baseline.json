@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-10T05:21:00.589Z",
+  "generated_at": "2026-08-10T19:51:45.767Z",
   "note": "Pre-existing large literal-array/regex-alternation shapes as of the day the spec-purity vocab-shape gate shipped. See spec-purity-vocab-shapes.ts. Regenerate only after reviewing what changed.",
   "entries": [
     {
@@ -1092,10 +1092,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1t6o1p7m28bu>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:1taxvs8t64um>"
     },
     {
@@ -1144,10 +1140,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:7zlflkt8mxs0>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:avq3m394v37k>"
     },
     {
@@ -1181,10 +1173,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:j234cc1kglgq>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:j3gc021it79c>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
@@ -1256,10 +1244,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "hasCryptoMarketContext"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "highSignalType"
     },
     {
@@ -1325,14 +1309,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/text-vocabulary.ts",
       "name": "ENGLISH_FUNCTION_WORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/workflow-detector.ts",
-      "name": "CROSS_CUTTING_KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/workflow-detector.ts",
-      "name": "INFRASTRUCTURE_KEYWORDS"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/ci/ci-pipeline-analyzer.ts",

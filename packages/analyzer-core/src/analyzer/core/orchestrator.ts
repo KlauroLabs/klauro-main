@@ -18163,8 +18163,9 @@ export class AnalyzerOrchestrator {
   // hasNetworkAccessConceptSignal, and hasTradingAutomationSignal — three
   // dead, never-called keyword-bag classifiers (confirmed zero call sites
   // anywhere in packages/). Each matched a fixed vocabulary list ('zero
-  // trust'/'policy'/'agent'/'device' for network-access; 'jupiter'/'raydium'/
-  // 'dex'/'cex'/'arbitrage'/'swap' for trading) against project text and
+  // trust'/'policy'/'agent'/'device' for network-access; a set of specific
+  // exchange/aggregator/protocol product names plus 'dex'/'cex'/'arbitrage'/
+  // 'swap' for trading) against project text and
   // concluded a business-domain verdict from incidental word overlap — the
   // exact class this defect targets, just unwired. Removed outright rather
   // than left as unused dead weight that could get re-wired later without
@@ -24288,7 +24289,24 @@ export class AnalyzerOrchestrator {
     }
     if (/\b(booking|venue|venues|hosted venue|geo code|geocode)\b/.test(text)) return 0;
     if (/\b(audio|song|track|transcript|vocal|voice|demucs|rmvpe|fcpe)\b/.test(text)) return 0;
-    if (/\b(wallet|wallets|transfer|transfers|passkey|drift|solana|spl|jupiter|raydium|pump|swap)\b/.test(text)) return 0;
+    // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10): a
+    // wallet/transfer/passkey/on-chain-protocol keyword bag used to force
+    // priority 0 (top rank) here. Several of those tokens were literal
+    // product names belonging to one benchmark subject's downstream
+    // integrations (a crypto trading bot's chain/aggregator dependencies),
+    // not generic English — the exact class this function must never key
+    // on: it artificially promoted any capability whose name happened to
+    // mention those products to the very top of EVERY analyzed repo's ranked
+    // list, which is the same failure class that once produced a fabricated
+    // crypto-arbitrage description on an unrelated repo. No structural
+    // signal (terminality/entity anchoring/operation count) can honestly
+    // stand in for "this capability belongs to that one benchmark's
+    // product" — that is business-domain identity, not a structural fact —
+    // so this is removed outright rather than replaced with a subtler
+    // word-based rule. Ranking now falls through to the structural criteria
+    // below (the
+    // portfolio/investment/generic-trading evidence gate, category, and the
+    // caller's operations-count/name tie-breakers), same as every other repo.
     // EVIDENCE-RE-ANCHORED (same misfire class as inferSystemPurpose's
     // clinical override): "portfolio"/"asset(s)"/"investment(s)"/"advisory"/
     // "dca" are distinctive enough alone to earn the near-top trading slot.
@@ -26007,9 +26025,6 @@ export class AnalyzerOrchestrator {
   }
 
   private domainKeyFromNode(node: CASNode, projectPath?: string): string | undefined {
-    const tradingKey = this.tradingBotDomainKeyFromNode(node);
-    if (tradingKey) return tradingKey;
-
     const nameKey = this.domainKeyFromText(node.name);
     if (nameKey) return nameKey;
 
@@ -26021,31 +26036,22 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  private tradingBotDomainKeyFromNode(node: CASNode): string | undefined {
-    const text = [
-      node.name,
-      node.source?.file || '',
-      ...(node.subcategories || []),
-    ].join(' ')
-      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-      .replace(/[_\-./]/g, ' ')
-      .toLowerCase();
-    const hasCryptoMarketContext = /\b(solana|spl|spltokens|trade|trading|swap|pump|jupiter|raydium|bonding|curve|mint|keypair|developer fee|buy|sell)\b/.test(text);
-    const isTradingContext = hasCryptoMarketContext ||
-      (/\btokens?\b/.test(text) &&
-        /\b(scrape|pair|pairs|market|wallet|balance|buy|sell|trade)\b/.test(text) &&
-        !/\b(identity|password|auth|authorize|authorization|register|claims?)\b/.test(text));
-    if (!isTradingContext) return undefined;
-    if (/\b(fee|fees|developer fee)\b/.test(text)) return 'fee';
-    if (hasCryptoMarketContext &&
-      /\b(balance|balances|account info|account|accounts|wallet|spltokens|spl token|spl tokens|token accounts?)\b/.test(text) &&
-      /\b(fetch|get|check|read|update|live update|balance|balances|account|accounts|wallet|spltokens|token accounts?)\b/.test(text)) {
-      return 'token-balance';
-    }
-    if (/\b(buy|sell|swap|trade|execute|send transaction|send and confirm transaction)\b/.test(text)) return 'trade';
-    if (/\b(pair|pairs|market|marketcap|market cap|bonding curve|scrape|scan|discover)\b/.test(text)) return 'market-data';
-    return undefined;
-  }
+  // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10):
+  // tradingBotDomainKeyFromNode used to run before domainKeyFromText/path
+  // fallback above and mine a node's name/file/subcategories text for a
+  // closed set of on-chain protocol/exchange/aggregator product names
+  // belonging to one benchmark subject's crypto trading bot — plus a secondary generic
+  // "tokens + pair/market/wallet/balance/buy/sell/trade" bag, then keyed the
+  // result into fixed labels ('fee', 'token-balance', 'trade',
+  // 'market-data'). That is a hardcoded brand/domain categorizer deciding a
+  // business-domain key from prose, not from any structural fact (no
+  // import/package/manifest/RPC-port evidence backed it). There is no
+  // generic structural signal that distinguishes "this node is a Solana
+  // fee-transfer op" from any other node — that is business-domain
+  // interpretation, which belongs to AI comprehension, not deterministic
+  // keying — so it is removed outright rather than replaced with a subtler
+  // word-based rule. domainKeyFromNode now falls straight through to the
+  // same generic name/path-token keying every other repo already used.
 
   private domainKeyFromText(text: string): string | undefined {
     // Keep the FULL meaningful phrase (hyphen-joined), not just its first
@@ -26485,27 +26491,31 @@ export class AnalyzerOrchestrator {
 
     const lower = label.toLowerCase();
     const operationText = operations.map(operation => operation.action).join(' ').toLowerCase();
-    const tradingContext = this.hasTradingCapabilityContext(projectPath, `${key} ${lower} ${operationText}`);
-    if (key === 'fee') return 'Fee Transfer';
-    if (key === 'trade') return 'Trade Execution';
-    if ((/^(token-balance|balance|balances)$/.test(key) && tradingContext) || /\btoken[-_\s]?balance\b/.test(`${lower} ${operationText}`)) return 'Token Balance Discovery';
-    if (/\btoken[-_\s]?launch\b/.test(`${lower} ${operationText}`) || (/^(token-launch)$/.test(key) && tradingContext)) return 'Token Launch Monitoring';
-    if (key === 'market-data' && tradingContext) return 'Market Data Discovery';
-    if (/^(pre-market|pre-market-rate|pre-market-rates|premarket|premarket-rate|premarket-rates)$/.test(key) && tradingContext) return 'Pre Market Rate Analysis';
-    if (/^(scaled-market|scaled-market-rate|scaled-market-rates|scaled)$/.test(key) && tradingContext) return 'Scaled Market Analysis';
-    if (/^(risk|control|controls)$/.test(key) && /\b(trade|trading|position|order|market|token)\b/.test(operationText)) return 'Trading Risk Control';
-    if (/^(pnl|p-l|profit-loss|profit-and-loss)$/.test(key)) return 'Profit And Loss Reporting';
-    if (/^(pair|pairs|token-pair|token-pairs)$/.test(key) && tradingContext) return 'Market Pair Discovery';
-    if (/^(market|market-usd|market_usd|price|prices|sol)$/.test(key) && tradingContext) return 'Market Price Analysis';
-    if (/^(purchase|buy|buyer)$/.test(key) && tradingContext) return 'Token Purchase Execution';
-    if (/^(batch|bundler|bundle)$/.test(key) && tradingContext) return 'Batch Trade Execution';
+    // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10): a
+    // tradingContext gate (hasTradingCapabilityContext, itself deleted) used
+    // to unlock ~12 branches here that stamped fixed labels ("Fee Transfer",
+    // "Token Balance Discovery", "Market Data Discovery", "Token Purchase
+    // Execution", "Batch Trade Execution", ...) onto any capability whose
+    // key/label/operation text scanned as crypto-trading vocabulary
+    // (on-chain protocol/wallet/swap terms among others). A literal
+    // whitelist of specific exchange/aggregator/market-data product names
+    // was stamped "<Name> Integration" the same way. Every
+    // one of these labels IS the business-domain conclusion, not a
+    // structural fact about the code — there is no terminality/entity/
+    // reachability signal that distinguishes "Fee Transfer" from "Token
+    // Purchase Execution"; that distinction is what the AI comprehension
+    // pass exists for. Removed outright (no evidence-based replacement is
+    // obviously correct) rather than replaced with a subtler word-based
+    // rule; capabilities that used to hit these branches now fall through
+    // to the generic operation-verb-driven labeling below (Settlement,
+    // Rebalancing, Generation, Synchronization, Analysis, Reporting,
+    // Management, Capability), same as every other repo's capabilities.
     if (key === 'ecr') return 'Container Registry Infrastructure';
     if (key === 'ecs') return 'Container Service Infrastructure';
     if (key === 'route53') return 'DNS Routing Infrastructure';
-    if (/^(bot|bots|sniper|volume|moonshot|raydium|jupiter|kamino|okx|coinbase|dexscreener|geckoterminal)$/.test(key)) {
-      return `${this.humanizeDomainKey(key)} Integration`;
-    }
-    if (/^(rpc|node-rpc|solana-rpc)$/.test(key)) return 'RPC Connectivity';
+    if (/^(risk|control|controls)$/.test(key) && /\b(trade|trading|position|order|market|token)\b/.test(operationText)) return 'Trading Risk Control';
+    if (/^(pnl|p-l|profit-loss|profit-and-loss)$/.test(key)) return 'Profit And Loss Reporting';
+    if (/^(rpc|node-rpc)$/.test(key)) return 'RPC Connectivity';
     // Authentication ONLY when member nodes carry auth-analyzer evidence; a name
     // like `auth`/`login` with no auth mechanism node is left to normal labeling
     // (and the AI comprehension pass) rather than keyword-stamped.
@@ -26559,12 +26569,15 @@ export class AnalyzerOrchestrator {
     if (key === 'ecr') return 'Container Registry Infrastructure';
     if (key === 'ecs') return 'Container Service Infrastructure';
     if (key === 'route53') return 'DNS Routing Infrastructure';
-    const tradingContext = this.hasTradingCapabilityContext(projectPath, operationText);
-    if ((/^(token-launch)$/.test(key) && tradingContext) || /\btoken[-_\s]?launch\b/.test(operationText)) return 'Token Launch Monitoring';
-    if ((/^(token-balance|balance|balances)$/.test(key) && tradingContext) || /\btoken[-_\s]?balance\b/.test(operationText)) return 'Token Balance Discovery';
+    // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10): a
+    // tradingContext gate (hasTradingCapabilityContext, itself deleted — see
+    // formatTerminalCapabilityName above for the full removal note) used to
+    // unlock "Token Launch Monitoring"/"Token Balance Discovery"/"Pre Market
+    // Rate Analysis"/"Scaled Market Analysis" here from a crypto-protocol/
+    // exchange/aggregator product-name prose scan. Removed outright; keys that
+    // used to hit these branches now fall through to the generic
+    // operation-verb-driven labeling below.
     if (/^(trading|trade|trades)$/.test(key) || /\btrade execution|automated trading|trading\b/.test(operationText)) return 'Trade Execution';
-    if (/^(pre-market|pre-market-rate|pre-market-rates|premarket|premarket-rate|premarket-rates)$/.test(key) && tradingContext) return 'Pre Market Rate Analysis';
-    if (/^(scaled-market|scaled-market-rate|scaled-market-rates|scaled)$/.test(key) && tradingContext) return 'Scaled Market Analysis';
     if (/^(pnl|p-l|profit-loss|profit-and-loss)$/.test(key)) return 'Profit And Loss Reporting';
 
     const label = fallbackLabel
@@ -26605,11 +26618,6 @@ export class AnalyzerOrchestrator {
     }
     this.klauroSelfProjectCache.set(resolved, isSelf);
     return isSelf;
-  }
-
-  private hasTradingCapabilityContext(projectPath: string | undefined, text: string): boolean {
-    return /\b(solana|arbitrage|dex|cex|swap|wallet|spl|jupiter|raydium|meteora|pumpfun|pump|token|trade|trading|position|liquidation|portfolio|market[-_\s]?(?:data|usd)|crypto|blockchain|pre[-_\s]?market|scaled[-_\s]?market|market[-_\s]?simulation|simulate|simulation)\b/i
-      .test(`${projectPath || ''} ${text || ''}`);
   }
 
   private inferActionFromNodeName(name: string): string {
