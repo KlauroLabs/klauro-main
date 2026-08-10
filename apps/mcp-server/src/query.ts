@@ -1547,8 +1547,17 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   const isDataRelated = node.type === 'entity' || node.type === 'model' || node.type === 'serializer';
   const isRepository = node.type === 'repository' ||
     /repository|repo|dao|gateway|store/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
-  const isCriticalDomain = /\b(auth|oauth|token|password|permission|role|security|invoice|billing|payment|charge|subscription|fuel|vehicle|driver|trip|dispatch|maintenance|customer|partner)\b/i.test(`${node.name} ${file}`);
-  const isSecuritySensitiveName = /\b(auth|oauth|token|password|permission|role|security|credential)\b/i.test(`${node.name} ${file}`);
+  // Severity escalation is driven by STRUCTURAL evidence only — real
+  // security metadata (node.security) and real fan-in — never a business-
+  // vocabulary name/keyword match. A prior version of this check matched
+  // node/file names against a hardcoded bag mixing generic security terms
+  // with business-domain nouns from an unrelated (fleet/logistics) corpus
+  // ("fuel", "vehicle", "driver", "trip", "dispatch"), which is exactly the
+  // hardcoded-categorizer class the product's cardinal rule forbids: right on
+  // repos someone thought of, silently wrong (both false-positive and
+  // false-negative) everywhere else. See the same-shaped fix already applied
+  // to capability naming in capability-audience-test.ts.
+  const hasSecurityEvidence = !!(node.security?.authentication_required || node.security?.authorization_roles);
   const nodeComplexity = node.metadata?.complexity?.cyclomatic || 0;
   const hasDirectTestCoverage = !!node.testing?.tested_by?.length || directlyTestCalled;
 
@@ -1560,10 +1569,10 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   }
 
   if (isEntryRelated) {
-    riskFactors.push({ factor: 'critical-path', severity: isCriticalDomain ? 'high' : 'medium', details: 'Entry-point or handler surface; changes can affect externally visible behavior' });
+    riskFactors.push({ factor: 'critical-path', severity: hasSecurityEvidence ? 'high' : 'medium', details: 'Entry-point or handler surface; changes can affect externally visible behavior' });
   }
   if (isDataRelated || isRepository) {
-    riskFactors.push({ factor: 'critical-path', severity: isCriticalDomain ? 'high' : 'medium', details: 'Data model or data access surface; changes can affect persistence and downstream consumers' });
+    riskFactors.push({ factor: 'critical-path', severity: hasSecurityEvidence ? 'high' : 'medium', details: 'Data model or data access surface; changes can affect persistence and downstream consumers' });
   }
   if (nodeComplexity > 20) {
     riskFactors.push({ factor: 'complex-logic', severity: 'high', details: `Cyclomatic complexity: ${nodeComplexity}` });
@@ -1573,11 +1582,8 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   if (hasExternalDep) {
     riskFactors.push({ factor: 'external-dependency', severity: 'medium', details: 'Has external service dependencies' });
   }
-  if (node.security?.authentication_required || node.security?.authorization_roles || isSecuritySensitiveName) {
+  if (hasSecurityEvidence) {
     riskFactors.push({ factor: 'security-sensitive', severity: 'high', details: 'Handles security-sensitive operations' });
-  }
-  if (isCriticalDomain && !riskFactors.some(f => f.factor === 'critical-path')) {
-    riskFactors.push({ factor: 'critical-path', severity: 'medium', details: 'Domain name suggests business-critical fleet, billing, identity, or operational behavior' });
   }
   const stability = (cas.temporal_stability || []).find(s => s.node_id === node.id);
   if (stability && stability.quality_signals.bug_fix_rate > 0.3) {
