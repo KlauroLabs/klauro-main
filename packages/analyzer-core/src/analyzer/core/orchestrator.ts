@@ -7506,13 +7506,23 @@ export class AnalyzerOrchestrator {
   };
 
   private scanUnanalyzedLanguages(projectPath: string): Array<{ name: string; files: number; share_of_source: number }> {
-    const supported = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'java', 'cs', 'dart', 'go', 'rs', 'php', 'rb', 'erb', 'rake']);
+    // DEFECT (2026-08 Kotlin coverage-caveat audit): this used to hand-maintain
+    // its own `supported` extension set, separate from LANGUAGE_REGISTRY (the
+    // single source of truth language-registry.ts's own module doc calls out:
+    // "adding a language is now one entry here"). That set was never updated
+    // when Kotlin (and most of the later breadth languages — Scala, Lua, R,
+    // Julia, Erlang, Clojure, Haskell, OCaml, Perl, Groovy, ...) gained real
+    // analyzer coverage, so a repo with a deep, working Kotlin analyzer (1000+
+    // Kotlin-derived nodes, capabilities built from Kotlin evidence) still
+    // reported "Kotlin not analyzed: N files (100% of source)" — a caveat that
+    // directly contradicted the rest of the same payload. Ground truth for
+    // "is this extension analyzed" is isRegisteredSourceExtension
+    // (LANGUAGE_REGISTRY), not a second hardcoded list that silently drifts.
+    // `unanalyzedNames` now exists ONLY to give a friendly display name to the
+    // handful of extensions genuinely outside the registry (e.g. Visual
+    // Basic's raw .vb source, which has no analyzer of its own).
     const unanalyzedNames: Record<string, string> = {
-      ex: 'Elixir', exs: 'Elixir',
-      scala: 'Scala', kt: 'Kotlin', kts: 'Kotlin', swift: 'Swift',
-      lua: 'Lua', r: 'R', jl: 'Julia', erl: 'Erlang', clj: 'Clojure',
-      hs: 'Haskell', ml: 'OCaml', vb: 'Visual Basic', fs: 'F#',
-      pl: 'Perl', pm: 'Perl', groovy: 'Groovy',
+      vb: 'Visual Basic',
     };
     const counts = new Map<string, number>();
     let supportedCount = 0;
@@ -7546,7 +7556,7 @@ export class AnalyzerOrchestrator {
         }
         if (isTestFileName(entry.name)) continue;
         const extension = entry.name.split('.').pop()?.toLowerCase() || '';
-        if (supported.has(extension)) supportedCount += 1;
+        if (isRegisteredSourceExtension(entry.name)) supportedCount += 1;
         else if (unanalyzedNames[extension]) counts.set(unanalyzedNames[extension], (counts.get(unanalyzedNames[extension]) || 0) + 1);
       }
     }
@@ -13875,10 +13885,42 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // The system_description MUST be AI-grounded. There is no deterministic
-    // substitute — if it still fails the grounding gate after repair, throw.
+    // The system_description MUST be AI-grounded — there is no deterministic
+    // SUBSTITUTE (never fabricate replacement prose). But a rejected paragraph
+    // must not be FATAL to the rest of comprehension.
+    //
+    // DEFECT (2026-08 blast-radius audit, confirmed live on a client-shaped
+    // codebase whose product legitimately talks to an external service it
+    // does not itself name): this used to throw here, and the throw
+    // propagated out of applyAIInterpretation entirely — past the
+    // capability-catalog splice that had ALREADY landed a full set of
+    // AI-authored capability names a few dozen lines above (see
+    // `catalogOutcome`/`reconciled`), past finalizeSystemCapabilityNames,
+    // past domain application. The deferred-enrichment caller
+    // (enrichAnalysisAI's registered closure) catches ANY throw from this
+    // method and rolls system_capabilities back to the pre-AI raw snapshot
+    // (a DELIBERATE fix for a worse defect: a response half AI-polished,
+    // half stale — see that catch site's own comment), so one rejected
+    // system-level paragraph took the entire catalog down with it — every
+    // capability shipping a raw mechanism name (including at least one
+    // visibly garbled placeholder) with zero AI comprehension anywhere, even
+    // though the capability-naming AI pass had already succeeded and passed
+    // its OWN grounding gate.
+    //
+    // The gate firing was legitimate in spirit (unnamed/unsupported-external-
+    // service-claim: the model named an integration without literally
+    // repeating a name from the externalServices fact list — the natural
+    // shape for a client that talks to a backend it does not itself define)
+    // — this is exactly the class of rejection the per-capability degradation
+    // path below already handles for capability text (see the
+    // `unresolvedAfterRepair` block: "Rejection is right; the blast radius
+    // was not"). The system description gets the same treatment: record the
+    // rejection honestly, ship NO description (never a fabricated one — the
+    // no-substitute doctrine holds), and let comprehension continue so
+    // capability naming/descriptions/domain are unaffected.
     if (!validation.ok) {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_rejected', true, validation.reason || 'generated-description-failed-quality-gate', budgetMs);
+      const systemDescriptionReason = validation.reason || 'generated-description-failed-quality-gate';
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_rejected', true, systemDescriptionReason, budgetMs);
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'system_description',
@@ -13887,26 +13929,39 @@ export class AnalyzerOrchestrator {
         raw_output_excerpt: cleaned,
         parse_ok: true,
         gate_verdict: 'rejected',
-        gate_reason: validation.reason || 'generated-description-failed-quality-gate',
-        final_outcome: 'error',
+        gate_reason: systemDescriptionReason,
+        final_outcome: 'degraded',
       });
-      throw new Error(`Klauro comprehension produced an ungrounded system description that failed the grounding gate (${validation.reason || 'unknown-rejection'}). Comprehension is AI-only; there is no deterministic fallback.`);
+      // Honesty record: never omitted to flatter the run (same convention as
+      // capability_description_degradations below). A consumer asking "why is
+      // system.description missing" gets the real reason, not silence.
+      enhancedSystemPurpose.system_description_degradation = {
+        reason: systemDescriptionReason,
+        failure_class: isProviderUnavailableFailure(systemDescriptionReason) ? 'provider-unavailable' : 'failed-grounding',
+      };
+      console.error(
+        `[Klauro] system description degraded (no AI comprehension text shipped — reason: ${systemDescriptionReason}). ` +
+        `Capability naming, capability descriptions and the primary domain are unaffected and continue.`
+      );
+      // Deliberately no `enhancedSystemPurpose.inferred_description` assignment
+      // and no `return`/`throw` — fall through into domain application and
+      // capability-level enrichment below.
+    } else {
+      enhancedSystemPurpose.inferred_description = cleaned;
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
+      recordSemanticDecision({
+        ts: Date.now(),
+        decision_type: 'system_description',
+        prompt_version: 'system_description.v3',
+        input_evidence_digest: semanticEvidenceDigest,
+        raw_output_excerpt: cleaned,
+        parse_ok: true,
+        gate_verdict: 'accepted',
+        gate_reason: rejectedElements.size > 0 ? `elements-rejected:${rejectedElements.size}` : undefined,
+        mechanical_corrections: cleaned.trim() !== (combined.systemDescription || '').trim() ? ['sanitize/trim'] : [],
+        final_outcome: 'ai',
+      });
     }
-
-    enhancedSystemPurpose.inferred_description = cleaned;
-    this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
-    recordSemanticDecision({
-      ts: Date.now(),
-      decision_type: 'system_description',
-      prompt_version: 'system_description.v3',
-      input_evidence_digest: semanticEvidenceDigest,
-      raw_output_excerpt: cleaned,
-      parse_ok: true,
-      gate_verdict: 'accepted',
-      gate_reason: rejectedElements.size > 0 ? `elements-rejected:${rejectedElements.size}` : undefined,
-      mechanical_corrections: cleaned.trim() !== (combined.systemDescription || '').trim() ? ['sanitize/trim'] : [],
-      final_outcome: 'ai',
-    });
 
     // Apply the AI domain label directly, grounded in the evidence bundle. The
     // model infers the domain from real dependencies/integrations; we normalize

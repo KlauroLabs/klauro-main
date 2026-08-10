@@ -344,6 +344,30 @@ describe('source inventory analyzer detection', () => {
       for (let i = 0; i < 10; i++) {
         fs.writeFileSync(path.join(root, 'src', `Service${i}.ts`), `export class Service${i} {}`);
       }
+      // Visual Basic (.vb) has no dedicated or breadth analyzer and is not in
+      // LANGUAGE_REGISTRY, so it stays genuinely unanalyzed — unlike Kotlin
+      // below, which now has a real deep analyzer and must NOT be reported.
+      fs.mkdirSync(path.join(root, 'legacy'), { recursive: true });
+      for (let i = 0; i < 5; i++) {
+        fs.writeFileSync(path.join(root, 'legacy', `Form${i}.vb`), `Class Form${i}\nEnd Class`);
+      }
+
+      const localOrch = new AnalyzerOrchestrator() as any;
+      const unanalyzed = localOrch.scanUnanalyzedLanguages(root);
+
+      expect(unanalyzed.find((entry: any) => entry.name === 'Visual Basic')).toBeDefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scanUnanalyzedLanguages never reports Kotlin as unanalyzed when it lives in real product source (DEFECT: this used to hand-maintain its own extension allowlist, separate from LANGUAGE_REGISTRY — the single source of truth for "is this extension analyzed" — so a repo with a full, working Kotlin analyzer pass still shipped a coverage_caveats entry claiming Kotlin was not analyzed, directly contradicting the same payload\'s own Kotlin-derived nodes and capabilities)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-unanalyzed-langs-kotlin-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      for (let i = 0; i < 10; i++) {
+        fs.writeFileSync(path.join(root, 'src', `Service${i}.ts`), `export class Service${i} {}`);
+      }
       fs.mkdirSync(path.join(root, 'mobile'), { recursive: true });
       for (let i = 0; i < 5; i++) {
         fs.writeFileSync(path.join(root, 'mobile', `Screen${i}.kt`), `class Screen${i}`);
@@ -352,7 +376,7 @@ describe('source inventory analyzer detection', () => {
       const localOrch = new AnalyzerOrchestrator() as any;
       const unanalyzed = localOrch.scanUnanalyzedLanguages(root);
 
-      expect(unanalyzed.find((entry: any) => entry.name === 'Kotlin')).toBeDefined();
+      expect(unanalyzed.find((entry: any) => entry.name === 'Kotlin')).toBeUndefined();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -30,6 +30,20 @@ import { SystemCapability } from '../../types/cas.types';
  * AI-polished capability names in one field while another field is stuck on
  * stale raw data. This test documents the underlying partial-mutation
  * mechanism that fix guards against.
+ *
+ * UPDATE (2026-08 blast-radius audit): that guard is a double-edged sword —
+ * catching EVERY throw, including "the system narrative alone failed its
+ * grounding gate after every repair", meant the rollback undid an already-
+ * good, already-AI-named capability catalog just because one unrelated
+ * paragraph could not be grounded (confirmed live: a client-shaped codebase
+ * shipped 21 capabilities as raw mechanism names, one visibly garbled, with
+ * zero AI comprehension anywhere, even though capability naming had already
+ * succeeded). applyAIInterpretation no longer throws for THAT case — see
+ * orchestrator.ts's system_description rejection block and
+ * EnhancedSystemPurpose.system_description_degradation — so the rollback
+ * this file documents now fires only for genuine total failures (the AI
+ * provider never answering at all), not for a contained, per-field
+ * degradation. Both shapes are asserted below.
  */
 
 const orch = new AnalyzerOrchestrator() as any;
@@ -116,29 +130,24 @@ async function runInterpretation(purpose: any, capabilities: SystemCapability[])
 }
 
 describe('applyAIInterpretation partial mutation on later failure (root cause of the summary/product_map contradiction)', () => {
-  it('leaves the capabilities array holding AI-polished names even though the pass as a whole throws', async () => {
+  it('leaves the capabilities array untouched when the AI PROVIDER itself never answers (genuine total failure — still throws, before any splice happens)', async () => {
     // Bypass the capability-catalog's own network/quality-gate machinery
-    // entirely (that machinery is owned elsewhere) and go straight to what
-    // matters here: what applyAIInterpretation does with a RECONCILED
-    // catalog result once it has one. This is exactly the audited shape --
-    // real, non-duplicate, AI-polished capability names.
+    // entirely (that machinery is owned elsewhere).
     const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockResolvedValue([
       aiCapability('cap_ai_1', 'Manage vehicle fleets'),
       aiCapability('cap_ai_2', 'Monitor driver safety'),
     ]);
-    // The system-description call is a SEPARATE step; make it return an
-    // ungroundable narrative so the pass fails downstream of the catalog
-    // reconciliation (marketing language the grounding gate rejects).
-    const descriptionSpy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
-      system_description: 'A blazing-fast, best-in-class, revolutionary platform that seamlessly empowers everything.',
-      domain: '',
-      descriptions: [],
-      capabilities: [],
-    }));
+    // The system-narrative call is the FIRST AI call the pass makes; make the
+    // PROVIDER ITSELF fail (never answers) rather than answer with
+    // ungroundable text — that is the one failure class applyAIInterpretation
+    // still throws for, because there is genuinely nothing usable from this
+    // pass at all. It throws from inside the try/catch that wraps that very
+    // first call, which runs BEFORE the catalog result is ever read or
+    // spliced in — so there is nothing to roll back here in the first place.
+    const descriptionSpy = jest.spyOn(aiService, 'generateComponentDescription').mockRejectedValue(
+      new Error('provider outage: model endpoint unreachable'),
+    );
 
-    // Raw/deterministic input capabilities, standing in for the audited
-    // response's "28 duplicate-laden" raw catalog -- a smaller, duplicated
-    // set is enough to prove the mechanism.
     const capabilities: SystemCapability[] = [
       rawCapability('cap_1', 'Vehicle table'),
       rawCapability('cap_2', 'Vehicle table'),
@@ -158,18 +167,60 @@ describe('applyAIInterpretation partial mutation on later failure (root cause of
       descriptionSpy.mockRestore();
     }
 
-    // The pass DID fail overall (system description ungroundable) --
+    // The pass DID fail overall (the provider never answered at all) --
     // matches the audited response's ai_enrichment:"error".
     expect(thrown).toBeInstanceOf(Error);
-    expect(String((thrown as Error).message)).toMatch(/system description/i);
+    // Nothing was spliced before the throw — the outer deferred-enrichment
+    // closure's rollback-to-raw-snapshot is a no-op here, but harmless.
+    expect(capabilities.map(c => c.name)).toEqual(rawNames);
+  });
 
-    // And yet: the capabilities array the caller already held a reference to
-    // was mutated in place with the AI-polished names BEFORE the throw. This
-    // is the exact partial-mutation window the orchestrator-level fix (the
-    // deferred-enrichment closure's try/catch around runAiInterpretation)
-    // detects and rolls back so it never reaches a served response.
-    const namesAfterThrow = capabilities.map(c => c.name);
-    expect(namesAfterThrow).not.toEqual(rawNames);
-    expect(namesAfterThrow).toEqual(['Manage vehicle fleets', 'Monitor driver safety']);
+  it('does NOT throw, and keeps the AI-polished capability names, when only the system narrative fails its grounding gate (contained degradation — the blast-radius fix)', async () => {
+    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockResolvedValue([
+      aiCapability('cap_ai_1', 'Manage vehicle fleets'),
+      aiCapability('cap_ai_2', 'Monitor driver safety'),
+    ]);
+    // The provider DOES answer here — with a narrative the grounding gate
+    // rejects on every attempt (marketing language, no evidence), and no
+    // per-capability prose at all. This is the "AI answered but the answer
+    // was ungrounded/incomplete" class, not a provider outage, and it must no
+    // longer take the already-reconciled catalog's NAMES with it — even
+    // though each capability's own description text still goes through its
+    // own independent per-item grounding check (see l5-capability-
+    // degradation.test.ts) and may itself degrade to deterministic text.
+    const descriptionSpy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+      system_description: 'A blazing-fast, best-in-class, revolutionary platform that seamlessly empowers everything.',
+      domain: '',
+      descriptions: [],
+      capabilities: [],
+    }));
+
+    const capabilities: SystemCapability[] = [
+      rawCapability('cap_1', 'Vehicle table'),
+      rawCapability('cap_2', 'Vehicle table'),
+      rawCapability('cap_3', 'Vehicle table'),
+      rawCapability('cap_4', 'Driver alerts'),
+    ];
+
+    const purpose = freshPurpose();
+    try {
+      await withAiEnv(() => runInterpretation(purpose, capabilities));
+    } finally {
+      catalogSpy.mockRestore();
+      descriptionSpy.mockRestore();
+    }
+
+    // No fabricated system description ships — the doctrine holds — but the
+    // failure is recorded, not silent.
+    expect(purpose.inferred_description).toBeFalsy();
+    expect(purpose.system_description_degradation).toBeDefined();
+
+    // The already-reconciled, already AI-named capability CATALOG survives
+    // intact — the names are never rolled back to the raw pre-AI snapshot
+    // just because the unrelated system paragraph failed its own gate. This
+    // is the fix under test. (Each capability's own DESCRIPTION text is a
+    // separate, independent per-item grounding concern — see
+    // l5-capability-degradation.test.ts — not re-asserted here.)
+    expect(capabilities.map(c => c.name)).toEqual(['Manage vehicle fleets', 'Monitor driver safety']);
   });
 });

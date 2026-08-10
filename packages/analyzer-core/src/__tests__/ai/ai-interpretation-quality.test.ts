@@ -540,17 +540,30 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
     expect(purpose.inferred_description).toMatch(/CAS relationship graphs/);
   });
 
-  it('throws after exhausting broad and focused repairs (AI-only-or-throw stands, no deterministic fallback)', async () => {
+  // DEFECT (2026-08 blast-radius audit): this used to assert applyAIInterpretation
+  // THROWS after exhausting repairs — but that throw is exactly what wiped an
+  // entire already-AI-named capability catalog off a real analysis when only
+  // the SYSTEM paragraph could not be grounded (see orchestrator.ts's
+  // system_description rejection block and EnhancedSystemPurpose.
+  // system_description_degradation). The no-deterministic-substitute doctrine
+  // for the system description itself is unchanged (no fabricated text ships,
+  // ever) — what changed is that this failure alone no longer fails the whole
+  // pass. It resolves, records the honest degradation, and leaves whatever
+  // description text pre-existed untouched.
+  it('degrades the system description (never throws) after exhausting broad and focused repairs — no deterministic fallback text ships, but comprehension continues', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(badAnswer);
     const purpose = freshPurpose();
 
-    await expect(
-      orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), [])
-    ).rejects.toThrow(/failed the grounding gate \(source-bucket-restatement(?:: [^)]+)?\)/);
+    await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), []);
 
     expect(spy).toHaveBeenCalledTimes(5);
     expect(purpose.description_generation.status).toBe('ai_rejected');
+    // Never overwritten with a fabricated substitute — the pre-existing value
+    // on the purpose object is left exactly as it was.
     expect(purpose.inferred_description).toBe('A code analysis service.');
+    expect(purpose.system_description_degradation).toBeDefined();
+    expect(purpose.system_description_degradation.failure_class).toBe('failed-grounding');
+    expect(purpose.system_description_degradation.reason).toMatch(/source-bucket-restatement/);
   });
 });
 

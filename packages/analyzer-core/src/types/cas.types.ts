@@ -4053,6 +4053,39 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
   inferred_description: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
+  /**
+   * Present ONLY when the AI-authored system_description failed the grounding
+   * gate even after every repair pass, and therefore SHIPPED WITH NO
+   * DESCRIPTION AT ALL (there is no deterministic substitute for the system
+   * narrative — `inferred_description` is deliberately left unset, and
+   * `system.description` is omitted at output assembly, never fabricated or
+   * empty-stringed).
+   *
+   * This exists because a rejected system description used to be FATAL to the
+   * entire L5 comprehension pass (applyAIInterpretation threw, and the
+   * deferred-enrichment caller rolls system_capabilities back to its raw
+   * pre-AI snapshot on ANY throw from that method) — one paragraph that
+   * couldn't be grounded took an entire catalog of already-AI-named,
+   * already-grounded capabilities down with it, shipping every one as a raw
+   * mechanism name with zero AI comprehension anywhere (confirmed live: a
+   * client-shaped codebase whose system description legitimately named an
+   * external service it does not itself define tripped the external-service
+   * grounding check, which wiped out capability catalog naming that had
+   * already passed its own gate). The system description's own
+   * no-deterministic-substitute doctrine is
+   * preserved — this field records the honest degradation instead of hiding
+   * it — but the failure is now contained to `system.description` alone;
+   * capability naming, capability descriptions and the primary domain are
+   * unaffected and still complete. Same convention as
+   * `capability_description_degradations`: never omitted to flatter the run.
+   */
+  system_description_degradation?: {
+    reason: string;
+    /** 'provider-unavailable' = retry / check credentials, quota and
+     *  reachability; 'failed-grounding' = the model answered and every
+     *  attempt was rejected, so the evidence or the prompt is the problem. */
+    failure_class: 'provider-unavailable' | 'failed-grounding';
+  };
   /** Hash of the deterministic product-semantic facts that produced the
    * current AI comprehension. Incremental analysis compares this with the
    * next deterministic facts instead of comparing AI-curated output to raw
