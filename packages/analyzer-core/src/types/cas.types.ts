@@ -114,8 +114,17 @@ export interface CASOutput {
   behavior_surfaces?: SystemCapability[];
   system_purpose?: SystemPurpose;
 
-  workflows?: CASWorkflow[];
-  workflow_graph?: CASWorkflowGraph;
+  /**
+   * Journeys are a DERIVED VIEW over `flows` (docs/cas/SPECIFICATION.md §0.5.1)
+   * — the only tier-3 comprehension members are Capabilities, Flows, Steps,
+   * Entities. A journey is surfaced iff a Flow exists whose entry point is
+   * user-facing (USER_FACING_ENTRY_TYPES); its name, steps, and capability
+   * linkage are the flow's own facts. There is no separate `workflows` field
+   * — "workflow" is a presentation projection over this same array
+   * (apps/mcp-server/src/query.ts getWorkflows), never a second stored
+   * structure. A stored analysis carrying the pre-2.2.0 `workflows` /
+   * `workflow_graph` fields is re-analyzed, not migrated (§0.11).
+   */
   user_journeys?: CASUserJourney[];
   user_journey_summary?: CASUserJourneySummary;
   data_lineage?: CASEntityLineage[];
@@ -3740,26 +3749,6 @@ export interface SystemPurpose {
   secondary_types?: string[];
 }
 
-export interface CASWorkflow {
-  id: string;
-  name: string;
-  description: string;
-  workflow_type: 'crud' | 'process' | 'query' | 'command' | 'composite';
-
-  entry_points: string[];
-  call_chains: string[];
-  exit_points: string[];
-
-  entities_touched: string[];
-  services_used: string[];
-
-  classification: 'primary' | 'supporting' | 'internal';
-  criticality: 'critical' | 'high' | 'medium' | 'low';
-
-  dependencies: string[];
-  dependents: string[];
-}
-
 export interface CASUserJourneyStep {
   node_id: string;
   name: string;
@@ -3953,26 +3942,6 @@ export interface CASBehaviorDiff {
   summary: {
     risk_flags: string[];
   };
-}
-
-export interface CASWorkflowDependency {
-  from_workflow: string;
-  to_workflow: string;
-  dependency_type: 'calls' | 'reads-from' | 'requires-auth' | 'requires-entity' | 'temporal';
-  strength: 'required' | 'optional';
-  evidence: string[];
-}
-
-export interface CASWorkflowGraph {
-  workflows: CASWorkflow[];
-  dependencies: CASWorkflowDependency[];
-  primary_workflow_id?: string;
-  entry_workflow_id?: string;
-  critical_shared_nodes: Array<{
-    node_id: string;
-    used_by_workflows: string[];
-    criticality: 'critical' | 'high' | 'medium' | 'low';
-  }>;
 }
 
 export interface CASDomainConcept {
@@ -4325,7 +4294,18 @@ export interface CASFlowGraph {
 // v2.1.0: added module_health (CASModuleHealth) — file-level size/churn/
 // fan-in/mixed-concern outlier surface, additive-only, no field removed or
 // retyped, no compatibility break with 2.0.0.
-export const CAS_VERSION = '2.1.0';
+// v2.2.0: finishes the journeys/workflows collapse into Flows that v2.0.0
+// declared but only did mechanically (docs/cas/SPECIFICATION.md §0.5.1). The
+// stored `workflows` (CASWorkflow[]) and `workflow_graph` (CASWorkflowGraph)
+// fields, and the CASWorkflow/CASWorkflowGraph/CASWorkflowDependency types,
+// are REMOVED — not deprecated, not aliased. Tier 3 comprehension has
+// exactly four members (Capability, Flow, Step, Entity); `user_journeys` and
+// any workflow-shaped read are presentation projections over `flows`,
+// computed at query time (apps/mcp-server/src/query.ts getWorkflows), never
+// a second persisted structure. Greenfield rename per §0.11 — no
+// compatibility path; a stored analysis carrying the old `workflows` /
+// `workflow_graph` fields is re-analyzed, not migrated.
+export const CAS_VERSION = '2.2.0';
 
 export interface CASFlowLayer {
   layer_number: number;
