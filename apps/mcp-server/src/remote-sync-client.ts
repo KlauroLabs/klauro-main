@@ -15,7 +15,7 @@ import {
   resolveAnalyzerUrl,
   type LoadedKlauroConfig,
 } from './klauro-config';
-import { connectorToken, requireConnectorEntitlement } from './connector-auth';
+import { connectorToken, findStoredAccountOwningProject, listStoredAccounts, requireConnectorEntitlement } from './connector-auth';
 import { assessUploadScope } from './upload-scope-guard';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { fetch as undiciFetch } from 'undici';
@@ -143,10 +143,26 @@ async function assertUploadTargetIsReachable(loaded: LoadedKlauroConfig, serverU
   if (!token) return;
   const probe = await probeHostedProjectBinding(serverUrl, token, String(projectId));
   if (probe === 'not_found') {
+    // `klauro init` binds a project by matching the repo's git remote, so a
+    // fork/re-clone/teammate copy of this SAME repo silently binds to the
+    // SAME hosted project. Before treating that as unreachable, check every
+    // OTHER account already signed into on this machine (`klauro accounts`)
+    // — if one of them can see this project, switching to it (no password,
+    // no session loss for the currently active account) is the fix, never
+    // `klauro login`, which would replace the active account's session
+    // instead of just switching to the one that already works.
+    const activeEmail = listStoredAccounts(serverUrl).find(account => account.active)?.email;
+    const owner = await findStoredAccountOwningProject(serverUrl, String(projectId), activeEmail, probeHostedProjectBinding);
+    if (owner) {
+      throw new Error(
+        `The project bound in this repo's .klaurorc (${projectId}) belongs to ${owner}, an account already signed in on this machine but not the currently active one. ` +
+        `Run \`klauro accounts --use ${owner}\` to switch to it (no password needed), then retry. Do not run \`klauro login\` — that replaces the currently active account's session instead of switching to one already stored here.`
+      );
+    }
     throw new Error(
-      `The project bound in this repo's .klaurorc (${projectId}) was not found for the currently signed-in account. ` +
-      "The server returns the same 404 whether the project truly no longer exists or exists but belongs to a workspace this account is not a member of — refusing to upload rather than accepting source into a destination this account cannot reach. " +
-      'Run `klauro whoami` to see which account is signed in; if it is the wrong one, run `klauro login --email you@example.com` for the account that owns this project; otherwise run `klauro init --force` to bind a fresh project this account can see.'
+      `The project bound in this repo's .klaurorc (${projectId}) was not found for any account signed in on this machine. ` +
+      "The server returns the same 404 whether the project truly no longer exists or exists but belongs to a workspace none of those accounts is a member of — refusing to upload rather than accepting source into a destination this machine cannot reach. " +
+      `Run \`klauro accounts\` to see who is signed in here (or \`klauro whoami\` for just the active one). If the account that owns ${projectId} has never signed in on this machine, ask them to add your account to its workspace, or run \`klauro init --force\` to bind a NEW project the active account can see — this starts a separate analysis, it does not touch or delete ${projectId}'s existing one. Do not run \`klauro login\` to try to "become" the owning account unless you actually intend to replace the currently active session.`
     );
   }
 }

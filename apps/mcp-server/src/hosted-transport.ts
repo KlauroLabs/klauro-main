@@ -1,4 +1,6 @@
 import { Agent, fetch as undiciFetch } from 'undici';
+import { findStoredAccountOwningProject, listStoredAccounts } from './connector-auth';
+import { probeHostedProjectBinding } from './klauro-config';
 
 /**
  * Transport for the installed MCP client's hosted read/query calls.
@@ -282,6 +284,42 @@ export function describeTransportFailure(error: unknown, context: { url: string;
 }
 
 /**
+ * `klauro init` binds a project by matching the repo's git remote, so a
+ * fork/re-clone/teammate copy of the SAME repo silently binds to the SAME
+ * hosted project — the server 404s every one of that project's queries for
+ * any account that isn't a member, and does not distinguish "does not exist"
+ * from "exists, not yours" (to avoid leaking a private project's existence).
+ * Before telling the caller to `klauro login` — which replaces whichever
+ * account is currently active instead of just switching — check every OTHER
+ * account already signed into on this machine (`klauro accounts`): if one of
+ * them can already see this project, switching to it is the real fix and
+ * needs no password. Falls back to a message that still never names
+ * `klauro login` as the remedy for this specific 404 shape; `klauro init
+ * --force` starts a separate analysis rather than touching the existing one.
+ */
+async function describeProjectNotFoundRemediation(url: string): Promise<string> {
+  const base = "The hosted project was not found for the currently signed-in account. The server returns this same 404 whether the project id in this repo's .klaurorc no longer exists OR it exists but belongs to a workspace this account is not a member of.";
+  const match = /^(https?:\/\/[^/]+)\/api\/projects\/([^/]+)/.exec(url);
+  if (!match) {
+    return `${base} Run \`klauro status\` to see the bound project id, \`klauro accounts\` to see who is signed in here, and \`klauro init --force\` to bind a fresh project the active account can see (this starts a separate analysis; it does not touch the existing one).`;
+  }
+  const [, serverUrl, encodedProjectId] = match;
+  const projectId = decodeURIComponent(encodedProjectId);
+  try {
+    const activeEmail = listStoredAccounts(serverUrl).find(account => account.active)?.email;
+    const owner = await findStoredAccountOwningProject(serverUrl, projectId, activeEmail, probeHostedProjectBinding);
+    if (owner) {
+      return `${base} It belongs to ${owner}, an account already signed in on this machine but not the active one. Run \`klauro accounts --use ${owner}\` to switch (no password needed), then retry. Do not run \`klauro login\` — it would replace the active account's session instead of switching to one already stored here.`;
+    }
+  } catch {
+    // Local auth-store read failed (e.g. no auth.json yet) — fall through to
+    // the generic remediation below rather than letting a probe failure mask
+    // the original 404.
+  }
+  return `${base} Run \`klauro accounts\` to see who is signed in here; if the owning account has never signed in on this machine, ask them to add your account to its workspace, or run \`klauro init --force\` to bind a NEW project (${projectId}'s existing analysis is untouched). Do not run \`klauro login\` to try to "become" the owning account unless you actually intend to replace the currently active session.`;
+}
+
+/**
  * Turn a non-OK hosted response into an error that names the status, the URL,
  * and what to do — never a bare status number. Reads the body defensively:
  * an edge that intercepts the request returns HTML, and JSON.parse-ing that
@@ -307,7 +345,7 @@ export async function describeHttpFailure(response: Response, context: { url: st
   if (status === 401 || status === 403) {
     remediation = 'The request was not authorized. Run `klauro auth-status`; if it reports no account, run `klauro login`, then restart the MCP client.';
   } else if (status === 404) {
-    remediation = "The hosted project was not found for the currently signed-in account. The server returns this same 404 whether the project id in this repo's .klaurorc no longer exists OR it exists but belongs to a workspace this account is not a member of (it deliberately does not distinguish the two, to avoid leaking a private project's existence). Run `klauro status` to see the bound project id, and `klauro whoami` to confirm which account is signed in; if it's the wrong account, run `klauro login` for the one that owns this project, otherwise run `klauro init --force` to bind a fresh project this account can see.";
+    remediation = await describeProjectNotFoundRemediation(context.url);
   } else if (status === 426) {
     remediation = 'This client is older than the protocol the server requires. Run `klauro update`, then restart the MCP client.';
   } else if (status === 429) {

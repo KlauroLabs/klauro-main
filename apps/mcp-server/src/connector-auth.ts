@@ -480,6 +480,54 @@ export function listStoredAccounts(serverUrl?: string): Array<{ email: string; u
 }
 
 /**
+ * Token for a SPECIFIC stored account by email, not necessarily the active
+ * one — lets a caller probe "does account X own this project" without first
+ * switching the active account. Returns undefined if that email was never
+ * signed into on this server (or its session predates the multi-account
+ * roster and isn't the single legacy active entry).
+ */
+export function tokenForStoredAccount(serverUrl: string | undefined, email: string): string | undefined {
+  const auth = loadStoredConnectorAuth();
+  const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
+  const rosterAccount = auth.accountsByServer?.[normalized]?.[email];
+  if (rosterAccount) return rosterAccount.token;
+  const active = auth.accounts[normalized];
+  return active?.email === email ? active.token : undefined;
+}
+
+/**
+ * When the ACTIVE account 404s a bound project, check every OTHER account
+ * already signed into on this machine (the `klauro accounts` roster) before
+ * concluding the project is unreachable. `klauro init` binds a project by
+ * matching the repo's git remote, so a fork, re-clone, or teammate's copy of
+ * the SAME repo silently binds to the SAME hosted project — if that project
+ * belongs to an account this machine has already signed into (just not the
+ * currently active one), `klauro login` is never the right first answer: it
+ * would replace whichever account IS active instead of just switching to the
+ * one that already works. `probeImpl` is injected (rather than importing
+ * klauro-config.ts's probeHostedProjectBinding directly) to avoid a circular
+ * import — connector-auth.ts is imported by hosted-transport.ts, which
+ * klauro-config.ts's probe-adjacent code paths can end up depending on.
+ * Returns the owning email, or undefined if no other stored account can see
+ * the project either.
+ */
+export async function findStoredAccountOwningProject(
+  serverUrl: string,
+  projectId: string,
+  activeEmail: string | undefined,
+  probeImpl: (serverUrl: string, token: string, projectId: string) => Promise<'bound' | 'not_found' | 'indeterminate'>,
+): Promise<string | undefined> {
+  const candidates = listStoredAccounts(serverUrl).filter(account => account.email !== activeEmail);
+  for (const candidate of candidates) {
+    const token = tokenForStoredAccount(serverUrl, candidate.email);
+    if (!token) continue;
+    const probe = await probeImpl(serverUrl, token, projectId);
+    if (probe === 'bound') return candidate.email;
+  }
+  return undefined;
+}
+
+/**
  * Flips the ACTIVE account for `serverUrl` to `email`, reusing the already-
  * stored token — no re-authentication, no password. This is the "way to
  * see/switch which account is active" task #127 asked for: e.g. an agent

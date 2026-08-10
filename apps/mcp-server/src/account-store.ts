@@ -620,7 +620,7 @@ export class AccountStore {
     if (!membership) {
       const caller = db.users.find(candidate => candidate.id === userId);
       const callerDesc = caller ? `Signed in as ${caller.email}` : 'The signed-in account';
-      throw httpError(404, `${callerDesc}, which has no access to workspace '${project.workspace_id}'. This repo is bound to a project owned by another account — sign in as that account (\`klauro login\`), or re-bind this repo with \`klauro init --force\` to a project your current account can see.`);
+      throw httpError(404, `${callerDesc}, which has no access to workspace '${project.workspace_id}'. This repo is bound to a project owned by another account. Run \`klauro accounts\` on this machine — if that account is already signed in (just not active), \`klauro accounts --use <email>\` switches to it with no password needed. Otherwise re-bind this repo with \`klauro init --force\` to a project your current account can see; do not run \`klauro login\` unless you actually intend to replace the currently active session.`);
     }
     return project;
   }

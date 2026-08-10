@@ -35,7 +35,7 @@ import { runSelfUpdate } from './self-update';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { decideInitFlow, resolveNamedChoice, type RecognizedRemote } from './init-resolution';
 import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
-import { clearStoredConnectorSession, connectorToken, isNetworkUnreachableError, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, unreachableServerError } from './connector-auth';
+import { clearStoredConnectorSession, connectorToken, findStoredAccountOwningProject, isNetworkUnreachableError, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, unreachableServerError } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
 import { detectWorkspaceIdentity, findFabricProjectRoot, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
 import { remoteActive } from './coordination/remote-transport';
@@ -1319,7 +1319,18 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     const staleId = String(loaded.config.project.id);
     const probe = await probeHostedProjectBinding(serverUrl, token, staleId);
     if (probe === 'not_found') {
-      try {
+      // Before minting a NEW project under the active account, check whether
+      // another account already signed into on this machine can see staleId
+      // — a fork/re-clone/teammate copy of this repo binds to the SAME
+      // hosted project via git-remote matching, so this is common, and
+      // switching (no password) preserves the existing analysis instead of
+      // starting a fresh one.
+      const activeEmail = listStoredAccounts(serverUrl).find(account => account.active)?.email;
+      const owner = await findStoredAccountOwningProject(serverUrl, staleId, activeEmail, probeHostedProjectBinding);
+      if (owner) {
+        projectStatus = 'warn';
+        projectNote = ` · existing .klaurorc binds ${staleId}, which belongs to ${owner} — an account already signed in on this machine but not active. Run \`klauro accounts --use ${owner}\` (no password needed) then re-run \`klauro init\`, instead of rebinding to a new project.`;
+      } else try {
         const placed = await placeHostedProjectHeadless(projectPath, serverUrl, token, args);
         await writeProjectBindingIntoConfig(projectPath, {
           projectId: placed.project.id,
