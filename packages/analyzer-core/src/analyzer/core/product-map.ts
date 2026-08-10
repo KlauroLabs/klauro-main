@@ -40,6 +40,39 @@ function normalizeEntityName(name: string): string {
 }
 
 /**
+ * INVARIANT (2026-08-10 live comprehension audit): `description_source` and
+ * the PRESENCE of `description` text must never disagree — a source can only
+ * ever describe text that actually exists. This used to unconditionally
+ * default a falsy `capability.description_source` to `'deterministic'`
+ * (`capability.description_source || 'deterministic'`), regardless of
+ * whether `capability.description` held any text. A capability whose AI
+ * description attempt was rejected AND had no deterministic fallback text —
+ * `description_source` left `undefined` and `description` empty/absent by
+ * design, both honestly recording "not described" (see
+ * `capability_description_degradations` on `EnhancedSystemPurpose`) — got
+ * stamped `description_source: 'deterministic'` here anyway, the moment it
+ * reached this view. Confirmed live: a Django "Process Forms" capability and
+ * a Go "Integrate with External Services" capability both shipped
+ * `description_source: 'deterministic'` with the `description` key absent
+ * entirely. Two upstream fixes (orchestrator.ts's per-capability repair
+ * loop) already closed every path that could leave `system_capabilities`
+ * itself in that state — this was a THIRD, independent site: a view built
+ * straight off the CAS that re-derives provenance with its own (buggy)
+ * default, never routing through `capabilityDescriptionTarget`/
+ * `validateElementDescription`. The fix is the invariant, not just this one
+ * call site: only ever infer 'deterministic' provenance when there is real
+ * text to attribute it to; otherwise pass the source through as-is (honest
+ * "no provenance because no text", matching identity.description_source's
+ * documented contract just above it in cas.types.ts).
+ */
+function resolveCapabilityDescriptionProvenance(
+  capability: Pick<SystemCapability, 'description' | 'description_source'>,
+): SystemCapability['description_source'] | undefined {
+  if (!capability.description) return capability.description_source;
+  return capability.description_source || 'deterministic';
+}
+
+/**
  * The journey's PRIMARY entities — what it terminally PRODUCES: terminal
  * entities it created/updated/deleted plus terminal_effects.entities_written.
  * A read-only journey writes nothing, so its terminal READS are its actual
@@ -181,7 +214,7 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
     return {
       name: capability.name,
       description: capability.description,
-      description_source: capability.description_source || 'deterministic',
+      description_source: resolveCapabilityDescriptionProvenance(capability),
       category: capability.category,
       criticality: capability.criticality,
       journeys: linkedSorted.map(journey => ({ id: journey.id, name: journey.name })),

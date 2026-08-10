@@ -1266,7 +1266,13 @@ export interface CASParadigmConformance {
 export interface CASProductMapCapability {
   name: string;
   description: string;
-  description_source: 'deterministic' | 'ai' | 'manual' | 'reused';
+  // Comprehension provenance (2026-08-10 live comprehension audit): optional
+  // for the same reason identity.description_source above is — a capability
+  // whose description text does not exist (rejected AI attempt with no
+  // deterministic fallback) has no provenance to report. Never coerced to
+  // 'deterministic' when `description` is empty; see
+  // resolveCapabilityDescriptionProvenance in product-map.ts.
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   category: 'core' | 'supporting' | 'admin' | 'internal';
   criticality: 'critical' | 'high' | 'medium' | 'low';
   journeys: Array<{ id: string; name: string }>;
