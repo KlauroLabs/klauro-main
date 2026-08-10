@@ -105,8 +105,10 @@ module.exports = {
   // Force exit after tests complete
   forceExit: false,
   
-  // Global setup and teardown
-  // globalSetup: '<rootDir>/src/__tests__/globalSetup.ts',
+  // Global setup: verifies the native tree-sitter addon can load in this
+  // Node runtime BEFORE any test file executes, and aborts the whole run
+  // with one unmissable diagnostic if it can't — see globalSetup.ts for why.
+  globalSetup: '<rootDir>/src/__tests__/globalSetup.ts',
   // globalTeardown: '<rootDir>/src/__tests__/globalTeardown.ts',
   
   // Test result processor for custom formatting

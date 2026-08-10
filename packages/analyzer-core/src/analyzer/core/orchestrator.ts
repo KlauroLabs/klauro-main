@@ -1820,6 +1820,12 @@ export class AnalyzerOrchestrator {
             });
           }
         }
+        const zeroYieldError = await this.detectZeroYieldForClaimedFiles(
+          registration,
+          result,
+          this.analyzerRootMap.get(registration.id) || projectPath
+        );
+        if (zeroYieldError) analysisErrors.push(zeroYieldError);
         contributions.push({
           analyzer_id: registration.id,
           analyzer_name: registration.name,
@@ -6504,6 +6510,8 @@ export class AnalyzerOrchestrator {
         });
       }
     }
+    const zeroYieldError = await this.detectZeroYieldForClaimedFiles(registration, result, matchedRoot);
+    if (zeroYieldError) accumulators.analysisErrors.push(zeroYieldError);
     accumulators.contributions.push({
       analyzer_id: registration.id,
       analyzer_name: registration.name,
@@ -7701,6 +7709,52 @@ export class AnalyzerOrchestrator {
    * to one entry, matching how the rest of the pipeline (buildIncrementalState,
    * etc.) already keys per-file records.
    */
+  /**
+   * Guards the "silent zero" defect class at the point where every language
+   * analyzer's contribution is recorded: a source-file glob matching N>0
+   * files but an extraction pipeline that crashed on every one of them (a
+   * native tree-sitter addon with no prebuilt binary for the running Node
+   * ABI is the concrete incident this exists for) still returns a
+   * structurally valid, empty CASContribution — nodes: [], edges: [] — with
+   * no thrown error anywhere the merge/summary code can see. That is
+   * indistinguishable from a legitimately tiny/empty project unless checked
+   * explicitly here.
+   *
+   * A registered LANGUAGE analyzer (framework/library/pattern analyzers
+   * legitimately detect nothing in most repos — that is not evidence of a
+   * crash) that matched at least one file but produced neither nodes nor
+   * edges is not "nothing to report": it is a parser/extraction failure, and
+   * must land in analysis_errors[] as severity 'error' — the field the
+   * top-level `errors` summary count is built from — not silently folded
+   * into a per-file 'warning' that count ignores.
+   */
+  private async detectZeroYieldForClaimedFiles(
+    registration: AnalyzerRegistration,
+    result: CASContribution,
+    matchedRoot: string
+  ): Promise<CASAnalysisError | null> {
+    if (registration.type !== 'language') return null;
+    if ((result.nodes?.length || 0) > 0 || (result.edges?.length || 0) > 0) return null;
+
+    let claimedFiles: string[] = [];
+    try {
+      claimedFiles = (await registration.analyzer.getRelevantFiles?.(matchedRoot)) || [];
+    } catch {
+      // Can't determine what this analyzer claimed to match; don't manufacture
+      // a false-positive error on top of that unrelated failure.
+      return null;
+    }
+    if (claimedFiles.length === 0) return null;
+
+    return {
+      severity: 'error',
+      code: 'ZERO_NODES_FOR_CLAIMED_FILES',
+      message: `${registration.name} matched ${claimedFiles.length} file(s) (e.g. "${claimedFiles[0]}") but produced zero nodes and zero edges. This is a parser/extraction failure, not an empty result — a registered language analyzer that matches files but yields nothing is never legitimately silent. Check for a native-addon load failure (see errors.ts NativeAddonUnavailableError, tree-sitter-parser.ts, tree-sitter-ts-extractor.ts) before treating this project as genuinely tiny/empty.`,
+      analyzer: registration.id,
+      recoverable: false
+    };
+  }
+
   private countDistinctSourceFiles(nodes: CASNode[] | undefined, projectPath?: string): number {
     if (!nodes || nodes.length === 0) return 0;
     const files = new Set<string>();
