@@ -1,0 +1,1634 @@
+{
+  "generated_at": "2026-08-10T05:15:06.445Z",
+  "note": "Pre-existing large literal-array/regex-alternation shapes as of the day the spec-purity vocab-shape gate shipped. See spec-purity-vocab-shapes.ts. Regenerate only after reviewing what changed.",
+  "entries": [
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "<inline-regex-line-2641>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "<inline-regex-line-5003>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "<inline-regex-line-675>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "AGENT_TARGET_DISCOVERY_EXCLUDED_DIRS"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "AGENT_TARGET_DISCOVERY_EXTENSIONS"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "FIRST_TURN_STOP_TERMS"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "identifierFragments"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "limit"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "symbols"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "name": "TASK_HINT_STOP_WORDS"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-from-zero-build-context-proof.ts",
+      "name": "FROM_ZERO_SCENARIOS"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "name": "<inline-regex-line-1578>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "name": "<inline-regex-line-1579>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "name": "<inline-regex-line-2010>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "name": "<inline-regex-line-672>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "name": "<inline-regex-line-792>"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "name": "lastPathLine"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "name": "sourceFiles"
+    },
+    {
+      "file": "apps/mcp-server/src/agent-workflow.ts",
+      "name": "<inline-regex-line-888>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-focus.ts",
+      "name": "FOCUS_ENV_KEYS"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-focus.ts",
+      "name": "FOCUS_PROFILES"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-freshness-deep.ts",
+      "name": "IGNORE_PATTERNS"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-narrative-enrichment-runner.ts",
+      "name": "<inline-regex-line-473>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-511>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-514>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-528>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-531>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-549>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-552>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-555>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-558>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-567>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-579>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "<inline-regex-line-599>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "financeSignals"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1413>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1472>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1513>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1558>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1583>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1589>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1639>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1649>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-1711>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "<inline-regex-line-724>"
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "name": "GENERIC_TERMS"
+    },
+    {
+      "file": "apps/mcp-server/src/analyzer.ts",
+      "name": "<inline-regex-line-557>"
+    },
+    {
+      "file": "apps/mcp-server/src/analyzer.ts",
+      "name": "<inline-regex-line-999>"
+    },
+    {
+      "file": "apps/mcp-server/src/cas-sections.ts",
+      "name": "IDENTITY_FIELDS"
+    },
+    {
+      "file": "apps/mcp-server/src/codebase-memory-agent-adapter.ts",
+      "name": "STOP_WORDS"
+    },
+    {
+      "file": "apps/mcp-server/src/competitors/embeddings-rag.ts",
+      "name": "SOURCE_EXT"
+    },
+    {
+      "file": "apps/mcp-server/src/connector-auth.ts",
+      "name": "<inline-regex-line-47>"
+    },
+    {
+      "file": "apps/mcp-server/src/context-fabric.ts",
+      "name": "<inline-regex-line-176>"
+    },
+    {
+      "file": "apps/mcp-server/src/context-fabric.ts",
+      "name": "<inline-regex-line-180>"
+    },
+    {
+      "file": "apps/mcp-server/src/coordination/conceptual-conflict.ts",
+      "name": "STOPWORDS"
+    },
+    {
+      "file": "apps/mcp-server/src/coordination/in-flight-capture.ts",
+      "name": "ANALYZABLE_EXTENSIONS"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-10008>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-10115>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-13348>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-13397>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-13518>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-13800>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-13844>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-14017>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-2742>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-3488>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-3540>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-3708>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-4174>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-4317>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-4912>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-5934>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-6319>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-6320>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-6588>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7334>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7388>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7481>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7644>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7691>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7712>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7737>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7739>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-7740>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-8242>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-8622>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-8624>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "<inline-regex-line-8859>"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "behaviorWords"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "concreteConcepts"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "concreteRelationships"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "concreteTerms"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "CRYPTO_CHAIN_PATTERN"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "CRYPTO_RPC_PORTS"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "FRONTEND_FRAMEWORK_NAMES"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "GENERIC_ROUTE_SEGMENTS"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "genericActor"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "genericPenalty"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "hasConcreteProductTerms"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "hasConcreteVerb"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "hasEvidenceShape"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "mutationVerb"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "plumbingWord"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "PLURAL_ES_NOUN_DOMAIN_HEADS"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "PRESERVED_TECH_COMPOUNDS"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "productTerms"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "readSignal"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "WORKSPACE_BEHAVIOR_WORD_PATTERN"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "WORKSPACE_GENERIC_DOMAIN_TOKENS"
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "WORKSPACE_GENERIC_ENTITY_TOKENS"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-1078>"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-349>"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-766>"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-778>"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-782>"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-879>"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-918>"
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "name": "<inline-regex-line-929>"
+    },
+    {
+      "file": "apps/mcp-server/src/freshness.ts",
+      "name": "SOURCE_FILE_EXTENSION_REGEX"
+    },
+    {
+      "file": "apps/mcp-server/src/freshness.ts",
+      "name": "WALK_IGNORED_DIRECTORIES"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "name": "<inline-regex-line-1112>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "name": "<inline-regex-line-495>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "name": "<inline-regex-line-500>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "name": "<inline-regex-line-863>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "name": "<inline-regex-line-866>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "name": "BUILD_MEMORY_GENERIC_TERMS"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "name": "GREENFIELD_BUILD_MEMORY_HIGH_SIGNAL_TERMS"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-123>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-132>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-137>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-711>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-712>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-717>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-725>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "<inline-regex-line-738>"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "durableDomainNeedsData"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "explicitDomainTerms"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "GENERIC_TERMS"
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-guidance.ts",
+      "name": "needsUi"
+    },
+    {
+      "file": "apps/mcp-server/src/hosted-transport.ts",
+      "name": "RETRIABLE_CODES"
+    },
+    {
+      "file": "apps/mcp-server/src/idiom-query.ts",
+      "name": "SOURCE_EXTENSIONS"
+    },
+    {
+      "file": "apps/mcp-server/src/installed-cli.ts",
+      "name": "FLAGS_WITH_VALUES"
+    },
+    {
+      "file": "apps/mcp-server/src/installed-cli.ts",
+      "name": "USAGE_TEXT"
+    },
+    {
+      "file": "apps/mcp-server/src/installed-client-runtime.ts",
+      "name": "RISKABLE_NODE_TYPES"
+    },
+    {
+      "file": "apps/mcp-server/src/installed-client-server.ts",
+      "name": "INSTALLED_TOOL_NAMES"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "<inline-regex-line-172>"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "<inline-regex-line-204>"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "<inline-regex-line-270>"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "<inline-regex-line-315>"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "<inline-regex-line-318>"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "<inline-regex-line-324>"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "<inline-regex-line-344>"
+    },
+    {
+      "file": "apps/mcp-server/src/integration-depth.ts",
+      "name": "RULES"
+    },
+    {
+      "file": "apps/mcp-server/src/layered-analysis.ts",
+      "name": "L0_IGNORE_PATTERNS"
+    },
+    {
+      "file": "apps/mcp-server/src/layered-analysis.ts",
+      "name": "LAYER_DEFINITIONS"
+    },
+    {
+      "file": "apps/mcp-server/src/product.ts",
+      "name": "GENERIC_ENTITY_NAMES"
+    },
+    {
+      "file": "apps/mcp-server/src/query.ts",
+      "name": "SEARCH_STOPWORDS"
+    },
+    {
+      "file": "apps/mcp-server/src/remote-source.ts",
+      "name": "EXCLUDED_DIRECTORIES"
+    },
+    {
+      "file": "apps/mcp-server/src/remote-source.ts",
+      "name": "EXTRA_INCLUDED_EXTENSIONS"
+    },
+    {
+      "file": "apps/mcp-server/src/repo-discovery.ts",
+      "name": "EXCLUDED_DIRS"
+    },
+    {
+      "file": "apps/mcp-server/src/repo-discovery.ts",
+      "name": "MANIFESTS"
+    },
+    {
+      "file": "apps/mcp-server/src/robustness-battery.ts",
+      "name": "CASES"
+    },
+    {
+      "file": "apps/mcp-server/src/robustness-battery.ts",
+      "name": "SUPPORTED_EXTENSIONS"
+    },
+    {
+      "file": "apps/mcp-server/src/semantic-roles.ts",
+      "name": "<inline-regex-line-59>"
+    },
+    {
+      "file": "apps/mcp-server/src/semantic-roles.ts",
+      "name": "<inline-regex-line-69>"
+    },
+    {
+      "file": "apps/mcp-server/src/semantic-roles.ts",
+      "name": "<inline-regex-line-85>"
+    },
+    {
+      "file": "apps/mcp-server/src/semantic-search.ts",
+      "name": "QUERY_STOPWORDS"
+    },
+    {
+      "file": "apps/mcp-server/src/server.ts",
+      "name": "CORE_TOOL_NAMES"
+    },
+    {
+      "file": "apps/mcp-server/src/server.ts",
+      "name": "GATEWAY_TOOL_GROUPS"
+    },
+    {
+      "file": "apps/mcp-server/src/spec-purity-gate.ts",
+      "name": "GENERIC_FIRST_SEGMENT"
+    },
+    {
+      "file": "apps/mcp-server/src/spec-purity-gate.ts",
+      "name": "GENERIC_STOPWORDS"
+    },
+    {
+      "file": "apps/mcp-server/src/storage-maintenance.ts",
+      "name": "TEMP_ARTIFACT_PREFIXES"
+    },
+    {
+      "file": "apps/mcp-server/src/test-discovery.ts",
+      "name": "<inline-regex-line-212>"
+    },
+    {
+      "file": "apps/mcp-server/src/test-discovery.ts",
+      "name": "IGNORE_PATTERNS"
+    },
+    {
+      "file": "apps/mcp-server/src/test-discovery.ts",
+      "name": "TEST_CONFIG_PATTERNS"
+    },
+    {
+      "file": "apps/mcp-server/src/test-discovery.ts",
+      "name": "TEST_PATTERNS"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/element-description-validator.ts",
+      "name": "<inline-regex-line-231>"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/element-description-validator.ts",
+      "name": "DEFAULT_GENERIC_SUBJECT_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
+      "name": "<inline-regex-line-133>"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
+      "name": "<inline-regex-line-64>"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
+      "name": "CODE_TYPE_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
+      "name": "COMMAND_VERB_PATTERN"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
+      "name": "KNOWN_SERVICE_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
+      "name": "KNOWN_SERVICE_TLDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
+      "name": "<inline-regex-line-333>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
+      "name": "CLI_DEPENDENCY_MARKERS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
+      "name": "GENERIC_QUALIFIER_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
+      "name": "<inline-regex-line-365>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
+      "name": "<inline-regex-line-366>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
+      "name": "<inline-regex-line-367>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
+      "name": "<inline-regex-line-368>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
+      "name": "keyword"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/behavior-diff.ts",
+      "name": "CAPABILITY_NAME_STOPWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-detector.ts",
+      "name": "ACTION_WORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
+      "name": "AMBIGUOUS_EXTENSION_WORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
+      "name": "CAPABILITY_PURPOSE_VERBS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
+      "name": "SOURCE_FILE_EXTENSION_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
+      "name": "STORAGE_PATH_NOISE_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
+      "name": "CORE_CONFIG_FILES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
+      "name": "IGNORE_PATTERNS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
+      "name": "PROJECT_SCOPE_TRIGGER_FILES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
+      "name": "SOURCE_EXTENSIONS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/codebase-type.ts",
+      "name": "DEP_TYPE_HINTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/codebase-type.ts",
+      "name": "DIR_HINTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/communication-seams.ts",
+      "name": "<inline-regex-line-394>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/coverage-gaps.ts",
+      "name": "CODE_EXTENSIONS_FOR_RATIO"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/coverage-gaps.ts",
+      "name": "DEFAULT_IGNORE_DEPENDENCIES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/dependency-manifest.ts",
+      "name": "IGNORED_DIRS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/container.ts",
+      "name": "<inline-regex-line-45>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/deploy-manifests.ts",
+      "name": "SIMPLE_PAAS_MANIFESTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/installer.ts",
+      "name": "GENERIC_OUTPUT_NOUN_WORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/installer.ts",
+      "name": "REAL_PLATFORM_WORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/installer.ts",
+      "name": "VERB_PHRASE_PREFIX"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/util.ts",
+      "name": "GENERIC_STRUCTURAL_DIR_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "<inline-regex-line-435>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "<inline-regex-line-462>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "DECLARED_TYPE_NODE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "ENGLISH_STOPWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "FRAMEWORK_AND_LIBRARY_TERMS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "GENERIC_CROSS_CUTTING_HINTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "GENERIC_INFRASTRUCTURE_HINTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "GENERIC_PROGRAMMING_TERMS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "name": "PRESENTATION_LAYER_TERMS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/entity-relations.ts",
+      "name": "COLLECTION_WRAPPERS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/entity-relations.ts",
+      "name": "REFERENCE_WRAPPERS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/entrenchment.ts",
+      "name": "UNIT_NODE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-enrichment.ts",
+      "name": "PRIMITIVE_TYPE_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
+      "name": "CRUD_VERB_RE"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
+      "name": "EXT_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
+      "name": "PROCESS_VERB_RE"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
+      "name": "TRACEABLE_NODE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/framework-comprehension.ts",
+      "name": "FRAMEWORK_APPLICATION_SURFACE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
+      "name": "appFiles"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
+      "name": "DEPENDENCY_INJECTION_DECORATORS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
+      "name": "roleName"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
+      "name": "SOURCE_EXTENSIONS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/in-repo-call-resolution.ts",
+      "name": "SOURCE_EXTENSIONS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/incremental-impact.ts",
+      "name": "GRAPH_DEPENDENCY_EDGE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/incremental-impact.ts",
+      "name": "SOURCE_CANDIDATE_EXTENSIONS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
+      "name": "<inline-regex-line-606>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
+      "name": "<inline-regex-line-608>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
+      "name": "<inline-regex-line-610>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "FRAMEWORK_LIFECYCLE_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "FRONTEND_STRUCTURE_SEGMENTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "FRONTEND_SUBJECT_VERBS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "GENERIC_API_TAIL_SEGMENTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "GENERIC_CLI_COMMAND_LABELS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "JUNK_CALL_TARGET_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "STD_TRAIT_METHOD_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "TRAVERSAL_EDGE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "name": "WALK_EXCLUDED_NODE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-builtins.ts",
+      "name": "LANGUAGE_BUILTIN_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-builtins.ts",
+      "name": "LANGUAGE_MODULE_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-builtins.ts",
+      "name": "PHP_PURE_BUILTIN_FUNCTIONS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-builtins.ts",
+      "name": "QUALIFIER_DOMAIN_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-builtins.ts",
+      "name": "SERIALIZATION_PLUMBING_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-builtins.ts",
+      "name": "UI_STATE_DOMAIN_TOKENS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-registry.ts",
+      "name": "LANGUAGE_REGISTRY"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-spec.ts",
+      "name": "<inline-regex-line-1785>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/minhash-clone-detection.ts",
+      "name": "KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/native-parse.ts",
+      "name": "NATIVE_LANGS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-10839>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-12671>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-12899>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-12907>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-15755>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-15826>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-15827>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-15888>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-15950>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-16495>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-16515>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-16890>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-16991>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-17886>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-18949>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-18952>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-19019>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-19046>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-19065>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-19099>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-20400>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-20704>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-20744>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-20766>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-20995>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-21275>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-23209>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-23619>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-23634>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-23643>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-24292>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-24994>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-25171>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-25181>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-25257>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-25453>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-25720>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-25786>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-26313>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-28674>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-29052>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-30107>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-30377>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-4527>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-471>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-475>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-557>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8113>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8212>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8469>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8520>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8658>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8659>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8876>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-8900>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-9582>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline-regex-line-9585>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "actionVerb"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "CAPABILITY_STRUCTURAL_AREA_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "danglingTail"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "definingFramework"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "GENERIC"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "GENERIC_PATH_LAYOUT_WORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "genericConceptListEnding"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "hasCryptoMarketContext"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "highSignalType"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "IDENTITY_FIELD"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "INFRA_SEGMENT"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "isCriticalDomain"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "isDataMutationName"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "lead"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "ORM_FAMILY_SUBCATEGORIES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "RISKABLE_NODE_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "SOURCE_EXT"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "sourceExtension"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "typeClaimPattern"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/paradigm-conformance.ts",
+      "name": "GENERIC_LEAF_DIRS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/paradigm-conformance.ts",
+      "name": "PUBLIC_ENTRY_PATTERN"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/terminal-signal.ts",
+      "name": "<inline-regex-line-111>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/terminal-signal.ts",
+      "name": "LIFECYCLE_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/terminal-signal.ts",
+      "name": "LOWERCASE_UTILITY_NAMES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/text-vocabulary.ts",
+      "name": "ENGLISH_FUNCTION_WORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/workflow-detector.ts",
+      "name": "CROSS_CUTTING_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/workflow-detector.ts",
+      "name": "INFRASTRUCTURE_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/ci/ci-pipeline-analyzer.ts",
+      "name": "CONFIG_PATTERNS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/ci/ci-pipeline-analyzer.ts",
+      "name": "platformMatch"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/dotnet/wpf-analyzer.ts",
+      "name": "isDbOperation"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/dotnet/wpf-analyzer.ts",
+      "name": "isDeviceOp"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/game/unity-analyzer.ts",
+      "name": "UNITY_LIFECYCLE_METHODS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/game/unity-analyzer.ts",
+      "name": "UNITY_PHYSICS_CALLBACKS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/index.ts",
+      "name": "FRAMEWORK_ANALYZERS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/javascript/hono-analyzer.ts",
+      "name": "BUILTIN_MIDDLEWARE"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/ocaml/dream-analyzer.ts",
+      "name": "<inline-regex-line-77>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/rust/index.ts",
+      "name": "FRAMEWORK_DETECTORS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer.ts",
+      "name": "methodPattern"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/fastapi-analyzer.ts",
+      "name": "<inline-regex-line-1025>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/flask-analyzer.ts",
+      "name": "AUTH"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
+      "name": "<inline-regex-line-1934>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
+      "name": "BUILTIN_NOT_EXIT_POINTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/qwik-analyzer.ts",
+      "name": "ENDPOINT_HANDLERS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-analyzer.ts",
+      "name": "callbacks"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-analyzer.ts",
+      "name": "RESTFUL_ACTIONS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/react-native-analyzer.ts",
+      "name": "RN_PRIMITIVES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/c-cpp-analyzer.ts",
+      "name": "C_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/csharp-analyzer.ts",
+      "name": "<inline-regex-line-2524>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer.ts",
+      "name": "<inline-regex-line-502>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer.ts",
+      "name": "NON_ARTIFACT_SOURCE_EXTENSIONS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/elixir-analyzer.ts",
+      "name": "USE_TAGS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/index.ts",
+      "name": "ANALYZER_METADATA"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/java-analyzer.ts",
+      "name": "<inline-regex-line-1165>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/kotlin-analyzer.ts",
+      "name": "COMPOSE_THEME_ONLY_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/kotlin-analyzer.ts",
+      "name": "KOTLIN_CALL_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/protobuf-analyzer.ts",
+      "name": "SCALAR_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/ruby-analyzer.ts",
+      "name": "RUBY_CALL_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
+      "name": "<inline-regex-line-2720>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
+      "name": "<inline-regex-line-2723>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
+      "name": "RUST_PRIMITIVES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
+      "name": "RUST_STD_MODULES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/shell-analyzer.ts",
+      "name": "EXTERNAL_EXIT_COMMANDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/shell-analyzer.ts",
+      "name": "SHELL_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/solidity-analyzer.ts",
+      "name": "<inline-regex-line-471>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/solidity-analyzer.ts",
+      "name": "SOL_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
+      "name": "<inline-regex-line-573>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
+      "name": "<inline-regex-line-689>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
+      "name": "initMatch"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
+      "name": "SWIFT_KEYWORDS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
+      "name": "<inline-regex-line-1722>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
+      "name": "<inline-regex-line-2706>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
+      "name": "BUILTIN_NOT_EXIT_POINTS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/ai-stack-analyzer.ts",
+      "name": "AI_PACKAGE_SIGNATURES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/architecture/architectural-library-analyzer.ts",
+      "name": "RULES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/architecture/di-container-analyzer.ts",
+      "name": "RULES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/auth/auth-analyzer.ts",
+      "name": "AUTH_RULES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/efcore-analyzer.ts",
+      "name": "SCALAR_TYPES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/http/outbound-http-client-analyzer.ts",
+      "name": "HTTP_CLIENT_DEPENDENCIES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/http/reqwest-analyzer.ts",
+      "name": "<inline-regex-line-207>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/http/reqwest-analyzer.ts",
+      "name": "<inline-regex-line-210>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/messaging/messaging-analyzer.ts",
+      "name": "<inline-regex-line-1332>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/messaging/messaging-analyzer.ts",
+      "name": "<inline-regex-line-1339>"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/observability/observability-analyzer.ts",
+      "name": "RULES"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/orm/doctrine-analyzer.ts",
+      "name": "nameRe"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/state/reactive-streams-analyzer.ts",
+      "name": "REACTOR_OPERATORS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/state/reactive-streams-analyzer.ts",
+      "name": "RXJS_OPERATORS"
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts",
+      "name": "<inline-regex-line-569>"
+    },
+    {
+      "file": "packages/analyzer-core/src/middleware/input-sanitizer.ts",
+      "name": "<inline-regex-line-8>"
+    },
+    {
+      "file": "packages/analyzer-core/src/types/cas.types.ts",
+      "name": "ENTRY_POINT_TYPES"
+    }
+  ]
+}

@@ -62,6 +62,10 @@ export function isNetworkUnreachableError(error: unknown): boolean {
   if (name === 'AbortError' || name === 'TimeoutError') return true;
   const cause = (error as { cause?: unknown }).cause ?? error;
   const code = (cause as { code?: unknown })?.code;
+  // spec-purity:vocab-ok — closed set of Node.js/libuv + undici errno-style
+  // system error codes, matched against the real `error.code`/`cause.code`
+  // structural field (not a name/domain guess); see MDN/Node's documented
+  // `error.code` values and undici's UND_ERR_* connect/socket/timeout codes.
   if (typeof code === 'string' &&
     /^(ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|UND_ERR_HEADERS_TIMEOUT)$/.test(code)) {
     return true;
