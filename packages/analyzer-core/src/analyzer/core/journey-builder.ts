@@ -60,7 +60,12 @@ const JUNK_CALL_TARGET_NAMES = new Set([
 const METHOD_NAME_POPULARITY_LIMIT = 3;
 const METHOD_LIKE_TYPES = /(^|[_\s])(method|function|action)([_\s]|$)/;
 
-const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route']);
+// Exported (task #119 candidate-generation inversion): the capability
+// generator needs the SAME "is this entry point genuinely caller-initiated"
+// fact journeys already use to classify 'user-facing' vs 'system'/'scheduled'
+// — one structural definition of "user-reachable", not a second one invented
+// at the capability layer.
+export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route']);
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
 // Entry types eligible for the k8s CronJob -> command scheduling-evidence

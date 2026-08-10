@@ -10956,3 +10956,136 @@ describe('determineSystemType: evidence-based classification (live defect: a Go 
     expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('application');
   });
 });
+
+// TASK #119 — root-cause fix: terminality GENERATES candidates instead of
+// filtering them post-hoc. These tests reproduce the owner's exact test case
+// (docs/audits/CAPABILITY-MECHANISM-AUDIT-2026-08-09.md, Repo A — a Go feed
+// reader) at the two new generation-time gates
+// (isUserReachableTerminalCandidate, filterIsolatedUncorroboratedCandidates)
+// instead of the post-hoc reconciliation gate the audit found could not
+// separate WebAuthn/Session from real, equally-isolated capabilities.
+describe('TASK #119: candidate-generation inversion (terminal / proximal-terminal admission)', () => {
+  const op = (entry_point_type: string, entry_point_id = 'ep_1'): any => ({
+    entry_point_id, entry_point_type, action: 'Manage', path_or_command: '/x',
+  });
+  const dataEntity = (id: string, name: string, writes: boolean): CASDataEntity => ({
+    id,
+    name,
+    type: 'entity',
+    fields: [],
+    lifecycle: writes
+      ? { created_by: [`${id}_creator`], read_by: [], updated_by: [], deleted_by: [] }
+      : { created_by: [], read_by: [`${id}_reader`], updated_by: [], deleted_by: [] },
+    relationships: [],
+  } as any);
+  const cap = (partial: any): any => ({
+    id: partial.id || 'cap_1',
+    name: partial.name || 'Do Thing',
+    description: 'x'.repeat(30),
+    category: 'core',
+    operations: partial.operations || [op('http')],
+    related_entities: partial.related_entities || [],
+    related_domains: partial.related_domains || [],
+    criticality: 'medium',
+    criticality_factors: [],
+    ...partial,
+  } as any);
+
+  describe('isUserReachableTerminalCandidate (GATE 1 + GATE 2)', () => {
+    it('rejects a candidate whose only trigger is a framework lifecycle/event hook — "Handle system events"', () => {
+      const entities = [dataEntity('e1', 'PetType', true)];
+      const candidate = cap({ operations: [op('lifecycle')], related_entities: ['e1'] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, entities)).toBe(false);
+    });
+
+    it('rejects a candidate whose only trigger is a scheduler/cron — "Schedule Feed Updates"', () => {
+      const candidate = cap({ operations: [op('schedule')], related_entities: [] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, [])).toBe(false);
+    });
+
+    it('rejects a real HTTP route whose only entity is read-only pass-through — "View Settings"', () => {
+      const entities = [dataEntity('e1', 'SoundSettings', false)];
+      const candidate = cap({ operations: [op('http')], related_entities: ['e1'] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, entities)).toBe(false);
+    });
+
+    it('admits a real HTTP route that writes a domain entity — "Manage RSS Feeds"', () => {
+      const entities = [dataEntity('e1', 'Feed', true)];
+      const candidate = cap({ operations: [op('http')], related_entities: ['e1'] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, entities)).toBe(true);
+    });
+
+    it('admits a real HTTP route with zero entity evidence rather than penalizing missing evidence — a frontend page action', () => {
+      const candidate = cap({ operations: [op('page')], related_entities: [] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, [])).toBe(true);
+    });
+
+    it('admits a real HTTP route that creates a WebAuthnCredential — GATE 1/2 alone cannot close this class (by design; GATE 3 does)', () => {
+      const entities = [dataEntity('e1', 'WebAuthnCredential', true)];
+      const candidate = cap({ operations: [op('http')], related_entities: ['e1'] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, entities)).toBe(true);
+    });
+  });
+
+  describe('filterIsolatedUncorroboratedCandidates (GATE 3 — closes the auth/session-vs-product ambiguity)', () => {
+    // Reproduces the audit's Repo A candidate set and in-degree numbers
+    // (Manage RSS Feeds 148/3, Read and Organize Feed Entries 150/2, Discover
+    // and Subscribe 51/0, Authenticate with WebAuthn 99/0, Manage Session
+    // Security 7/0) using the entity-overlap proxy this gate computes at
+    // generation time (flows/rollupSystemCapabilityDependencies don't exist
+    // yet at this point in the pipeline).
+    const journeys = [
+      { name: 'Adds a new RSS feed subscription' },
+      { name: 'Marks a feed entry as read' },
+      { name: 'Discovers and subscribes to a feed by URL' },
+    ] as any;
+
+    it('drops an isolated candidate whose terminology is not in the product journey/top-down vocabulary — WebAuthn', () => {
+      const feeds = cap({ id: 'feeds', name: 'Manage RSS Feeds', related_entities: ['Feed'], related_domains: ['feed'] });
+      const webauthn = cap({ id: 'webauthn', name: 'Authenticate with WebAuthn', related_entities: ['WebAuthnCredential'], related_domains: ['webauthn'] });
+      const out = orch.filterIsolatedUncorroboratedCandidates([feeds, webauthn], journeys, undefined);
+      expect(out.map((c: any) => c.id)).toEqual(['feeds']);
+    });
+
+    it('drops an isolated candidate for session/CSRF/OAuth2 plumbing — Manage Session Security', () => {
+      const feeds = cap({ id: 'feeds', name: 'Manage RSS Feeds', related_entities: ['Feed'], related_domains: ['feed'] });
+      const session = cap({ id: 'session', name: 'Manage Session Security', related_entities: ['Session'], related_domains: ['session'] });
+      const out = orch.filterIsolatedUncorroboratedCandidates([feeds, session], journeys, undefined);
+      expect(out.map((c: any) => c.id)).toEqual(['feeds']);
+    });
+
+    it('keeps an isolated candidate whose terminology IS corroborated by the product journeys — Discover and Subscribe to New Feeds', () => {
+      const feeds = cap({ id: 'feeds', name: 'Manage RSS Feeds', related_entities: ['Feed'], related_domains: ['feed'] });
+      const discover = cap({ id: 'discover', name: 'Discover and Subscribe to New Feeds', related_entities: ['Feed2'], related_domains: ['discover'] });
+      const webauthn = cap({ id: 'webauthn', name: 'Authenticate with WebAuthn', related_entities: ['WebAuthnCredential'], related_domains: ['webauthn'] });
+      const out = orch.filterIsolatedUncorroboratedCandidates([feeds, discover, webauthn], journeys, undefined);
+      expect(out.map((c: any) => c.id).sort()).toEqual(['discover', 'feeds']);
+    });
+
+    it('keeps the full 3-real-capability Repo A set together and drops both mechanism candidates', () => {
+      const feeds = cap({ id: 'feeds', name: 'Manage RSS Feeds', related_entities: ['Feed'], related_domains: ['feed'] });
+      const entries = cap({ id: 'entries', name: 'Read and Organize Feed Entries', related_entities: ['FeedEntry'], related_domains: ['entries'] });
+      const discover = cap({ id: 'discover', name: 'Discover and Subscribe to New Feeds', related_entities: ['Feed2'], related_domains: ['discover'] });
+      const webauthn = cap({ id: 'webauthn', name: 'Authenticate with WebAuthn', related_entities: ['WebAuthnCredential'], related_domains: ['webauthn'] });
+      const session = cap({ id: 'session', name: 'Manage Session Security', related_entities: ['Session'], related_domains: ['session'] });
+      const out = orch.filterIsolatedUncorroboratedCandidates([feeds, entries, discover, webauthn, session], journeys, undefined);
+      const ids = out.map((c: any) => c.id).sort();
+      expect(ids).toEqual(['discover', 'entries', 'feeds']);
+      expect(ids).not.toContain('webauthn');
+      expect(ids).not.toContain('session');
+    });
+
+    it('keeps an isolated candidate that shares NO tokens with journeys but IS cross-referenced by another candidate (substrate, not this gate\'s job)', () => {
+      const feeds = cap({ id: 'feeds', name: 'Manage RSS Feeds', related_entities: ['Feed', 'User'], related_domains: ['feed'] });
+      const accounts = cap({ id: 'accounts', name: 'Manage User Accounts', related_entities: ['User'], related_domains: ['account'] });
+      const out = orch.filterIsolatedUncorroboratedCandidates([feeds, accounts], journeys, undefined);
+      expect(out.map((c: any) => c.id).sort()).toEqual(['accounts', 'feeds']);
+    });
+
+    it('leaves infrastructure/behavior-shaped candidates (no related_entities, non-user-facing entry_point_type) untouched', () => {
+      const infra = cap({ id: 'infra', name: 'Provision platform infrastructure', operations: [op('infrastructure_resource')], related_entities: [] });
+      const out = orch.filterIsolatedUncorroboratedCandidates([infra], [], undefined);
+      expect(out.map((c: any) => c.id)).toEqual(['infra']);
+    });
+  });
+});

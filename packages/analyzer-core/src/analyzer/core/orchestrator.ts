@@ -111,7 +111,7 @@ import {
   type AnalyzerContributionCacheEvidence,
   stableAnalyzerCacheIdentity,
 } from './analyzer-contribution-cache';
-import { buildUserJourneys } from './journey-builder';
+import { buildUserJourneys, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { testCapabilityNameAgainstIdentifierVocabulary } from './capability-audience-test';
@@ -10820,16 +10820,22 @@ export class AnalyzerOrchestrator {
     return token;
   }
 
-  private rankCatalogPromptCandidates(
-    candidates: SystemCapability[],
+  /**
+   * Journey SUBJECT tokens: the leading value-verb ("Manage"/"Track"/...) is
+   * capability-naming grammar, not terminology — without stripping it, every
+   * "Manage <X>" candidate would corroborate every "Manage <Y>" journey.
+   * Extracted so TASK #119's isolated-candidate corroboration gate (see
+   * `filterIsolatedUncorroboratedCandidates`) shares the exact same
+   * non-lexical, repo-adaptive token vocabulary as the existing catalog-
+   * window ranking, rather than inventing a second one.
+   */
+  private buildJourneyTerminologyTokens(
     userJourneys: CASUserJourney[],
-  ): SystemCapability[] {
-    // Journey SUBJECT tokens: the leading value-verb ("Manage"/"Track"/...) is
-    // capability-naming grammar, not terminology — without stripping it, every
-    // "Manage <X>" candidate would corroborate every "Manage <Y>" journey.
+    projectTextSignal?: ProjectTextSignal,
+  ): Set<string> {
     const journeyTokens = new Set<string>();
-    for (const journey of userJourneys) {
-      for (const token of String(journey.name || '')
+    const addFromText = (text: string) => {
+      for (const token of String(text || '')
         .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|supports?|enables?|creates?|updates?|deletes?|views?)\s+/i, '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
@@ -10841,14 +10847,40 @@ export class AnalyzerOrchestrator {
         // by isGenericCapabilityToken.
         if (token.length > 2 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
       }
+    };
+    for (const journey of userJourneys) addFromText(journey.name || '');
+    // TASK #119: the product's OWN top-down words (README/manifest framing)
+    // corroborate a candidate's terminology too — this is exactly the
+    // top_down_signals arbiter the AI catalog prompt already leans on (Rule
+    // 2), made available to the deterministic isolated-candidate gate as
+    // well. Real evidence strings only, never fabricated.
+    if (projectTextSignal) {
+      for (const concept of projectTextSignal.concepts || []) addFromText(concept);
+      addFromText(projectTextSignal.summary || '');
+      addFromText(projectTextSignal.manifestDescription || '');
     }
+    return journeyTokens;
+  }
+
+  /** Subject tokens for one candidate, in the same normalized vocabulary as
+   *  `buildJourneyTerminologyTokens` — extracted for reuse by TASK #119's
+   *  isolated-candidate corroboration gate. */
+  private candidateSubjectTerminologyTokens(candidate: SystemCapability): string[] {
+    return `${candidate.structural_label || candidate.name} ${(candidate.related_domains || []).join(' ')}`
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(token => token.length > 2 && !this.isGenericCapabilityToken(token))
+      .map(token => this.stemTerminologyToken(token));
+  }
+
+  private rankCatalogPromptCandidates(
+    candidates: SystemCapability[],
+    userJourneys: CASUserJourney[],
+  ): SystemCapability[] {
+    const journeyTokens = this.buildJourneyTerminologyTokens(userJourneys);
     const scored = candidates.map(candidate => {
-      const subjectTokens = `${candidate.structural_label || candidate.name} ${(candidate.related_domains || []).join(' ')}`
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter(token => token.length > 2 && !this.isGenericCapabilityToken(token))
-        .map(token => this.stemTerminologyToken(token));
+      const subjectTokens = this.candidateSubjectTerminologyTokens(candidate);
       const journeyCorroboration = new Set(subjectTokens.filter(token => journeyTokens.has(token))).size;
       const entityCount = (candidate.related_entities || []).length;
       const externalOps = (candidate.operations || [])
@@ -12081,13 +12113,27 @@ export class AnalyzerOrchestrator {
     // "Authenticate with WebAuthn"/"Manage Session Security" shapes, not the
     // other four mechanism shapes the audit found (those are the purpose
     // gate's and the trigger-role/terminality work's job, not this one's).
+    // TASK #119 (owner correction): with candidate GENERATION now inverted
+    // (isUserReachableTerminalCandidate + filterIsolatedUncorroboratedCandidates
+    // in buildSystemCapabilities/applyAIInterpretation), the shapes this test
+    // was built to catch (WebAuthn/Session-Security) should never reach the
+    // AI catalog as a candidate at all — so this firing on a real analysis is
+    // now a REGRESSION SIGNAL (the generator drifted), not routine cleanup.
+    // Still applied as a filter (defense-in-depth costs nothing when it
+    // rarely fires), but logged distinctly from ordinary reconciliation so a
+    // firing is visible rather than silently absorbed.
     const vocabularyGated = libraryNames.length > 0
-      ? gated.filter(capability =>
-          !testCapabilityNameAgainstIdentifierVocabulary(
+      ? gated.filter(capability => {
+          const verdict = testCapabilityNameAgainstIdentifierVocabulary(
             capability.name,
             libraryNames.map(name => ({ name })),
             dataEntities,
-          ).failsIdentifierTest)
+          );
+          if (verdict.failsIdentifierTest) {
+            console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${capability.name}" post-generation — candidate generation should have excluded this before it ever reached the AI catalog.`);
+          }
+          return !verdict.failsIdentifierTest;
+        })
       : gated;
     // Same never-empty-catalog safeguard as the purpose gate above.
     const audienceGated = vocabularyGated.length > 0 ? vocabularyGated : gated;
@@ -13252,6 +13298,75 @@ export class AnalyzerOrchestrator {
     }
   }
 
+  /**
+   * TASK #119 GATE 3 — closes the class GATE 1/2 in
+   * `isUserReachableTerminalCandidate` cannot: a real user-initiated route
+   * that writes a real persisted entity, where the entity is a security/
+   * identity artifact (WebAuthnCredential, Session) rather than a domain
+   * record (Feed). Both are structurally identical facts (real route, real
+   * write) — see docs/audits/CAPABILITY-MECHANISM-AUDIT-2026-08-09.md's
+   * falsification: entity-write/route-type checks cannot separate them.
+   *
+   * The audit's own recommendation (last section, "Recommended structural
+   * discriminator"): make the top-down/journey domain-identity signal a hard
+   * deterministic gate instead of a soft AI-prompt instruction. A candidate
+   * is excluded here only when BOTH:
+   *   - ISOLATED: none of its related_entities are shared with any other
+   *     candidate in the same pool (no cross-candidate entity reference —
+   *     the same entity-overlap proxy the audit used to measure in-degree,
+   *     computed here at generation time instead of post-hoc from flow
+   *     roles, which don't exist yet at this point in the pipeline), AND
+   *   - UNCORROBORATED: none of its subject terms appear in the system's own
+   *     journey/top-down vocabulary (buildJourneyTerminologyTokens — the
+   *     product's own words, never a hardcoded auth/session word list).
+   * A real capability with no other capability depending on it (Discover and
+   * Subscribe to New Feeds, 0 incoming) survives because its terminology
+   * ("feed", "subscribe") IS the product's own vocabulary. WebAuthn/Session
+   * terminology is not, on a feed reader, so it does not.
+   * DELIBERATELY NOT applied to a candidate with nonzero cross-reference
+   * (isolation is necessary, not sufficient, for exclusion) — a widely-
+   * referenced entity can be either genuine substrate (owner's scope-
+   * relativity example) or a genuinely central domain entity (repo C's
+   * "Schedule and manage staff", the audit's own counter-example) and a
+   * blind in-degree threshold would misfire in the direction of deleting
+   * real product truth, which the owner named as the more expensive error.
+   * That class (b) discrimination needs the capability-dependency graph
+   * (`CASCapability.depends_on`/`depended_by` — dead schema per the audit)
+   * and is explicitly out of scope for this pass.
+   */
+  private filterIsolatedUncorroboratedCandidates(
+    candidates: SystemCapability[],
+    userJourneys: CASUserJourney[],
+    projectTextSignal?: ProjectTextSignal,
+  ): SystemCapability[] {
+    const inScope = (candidate: SystemCapability) =>
+      (candidate.related_entities || []).length > 0 &&
+      (candidate.operations || []).some(
+        operation => USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as any)
+      );
+    const entitySetById = new Map(
+      candidates.map(candidate => [candidate.id, new Set(candidate.related_entities || [])] as const)
+    );
+    const hasCrossCandidateReference = (candidate: SystemCapability): boolean => {
+      const own = entitySetById.get(candidate.id);
+      if (!own || own.size === 0) return false;
+      return candidates.some(other => {
+        if (other.id === candidate.id) return false;
+        const otherEntities = entitySetById.get(other.id);
+        if (!otherEntities) return false;
+        for (const entityId of own) if (otherEntities.has(entityId)) return true;
+        return false;
+      });
+    };
+    const domainTokens = this.buildJourneyTerminologyTokens(userJourneys, projectTextSignal);
+    return candidates.filter(candidate => {
+      if (!inScope(candidate)) return true; // infra/behavior-surface candidates: untouched
+      if (hasCrossCandidateReference(candidate)) return true;
+      const subjectTokens = this.candidateSubjectTerminologyTokens(candidate);
+      return subjectTokens.some(token => domainTokens.has(token));
+    });
+  }
+
   private async applyAIInterpretation(
     enhancedSystemPurpose: EnhancedSystemPurpose,
     systemName: string,
@@ -13333,7 +13448,18 @@ export class AnalyzerOrchestrator {
       return;
     }
 
-    const candidateSnapshot = systemCapabilities.map(capability => ({ ...capability }));
+    // TASK #119 GATE 3 (see filterIsolatedUncorroboratedCandidates): applied
+    // to the ONE candidateSnapshot both the AI catalog path
+    // (aiExtractCapabilityCatalog/reconcileCatalogedCapabilities below) and
+    // the deterministic AI-off fallback (applyDeterministicCapabilityFallback)
+    // read from — so an isolated, domain-uncorroborated candidate (WebAuthn/
+    // Session on a feed reader) never reaches EITHER path, regardless of
+    // whether an AI provider is configured for this analysis.
+    const candidateSnapshot = this.filterIsolatedUncorroboratedCandidates(
+      systemCapabilities.map(capability => ({ ...capability })),
+      userJourneys,
+      projectTextSignal,
+    );
     const aiInputFingerprint = this.hashAIInterpretationRefreshFingerprint(
       this.buildAIInterpretationRefreshFingerprint(
         systemName,
@@ -22177,6 +22303,83 @@ export class AnalyzerOrchestrator {
     };
   }
 
+  /**
+   * TASK #119 candidate-generation gate (see the call site inside
+   * buildSystemCapabilities for the full rationale). A resource-group
+   * candidate survives generation only if it is reachable from the system's
+   * OUTWARD FACE and lands on a domain-entity WRITE — terminal (the write is
+   * this candidate's own direct evidence) or PROXIMAL-TERMINAL (the write is
+   * one call-hop away, via the same direct/hop entity-matching evidence
+   * already used to populate `related_entities` above — e.g. a controller
+   * that delegates persistence to a manager one call away). Two structural
+   * facts, both already computed elsewhere in the CAS, no new vocabulary:
+   *
+   * GATE 1 — genuinely caller-initiated: at least one operation's
+   * entry_point_type is in USER_FACING_ENTRY_TYPES (http/websocket/cli/page/
+   * route — the exact set journey-builder already uses to mark a journey
+   * 'user-facing' rather than 'system'/'scheduled'). This alone excludes a
+   * framework lifecycle hook (Spring ApplicationStartedEvent), a cron/
+   * schedule trigger, and a test harness entry — nobody "does" these, the
+   * system does them to itself.
+   *
+   * GATE 2 — when there IS entity evidence, it must include a domain-entity
+   * WRITE: at least one of the candidate's `related_entities` has a non-
+   * empty created_by/updated_by/deleted_by lifecycle. This rejects an
+   * entity-anchored candidate whose entities are all read-only pass-through
+   * (a "View Settings" screen that displays state nothing on this path ever
+   * writes). It is DELIBERATELY a no-op (does not reject) when
+   * `related_entities` is empty — a frontend page/UI action, or any real
+   * user-facing operation this analyzer's entity-lifecycle evidence simply
+   * doesn't reach, is not penalized for evidence that isn't there; GATE 1 is
+   * its whole admission bar, same as before this change (measured against
+   * the orchestrator-internals test suite: an entities-required GATE 2
+   * dropped legitimate zero-entity page/UI capabilities as false negatives —
+   * recall regression, corrected). Known consequence, stated plainly: a
+   * genuinely mechanism zero-entity endpoint (POST /fallback ->
+   * ResponseEntity<String>, entities: []) is NOT closed by this gate — it
+   * still depends on the existing downstream gates
+   * (isInfrastructureOnlyCapability, the audience test) exactly as before.
+   *
+   * What this gate deliberately does NOT attempt: separating a genuine
+   * product write (Feed) from an identity/security-artifact write
+   * (WebAuthnCredential, Session) — both are real persisted-entity writes
+   * reached by a real user-initiated route, structurally identical by every
+   * fact available here. That ambiguity is not shape-discriminable (see
+   * docs/audits/CAPABILITY-MECHANISM-AUDIT-2026-08-09.md) and is closed by a
+   * separate, later gate that has access to top-down/journey evidence this
+   * method does not (isolated-and-uncorroborated exclusion in
+   * applyAIInterpretation, at candidateSnapshot construction).
+   */
+  private isUserReachableTerminalCandidate(
+    capability: SystemCapability,
+    dataEntities: CASDataEntity[]
+  ): boolean {
+    const hasUserTriggeredEntry = (capability.operations || []).some(
+      operation => USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as any)
+    );
+    if (!hasUserTriggeredEntry) return false;
+
+    // Entity-write check only fires when there IS entity evidence to judge —
+    // a candidate with zero related_entities (a frontend page/UI surface with
+    // no backend entity visible to this analyzer, or any genuinely entity-
+    // less user-facing action) is not penalized for evidence this analyzer
+    // simply doesn't have; GATE 1 alone is its admission bar, same as before
+    // this change. What this check DOES reject: entity evidence exists but
+    // is read-only pass-through on every related entity (nothing this
+    // candidate touches is ever created/updated/deleted anywhere in the
+    // system) — the "View Settings" / read-only-screen shape.
+    const relatedEntityIds = capability.related_entities || [];
+    if (relatedEntityIds.length === 0) return true;
+    const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
+    return relatedEntityIds.some(entityId => {
+      const entity = entityById.get(entityId);
+      if (!entity) return false;
+      return (entity.lifecycle?.created_by?.length || 0) > 0
+        || (entity.lifecycle?.updated_by?.length || 0) > 0
+        || (entity.lifecycle?.deleted_by?.length || 0) > 0;
+    });
+  }
+
   private async buildSystemCapabilities(
     entryPoints: CASEntryPoint[],
     dataEntities: CASDataEntity[],
@@ -22421,6 +22624,32 @@ export class AnalyzerOrchestrator {
         criticality,
         criticality_factors: factors
       });
+    }
+
+    // TASK #119 ROOT-CAUSE FIX — candidate GENERATION, not post-hoc filtering.
+    // Owner's diagnosis: "How is [Authenticate with WebAuthn] even coming up as
+    // a candidate AT ALL?" is the real defect. A capability is not "a coherent
+    // cluster of code" (what the resource-group loop above emits) — it is an
+    // OUTCOME a user gets. Inverting: generate only from the system's outward
+    // face (a genuinely caller-initiated entry point — isUserReachableTerminalCandidate
+    // GATE 1, same USER_FACING_ENTRY_TYPES fact journeys already use, never a
+    // second definition of "user-facing") followed to a TERMINAL-OR-PROXIMAL-
+    // TERMINAL domain-entity write (GATE 2) — so mechanism candidates (an
+    // event-lifecycle hook, a cron scheduler, a resilience endpoint with no
+    // entity output, a settings SCREEN with nothing written) are never admitted
+    // to the candidate pool in the first place. Downstream gates
+    // (isInfrastructureOnlyCapability, the audience test) then have nothing to
+    // reject for these shapes — verify, not generate-then-filter.
+    // This does NOT close the auth/session-vs-product ambiguity class (a real
+    // HTTP route that genuinely creates a WebAuthnCredential/Session record is
+    // structurally IDENTICAL to a legitimate domain write) — see the isolated/
+    // uncorroborated-candidate gate applied later in applyAIInterpretation,
+    // which is where the top-down domain-identity signal actually lives.
+    {
+      const survivingCandidates = capabilities.filter(capability =>
+        this.isUserReachableTerminalCandidate(capability, productDataEntities));
+      capabilities.length = 0;
+      capabilities.push(...survivingCandidates);
     }
 
     await maybeYield();
