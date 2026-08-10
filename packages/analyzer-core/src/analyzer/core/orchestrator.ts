@@ -126,6 +126,7 @@ import { assignNodeRoles } from './node-roles';
 import { deriveFrameworkIdentities } from './framework-identity';
 import { deriveDependencyRoles } from './dependency-roles';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
+import { computeModuleHealth } from './module-health';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
@@ -2315,6 +2316,19 @@ export class AnalyzerOrchestrator {
     // is not derived twice inside the output literal below.
     const dependencyRoles = deriveDependencyRoles(dependencyManifest, allExitPoints);
 
+    // Tier 2 module health — "dangerous to touch, and why" (task #122).
+    // Composed entirely from facts already computed above (nodes, edges,
+    // final entry points, final system capabilities, temporal stability,
+    // and the layering violations architecturalConflicts just derived).
+    const moduleHealth = computeModuleHealth({
+      nodes: allNodes,
+      edges: allEdges,
+      entryPoints: entryPointsWithContractAndCapability,
+      systemCapabilities,
+      temporalStability,
+      principleViolations: architecturalConflicts.principle_violations,
+    });
+
     const output = {
       cas_version: CAS_VERSION,
       analyzer_build: getBuildIdentity().version,
@@ -2414,6 +2428,7 @@ export class AnalyzerOrchestrator {
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
       architectural_conflicts: architecturalConflicts.conflicts.length > 0 ? architecturalConflicts.conflicts : undefined,
       principle_violations: architecturalConflicts.principle_violations.length > 0 ? architecturalConflicts.principle_violations : undefined,
+      module_health: moduleHealth,
       data_lineage: dataLineage.length > 0 ? dataLineage : undefined,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
       enhanced_system_purpose: enhancedSystemPurpose,
@@ -3745,6 +3760,19 @@ export class AnalyzerOrchestrator {
       method_calls: previousOutput.method_calls,
     });
 
+    // Tier 2 module health — same composition as the full-analysis path,
+    // rebuilt over the fresh incremental node/edge graph rather than carried
+    // forward from previousOutput (a stale surface would silently answer
+    // "dangerous to touch" over the previous revision's file sizes/churn).
+    const rebuiltModuleHealth = computeModuleHealth({
+      nodes,
+      edges,
+      entryPoints: entryPointsWithContractAndCapability,
+      systemCapabilities,
+      temporalStability,
+      principleViolations: architecturalConflicts.principle_violations,
+    });
+
     const rebuiltOutput: CASOutput = {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
@@ -3812,6 +3840,7 @@ export class AnalyzerOrchestrator {
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
       architectural_conflicts: architecturalConflicts.conflicts.length > 0 ? architecturalConflicts.conflicts : undefined,
       principle_violations: architecturalConflicts.principle_violations.length > 0 ? architecturalConflicts.principle_violations : undefined,
+      module_health: rebuiltModuleHealth,
       data_lineage: dataLineage.length > 0 ? dataLineage : undefined,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
       flow_graph: flowGraph,
