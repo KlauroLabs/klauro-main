@@ -6886,9 +6886,19 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(targetCapability.operations.length).toBe(13);
   });
 
-  it('exercises count restraint: no behavior capability from small or prefix-less surfaces, hard cap overall', async () => {
+  it('CORRECTED (shape-coverage audit, 2026-08-10): a small, prefix-less cli surface still yields ONE consolidated candidate, not per-command fragmentation and not zero', async () => {
     // 3 cli commands (below family threshold) + 5 diverse cli commands with
-    // action-verb prefixes only → nothing.
+    // action-verb prefixes only → no shared-prefix FAMILY forms. Before the
+    // shape-coverage fix this asserted 0 capabilities — but that is the exact
+    // under-generation bug docs/audits/2026-08-10-shape-coverage-beta-gate.md
+    // measured live: an 8-command hybrid CLI+HTTP tool (kontinuum) produced
+    // ZERO capabilities/journeys for its entire real CLI surface, because a
+    // real CLI's command names routinely share no prefix at all
+    // (`ingest-text`, `health`, `kernel-summary`, `eval-runs`). §0.7.1: zero
+    // is essentially never correct. The corrected behavior is ONE
+    // consolidated candidate for the whole surface (never one per command —
+    // that would reopen the 40-subcommand-fragmentation anti-pattern a peer
+    // lane is guarding against on a different shape).
     const cliEntries: CASEntryPoint[] = [
       'deploy:web', 'deploy:api', 'deploy:docs',
       'get_thing', 'run_thing', 'list_thing', 'create_thing', 'update_thing',
@@ -6901,7 +6911,9 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     const cliNodes = cliEntries.map((entry, index) => bNode({ id: `cli_${index}`, name: entry.name, type: 'function' }));
 
     const capabilities = await localOrch.buildBehaviorCapabilities(cliEntries, cliNodes, [], []);
-    expect(capabilities).toHaveLength(0);
+    expect(capabilities).toHaveLength(1);
+    expect(capabilities[0].category).not.toBe('internal');
+    expect(capabilities[0].operations.length).toBe(8);
   });
 
   it('R8-C: enum_variant-backed cli entries (Rust clap #[derive(Subcommand)] variants) never form their own "Enum Variant Surface" — they fall in with the real cli family', async () => {
