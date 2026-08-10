@@ -31,6 +31,23 @@ export interface LanguageSpec {
    * coverage keeps them); only their type label is honest now.
    */
   classNodeLabel?: string;
+  /**
+   * Optional: when true, classNodeTypes matches for this grammar are NOT emitted
+   * as one CAS node per match. Instead the walker emits a single aggregate node
+   * per file (type = classNodeLabel, name = the file's basename) carrying
+   * metadata.attributes.rule_count (the true total, never truncated) and a
+   * capped `sample_selectors` preview for evidence. Exists because a single
+   * per-selector `style_rule` node is the wrong granularity for CSS: one bundled
+   * stylesheet contributing thousands of graph nodes dwarfs the rest of a real
+   * codebase's structure (measured: 2,708 style_rule nodes vs 229 methods on a
+   * Java Spring repo, 69% of the entire node graph) while having zero downstream
+   * consumers (no reachability walk, capability, or search path reads
+   * type==='style_rule'). Aggregating preserves the fact ("this file has 2,708
+   * rules") without paying the per-node cost of indexing each selector as if it
+   * were a first-class structural unit. Not a truncation: the count is exact and
+   * the samples are labeled as a preview, not the full list.
+   */
+  aggregateClassNodes?: boolean;
   /** AST node types representing a call expression. */
   callNodeTypes: string[];
   /** AST node types representing an import/use/require statement. */
@@ -506,6 +523,7 @@ export const LANGUAGE_SPECS: Record<string, LanguageSpec> = {
     functionNodeTypes: [],
     classNodeTypes: ['rule_set'],
     classNodeLabel: 'style_rule',
+    aggregateClassNodes: true,
     callNodeTypes: [],
     importNodeTypes: ['import_statement'],
     resolveName: (node: any) => firstDescByType(node, 'selectors').replace(/\s+/g, ' ').trim(),

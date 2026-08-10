@@ -2437,7 +2437,7 @@ export class AnalyzerOrchestrator {
     // testSuites built earlier (hoisted above the flow-coverage pass).
     const mocks = this.buildMocks(allNodes);
     const fixtures = this.buildFixtures(allNodes);
-    const testSummary = this.buildTestSummary(allNodes, allEntryPoints);
+    const testSummary = this.buildTestSummary(allNodes, allEntryPoints, testSuites);
     const behavioralInvariants = this.buildBehavioralInvariants(allNodes, allEdges, allEntryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
     logTiming('pp_testData', phaseStart);
@@ -30308,41 +30308,72 @@ export class AnalyzerOrchestrator {
     return fixtures;
   }
 
-  private buildTestSummary(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASTestSummary {
-    const testNodes = nodes.filter(n =>
-      n.type === 'test' && !n.subcategories?.includes('suite')
-    );
+  /**
+   * The ONE source of truth for "does this codebase have tests, and how
+   * many" — derived from `testSuites` (buildTestSuites' output), never
+   * recomputed from raw nodes. `testSuites` is the robust, multi-fallback
+   * discovery pass (dedicated `type==='test'` suite nodes, then test-module
+   * nodes, then *Test-named classes, then test-file naming conventions, then
+   * a direct filesystem glob) that already resolves correctly across
+   * languages — it is what get_test_summary/orient_capsule read and, on a
+   * real Java Spring repo with 8 genuine JUnit test classes, it counts 8.
+   *
+   * Before this fix, buildTestSummary independently re-derived the same fact
+   * from `nodes.filter(n => n.type === 'test')` alone — a signal ONLY
+   * TestFrameworkAnalyzer's own dedicated suite/case nodes ever set. Java
+   * (and any language where the deep analyzer tags tests via
+   * `metadata.is_test`/`category:'test'` on ordinary method/class nodes
+   * rather than emitting synthetic `type:'test'` nodes) always produced
+   * zero here, contradicting cas.test_suites in the same response:
+   * orient_capsule.dimensions.tests reported 8 while product_map.health.tests
+   * and the "No tests detected" coverage caveat (both sourced from this
+   * function) reported 0 — four surfaces, two answers, from one CAS. Basing
+   * both on the same `testSuites` array is what makes them agree by
+   * construction rather than by coincidence.
+   */
+  private buildTestSummary(nodes: CASNode[], entryPoints: CASEntryPoint[], testSuites: CASTestSuite[]): CASTestSummary {
+    const allTests = testSuites.flatMap(suite => suite.tests);
 
     let unit = 0;
     let integration = 0;
     let e2e = 0;
     let acceptance = 0;
+    let bdd = 0;
+    let skipped = 0;
+    let flaky = 0;
 
-    for (const node of testNodes) {
-      const type = this.inferTestType(node);
-      switch (type) {
+    for (const test of allTests) {
+      switch (test.test_type) {
         case 'unit': unit++; break;
         case 'integration': integration++; break;
         case 'e2e': e2e++; break;
         case 'acceptance': acceptance++; break;
+        case 'bdd': bdd++; break;
       }
+      if (test.status?.skipped) skipped++;
+      if (test.status?.flaky) flaky++;
     }
 
     return {
-      total_tests: testNodes.length,
+      total_tests: allTests.length,
       by_type: {
         unit,
         integration,
         e2e,
         acceptance,
-        bdd: 0,
+        bdd,
         other: 0
       },
       by_status: {
-        passing: testNodes.length,
+        // Static analysis has no execution result to read, so — same
+        // convention the previous implementation used — every discovered
+        // test is counted as passing unless the suite itself marked it
+        // skipped/flaky; "0 failing" here means "no failure evidence
+        // observed", not "verified green".
+        passing: allTests.length - skipped,
         failing: 0,
-        skipped: 0,
-        flaky: 0
+        skipped,
+        flaky
       },
       coverage: {
         status: 'not-measured',
