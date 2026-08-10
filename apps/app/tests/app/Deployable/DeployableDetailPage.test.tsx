@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithProviders } from '../../utils/renderWithProviders';
 import { DeployableDetailPage } from '@/app/Deployable/DeployableDetailPage';
-import * as hooks from '@/shared/hooks/useDasUnits';
+import * as hooks from '@/shared/hooks/useSubCasNodes';
 import { encodeSlug } from '@/shared/lib/slugs';
-import type { RemoteDasUnit } from '@/shared/hooks/useDasUnits';
+import type { RemoteDasUnit } from '@/shared/hooks/useSubCasNodes';
 
 const unitA: RemoteDasUnit = {
   id: 'das:container:services-api:api',
@@ -43,8 +43,8 @@ function mockIndex(overrides: Partial<ReturnType<typeof hooks.useDasUnitIndex>>)
   } as ReturnType<typeof hooks.useDasUnitIndex>);
 }
 
-function mockSlice(overrides: Partial<ReturnType<typeof hooks.useDasUnitSlice>>) {
-  vi.spyOn(hooks, 'useDasUnitSlice').mockReturnValue({
+function mockSlice(overrides: Partial<ReturnType<typeof hooks.useSubCasNodeSlice>>) {
+  vi.spyOn(hooks, 'useSubCasNodeSlice').mockReturnValue({
     isLoading: false,
     isError: false,
     entryPoints: [],
@@ -53,7 +53,7 @@ function mockSlice(overrides: Partial<ReturnType<typeof hooks.useDasUnitSlice>>)
     entities: [],
     shipEvidence: undefined,
     ...overrides,
-  } as ReturnType<typeof hooks.useDasUnitSlice>);
+  } as ReturnType<typeof hooks.useSubCasNodeSlice>);
 }
 
 const routeProps = {

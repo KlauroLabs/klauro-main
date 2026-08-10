@@ -226,7 +226,7 @@ export interface CasEdgeRef {
 }
 
 /** A minimal workspace-level-CAS capability, enough for capability-name matching (matches WorkspaceCapability). */
-export interface WasCapabilityRef {
+export interface WorkspaceCapabilityRef {
   id: string;
   name: string;
   project_ids?: string[];

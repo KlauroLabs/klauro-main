@@ -54,7 +54,7 @@ import {
   type ConceptIndex,
 } from '../coordination/conceptual-scope';
 import { partitionTasks, groupTasksByConcept, type PartitionTask, type PartitionCas } from '../coordination/partitioner';
-import type { CasEdgeRef, ConceptualCoordinate, WasCapabilityRef, WorkClaim } from '../coordination/types';
+import type { CasEdgeRef, ConceptualCoordinate, WorkspaceCapabilityRef, WorkClaim } from '../coordination/types';
 
 const REPO_PATH = '/Users/michaelshattuck/dev/unravl/proof-of-concept';
 const WORKSPACE_ID = 'fabric-fleet-proof-workspace';
@@ -107,7 +107,7 @@ function nowClaim(partial: Partial<WorkClaim> & Pick<WorkClaim, 'claim_id' | 'ag
 }
 
 const NO_CAS_EDGES: CasEdgeRef[] = [];
-const NO_WAS_CAPS: WasCapabilityRef[] = [];
+const NO_WORKSPACE_CAPS: WorkspaceCapabilityRef[] = [];
 
 // ---------------------------------------------------------------------------
 // Real flow selection — picked once from this repo's real, cached analysis.
@@ -223,7 +223,7 @@ async function property2(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     },
     intent: 'Work step A of the shared flow',
   }));
-  const resultA = arbitrate(claimA, await getActiveClaims(WORKSPACE_ID), NO_CAS_EDGES, NO_WAS_CAPS);
+  const resultA = arbitrate(claimA, await getActiveClaims(WORKSPACE_ID), NO_CAS_EDGES, NO_WORKSPACE_CAPS);
   say(transcript, 2, 'Agent A file/symbol-level verdict (arbitrate)', { verdict: resultA.verdict });
 
   say(transcript, 2, `Agent B claims real step "${sel.sameFlowStepB.step_id}" of the SAME flow — a DIFFERENT step, DIFFERENT symbol.`);
@@ -238,7 +238,7 @@ async function property2(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     },
     intent: 'Work step B of the shared flow',
   }));
-  const resultB = arbitrate(claimB, await getActiveClaims(WORKSPACE_ID), NO_CAS_EDGES, NO_WAS_CAPS);
+  const resultB = arbitrate(claimB, await getActiveClaims(WORKSPACE_ID), NO_CAS_EDGES, NO_WORKSPACE_CAPS);
   say(transcript, 2, 'Agent B file/symbol-level verdict (arbitrate)', { verdict: resultB.verdict });
 
   const conceptCmp = compareConceptualCoordinates(claimA.scope.concept, claimB.scope.concept);
@@ -324,7 +324,7 @@ async function property4(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     seq: 999,
   };
   const activeForF = await getActiveClaims(WORKSPACE_ID);
-  const resultF = arbitrate(claimFAttempt, activeForF, NO_CAS_EDGES, NO_WAS_CAPS);
+  const resultF = arbitrate(claimFAttempt, activeForF, NO_CAS_EDGES, NO_WORKSPACE_CAPS);
   say(transcript, 4, 'Agent F verdict (arbitrate, capability-name dedup)', {
     verdict: resultF.verdict,
     with_claim_id: resultF.with_claim?.claim_id,
@@ -409,7 +409,7 @@ async function property6(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     scope: { repo: WORKSPACE_ID, paths: [], symbols: [sel.disjointFlow.symbol] },
     intent: 'Change the Order entity constraint via flow B',
   }), seq: 501 };
-  const fileOnlyVerdict = arbitrate(claimD, [claimC as any], NO_CAS_EDGES, NO_WAS_CAPS);
+  const fileOnlyVerdict = arbitrate(claimD, [claimC as any], NO_CAS_EDGES, NO_WORKSPACE_CAPS);
   say(transcript, 6, 'File/symbol-only arbitrate() verdict for two agents on genuinely different flows/files/symbols but the SAME entity constraint', { verdict: fileOnlyVerdict.verdict });
 
   const conceptualVerdict = compareConceptualCoordinates(
@@ -428,7 +428,7 @@ async function property6(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     scope: { repo: WORKSPACE_ID, paths: [], symbols: [], capability: 'totally-different-label' },
     intent: 'Re-implement the step-A behavior under a different name',
   }), seq: 502 };
-  const fileOnlyDedup = arbitrate(claimGNoLabel, await getActiveClaims(WORKSPACE_ID), NO_CAS_EDGES, NO_WAS_CAPS);
+  const fileOnlyDedup = arbitrate(claimGNoLabel, await getActiveClaims(WORKSPACE_ID), NO_CAS_EDGES, NO_WORKSPACE_CAPS);
   say(transcript, 6, 'File/capability-only verdict (different label, no path/symbol overlap declared)', { verdict: fileOnlyDedup.verdict });
   const conceptualDedup = compareConceptualCoordinates(
     { flow_id: sel.sameFlowStepA.flow_id, step_id: sel.sameFlowStepA.step_id, source: 'derived' },

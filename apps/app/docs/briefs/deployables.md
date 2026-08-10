@@ -95,7 +95,7 @@ unit with no persisted shapes of its own) is common and shown as exactly that, n
   analyzer computes it (same slug-of-kind-root-name construction, same collision handling), so
   if the MCP-scoped surface is ever exposed over HTTP, these ids will already match it.
 - **The per-unit slice is an approximation, and says so in the code and here.** The true DAS
-  slice (`get_summary` with a `das_unit_id` scope) walks the call graph to compute a
+  slice (`get_summary` with a `sub_cas_node_id` scope) walks the call graph to compute a
   reachability closure per unit, including shared/owned code attribution across units. That
   algorithm lives only in the MCP surface today — `GET /api/projects/:id/cas` returns the full,
   repo-wide CAS payload, not a pre-sliced one. This page instead scopes entry points by their

@@ -7,7 +7,7 @@ import { useResolvedProjectId } from '@/shared/hooks/useResolvedProjectId';
 import { useProjectSummary } from '@/shared/hooks/useProjectSummary';
 import { useProjectConceptual } from '@/shared/hooks/useProjectConceptual';
 import { useReanalyzeProject } from '@/shared/hooks/useReanalyze';
-import { useDasIndex } from '@/shared/hooks/useDasUnits';
+import { useSubCasNodeIndex } from '@/shared/hooks/useSubCasNodes';
 import { useArchitectureConcepts } from '@/shared/hooks/useArchitectureConcepts';
 import { useEntryPoints } from '@/shared/hooks/useEntryPoints';
 import { CodebaseHeader } from './CodebaseHeader';
@@ -25,7 +25,7 @@ export function CodebaseOverview() {
   const summaryQuery = useProjectSummary(projectId);
   const conceptualQuery = useProjectConceptual(projectId);
   const reanalyze = useReanalyzeProject();
-  const dasIndex = useDasIndex(projectId);
+  const subCasNodeIndex = useSubCasNodeIndex(projectId);
   const concepts = useArchitectureConcepts(projectId);
 
   const entryPointsQuery = useEntryPoints(projectId);
@@ -77,7 +77,7 @@ export function CodebaseOverview() {
           projectId={routeParam ?? projectId}
           systemType={summary.architecture_type}
           patterns={summary.architectural_patterns ?? architectureSummary?.architectural_patterns ?? []}
-          deployableEvidence={dasIndex.evidence}
+          deployableEvidence={subCasNodeIndex.evidence}
           conceptInventory={concepts.inventory}
           conceptEdges={concepts.edges}
         />

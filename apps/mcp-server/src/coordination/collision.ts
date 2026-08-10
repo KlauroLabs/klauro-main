@@ -15,7 +15,7 @@ import type {
   DuplicateFinding,
   InFlightSnapshot,
   OverlapFinding,
-  WasCapabilityRef,
+  WorkspaceCapabilityRef,
   WorkClaim,
 } from './types';
 
@@ -37,7 +37,7 @@ function intersect<T>(a: T[], b: T[]): T[] {
 /** Detector 1: duplicate-work — two active claims target the same capability. */
 function detectDuplicates(
   activeClaims: WorkClaim[],
-  wasCapabilities: WasCapabilityRef[]
+  workspaceCapabilities: WorkspaceCapabilityRef[]
 ): DuplicateFinding[] {
   const findings: DuplicateFinding[] = [];
   const seen = new Set<string>();
@@ -50,14 +50,14 @@ function detectDuplicates(
       const pairKey = [a.claim_id, b.claim_id].sort().join('|');
       if (seen.has(pairKey)) continue;
       seen.add(pairKey);
-      const was = wasCapabilities.find((c) => c.name === a.scope.capability);
+      const workspaceCapability = workspaceCapabilities.find((c) => c.name === a.scope.capability);
       findings.push({
         claim_id: a.claim_id,
         with_claim_id: b.claim_id,
         capability: a.scope.capability,
         evidence: [
           `capability:${a.scope.capability}`,
-          ...(was ? [`workspace_capability:${was.id}`] : []),
+          ...(workspaceCapability ? [`workspace_capability:${workspaceCapability.id}`] : []),
         ],
       });
     }
@@ -342,11 +342,11 @@ export function detectCollisions(
   activeClaims: WorkClaim[],
   inFlightSnapshots: InFlightSnapshot[],
   casEdges: CasEdgeRef[],
-  wasCapabilities: WasCapabilityRef[]
+  workspaceCapabilities: WorkspaceCapabilityRef[]
 ): CollisionReport {
   const active = activeClaims.filter((c) => c.status === 'active');
   return {
-    duplicates: detectDuplicates(active, wasCapabilities),
+    duplicates: detectDuplicates(active, workspaceCapabilities),
     overlaps: detectOverlaps(active),
     drifts: detectDrifts(active, inFlightSnapshots),
     blast_intersections: detectBlastIntersections(active, casEdges),

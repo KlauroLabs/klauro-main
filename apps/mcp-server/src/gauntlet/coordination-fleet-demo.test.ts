@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import {
   buildFleetScenario,
   buildCasEdges,
-  buildWasCapabilities,
+  buildWorkspaceCapabilities,
   buildInFlightSnapshots,
   runCoordinatedArm,
   runUncoordinatedArm,
@@ -49,10 +49,10 @@ test('coordinated arm: duplicate capability claim (alpha vs beta) is DENIED by a
   const workspaceId = 'ws-dup-test';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
 
   const betaVerdict = result.arbitrations.find((a) => a.agent_id === 'agent-beta');
   assert.ok(betaVerdict, 'expected an arbitration record for agent-beta');
@@ -69,10 +69,10 @@ test('coordinated arm: path-prefix overlap (gamma vs zeta) is DENIED as a confli
   const workspaceId = 'ws-path-test';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
 
   const zetaVerdict = result.arbitrations.find((a) => a.agent_id === 'agent-zeta');
   assert.ok(zetaVerdict);
@@ -89,10 +89,10 @@ test('coordinated arm: blast-radius conflict (delta vs epsilon via CAS edge) is 
   const workspaceId = 'ws-blast-test';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
 
   const blastFindings = result.collisionReport.blast_intersections;
   const deltaEpsilonPair = blastFindings.filter(
@@ -113,10 +113,10 @@ test('coordinated arm: in-flight drift (epsilon uncommitted vs gamma claim on Ch
   const workspaceId = 'ws-drift-test';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
 
   const drifts = result.collisionReport.drifts;
   const epsilonGammaDrift = drifts.find(
@@ -145,10 +145,10 @@ test('coordinated arm: attribution correctly identifies which agents are on a cl
   const workspaceId = 'ws-attr-test';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
 
   const checkoutAttr = result.attributions.find((a) => a.path === 'src/routes/checkout.ts');
   assert.ok(checkoutAttr);
@@ -166,10 +166,10 @@ test('coordinated arm: edit-lock check flags zeta writing into gamma-locked chec
   const workspaceId = 'ws-lock-test';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = await runCoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
 
   const zetaLock = result.editLockConflicts.find((e) => e.agent_id === 'agent-zeta');
   assert.ok(
@@ -183,10 +183,10 @@ test('uncoordinated baseline arm: has ZERO in-flight visibility by construction'
   const workspaceId = 'ws-baseline-test';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = runUncoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = runUncoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
   assert.equal(result.inFlightVisibility, 0);
 });
 
@@ -194,10 +194,10 @@ test('uncoordinated baseline arm: dup-work and path/blast/drift conflicts ALL la
   const workspaceId = 'ws-baseline-2';
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlight = buildInFlightSnapshots(workspaceId);
 
-  const result = runUncoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlight);
+  const result = runUncoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlight);
 
   // The same ground-truth conflicts exist (they're the same scenario) but
   // nothing in this arm's live path (actionsTaken) ever surfaced them —

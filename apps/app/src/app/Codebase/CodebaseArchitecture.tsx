@@ -5,7 +5,7 @@ import { ErrorState } from '@/shared/layout/ErrorState';
 import { EmptyState } from '@/shared/layout/EmptyState';
 import { useResolvedProjectId } from '@/shared/hooks/useResolvedProjectId';
 import { useProjectSummary } from '@/shared/hooks/useProjectSummary';
-import { useDasIndex } from '@/shared/hooks/useDasUnits';
+import { useSubCasNodeIndex } from '@/shared/hooks/useSubCasNodes';
 import { useArchitectureConcepts } from '@/shared/hooks/useArchitectureConcepts';
 import { asExtendedSummary } from './casSummary';
 import { ArchitectureDiagram } from '@/app/Codebase/sections/ArchitectureDiagram';
@@ -14,7 +14,7 @@ export function CodebaseArchitecture() {
   const { projectId: routeParam } = useParams<{ projectId: string }>();
   const projectId = useResolvedProjectId(routeParam) ?? routeParam;
   const summaryQuery = useProjectSummary(projectId);
-  const dasIndex = useDasIndex(projectId);
+  const subCasNodeIndex = useSubCasNodeIndex(projectId);
   const concepts = useArchitectureConcepts(projectId);
 
   if (!projectId) return null;
@@ -41,7 +41,7 @@ export function CodebaseArchitecture() {
         <Typography variant="subtitle1" sx={{ mb: 2 }}>Architecture diagram</Typography>
         <ArchitectureDiagram
           projectId={projectId}
-          evidence={dasIndex.evidence}
+          evidence={subCasNodeIndex.evidence}
           conceptInventory={concepts.inventory}
           conceptEdges={concepts.edges}
         />

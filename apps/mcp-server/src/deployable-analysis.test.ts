@@ -5,7 +5,7 @@ import {
   tierQualifiedShipUnits,
   sliceDeployableAnalysis,
   buildDeployableAnalyses,
-  resolveDasScope,
+  resolveSubCasNodeScope,
 } from './deployable-analysis';
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildReachabilityIndexFromCas, buildReachabilityIndex, callEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
@@ -454,22 +454,22 @@ test("a slice's comprehension payload excludes other units' flows and resolves i
   assert.deepEqual((apiUnit.slice.system_capabilities as any[])[0].operations.map((o: any) => o.entry_point_id), ['ep_api']);
 });
 
-test('resolveDasScope: looks up a unit by id, undefined for unknown/non-promoted', () => {
+test('resolveSubCasNodeScope: looks up a unit by id, undefined for unknown/non-promoted', () => {
   const cas = buildFixtureCas();
   const { units } = buildDeployableAnalyses(cas);
-  const apiId = units.find(u => u.das_unit_name === 'api')!.das_unit_id;
+  const apiId = units.find(u => u.das_unit_name === 'api')!.sub_cas_node_id;
 
-  const resolved = resolveDasScope(cas, apiId);
+  const resolved = resolveSubCasNodeScope(cas, apiId);
   assert.ok(resolved);
   assert.equal(resolved!.das_unit_name, 'api');
 
-  assert.equal(resolveDasScope(cas, 'das:nonexistent'), undefined);
+  assert.equal(resolveSubCasNodeScope(cas, 'das:nonexistent'), undefined);
 
   const singleDeployableCas = {
     ...cas,
     deployable_evidence: [{ root_path: '.', name: 'app', tier: 1, kind: 'container', evidence: [] }],
   } as CASOutput;
-  assert.equal(resolveDasScope(singleDeployableCas, apiId), undefined);
+  assert.equal(resolveSubCasNodeScope(singleDeployableCas, apiId), undefined);
 });
 
 test('sliceDeployableAnalysis: single-unit call still produces a CASOutput-shaped slice (no new object model)', () => {

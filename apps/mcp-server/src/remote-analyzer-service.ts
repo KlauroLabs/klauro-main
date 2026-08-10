@@ -43,7 +43,7 @@ import { descriptionStorePath } from './description-enrichment';
 import { generateElementDescription } from './description-enrichment';
 import { withAnalysisFocus } from './analysis-focus';
 import { ResponseCache, responseCacheKey } from './response-cache';
-import { getCachedDeployableAnalyses, scopeCasToDasUnit } from './deployable-analysis';
+import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { executeHostedProjectQuery, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
@@ -2798,13 +2798,13 @@ async function handleAccountApi(
       // hostedSummaryPayload, hit whenever a caller passes no scope/detail=
       // full/runtime/exclude_sections — i.e. the common case). Without
       // attaching it here, sub_cas_nodes only ever reached a caller that fell
-      // through to the slower full-CAS-mirror branch (buildSummaryWithDasIndex
+      // through to the slower full-CAS-mirror branch (buildSummaryWithSubCasNodeIndex
       // in server.ts) or hit the dedicated /api/projects/{id}/das route
       // directly — so a fresh promoted analysis queried the normal way never
       // saw its sub-CAS nodes. Attach it onto `summary` (not a sibling of it)
       // so hostedSummaryPayload's `{ ...state.summary, hosted_status }` spread
       // flattens it to the same top-level `sub_cas_nodes` key
-      // buildSummaryWithDasIndex already produces.
+      // buildSummaryWithSubCasNodeIndex already produces.
       const das = getCachedDeployableAnalyses(cas);
       (summary as Record<string, unknown>).sub_cas_nodes = das.sub_cas_nodes;
       const productMap = getProductMap(cas);
@@ -2958,24 +2958,24 @@ async function handleAccountApi(
     }
     if (sections.length === 0) throw new AccountHttpError(400, 'At least one CAS section is required');
     const workspace = workspacePath(dataDir, project.analysis_id);
-    const sectionsDasUnitId = url.searchParams.get('das_unit_id') || undefined;
+    const sectionsSubCasNodeId = url.searchParams.get('sub_cas_node_id') || undefined;
 
-    // Sub-CAS-node-scoped sections (?das_unit_id=<id>): the scope used to be accepted
-    // and silently IGNORED here, so `?sections=comprehension&das_unit_id=X`
+    // Sub-CAS-node-scoped sections (?sub_cas_node_id=<id>): the scope used to be accepted
+    // and silently IGNORED here, so `?sections=comprehension&sub_cas_node_id=X`
     // returned the whole repo's capability and flow set — flows whose own ids
     // name other deployables — while looking like a scoped answer. Slicing
     // needs the layers the closure is derived from (graph/calls) plus the ship
     // evidence itself (runtime) and the entry/exit/entity layer
     // (supplemental), so those are loaded regardless of what was requested and
     // then projected back down to exactly the requested sections.
-    if (sectionsDasUnitId) {
+    if (sectionsSubCasNodeId) {
       const version = await storedAnalysisVersion(workspace);
       const cacheKey = version === null ? null : responseCacheKey({
         endpoint: 'das-cas-sections',
         projectId: project.id,
         analysisId: project.analysis_id,
         version,
-        params: { das_unit_id: sectionsDasUnitId, sections: sections.join(',') },
+        params: { sub_cas_node_id: sectionsSubCasNodeId, sections: sections.join(',') },
       });
       if (cacheKey) {
         const cached = casReadResponseCache.get(cacheKey);
@@ -2995,10 +2995,10 @@ async function handleAccountApi(
       try {
         // loadAnalysisSections returns Partial<CASOutput> by design (it loaded a
         // named subset); the slicer only reads the fields requested above.
-        scopedCas = scopeCasToDasUnit(fullEnough as CASOutput, { das_unit_id: sectionsDasUnitId });
+        scopedCas = scopeCasToSubCasNode(fullEnough as CASOutput, { sub_cas_node_id: sectionsSubCasNodeId });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new AccountHttpError(message.startsWith('Unknown scope.das_unit_id') ? 404 : 400, message);
+        throw new AccountHttpError(message.startsWith('Unknown scope.sub_cas_node_id') ? 404 : 400, message);
       }
       const body = {
         status: 'ready',
@@ -3006,7 +3006,7 @@ async function handleAccountApi(
         analysis_id: project.analysis_id,
         analysis_timestamp: scopedCas.analysis_timestamp || null,
         sections,
-        das_unit_id: sectionsDasUnitId,
+        sub_cas_node_id: sectionsSubCasNodeId,
         cas: selectCasSections(scopedCas, sections),
       };
       const serializedBody = JSON.stringify(body);
@@ -3059,13 +3059,13 @@ async function handleAccountApi(
   // explicit compressed stream at /cas/export; normal MCP clients hydrate
   // named sections and never mirror the entire customer graph.
   //
-  // Sub-CAS-node-scoped variant (?das_unit_id=<id>): the web UI's deployable page was
+  // Sub-CAS-node-scoped variant (?sub_cas_node_id=<id>): the web UI's deployable page was
   // approximating deployable-analysis.ts's phase-2 scoping (getCachedDeploy-
-  // ableAnalyses / scopeCasToDasUnit) client-side because the real scoped
+  // ableAnalyses / scopeCasToSubCasNode) client-side because the real scoped
   // surface — already wired into 5 MCP tools via server.ts's
-  // buildSummaryWithDasIndex-style `scope` param — was never exposed over
+  // buildSummaryWithSubCasNodeIndex-style `scope` param — was never exposed over
   // HTTP. Unlike the full-CAS path above, a slice IS worth caching: it is a
-  // pure function of the stored CAS + das_unit_id, and (unlike the
+  // pure function of the stored CAS + sub_cas_node_id, and (unlike the
   // once-per-client mirror pull) a UI page can re-request the same unit
   // repeatedly as the user navigates.
   const projectCasMatch = route.match(/^\/api\/projects\/([^/]+)\/cas$/);
@@ -3078,16 +3078,16 @@ async function handleAccountApi(
     }
     const workspace = workspacePath(dataDir, project.analysis_id);
     const url = new URL(request.url || '', 'http://localhost');
-    const dasUnitId = url.searchParams.get('das_unit_id') || undefined;
+    const subCasNodeId = url.searchParams.get('sub_cas_node_id') || undefined;
 
-    if (dasUnitId) {
+    if (subCasNodeId) {
       const version = await storedAnalysisVersion(workspace);
       const cacheKey = version === null ? null : responseCacheKey({
         endpoint: 'das-cas-slice',
         projectId: project.id,
         analysisId: project.analysis_id,
         version,
-        params: { das_unit_id: dasUnitId },
+        params: { sub_cas_node_id: subCasNodeId },
       });
       if (cacheKey) {
         const cached = casReadResponseCache.get(cacheKey);
@@ -3109,7 +3109,7 @@ async function handleAccountApi(
           },
         };
       }
-      // scopeCasToDasUnit throws a caller-facing Error — never a silent empty
+      // scopeCasToSubCasNode throws a caller-facing Error — never a silent empty
       // result — for a repo that hasn't promoted (fewer than 2 tier-qualified
       // ship units) or an id that doesn't match any current unit (naming the
       // ids that DO exist so a caller can self-correct). These are REQUEST
@@ -3118,10 +3118,10 @@ async function handleAccountApi(
       // handler — not folded into the 200 no_analysis shape above.
       let scopedCas;
       try {
-        scopedCas = scopeCasToDasUnit(cas, { das_unit_id: dasUnitId });
+        scopedCas = scopeCasToSubCasNode(cas, { sub_cas_node_id: subCasNodeId });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const statusCode = message.startsWith('Unknown scope.das_unit_id') ? 404 : 400;
+        const statusCode = message.startsWith('Unknown scope.sub_cas_node_id') ? 404 : 400;
         throw new AccountHttpError(statusCode, message);
       }
       const body = {
@@ -3129,7 +3129,7 @@ async function handleAccountApi(
         project_id: project.id,
         analysis_id: project.analysis_id,
         analysis_timestamp: scopedCas.analysis_timestamp || null,
-        das_unit_id: dasUnitId,
+        sub_cas_node_id: subCasNodeId,
         cas: scopedCas,
       };
       const serializedBody = JSON.stringify(body);
@@ -3152,7 +3152,7 @@ async function handleAccountApi(
   // sub-CAS-node index: units + counts + orphan accounting WITHOUT the
   // multi-MB `cas` body — the cheap discovery call a UI makes before ever
   // requesting a scoped slice (mirrors get_summary's sub_cas_nodes attachment
-  // in server.ts's buildSummaryWithDasIndex). Cacheable for the same reason
+  // in server.ts's buildSummaryWithSubCasNodeIndex). Cacheable for the same reason
   // the slice above is: a pure function of the stored CAS, no scope param to
   // vary on.
   const projectDasMatch = route.match(/^\/api\/projects\/([^/]+)\/das$/);

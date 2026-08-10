@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDasIndex, tierQualifiedShipUnits } from '@/app/Deployable/dasIndex';
+import { buildSubCasNodeIndex, tierQualifiedShipUnits } from '@/app/Deployable/subCasNodeIndex';
 import type { DeployableEvidence } from '@/app/Deployable/dasTypes';
 
 const container: DeployableEvidence = {
@@ -45,14 +45,14 @@ describe('tierQualifiedShipUnits', () => {
   });
 });
 
-describe('buildDasIndex', () => {
+describe('buildSubCasNodeIndex', () => {
   it('does not promote below 2 tier-qualified units', () => {
-    expect(buildDasIndex([container])).toEqual({ promoted: false, units: [] });
-    expect(buildDasIndex(undefined)).toEqual({ promoted: false, units: [] });
+    expect(buildSubCasNodeIndex([container])).toEqual({ promoted: false, units: [] });
+    expect(buildSubCasNodeIndex(undefined)).toEqual({ promoted: false, units: [] });
   });
 
   it('promotes at 2+ units and folds bundled members under their owner', () => {
-    const result = buildDasIndex([container, worker, bundledBin]);
+    const result = buildSubCasNodeIndex([container, worker, bundledBin]);
     expect(result.promoted).toBe(true);
     expect(result.units).toHaveLength(2);
     const apiUnit = result.units.find(u => u.name === 'api')!;
@@ -62,8 +62,8 @@ describe('buildDasIndex', () => {
   });
 
   it('derives ids deterministically for the same input', () => {
-    const a = buildDasIndex([container, worker]);
-    const b = buildDasIndex([container, worker]);
+    const a = buildSubCasNodeIndex([container, worker]);
+    const b = buildSubCasNodeIndex([container, worker]);
     expect(a.units.map(u => u.id)).toEqual(b.units.map(u => u.id));
   });
 });

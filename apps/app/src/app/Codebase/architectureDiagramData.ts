@@ -1,6 +1,6 @@
 import type { DeployableEvidence } from '@/app/Deployable/dasTypes';
 import { KIND_LABEL } from '@/app/Deployable/dasLabels';
-import { buildDasIndex, normalizePath } from '@/app/Deployable/dasIndex';
+import { buildSubCasNodeIndex, normalizePath } from '@/app/Deployable/subCasNodeIndex';
 import type { RawCallEdge } from '@/shared/hooks/useArchitectureConcepts';
 import type { GraphNode } from '@/shared/components/diagram/graphLayout';
 import type { DiagramEdge } from '@/shared/components/diagram/GraphCanvas';
@@ -140,7 +140,7 @@ export function buildArchitectureDiagramEdges(evidence: DeployableEvidence[]): D
 }
 
 export function promotedUnitIdForEvidence(evidence: DeployableEvidence[], nodeId: string): string | undefined {
-  const index = buildDasIndex(evidence);
+  const index = buildSubCasNodeIndex(evidence);
   const match = evidence.findIndex((e, i) => evidenceKey(e, i) === nodeId);
   if (match < 0) return undefined;
   const target = evidence[match];

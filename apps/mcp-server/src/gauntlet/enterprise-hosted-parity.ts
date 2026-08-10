@@ -306,13 +306,13 @@ function assertWorkspaceSemanticQuality(workspace: any): void {
 
   const deployables = workspace.deployables || [];
   invariant(workspace.summary?.applications === deployables.length, `WAS application summary counts non-canonical surfaces (${workspace.summary?.applications} vs ${deployables.length})`);
-  const dasUnitIds = deployables.map((item: any) => item.source_das_unit_id).filter(Boolean);
-  invariant(new Set(dasUnitIds).size === dasUnitIds.length, 'WAS exposed the same DAS deployable more than once');
+  const subCasNodeIds = deployables.map((item: any) => item.source_sub_cas_node_id).filter(Boolean);
+  invariant(new Set(subCasNodeIds).size === subCasNodeIds.length, 'WAS exposed the same DAS deployable more than once');
   invariant(!deployables.some((item: any) => item.name === 'enterprise-platform-infra'), 'WAS promoted a Terraform-only repository root to an application deployable');
   const duplicateDasSurfaces = (workspace.applications || []).filter((item: any) =>
-    item.source_das_unit_id &&
+    item.source_sub_cas_node_id &&
     (workspace.applications || []).some((other: any) =>
-      other.id !== item.id && other.source_das_unit_id === item.source_das_unit_id));
+      other.id !== item.id && other.source_sub_cas_node_id === item.source_sub_cas_node_id));
   invariant(duplicateDasSurfaces.every((item: any) => item.merged_into || duplicateDasSurfaces.some((other: any) => other.id !== item.id && other.merged_into === item.id)), 'WAS left duplicate DAS application surfaces uncanonicalized');
 }
 

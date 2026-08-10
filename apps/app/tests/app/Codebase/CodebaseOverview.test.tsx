@@ -5,7 +5,7 @@ import { CodebaseOverview } from '@/app/Codebase/CodebaseOverview';
 import * as summaryHooks from '@/shared/hooks/useProjectSummary';
 import * as conceptualHooks from '@/shared/hooks/useProjectConceptual';
 import * as reanalyzeHooks from '@/shared/hooks/useReanalyze';
-import * as dasHooks from '@/shared/hooks/useDasUnits';
+import * as dasHooks from '@/shared/hooks/useSubCasNodes';
 import * as architectureConceptsHooks from '@/shared/hooks/useArchitectureConcepts';
 import * as entryPointsHooks from '@/shared/hooks/useEntryPoints';
 import * as externalServicesHooks from '@/shared/hooks/useExternalServices';
@@ -39,18 +39,18 @@ describe('CodebaseOverview', () => {
       isPending: false,
     } as unknown as ReturnType<typeof reanalyzeHooks.useReanalyzeProject>);
     // ArchitectureSection's diagram (clickables-diagrams lane) reads
-    // deployable_evidence via useDasIndex — mocked here the same way
+    // deployable_evidence via useSubCasNodeIndex — mocked here the same way
     // summary/conceptual are, so this test doesn't need an AuthProvider.
-    vi.spyOn(dasHooks, 'useDasIndex').mockReturnValue({
+    vi.spyOn(dasHooks, 'useSubCasNodeIndex').mockReturnValue({
       evidence: [],
       units: [],
       promoted: false,
       isLoading: false,
       isError: false,
-    } as unknown as ReturnType<typeof dasHooks.useDasIndex>);
+    } as unknown as ReturnType<typeof dasHooks.useSubCasNodeIndex>);
     // ArchitectureSection's diagram concepts lens (arch-concepts lane) reads
     // architecture_summary.architectural_inventory + call edges via
-    // useArchitectureConcepts — mocked the same way as useDasIndex above.
+    // useArchitectureConcepts — mocked the same way as useSubCasNodeIndex above.
     vi.spyOn(architectureConceptsHooks, 'useArchitectureConcepts').mockReturnValue({
       inventory: {},
       edges: [],
@@ -58,7 +58,7 @@ describe('CodebaseOverview', () => {
       isError: false,
     } as unknown as ReturnType<typeof architectureConceptsHooks.useArchitectureConcepts>);
     // Product-entry count (page-codebase) reads useEntryPoints — same
-    // useProjectCas-backed reason as useDasIndex/useArchitectureConcepts above.
+    // useProjectCas-backed reason as useSubCasNodeIndex/useArchitectureConcepts above.
     vi.spyOn(entryPointsHooks, 'useEntryPoints').mockReturnValue({
       allEntryPoints: [],
       deployables: [],
@@ -67,7 +67,7 @@ describe('CodebaseOverview', () => {
     } as unknown as ReturnType<typeof entryPointsHooks.useEntryPoints>);
     // DependenciesSection (page-codebase) reuses the integrations lane's
     // hooks (useExternalServices/useLibraries) — both built on useProjectCas
-    // — mocked the same way for the same reason as useDasIndex above.
+    // — mocked the same way for the same reason as useSubCasNodeIndex above.
     vi.spyOn(externalServicesHooks, 'useExternalServices').mockReturnValue({
       externalServices: [],
       isLoading: false,

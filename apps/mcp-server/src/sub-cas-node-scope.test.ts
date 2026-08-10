@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  scopeCasToDasUnit,
+  scopeCasToSubCasNode,
   getCachedDeployableAnalyses,
   buildDeployableAnalyses,
 } from './deployable-analysis';
@@ -17,7 +17,7 @@ import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } f
  *  - scope propagating cleanly through query.ts's existing read functions
  *    (search_nodes's contract, via query.searchNodes),
  *  - the unknown-id / non-promoted error paths a caller actually sees,
- *  - the workspace-level CAS's source_das_unit_id linkage (spec §4's three-hop provenance).
+ *  - the workspace-level CAS's source_sub_cas_node_id linkage (spec §4's three-hop provenance).
  */
 
 function node(id: string, file: string): CASNode {
@@ -43,7 +43,7 @@ function entryPoint(id: string, file: string, handlerNodeId: string): CASEntryPo
  *  units in their own right (ship evidence qualifies them; cardinality does
  *  not gate them) — kept local so this file exercises the product surface
  *  without depending on another test file's internals. */
-function buildPromotedCas(analysisId = 'das-scope-promoted'): CASOutput {
+function buildPromotedCas(analysisId = 'sub-cas-node-scope-promoted'): CASOutput {
   const nodes: CASNode[] = [
     node('A1', 'apps/api/handler.ts'),
     node('A2', 'apps/api/other.ts'),
@@ -91,7 +91,7 @@ function buildNonPromotedCas(): CASOutput {
   return {
     cas_version: '1.0.0',
     analysis_timestamp: new Date().toISOString(),
-    analysis_id: 'das-scope-non-promoted',
+    analysis_id: 'sub-cas-node-scope-non-promoted',
     system: { id: 'sys2', name: 'single-app', type: 'monorepo', root_path: '.' },
     nodes,
     edges: [],
@@ -103,9 +103,9 @@ function buildNonPromotedCas(): CASOutput {
   } as unknown as CASOutput;
 }
 
-test('scopeCasToDasUnit: omitted scope returns the same CAS unchanged (existing callers unaffected)', () => {
+test('scopeCasToSubCasNode: omitted scope returns the same CAS unchanged (existing callers unaffected)', () => {
   const cas = buildPromotedCas();
-  assert.equal(scopeCasToDasUnit(cas, undefined), cas);
+  assert.equal(scopeCasToSubCasNode(cas, undefined), cas);
 });
 
 test('get_summary product surface: promoted CAS exposes sub_cas_nodes; rollup counts cover the whole repo', () => {
@@ -116,7 +116,7 @@ test('get_summary product surface: promoted CAS exposes sub_cas_nodes; rollup co
   assert.deepEqual(das.sub_cas_nodes.units.map(u => u.name).sort(), ['api', 'tool1', 'tool2', 'worker']);
   assert.equal(das.sub_cas_nodes.qualified_unit_count, 4);
 
-  const rollupSummary = query.buildSummary(scopeCasToDasUnit(cas, undefined));
+  const rollupSummary = query.buildSummary(scopeCasToSubCasNode(cas, undefined));
   assert.equal(rollupSummary.nodes, 6); // all 6 nodes, unscoped rollup
 });
 
@@ -125,7 +125,7 @@ test('get_summary product surface: scoped summary reflects the UNIT, not the rol
   const das = getCachedDeployableAnalyses(cas);
   const apiUnitId = das.sub_cas_nodes.units.find(u => u.name === 'api')!.id;
 
-  const scopedCas = scopeCasToDasUnit(cas, { das_unit_id: apiUnitId });
+  const scopedCas = scopeCasToSubCasNode(cas, { sub_cas_node_id: apiUnitId });
   const scopedSummary = query.buildSummary(scopedCas);
 
   // api's slice is A1, A2, S1 (3 nodes) — strictly less than the 6-node rollup,
@@ -136,13 +136,13 @@ test('get_summary product surface: scoped summary reflects the UNIT, not the rol
 });
 
 test('getCachedDeployableAnalyses: repeat calls on the same analysis_id reuse the cached result (identity-equal)', () => {
-  const cas = buildPromotedCas('das-scope-cache-check');
+  const cas = buildPromotedCas('sub-cas-node-scope-cache-check');
   const first = getCachedDeployableAnalyses(cas);
   const second = getCachedDeployableAnalyses(cas);
   assert.equal(first, second);
   // A structurally-identical-but-distinct CAS object with a different
   // analysis_id must NOT hit the same cache entry.
-  const differentAnalysis = { ...cas, analysis_id: 'das-scope-cache-check-2' };
+  const differentAnalysis = { ...cas, analysis_id: 'sub-cas-node-scope-cache-check-2' };
   const third = getCachedDeployableAnalyses(differentAnalysis);
   assert.notEqual(first, third);
 });
@@ -151,7 +151,7 @@ test('search_nodes contract: scoped search only returns nodes inside the unit\'s
   const cas = buildPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
   const workerUnitId = das.sub_cas_nodes.units.find(u => u.name === 'worker')!.id;
-  const scopedCas = scopeCasToDasUnit(cas, { das_unit_id: workerUnitId });
+  const scopedCas = scopeCasToSubCasNode(cas, { sub_cas_node_id: workerUnitId });
 
   // A broad query that would match every node's type in the whole-repo CAS...
   const rollupHits = query.searchNodes(cas, 'W1');
@@ -167,12 +167,12 @@ test('search_nodes contract: scoped search only returns nodes inside the unit\'s
   assert.equal(scopedHitsForA2.length, 0);
 });
 
-test('scopeCasToDasUnit: unknown das_unit_id throws a helpful error naming available units', () => {
+test('scopeCasToSubCasNode: unknown sub_cas_node_id throws a helpful error naming available units', () => {
   const cas = buildPromotedCas();
   assert.throws(
-    () => scopeCasToDasUnit(cas, { das_unit_id: 'das:does-not-exist' }),
+    () => scopeCasToSubCasNode(cas, { sub_cas_node_id: 'das:does-not-exist' }),
     (error: Error) => {
-      assert.match(error.message, /Unknown scope\.das_unit_id/);
+      assert.match(error.message, /Unknown scope\.sub_cas_node_id/);
       assert.match(error.message, /api/);
       assert.match(error.message, /worker/);
       return true;
@@ -180,7 +180,7 @@ test('scopeCasToDasUnit: unknown das_unit_id throws a helpful error naming avail
   );
 });
 
-test('scopeCasToDasUnit: non-promoted repo reports WHY (not just an empty list) and a scope param errors gracefully', () => {
+test('scopeCasToSubCasNode: non-promoted repo reports WHY (not just an empty list) and a scope param errors gracefully', () => {
   const cas = buildNonPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
   assert.equal(das.promoted, false);
@@ -190,15 +190,15 @@ test('scopeCasToDasUnit: non-promoted repo reports WHY (not just an empty list) 
   assert.equal(das.sub_cas_nodes.promotion_threshold, 2);
   assert.match(das.sub_cas_nodes.reason, /below the promotion threshold/);
 
-  assert.equal(scopeCasToDasUnit(cas, undefined), cas);
+  assert.equal(scopeCasToSubCasNode(cas, undefined), cas);
   assert.throws(
-    () => scopeCasToDasUnit(cas, { das_unit_id: 'das:anything' }),
+    () => scopeCasToSubCasNode(cas, { sub_cas_node_id: 'das:anything' }),
     /has not promoted any sub-CAS nodes/
   );
 });
 
-test('WAS composition: a promoted member CAS tags its matching WorkspaceDeployable rows with source_das_unit_id', () => {
-  const cas = buildPromotedCas('das-scope-was-link');
+test('WAS composition: a promoted member CAS tags its matching WorkspaceDeployable rows with source_sub_cas_node_id', () => {
+  const cas = buildPromotedCas('sub-cas-node-scope-workspace-link');
   const repositories: CrossCodebaseInput[] = [
     { path: '/repos/multi-deploy-repo', name: 'multi-deploy-repo', cas },
   ];
@@ -212,17 +212,17 @@ test('WAS composition: a promoted member CAS tags its matching WorkspaceDeployab
   const workerApp = graph.applications.find(app => app.name === 'worker');
   assert.ok(apiApp, 'api application should be resolved from the promoted CAS');
   assert.ok(workerApp, 'worker application should be resolved from the promoted CAS');
-  assert.equal(apiApp!.source_das_unit_id, apiUnitId);
-  assert.equal(workerApp!.source_das_unit_id, workerUnitId);
+  assert.equal(apiApp!.source_sub_cas_node_id, apiUnitId);
+  assert.equal(workerApp!.source_sub_cas_node_id, workerUnitId);
 });
 
-test('WAS composition: a non-promoted member CAS leaves source_das_unit_id absent (silent-to-schema fallback, spec §4)', () => {
+test('WAS composition: a non-promoted member CAS leaves source_sub_cas_node_id absent (silent-to-schema fallback, spec §4)', () => {
   const cas = buildNonPromotedCas();
   const repositories: CrossCodebaseInput[] = [
     { path: '/repos/single-deploy-repo', name: 'single-deploy-repo', cas },
   ];
   const graph = buildCrossCodebaseSystemGraph('was-das-fallback-test', repositories);
   for (const app of graph.applications) {
-    assert.equal(app.source_das_unit_id, undefined);
+    assert.equal(app.source_sub_cas_node_id, undefined);
   }
 });

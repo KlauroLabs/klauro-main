@@ -8,7 +8,7 @@ import type {
   ArbitrationResult,
   CasEdgeRef,
   ConflictKind,
-  WasCapabilityRef,
+  WorkspaceCapabilityRef,
   WorkClaim,
 } from './types';
 
@@ -56,7 +56,7 @@ export function arbitrate(
   newClaim: WorkClaim,
   activeClaims: WorkClaim[],
   casEdges: CasEdgeRef[],
-  wasCapabilities: WasCapabilityRef[]
+  workspaceCapabilities: WorkspaceCapabilityRef[]
 ): ArbitrationResult {
   const others = activeClaims.filter(
     (c) => c.claim_id !== newClaim.claim_id && c.status === 'active'
@@ -76,19 +76,19 @@ export function arbitrate(
     }
     // Also treat matching a known workspace-level-CAS capability name as duplicate evidence
     // when some other active claim's intent/capability resolves to it.
-    const matchedWas = wasCapabilities.find((c) => c.name === newClaim.scope.capability);
-    if (matchedWas) {
+    const matchedWorkspaceCapability = workspaceCapabilities.find((c) => c.name === newClaim.scope.capability);
+    if (matchedWorkspaceCapability) {
       const other = others.find(
         (o) =>
-          o.scope.capability === matchedWas.name ||
-          wasCapabilities.some((c) => c.name === o.scope.capability && c.id === matchedWas.id)
+          o.scope.capability === matchedWorkspaceCapability.name ||
+          workspaceCapabilities.some((c) => c.name === o.scope.capability && c.id === matchedWorkspaceCapability.id)
       );
       if (other) {
         return {
           verdict: 'duplicate',
           with_claim: other,
           kind: 'capability',
-          evidence: [`workspace_capability:${matchedWas.id}:${matchedWas.name}`],
+          evidence: [`workspace_capability:${matchedWorkspaceCapability.id}:${matchedWorkspaceCapability.name}`],
         };
       }
     }

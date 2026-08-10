@@ -138,14 +138,14 @@ export interface SystemApplication {
    *  this application resolves to one of its sub-CAS nodes: the three-hop
    *  provenance `workspace -> CAS (codebase_id) -> sub-CAS node (this id)` (spec §4).
    *  A caller drills into the unit's own sliced capabilities/flows/entities
-   *  via the owning codebase's repo-level tools with `scope: { das_unit_id }`
+   *  via the owning codebase's repo-level tools with `scope: { sub_cas_node_id }`
    *  (spec §6) instead of a new workspace-level endpoint. Additive and
    *  optional: absent whenever the owning CAS has not promoted (the common
    *  single-ship-unit case), so every other field on this row is populated
    *  identically regardless of provenance — a workspace-level-CAS consumer never has to
    *  branch on this field to read a deployable's facts, only to decide how
    *  much drilldown depth to trust (spec §4's "silent to the schema"). */
-  source_das_unit_id?: string;
+  source_sub_cas_node_id?: string;
   /** Id of the OTHER workspace member's SystemApplication this row was merged
    *  into (cross-member identity merge, distinct from `bundled_into`'s
    *  intra-repo bundling). Requires containment + name-identity evidence, never
@@ -1052,7 +1052,7 @@ export interface WorkspaceComplexitySubscores {
    *  a single codebase's `coupling` subscore. */
   runtime_link_density: ComplexitySubscore;
   /** Fraction (0-100) of applications whose deployable identity was
-   *  confirmed by sub-CAS-node promotion (`source_das_unit_id` set) — a proxy for how
+   *  confirmed by sub-CAS-node promotion (`source_sub_cas_node_id` set) — a proxy for how
    *  much of the workspace is verified multi-layer shipped topology versus
    *  single-CAS guesswork. Unlike the other subscores this is a ratio, not a
    *  log-scaled count, because "half the fleet is sub-CAS-node-verified" is already
@@ -1223,7 +1223,7 @@ export function computeWorkspaceComplexity(
     score: Math.round(logScaleScore(runtimeLinks.length, 100)), // 100+ resolved runtime links: densely-wired ceiling
     inputs: { runtime_link_count: runtimeLinks.length },
   };
-  const dasPromotedCount = applications.filter(app => app.source_das_unit_id).length;
+  const dasPromotedCount = applications.filter(app => app.source_sub_cas_node_id).length;
   const dasVerifiedFraction = applications.length > 0 ? (dasPromotedCount / applications.length) * 100 : 0;
   const dasVerified: ComplexitySubscore = {
     score: Math.round(linearScaleScore(dasVerifiedFraction, 100)),
@@ -1242,7 +1242,7 @@ export function computeWorkspaceComplexity(
       'codebases[].graph',
       'applications.length',
       'runtime_links.length',
-      'applications[].source_das_unit_id',
+      'applications[].source_sub_cas_node_id',
       ...Array.from(new Set(memberComplexities.flatMap(complexity => complexity.computed_from))),
     ],
   };
@@ -1294,8 +1294,8 @@ export function buildCrossCodebaseSystemGraph(
   const runtimeComponents = repositories.flatMap(repository => extractRuntimeComponents(repository, codebaseId(repository.path)));
   const applications = buildApplications(codebases, interfaces, runtimeComponents, repositories);
   resolveDeployables(applications, repositories);
-  linkDasUnits(applications, repositories);
-  mergeDuplicateDasApplications(applications);
+  linkSubCasNodes(applications, repositories);
+  mergeDuplicateSubCasNodeApplications(applications);
   mergeCrossMemberSubdirApplications(applications, codebases, repositories);
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
   const appByIdForLinks = new Map(applications.map(app => [app.id, app]));
@@ -1496,7 +1496,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       acceptedProductValueSummary = await generateMissingWorkspaceProductValueSummary(
         graph,
         narrativeDescription,
-        'was-primary-missing-product-value-summary-v1',
+        'workspace-primary-missing-product-value-summary-v1',
       );
     }
     const narrativeGate = baseNarrativeGate.accepted && !acceptedProductValueSummary
@@ -1530,7 +1530,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           ai_structured_model: graph.ai_enrichment.structured_model,
           source: 'ai-required-degraded',
           generated_at: now,
-          degraded_reason: `Workspace AI enrichment was rejected by the WAS quality gate: ${narrativeGate.reason}`,
+          degraded_reason: `Workspace AI enrichment was rejected by the workspace narrative quality gate: ${narrativeGate.reason}`,
         };
     // E1 (observational): the workspace narrative gate decision. Compact digest
     // only — codebase/capability/domain counts, never source or secrets.
@@ -1851,7 +1851,7 @@ async function generateWorkspaceOllamaJson(additionalContext: Record<string, unk
   const prompt = [
     'You are Klauro workspace analysis AI.',
     'Return one valid JSON object only. Do not add markdown, comments, explanations, or copied prompt keys.',
-    'Use only the supplied deterministic WAS facts. Do not invent links, deployables, dependencies, business claims, customers, or runtime behavior.',
+    'Use only the supplied deterministic workspace-level CAS facts. Do not invent links, deployables, dependencies, business claims, customers, or runtime behavior.',
     'Every description must be concrete, evidence-backed, and useful to a senior engineer or AI coding agent.',
     `TASK: ${String((additionalContext as any).task || 'Generate the requested workspace JSON.')}`,
     `OUTPUT SHAPE: ${JSON.stringify((additionalContext as any).output_schema || workspaceDirectOutputShape(additionalContext))}`,
@@ -1966,7 +1966,7 @@ async function repairRejectedWorkspaceNarrative(
       repairedProductValueSummary = await generateMissingWorkspaceProductValueSummary(
         graph,
         description,
-        `was-repair-missing-product-value-summary-v1-${attempt ?? 0}`,
+        `workspace-repair-missing-product-value-summary-v1-${attempt ?? 0}`,
       );
     }
     const gate = baseGate.accepted && !repairedProductValueSummary
@@ -1975,7 +1975,7 @@ async function repairRejectedWorkspaceNarrative(
     if (!gate.accepted) {
       return {
         ...graph.workspace_narrative,
-        degraded_reason: `Workspace AI enrichment was rejected by the WAS quality gate: ${gate.reason}`,
+        degraded_reason: `Workspace AI enrichment was rejected by the workspace narrative quality gate: ${gate.reason}`,
       };
     }
     const metadata = workspaceAiProviderMetadata();
@@ -2014,7 +2014,7 @@ export async function enforceWorkspaceNarrativeProductValueSummary(graph: Worksp
     const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText({
       responseFormat: 'json',
       maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '240'),
-      prompt_version: 'was-missing-product-value-summary-v1',
+      prompt_version: 'workspace-missing-product-value-summary-v1',
       task: 'The accepted workspace narrative is missing its REQUIRED product_value_summary field. Return only valid JSON shaped {"product_value_summary":"..."} — one concrete, evidence-backed sentence explaining the product/business job this workspace serves.',
       rejection_feedback: 'missing product_value_summary: the previous response omitted or emptied the product_value_summary field. You must return the product_value_summary field explicitly and non-empty.',
       rules: [
@@ -2358,7 +2358,7 @@ function workspaceSingleDescriptionRepairPromptContext(
   return {
     responseFormat: 'json',
     maxTokens: 450,
-    prompt_version: 'was-single-default-description-repair-v1',
+    prompt_version: 'workspace-single-default-description-repair-v1',
     task: `Return only valid JSON shaped {"${kind === 'domain' ? 'domains' : 'key_capabilities'}":[{"name":"${item.name}","description":"..."}]}. Generate exactly one AI description for the exact ${kind} name.`,
     exact_name: item.name,
     required_name_terms: requiredNameTerms,
@@ -2416,7 +2416,7 @@ function workspaceDescriptionTargetSpecificRules(normalizedItemName: string): st
     rules.push('For codebase analysis targets, describe how analyzed code structure, behavior, entities, and risks become usable context for engineers or agents.');
   }
   if (/\bcontract\b|\bvalidation\b/.test(normalizedItemName)) {
-    rules.push('For validation targets, describe checks against CAS/WAS contracts or invariants, not generic code correctness.');
+    rules.push('For validation targets, describe checks against CAS contracts or invariants at any level, not generic code correctness.');
   }
   return rules;
 }
@@ -2456,7 +2456,7 @@ function workspaceDescriptionRepairPromptContext(
   return {
     responseFormat: 'json',
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || String(Math.min(1100, 180 + domains.length * 170 + capabilities.length * 190))),
-    prompt_version: 'was-default-description-repair-v2',
+    prompt_version: 'workspace-default-description-repair-v2',
     task: 'Return only valid JSON shaped {"domain_items":[{"name":"...","description":"..."}],"capability_items":[{"name":"...","description":"..."}]}. Rewrite each current_description for every exact target name only. Do not invent new facts.',
     quality_gate: 'Each description must be 80-180 characters, include the exact target name or one important target word, preserve the concrete nouns from current_description, include at least one exact grounding_terms value when grounding_terms is non-empty, and explain why the target matters to an engineer or AI agent. Avoid generic phrases like manages functionality, inferred from evidence, or whole-workspace domain.',
     target_domains: domains.map(domain => ({
@@ -2578,7 +2578,7 @@ export function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGr
   return {
     responseFormat: 'json',
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '520'),
-    prompt_version: 'was-default-narrative-repair-v2',
+    prompt_version: 'workspace-default-narrative-repair-v2',
     product_name: productName,
     // The attempt index and rejection feedback are deliberately part of this
     // context: they tell the model exactly what to fix AND make each retry a
@@ -2590,9 +2590,9 @@ export function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGr
     // attempt. A gate-rejection retry must always be a fresh model round-trip,
     // uniformly across every rejection kind.
     retry_nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-    ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the WAS quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite, grounding it in the supplied workspace_domains, primary_capabilities, and required_terms evidence.` } : {}),
+    ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the workspace narrative quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite, grounding it in the supplied workspace_domains, primary_capabilities, and required_terms evidence.` } : {}),
     task: hasSourceBackedLinks
-      ? 'Return only valid JSON with keys description and product_value_summary. Rewrite the workspace description from the supplied WAS facts and source-backed links only.'
+      ? 'Return only valid JSON with keys description and product_value_summary. Rewrite the workspace description from the supplied workspace-level CAS facts and source-backed links only.'
       : 'Return only valid JSON with keys description and product_value_summary. Describe each member project independently because no source-backed cross-project link exists.',
     rules: [
       'Write one concrete paragraph.',
@@ -2988,7 +2988,7 @@ function synthesizePrimaryDomainDescriptionFromAiEvidence(domain: WorkspaceDomai
     return 'Runtime SDK capabilities provide the installable runtime integration layer that sends traces and telemetry back into analysis workflows.';
   }
   if (/\bcontract validation\b/.test(normalizedName)) {
-    return 'CAS Contract Validation checks analysis output against CAS and WAS invariants so agents can trust graph, risk, and work-context data.';
+    return 'CAS Contract Validation checks analysis output against CAS invariants at every level so agents can trust graph, risk, and work-context data.';
   }
   if (/\bregister\b/.test(normalizedName) && /\bdevice\b/.test(normalizedName)) {
     return 'Register Device connects device enrollment, identity, and access-context evidence so agents can follow how devices enter the protected network workflow.';
@@ -3888,7 +3888,7 @@ export function evaluateWorkspaceNarrativeGate(
   ) {
     return {
       accepted: false,
-      reason: 'the description invents cross-project interaction, but WAS has no source-backed application link; describe the members as independent unless deterministic link evidence appears',
+      reason: 'the description invents cross-project interaction, but the workspace-level CAS has no source-backed application link; describe the members as independent unless deterministic link evidence appears',
     };
   }
   const unsupportedCrossProjectClaim = workspaceNarrativeUnsupportedCrossProjectClaim(graph, description);
@@ -4366,9 +4366,9 @@ export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): 
     compactPrompt: true,
     responseFormat: 'json',
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_MAX_TOKENS || '650'),
-    prompt_version: 'was-default-primary-semantics-v10',
+    prompt_version: 'workspace-default-primary-semantics-v10',
     product_name: productName,
-    task: 'Return only valid JSON with keys description, product_value_summary, domain_items, capability_items, value_drivers, relationship_summary. domain_items and capability_items must include every required exact name exactly once. Use only supplied WAS facts.',
+    task: 'Return only valid JSON with keys description, product_value_summary, domain_items, capability_items, value_drivers, relationship_summary. domain_items and capability_items must include every required exact name exactly once. Use only supplied workspace-level CAS facts.',
     style: `Write for a senior engineer or AI agent changing ${productName}. The description is one concrete paragraph about product/runtime behavior, not an inventory. It must explain how the key deployables, contracts, data, or infrastructure work together.`,
     quality_gate: 'The output is rejected unless every required domain/capability has a specific description grounded in its target evidence. Descriptions must not merely restate the name, say "provides/manages functionality", or invent relationships.',
     contract: 'Keep graph facts deterministic. AI may describe existing facts but must not create new links, dependencies, deployables, workflows, entities, or runtime claims.',
@@ -4903,7 +4903,6 @@ export function normalizeWorkspaceAiDescriptionText(value: unknown): string {
     .replace(/\bSDKs?\b/gi, match => match.toLowerCase().endsWith('s') ? 'SDKs' : 'SDK')
     .replace(/\bAPIs?\b/gi, match => match.toLowerCase().endsWith('s') ? 'APIs' : 'API')
     .replace(/\bCAS\b/gi, 'CAS')
-    .replace(/\bWAS\b/gi, 'WAS')
     .replace(/\s+\./g, '.')
     .replace(/\s+/g, ' ')
     .trim();
@@ -5154,7 +5153,7 @@ export function buildWorkspaceAgentContext(
       .filter(flag => flag.severity !== 'info' || flag.code === 'prototype-or-demo-projects-present')
       .sort((left, right) => Number(right.code === 'prototype-or-demo-projects-present') - Number(left.code === 'prototype-or-demo-projects-present'))
       .map(flag => `${flag.code}: ${conciseText(flag.message, 150)}`),
-    ...(graph.workspace_narrative.source !== 'ai' ? [`Workspace narrative is ${graph.workspace_narrative.source}; default WAS enrichment requires AI and this artifact should be refreshed with AI enabled before customer-facing use.`] : []),
+    ...(graph.workspace_narrative.source !== 'ai' ? [`Workspace narrative is ${graph.workspace_narrative.source}; default workspace enrichment requires AI and this artifact should be refreshed with AI enabled before customer-facing use.`] : []),
     ...graph.system_insights
       .filter(insight => insight.type === 'declared-unused-infrastructure')
       .map(insight => insight.title)
@@ -6084,7 +6083,7 @@ function isolatedDeployableReasonCategory(app: SystemApplication): WorkspaceLeve
 function isolatedDeployableReason(app: SystemApplication): string {
   const category = isolatedDeployableReasonCategory(app);
   if (category === 'validated-standalone') return 'No workspace link was found and the surface looks intentionally standalone or auxiliary from name/path/runtime evidence.';
-  if (category === 'unresolved-candidate') return 'No workspace link was found even though the deployable has interfaces or runtime topology; treat this as a CAS/WAS investigation candidate before assuming isolation.';
+  if (category === 'unresolved-candidate') return 'No workspace link was found even though the deployable has interfaces or runtime topology; treat this as a cross-CAS investigation candidate before assuming isolation.';
   if (category === 'weak-cas-signal') return 'No workspace link was found for this deployable; there is not enough cross-project evidence to prove whether isolation is intentional.';
   return 'No interface, runtime, or link evidence connects this surface at workspace level.';
 }
@@ -6511,7 +6510,7 @@ function classifyWorkspaceComposition(
     isolated_deployable_count: isolatedDeployableCount,
     app_deployable_count: appDeployables.length,
     package_deployable_count: packageDeployables.length,
-    reasons: reasons.length ? reasons : ['No strong runtime or package composition links were found in the WAS input facts.'],
+    reasons: reasons.length ? reasons : ['No strong runtime or package composition links were found in the workspace-level CAS input facts.'],
   };
 }
 
@@ -6705,7 +6704,7 @@ function buildWorkspaceTelemetry(repositories: CrossCodebaseInput[], application
       ? ['Use runtime observations and operational priorities before selecting production bug work.']
       : status === 'instrumentable'
         ? ['Runtime hooks are instrumentable but not observed yet; add SDK ingestion before claiming production impact.']
-        : ['No production telemetry is available at workspace level yet; rely on static WAS/CAS evidence and mark runtime impact unknown.'],
+        : ['No production telemetry is available at workspace level yet; rely on static CAS evidence and mark runtime impact unknown.'],
   };
 }
 
@@ -7029,7 +7028,7 @@ function buildWorkspaceDomains(
       description_source: 'ai-required-degraded' as const,
       ai_required: true as const,
       generation_pass: 'default-summary' as const,
-      degraded_reason: 'Whole-workspace domain descriptions require default AI enrichment from deterministic WAS facts.',
+      degraded_reason: 'Whole-workspace domain descriptions require default AI enrichment from deterministic workspace-level CAS facts.',
     }));
 }
 
@@ -7607,7 +7606,7 @@ function buildWorkspaceCapabilities(
         ai_required: true,
         generation_pass: 'default-summary',
         degraded_reason: repoAiDescriptionReady ? undefined :
-          'Whole-workspace capability descriptions require grounded AI enrichment from deterministic WAS facts.',
+          'Whole-workspace capability descriptions require grounded AI enrichment from deterministic workspace-level CAS facts.',
         semantic_role: semanticRole,
         terminal_score: roundTerminalScore(infraOnlyEvidence ? Math.min(0, terminalSignal.score) : terminalSignal.score),
         terminal_evidence: infraOnlyEvidence ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
@@ -7629,7 +7628,7 @@ function buildWorkspaceCapabilities(
         description_source: 'ai-required-degraded' as const,
         ai_required: true as const,
         generation_pass: 'default-summary' as const,
-        degraded_reason: 'Whole-workspace primary capability descriptions require default AI enrichment from deterministic WAS facts.',
+        degraded_reason: 'Whole-workspace primary capability descriptions require default AI enrichment from deterministic workspace-level CAS facts.',
         project_ids: [app.codebase_id],
         deployable_ids: [app.id],
         criticality: inferTier(app, codebaseById.get(app.codebase_id), undefined) === 'critical' ? 'high' : 'medium',
@@ -10904,7 +10903,7 @@ function inferSystemInsights(
         title,
         description: hasSourceBackedBridge
           ? `${app.name} has both inbound and outbound source-backed workspace links, so agents should treat it as part of the communication path while preserving each link's evidence quality.`
-          : `${app.name} is connected by deployment topology, but WAS should not claim source-level brokering until source-backed incoming and outgoing paths are present.`,
+          : `${app.name} is connected by deployment topology, but the workspace-level CAS should not claim source-level brokering until source-backed incoming and outgoing paths are present.`,
         application_ids: [app.id, ...new Set([...inLinks.map(link => link.source_application_id), ...outLinks.map(link => link.target_application_id)])],
         codebase_ids: [...new Set([app.codebase_id, ...inLinks.map(link => link.source_codebase_id), ...outLinks.map(link => link.target_codebase_id)])],
         confidence: hasSourceBackedBridge ? (queueEvidenceSurface ? 0.86 : 0.72) : 0.62,
@@ -10927,7 +10926,7 @@ function inferSystemInsights(
       id: `insight:unused-provider:${slugify(app.id)}`,
       type: 'provider-api-without-source-consumers',
       title: `${app.name} exposes provider interfaces with no source-backed incoming consumers`,
-      description: `${app.name} has provider interfaces in CAS/WAS, but Klauro did not find source-backed incoming calls, listeners, streams, or package consumers connected to it in this workspace. Treat it as an exposed-but-unclaimed surface: it may be externally consumed, intentionally dormant, or missing caller evidence, but WAS should not claim it is actively used until repo-level CAS proves an incoming path.`,
+      description: `${app.name} has provider interfaces in the CAS, but Klauro did not find source-backed incoming calls, listeners, streams, or package consumers connected to it in this workspace. Treat it as an exposed-but-unclaimed surface: it may be externally consumed, intentionally dormant, or missing caller evidence, but the workspace-level CAS should not claim it is actively used until repo-level CAS proves an incoming path.`,
       application_ids: [app.id],
       codebase_ids: [app.codebase_id],
       confidence: providerInterfaces.length >= 2 ? 0.78 : 0.68,
@@ -11164,7 +11163,7 @@ function buildWorkspaceNarrative(
     ],
     ai_required: true,
     generation_pass: 'default-summary',
-    degraded_reason: 'AI workspace narrative enrichment was not attached to this synchronous WAS builder run. Overall description and primary capabilities are required default AI enrichment; refresh/run WAS with AI enrichment before customer-facing use.',
+    degraded_reason: 'AI workspace narrative enrichment was not attached to this synchronous workspace builder run. Overall description and primary capabilities are required default AI enrichment; refresh/run the workspace analysis with AI enrichment before customer-facing use.',
   };
 }
 
@@ -12571,7 +12570,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
  * not positional. Bundled-member applications are skipped — their primary
  * carries the link. Purely additive; no-op when the CAS has no promotion.
  */
-function linkDasUnits(applications: SystemApplication[], repositories: CrossCodebaseInput[]): void {
+function linkSubCasNodes(applications: SystemApplication[], repositories: CrossCodebaseInput[]): void {
   const rootMatches = (appRoot: string, unitRoot: string): boolean => {
     if (!appRoot || !unitRoot) return false;
     if (appRoot === unitRoot) return true;
@@ -12612,22 +12611,22 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
       // fallbacks stay primary-only (containment under a shared root is not
       // identity), so members without a same-name unit still defer.
       if (app.bundled_into) {
-        if (nameMatch) app.source_das_unit_id = nameMatch.id;
+        if (nameMatch) app.source_sub_cas_node_id = nameMatch.id;
         continue;
       }
       const match = nameMatch || das.sub_cas_nodes.units.find(unit =>
         rootMatches(appRoot, unit.root_path) ||
         unit.member_root_paths.some(memberRoot => rootMatches(appRoot, memberRoot)));
-      if (match) app.source_das_unit_id = match.id;
+      if (match) app.source_sub_cas_node_id = match.id;
     }
   }
 }
 
-function mergeDuplicateDasApplications(applications: SystemApplication[]): void {
+function mergeDuplicateSubCasNodeApplications(applications: SystemApplication[]): void {
   const byUnit = new Map<string, SystemApplication[]>();
   for (const app of applications) {
-    if (!app.source_das_unit_id || app.merged_into) continue;
-    const key = `${app.codebase_id}:${app.source_das_unit_id}`;
+    if (!app.source_sub_cas_node_id || app.merged_into) continue;
+    const key = `${app.codebase_id}:${app.source_sub_cas_node_id}`;
     byUnit.set(key, [...(byUnit.get(key) || []), app]);
   }
 
@@ -12671,8 +12670,8 @@ function mergeDuplicateDasApplications(applications: SystemApplication[]): void 
         if (!survivor.description && duplicate.description) survivor.description = duplicate.description;
         duplicate.merged_into = survivor.id;
         duplicate.boundary_evidence = mergeStrings(duplicate.boundary_evidence || [], [
-          `duplicate-das-surface:merged-into:${survivor.id}`,
-          `shared-das-unit:${duplicate.source_das_unit_id}`,
+          `duplicate-sub-cas-node-surface:merged-into:${survivor.id}`,
+          `shared-sub-cas-node:${duplicate.source_sub_cas_node_id}`,
         ]);
       }
     }
@@ -12681,7 +12680,7 @@ function mergeDuplicateDasApplications(applications: SystemApplication[]): void 
 
 /** Merges a monorepo subdir-derived application row with a standalone member
  *  uploaded from that same subdir, so the workspace-level CAS doesn't show the same logical
- *  app twice. Must run after resolveDeployables/linkDasUnits; annotates only
+ *  app twice. Must run after resolveDeployables/linkSubCasNodes; annotates only
  *  (marks the subdir row merged_into the survivor), never removes rows.
  *  Requires two INDEPENDENT evidence signals (never name-only): (a) normalized
  *  name identity between the rows, and (b) the monorepo row's path_hint tail

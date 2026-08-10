@@ -58,7 +58,7 @@ inventing it — see "Data realities" below for what's missing and why.
   communication-seam edges (service A calls service B over HTTP/queue/etc) are computed
   server-side (`mcp__klauro__get_communication_seams`) but not exposed on `GET
   /api/projects/:id/cas` today — see "Data realities" below.
-- **Click**: a node navigates to `/codebases/:projectId/deployables/:dasUnitId` ONLY when it
+- **Click**: a node navigates to `/codebases/:projectId/deployables/:subCasNodeId` ONLY when it
   corresponds to a promoted DAS unit (2+ qualified ship units in this repo); a bundled member or
   a single, non-promoted deployable has no detail route to open and renders as a real,
   non-clickable node rather than a dead link.
@@ -115,7 +115,7 @@ overclaim; "Exposure" states exactly what the one available field supports.
   `WorkspaceAnalysisResponse.analysis.summary.entities` is a single workspace-wide total, not
   per-application or per-codebase; `DataEntity.lifecycle` (created_by/read_by/...) is keyed by
   function/node id, several hops from an application or deployable-evidence row.
-  Per-codebase, `useDasUnitSlice` DOES scope entities to a promoted DAS unit — but that's a
+  Per-codebase, `useSubCasNodeSlice` DOES scope entities to a promoted DAS unit — but that's a
   slice of ONE unit at a time (the DAS drilldown page), not a cross-node lens over the whole
   diagram.
 - **Runtime/telemetry lens** — the system map's edge `evidence` field is the closest real
