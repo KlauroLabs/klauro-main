@@ -100,7 +100,22 @@ export function describeAnalysisVersion(storedVersion: string | undefined): Anal
   let status: AnalysisVersionStatus;
   if (parsed[0] > current[0]) {
     status = 'newer-major';
-  } else if (parsed[0] < current[0] || compareCasVersions(stored, MINIMUM_COMPATIBLE_CAS_VERSION) < 0) {
+  } else if (compareCasVersions(stored, MINIMUM_COMPATIBLE_CAS_VERSION) < 0) {
+    // The floor is MINIMUM_COMPATIBLE_CAS_VERSION, not "same major digit as
+    // current". A stored major line strictly below current's used to also
+    // force 'unsupported' here (`parsed[0] < current[0] || ...`), which was
+    // dormant and harmless while CAS_VERSION stayed on the 1.x line — no
+    // real analysis could have a lower major than 1. It went live the moment
+    // CAS_VERSION crossed a major boundary (1.11.0 -> 2.0.0 -> 2.1.0,
+    // 2026-08-09): every already-stored 1.x analysis at or above the 1.6.0
+    // floor (e.g. 1.9.0, 1.10.0) started misclassifying as 'unsupported'
+    // instead of 'older-compatible', which silently cut off buildSummary's
+    // degrade-notice (gated on 'older-compatible') and made
+    // assertAnalysisVersionSupported start hard-throwing on perfectly
+    // degradable analyses. Caught by nightly-eval's version-skew suite plus
+    // this file's own pre-existing 'describeAnalysisVersion classifies
+    // stored versions against the floor' test, both of which already
+    // asserted the floor-only contract below.
     status = 'unsupported';
   } else if (compareCasVersions(stored, CAS_VERSION) === 0) {
     status = 'current';
