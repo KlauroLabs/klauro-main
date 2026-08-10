@@ -1263,6 +1263,12 @@ export interface CASProductMap {
   identity: {
     name: string;
     domain: string;
+    /** Human-readable rendering of `domain` (kebab-case slug -> Title Case
+     *  words) for a leadership/onboarding reader — see product-map.ts's
+     *  humanizeDomainSlug. Purely mechanical, never a synonym/fabrication;
+     *  `domain` itself stays the stable machine-comparable slug. Omitted
+     *  when there is no domain to humanize. */
+    domain_label?: string;
     // Comprehension provenance is AI-only (docs/cas/DETERMINISM-BOUNDARY.md).
     // Left UNSET until AI runs — never coerced to 'deterministic' on empty
     // output. ('deterministic' remains in the union only for legacy/reused rows.)
