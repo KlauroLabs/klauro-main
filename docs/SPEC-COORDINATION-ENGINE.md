@@ -67,10 +67,10 @@ scale program. Practical consequences:
 
 - **CAS** — Codebase Analysis (single-repo): the precomputed structural + semantic model of
   one repository (nodes = functions/classes/files, edges = calls/imports, plus routes,
-  entities, capabilities, flows). Produced by `packages/analyzer-core`.
-- **WAS** — Workspace Analysis (cross-repo): the same, lifted to a multi-repo workspace —
-  cross-repo links, shared-code rollup, workspace capabilities.
-- **Fabric** — the multi-agent coordination layer built on CAS/WAS
+  entities, capabilities, flows). Produced by `packages/analyzer-core`. A CAS nests via
+  sub-CAS nodes: a **workspace-level CAS** is the same model lifted to a multi-repo
+  workspace — cross-repo links, shared-code rollup, workspace capabilities (docs/cas/SPECIFICATION.md §0).
+- **Fabric** — the multi-agent coordination layer built on the CAS graph (repo- and workspace-level)
   (`apps/mcp-server/src/coordination/`), exposed as MCP tools (`fab_*`, `check_*`,
   `plan_*`) and HTTP (`/v1/coordination/*`).
 - **Participant / agent** — any actor working the codebase: a human, an AI coding agent, an
@@ -102,7 +102,7 @@ scale program. Practical consequences:
 - **Surprise** — a persisted, addressed event: a contract-divergence finding that would pass
   textual merge silently; delivered to the affected participant.
 - **Blast radius** — the set of nodes structurally affected by changing a symbol, walked
-  over CAS/WAS edges.
+  over the CAS graph's edges (repo- and workspace-level).
 - **Relevance neighborhood** — the slice of the board that overlaps a participant's own
   footprint (paths ∪ symbols ∪ declared contracts ∪ their bounded blast radius). The unit
   all per-participant costs are bound to (§2).

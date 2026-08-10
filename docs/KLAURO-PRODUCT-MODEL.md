@@ -35,7 +35,7 @@ Consequences:
   defaults built in) and processes it on the VPS.
 - **Connect a repo first:** the VPS checks out everything and processes it.
 
-Both end in the same state: `project + branch + commitSHA -> CAS/WAS analysis revision`.
+Both end in the same state: `project + branch + commitSHA -> CAS analysis revision` (repo- or workspace-level).
 The **only** thing a connected remote adds is automatic re-analysis on each push to the
 selected branch. Inviting a teammate shares the same hosted context.
 

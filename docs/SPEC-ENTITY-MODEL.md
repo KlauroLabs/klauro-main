@@ -12,8 +12,8 @@ during this study; see "Validation evidence" for exact outputs.
 one real gap.**
 
 `apps/mcp-server/src/cross-codebase-analysis.ts` already has a full
-`applications` / `deployables` / `distribution_units` model in the WAS
-(Workspace Analysis Spec) layer. It runs `buildApplications()` over one or more
+`applications` / `deployables` / `distribution_units` model in the
+workspace-level CAS layer. It runs `buildApplications()` over one or more
 CAS inputs and, critically, does **not** treat "one repo = one application" —
 `applicationSurfaceCandidatesFromCas()` (line ~9600) walks every CAS node's
 source file and every `distribution_unit` and classifies sub-paths:
@@ -77,7 +77,7 @@ library (deployable: false), plus 2 `application_links` between deployables
 ### G1 — Gap: no first-class "shared library" edge between deployables
 
 This is the real, material gap, and it is the one thing the founder's brief
-explicitly asked to validate. The reference monorepo's WAS output has:
+explicitly asked to validate. The reference monorepo's workspace-level CAS output has:
 
 ```
 composition.package_link_count: 0
@@ -89,7 +89,7 @@ cross_repo_links (get_cross_repo_links): links: []
 
 Klauro knows `admin-api` and `user-api` both use `libs/business/auth` (that
 path string appears ~7,485 times across the two apps' evidence arrays in the
-raw WAS JSON — it's baked into individual capability/route evidence), but
+raw workspace-level CAS JSON — it's baked into individual capability/route evidence), but
 there is **no aggregated, queryable "these N deployables share library X"
 edge**. `get_shared_components(path)` — the tool that sounds like it should
 answer this — only finds intra-app duplication (e.g. a React `StatCard`
@@ -239,7 +239,7 @@ no benefit in the common case).
 
 ## 4. Monorepo → N projects mapping
 
-**Detection: reuse WAS `applications`/`deployables` verbatim — don't build a
+**Detection: reuse the workspace-level CAS's `applications`/`deployables` verbatim — don't build a
 second heuristic.** The path-prefix classifier in
 `applicationSurfaceCandidatesFromCas()` (apps/mcp-server/src/cross-codebase-analysis.ts:9663)
 already produces exactly the `{name, path_hint, deployable: bool}` tuples a
@@ -247,7 +247,7 @@ already produces exactly the `{name, path_hint, deployable: bool}` tuples a
 
 1. User connects a repo (or points at `local_path`) to a Workspace.
 2. Klauro runs (or re-uses) CAS analysis on the repo root.
-3. Call `run_workspace_analysis(paths: [repo_path])` (single-repo WAS run —
+3. Call `run_workspace_analysis(paths: [repo_path])` (single-repo workspace-level CAS run —
    exactly what this study did) and read `.deployables` from the result
    (the array already filtered to `deployable: true`, e.g.
    `["app:admin-api","app:user-api","app:mcp-api","app:internal-api"]`).
@@ -262,12 +262,12 @@ already produces exactly the `{name, path_hint, deployable: bool}` tuples a
 
 **Lineage: `repo_id` + `subpath`/`deployable_id` on Project** (already
 reflected in the schema above). This is sufficient because `subpath` is
-already the WAS `path_hint` and is stable across re-analysis (path-based, not
+already the workspace-level CAS's `path_hint` and is stable across re-analysis (path-based, not
 generated-ID-based), so re-running analysis after new commits doesn't orphan
 the Project↔deployable link.
 
 **"What do sibling projects share": the G1 gap must be closed first.** Today
-there's no queryable answer beyond re-deriving it by grepping raw WAS JSON for
+there's no queryable answer beyond re-deriving it by grepping raw workspace-level CAS JSON for
 shared `libs/*` evidence strings (which is what this study had to do — see
 Section 1). The concrete fix: add a `shared_dependencies` computation to
 `run_workspace_analysis`'s output, one row per (deployable_a, deployable_b,
@@ -282,7 +282,7 @@ shared_target, shared_target_kind: library|database|queue), derived from:
 Until that lands, the UI-facing "what does project X share with project Y in
 this repo" feature should be scoped down to "shared libs" computed by a direct
 import-graph query (`get_dependencies`/`get_callers` per deployable, intersect
-the `libs/*` targets) rather than promised as a WAS-level feature — it's a
+the `libs/*` targets) rather than promised as a workspace-level-CAS feature — it's a
 real gap, not a UI polish item.
 
 ## 5. Concrete gaps, prioritized
@@ -291,7 +291,7 @@ real gap, not a UI polish item.
 1. **G1 — shared-library rollup across deployables in one repo.** Highest
    priority; this is the single missing piece between "detects deployables"
    (done) and "shows you the monorepo's actual internal coupling" (not done).
-   Land as a new field on the WAS deployable/application_link output, sourced
+   Land as a new field on the workspace-level CAS's deployable/application_link output, sourced
    from existing per-CAS import resolution.
 2. **G2 — promote shared-database/shared-queue signals to application_links.**
    The reference monorepo's 4 deployables share Postgres + Redis + BullMQ
@@ -342,8 +342,8 @@ real gap, not a UI polish item.
   React component reuse inside `apps/internal-api/client`, confirming no
   cross-deployable library-sharing surface exists today (G1).
 - `get_cross_repo_links(paths: [<reference monorepo>])` — `links: []`,
-  confirming G1/G2 from a second angle (cross_repo_links tool, not just WAS
-  composition).
+  confirming G1/G2 from a second angle (cross_repo_links tool, not just
+  workspace-level CAS composition).
 - `run_workspace_analysis(paths: ["proof-of-concept"])`, saved as
   `poc-entity-model-study` — 9 applications, 4 deployables (api, app,
   marketing-site, mcp-server), 1 library (analyzer-core), 2

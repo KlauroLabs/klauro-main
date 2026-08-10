@@ -201,8 +201,8 @@ dependents-of-change; O(answer)).
 **Standing rule — the exhaustive-scan defect class:** any code that answers a
 reachability/impact/membership question by re-walking or re-scanning the full
 node/edge list per query is an instance of this defect class (three found so
-far: call-resolver quadratic fallback, telemetry CAS re-parse, WAS lookup-map
-rebuild; the partitioner one-hop edge scan was the fourth). The fix is never
+far: call-resolver quadratic fallback, telemetry CAS re-parse, workspace-level-CAS
+lookup-map rebuild; the partitioner one-hop edge scan was the fourth). The fix is never
 a local cache hack: consume the reachability index (reachability/impact) or a
 once-per-CAS derived map keyed by the same stage fingerprints. Self-CAS
 measurements (54k nodes / 61k edges / 23k method_calls; 11.5k call-graph

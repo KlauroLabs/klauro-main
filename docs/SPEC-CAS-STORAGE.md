@@ -9,7 +9,7 @@ segments here). Examples are shape-based; no client or benchmark product names.
 
 Every storage/resource incident of 2026-07-20/21 — telemetry flush at 2.8 GB,
 `status` at 1.2 GB/20 s, the status endpoint's full decompress, the
-coordinator+worker duplicate at 5.9 GB, WAS lookup-map rebuilds, 126 s
+coordinator+worker duplicate at 5.9 GB, workspace-level-CAS lookup-map rebuilds, 126 s
 historical saves — is one defect: **the CAS is a single monolithic JSON
 document, and every consumer that wants any of it must materialize all of
 it.** Quotas, caps, and queues manage that symptom; this spec removes the
@@ -103,7 +103,7 @@ newest member of a class (`index` by_name/by_type at 18.2 MB, `call_chains`,
   first thing agents *don't* need when they asked for a file's node list.
 - **`analysis_facts`** is per-subject evidence (32k–41k records) touched
   almost exclusively by fact-oriented tools — 31% of the self-shape CAS that
-  status/telemetry/WAS never read.
+  status/telemetry/workspace-level composition never read.
 
 ### 1.3 Consumer inventory (who loads what, and what they actually need)
 
@@ -115,7 +115,7 @@ Verified against the tree at `9e13f705`:
 | Hosted status endpoints (`/analysis`) | `hosted-analysis.ts:249–250` — **two** `loadAnalysis` calls (preferred + main) | manifest tier + `.reanalyze-attempt.json` sidecar | per poll, per client | < 100 ms, must never starve health | 2× full load (cached, but cold after every save) |
 | Self-telemetry correlation | `self-telemetry.ts` flush → cached CAS | per-node lookup by static id (`runtime_static_links`, node existence) | every ingest flush | < 10 ms/lookup | full CAS held resident (post-`ef4e29ac`; was the 2.8 GB incident) |
 | MCP tool handlers (~160 tools) | `analyzer.ts:1387 getAnalysis` → `query.ts` (40+ functions, all typed `(cas: CASOutput, …)`) | per-tool slices: a node, a file's nodes, edges-for-node, route table, one summary block | interactive, bursty | < 1 s | `getAnalysis` calls `loadAnalysis` **without `preferCache`** — a full decompress+parse per call is possible on this hottest path (defect, wave 0) |
-| WAS composition | `cross-codebase-analysis.ts` | per-member: system summary, capabilities, interfaces, entry/exit, links — never `nodes[]`/`method_calls` | per workspace build/refresh | seconds | loads every member CAS fully; rebuilds lookup maps per run (a named instance of the exhaustive-scan defect class, SPEC-MATHEMATICAL-INTELLIGENCE §C.1) |
+| Workspace-level CAS composition | `cross-codebase-analysis.ts` | per-member: system summary, capabilities, interfaces, entry/exit, links — never `nodes[]`/`method_calls` | per workspace build/refresh | seconds | loads every member CAS fully; rebuilds lookup maps per run (a named instance of the exhaustive-scan defect class, SPEC-MATHEMATICAL-INTELLIGENCE §C.1) |
 | Reanalysis coordinator | `analyzer.ts` (6× `loadAnalysis(preferCache)`) | previous manifest + affected sets + freshness | per analysis job | seconds | full previous CAS resident **in the coordinator process while the worker holds its own copy** — the 5.9 GB duplicate incident |
 | Build worker (analysis-worker) | orchestrator | the full graph — the one legitimate materializer | per analysis job | n/a | full (correct) |
 | Description enrichment | `description-enrichment.ts` | node slices in, prose out | background, per batch | n/a | load-modify-save of the whole blob per enrichment batch — a 258 MB rewrite to add kilobytes of prose |
@@ -135,7 +135,7 @@ R1. **Status is O(bytes of metadata).** `status`-class reads touch only the
 R2. **Per-record reads.** Telemetry correlation and MCP node/file tools read
     single records or file-groups by offset, without loading a segment into a
     parsed object graph larger than the answer.
-R3. **Only the building worker materializes.** No API/coordinator/status/WAS
+R3. **Only the building worker materializes.** No API/coordinator/status/workspace-level-composition
     process ever holds a full parsed CAS. The coordinator consumes manifests
     and affected sets.
 R4. **Concurrent readers during a write.** A reader holding revision N is
@@ -354,7 +354,7 @@ Memory:
 - **Today:** any consumer touching K distinct analyses transiently costs
   K × ~6.5 × blob-size. Two 258 MB-class loads = ~3.4 GB + GC headroom — the
   measured incident band (1.2–5.9 GB). 100 projects with even occasional
-  cross-project reads (WAS, telemetry, status pollers) cannot fit at any
+  cross-project reads (workspace-level composition, telemetry, status pollers) cannot fit at any
   quota setting: the format is the ceiling.
 - **Segmented:** API/status tier: 100 × manifest ≈ 100 × 20 KB = **2 MB**.
   Telemetry: idx probes, ~0 resident. MCP burst of 10 concurrent slice reads
@@ -376,7 +376,7 @@ hundreds of cold runs):
   analyses/day**; the queue holds only cold jobs. That is "hundreds of
   analyses" not as a queue-management problem but as a unit-economics fact.
 
-WAS composition: N members × manifest+capability segments (~1–3 MB each)
+Workspace-level CAS composition: N members × manifest+capability segments (~1–3 MB each)
 instead of N × full CAS — a 17-member workspace refresh drops from
 ~17 × 1.7 GB transients (serialized by necessity today) to ~30 MB of reads.
 
@@ -440,13 +440,13 @@ segment bytes stable across two runs of the same input. Gates run on the VPS
 - `query.ts` surface migrates `(cas)` → `(handle)`; each tool declares the
   segments it reads (mechanical for ~80% of tools: node/file/edges/route
   lookups; the summary/overview tools read manifest + 1–2 segments).
-- WAS composition consumes member manifests + capability/interface segments;
+- Workspace-level CAS composition consumes member manifests + capability/interface segments;
   its lookup maps become once-per-revision derived artifacts keyed by
   segment hash (closing its instance of the exhaustive-scan defect class).
 - Reanalysis coordinator consumes previous *manifest* + affected sets; only
   the worker opens segments.
 - Description enrichment writes `prose.seg` deltas (§3.4), never the blob.
-- **Kills:** the coordinator+worker duplicate class (5.9 GB) and the WAS
+- **Kills:** the coordinator+worker duplicate class (5.9 GB) and the workspace-level-CAS
   rebuild class; enrichment's 258 MB-rewrite-for-kilobytes write
   amplification.
 - Deletes: `materialize()` calls from every non-worker consumer;
@@ -487,7 +487,7 @@ segment bytes stable across two runs of the same input. Gates run on the VPS
 | telemetry flush 2.8 GB | full CAS for per-node lookups | W1 |
 | health-check starvation | loaders competing on API host | W1 (R3) |
 | coordinator+worker 5.9 GB duplicate | two full materializations per job | W2 |
-| WAS map rebuilds | N× full member loads per compose | W2 |
+| Workspace-level CAS map rebuilds | N× full member loads per compose | W2 |
 | 126 s saves / giant stringify | monolithic serialize | W1 (off consumer path) → W4 (gone) |
 
 ---

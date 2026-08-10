@@ -2,8 +2,8 @@
 
 Klauro can keep proprietary analyzers off the developer machine while still
 giving AI agents fast MCP context. This is one Klauro analysis flow, not two
-separate products. The installed client, hosted analyzer service, CAS/WAS
-storage, MCP server, and UI cooperate to produce durable and in-flight
+separate products. The installed client, hosted analyzer service, CAS
+storage (repo- and workspace-level), MCP server, and UI cooperate to produce durable and in-flight
 understanding.
 
 The deployment shape is:
@@ -17,15 +17,15 @@ Developer machine
 Klauro analyzer service
   account + entitlement check
   closed analyzer runtime
-  shared project CAS/WAS generation
+  shared project CAS generation (repo- and workspace-level)
   hosted AI enrichment
   selected-branch commit history
 ```
 
 Klauro tracks shared project truth as analyzed revisions for selected branches.
 A revision can come from a connected Git provider checkout or from a signed-in
-CLI submission of a committed local tree. Both produce the same CAS/WAS project
-state. If a Git remote is detected during local setup, Klauro recommends
+CLI submission of a committed local tree. Both produce the same CAS project
+state (repo- or workspace-level). If a Git remote is detected during local setup, Klauro recommends
 connecting it in the UI for automatic push-triggered analysis, but the
 connection is not required.
 

@@ -130,7 +130,7 @@ prose) — never the categorizer. See `CAMPS.md` for the full competitive framin
   TODOs as tracked work signal.
   Tools: `get_test_summary`, `find_tests`, `get_documentation_coverage`, `get_todos`.
 
-## Workspace-level (WAS) — cross-repo, first-class
+## Workspace-level CAS — cross-repo, first-class
 
 This is the layer most competitors have no concept of at all: understanding a whole
 **workspace** (ui -> api -> worker -> infra) as one product, not one repo. See `CAMPS.md`

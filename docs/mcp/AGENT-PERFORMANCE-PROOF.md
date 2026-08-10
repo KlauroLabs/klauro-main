@@ -20,7 +20,7 @@ The next proof bar is stronger than ordinary indexing benchmarks. The gauntlet
 must show the same installed Klauro product path a customer would use:
 
 - cold analysis of new projects/workspaces;
-- warm understanding queries against existing CAS/WAS;
+- warm understanding queries against an existing CAS (repo- or workspace-level);
 - in-flight analysis of uncommitted, branch, or agent-session work;
 - incoming change awareness for analyzed commits or branches the local checkout
   has not yet pulled;

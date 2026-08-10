@@ -38,7 +38,7 @@ export DEEPINFRA_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"
 # export OPENAI_MODEL="$DEEPINFRA_MODEL"
 # export OPENAI_STRUCTURED_MODEL="$DEEPINFRA_STRUCTURED_MODEL"
 
-# Workspace (WAS) narrative pass tuning
+# Workspace-level CAS narrative pass tuning
 export KLAURO_WORKSPACE_AI_MAX_TOKENS=650
 export KLAURO_WAS_AI_SLOW_MS=120000
 ```
@@ -83,7 +83,7 @@ unchanged code reuses cached AI output.
 
 ## Proving the hosted provider was used
 
-CAS/WAS enrichment must not silently fall back to local inference when hosted
+CAS enrichment (repo- and workspace-level) must not silently fall back to local inference when hosted
 DeepInfra is expected. Set:
 
 ```bash

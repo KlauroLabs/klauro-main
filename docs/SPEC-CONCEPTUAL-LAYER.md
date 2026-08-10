@@ -22,7 +22,7 @@ uniform from a single function up to a whole capability.
 ## 1. The behavioral hierarchy
 
 ```
-Capability                       (high-level "what it does"; already computed — CAS/WAS)
+Capability                       (high-level "what it does"; already computed — CAS, repo- or workspace-level)
   ├─ has: Flow[]                 (how a request/job moves through the system)
   └─ has: Entity[]               (the data entities involved)
 Flow
@@ -86,14 +86,14 @@ The conceptual layer is not just comprehension — it's the substrate for coordi
 
 ## 5. The moat
 
-Every layer here is computed OVER the CAS/WAS semantic graph + intent. A symbol index (git, editors,
+Every layer here is computed OVER the CAS semantic graph (repo- and workspace-level) + intent. A symbol index (git, editors,
 codebase-memory) has the substrate but not the concepts — it cannot tell you a *flow's* constraints,
 a *step's* side-effects, or which *capability* a change touches. This is comprehension at every level,
 and it's what lets a fleet of agents align on *meaning*, not just files.
 
 ## 6. Status / roadmap
 
-- **Behavioral: Capability** — computed (CAS/WAS). **Flow → Step (I/L/S/O + Constraints, sub-function
+- **Behavioral: Capability** — computed (CAS, repo- or workspace-level). **Flow → Step (I/L/S/O + Constraints, sub-function
   sections, capability/entity linkage)** — BUILDING (`flow-concepts.ts` + `get_flow_concepts`).
 - **Structural: architectural + paradigm** — partly built (`get_architectural_conflicts`,
   `get_paradigm_conformance`); to be unified under this layer's vocabulary.

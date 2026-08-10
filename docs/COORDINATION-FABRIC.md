@@ -20,7 +20,7 @@ three hazards nothing in the filesystem or Git prevents:
 
 Git and the filesystem carry no intent, no reasoning, no "peer is mid-edit," and no
 arbitration. The coordination fabric adds that layer on top of Klauro's existing structural
-understanding (CAS) and cross-repo understanding (WAS).
+understanding (CAS) and cross-repo understanding (the workspace-level CAS, composed via sub-CAS nodes).
 
 ## Two tiers, composed
 
@@ -78,7 +78,7 @@ nothing about intent:
 
 `apps/mcp-server/src/coordination/arbiter.ts` computes overlap between a new claim and every
 active claim: path-prefix intersection, symbol-set intersection, capability-name match against
-WAS `workspace_capabilities`, and blast-radius intersection via CAS call-graph edges. It
+the workspace-level CAS's `workspace_capabilities`, and blast-radius intersection via CAS call-graph edges. It
 returns `granted`, `conflict` (with the colliding claim and evidence), or `duplicate` (with the
 existing claim that already covers the same capability). `collision.ts` composes the same
 signals into a full `CollisionReport` (duplicates, overlaps, in-flight contract drifts, and
