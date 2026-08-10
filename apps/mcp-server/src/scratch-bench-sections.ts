@@ -26,18 +26,24 @@ async function runConcurrent(label: string, n: number, fn: () => Promise<unknown
   console.log(JSON.stringify({ label, n, elapsed_ms: elapsed, rss_before_mb: rssBefore, peak_rss_mb: peakRss }));
 }
 
+const MODE = process.env.BENCH_MODE || 'all';
+
 async function main() {
-  console.log(`bench project=${PROJECT_PATH}`);
-  for (const n of [1, 4, 16]) {
-    await runConcurrent('full-cas', n, () => loadAnalysis(PROJECT_PATH));
+  console.log(`bench project=${PROJECT_PATH} mode=${MODE}`);
+  if (MODE === 'full' || MODE === 'all') {
+    for (const n of [1, 4, 16]) {
+      await runConcurrent('full-cas', n, () => loadAnalysis(PROJECT_PATH));
+    }
   }
-  for (const n of [1, 4, 16]) {
-    await runConcurrent('segmented-start-context', n, () =>
-      loadAnalysisSections(PROJECT_PATH, CAS_SECTION_PROFILES.full));
-  }
-  for (const n of [1, 4, 16]) {
-    await runConcurrent('segmented-graph-search', n, () =>
-      loadAnalysisSections(PROJECT_PATH, CAS_SECTION_PROFILES.graph_search));
+  if (MODE === 'segmented' || MODE === 'all') {
+    for (const n of [1, 4, 16]) {
+      await runConcurrent('segmented-start-context', n, () =>
+        loadAnalysisSections(PROJECT_PATH, CAS_SECTION_PROFILES.full));
+    }
+    for (const n of [1, 4, 16]) {
+      await runConcurrent('segmented-graph-search', n, () =>
+        loadAnalysisSections(PROJECT_PATH, CAS_SECTION_PROFILES.graph_search));
+    }
   }
 }
 
