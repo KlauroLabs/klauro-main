@@ -50,6 +50,7 @@ import {
   EnhancedSystemPurpose,
   CASFlowGraph,
   CASFlowRef,
+  CASCapabilityDependency,
   CASTestSuite,
   CASTestCase,
   CASMock,
@@ -112,7 +113,8 @@ import {
 } from './analyzer-contribution-cache';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
-import { TRACEABLE_NODE_TYPES, computeFlowConcepts } from './flow-concepts';
+import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
+import { testCapabilityNameAgainstIdentifierVocabulary } from './capability-audience-test';
 import {
   attachFlowContract,
   attachCapability,
@@ -1364,6 +1366,8 @@ export class AnalyzerOrchestrator {
         }
       }
 
+      this.rollupSystemCapabilityDependencies(flows, cas.system_capabilities || []);
+
       // Structural cast: CASEntryPoint's `input.fields` is optional (real CAS
       // shape) while EntryPointLike's normalized EntryPointInputShape.fields
       // is required — a type-level-only mismatch (runtime shape always
@@ -1377,6 +1381,97 @@ export class AnalyzerOrchestrator {
       // Never let enrichment failure break the analysis — leave entry points
       // exactly as they were (evidence-gated, no fabrication on error).
       return entryPoints;
+    }
+  }
+
+  /**
+   * CAPABILITY-DEPENDENCY ROLLUP (#119 audit): aggregates the per-flow
+   * `capability_relationships` role signal (already computed by
+   * `deriveCapabilityRelationships` in flow-concepts.ts, and already
+   * materialized onto `related_flows` just above this call) into real
+   * capability-PAIR dependency edges on `system_capabilities[].depends_on`/
+   * `depended_by`.
+   *
+   * This replaces the "related_flows[].role in-degree" proxy the
+   * capability/mechanism audit (2026-08-09) was forced to use to test
+   * terminality — the audit's own words: "the raw ingredient is already
+   * computed, just not rolled up." One flow whose PRIMARY owner is
+   * capability P, but which also appears with role `'supporting'` in
+   * capability C's own related_flows, is direct, non-lexical evidence that
+   * P's flow reaches into C's entities: P depends on C. Aggregated per
+   * (P, C) pair (evidence.call_count = number of overlapping flows), never
+   * emitted per-flow, matching CASCapabilityDependency's existing shape.
+   *
+   * Distinct from — and never to be confused with — `CASCapability.
+   * depends_on` on `flow_graph.capabilities`, a separate, OLDER,
+   * structurally different capability list (CapabilityDetector's grouping
+   * heuristics, not the AI catalog) that already has its own independently-
+   * populated dependency schema via CapabilityDependencyBuilder. This
+   * rollup is scoped specifically to the AI-curated `system_capabilities`
+   * catalog every consumer/audit actually reads — that list had NO
+   * dependency edges of its own before this method existed.
+   *
+   * A pure function of its inputs (mutates `capabilities` in place, exactly
+   * like the `related_flows` materialization it follows) so it is testable
+   * without the full `computeFlowConcepts` derivation pipeline.
+   */
+  private rollupSystemCapabilityDependencies(
+    flows: Array<Pick<FlowConcept, 'flow_id' | 'capability_id' | 'capability_relationships'>>,
+    capabilities: SystemCapability[],
+  ): void {
+    const depPairs = new Map<string, { from: string; to: string; count: number }>();
+    for (const flow of flows) {
+      const relationships = flow.capability_relationships || [];
+      const primary = relationships.find(r => r.role === 'primary')?.capability_id || flow.capability_id;
+      if (!primary) continue;
+      for (const rel of relationships) {
+        if (rel.role === 'primary' || rel.capability_id === primary) continue;
+        const key = `${primary}|${rel.capability_id}`;
+        const entry = depPairs.get(key);
+        if (entry) entry.count += 1;
+        else depPairs.set(key, { from: primary, to: rel.capability_id, count: 1 });
+      }
+    }
+    if (depPairs.size === 0) return;
+
+    const capById = new Map<string, SystemCapability>();
+    for (const cap of capabilities) capById.set(cap.id, cap);
+
+    const dependsOnById = new Map<string, CASCapabilityDependency[]>();
+    const dependedByById = new Map<string, Set<string>>();
+    for (const { from, to, count } of depPairs.values()) {
+      // Only pairs where BOTH ends resolve to a real system_capabilities
+      // entry — never a dangling id from a pruned/behavior-surface flow
+      // relationship.
+      const fromCap = capById.get(from);
+      const toCap = capById.get(to);
+      if (!fromCap || !toCap) continue;
+      const sharedEntities = (fromCap.related_entities || [])
+        .filter(e => (toCap.related_entities || []).includes(e));
+      const dep: CASCapabilityDependency = {
+        from_capability: from,
+        to_capability: to,
+        dependency_type: sharedEntities.length > 0 ? 'shares-data' : 'uses',
+        strength: count > 2 ? 'common' : 'optional',
+        evidence: {
+          shared_services: [],
+          shared_entities: sharedEntities.length > 0 ? sharedEntities : undefined,
+          shared_nodes: [],
+          call_count: count,
+        },
+        description: `${count} shared flow${count > 1 ? 's' : ''} between "${fromCap.name}" and "${toCap.name}"`,
+      };
+      if (!dependsOnById.has(from)) dependsOnById.set(from, []);
+      dependsOnById.get(from)!.push(dep);
+      if (!dependedByById.has(to)) dependedByById.set(to, new Set());
+      dependedByById.get(to)!.add(from);
+    }
+
+    for (const cap of capabilities) {
+      const outgoing = dependsOnById.get(cap.id);
+      if (outgoing && outgoing.length > 0) cap.depends_on = outgoing;
+      const incoming = dependedByById.get(cap.id);
+      if (incoming && incoming.size > 0) cap.depended_by = Array.from(incoming);
     }
   }
 
@@ -11855,6 +11950,12 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[] = [],
     nodes: CASNode[] = [],
     purpose?: EnhancedSystemPurpose,
+    // Real dependency/package names (CASLibrary.name — already collected by
+    // detectLibrariesFromManifests) — the "identifier vocabulary" evidence
+    // for the #119 audience-test compliance check below. Optional/defaulted
+    // so every existing caller/test is unaffected; the check simply no-ops
+    // when omitted.
+    libraryNames: string[] = [],
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
     // Defense-in-depth: a behavior-surface item must never enter the ranked
@@ -11896,9 +11997,37 @@ export class AnalyzerOrchestrator {
     // runtime/daemon repo), keep the original so agents still have targets.
     const gated = purposeGated.length > 0 ? purposeGated : result;
 
+    // (1b) AUDIENCE-TEST COMPLIANCE CHECK (#119 audit): the AI catalog prompt
+    // already tells the model to never name a capability after a mechanism
+    // (its own words: "a product/user/operational ability that would appear
+    // in a product description... NEVER as a mechanism or a supporting
+    // noun"), and the audit found the model only PARTIALLY complies —
+    // demoting a mechanism-named capability to `category: "supporting"`
+    // instead of dropping it, exactly the gap this closes. Deterministic,
+    // evidence-based backstop: a capability's SUBJECT reads as
+    // identifier-only vocabulary (imported dependency/package name) with NO
+    // domain-entity backing (see capability-audience-test.ts for the full
+    // method and its measured precision/recall against the audit's own 23
+    // graded capabilities — precision 1.0 / recall 0.67 on the specific
+    // protocol-name defect shape it targets, zero false positives on real
+    // product capabilities). Narrowly scoped on purpose: it catches
+    // "Authenticate with WebAuthn"/"Manage Session Security" shapes, not the
+    // other four mechanism shapes the audit found (those are the purpose
+    // gate's and the trigger-role/terminality work's job, not this one's).
+    const vocabularyGated = libraryNames.length > 0
+      ? gated.filter(capability =>
+          !testCapabilityNameAgainstIdentifierVocabulary(
+            capability.name,
+            libraryNames.map(name => ({ name })),
+            dataEntities,
+          ).failsIdentifierTest)
+      : gated;
+    // Same never-empty-catalog safeguard as the purpose gate above.
+    const audienceGated = vocabularyGated.length > 0 ? vocabularyGated : gated;
+
     // (2) DEDUP. Re-run the name + entity-set dedup (with the strengthened
     // verb-variant pass) on the AI output — it never ran on the catalog.
-    const deduped = this.dedupeSystemCapabilitiesByName(gated);
+    const deduped = this.dedupeSystemCapabilitiesByName(audienceGated);
 
     // (3) DESCRIPTION-VS-CAPABILITY CROSS-CHECK. See
     // `description_capability_gaps` on EnhancedSystemPurpose for the full
@@ -12117,21 +12246,37 @@ export class AnalyzerOrchestrator {
       : [];
     const isDistributionOrCiNodeType = (type: string) => /^(distribution_|ci_)/.test(type);
     const hasRealOperationAnchor = operationNodeTypes.some(type => !isDistributionOrCiNodeType(type));
-    // Any real product entry point anchor (http route, ordinary-code-backed
-    // cli/command, ...) present among the operations → never demote, no matter
-    // what the entity anchors or the name look like.
-    if (hasRealOperationAnchor) return false;
     const operationsAllDistributionOrCi = operationNodeTypes.length > 0
       && operationNodeTypes.every(isDistributionOrCiNodeType);
 
-    // No resolvable entity anchor AND no resolvable operation anchor → nothing
-    // to check evidence against; fall back to the name as a corroborating
-    // signal only.
-    if (anchors.length === 0 && operationNodeTypes.length === 0) {
-      return this.isInfrastructureMachineryName(capability.name);
+    // ZERO ENTITY EVIDENCE. A real (non-CI/non-distribution) operation
+    // anchor — an HTTP route, an event listener, a CLI command — proves only
+    // that the code is REACHABLE, never that it touches a product record.
+    // Live defect this closes: "Provide system fallback" (`entities: []`,
+    // one real `POST /fallback` route) used to short-circuit to `return
+    // false` (kept) on `hasRealOperationAnchor` alone, before the entity
+    // anchor evaluation below ever ran — a route/event trigger is not
+    // product evidence by itself. Zero entity evidence must not ship
+    // regardless of what operations exist on it.
+    if (anchors.length === 0) {
+      if (operationNodeTypes.length === 0) {
+        // Nothing to check evidence against at all; fall back to the name
+        // as a corroborating signal only (unchanged narrow fallback).
+        return this.isInfrastructureMachineryName(capability.name);
+      }
+      // Has a resolvable operation (possibly a real, non-CI/distribution
+      // one) but NO entity evidence backing it anywhere — infra-shaped by
+      // absence of product evidence, not by name or route shape.
+      return true;
     }
 
-    const entityAnchorsAllInfra = anchors.length > 0 && anchors.every(entity => {
+    // Real product entry point anchor present AND there is entity evidence
+    // to potentially have been infra-shaped → never demote on entity-name
+    // shape alone; the operation evidence overrides it. (This bypass only
+    // ever applies once the zero-entity case above has been ruled out.)
+    if (hasRealOperationAnchor) return false;
+
+    const entityAnchorsAllInfra = anchors.every(entity => {
       // Real product record / produced response → product evidence, keep.
       if (entity.kind === 'persisted-entity' || entity.kind === 'api-response') return false;
       return this.isInfrastructureShapedEntityName(entity.name);
@@ -12783,6 +12928,7 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[];
     nodes: CASNode[];
     budgetMs: number;
+    libraryNames?: string[];
   }): Promise<SystemCapability[]> {
     const distinctFamilyCount = this.catalogDistinctFamilyCount(args.candidateSnapshot);
     let reconciled: SystemCapability[] = [];
@@ -12807,7 +12953,7 @@ export class AnalyzerOrchestrator {
         ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
       });
       const cycleReconciled = extracted.length > 0
-        ? this.reconcileCatalogedCapabilities(extracted, args.candidateSnapshot, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose)
+        ? this.reconcileCatalogedCapabilities(extracted, args.candidateSnapshot, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [])
         : [];
       if (cycleReconciled.length > reconciled.length) reconciled = cycleReconciled;
       qualityFailure = this.catalogQualityFailure(reconciled, distinctFamilyCount);
@@ -13116,6 +13262,7 @@ export class AnalyzerOrchestrator {
         entryPoints,
         nodes,
         budgetMs,
+        libraryNames,
       })
       : Promise.resolve<SystemCapability[]>([]);
     const capabilityCatalogOutcome = capabilityCatalogPromise.then(
