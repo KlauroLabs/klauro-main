@@ -65,7 +65,32 @@ const METHOD_LIKE_TYPES = /(^|[_\s])(method|function|action)([_\s]|$)/;
 // fact journeys already use to classify 'user-facing' vs 'system'/'scheduled'
 // — one structural definition of "user-reachable", not a second one invented
 // at the capability layer.
-export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route']);
+//
+// Cross-repo audit (2026-08-09, docs/audits/…): this set was HTTP-biased —
+// correct for services, blind on shapes whose outward face is not a route at
+// all. 'ipc' (Electron ipcMain.handle/.on, invoked from the renderer) and
+// 'command' (Tauri #[tauri::command], invoked via invoke() from the
+// frontend) are ALREADY-CLOSED entry-point kinds (ENTRY_POINT_TYPES,
+// cas.types.ts) that are exactly as "genuinely caller-initiated" as an HTTP
+// route on a desktop app — a user clicks a button, the renderer invokes the
+// command, a real caller-initiated action happens. Adding them widens the
+// EXISTING closed vocabulary by two structural facts already computed
+// elsewhere; it is not a new hardcoded keyword/vendor list (the kind of
+// table this spec forbids elsewhere, §0.7.1's audience test).
+//
+// This does NOT close the mobile (Kotlin/Swift) gap the same audit found:
+// an Android `<activity>`/structural-Activity-subclass entry already maps to
+// 'page' (kotlin-analyzer.ts MANIFEST_COMPONENT_ENTRY_TYPES) and so was
+// already in this set — that shape's audit failures (a substrate candidate
+// surviving, a vendor name leaking into a description) are NOT admission
+// failures and are not fixed here; see GATE 3
+// (filterIsolatedUncorroboratedCandidates) and the audience-test work in
+// orchestrator.ts. A pure Jetpack-Compose UI with no AndroidManifest and no
+// Activity subclass emits NO entry points at all today (ComposeAnalyzer only
+// emits the `renders` component tree, never a CASEntryPoint) — that is a
+// real, un-closed analyzer gap (a missing UI-screen-entry detector), stated
+// here rather than papered over with a broader match on this set.
+export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route', 'ipc', 'command']);
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
 // Entry types eligible for the k8s CronJob -> command scheduling-evidence

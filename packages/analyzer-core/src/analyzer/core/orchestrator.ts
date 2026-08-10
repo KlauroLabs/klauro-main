@@ -23,6 +23,7 @@ import {
   ENTRY_POINT_TYPES,
   EXIT_POINT_TYPES,
   CASExitPoint,
+  CASExitPointType,
   CASIntent,
   CASFlowSummary,
   CASChangeRisk,
@@ -114,7 +115,7 @@ import {
 import { buildUserJourneys, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
-import { testCapabilityNameAgainstIdentifierVocabulary } from './capability-audience-test';
+import { testCapabilityNameAgainstIdentifierVocabulary, testCapabilityDescriptionAgainstAudience } from './capability-audience-test';
 import {
   attachFlowContract,
   attachCapability,
@@ -12204,19 +12205,39 @@ export class AnalyzerOrchestrator {
     // Still applied as a filter (defense-in-depth costs nothing when it
     // rarely fires), but logged distinctly from ordinary reconciliation so a
     // firing is visible rather than silently absorbed.
-    const vocabularyGated = libraryNames.length > 0
-      ? gated.filter(capability => {
-          const verdict = testCapabilityNameAgainstIdentifierVocabulary(
-            capability.name,
-            libraryNames.map(name => ({ name })),
-            dataEntities,
-          );
-          if (verdict.failsIdentifierTest) {
-            console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${capability.name}" post-generation — candidate generation should have excluded this before it ever reached the AI catalog.`);
-          }
-          return !verdict.failsIdentifierTest;
-        })
-      : gated;
+    // Cross-repo audit (2026-08-09): the name-only check above missed vendor
+    // names, a protocol term, an `Rpc` mention, and a source-file path that
+    // reached DESCRIPTIONS instead of names, plus descriptions that were
+    // missing entirely or merely restated the capability's own name — the
+    // audience bar applies to the whole capability a customer reads (§0.7.1),
+    // not just the title. `testCapabilityDescriptionAgainstAudience` runs
+    // regardless of `libraryNames` for the missing/restates-name/source-path
+    // checks (no library evidence needed for those); the identifier-
+    // vocabulary check within it is a no-op when there are no libraries.
+    const vocabularyGated = gated.filter(capability => {
+      if (libraryNames.length > 0) {
+        const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(
+          capability.name,
+          libraryNames.map(name => ({ name })),
+          dataEntities,
+        );
+        if (nameVerdict.failsIdentifierTest) {
+          console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${capability.name}" post-generation — candidate generation should have excluded this before it ever reached the AI catalog.`);
+          return false;
+        }
+      }
+      const descVerdict = testCapabilityDescriptionAgainstAudience(
+        capability.name,
+        capability.description,
+        libraryNames.map(name => ({ name })),
+        dataEntities,
+      );
+      if (descVerdict.failsAudienceTest) {
+        console.error(`[Klauro] audience test rejected the DESCRIPTION of "${capability.name}" (${descVerdict.reasons.join(',')}) — see §0.7.1's audience test.`);
+        return false;
+      }
+      return true;
+    });
     // Same never-empty-catalog safeguard as the purpose gate above.
     const audienceGated = vocabularyGated.length > 0 ? vocabularyGated : gated;
 
@@ -18991,7 +19012,17 @@ export class AnalyzerOrchestrator {
       'old', 'new', 'main', 'index', 'metadata', 'data', 'core', 'lib', 'library',
       'src', 'dist', 'build', 'out', 'pkg', 'bin', 'httpexception', 'exception', 'exceptions', 'error', 'errors',
       'libs', 'package', 'portal', 'dashboard', 'admin', 'business', 'apps',
-      'users', 'dev', 'clients',
+      // 'users'/'clients' deliberately NOT here (regression, coverage-gate
+      // red on express-mongoose fixture): both are real, common domain
+      // resources (a "users" REST resource, a CRM "clients" entity) — the
+      // ambient generic-app-scaffolding words this set exists for
+      // ('app'/'server'/'client'[singular, tooling role]/'dashboard') are a
+      // different class than a pluralized DOMAIN RESOURCE noun. Blocking
+      // "users" silently zeroed capability generation for the smallest real
+      // fixture (2 Express routes over a Mongoose User model) — the resource
+      // key normalized to exactly this blocked token before any capability
+      // was ever built, well upstream of the terminality gates.
+      'dev',
       'page', 'pages', 'route', 'routes', 'component', 'components', 'layout',
       'layouts', 'section', 'sections', 'navbar', 'nav', 'footer', 'button',
       'arrow', 'padding', 'total', 'home', 'submit', 'rewrite', 'rewrites',
@@ -22486,7 +22517,20 @@ export class AnalyzerOrchestrator {
    */
   private isUserReachableTerminalCandidate(
     capability: SystemCapability,
-    dataEntities: CASDataEntity[]
+    dataEntities: CASDataEntity[],
+    // Cross-repo audit (2026-08-09) root cause #2: GATE 2's entity-write
+    // requirement under-generates real capabilities that write no domain
+    // ENTITY at all — an AI chat/recommendation service, a notification
+    // subsystem, an approval workflow with its own mutation, all produce an
+    // Effect (a message sent, an email dispatched, an event emitted) rather
+    // than a persisted row. §0.7.1: "under-generation is a first-class
+    // failure, equal in severity to over-generation." True per-candidate
+    // evidence, not a name/keyword guess — set by buildSystemCapabilities
+    // from the SAME direct/one-hop handler-node matching entity evidence
+    // already uses, just against exit points of an effect-shaped kind
+    // (message/event/webhook) instead of entity lifecycle. Defaults false so
+    // every other caller (tests, other candidate pools) is unaffected.
+    hasEffectEvidence = false
   ): boolean {
     const hasUserTriggeredEntry = (capability.operations || []).some(
       operation => USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as any)
@@ -22505,13 +22549,23 @@ export class AnalyzerOrchestrator {
     const relatedEntityIds = capability.related_entities || [];
     if (relatedEntityIds.length === 0) return true;
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
-    return relatedEntityIds.some(entityId => {
+    const hasEntityWrite = relatedEntityIds.some(entityId => {
       const entity = entityById.get(entityId);
       if (!entity) return false;
       return (entity.lifecycle?.created_by?.length || 0) > 0
         || (entity.lifecycle?.updated_by?.length || 0) > 0
         || (entity.lifecycle?.deleted_by?.length || 0) > 0;
     });
+    // An entity write and an Effect are co-equal terminal evidence (§0.7.1):
+    // a candidate whose related entities are read-only pass-through still
+    // survives if it genuinely dispatches an Effect ("sends alerts to staff
+    // when an incident is logged" reads no persisted alert but sends one).
+    // A zero-entity, zero-effect candidate ("Provide system fallback" —
+    // POST /fallback -> ResponseEntity<String>) is unaffected by this OR:
+    // it already returned true above at the empty-related_entities check,
+    // same as before this change — this branch only ever widens the
+    // non-empty-entities, all-read-only case.
+    return hasEntityWrite || hasEffectEvidence;
   }
 
   private async buildSystemCapabilities(
@@ -22552,6 +22606,24 @@ export class AnalyzerOrchestrator {
     const productExitPoints = (exitPoints || []).filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node))
     );
+    // Cross-repo audit (2026-08-09) root cause #3: a pure-substrate node (a
+    // wire-protocol library with no HTTP surface AND no deployable entry
+    // point of its own — its purpose lives entirely in its consumer crates)
+    // manufactured mechanism-shaped capabilities anyway, because
+    // buildTerminalCapabilities below derives candidates from entity/node
+    // CLUSTERS with no outward-reachability requirement at all — it can fire
+    // even when GATE 1/2 (isUserReachableTerminalCandidate) rejected every
+    // entry-point-anchored candidate above. §0.9/§0.7.1: zero capabilities is
+    // the CORRECT, honest answer for such a node, not a floor to fill.
+    // hasOutwardFace is the same structural fact GATE 1 already uses
+    // (USER_FACING_ENTRY_TYPES, now widened past HTTP — see journey-builder's
+    // comment) computed once for the WHOLE product rather than per
+    // candidate: when the product has genuinely NO caller-initiated entry
+    // point anywhere, its entity/behavior clusters are substrate by
+    // construction and must not be promoted to Tier 3 capabilities.
+    const hasOutwardFace = productEntryPoints.some(
+      ep => USER_FACING_ENTRY_TYPES.has(ep.type as any)
+    );
     const productDataEntities = dataEntities.filter(entity => {
       if (entity.schema_source && !isProductPath(entity.schema_source)) return false;
       const lifecycleIds = [
@@ -22589,6 +22661,9 @@ export class AnalyzerOrchestrator {
 
     let capIndex = 0;
     const usedCapabilityIds = new Set<string>();
+    // Populated by the resource-group loop below, consulted by the GATE 1/2
+    // filter that follows it (root cause #2 — see isUserReachableTerminalCandidate).
+    const effectEvidenceByCapabilityId = new Set<string>();
     const nextCapabilityId = (capability: Pick<SystemCapability, 'name' | 'related_domains'>): string => {
       const seed = capability.name || capability.related_domains?.[0] || `capability-${capIndex++}`;
       const base = `cap_${this.slugForId(seed)}`;
@@ -22646,6 +22721,22 @@ export class AnalyzerOrchestrator {
     }
     const groupEntityMatches = new Map<string, { direct: Set<string>; hop: Set<string> }>();
     const hopMatchDf = new Map<string, number>();
+    // Root cause #2 (see isUserReachableTerminalCandidate's hasEffectEvidence
+    // param): the SAME direct/one-hop handler-node evidence used to match a
+    // candidate to an entity WRITE below is used here to match it to an
+    // EFFECT exit point instead — message/event/webhook are ICELOT Effect
+    // kinds (cas.types.ts EXIT_POINT_TYPES), never a persisted row but
+    // exactly as real a terminal outcome ("sends alerts to staff", "emits a
+    // chat completion", "dispatches an approval notification").
+    const EFFECT_EXIT_TYPES = new Set<CASExitPointType>(['message', 'event', 'webhook']);
+    const exitPointsByHandlerNode = new Map<string, CASExitPoint[]>();
+    for (const ep of productExitPoints) {
+      if (!ep.source_node || !EFFECT_EXIT_TYPES.has(ep.type)) continue;
+      const list = exitPointsByHandlerNode.get(ep.source_node);
+      if (list) list.push(ep);
+      else exitPointsByHandlerNode.set(ep.source_node, [ep]);
+    }
+    const groupEffectEvidence = new Map<string, boolean>();
     for (const [resourceKey, group] of resourceGroups.entries()) {
       await maybeYield();
       const handlerIds = new Set<string>();
@@ -22672,6 +22763,10 @@ export class AnalyzerOrchestrator {
       }
       for (const entityId of hop) hopMatchDf.set(entityId, (hopMatchDf.get(entityId) || 0) + 1);
       groupEntityMatches.set(resourceKey, { direct, hop });
+      groupEffectEvidence.set(
+        resourceKey,
+        [...handlerIds, ...hopIds].some(id => exitPointsByHandlerNode.has(id))
+      );
     }
     // Ubiquity threshold: a hop-matched entity in more than a quarter of the
     // groups (min 4) is repo-wide plumbing for hop purposes, not a domain
@@ -22726,9 +22821,11 @@ export class AnalyzerOrchestrator {
       // DISPLAY NAME = terminal-evidence-grounded placeholder (fact), overwritten
       // by the AI naming pass with an AI-authored name (name_source:'ai').
       const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, relatedEntities);
+      const groupCapId = nextCapabilityId({ name: structuralLabel, related_domains: [resourceKey] });
+      if (groupEffectEvidence.get(resourceKey)) effectEvidenceByCapabilityId.add(groupCapId);
 
       capabilities.push({
-        id: nextCapabilityId({ name: structuralLabel, related_domains: [resourceKey] }),
+        id: groupCapId,
         name: capabilityName,
         name_source: undefined,
         name_generation: {
@@ -22781,7 +22878,11 @@ export class AnalyzerOrchestrator {
     // which is where the top-down domain-identity signal actually lives.
     {
       const survivingCandidates = capabilities.filter(capability =>
-        this.isUserReachableTerminalCandidate(capability, productDataEntities));
+        this.isUserReachableTerminalCandidate(
+          capability,
+          productDataEntities,
+          effectEvidenceByCapabilityId.has(capability.id)
+        ));
       capabilities.length = 0;
       capabilities.push(...survivingCandidates);
     }
@@ -22801,6 +22902,32 @@ export class AnalyzerOrchestrator {
     // fabricated from a product-name lookup table.
 
     await maybeYield();
+    // NOTE (root cause #3, cross-repo audit 2026-08-09): the intended fix here
+    // was to gate this pass on `hasOutwardFace` (computed above) — a
+    // pure-substrate node (no caller-initiated entry point anywhere) should
+    // not have its entity/node clusters promoted to Tier 3 capabilities at
+    // all (§0.7.1/§0.9), which is what let a Rust wire-protocol library with
+    // zero HTTP surface manufacture two mechanism-shaped capabilities from
+    // internal struct/function clusters alone. That gate was implemented and
+    // then REVERTED: it regressed 8 existing orchestrator-internals tests
+    // (e.g. "filters DTO and source-support terminal buckets out of primary
+    // capabilities") that deliberately call `buildSystemCapabilities([],
+    // entities, nodes, edges)` — zero entry points — and still expect a real
+    // entity-anchored capability ("Vehicle Management") to survive. That is
+    // established, tested product behavior: an entity with genuine write
+    // lifecycle evidence (created_by/updated_by) can be a real capability
+    // with no entry-point evidence in view, which is structurally
+    // indistinguishable, at THIS gate, from the Rust crate's case using only
+    // the evidence available here. The real discriminator is a library/no-
+    // deployable-of-its-own SHAPE signal (Cargo [lib] with no [[bin]], no
+    // ship-boundary evidence) — available elsewhere in the orchestrator
+    // (deployable-evidence collection) but not plumbed into
+    // buildSystemCapabilities today, and not safe to wire through in this
+    // pass without a wider, separately-verified change. Root cause #3 is
+    // THEREFORE STILL OPEN — reported honestly rather than landing a
+    // regression to close it. `hasOutwardFace` above is computed but
+    // currently unused by this pass; it remains available for that follow-up.
+    void hasOutwardFace;
     const terminalCapabilities = await this.buildTerminalCapabilities(
       productDataEntities,
       productNodes,
