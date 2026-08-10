@@ -9,7 +9,7 @@ import { ReachabilityIndex, reachabilityEdgePairs } from '../../../packages/anal
 import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/core/community-detection';
 import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
-import { buildProductMap, humanizeDomainSlug } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
+import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
@@ -231,10 +231,19 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
         }
       : {}),
     primary_domain: primaryDomain,
-    // Human-readable rendering of primary_domain for a leadership/onboarding
-    // reader — see product-map.ts's humanizeDomainSlug. primary_domain itself
-    // stays the stable kebab-case slug other tooling compares against.
-    ...(humanizeDomainSlug(primaryDomain) ? { primary_domain_label: humanizeDomainSlug(primaryDomain) } : {}),
+    // #129 — no primary_domain_label here. It used to be a mechanical
+    // kebab-case->Title Case rendering of `primary_domain` (see
+    // product-map.ts's now-removed humanizeDomainSlug), but `primary_domain`
+    // is itself a composed/heuristic slug (token-pile pieces like
+    // "feed-integration-category"), not a human-authored phrase — title-
+    // casing it does not produce something a non-technical reader would
+    // write, it just capitalizes the same internal tokens. The owner's bar
+    // is a real reader, not a mechanical transform, so: omit the field
+    // rather than ship a label shaped like a fabricated one. If/when this
+    // needs a real human-facing domain phrase, it belongs behind the same
+    // AI-authored, evidence-grounded path as description/capability naming
+    // (docs/cas/DETERMINISM-BOUNDARY.md) — never a second hardcoded
+    // string-munging pass alongside it.
     description: cas.enhanced_system_purpose?.inferred_description || null,
     description_source: cas.enhanced_system_purpose?.description_source || null,
     // Honest terminal AI-comprehension state. 'error' means the L5 pass RAN

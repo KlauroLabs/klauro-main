@@ -12,25 +12,18 @@ import {
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
 
-/**
- * Presentation-only humanization of a `primary_domain` kebab-case slug
- * ("feed-integration-category-user" -> "Feed Integration Category User")
- * for a leadership/onboarding reader. Purely mechanical (split on `-`,
- * title-case each token) — no synonym table, no word substitution, no
- * fabricated content, so it can never say anything the slug didn't already
- * say. The slug itself (`domain`) is left untouched: orchestrator.ts compares
- * primary_domain strings token-by-token across analysis runs (reuse
- * detection, truncation/plumbing gates), so the machine-comparable kebab form
- * must keep shipping exactly as-is; this only adds a second, human-facing
- * rendering of the same value alongside it. Returns undefined for 'unknown'
- * or an empty slug — there is nothing to humanize.
- */
-export function humanizeDomainSlug(slug: string | undefined | null): string | undefined {
-  if (!slug || slug === 'unknown') return undefined;
-  const words = slug.split('-').filter(Boolean);
-  if (!words.length) return undefined;
-  return words.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-}
+// #129 — humanizeDomainSlug (mechanical kebab-case->Title Case rendering of
+// `primary_domain`) was removed. `primary_domain` is a composed/heuristic
+// slug ("feed-integration-category", not a phrase a person wrote), so
+// title-casing its tokens produced strings like "Feed Integration Category"
+// that read as a human-authored label but are actually just capitalized
+// internal tokens — a faked label, not a derived one. See identity.domain /
+// identity.domain_label's doc comments in cas.types.ts and this function's
+// two former call sites (here and query.ts's primary_domain_label) for the
+// full reasoning. The slug itself (`domain`) is unaffected: orchestrator.ts
+// still compares primary_domain strings token-by-token across analysis runs
+// (reuse detection, truncation/plumbing gates), so it keeps shipping exactly
+// as before — only the fabricated-looking humanized rendering is gone.
 
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const RISK_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -661,10 +654,10 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
     identity: {
       name: cas.system?.name || 'unknown',
       domain: purpose?.primary_domain || 'unknown',
-      // Human-readable rendering of `domain` for a leadership/onboarding
-      // reader — see humanizeDomainSlug's doc comment. Omitted (not a
-      // fabricated 'Unknown') when there is no domain to humanize.
-      ...(humanizeDomainSlug(purpose?.primary_domain) ? { domain_label: humanizeDomainSlug(purpose?.primary_domain) } : {}),
+      // #129 — no `domain_label` here (see CASProductMap.identity.domain_label's
+      // doc comment for why: `domain` is a composed slug, not a phrase, so
+      // mechanically title-casing it does not produce something a
+      // non-technical reader would actually write).
       // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): 'deterministic'
       // is NOT a valid comprehension provenance. When AI hasn't run (or failed),
       // the domain/description provenance is left UNSET rather than stamped

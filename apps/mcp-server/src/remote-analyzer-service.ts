@@ -2767,13 +2767,49 @@ async function handleAccountApi(
       return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     }
     const analysisWorkspace = workspacePath(dataDir, project.analysis_id);
+    // STRANDED-ANALYSIS (defect class #41 continuation): lazily reap on every
+    // poll, same as GET /v1/analyses/:id/status and GET .../analysis below —
+    // this route was the one omission (task #129 audit), so a crashed
+    // background analysis queried through THIS surface never self-healed the
+    // way the other two do.
+    await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
     const entry = await getAnalysisEntry(analysisWorkspace);
     const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
+    // #129 — "status: fresh" on a stale, foreign-looking analysis. `entry` is
+    // a STATIC on-disk snapshot read by path, keyed by `project.analysis_id`
+    // (itself a deterministic hash of the repo path, not this project's own
+    // identity — see resolveAnalysisId). If a NEW analysis is actively being
+    // written into this same workspace right now (lastAttempt.state ===
+    // 'in-progress' — written the moment a push is accepted, well before the
+    // CAS itself lands), `entry` still reflects whatever was landed BEFORE
+    // this attempt started: a previous run of this project, or — if the path
+    // was ever reused/reinitialized — a genuinely different project's
+    // leftover analysis. Either way, reporting that stale entry as 'ready'/
+    // fresh here is exactly the "told fresh when it isn't" defect: the
+    // customer polls mid-write and is handed a timestamp from before the run
+    // they just kicked off. `/v1/analyses/:id/status` avoids this the same
+    // way via `activeCommittedSnapshots` (an in-memory, per-analysis "a write
+    // is landing right now" flag scoped to the request-handling closure this
+    // route cannot see); `lastAttempt.state === 'in-progress'` is the durable
+    // on-disk equivalent of that exact signal, already being read on the line
+    // above — so an in-progress attempt must win over a landed-but-stale
+    // entry, not the other way around, regardless of whether `entry` exists.
+    if (lastAttempt?.state === 'in-progress') {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'populating',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          last_attempt: lastAttempt,
+        },
+      };
+    }
     if (!entry) {
       return {
         statusCode: 200,
         body: {
-          status: lastAttempt?.state === 'in-progress' ? 'populating' : 'no_analysis',
+          status: 'no_analysis',
           project_id: project.id,
           analysis_id: project.analysis_id,
           ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
@@ -2829,6 +2865,21 @@ async function handleAccountApi(
     // recovery. Never touches a record whose heartbeat is still fresh, and
     // never fails a landed CAS (see reapAbandonedAttempt's doc comment).
     await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
+    // #129 — same "told fresh when it isn't" defect as GET .../analysis-status
+    // above, same fix: `getAnalysis` below reads whatever CAS is currently
+    // landed on disk, which — while a new attempt is actively writing into
+    // this same workspace (lastAttempt.state === 'in-progress', set the
+    // moment a push is accepted) — is necessarily the PREVIOUS run's data,
+    // not the one this caller just triggered. Short-circuit on that signal
+    // before doing the (heavier) CAS read/status computation below, so a
+    // mid-write poll reports 'populating' instead of a stale 'ready'.
+    const earlyLastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
+    if (earlyLastAttempt?.state === 'in-progress') {
+      return {
+        statusCode: 200,
+        body: { status: 'populating', project_id: project.id, analysis_id: project.analysis_id, last_attempt: earlyLastAttempt },
+      };
+    }
     try {
       const cas = await getAnalysis(analysisWorkspace);
       const summary = buildSummary(cas, { detail: 'compact' });
