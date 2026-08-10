@@ -16,7 +16,11 @@
     "package.json",
     "README.md"
   ],
+  "engines": {
+    "node": ">=22.0.0 <23.0.0"
+  },
   "scripts": {
+    "postinstall": "node scripts/verify-native-parser.cjs",
     "start": "tsx src/index.ts",
     "build": "node scripts/build-bundle.mjs",
     "build:hosted": "node scripts/build-bundle.mjs --hosted",

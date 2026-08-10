@@ -5,6 +5,7 @@
   "description": "Klauro CAS analyzer engine and legacy API shell kept for analyzer compatibility.",
   "main": "index.js",
   "scripts": {
+    "postinstall": "node scripts/verify-native-parser.cjs",
     "dev": "nest start --watch",
     "dev:legacy": "nodemon --exec ts-node src/index.ts",
     "build": "nest build",
@@ -29,6 +30,9 @@
   "keywords": [],
   "author": "",
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.0.0 <23.0.0"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.62.0",
     "@babel/parser": "^7.28.4",
