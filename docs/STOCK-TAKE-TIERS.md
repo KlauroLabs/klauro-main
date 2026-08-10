@@ -404,6 +404,89 @@ the static model... converts blast radius from a set into a weighted set").
 Today, tier 4 is a commodity metrics dashboard, by the spec's own definition
 of what would make it *not* one.
 
+### Addendum — two ingest pipelines adjudicated (post-fix)
+
+Once the `flow_id|step_id|capability_id` gap above was closed for the
+`telemetry-ingestion.ts` → `product.buildNodeRuntimeMetrics` →
+`attachTelemetryToFlows` path (the real Tier 4 join, now tested by
+`telemetry-conceptual-join.test.ts`), a second question surfaced: this
+codebase has *two* telemetry-ingest pipelines, and the fix only touched one.
+`telemetry-fusion.ts` (`RuntimeFact`, `POST /v1/telemetry/ingest`) is still
+node-only exactly as described above — re-confirmed, unchanged.
+
+Investigation into whether `telemetry-fusion.ts` should be retired, merged,
+or kept as a deliberate lighter-weight signal found:
+
+- **No real producer posts to it.** The actual installed customer SDK
+  (`@klauro/telemetry`, `packages/klauro-sdk-js`) POSTs to
+  `/api/telemetry/runtime-events/:projectId`, which `remote-analyzer-service.ts`
+  explicitly routes through the *other* pipeline (`ingestTelemetryBatch` via
+  `mapSdkEvent` — see the comment at `remote-analyzer-service.ts:359-373`,
+  which states this in its own words: "NOT to `/v1/telemetry/ingest`").
+  `/v1/telemetry/ingest` itself is live, wired, and documented
+  (`COORDINATION-FABRIC.md`, `SPEC-COORDINATION-FABRIC.md`,
+  `docs/mcp/TOOLS.md`), but nothing in this repository — no SDK, no
+  middleware, no gauntlet/bench outside its own unit tests — POSTs to it.
+  Its output (`fused_runtime_facts`) is merged additively into
+  `get_coding_context` and `get_runtime_observations`, but no test asserts
+  that merge and neither tool's doc entry mentions the field.
+- **The wire-shape argument for keeping a separate intake does not hold.**
+  The hypothesis going in was that the fusion pipeline's span shape might be
+  what a real observability stack already emits, and the ingestion pipeline's
+  shape bespoke. It's the reverse: the SDK's real wire shape
+  (`CasRuntimeEvent` — trace/span ids, `static_id`/`node_id`/`entry_point_id`/
+  `exit_point_id` for direct correlation, environment, attributes) is richer
+  than `telemetry-fusion.ts`'s own invented `TelemetrySpan` shape
+  (`service`/`endpoint`/`duration_ms`/`error`/`count`/`stack`), and it is the
+  ingestion pipeline, not the fusion pipeline, that receives it.
+- **Node-only is not a structural ceiling.** `RuntimeFact` already carries
+  `node_id` and a `matched_id` (which can be an entry-point id) plus a
+  route-like `service`/`endpoint` pair — the same key family
+  (`static_id`/`node_id`/`entry_point_id`/`route`/`method`) that
+  `RuntimeMetricLike` (what `attachTelemetryToFlows` actually consumes) and
+  `NodeRuntimeMetrics` (the ingestion pipeline's own aggregate) both use.
+  `attachTelemetryToFlows` resolves flow/step membership by matching node ids
+  already present in the flow's step→function graph — the telemetry event
+  itself never has to carry a `flow_id`. So a `RuntimeFact` is one adapter
+  function away from the same join, not blocked from it by its wire shape.
+- **A separate, unrelated dead path was found in passing**: a *third* SDK
+  file, `packages/analyzer-core/src/sdk/javascript/klauro-sdk.ts`, POSTs to
+  `/api/telemetry/ingest` — a route no server file implements. It hasn't been
+  touched since the original monorepo reorg commit and is referenced only
+  from `docs/SECURITY-PRIVACY.md`. It is not part of either live pipeline;
+  flagged separately, not fixed here.
+
+**Adjudication: (b) is the technically correct target** — keep
+`/v1/telemetry/ingest`'s intake (spans are still a reasonable lightweight
+format for a caller without the full SDK installed) but route
+`fuseTelemetry`'s output through the same `RuntimeMetricLike` join
+`attachTelemetryToFlows` already exposes, then retire the separate
+`runtime-facts.json` store and the additive `fused_runtime_facts` field once
+both tools read from one join. This removes the exact failure mode this
+product has already paid for once: two surfaces (here, `contract.telemetry`
+vs. `fused_runtime_facts`) able to disagree about the same node, because they
+run different aggregation (`runtimeImpactStats` vs. `telemetry-fusion.ts`'s
+own `SLOW_DURATION_MS`/`HOT_COUNT` thresholds) over the same underlying
+signal. No live disagreement was found in this repo — there is no producer
+feeding real traffic to `/v1/telemetry/ingest` today — but the two paths are
+architecturally primed for it the moment anything does POST there, and nothing
+today would surface a contradiction if it happened.
+
+**Not implemented in this pass**, deliberately: `fix/tier4-telemetry-join`
+(the branch that made the ingestion-pipeline join real) is not yet merged to
+master, so building a merge on top of it here would sit on an unstable base;
+and `/v1/telemetry/ingest` is a live, documented, externally-reachable HTTP
+route this investigation cannot confirm is traffic-free in production (no
+producer was found *in this repository*, which is not proof no external
+caller exists). Retiring or rewiring a live ingest surface under that
+uncertainty is exactly the case that calls for reporting rather than acting.
+Recommended follow-up, once the join branch lands: add a `RuntimeFact` →
+`RuntimeMetricLike` adapter, feed it through the existing
+`attachTelemetryToFlows` call, confirm zero external callers of
+`/v1/telemetry/ingest` in production logs, then delete `runtime-facts.json`
+persistence and the `fused_runtime_facts`/`fused_updated_at` fields as a
+separate, surgical follow-up commit.
+
 ---
 
 ## Tier 5 — Action / Collaboration / Fabric (seam only)
