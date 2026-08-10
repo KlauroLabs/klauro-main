@@ -22876,6 +22876,22 @@ export class AnalyzerOrchestrator {
     const productExitPoints = (exitPoints || []).filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node))
     );
+    // TASK #1 (2026-08-10, capability altitude / over-merging): attachDeployable
+    // (entry-point-deployable.ts) populates CASEntryPoint.deployable_id for
+    // every entry point that resolves to a real ship/build unit. That is
+    // STRUCTURAL evidence a domain-token or incidental-entity-reachability
+    // match can never provide: two entry points in different deployables are
+    // in different runnable units by construction, not by inference. Fed into
+    // mergeBehaviorCapabilityIntoExisting below to block exactly the failure
+    // mode the owner traced live on spring-petclinic-microservices — a
+    // VectorStoreController/PetclinicChatClient chat candidate (its own
+    // `genai-service` deployable) absorbed into the unrelated `Pet` capability
+    // on bare entity/domain overlap, even though the two live in different
+    // deployables and are provably different user outcomes.
+    const entryPointDeployableById = new Map<string, string>();
+    for (const ep of entryPoints) {
+      if (ep.deployable_id) entryPointDeployableById.set(ep.id, ep.deployable_id);
+    }
     // Cross-repo audit (2026-08-09) root cause #3: a pure-substrate node (a
     // wire-protocol library with no HTTP surface AND no deployable entry
     // point of its own — its purpose lives entirely in its consumer crates)
@@ -23364,7 +23380,7 @@ export class AnalyzerOrchestrator {
     const behaviorSurfaces: SystemCapability[] = [];
     for (const candidate of behaviorCapabilities) {
       await maybeYield();
-      if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
+      if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities, entryPointDeployableById)) continue;
       const promoted = { ...candidate, id: nextCapabilityId(candidate) };
       if (candidate.category !== 'internal') {
         capabilities.push(promoted);
@@ -23397,7 +23413,7 @@ export class AnalyzerOrchestrator {
     );
     for (const candidate of integrationCapabilities) {
       await maybeYield();
-      if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
+      if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities, entryPointDeployableById)) continue;
       behaviorSurfaces.push({
         ...candidate,
         id: nextCapabilityId(candidate),
@@ -25525,10 +25541,28 @@ export class AnalyzerOrchestrator {
    * evidence — instead of standing next to it as a near-duplicate. Returns
    * true when merged. Only entity-free / non-overlapping behavior clusters
    * (the invisible flagship engines this pass exists for) stay standalone.
+   *
+   * TASK #1 (2026-08-10, capability altitude / over-merging): entity overlap
+   * is not identity — two capabilities touching the same entity (an order
+   * system and a refund system both touch `Order`) is the NORMAL case, not
+   * evidence they are one outcome. `entryPointDeployableById`, when supplied,
+   * carries the one piece of STRUCTURAL evidence stronger than any textual
+   * domain/entity signal: which real deployable/ship-unit each side's entry
+   * points actually run in (attachDeployable, entry-point-deployable.ts). Two
+   * candidates whose operations resolve to disjoint, non-empty deployable
+   * sets are proven to live in different runnable units and are blocked from
+   * merging regardless of domain/entity/subject agreement — this is what
+   * keeps a `genai-service` AI-chat surface from being absorbed into a `Pet`
+   * capability living in the main petclinic deployable (the live-traced
+   * regression this task fixes). Absence of deployable evidence on either
+   * side (a monolith, or entry points attachDeployable could not resolve)
+   * leaves the existing entity/domain/subject gates as the sole authority,
+   * unchanged.
    */
   private mergeBehaviorCapabilityIntoExisting(
     candidate: SystemCapability,
-    capabilities: SystemCapability[]
+    capabilities: SystemCapability[],
+    entryPointDeployableById?: Map<string, string>
   ): boolean {
     const candidateEntities = new Set(candidate.related_entities);
     const candidateDomain = this.normalizeDomainToken(
@@ -25542,9 +25576,34 @@ export class AnalyzerOrchestrator {
     // capped operations array can show" reason.
     const candidateTrueSize = this.behaviorSurfaceEntryCount(candidate);
 
+    const deployablesOf = (systemCapability: SystemCapability): Set<string> => {
+      const deployables = new Set<string>();
+      if (!entryPointDeployableById) return deployables;
+      for (const operation of systemCapability.operations || []) {
+        const deployable = entryPointDeployableById.get(operation.entry_point_id);
+        if (deployable) deployables.add(deployable);
+      }
+      return deployables;
+    };
+    const candidateDeployables = deployablesOf(candidate);
+
     let best: SystemCapability | undefined;
     let bestScore = 0;
     for (const capability of capabilities) {
+      // TASK #1: disjoint, non-empty deployable evidence is decisive — it
+      // overrides domain/entity/subject agreement rather than merely
+      // competing with it, because it is structural fact (which ship unit an
+      // entry point runs in) rather than a textual or reachability inference.
+      if (candidateDeployables.size > 0) {
+        const targetDeployables = deployablesOf(capability);
+        if (targetDeployables.size > 0) {
+          let sharesDeployable = false;
+          for (const deployable of candidateDeployables) {
+            if (targetDeployables.has(deployable)) { sharesDeployable = true; break; }
+          }
+          if (!sharesDeployable) continue;
+        }
+      }
       const sharedEntities = capability.related_entities
         .filter(id => candidateEntities.has(id)).length;
       const entityOverlap = candidateEntities.size > 0 &&

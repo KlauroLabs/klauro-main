@@ -6918,6 +6918,90 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(targetCapability.operations.length).toBe(13);
   });
 
+  it('TASK #1 (2026-08-10, capability altitude): refuses to merge across a proven deployable boundary even with domain/entity overlap — spring-petclinic AI-chat-into-Pet regression', () => {
+    // Reproduces the owner-traced live regression exactly: a chat candidate
+    // (VectorStoreController/PetclinicChatClient, its own genai-service
+    // deployable) whose handlers happen to reach the Pet entity must NOT be
+    // absorbed into the unrelated Pet capability (main petclinic deployable)
+    // just because both sides mention "pet". Two entry points in different
+    // deployables are structurally different runnable units — decisive
+    // evidence a textual domain/entity match can never override.
+    const chatCandidate = {
+      id: 'cap_pending_chat',
+      name: 'Pet Chat Surface',
+      structural_label: 'Pet Chat Surface',
+      description: '',
+      category: 'internal',
+      operations: [
+        { entry_point_id: 'entry_chatclient', entry_point_type: 'http' },
+        { entry_point_id: 'entry_vectorstore', entry_point_type: 'http' },
+      ],
+      related_entities: ['entity-pet'],
+      related_domains: ['pet'],
+      criticality: 'low',
+      criticality_factors: [],
+    } as any;
+    const petCapability = {
+      id: 'cap_pet',
+      name: 'Pet',
+      description: '',
+      category: 'core',
+      operations: [{ entry_point_id: 'entry_pet_list', entry_point_type: 'http' }],
+      related_entities: ['entity-pet'],
+      related_domains: ['pet'],
+      criticality: 'high',
+      criticality_factors: [],
+    } as any;
+    const capabilities = [petCapability];
+    const entryPointDeployableById = new Map<string, string>([
+      ['entry_chatclient', 'genai-service'],
+      ['entry_vectorstore', 'genai-service'],
+      ['entry_pet_list', 'petclinic-service'],
+    ]);
+
+    const merged = localOrch.mergeBehaviorCapabilityIntoExisting(chatCandidate, capabilities, entryPointDeployableById);
+
+    expect(merged).toBe(false);
+    expect(petCapability.operations).toHaveLength(1);
+    expect(capabilities).toHaveLength(1);
+  });
+
+  it('TASK #1 (2026-08-10, capability altitude): still merges when deployable evidence AGREES (same ship unit) — the boundary check narrows merging, it does not disable it', () => {
+    const sameDeployableCandidate = {
+      id: 'cap_pending_visit_surface',
+      name: 'Visit Tool Surface',
+      structural_label: 'Visit Tool Surface',
+      description: '',
+      category: 'internal',
+      operations: [{ entry_point_id: 'entry_visit_create', entry_point_type: 'http' }],
+      related_entities: ['entity-visit'],
+      related_domains: ['visit'],
+      criticality: 'low',
+      criticality_factors: [],
+    } as any;
+    const visitCapability = {
+      id: 'cap_visit',
+      name: 'Visit',
+      description: '',
+      category: 'core',
+      operations: [{ entry_point_id: 'entry_visit_list', entry_point_type: 'http' }],
+      related_entities: ['entity-visit'],
+      related_domains: ['visit'],
+      criticality: 'high',
+      criticality_factors: [],
+    } as any;
+    const capabilities = [visitCapability];
+    const entryPointDeployableById = new Map<string, string>([
+      ['entry_visit_create', 'petclinic-service'],
+      ['entry_visit_list', 'petclinic-service'],
+    ]);
+
+    const merged = localOrch.mergeBehaviorCapabilityIntoExisting(sameDeployableCandidate, capabilities, entryPointDeployableById);
+
+    expect(merged).toBe(true);
+    expect(visitCapability.operations.length).toBe(2);
+  });
+
   it('CORRECTED (shape-coverage audit, 2026-08-10): a small, prefix-less cli surface still yields ONE consolidated candidate, not per-command fragmentation and not zero', async () => {
     // 3 cli commands (below family threshold) + 5 diverse cli commands with
     // action-verb prefixes only → no shared-prefix FAMILY forms. Before the
