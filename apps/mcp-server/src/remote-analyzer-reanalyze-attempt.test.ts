@@ -90,12 +90,17 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
     assert.equal(linkRes.statusCode, 201);
     const project = JSON.parse(linkRes.body).project as { id: string; analysis_id: string };
 
-    // Sanity: before any reanalyze attempt, no last_attempt is present
-    // (purely additive — old clients see no new field).
+    // Sanity: before any REANALYZE attempt, last_attempt reflects the
+    // first-analyze that already ran (trigger: 'analyze') rather than being
+    // absent. STRANDED-ANALYSIS (defect class #41 continuation) closed the
+    // asymmetry where only /reanalyze wrote this sidecar — the first-analyze
+    // async path now writes one too, so a first-analyze interrupted by a
+    // server restart is reapable the same way a reanalyze always was.
     const beforeRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
-    const beforeBody = JSON.parse(beforeRes.body) as { status?: string; last_attempt?: unknown };
+    const beforeBody = JSON.parse(beforeRes.body) as { status?: string; last_attempt?: { state?: string; trigger?: string } };
     assert.equal(beforeBody.status, 'ready');
-    assert.equal(beforeBody.last_attempt, undefined, 'no last_attempt before any reanalyze has run');
+    assert.equal(beforeBody.last_attempt?.state, 'succeeded', 'the first-analyze itself now leaves a succeeded attempt record');
+    assert.equal(beforeBody.last_attempt?.trigger, 'analyze');
 
     // --- FAILURE CASE: force the background reanalyze to throw for real.
     // analyzeProjectLayered's very first line is
