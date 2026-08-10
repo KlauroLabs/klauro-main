@@ -44,6 +44,38 @@ function toRepoRelativeAccessorFile(file: string | undefined): string | undefine
   return m ? m[1] : undefined; // no recoverable source tail: drop the temp path
 }
 
+/**
+ * Resolve a customer-facing recipient identity from an exit point, never the
+ * raw exit point name unless it already reads as a clean identifier.
+ *
+ * `service_id`/`sdk` are structured identity fields and always safe. The
+ * fallback to `exitPoint.name` is not: several language analyzers' chained-
+ * expression extraction (Go/C#/Java/PHP/Solidity `External call: <target>`
+ * labels) can glue an entire source expression — including inlined
+ * multi-line SQL — into that name when the call target itself is a chain
+ * rather than a plain identifier. `exposure_highlights.external_recipients`
+ * is a security-facing field; dumping that raw source there is the worst
+ * place for an extraction artifact to leak (sibling class to the
+ * orphan_node_ids raw-id dump, already fixed once). A clean label reads as
+ * `word[.:/-]word...` with no whitespace and no quote/statement punctuation;
+ * anything else is treated as unresolved and DROPPED rather than surfaced,
+ * per the "resolved identity or omit the entry, never raw source" rule.
+ */
+function resolveRecipientService(exitPoint: CASExitPoint): string | undefined {
+  const structured = exitPoint.target?.service_id || exitPoint.target?.sdk;
+  if (structured) return structured;
+  const name = exitPoint.name;
+  if (!name) return undefined;
+  const label = name.startsWith('External call: ') ? name.slice('External call: '.length) : name;
+  const trimmed = label.trim();
+  if (!trimmed) return undefined;
+  const looksLikeCleanIdentifier =
+    trimmed.length <= 80 &&
+    !/[\s'"`;(){}\n\r]/.test(trimmed) &&
+    /^[A-Za-z0-9_$][\w$.:/<>#-]*$/.test(trimmed);
+  return looksLikeCleanIdentifier ? trimmed : undefined;
+}
+
 const WRITE_EDGE_TYPES = new Set(['writes', 'creates', 'updates', 'deletes', 'persists', 'saves', 'mutates']);
 const READ_EDGE_TYPES = new Set(['reads', 'queries']);
 const CONTAINMENT_EDGE_TYPES = new Set(['contains', 'has_method', 'declares']);
@@ -232,9 +264,15 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   const recordRecipient = (exitPoint: CASExitPoint) => {
     if (!EXTERNAL_EXIT_TYPES.has(exitPoint.type) || recipients.has(exitPoint.id)) return;
     if (isLanguageBuiltinExitPoint(exitPoint)) return;
+    const service = resolveRecipientService(exitPoint);
+    // No resolved identity — omit the entry rather than leak the raw exit
+    // point name (see resolveRecipientService). Other exit points for this
+    // entity that DO resolve still surface; if none do, external_transfer
+    // stays false rather than reporting a transfer to an unnamed recipient.
+    if (!service) return;
     recipients.set(exitPoint.id, {
       exit_point_id: exitPoint.id,
-      service: exitPoint.target?.service_id || exitPoint.target?.sdk || exitPoint.name,
+      service,
       via_node: exitPoint.source_node,
     });
   };

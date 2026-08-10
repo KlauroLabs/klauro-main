@@ -386,6 +386,64 @@ describe('buildDataLineage language-builtin exit filtering', () => {
   });
 });
 
+// Defect #4 (2026-08 blackbox demo): exposure_highlights.external_recipients
+// (via CASEntityLineage.external_recipients[].service) leaked raw source
+// text — including multi-line SQL — into a SECURITY-FACING field. Root
+// cause: recordRecipient fell back to the raw exit point `name` whenever
+// target.service_id/sdk were absent, and several language analyzers' chained-
+// expression extraction can glue an entire source expression into that name
+// for a non-trivial call target. Sibling class to the orphan_node_ids raw-id
+// dump already fixed once: never surface raw internals in a customer payload.
+describe('buildDataLineage external recipient service resolution', () => {
+  const cleanChainedExit: CASExitPoint = {
+    id: 'exit_clean_chain',
+    source_node: 'n_payments_service_create',
+    type: 'sdk',
+    name: 'External call: PaymentGateway.charge',
+  } as CASExitPoint;
+  const rawSourceExit: CASExitPoint = {
+    id: 'exit_raw_source',
+    source_node: 'n_payments_service_create',
+    type: 'sdk',
+    name: 'External call: db.Query(`\n  SELECT * FROM payments\n  WHERE account_id = ? AND status = \'pending\'\n`, accountID)',
+  } as CASExitPoint;
+  const longUnresolvedExit: CASExitPoint = {
+    id: 'exit_long_unresolved',
+    source_node: 'n_payments_service_create',
+    type: 'sdk',
+    name: `External call: ${'x'.repeat(120)}`,
+  } as CASExitPoint;
+
+  const lineage = buildDataLineage({
+    nodes,
+    edges,
+    dataEntities: [paymentEntity],
+    exitPoints: [stripeExit, cleanChainedExit, rawSourceExit, longUnresolvedExit],
+    entryPoints,
+    userJourneys: journeys,
+  });
+  const payment = lineage.find(item => item.entity_id === 'entity_payment')!;
+
+  it('never emits raw source text (newlines, quoted SQL) as a recipient service identity', () => {
+    for (const recipient of payment.external_recipients) {
+      expect(recipient.service).not.toMatch(/\n/);
+      expect(recipient.service).not.toMatch(/SELECT|FROM|WHERE/i);
+      expect(recipient.service.length).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it('drops the unresolved raw-source exit point entirely rather than truncating it into a fake identity', () => {
+    const ids = payment.external_recipients.map(recipient => recipient.exit_point_id);
+    expect(ids).not.toContain('exit_raw_source');
+    expect(ids).not.toContain('exit_long_unresolved');
+  });
+
+  it('still resolves service_id/sdk and clean chained-call labels normally (no over-suppression)', () => {
+    const services = payment.external_recipients.map(recipient => recipient.service).sort();
+    expect(services).toEqual(['PaymentGateway.charge', 'stripe']);
+  });
+});
+
 describe('buildDataLineage accessor .file relativization', () => {
   // (c) Guard for the staged-temp-path leak class: some nodes carry an ABSOLUTE
   // staged/temp path on source.file (bench/remote analyzer snapshots source into

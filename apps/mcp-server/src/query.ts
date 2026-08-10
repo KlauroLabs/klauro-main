@@ -1,7 +1,7 @@
 import type {
   CASOutput, CASNode, CASEdge, CASEntryPoint, CASExitPoint,
   CASCallChain, CASMethodCall, CASDecorator, CASIntent,
-  CASChangeRisk, CASTemporalStability, CASFlowCoverage,
+  CASChangeRisk, ChangeRiskFactor, CASTemporalStability, CASFlowCoverage,
   CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
@@ -1481,11 +1481,190 @@ export function getAffectedSet(
   };
 }
 
+function isTestOwnedRiskNode(node: CASNode | undefined): boolean {
+  return !!node && (
+    node.metadata?.is_test === true ||
+    node.category === 'test' ||
+    ['test', 'mock', 'test_double', 'test_fixture'].includes(node.type)
+  );
+}
+
+/**
+ * Score change risk for a SINGLE node on demand, when it is a riskable type
+ * (function/method/service/controller/...) but buildChangeRisks left it out
+ * of the precomputed `cas.change_risks` list — either because that pass caps
+ * itself at the top 100 repo-wide, or because its "boring node" pre-filter
+ * (few callers, not exported, not entry/data/repo/domain/critical) skipped
+ * it as noise for a REPO-WIDE summary. Neither reason is valid grounds for
+ * `assess_change_risk` to answer `null` when a caller asks about this ONE
+ * specific node by id: the top-100/noise-filtering makes sense for a
+ * repo-wide list, never for a targeted per-node question (defect #1,
+ * 2026-08 blackbox demo: a real method's headline `risk` field came back
+ * null while the transitive-impact data beneath it was excellent).
+ *
+ * Mirrors buildChangeRisks' non-git risk factors from CASOutput fields alone
+ * (nodes/edges/entry_points/temporal_stability already on the analysis) — the
+ * one factor buildChangeRisks derives from a live git.log() call
+ * (`recent-bugs`) is instead read from cas.temporal_stability for this node
+ * when present, and honestly omitted (not silently assumed absent) when it
+ * is not. No node is ever dropped for having "too few" risk factors here —
+ * zero factors is itself the honest answer 'low' risk, not a reason to
+ * return nothing.
+ */
+function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
+  const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
+  const edges = cas.edges || [];
+
+  const directCallers: string[] = [];
+  let directlyTestCalled = false;
+  let hasExternalDep = false;
+  for (const edge of edges) {
+    if (edge.target === node.id && (edge.type === 'calls' || edge.type === 'uses' || edge.type === 'depends_on')) {
+      directCallers.push(edge.source);
+      if (isTestOwnedRiskNode(nodesById.get(edge.source))) directlyTestCalled = true;
+    }
+    if (edge.source === node.id && (edge.type === 'external_call' || edge.category === 'external')) {
+      hasExternalDep = true;
+    }
+  }
+
+  const entryNodeIds = new Set<string>();
+  const entryFiles = new Set<string>();
+  for (const ep of cas.entry_points || []) {
+    if (ep.source_node) entryNodeIds.add(ep.source_node);
+    if (ep.handler?.node_id) entryNodeIds.add(ep.handler.node_id);
+    if (ep.handler?.file) entryFiles.add(ep.handler.file.replace(/\\/g, '/').toLowerCase());
+  }
+
+  const file = node.source?.file?.replace(/\\/g, '/').toLowerCase() || '';
+  const isEntryRelated = node.type === 'controller' || node.type === 'route' || node.type === 'handler' ||
+    entryNodeIds.has(node.id) || (file && entryFiles.has(file));
+  const isDataRelated = node.type === 'entity' || node.type === 'model' || node.type === 'serializer';
+  const isRepository = node.type === 'repository' ||
+    /repository|repo|dao|gateway|store/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
+  const isCriticalDomain = /\b(auth|oauth|token|password|permission|role|security|invoice|billing|payment|charge|subscription|fuel|vehicle|driver|trip|dispatch|maintenance|customer|partner)\b/i.test(`${node.name} ${file}`);
+  const isSecuritySensitiveName = /\b(auth|oauth|token|password|permission|role|security|credential)\b/i.test(`${node.name} ${file}`);
+  const nodeComplexity = node.metadata?.complexity?.cyclomatic || 0;
+  const hasDirectTestCoverage = !!node.testing?.tested_by?.length || directlyTestCalled;
+
+  const riskFactors: ChangeRiskFactor[] = [];
+  if (directCallers.length > 10) {
+    riskFactors.push({ factor: 'many-callers', severity: 'high', details: `Called by ${directCallers.length} functions` });
+  } else if (directCallers.length > 5) {
+    riskFactors.push({ factor: 'many-callers', severity: 'medium', details: `Called by ${directCallers.length} functions` });
+  }
+
+  if (isEntryRelated) {
+    riskFactors.push({ factor: 'critical-path', severity: isCriticalDomain ? 'high' : 'medium', details: 'Entry-point or handler surface; changes can affect externally visible behavior' });
+  }
+  if (isDataRelated || isRepository) {
+    riskFactors.push({ factor: 'critical-path', severity: isCriticalDomain ? 'high' : 'medium', details: 'Data model or data access surface; changes can affect persistence and downstream consumers' });
+  }
+  if (nodeComplexity > 20) {
+    riskFactors.push({ factor: 'complex-logic', severity: 'high', details: `Cyclomatic complexity: ${nodeComplexity}` });
+  } else if (nodeComplexity > 10) {
+    riskFactors.push({ factor: 'complex-logic', severity: 'medium', details: `Cyclomatic complexity: ${nodeComplexity}` });
+  }
+  if (hasExternalDep) {
+    riskFactors.push({ factor: 'external-dependency', severity: 'medium', details: 'Has external service dependencies' });
+  }
+  if (node.security?.authentication_required || node.security?.authorization_roles || isSecuritySensitiveName) {
+    riskFactors.push({ factor: 'security-sensitive', severity: 'high', details: 'Handles security-sensitive operations' });
+  }
+  if (isCriticalDomain && !riskFactors.some(f => f.factor === 'critical-path')) {
+    riskFactors.push({ factor: 'critical-path', severity: 'medium', details: 'Domain name suggests business-critical fleet, billing, identity, or operational behavior' });
+  }
+  const stability = (cas.temporal_stability || []).find(s => s.node_id === node.id);
+  if (stability && stability.quality_signals.bug_fix_rate > 0.3) {
+    riskFactors.push({ factor: 'recent-bugs', severity: 'high', details: `Bug fix density: ${Math.round(stability.quality_signals.bug_fix_rate * 100)}% of commits are bug fixes` });
+  }
+  if (!hasDirectTestCoverage) {
+    riskFactors.push({ factor: 'no-tests', severity: 'high', details: 'No direct test coverage detected' });
+  }
+
+  const highSeverityCount = riskFactors.filter(f => f.severity === 'high').length;
+  const riskLevel: CASChangeRisk['risk_level'] =
+    highSeverityCount >= 2 ? 'critical' :
+    highSeverityCount === 1 ? 'high' :
+    riskFactors.length >= 2 ? 'medium' : 'low';
+
+  const recommendations: string[] = [];
+  if (riskFactors.some(f => f.factor === 'no-tests')) recommendations.push(`Find or add focused tests around ${node.name} before changing it.`);
+  if (riskFactors.some(f => f.factor === 'critical-path')) recommendations.push('Inspect entry points, data lifecycle, and downstream callers before editing this node.');
+  if (riskFactors.some(f => f.factor === 'security-sensitive')) recommendations.push('Preserve authentication, authorization, tenant, and token handling invariants.');
+  if (riskFactors.some(f => f.factor === 'external-dependency')) recommendations.push('Check integration contracts and failure handling for external calls.');
+  if (riskFactors.some(f => f.factor === 'complex-logic')) recommendations.push('Prefer small behavior-preserving changes and add regression coverage for branch-heavy paths.');
+
+  return {
+    node_id: node.id,
+    risk_level: riskLevel,
+    risk_factors: riskFactors,
+    downstream_impact: {
+      direct_callers: directCallers,
+      transitive_callers: [],
+      affected_call_chains: [],
+      affected_entry_points: [],
+    },
+    test_protection: {
+      has_direct_tests: hasDirectTestCoverage,
+      has_integration_tests: false,
+      test_ids: node.testing?.tested_by,
+    },
+    stability_context: {
+      recent_churn: stability ? (stability.stability_class === 'volatile' || stability.stability_class === 'fragile') : false,
+      commit_count_30d: stability?.churn_metrics.commits_30d || 0,
+      bug_fix_density: stability?.quality_signals.bug_fix_rate || 0,
+      last_refactor: stability?.age_context.last_major_change,
+    },
+    recommendations: recommendations.slice(0, 5),
+  };
+}
+
+/**
+ * `high_risk_nodes` / `untested_critical_paths` on `cas.change_risk_summary`
+ * are REPO-WIDE lists (buildChangeRiskSummary scans every scored node in the
+ * whole codebase), not consequences of the one change being assessed.
+ * Embedding them wholesale under a per-node assess_change_risk answer read as
+ * "your change endangers ~100 things" (defect #2, 2026-08 blackbox demo: a
+ * one-method query returned ~100 high_risk_nodes and ~47
+ * untested_critical_paths spanning unrelated JS files, locale printers, and
+ * config parsers) — false, and actively destructive to trust in a tool whose
+ * whole job is honest risk signal. Scope both lists to the change's own
+ * transitive blast radius (`scopeNodeIds`); repo-wide totals are still
+ * available, but as counts only and unmistakably labeled repo-wide rather
+ * than embedded as if they were part of the per-node answer.
+ */
+function scopedChangeRiskContext(cas: CASOutput, scopeNodeIds: Set<string>) {
+  const summary = cas.change_risk_summary;
+  if (!summary) return null;
+  const inScope = (id: string) => scopeNodeIds.has(id);
+  return {
+    note: 'high_risk_nodes / untested_critical_paths below are scoped to this change (the node itself plus its transitive blast radius) — every id here can actually be affected by this change. repo_wide is UNSCOPED whole-codebase context, not a consequence of this change.',
+    high_risk_nodes: summary.high_risk_nodes.filter(inScope),
+    untested_critical_paths: summary.untested_critical_paths.filter(inScope),
+    recent_hotspots: summary.recent_hotspots.filter(inScope),
+    repo_wide: {
+      note: 'Whole-codebase counts, NOT scoped to this change. Do not read as consequences of this edit.',
+      high_risk_node_count: summary.high_risk_nodes.length,
+      untested_critical_path_count: summary.untested_critical_paths.length,
+      recent_hotspot_count: summary.recent_hotspots.length,
+    },
+  };
+}
+
 export function assessChangeRisk(cas: CASOutput, nodeId: string) {
   const node = cas.nodes.find(n => n.id === nodeId);
   const risk = (cas.change_risks || []).find(r => r.node_id === nodeId);
 
-  if (!risk && node && !RISKABLE_NODE_TYPES.includes(node.type)) {
+  if (!node) {
+    return {
+      risk: null,
+      reason: `No node with id '${nodeId}' on this analysis. Nothing was assessed — this is not a "low risk" result.`,
+      change_risk_context: null,
+    };
+  }
+
+  if (!risk && !RISKABLE_NODE_TYPES.includes(node.type)) {
     // The node exists but its type is never scored by buildChangeRisks (property,
     // interface, variable, class, file, import, ...) — returning `risk: null` plus the
     // whole-repo change_risk_summary here would look like "assessed, low-risk" when the
@@ -1520,7 +1699,7 @@ export function assessChangeRisk(cas: CASOutput, nodeId: string) {
       node_type: node.type,
       suggested_node_id: supported?.id,
       suggested_node_reason: supported ? `Containing ${supported.type} node — assess that instead to get real risk signal for this change.` : undefined,
-      change_risk_summary: null,
+      change_risk_context: null,
     };
   }
 
@@ -1536,10 +1715,20 @@ export function assessChangeRisk(cas: CASOutput, nodeId: string) {
     method: affectedResult.method,
   };
 
+  // Defect #1: never fall back to a silent `risk: null` for a riskable-type
+  // node just because buildChangeRisks' repo-wide top-100/noise filtering
+  // left it out — compute the answer on demand instead (see
+  // scoreChangeRiskOnDemand). `risk_computation` says which path produced it,
+  // so a caller can tell "the analysis already knew this" from "computed just
+  // now for this ask" without guessing from field presence alone.
+  const resolvedRisk = risk || scoreChangeRiskOnDemand(cas, node);
+  const scopeNodeIds = new Set<string>([nodeId, ...affectedResult.affected]);
+
   return {
-    risk: risk || null,
+    risk: resolvedRisk,
+    risk_computation: risk ? 'precomputed' : 'computed_on_demand',
     transitive_impact: transitiveImpact,
-    change_risk_summary: cas.change_risk_summary || null,
+    change_risk_context: scopedChangeRiskContext(cas, scopeNodeIds),
   };
 }
 

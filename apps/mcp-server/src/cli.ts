@@ -2477,7 +2477,10 @@ function summarizeRiskForCli(risk: any) {
     score: selectedRisk.score || selectedRisk.impact_score || null,
     reasons: selectedRisk.reasons || selectedRisk.factors || selectedRisk.risk_factors || selectedRisk.details || [],
     recommendations: selectedRisk.recommendations || [],
-    summary: risk.change_risk_summary || null,
+    // change_risk_context: assess_change_risk's per-change-scoped field
+    // (defect #2 — the old change_risk_summary here was the raw repo-wide
+    // list embedded under a one-node answer).
+    summary: risk.change_risk_context || null,
   };
 }
 

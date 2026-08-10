@@ -780,7 +780,7 @@ function extractValidationCommands(validationPlan: any): string[] {
 
 function summarizeRisk(risk: any) {
   if (!risk) return null;
-  const summary = risk.change_risk_summary || risk.risk || risk;
+  const summary = risk.change_risk_context || risk.risk || risk;
   return {
     level: risk.risk?.level || summary?.level || null,
     impact_score: risk.risk?.impact_score || summary?.impact_score || null,
