@@ -135,6 +135,21 @@ A conforming implementation:
   rules Tier 3 (§7) and the ICELOT contract (§5.4) implement.
 - `docs/cas/DETERMINISM-BOUNDARY.md` — the facts-versus-comprehension rule
   referenced throughout this specification.
+- `docs/SPEC-ABSTRACTION-TIERS.md` — the model and rationale behind Tiers 1-4
+  (§5-§8 of this specification): what each tier contains, the one-directional
+  dependency rule (§11.1), the two proven tier-skip defects that rule exists
+  to prevent, and the CAS surfaces (temporal/churn, derived graph metrics,
+  risk/health judgments, agent-facing knowledge) this specification does not
+  yet place. Also records the journeys/workflows-collapse-into-flows decision
+  (its §D) that motivates §7.1's `workflows?`/`user_journeys?` fields being
+  targeted for collapse, and the god-file decomposition sequencing decision
+  that must land before the composition model in §10 is implemented.
+- `docs/SPEC-ANALYSIS-SCOPES.md` — the model and rationale behind the
+  recursive `AnalysisScope` structure itself (§4, §10, §11.10 of this
+  specification): the naming decision, the no-closed-type-vocabulary
+  argument (§1a), the derivation gradient this specification's §10.2 restates
+  as Option A/B (its §7a, resolved), and the implementation sequencing this
+  specification's §12.1 status line reflects (its §8).
 
 ## 4. The Analysis Scope
 
