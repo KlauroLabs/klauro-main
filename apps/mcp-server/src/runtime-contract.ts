@@ -53,8 +53,15 @@ export function getRuntimeEventContract(cas: CASOutput, opts: { limit?: number }
       instrumentable: links.filter(link => link.telemetry_status === 'instrumentable').length,
       not_instrumented: links.filter(link => link.telemetry_status === 'not-instrumented').length,
     },
+    // Describes the installable `@klauro/telemetry` package
+    // (`packages/klauro-sdk-js`), the one `get_runtime_sdk_package` actually
+    // generates install/init snippets for. `method` used to say
+    // `recordCasEvent` — that method belongs to a different, unpublished
+    // legacy client (`packages/analyzer-core/src/sdk/javascript/klauro-sdk.ts`)
+    // that ships to no one; `@klauro/telemetry`'s `KlauroClient` exposes
+    // `recordEvent` (plus `record`/`captureError`/`startSpan` helpers).
     sdk_contract: {
-      method: 'recordCasEvent',
+      method: 'recordEvent',
       flush_method: 'flush',
       required_config: ['projectId', 'apiKey'],
       optional_config: ['endpoint', 'environment', 'serviceName', 'batchSize', 'flushInterval'],
