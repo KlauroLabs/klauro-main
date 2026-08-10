@@ -411,7 +411,10 @@ test('an explicit path that does not exist, or is not a directory, fails with a 
 function runInstalledCliIsolated(args: string[], cwd: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise(resolve => {
     const noAuthDir = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-no-auth-'));
-    const env = { ...process.env, KLAURO_AUTH_CONFIG_PATH: path.join(noAuthDir, 'auth.json') };
+    // Typed as ProcessEnv so the `delete`s below are legal: spreading
+    // process.env into an object literal narrows it to just the explicitly
+    // listed key, and deleting anything else then fails to typecheck.
+    const env: NodeJS.ProcessEnv = { ...process.env, KLAURO_AUTH_CONFIG_PATH: path.join(noAuthDir, 'auth.json') };
     delete env.KLAURO_ACCOUNT_TOKEN;
     delete env.KLAURO_AUTH_TOKEN;
     delete env.KLAURO_ANALYZER_TOKEN;
