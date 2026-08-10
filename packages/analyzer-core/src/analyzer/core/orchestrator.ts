@@ -14223,15 +14223,58 @@ export class AnalyzerOrchestrator {
           // ship a description at all — never delete the capability itself,
           // just its unverifiable prose (see the 'no fallback' branch below).
           const fallbackValidation = fallback ? this.validateElementDescription(fallback, target) : undefined;
+          let regeneratedValidation: { ok: boolean; reason?: string } | undefined;
           if (fallback && fallbackValidation?.ok) {
             capability.description = fallback;
             capability.description_source = 'deterministic';
           } else {
-            // Either there was no deterministic text to fall back to, or that
-            // text itself failed the grounding gate (fallbackValidation.ok ===
-            // false) — never ship ungrounded prose under ANY provenance.
-            delete (capability as Partial<SystemCapability>).description;
-            capability.description_source = undefined;
+            // DEFECT (2026-08-09 live comprehension audit): there was no
+            // captured deterministic text to fall back to (fresh/never-seeded
+            // capability), or the captured text itself failed the grounding
+            // gate — either way this branch used to delete the description
+            // outright, shipping description_source: 'deterministic' with no
+            // description at all (confirmed on a live 418-file Go repo and a
+            // Django repo: capabilities with a name and nothing else). A
+            // capability whose name and description DISAGREE must not ship
+            // unverifiable prose, but "no usable stored text" is not the same
+            // failure — regenerate straight from this capability's own
+            // structural facts (name, operations, related entities) via the
+            // canonical deterministic generator. That text is built from and
+            // grounds on the subject's own name by construction, so
+            // degradation always yields real, honest deterministic text
+            // instead of an empty field.
+            const regenerated = this.generateCapabilityDescription(
+              capability.name,
+              capability.operations,
+              capability.related_entities.map(id => ({ name: entityNamesById?.get(id) || id })),
+              [],
+            );
+            regeneratedValidation = this.validateElementDescription(regenerated, target);
+            if (regeneratedValidation.ok) {
+              capability.description = regenerated;
+              capability.description_source = 'deterministic';
+            } else {
+              // The evidence-grounded regeneration itself failed the gate — this
+              // is the no-operations/no-entities capability, where
+              // generateCapabilityDescription's own no-evidence sentence trips
+              // the same generic-phrase filter AI text must pass. Fall back to
+              // the minimal, always-grounded last-resort sentence: it names the
+              // capability and nothing else, so it structurally cannot fail
+              // marketing/scaffold/filler checks. A capability must never ship
+              // description_source: 'deterministic' with no description.
+              const lastResort = this.lastResortCapabilityDescription(capability.name);
+              const lastResortValidation = this.validateElementDescription(lastResort, target);
+              if (lastResortValidation.ok) {
+                capability.description = lastResort;
+                capability.description_source = 'deterministic';
+              } else {
+                // Should be unreachable given lastResortCapabilityDescription's
+                // fixed shape, but never ship ungrounded prose under ANY
+                // provenance if it somehow still fails.
+                delete (capability as Partial<SystemCapability>).description;
+                capability.description_source = undefined;
+              }
+            }
           }
           capability.description_generation = {
             ...(capability.description_generation || { attempted: true }),
@@ -14239,8 +14282,10 @@ export class AnalyzerOrchestrator {
             attempted: true,
             reason: fallback && !fallbackValidation?.ok
               ? `deterministic-fallback-ungrounded:${fallbackValidation?.reason || 'unknown'}`
-              : reason,
-            origin_source: fallback && fallbackValidation?.ok ? 'deterministic' : capability.description_generation?.origin_source,
+              : regeneratedValidation && !regeneratedValidation.ok
+                ? `deterministic-regeneration-ungrounded:${regeneratedValidation.reason || 'unknown'}`
+                : reason,
+            origin_source: capability.description_source === 'deterministic' ? 'deterministic' : capability.description_generation?.origin_source,
           };
           degraded.push({
             id: capability.id,
@@ -26907,6 +26952,18 @@ export class AnalyzerOrchestrator {
       return segments.slice(-2).join('/');
     }
     return normalized;
+  }
+
+  // Guaranteed-safe deterministic text for a capability with no operations,
+  // entities, or prior stored description to draw on. Names the capability
+  // and states plainly that no further evidence resolved for it — nothing
+  // else — so it structurally cannot trip the marketing/scaffold/filler
+  // grounding gate every other capability description must also pass.
+  // A capability must never end up with description_source: 'deterministic'
+  // and no description text (see the degradation-repair path above).
+  private lastResortCapabilityDescription(name: string): string {
+    const name_ = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
+    return `${name_} is a structural capability grouping identified in the codebase; no operations or related data entities have been resolved for it.`;
   }
 
   // Deterministic, fact-grounded capability description from the structural
