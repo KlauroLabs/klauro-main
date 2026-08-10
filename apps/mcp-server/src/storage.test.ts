@@ -133,6 +133,29 @@ test('segmented storage hydrates exact CAS and targeted reads omit unrequested d
   });
 });
 
+test('a missing/corrupt segmented section file fails loudly, naming the section, instead of returning a silently partial CAS', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/segmented-corrupt-project';
+    const cas = casFixture('segmented-corrupt');
+    const entry = await saveAnalysis(project, cas);
+    const manifest = await loadAnalysisSectionManifest(project);
+    const graphDescriptor = manifest?.sections.find(section => section.name === 'graph');
+    assert.ok(graphDescriptor?.file);
+
+    // Find the on-disk revision directory (writeSegmentedAnalysis's
+    // `<file>.sections/<revision>/`) and corrupt the graph section's file.
+    const sectionsRoot = path.join(storagePath, `${entry.file}.sections`);
+    const pointer = await fs.readJson(path.join(sectionsRoot, 'current.json'));
+    const sectionPath = path.join(sectionsRoot, pointer.revision, graphDescriptor!.file!);
+    await fs.writeFile(sectionPath, 'not valid json{{{');
+
+    await assert.rejects(
+      () => loadAnalysisSections(project, ['graph']),
+      /section 'graph'/,
+    );
+  });
+});
+
 test('a segmented write failure never invalidates the authoritative analysis', async () => {
   await withStoragePath(async storagePath => {
     const project = '/tmp/segment-failure-project';
