@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { loadKlauroConfig } from './klauro-config';
-import { connectorToken, isNetworkUnreachableError, loadStoredConnectorAuth, normalizeServerUrl, unreachableServerError } from './connector-auth';
+import { connectorToken, isNetworkUnreachableError, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, unreachableServerError } from './connector-auth';
 import { detectWorkspaceIdentity, resolveFabricSettings } from './coordination/fabric-config';
 import { remoteActive } from './coordination/remote-transport';
 import { getActiveClaims } from './coordination/local-store';
@@ -233,6 +233,16 @@ export interface StatusReport {
   platform: string;
   server_url: string;
   signed_in: boolean;
+  /**
+   * Real server-verified auth state (see connector-auth.ts resolveAuthStatus)
+   * — 'no-token' | 'signed-in' | 'rejected' | 'unreachable'. `signed_in` is
+   * derived from this, not from local token presence, so `klauro status`
+   * can never report signed_in: true for a dead/expired token the way it
+   * used to (task #117: local-only check said signed_in: true right up
+   * until the next real call 401'd).
+   */
+  auth_state: string;
+  auth_detail: string;
   email: string | null;
   latest_available: string | null;
   update_available: boolean;
@@ -282,7 +292,13 @@ function formatStatusLines(
       : 'no running sessions detected on this machine';
   return [
     `klauro ${report.version} (${report.channel}) · node ${report.node} · ${report.platform}`,
-    report.signed_in ? `Account:  signed in to ${report.server_url}${report.email ? ` as ${report.email}` : ''}` : `Account:  not signed in to ${report.server_url}  (klauro login --email you@example.com --register)`,
+    report.auth_state === 'signed-in'
+      ? `Account:  signed in to ${report.server_url}${report.email ? ` as ${report.email}` : ''}`
+      : report.auth_state === 'rejected'
+        ? `Account:  session rejected by ${report.server_url}${report.email ? ` for ${report.email}` : ''} — the stored token was not accepted (expired, or dropped server-side). Run: klauro login`
+        : report.auth_state === 'unreachable'
+          ? `Account:  could not verify with ${report.server_url} (server unreachable)${report.email ? ` — local token present for ${report.email}` : ''}`
+          : `Account:  not signed in to ${report.server_url}  (klauro login --email you@example.com --register)`,
     report.latest_available
       ? (report.update_available ? `Release:  ${report.latest_available} available — run: klauro update` : `Release:  up to date (${report.latest_available})`)
       : `Release:  could not reach ${report.server_url}`,
@@ -317,6 +333,10 @@ export async function renderStatusReport(options: { repoPath: string; serverUrl?
   const manifest = await fetchReleaseManifest(serverUrl);
   const latest = manifest?.version || null;
   const stored = auth.accounts[serverUrl];
+  // Server-verified, not local-token-presence — see the StatusReport.auth_state
+  // doc comment and task #117. A dead/expired/server-dropped token must never
+  // render as "signed in" just because a token file happens to exist.
+  const authStatus = await resolveAuthStatus({ serverUrl });
 
   const repoPath = options.repoPath;
   let repo: { analyzed: boolean; analysis_complete: boolean; system?: string; analyzed_at?: string; staleness?: string; layers_ready?: unknown } = { analyzed: false, analysis_complete: false };
@@ -351,8 +371,10 @@ export async function renderStatusReport(options: { repoPath: string; serverUrl?
     node: process.version,
     platform: `${process.platform}-${process.arch}`,
     server_url: serverUrl,
-    signed_in: Boolean(stored),
-    email: stored?.email ?? null,
+    signed_in: authStatus.state === 'signed-in',
+    auth_state: authStatus.state,
+    auth_detail: authStatus.detail,
+    email: authStatus.email ?? stored?.email ?? null,
     latest_available: latest,
     update_available: Boolean(latest && latest !== identity.base_version),
     repo: repoPath,

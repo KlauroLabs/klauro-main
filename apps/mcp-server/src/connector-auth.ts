@@ -19,14 +19,33 @@ export interface ConnectorIdentity {
   entitlement: ConnectorEntitlement;
 }
 
+export interface StoredConnectorAccount {
+  token: string;
+  email?: string;
+  updated_at: string;
+}
+
+/**
+ * Multi-account storage (task #127's third defect). `accounts[serverUrl]`
+ * remains the single ACTIVE account per server — every existing read site
+ * (`connectorToken`, `resolveAuthStatus`, `klauro status`, `klauro init`,
+ * etc.) keeps working unchanged, because "the active account" is exactly
+ * what those call sites always meant by "the" account.
+ *
+ * What changes: `klauro login` for a SECOND email on the same server no
+ * longer overwrites and loses the first one. Every account ever signed into
+ * on a given server is additionally kept in `accountsByServer[serverUrl]`,
+ * keyed by email, so `klauro accounts` can list them and `klauro accounts
+ * use <email>` can flip the active pointer back WITHOUT re-authenticating.
+ * `accountsByServer` is optional so a pre-existing v1 auth.json (single
+ * account, no roster) loads and behaves exactly as before until the next
+ * login populates the roster.
+ */
 export interface StoredConnectorAuth {
   version: 1;
   defaultServerUrl?: string;
-  accounts: Record<string, {
-    token: string;
-    email?: string;
-    updated_at: string;
-  }>;
+  accounts: Record<string, StoredConnectorAccount>;
+  accountsByServer?: Record<string, Record<string, StoredConnectorAccount>>;
 }
 
 /**
@@ -352,20 +371,10 @@ export function loadStoredConnectorToken(serverUrl?: string): string | undefined
   return auth.accounts[normalized]?.token;
 }
 
-export function saveStoredConnectorSession(input: {
-  serverUrl?: string;
-  token: string;
-  email?: string;
-}): { file: string; serverUrl: string } {
-  const serverUrl = normalizeServerUrl(input.serverUrl);
+/** Shared tail of every auth.json mutator: write, then best-effort chmod
+ *  0600 (the file holds bearer tokens for every signed-in account). */
+function persistAuth(auth: StoredConnectorAuth): string {
   const file = authConfigPath();
-  const auth = loadStoredConnectorAuth();
-  auth.defaultServerUrl = serverUrl;
-  auth.accounts[serverUrl] = {
-    token: input.token,
-    email: input.email,
-    updated_at: new Date().toISOString(),
-  };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
   try {
@@ -373,24 +382,124 @@ export function saveStoredConnectorSession(input: {
   } catch {
     // Best effort on platforms/filesystems that do not support chmod.
   }
+  return file;
+}
+
+/**
+ * Signs an account in as the ACTIVE account for `serverUrl`, and — the fix
+ * for task #127's "`klauro login` is a session clobberer" — records it in
+ * that server's account roster WITHOUT touching any other email's entry.
+ * Before this, `auth.accounts[serverUrl] = {...}` unconditionally overwrote
+ * whatever account was previously active, so a second `klauro login` for a
+ * work/personal split (or an agent signing in as a beta-test account) always
+ * silently evicted the first session with no warning and no way back short
+ * of logging in again with the original password.
+ */
+export function saveStoredConnectorSession(input: {
+  serverUrl?: string;
+  token: string;
+  email?: string;
+}): { file: string; serverUrl: string } {
+  const serverUrl = normalizeServerUrl(input.serverUrl);
+  const auth = loadStoredConnectorAuth();
+  auth.defaultServerUrl = serverUrl;
+  const account: StoredConnectorAccount = {
+    token: input.token,
+    email: input.email,
+    updated_at: new Date().toISOString(),
+  };
+  auth.accounts[serverUrl] = account;
+  if (input.email) {
+    auth.accountsByServer = auth.accountsByServer || {};
+    auth.accountsByServer[serverUrl] = auth.accountsByServer[serverUrl] || {};
+    auth.accountsByServer[serverUrl][input.email] = account;
+  }
+  const file = persistAuth(auth);
   return { file, serverUrl };
 }
 
-export function clearStoredConnectorSession(serverUrl?: string): { file: string; removed: boolean; serverUrl: string } {
-  const file = authConfigPath();
+/**
+ * Signs out the currently-ACTIVE account for `serverUrl` (unchanged
+ * behavior/signature — logout has always meant "sign out the account I'm
+ * using", not "sign out everyone"). Removes it from the roster too so
+ * `klauro accounts` does not keep listing a token that was just revoked
+ * client-side. Other accounts in the roster for this server are untouched;
+ * if any remain, the most-recently-used one becomes the new active account
+ * automatically (still logged in beats silently logged out when the roster
+ * is non-empty) — otherwise the server has no active account, same as today.
+ */
+export function clearStoredConnectorSession(serverUrl?: string): { file: string; removed: boolean; serverUrl: string; switched_to?: string } {
   const auth = loadStoredConnectorAuth();
   const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
   const removed = Boolean(auth.accounts[normalized]);
+  const removedEmail = auth.accounts[normalized]?.email;
   delete auth.accounts[normalized];
-  if (auth.defaultServerUrl === normalized) auth.defaultServerUrl = Object.keys(auth.accounts)[0];
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // Best effort.
+  if (removedEmail && auth.accountsByServer?.[normalized]) {
+    delete auth.accountsByServer[normalized][removedEmail];
   }
-  return { file, removed, serverUrl: normalized };
+  let switchedTo: string | undefined;
+  const roster = auth.accountsByServer?.[normalized];
+  if (roster && Object.keys(roster).length > 0) {
+    const [nextEmail, nextAccount] = Object.entries(roster).sort(
+      ([, a], [, b]) => Date.parse(b.updated_at) - Date.parse(a.updated_at),
+    )[0];
+    auth.accounts[normalized] = nextAccount;
+    switchedTo = nextEmail;
+  }
+  if (auth.defaultServerUrl === normalized && !auth.accounts[normalized]) {
+    auth.defaultServerUrl = Object.keys(auth.accounts)[0];
+  }
+  const file = persistAuth(auth);
+  return { file, removed, serverUrl: normalized, ...(switchedTo ? { switched_to: switchedTo } : {}) };
+}
+
+/**
+ * Every account ever signed into `serverUrl` (the roster
+ * `saveStoredConnectorSession` builds up), each flagged with whether it is
+ * the current active account. Falls back to a single-entry list built from
+ * `accounts[serverUrl]` for auth.json files written before the roster
+ * existed, so `klauro accounts` never reports "no accounts" for a session
+ * that plainly works.
+ */
+export function listStoredAccounts(serverUrl?: string): Array<{ email: string; updated_at: string; active: boolean }> {
+  const auth = loadStoredConnectorAuth();
+  const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
+  const activeEmail = auth.accounts[normalized]?.email;
+  const roster = auth.accountsByServer?.[normalized];
+  if (roster && Object.keys(roster).length > 0) {
+    return Object.entries(roster)
+      .map(([email, account]) => ({ email, updated_at: account.updated_at, active: email === activeEmail }))
+      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+  }
+  const active = auth.accounts[normalized];
+  return active?.email ? [{ email: active.email, updated_at: active.updated_at, active: true }] : [];
+}
+
+/**
+ * Flips the ACTIVE account for `serverUrl` to `email`, reusing the already-
+ * stored token — no re-authentication, no password. This is the "way to
+ * see/switch which account is active" task #127 asked for: e.g. an agent
+ * that discovers it is signed in as the wrong account for a bound project
+ * can switch back without anyone re-typing a password (`klauro login`
+ * remains the only way to ADD a new account to the roster).
+ */
+export function switchStoredAccount(serverUrl: string | undefined, email: string): { file: string; serverUrl: string; email: string } {
+  const auth = loadStoredConnectorAuth();
+  const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
+  const roster = auth.accountsByServer?.[normalized];
+  const account = roster?.[email];
+  if (!account) {
+    const known = roster ? Object.keys(roster) : [];
+    throw new Error(
+      known.length > 0
+        ? `No stored session for ${email} on ${normalized}. Known accounts: ${known.join(', ')}. Run \`klauro login --email ${email}\` to add it.`
+        : `No stored accounts for ${normalized} yet. Run \`klauro login --email ${email}\` first.`,
+    );
+  }
+  auth.accounts[normalized] = account;
+  auth.defaultServerUrl = normalized;
+  const file = persistAuth(auth);
+  return { file, serverUrl: normalized, email };
 }
 
 function normalizeEntitlement(value: any): ConnectorEntitlement {

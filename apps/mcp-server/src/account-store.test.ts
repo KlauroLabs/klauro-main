@@ -91,9 +91,42 @@ test('account store rejects invalid login and cross-workspace project access', a
       () => store.login({ email: owner.user.email, password: 'wrong-password' }),
       (error: unknown) => error instanceof AccountHttpError && error.statusCode === 401,
     );
+    // task #127 defect 1: the cross-tenant 404 must name the CALLER's own
+    // account (so an agent/customer never has to run a second command just
+    // to learn who it's signed in as) and must NEVER name or otherwise leak
+    // the owning account/workspace's identity — only that the project
+    // belongs to someone else.
     await assert.rejects(
       () => store.getProjectForUser(outsider.user.id, project.id),
-      (error: unknown) => error instanceof AccountHttpError && error.statusCode === 404,
+      (error: unknown) => {
+        if (!(error instanceof AccountHttpError) || error.statusCode !== 404) return false;
+        assert.match(error.message, /Signed in as outsider@example\.com/);
+        assert.match(error.message, /no access/);
+        assert.doesNotMatch(error.message, /owner@example\.com/, 'must never name the owning account');
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('account store 404 distinguishes a truly nonexistent project id from one owned by another account', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-accounts-404-shapes-'));
+  const store = new AccountStore(root);
+
+  try {
+    const outsider = await store.register({ email: 'outsider2@example.com', password: 'password-1234', workspaceName: 'Other' });
+
+    // A project id that was never created anywhere on this server.
+    await assert.rejects(
+      () => store.getProjectForUser(outsider.user.id, 'prj_does_not_exist'),
+      (error: unknown) => {
+        if (!(error instanceof AccountHttpError) || error.statusCode !== 404) return false;
+        assert.match(error.message, /was not found on this server/);
+        assert.doesNotMatch(error.message, /Signed in as/, 'a genuinely-missing project must not claim a specific account lacks access to it');
+        return true;
+      },
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

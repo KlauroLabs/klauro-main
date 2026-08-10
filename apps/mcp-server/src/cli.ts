@@ -33,7 +33,7 @@ import { runSelfUpdate } from './self-update';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { decideInitFlow, resolveNamedChoice, type RecognizedRemote } from './init-resolution';
 import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
-import { clearStoredConnectorSession, connectorToken, isNetworkUnreachableError, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, resolveAuthStatus, saveStoredConnectorSession, unreachableServerError } from './connector-auth';
+import { clearStoredConnectorSession, connectorToken, isNetworkUnreachableError, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, unreachableServerError } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
 import { detectWorkspaceIdentity, findFabricProjectRoot, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
 import { remoteActive } from './coordination/remote-transport';
@@ -194,6 +194,30 @@ async function main(): Promise<void> {
     process.stdout.write(args.json
       ? `${JSON.stringify(result, null, 2)}\n`
       : `${result.removed ? 'Removed' : 'No stored'} Klauro login for ${result.serverUrl}\n`);
+    return;
+  }
+
+  if (args.command === 'accounts') {
+    const serverUrl = normalizeServerUrl(args.serverUrl);
+    if (args.email) {
+      const switched = switchStoredAccount(serverUrl, args.email);
+      process.stdout.write(args.json
+        ? `${JSON.stringify({ status: 'switched', ...switched }, null, 2)}\n`
+        : `Active account for ${switched.serverUrl} is now ${switched.email}.\n`);
+      return;
+    }
+    const accounts = listStoredAccounts(serverUrl);
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify({ server_url: serverUrl, accounts }, null, 2)}\n`);
+      return;
+    }
+    if (accounts.length === 0) {
+      process.stdout.write(`No accounts signed in on ${serverUrl}. Run \`klauro login\`.\n`);
+      return;
+    }
+    process.stdout.write(
+      `${accounts.map(a => `${a.active ? '* ' : '  '}${a.email}${a.active ? '  (active)' : ''}  — last used ${a.updated_at}`).join('\n')}\n`,
+    );
     return;
   }
 
@@ -1990,6 +2014,8 @@ function printHelp(): void {
     '  klauro whoami [--server-url url] [--json]',
     '  klauro auth-status [--server-url url] [--json]',
     '  klauro logout [--server-url url] [--json]',
+    '  klauro accounts [--server-url url] [--email you@example.com] [--json]',
+    '    (no --email: lists every account signed into this server on this machine; with --email: switches the active one, no password needed)',
     '  klauro change-password [--current-password-stdin | --current-password value] [--new-password-stdin | --new-password value] [--server-url url] [--json]',
     '      (requires an existing session; invalidates every OTHER session; rotates and saves this one)',
     '  klauro reset-password --token value [--token-stdin] [--new-password-stdin | --new-password value] [--server-url url] [--json]',

@@ -5,9 +5,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  clearStoredConnectorSession,
+  listStoredAccounts,
+  loadStoredConnectorAuth,
+  loadStoredConnectorToken,
   normalizeServerUrl,
   resolveAuthStatus,
   saveStoredConnectorSession,
+  switchStoredAccount,
   warnIfSessionExpiringSoon,
   resetSessionWarningStateForTests,
   SESSION_TOKEN_TTL_DAYS,
@@ -194,4 +199,113 @@ test('warnIfSessionExpiringSoon: at most once per process (the latch)', () => {
   warnIfSessionExpiringSoon('https://example.test', { token: 't', email: 'a@b.com', updated_at: updatedAt }, now, stderr);
   warnIfSessionExpiringSoon('https://example.test', { token: 't', email: 'a@b.com', updated_at: updatedAt }, now, stderr);
   assert.equal(writes.length, 1, 'a second call in the same process must not repeat the warning');
+});
+
+/**
+ * Multi-account auth.json (task #127, defect 3): before this, `klauro login`
+ * for a SECOND email on the same server unconditionally overwrote
+ * `accounts[serverUrl]`, silently destroying whatever account was
+ * previously signed in — a real beta blocker for anyone with a work +
+ * personal account. These tests use an isolated auth.json fixture
+ * (KLAURO_AUTH_CONFIG_PATH under a temp dir) and never touch the real
+ * ~/.klauro/auth.json or invoke `klauro login` for real.
+ */
+
+test('multi-account: logging in as a second email does not evict the first account\'s token', async () => {
+  await withIsolatedAuthFile(async () => {
+    const serverUrl = 'https://example.test';
+    saveStoredConnectorSession({ serverUrl, token: 'token-a', email: 'a@example.test' });
+    saveStoredConnectorSession({ serverUrl, token: 'token-b', email: 'b@example.test' });
+
+    // The active account is now B (login always activates what you just
+    // signed into) — but A's session must still be recoverable, not gone.
+    assert.equal(loadStoredConnectorToken(serverUrl), 'token-b');
+    const auth = loadStoredConnectorAuth();
+    assert.equal(auth.accountsByServer?.[serverUrl]?.['a@example.test']?.token, 'token-a');
+    assert.equal(auth.accountsByServer?.[serverUrl]?.['b@example.test']?.token, 'token-b');
+  });
+});
+
+test('multi-account: listStoredAccounts reports every account and flags the active one', async () => {
+  await withIsolatedAuthFile(async () => {
+    const serverUrl = 'https://example.test';
+    saveStoredConnectorSession({ serverUrl, token: 'token-a', email: 'a@example.test' });
+    saveStoredConnectorSession({ serverUrl, token: 'token-b', email: 'b@example.test' });
+
+    const accounts = listStoredAccounts(serverUrl);
+    const emails = accounts.map(a => a.email).sort();
+    assert.deepEqual(emails, ['a@example.test', 'b@example.test']);
+    const active = accounts.find(a => a.active);
+    assert.equal(active?.email, 'b@example.test');
+    assert.equal(accounts.filter(a => a.active).length, 1, 'exactly one account is active');
+  });
+});
+
+test('multi-account: switchStoredAccount flips the active account without a new token', async () => {
+  await withIsolatedAuthFile(async () => {
+    const serverUrl = 'https://example.test';
+    saveStoredConnectorSession({ serverUrl, token: 'token-a', email: 'a@example.test' });
+    saveStoredConnectorSession({ serverUrl, token: 'token-b', email: 'b@example.test' });
+    assert.equal(loadStoredConnectorToken(serverUrl), 'token-b');
+
+    const switched = switchStoredAccount(serverUrl, 'a@example.test');
+    assert.equal(switched.email, 'a@example.test');
+    assert.equal(loadStoredConnectorToken(serverUrl), 'token-a', 'active token must now be A\'s, reused verbatim');
+
+    // Roster is untouched by switching — both accounts remain recoverable.
+    const accounts = listStoredAccounts(serverUrl);
+    assert.equal(accounts.length, 2);
+    assert.equal(accounts.find(a => a.email === 'a@example.test')?.active, true);
+    assert.equal(accounts.find(a => a.email === 'b@example.test')?.active, false);
+  });
+});
+
+test('multi-account: switching to an unknown email throws a clear, actionable error (not a silent no-op)', async () => {
+  await withIsolatedAuthFile(async () => {
+    const serverUrl = 'https://example.test';
+    saveStoredConnectorSession({ serverUrl, token: 'token-a', email: 'a@example.test' });
+    await assert.rejects(
+      async () => switchStoredAccount(serverUrl, 'nobody@example.test'),
+      /No stored session for nobody@example\.test.*Known accounts: a@example\.test/s,
+    );
+  });
+});
+
+test('multi-account: logging out the active account auto-switches to another stored account when one remains', async () => {
+  await withIsolatedAuthFile(async () => {
+    const serverUrl = 'https://example.test';
+    saveStoredConnectorSession({ serverUrl, token: 'token-a', email: 'a@example.test' });
+    saveStoredConnectorSession({ serverUrl, token: 'token-b', email: 'b@example.test' });
+    assert.equal(loadStoredConnectorToken(serverUrl), 'token-b');
+
+    const result = clearStoredConnectorSession(serverUrl);
+    assert.equal(result.removed, true);
+    assert.equal(result.switched_to, 'a@example.test');
+    assert.equal(loadStoredConnectorToken(serverUrl), 'token-a', 'the remaining account becomes active, not silently signed out');
+  });
+});
+
+test('multi-account: logging out the only account leaves the server fully signed out', async () => {
+  await withIsolatedAuthFile(async () => {
+    const serverUrl = 'https://example.test';
+    saveStoredConnectorSession({ serverUrl, token: 'token-a', email: 'a@example.test' });
+    const result = clearStoredConnectorSession(serverUrl);
+    assert.equal(result.removed, true);
+    assert.equal(result.switched_to, undefined);
+    assert.equal(loadStoredConnectorToken(serverUrl), undefined);
+    assert.deepEqual(listStoredAccounts(serverUrl), []);
+  });
+});
+
+test('multi-account: pre-existing v1 auth.json (no accountsByServer roster) still reports its single account via listStoredAccounts', async () => {
+  await withIsolatedAuthFile(async (authFile) => {
+    const serverUrl = 'https://example.test';
+    fs.writeFileSync(authFile, JSON.stringify({
+      version: 1,
+      defaultServerUrl: serverUrl,
+      accounts: { [serverUrl]: { token: 'legacy-token', email: 'legacy@example.test', updated_at: new Date().toISOString() } },
+    }));
+    const accounts = listStoredAccounts(serverUrl);
+    assert.deepEqual(accounts, [{ email: 'legacy@example.test', updated_at: accounts[0]?.updated_at, active: true }]);
+  });
 });

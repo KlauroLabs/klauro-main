@@ -593,11 +593,35 @@ export class AccountStore {
     });
   }
 
+  /**
+   * Looks up a project the caller believes they are bound to (via this
+   * repo's `.klaurorc`) and enforces tenant isolation (the #120 fix).
+   *
+   * Two distinct 404s existed before this comment and were easy to conflate
+   * from the outside — a caller's own `.klaurorc` binding already implies
+   * the project id is real (they didn't guess it), so telling them apart
+   * here does not leak anything a stranger could not already infer:
+   *   - the project id genuinely does not exist on this server at all, or
+   *   - the project exists, but the signed-in caller's account has no
+   *     membership in the workspace that owns it (wrong account, or a
+   *     `.klaurorc` copied/shared from someone else's project).
+   * Both throw AccountHttpError(404) so callers that just check `if (!project)`
+   * still work, but the message now says which case it is and names the
+   * CALLER's own account — never the owning workspace or its members, which
+   * would leak private information the caller has no right to.
+   */
   async getProjectForUser(userId: string, projectId: string): Promise<AccountProject | null> {
     const db = await this.load();
     const project = db.projects.find(candidate => candidate.id === projectId);
-    if (!project) return null;
-    requireMembership(db, userId, project.workspace_id);
+    if (!project) {
+      throw httpError(404, `Project '${projectId}' was not found on this server. Confirm the project id in this repo's .klaurorc, or run \`klauro init\` to bind a fresh project.`);
+    }
+    const membership = db.workspace_users.find(member => member.workspace_id === project.workspace_id && member.user_id === userId);
+    if (!membership) {
+      const caller = db.users.find(candidate => candidate.id === userId);
+      const callerDesc = caller ? `Signed in as ${caller.email}` : 'The signed-in account';
+      throw httpError(404, `${callerDesc}, which has no access to workspace '${project.workspace_id}'. This repo is bound to a project owned by another account — sign in as that account (\`klauro login\`), or re-bind this repo with \`klauro init --force\` to a project your current account can see.`);
+    }
     return project;
   }
 
