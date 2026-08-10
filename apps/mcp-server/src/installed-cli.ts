@@ -4,7 +4,7 @@ import { existsSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { buildUploadManifest } from './remote-source';
-import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, warnIfSessionExpiringSoon } from './connector-auth';
+import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
 import { writeDefaultKlauroConfig } from './klauro-config';
 import { formatBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
 import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
@@ -78,7 +78,7 @@ const HELP_FLAGS = new Set(['--help', '-h']);
 const FLAGS_WITH_VALUES = new Set([
   '--server-url', '--project-id', '--organization-id', '--workspace', '--output',
   '--email', '--password', '--token', '--new-password', '--current-password',
-  '--data-dir', '--minted-by', '--claude-scope',
+  '--data-dir', '--minted-by', '--claude-scope', '--use',
 ]);
 
 /** The flags each subcommand actually reads (via `value()` or
@@ -105,6 +105,7 @@ const COMMAND_FLAGS: Record<string, Set<string>> = {
   whoami: new Set(['--server-url', '--json']),
   logout: new Set(['--server-url', '--json']),
   login: new Set(['--server-url', '--email', '--password', '--password-stdin', '--register', '--json']),
+  accounts: new Set(['--server-url', '--use', '--json']),
   'reset-password': new Set(['--server-url', '--token', '--token-stdin', '--new-password', '--new-password-stdin', '--json']),
   'change-password': new Set(['--server-url', '--current-password', '--current-password-stdin', '--new-password', '--new-password-stdin', '--json']),
   'admin-mint-reset-token': new Set(['--email', '--data-dir', '--minted-by', '--json']),
@@ -164,6 +165,8 @@ const USAGE_TEXT = [
   '  login [--email EMAIL] [--password-stdin | --register]',
   '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts',
   '  auth-status | whoami | logout | version',
+  '  accounts [--server-url URL] [--use EMAIL]',
+  '                               List every account signed into this server on this machine, or switch the active one (no password needed if already logged in as EMAIL)',
   '  change-password [--current-password-stdin] [--new-password-stdin]',
   '                               Requires an existing session + current password; invalidates every other session',
   '  reset-password --token TOKEN [--token-stdin] [--new-password-stdin]',
@@ -311,6 +314,23 @@ async function main() {
       json);
   }
   if (command === 'logout') return output(clearStoredConnectorSession(value('--server-url')), json);
+  if (command === 'accounts') {
+    const serverUrl = normalizeServerUrl(value('--server-url'));
+    const useEmail = value('--use');
+    if (useEmail) {
+      const switched = switchStoredAccount(serverUrl, useEmail);
+      return output(json ? { status: 'switched', ...switched } : `Active account for ${switched.serverUrl} is now ${switched.email}.`, json);
+    }
+    const accounts = listStoredAccounts(serverUrl);
+    if (json) return output({ server_url: serverUrl, accounts }, json);
+    if (accounts.length === 0) {
+      return output(`No accounts signed in on ${serverUrl}. Run \`klauro login\`.`, json);
+    }
+    return output(
+      accounts.map(a => `${a.active ? '* ' : '  '}${a.email}${a.active ? '  (active)' : ''}  — last used ${a.updated_at}`).join('\n'),
+      json,
+    );
+  }
   if (command === 'login') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
     // Credentials must travel over HTTPS only — never send a password in the clear.
