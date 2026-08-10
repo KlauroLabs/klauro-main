@@ -219,6 +219,25 @@ describe('buildProductMap', () => {
     ]);
   });
 
+  it('never carries identity.description_source when neither inferred_description nor system.description has text (same invariant as capabilities)', () => {
+    // A stray `enhanced_system_purpose.description_source` (e.g. 'ai') with no
+    // backing `inferred_description` text, and no `cas.system.description`
+    // fallback either, must not ship identity.description_source — same
+    // provenance-must-agree-with-text invariant as buildCapabilities.
+    const cas = {
+      ...fullCas,
+      system: { ...fullCas.system, description: undefined },
+      enhanced_system_purpose: {
+        ...fullCas.enhanced_system_purpose,
+        inferred_description: '',
+        description_source: 'ai',
+      },
+    } as unknown as CASOutput;
+    const map = buildProductMap(cas);
+    expect(map.identity.description).toBe('');
+    expect(map.identity.description_source).toBeUndefined();
+  });
+
   it('orders capabilities by criticality and carries description provenance', () => {
     expect(map.capabilities.map(capability => capability.name)).toEqual(['Billing', 'Reporting']);
     expect(map.capabilities[0].description_source).toBe('ai');
@@ -251,6 +270,67 @@ describe('buildProductMap', () => {
     expect(undescribedMap.capabilities).toHaveLength(1);
     expect(undescribedMap.capabilities[0].description).toBeFalsy();
     expect(undescribedMap.capabilities[0].description_source).toBeUndefined();
+  });
+
+  it('scrubs an ALREADY-mismatched description_source with no text, not just declines to add a new one', () => {
+    // The narrower version of this fix only stopped buildCapabilities from
+    // COERCING an unset source to 'deterministic'; it forwarded an
+    // already-mismatched capability (source set, text absent) unchanged. That
+    // shape is exactly what a stored analysis computed before this invariant
+    // existed looks like on disk, or what a future upstream regression would
+    // produce — this view must actively repair it, not just avoid worsening it.
+    const staleCorrupted: SystemCapability[] = [
+      {
+        id: 'cap_stale',
+        name: 'Process Forms',
+        description: undefined as unknown as string,
+        description_source: 'deterministic',
+        category: 'core',
+        operations: [],
+        related_entities: [],
+        related_domains: [],
+        criticality: 'medium',
+        criticality_factors: [],
+      },
+    ];
+    const cas = { ...fullCas, system_capabilities: staleCorrupted } as unknown as CASOutput;
+    const map = buildProductMap(cas);
+    expect(map.capabilities).toHaveLength(1);
+    expect(map.capabilities[0].description).toBeFalsy();
+    expect(map.capabilities[0].description_source).toBeUndefined();
+  });
+
+  it('INVARIANT: no capability in a built product map ever carries description_source without description text', () => {
+    // Broad sweep over every provenance/text combination the type allows —
+    // the property this whole class of defect violated, expressed once as a
+    // sweep rather than one example at a time.
+    const sources: Array<SystemCapability['description_source']> = ['deterministic', 'ai', 'manual', 'reused', undefined];
+    const texts = ['', undefined as unknown as string, 'Real grounded description text.'];
+    const sweep: SystemCapability[] = [];
+    let index = 0;
+    for (const source of sources) {
+      for (const text of texts) {
+        sweep.push({
+          id: `cap_sweep_${index++}`,
+          name: `Sweep Capability ${index}`,
+          description: text,
+          description_source: source,
+          category: 'core',
+          operations: [],
+          related_entities: [],
+          related_domains: [],
+          criticality: 'medium',
+          criticality_factors: [],
+        });
+      }
+    }
+    const cas = { ...fullCas, system_capabilities: sweep } as unknown as CASOutput;
+    const map = buildProductMap(cas);
+    for (const capability of map.capabilities) {
+      if (capability.description_source) {
+        expect(capability.description).toBeTruthy();
+      }
+    }
   });
 
   it('links capabilities to journeys via entry points and shared terminal entities', () => {
