@@ -544,12 +544,13 @@ function enableToolCallLogging(server: McpServer): void {
 }
 
 /**
- * get_summary's DAS wiring (docs/SPEC-DEPLOYABLE-ANALYSIS.md §6): scope the
- * summary to one DAS unit when `scope` is given (throws a helpful error for
- * an unknown id or a non-promoted repo, surfaced by withErrorHandling like
- * any other tool error), otherwise return the rollup summary with a
- * `das_index` attached when the repo has promoted — the discovery path a
- * caller uses to learn a scope exists before ever passing one.
+ * get_summary's sub-CAS-node wiring (docs/cas/SPECIFICATION.md §0.4): scope
+ * the summary to one sub-CAS-node unit when `scope` is given (throws a
+ * helpful error for an unknown id or a non-promoted repo, surfaced by
+ * withErrorHandling like any other tool error), otherwise return the rollup
+ * summary with `sub_cas_nodes` attached (always, promoted or not — §0.4) —
+ * the discovery path a caller uses to learn a scope exists before ever
+ * passing one.
  */
 function buildSummaryWithDasIndex(
   cas: CASOutput,
@@ -560,12 +561,12 @@ function buildSummaryWithDasIndex(
   const summary = query.buildSummary(scopedCas, opts);
   if (scope) return summary;
   const das = getCachedDeployableAnalyses(cas);
-  // das_index is attached whether or not the repo promoted. When it hasn't, the
-  // index is a few fields (qualified_unit_count / promotion_threshold / reason)
-  // and it is the only way a caller can tell "one ship unit found, below the
-  // threshold" from "no ship evidence found at all" — omitting it made those
-  // two answers indistinguishable.
-  return { ...summary, das_index: das.das_index };
+  // sub_cas_nodes is attached whether or not the repo promoted. When it
+  // hasn't, the index is a few fields (qualified_unit_count /
+  // promotion_threshold / reason) and it is the only way a caller can tell
+  // "one ship unit found, below the threshold" from "no ship evidence found
+  // at all" — omitting it made those two answers indistinguishable.
+  return { ...summary, sub_cas_nodes: das.sub_cas_nodes };
 }
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
@@ -1151,7 +1152,7 @@ const EXCLUDE_SECTIONS_PARAM = z
   .optional()
   .describe('Named sections to omit regardless of runtime mode, e.g. ["runtime","seams","topology"] (aliases like "telemetry","communication_seams" accepted). Excluded sections are skipped, not blanked.');
 
-// DAS retrieval scope (docs/SPEC-DEPLOYABLE-ANALYSIS.md §6): on a promoted
+// DAS retrieval scope (docs/cas/SPECIFICATION.md §0.4): on a promoted
 // repo (>= 2 tier-qualified ship units, see deployable-analysis.ts), scope a
 // repo-level tool to exactly one das_unit_id's sliced facts instead of the
 // whole-repo rollup. Omitted on any repo (promoted or not) preserves today's
@@ -1159,10 +1160,10 @@ const EXCLUDE_SECTIONS_PARAM = z
 // pattern one level down (spec §6).
 const DAS_SCOPE_PARAM = z
   .object({
-    das_unit_id: z.string().describe('A das_unit_id from get_summary\'s das_index (only present on a promoted repo).'),
+    das_unit_id: z.string().describe('A das_unit_id from get_summary\'s sub_cas_nodes (only present on a promoted repo).'),
   })
   .optional()
-  .describe('Scope this call to one DAS unit (see das_index on get_summary). Omit to query the whole repo/rollup.');
+  .describe('Scope this call to one sub-CAS-node unit (see sub_cas_nodes on get_summary). Omit to query the whole repo/rollup.');
 
 // Fold env (KLAURO_CONTEXT_RUNTIME) and the .klaurorc context.runtime default
 // into the task's `runtime` field before it reaches getAgentContext (which only

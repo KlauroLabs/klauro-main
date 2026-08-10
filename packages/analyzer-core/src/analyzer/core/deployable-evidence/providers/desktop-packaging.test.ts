@@ -28,7 +28,7 @@ function withTempDir(fn: (dir: string) => void): void {
 // Real defect: an Electron app shipping electron-builder.yml — a genuine
 // packaging-plugin ship declaration, the desktop equivalent of a Dockerfile
 // COPY/ENTRYPOINT or spring-boot-maven-plugin's repackage goal — produced no
-// Tier-1 installer evidence at all, so it never promoted to a das_index
+// Tier-1 installer evidence at all, so it never promoted to sub_cas_nodes
 // despite plainly shipping a desktop artifact.
 test('electron-builder.yml registers as Tier-1 installer evidence', () => {
   withTempDir(dir => {

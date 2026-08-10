@@ -2,7 +2,7 @@
 
 **Status:** model definition. Owner-defined 2026-08-09; elaborated here.
 **Purpose:** define what each tier contains, what it may depend on, and what it must never do. This is a structural contract, not a pitch.
-**Normative counterpart:** `docs/analysis-scope/SPECIFICATION.md` (v2.0.0) is the normative spec for the recursive Analysis Scope structure. This document is the tier model and rationale behind that specification's Tier 1-4 sections (§5-§8) — read this first for *why* the tiers are shaped the way they are, then the specification for the conformance-level contract. See also `docs/SPEC-ANALYSIS-SCOPES.md`, the companion document for the recursive-scope model (naming, derivation gradient, sequencing) that sits alongside this tier model.
+**Normative counterpart:** `docs/cas/SPECIFICATION.md` (v2.0.0) is the normative spec for the recursive CAS structure. Its §0 covers the naming decision, the no-closed-type-vocabulary argument, the derivation gradient, and inter-sub-CAS-node seams; its §0.5 restates the Tier 1-4 model this document is the rationale behind. Read this document first for *why* the tiers are shaped the way they are, then `docs/cas/SPECIFICATION.md` §0 for the conformance-level contract.
 
 ```
       /        Action / Collaboration / Fabric          \     tier 5
@@ -151,7 +151,7 @@ The comprehension layer was defined as four members: capabilities, flows, steps,
 
 **Pre-work required before removal.** Check consumers of `user_journeys`/`workflows` — the journey builder, the product map, and any UI surface — before removing the separate builders, since a consumer may depend on journey-specific fields (`kind`, `layer`, `depth`, `boundaries`, `tests`) that must be preserved as derived facets on flows rather than silently dropped.
 
-This resolves the open question this section originally posed, and it changes §3 of `docs/SPEC-ANALYSIS-SCOPES.md` (the comprehension-layer member list) accordingly — see that document's Flows section for the same decision restated in the scope-recursion context, and `docs/analysis-scope/SPECIFICATION.md` §7.1/§7.3, whose `ScopeComprehension.workflows?`/`user_journeys?` fields are the shipped-schema surface this decision targets for the same collapse.
+This resolves the open question this section originally posed. `docs/cas/SPECIFICATION.md` §0.5.1 restates the same decision in the recursive-CAS context: journeys and workflows are derived views over `flows`, not a fifth comprehension member.
 
 ### E. Agent-facing knowledge
 
@@ -169,13 +169,13 @@ Proposal: idioms and conventions belong in **tier 2** (they are conventions, whi
 
 ## Implementation sequencing: god-file decomposition follows tier boundaries — resolved (owner, post-2026-08-09)
 
-**Decision.** File decomposition is sequenced by tier boundary, and it is sequenced *before* the recursive scope structure (`docs/SPEC-ANALYSIS-SCOPES.md`) is built, not after.
+**Decision.** File decomposition is sequenced by tier boundary, and it is sequenced *before* the recursive CAS structure (`docs/cas/SPECIFICATION.md` §0) is built, not after.
 
 **Evidence.** 6 files hold 70,542 of 548,471 source lines; `orchestrator.ts` alone is 31,353. Both tier-skip defects cited at the top of this document (`determineSystemType` reading tier-1 labels; capability generation never consuming tier-2 dependency roles) were possible *because* tiers 1, 2, and 3 share one file with no import boundary between them — nothing at the file level stopped a tier-3 code path from reaching into tier-1 data.
 
 **Why this is sequenced where it is.** Splitting by tier makes the cleanup and the dependency-rule enforcement (the one rule at the top of this document) the same piece of work: decomposing `orchestrator.ts` and its five siblings along tier lines, with a lint/import-boundary gate so a tier-3 module cannot import a tier-1 module's internals directly, turns "a rule stated in prose" into "a rule a build fails on." That gate is cheap once the files are split and meaningless before they are.
 
-It is sequenced **after** beta-blockers (this is not itself a beta blocker) but **before** the scope recursion in `docs/SPEC-ANALYSIS-SCOPES.md` is built, so that recursive composition (§7a of that document — the derivation gradient) is not layered on top of a monolith that the tier-ordering rule cannot yet be mechanically enforced against. Building recursion first would mean composing scopes over code that still lets tier 3 read past tier 2 undetected — the same defect class this document exists to prevent, now with more scopes to hide in.
+It is sequenced **after** beta-blockers (this is not itself a beta blocker) but **before** the CAS recursion in `docs/cas/SPECIFICATION.md` §0 is built, so that recursive composition (§0.6 of that document — the derivation gradient) is not layered on top of a monolith that the tier-ordering rule cannot yet be mechanically enforced against. Building recursion first would mean composing CAS nodes over code that still lets tier 3 read past tier 2 undetected — the same defect class this document exists to prevent, now with more nodes to hide in.
 
 ## Where each tier's defects show up
 

@@ -10,10 +10,10 @@ import { buildCrossCodebaseSystemGraph, type CrossCodebaseInput } from './cross-
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 
 /**
- * DAS PHASE 2 — product-surface wiring tests (docs/SPEC-DEPLOYABLE-ANALYSIS.md
+ * DAS PHASE 2 — product-surface wiring tests (docs/cas/SPECIFICATION.md §0.4/§0.8
  * §4, §6). Phase 1 (deployable-analysis.test.ts) proves the slicing primitive
  * in isolation; this file proves the pieces phase 2 wires it INTO:
- *  - get_summary's das_index discovery surface + scoped-vs-rollup counts,
+ *  - get_summary's sub_cas_nodes discovery surface + scoped-vs-rollup counts,
  *  - scope propagating cleanly through query.ts's existing read functions
  *    (search_nodes's contract, via query.searchNodes),
  *  - the unknown-id / non-promoted error paths a caller actually sees,
@@ -108,13 +108,13 @@ test('scopeCasToDasUnit: omitted scope returns the same CAS unchanged (existing 
   assert.equal(scopeCasToDasUnit(cas, undefined), cas);
 });
 
-test('get_summary product surface: promoted CAS exposes das_index; rollup counts cover the whole repo', () => {
+test('get_summary product surface: promoted CAS exposes sub_cas_nodes; rollup counts cover the whole repo', () => {
   const cas = buildPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
   assert.equal(das.promoted, true);
-  assert.equal(das.das_index.units.length, 4);
-  assert.deepEqual(das.das_index.units.map(u => u.name).sort(), ['api', 'tool1', 'tool2', 'worker']);
-  assert.equal(das.das_index.qualified_unit_count, 4);
+  assert.equal(das.sub_cas_nodes.units.length, 4);
+  assert.deepEqual(das.sub_cas_nodes.units.map(u => u.name).sort(), ['api', 'tool1', 'tool2', 'worker']);
+  assert.equal(das.sub_cas_nodes.qualified_unit_count, 4);
 
   const rollupSummary = query.buildSummary(scopeCasToDasUnit(cas, undefined));
   assert.equal(rollupSummary.nodes, 6); // all 6 nodes, unscoped rollup
@@ -123,7 +123,7 @@ test('get_summary product surface: promoted CAS exposes das_index; rollup counts
 test('get_summary product surface: scoped summary reflects the UNIT, not the rollup (counts differ)', () => {
   const cas = buildPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
-  const apiUnitId = das.das_index.units.find(u => u.name === 'api')!.id;
+  const apiUnitId = das.sub_cas_nodes.units.find(u => u.name === 'api')!.id;
 
   const scopedCas = scopeCasToDasUnit(cas, { das_unit_id: apiUnitId });
   const scopedSummary = query.buildSummary(scopedCas);
@@ -150,7 +150,7 @@ test('getCachedDeployableAnalyses: repeat calls on the same analysis_id reuse th
 test('search_nodes contract: scoped search only returns nodes inside the unit\'s reachability closure', () => {
   const cas = buildPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
-  const workerUnitId = das.das_index.units.find(u => u.name === 'worker')!.id;
+  const workerUnitId = das.sub_cas_nodes.units.find(u => u.name === 'worker')!.id;
   const scopedCas = scopeCasToDasUnit(cas, { das_unit_id: workerUnitId });
 
   // A broad query that would match every node's type in the whole-repo CAS...
@@ -184,11 +184,11 @@ test('scopeCasToDasUnit: non-promoted repo reports WHY (not just an empty list) 
   const cas = buildNonPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
   assert.equal(das.promoted, false);
-  assert.equal(das.das_index.units.length, 0);
+  assert.equal(das.sub_cas_nodes.units.length, 0);
   // Legible: one ship unit found, below the threshold — not "found nothing".
-  assert.equal(das.das_index.qualified_unit_count, 1);
-  assert.equal(das.das_index.promotion_threshold, 2);
-  assert.match(das.das_index.reason, /below the promotion threshold/);
+  assert.equal(das.sub_cas_nodes.qualified_unit_count, 1);
+  assert.equal(das.sub_cas_nodes.promotion_threshold, 2);
+  assert.match(das.sub_cas_nodes.reason, /below the promotion threshold/);
 
   assert.equal(scopeCasToDasUnit(cas, undefined), cas);
   assert.throws(
@@ -205,8 +205,8 @@ test('WAS composition: a promoted member CAS tags its matching WorkspaceDeployab
 
   const graph = buildCrossCodebaseSystemGraph('was-das-link-test', repositories);
   const das = getCachedDeployableAnalyses(cas);
-  const apiUnitId = das.das_index.units.find(u => u.name === 'api')!.id;
-  const workerUnitId = das.das_index.units.find(u => u.name === 'worker')!.id;
+  const apiUnitId = das.sub_cas_nodes.units.find(u => u.name === 'api')!.id;
+  const workerUnitId = das.sub_cas_nodes.units.find(u => u.name === 'worker')!.id;
 
   const apiApp = graph.applications.find(app => app.name === 'api');
   const workerApp = graph.applications.find(app => app.name === 'worker');

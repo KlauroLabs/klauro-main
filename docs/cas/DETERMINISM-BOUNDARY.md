@@ -1,4 +1,4 @@
-# CAS / WAS Determinism Boundary — Facts are deterministic, Comprehension is AI
+# CAS Determinism Boundary — Facts are deterministic, Comprehension is AI
 
 Status: **authoritative target architecture (2026-07-07).** Supersedes the prior
 "deterministic text is the default, AI replaces it after gates, on failure the
@@ -23,20 +23,20 @@ fallback code; it is not a safety net, it is a defect.
 
 This retires: `description_source: 'deterministic'`, `domain_source:
 'deterministic'`, the keyword domain classifier (`orchestrator.ts` ~9095–11267),
-every hardcoded description frame, the WAS `deterministic_narrative`, and the
+every hardcoded description frame, the workspace-level (parent-CAS) `deterministic_narrative`, and the
 "degraded default CAS" concept.
 
-## The three camps (the code-intelligence layers; both CAS and WAS have all three)
+## The three camps (the code-intelligence layers; every CAS, leaf or parent, has all three)
 
 | Camp | What | Determinism | Scope note |
 |---|---|---|---|
-| **B — Structure** | the compile/connectivity graph + all code facts | **deterministic** (the ONLY place determinism lives) | CAS: tree-sitter symbols + **resolved references** + entities, routes, endpoints, deployables, classes, contracts, communication seams, data lineage. WAS: the **cross-repo** connectivity graph — runtime/integration/application links, cross-repo contracts, shared code, data-flow paths, deployables, topology. |
+| **B — Structure** | the compile/connectivity graph + all code facts | **deterministic** (the ONLY place determinism lives) | A leaf CAS: tree-sitter symbols + **resolved references** + entities, routes, endpoints, deployables, classes, contracts, communication seams, data lineage. A composed (parent) CAS: the **inter-sub-CAS-node** connectivity graph — runtime/integration links, cross-repo contracts, shared code, data-flow paths, deployables, topology, and communication seams between sub-CAS nodes (`docs/cas/SPECIFICATION.md` §0.8). |
 | **A — Retrieval** | semantic search over the graph/code | deterministic infra, model-scored | surfaces the right grounding so Camp C isn't writing from thin air |
-| **C — Comprehension** | meaning, in the comprehension ladder below | **AI only, or throw** | CAS + WAS both have the full ladder |
+| **C — Comprehension** | meaning, in the comprehension ladder below | **AI only, or throw** | Every CAS, leaf or parent, has the full ladder |
 
 ## The comprehension ladder (Camp C) — code → up
 
-Both project (CAS) and workspace (WAS) carry every rung:
+Every CAS — a leaf project or a composed parent — carries every rung:
 
 1. **Overall description**
 2. **Capabilities** — description · related flows · entities · project connections · 3rd-party integrations. **No ICELOT.**

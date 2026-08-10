@@ -134,7 +134,7 @@ export interface SystemApplication {
    *  artifact evidence, and (if merged) the positive bundling evidence. */
   boundary_evidence?: string[];
   /** Present only when this application's owning CAS has promoted to a
-   *  Deployable-Analysis Workspace (docs/SPEC-DEPLOYABLE-ANALYSIS.md §1) and
+   *  Deployable-Analysis Workspace (docs/cas/SPECIFICATION.md §0.4) and
    *  this application resolves to one of its DAS units: the three-hop
    *  provenance `workspace -> CAS (codebase_id) -> DAS (this id)` (spec §4).
    *  A caller drills into the unit's own sliced capabilities/flows/entities
@@ -12566,7 +12566,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
 /**
  * Tags each matching SystemApplication with its DAS unit id so a
  * WorkspaceDeployable carries workspace -> CAS -> DAS provenance
- * (docs/SPEC-DEPLOYABLE-ANALYSIS.md §4). Must run after resolveDeployables.
+ * (docs/cas/SPECIFICATION.md §0.4). Must run after resolveDeployables.
  * Matching is identity-based (root_path/member_root_paths vs path_hint||name),
  * not positional. Bundled-member applications are skipped — their primary
  * carries the link. Purely additive; no-op when the CAS has no promotion.
@@ -12589,7 +12589,7 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
     } catch {
       continue; // Malformed/legacy CAS shape: no DAS link, never a hard failure for the workspace build.
     }
-    if (!das.promoted || das.das_index.units.length === 0) continue;
+    if (!das.promoted || das.sub_cas_nodes.units.length === 0) continue;
 
     for (const app of appsForRepo) {
       const appRoot = app.path_hint || app.name;
@@ -12603,7 +12603,7 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
       // position — the service's WAS row drilled down into the wrong unit.
       // A unit bearing the app's own cleaned name is the strongest identity
       // evidence and must win; root/member containment stays as fallback.
-      const nameMatch = das.das_index.units.find(unit => distributionNamesMatch(app.name, unit.name));
+      const nameMatch = das.sub_cas_nodes.units.find(unit => distributionNamesMatch(app.name, unit.name));
       // A bundled-member app normally leaves the link to its bundle primary
       // — but when the DAS itself promoted a unit under this app's OWN name,
       // the two layers disagree (workspace bundling folded it, DAS ships it
@@ -12615,7 +12615,7 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
         if (nameMatch) app.source_das_unit_id = nameMatch.id;
         continue;
       }
-      const match = nameMatch || das.das_index.units.find(unit =>
+      const match = nameMatch || das.sub_cas_nodes.units.find(unit =>
         rootMatches(appRoot, unit.root_path) ||
         unit.member_root_paths.some(memberRoot => rootMatches(appRoot, memberRoot)));
       if (match) app.source_das_unit_id = match.id;

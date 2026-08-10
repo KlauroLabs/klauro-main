@@ -15,7 +15,7 @@ import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } f
  * tools) client-side, because the real scoped surface was never exposed over
  * HTTP. This proves the two new routes:
  *
- *  - GET /api/projects/:id/das — the das_index summary (units + counts +
+ *  - GET /api/projects/:id/das — the sub_cas_nodes summary (units + counts +
  *    orphan accounting) WITHOUT the multi-MB `cas` body.
  *  - GET /api/projects/:id/cas?das_unit_id=<id> — the unit's CAS-shaped
  *    slice, membership-gated + LRU-cached like the sibling /conceptual and
@@ -197,32 +197,32 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(dasBody.status, 'ready');
     assert.equal(dasBody.project_id, project.id);
     assert.equal(dasBody.analysis_id, project.analysis_id);
-    assert.equal(dasBody.das_index.promoted, true);
-    assert.equal(dasBody.das_index.units.length, 4);
-    assert.deepEqual(dasBody.das_index.units.map((u: any) => u.name).sort(), ['api', 'tool1', 'tool2', 'worker']);
+    assert.equal(dasBody.sub_cas_nodes.promoted, true);
+    assert.equal(dasBody.sub_cas_nodes.units.length, 4);
+    assert.deepEqual(dasBody.sub_cas_nodes.units.map((u: any) => u.name).sort(), ['api', 'tool1', 'tool2', 'worker']);
     // Honest coverage accounting travels with the index over HTTP too.
-    assert.equal(dasBody.das_index.graph_node_count, 6);
+    assert.equal(dasBody.sub_cas_nodes.graph_node_count, 6);
     assert.equal(
-      dasBody.das_index.exclusive_node_count + dasBody.das_index.shared_node_count + dasBody.das_index.orphan_node_count,
-      dasBody.das_index.graph_node_count,
+      dasBody.sub_cas_nodes.exclusive_node_count + dasBody.sub_cas_nodes.shared_node_count + dasBody.sub_cas_nodes.orphan_node_count,
+      dasBody.sub_cas_nodes.graph_node_count,
     );
-    assert.ok(dasBody.das_index.sum_of_unit_node_counts >= dasBody.das_index.covered_node_count);
+    assert.ok(dasBody.sub_cas_nodes.sum_of_unit_node_counts >= dasBody.sub_cas_nodes.covered_node_count);
     assert.equal(dasBody.cas, undefined, '/das must never carry the multi-MB cas body');
-    for (const unit of dasBody.das_index.units) {
+    for (const unit of dasBody.sub_cas_nodes.units) {
       assert.ok(typeof unit.id === 'string' && unit.id.length > 0);
       assert.ok(typeof unit.node_count === 'number' && unit.node_count > 0);
     }
-    assert.ok(typeof dasBody.das_index.orphan_node_count === 'number');
+    assert.ok(typeof dasBody.sub_cas_nodes.orphan_node_count === 'number');
 
-    const apiUnit = dasBody.das_index.units.find((u: any) => u.name === 'api');
-    const workerUnit = dasBody.das_index.units.find((u: any) => u.name === 'worker');
-    assert.ok(apiUnit, 'expected the api unit in das_index');
-    assert.ok(workerUnit, 'expected the worker unit in das_index');
+    const apiUnit = dasBody.sub_cas_nodes.units.find((u: any) => u.name === 'api');
+    const workerUnit = dasBody.sub_cas_nodes.units.find((u: any) => u.name === 'worker');
+    assert.ok(apiUnit, 'expected the api unit in sub_cas_nodes');
+    assert.ok(workerUnit, 'expected the worker unit in sub_cas_nodes');
 
     // --- get_summary's FAST hosted path (GET /api/projects/:id/analysis)
-    // must carry das_index too. This is the endpoint hostedSummaryPayload
+    // must carry sub_cas_nodes too. This is the endpoint hostedSummaryPayload
     // (hosted-analysis.ts) hits by default — before this fix it never
-    // attached das_index, so a promoted repo queried the ordinary way (no
+    // attached sub_cas_nodes, so a promoted repo queried the ordinary way (no
     // scope/detail=full/runtime/exclude_sections) reported no DAS units at
     // all despite /das and the full-CAS path both having them. ---
     const analysisRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
@@ -230,12 +230,12 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     const analysisBody = JSON.parse(analysisRes.body);
     assert.equal(analysisBody.status, 'ready');
     assert.ok(analysisBody.summary, 'expected a summary object on the fast hosted path');
-    assert.equal(analysisBody.summary.das_index.promoted, true);
+    assert.equal(analysisBody.summary.sub_cas_nodes.promoted, true);
     assert.deepEqual(
-      analysisBody.summary.das_index.units.map((u: any) => u.name).sort(),
+      analysisBody.summary.sub_cas_nodes.units.map((u: any) => u.name).sort(),
       ['api', 'tool1', 'tool2', 'worker'],
     );
-    assert.deepEqual(analysisBody.summary.das_index, dasBody.das_index, 'the fast hosted path and the dedicated /das route must report the identical index');
+    assert.deepEqual(analysisBody.summary.sub_cas_nodes, dasBody.sub_cas_nodes, 'the fast hosted path and the dedicated /das route must report the identical index');
 
     // --- scoped slice: strictly smaller than the full CAS (api's closure is
     // A1, A2, S1 = 3 of the 6 fixture nodes, same as das-scope.test.ts's
@@ -340,13 +340,13 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(dasNonPromoted.statusCode, 200);
     const dasNonPromotedBody = JSON.parse(dasNonPromoted.body);
     assert.equal(dasNonPromotedBody.status, 'ready');
-    assert.equal(dasNonPromotedBody.das_index.promoted, false);
-    assert.deepEqual(dasNonPromotedBody.das_index.units, []);
+    assert.equal(dasNonPromotedBody.sub_cas_nodes.promoted, false);
+    assert.deepEqual(dasNonPromotedBody.sub_cas_nodes.units, []);
     // "1 found, below the threshold" must be legible over HTTP, not just an
     // empty list a caller has to read as "found nothing".
-    assert.equal(dasNonPromotedBody.das_index.qualified_unit_count, 1);
-    assert.equal(dasNonPromotedBody.das_index.promotion_threshold, 2);
-    assert.match(dasNonPromotedBody.das_index.reason, /below the promotion threshold/);
+    assert.equal(dasNonPromotedBody.sub_cas_nodes.qualified_unit_count, 1);
+    assert.equal(dasNonPromotedBody.sub_cas_nodes.promotion_threshold, 2);
+    assert.match(dasNonPromotedBody.sub_cas_nodes.reason, /below the promotion threshold/);
 
     const scopeNonPromoted = await request(port, 'GET', `/api/projects/${nonPromotedProject.id}/cas?das_unit_id=anything`, undefined, token);
     assert.equal(scopeNonPromoted.statusCode, 400, 'scoping a non-promoted repo must be a 4xx request error, not a 200 no_analysis body');

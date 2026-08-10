@@ -13,7 +13,7 @@ export interface CASOutput {
    * of the parser/language-analyzer layer and the graph/derived-facts layer,
    * respectively. Incremental analysis compares these instead of the blanket
    * `analyzer_build` stamp so a release that never touches the parse/graph
-   * pipeline (e.g. MCP-tool-only or WAS-only changes) does not force a full
+   * pipeline (e.g. MCP-tool-only or parent-CAS-composition-only changes) does not force a full
    * rebuild just because the whole-monorepo build identity moved.
    */
   parser_fingerprint?: string;
@@ -878,7 +878,7 @@ export interface CASReachabilityIndex {
    * BEFORE that fix, whose closure covered 'calls' + method_calls only.
    * Every consumer that can either rehydrate this persisted index OR fall
    * back to rebuilding its own (query.ts's getAffectedSet,
-   * deployable-analysis.ts's DAS slice) MUST gate reuse on this flag being
+   * deployable-analysis.ts's sub-CAS-node slice) MUST gate reuse on this flag being
    * true — trusting presence alone would silently hand a stale, narrower
    * closure to a caller that used to get the wider (invokes-inclusive) one
    * from a from-scratch rebuild, on any analysis stored before this field
@@ -4042,7 +4042,7 @@ export interface CASFlowGraph {
   };
 }
 
-export const CAS_VERSION = '1.11.0';
+export const CAS_VERSION = '2.0.0';
 
 export interface CASFlowLayer {
   layer_number: number;
