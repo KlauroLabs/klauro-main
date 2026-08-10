@@ -309,6 +309,37 @@ function buildCoverageCaveats(
     caveats.push(`${errorCount} analysis error${errorCount === 1 ? '' : 's'} recorded during analysis`);
   }
 
+  // The description-vs-capability cross-check (orchestrator.ts's
+  // description_capability_gaps, EnhancedSystemPurpose) exists specifically
+  // so the product can admit when its own AI description names an entity
+  // no shipped capability is anchored on — a real, evidence-derived honesty
+  // signal that, before this, no consumer-facing tool surfaced anywhere
+  // (get_summary / get_conceptual_analysis / get_product_map /
+  // run_answer_pack / get_agent_context all omitted it): the field existed
+  // but nothing a reader would call ever showed it, so it did no work.
+  // Reported here alongside every other "here is what this analysis could
+  // not fully resolve" caveat, distinguishing the two dispositions plainly
+  // rather than collapsing them into one vague warning.
+  const capabilityGaps = cas.enhanced_system_purpose?.description_capability_gaps || [];
+  const reinjected = capabilityGaps.filter(gap => gap.disposition === 'reinjected-from-candidate');
+  const unanchored = capabilityGaps.filter(gap => gap.disposition === 'no-structural-candidate');
+  if (unanchored.length > 0) {
+    caveats.push(
+      `Description names ${unanchored.length} ${unanchored.length === 1 ? 'entity' : 'entities'} `
+      + `with no capability built for ${unanchored.length === 1 ? 'it' : 'them'} in this catalog `
+      + `(${unanchored.slice(0, 5).map(gap => gap.entity_name).join(', ')}${unanchored.length > 5 ? ', ...' : ''}); `
+      + 'the description may be overreaching relative to the shipped capability list.'
+    );
+  }
+  if (reinjected.length > 0) {
+    caveats.push(
+      `${reinjected.length} ${reinjected.length === 1 ? 'capability was' : 'capabilities were'} restored into this `
+      + `catalog after the description referenced ${reinjected.length === 1 ? 'an entity' : 'entities'} `
+      + `(${reinjected.slice(0, 5).map(gap => gap.entity_name).join(', ')}${reinjected.length > 5 ? ', ...' : ''}) `
+      + `a pre-AI candidate already supported but reconciliation had dropped.`
+    );
+  }
+
   const totalTests = cas.test_summary?.total_tests ?? 0;
   const journeysWithTests = (cas.user_journeys || []).filter(journey => (journey.tests_covering || []).length > 0).length;
   if (totalTests === 0 && journeysWithTests === 0) {
