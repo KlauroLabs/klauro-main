@@ -167,6 +167,25 @@ async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly
  * bypass hosted resolution, as does any unbound repo — those paths are
  * byte-for-byte the legacy local-store behavior.
  */
+/**
+ * Section set for the get_agent_start_context / get_agent_tool_plan /
+ * get_agent_context / install_agent_default_config family: these read across
+ * nearly every CAS section (system summary, entry/exit points, capabilities,
+ * idioms, invariants, security, tests) so there is no narrower fixed profile
+ * to hand them (verified against agent-adoption.ts's actual field reads).
+ * The one section genuinely skippable is 'runtime' (runtime_static_links,
+ * communication_seams, runtime topology), and only when the operator's own
+ * KLAURO_CONTEXT_RUNTIME/.klaurorc default (or an explicit runtime/
+ * exclude_sections param, where the tool exposes one) says to exclude it —
+ * mirrors the existing runtimeExcluded gate in getAgentStartContext, just
+ * applied before the read instead of after.
+ */
+async function agentContextFamilySections(path: string, opts: { runtime?: unknown; exclude_sections?: unknown } = {}): Promise<readonly CasSectionName[]> {
+  const filter = await resolveSectionFilterForProject(path, opts);
+  if (!filter.isExcluded('runtime')) return CAS_SECTION_PROFILES.full;
+  return CAS_SECTION_PROFILES.full.filter(section => section !== 'runtime');
+}
+
 async function getAnalysis(projectPath: string, options?: { track?: import('./track').AnalysisTrack; sections?: readonly CasSectionName[] }) {
   if (!options?.track) {
     const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
@@ -2949,7 +2968,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getFreshAnalysisForAgent(path);
+      const sections = await agentContextFamilySections(path);
+      const cas = await getFreshAnalysisForAgent(path, sections);
       return json(await agentDefaults.getAgentDefaultConfig(cas, path, task || {}));
     })
   );
@@ -2973,7 +2993,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getFreshAnalysisForAgent(path);
+      const sections = await agentContextFamilySections(path);
+      const cas = await getFreshAnalysisForAgent(path, sections);
       return json(await agentDefaults.writeAgentDefaultConfig(cas, path, task || {}));
     })
   );
@@ -2997,7 +3018,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getFreshAnalysisForAgent(path);
+      const sections = await agentContextFamilySections(path);
+      const cas = await getFreshAnalysisForAgent(path, sections);
       return json(agentAdoption.getAgentStartContext(cas, path, task || {}));
     })
   );
@@ -3020,7 +3042,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getFreshAnalysisForAgent(path);
+      const sections = await agentContextFamilySections(path);
+      const cas = await getFreshAnalysisForAgent(path, sections);
       return json(agentAdoption.getAgentToolPlan(cas, { path, task: task || {} }));
     })
   );
@@ -3046,7 +3069,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
-      const cas = await getFreshAnalysisForAgent(path);
+      const sections = await agentContextFamilySections(path, { runtime: task?.runtime, exclude_sections: task?.exclude_sections });
+      const cas = await getFreshAnalysisForAgent(path, sections);
       const resolvedTask = await applyRuntimeContextDefault(path, task);
       const context = await agentAdoption.getAgentContext(cas, path, resolvedTask);
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
@@ -3104,7 +3128,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const sections = await agentContextFamilySections(path, { runtime: task?.runtime, exclude_sections: task?.exclude_sections });
+      const cas = await getAnalysis(path, { sections });
       const resolvedTask = await applyRuntimeContextDefault(path, task);
       const context = await agentAdoption.getAgentContext(cas, path, resolvedTask);
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
@@ -4093,7 +4118,14 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, type, limit, offset, scope }: any) => withErrorHandling(async () => {
-      const cas = scopeCasToSubCasNode(await getAnalysis(path), scope);
+      // entry_points/deployable_evidence -> supplemental, nodes -> graph,
+      // security_boundaries/contexts -> quality, communication_seams ->
+      // runtime; scope (when passed) additionally needs calls+comprehension
+      // for deployable-unit detection (DAS sliceInputSections parity).
+      const cas = scopeCasToSubCasNode(
+        await getAnalysis(path, { sections: ['identity', 'graph', 'calls', 'runtime', 'quality', 'comprehension', 'supplemental'] }),
+        scope,
+      );
       const result = query.getEntryPoints(cas, { type, limit, offset });
       // ENTRY-POINT ANALYSIS-GAP ENRICHMENT (query-time — keeps the stored CAS
       // canonical, mirrors the getFlowConcepts/telemetry query-time pattern).
@@ -4168,7 +4200,9 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, method, limit, offset }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      // route_table lives outside every keyword-matched section (casSectionForField
+      // falls through to 'supplemental') and getRouteTable reads nothing else.
+      const cas = await getAnalysis(path, { sections: ['identity', 'supplemental'] });
       return json(query.getRouteTable(cas, { method, limit, offset }));
     })
   );
@@ -4674,7 +4708,15 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, entity_name, limit, offset, role, scope }: any) => withErrorHandling(async () => {
-      const cas = scopeCasToSubCasNode(await getAnalysis(path), scope);
+      // getDataEntities itself needs graph (relation index)+comprehension
+      // (domain_concepts)+supplemental (data_entities); scopeCasToSubCasNode,
+      // when `scope` is actually passed, additionally needs calls+runtime for
+      // deployable-unit detection (mirrors the DAS sliceInputSections set in
+      // remote-analyzer-service.ts's /cas/sections sub_cas_node_id path).
+      const cas = scopeCasToSubCasNode(
+        await getAnalysis(path, { sections: ['identity', 'graph', 'calls', 'runtime', 'comprehension', 'supplemental'] }),
+        scope,
+      );
       return json(query.getDataEntities(cas, { entityName: entity_name, limit, offset, role }));
     })
   );
@@ -4687,7 +4729,8 @@ function registerTools(server: McpServer) {
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      // security_boundaries/security_contexts/security_summary all classify to 'quality'.
+      const cas = await getAnalysis(path, { sections: ['identity', 'quality'] });
       return json(query.getSecurityOverview(cas));
     })
   );
@@ -6707,7 +6750,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, gap_type, severity, limit, offset }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      // test_gaps/test_coverage/test_summary all classify to the 'tests' section.
+      const cas = await getAnalysis(path, { sections: ['identity', 'tests'] });
       return json(query.getTestSummary(cas, { gapType: gap_type, severity, limit, offset }));
     })
   );
@@ -6722,7 +6766,7 @@ function registerTools(server: McpServer) {
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getAnalysis(path, { sections: ['identity', 'supplemental'] });
       return json(query.getDatabaseSchema(cas));
     })
   );
@@ -6739,7 +6783,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, format, entity }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      // buildErd reads only data_entities and database_schema, both 'supplemental'.
+      const cas = await getAnalysis(path, { sections: ['identity', 'supplemental'] });
       return json(query.getErd(cas, { format, entityName: entity }));
     })
   );
@@ -6754,7 +6799,8 @@ function registerTools(server: McpServer) {
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      // implementation_health classifies to 'quality'.
+      const cas = await getAnalysis(path, { sections: ['identity', 'quality'] });
       return json(query.getImplementationHealth(cas));
     })
   );

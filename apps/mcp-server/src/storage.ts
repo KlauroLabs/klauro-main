@@ -1091,9 +1091,26 @@ export async function loadAnalysisSections(
   const parts: Partial<CASOutput>[] = [];
   for (const section of requested) {
     const descriptor = descriptorByName.get(section);
-    if (!descriptor?.file) continue;
+    // Absent from the manifest means the analysis genuinely has zero fields
+    // in that section (createCasSectionManifest drops empty sections) — not
+    // a defect, so skip silently. A descriptor that IS listed but whose file
+    // is unreadable/missing/corrupt is a real gap: fail loudly naming the
+    // section rather than quietly returning a partial CAS that looks complete.
+    if (!descriptor) continue;
+    if (!descriptor.file) {
+      throw new Error(`Segmented CAS section '${section}' is listed in the manifest for ${resolved} but has no file recorded`);
+    }
     const sectionPath = path.join(segmented.directory, descriptor.file);
-    parts.push(await readJsonMaybeCompressed(sectionPath) as Partial<CASOutput>);
+    let sectionData: Partial<CASOutput>;
+    try {
+      sectionData = await readJsonMaybeCompressed(sectionPath) as Partial<CASOutput>;
+    } catch (error) {
+      throw new Error(`Segmented CAS section '${section}' (${sectionPath}) could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (sectionData == null) {
+      throw new Error(`Segmented CAS section '${section}' (${sectionPath}) is missing or empty on disk`);
+    }
+    parts.push(sectionData);
   }
   return hydrateCasSections(parts);
 }

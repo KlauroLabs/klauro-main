@@ -156,6 +156,7 @@ import {
   getAnalysisVersionInfo,
   saveAnalysis,
   loadAnalysis,
+  loadAnalysisSections,
   saveIncrementalState,
   loadIncrementalState,
   saveChangeHistoryEntry,
@@ -168,6 +169,7 @@ import {
   withProjectAnalysisLockIfAvailable,
   writeJsonAtomic
 } from './storage';
+import { CAS_SECTION_NAMES, type CasSectionName } from './cas-sections';
 import { loadKlauroConfig, validateEmbeddingConfig, validateConventions, type KlauroConventions } from './klauro-config';
 import { clearFreshnessSummaryCache } from './freshness';
 import { createEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
@@ -1423,10 +1425,34 @@ export async function analyzeProjectLayered(
   return { l0: l0Promise, rest: restPromise };
 }
 
+/**
+ * Local/track-scoped analysis read. `sections` mirrors the hosted read path
+ * (hosted-analysis.ts's resolveBoundAnalysis): when the caller only needs
+ * part of the CAS, load just those sections from the on-disk `.sections`
+ * segments instead of materializing and caching the whole parsed CAS — the
+ * same mechanism `storage.ts`'s writeSegmentedAnalysis/loadAnalysisSections
+ * already write/read, never a second segmentation scheme. A requested
+ * section that genuinely cannot be produced fails loudly (missing section
+ * data is a bug to surface, not a gap to paper over with a full-CAS
+ * fallback). `applyStoredElementDescriptions` walks the full node graph to
+ * validate manual-description fingerprints; running it against a narrowed
+ * section set would read absent nodes as "target not found" and silently
+ * invalidate real stored descriptions, so it only runs on full loads.
+ */
 export async function getAnalysis(
   projectPath: string,
-  options?: { track?: import('./track').AnalysisTrack }
+  options?: { track?: import('./track').AnalysisTrack; sections?: readonly CasSectionName[] }
 ): Promise<CASOutput> {
+  if (options?.sections?.length && options.sections.length < CAS_SECTION_NAMES.length) {
+    // loadAnalysisSections itself fails loudly (naming the section) when a
+    // section the manifest promises turns out to be unreadable — no silent
+    // fallback here, and no full-CAS re-read on a partial-section miss.
+    const partial = await loadAnalysisSections(projectPath, options.sections, options.track ? { track: options.track } : undefined);
+    if (!partial) throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
+    assertAnalysisVersionSupported(partial as CASOutput, projectPath);
+    return partial as CASOutput;
+  }
+
   const cached = await loadAnalysis(projectPath, { preferCache: true, ...(options?.track ? { track: options.track } : {}) });
   if (cached) {
     assertAnalysisVersionSupported(cached, projectPath);
