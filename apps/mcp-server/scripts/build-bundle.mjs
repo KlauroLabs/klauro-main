@@ -176,6 +176,54 @@ const seaEntryResult = await build({ ...shared, entryPoints: ['src/installed-sea
   }
 }
 
+// Released-bundle retired-vocabulary gate (task #129). WAS/DAS were retired
+// in favor of the recursive-CAS model (6606732a/4bb416d2/c5eef85e/c0f4694b,
+// 2026-08-09): every source string was rewritten, and
+// apps/mcp-server/src/spec-purity-gate-cli.ts (a SOURCE gate) keeps that
+// rewrite from silently regressing going forward. Neither of those catches
+// the actual defect observed live: a customer running the shipped 1.0.134
+// npm/SEA bundle still saw `klauro --help` print the retired "Analysis,
+// CAS/WAS construction, ... execute only on Klauro infrastructure." line —
+// not because the SOURCE regressed (it hadn't; this repo's tree already read
+// "CAS construction at every level" days before that build was cut), but
+// because the RELEASED ARTIFACT was built from a tree that predated the
+// purge and was never rebuilt afterward. A source-only gate is structurally
+// blind to this class: it can only ever see what's in the tree right now,
+// never what already shipped from an older tree. So the check has to run
+// here too — against the actual bytes this build is about to hand to
+// `npm publish` / the SEA binary — so a build cut from a stale-vocabulary
+// tree fails LOUDLY instead of quietly re-shipping the same retired string
+// forever (this bundle, once built, is exactly what klauro-install-oneliner
+// installs and what `klauro update` hands out — see self-update.ts).
+{
+  // Deliberately narrow (acronym pairs, not bare "WAS"/"DAS" — those are an
+  // ordinary English word and a common short identifier fragment and would
+  // false-positive constantly). `validate_was_contract` (the MCP tool id) is
+  // intentionally NOT banned here — renaming it is a breaking API change
+  // tracked separately (see 4bb416d2's doc comment), not a vocabulary defect.
+  const RETIRED_VOCAB = ['CAS/WAS', 'WAS/DAS', 'DAS/WAS'];
+  const builtFiles = [
+    ['dist/cli.cjs', path.join(output, 'cli.cjs')],
+    ['dist/server.cjs', path.join(output, 'server.cjs')],
+    ['dist/index.cjs', path.join(output, 'index.cjs')],
+    ['dist-sea/klauro-sea-entry.cjs', path.join(packageRoot, 'dist-sea', 'klauro-sea-entry.cjs')],
+  ].filter(([, filePath]) => existsSync(filePath));
+  const vocabViolations = [];
+  for (const [label, filePath] of builtFiles) {
+    const content = readFileSync(filePath, 'utf8');
+    for (const banned of RETIRED_VOCAB) {
+      if (content.includes(banned)) vocabViolations.push(`${label}: contains retired vocabulary "${banned}"`);
+    }
+  }
+  if (vocabViolations.length) {
+    throw new Error([
+      'build-bundle: the compiled artifact about to ship contains retired WAS/DAS vocabulary — this is the exact "customer still sees CAS/WAS construction in klauro --help on a build cut after the purge landed" defect (task #129):',
+      ...vocabViolations.map(v => `  ${v}`),
+      'This means the tree this build ran against was stale relative to the purge commits (6606732a/4bb416d2/c5eef85e/c0f4694b) — rebase onto current master and rebuild, or (if this string is intentionally new) add it to docs/ vocabulary review rather than silently shipping it.',
+    ].join('\n'));
+  }
+}
+
 const mergedMetafile = { server: serverResult.metafile, cli: cliResult.metafile };
 writeFileSync(path.join(output, 'bundle-metafile.json'), JSON.stringify(mergedMetafile));
 

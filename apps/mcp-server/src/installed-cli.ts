@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
+import { formatRemoteResult, withAnalysisState } from './remote-result-format';
 import { buildUploadManifest } from './remote-source';
 import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
 import { writeDefaultKlauroConfig } from './klauro-config';
@@ -241,8 +242,26 @@ async function main() {
     });
     return;
   }
-  if (command === 'analyze' || command === 'remote-analyze') return output(await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true }), json);
-  if (command === 'remote-sync' || command === 'sync') return output(await syncWorkingTreeRemotely({ projectPath: target, requireBoundProject: true }), json);
+  // #129 — this branch used to hand the raw result straight to `output()`,
+  // which JSON.stringifies ANY non-string value even in plain-text mode: a
+  // customer running `klauro analyze .` (no --json) got a full JSON dump —
+  // reuse_decision, analysis_id, manifest — that reads exactly like a
+  // finished result the instant the upload was merely ACCEPTED (`status:
+  // 'accepted'`, seconds in, server-side analysis still running). cli.ts's
+  // dev-only `analyze` always rendered this honestly via formatRemoteResult;
+  // it just never shipped to customers. Both entry points now go through the
+  // same shared formatter (remote-result-format.ts) so they can't diverge
+  // again, and --json now also carries an explicit `analysis_state` field
+  // ('running' | 'complete') so a script/harness has one unambiguous field
+  // to check instead of having to already know 'accepted' means not-done.
+  if (command === 'analyze' || command === 'remote-analyze') {
+    const result = await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true });
+    return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
+  }
+  if (command === 'remote-sync' || command === 'sync') {
+    const result = await syncWorkingTreeRemotely({ projectPath: target, requireBoundProject: true });
+    return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
+  }
   if (command === 'upload-manifest' || command === 'index') return output(await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full'), json);
   // status/doctor/support-bundle: the same class of dead end `update` was
   // (see the comment above SELF_UPDATE_COMMANDS) — the product's own text

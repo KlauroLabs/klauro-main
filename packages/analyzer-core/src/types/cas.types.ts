@@ -1263,11 +1263,14 @@ export interface CASProductMap {
   identity: {
     name: string;
     domain: string;
-    /** Human-readable rendering of `domain` (kebab-case slug -> Title Case
-     *  words) for a leadership/onboarding reader — see product-map.ts's
-     *  humanizeDomainSlug. Purely mechanical, never a synonym/fabrication;
-     *  `domain` itself stays the stable machine-comparable slug. Omitted
-     *  when there is no domain to humanize. */
+    /** LEGACY, never populated going forward (#129). Used to be a mechanical
+     *  kebab-case-slug -> Title Case rendering of `domain` (product-map.ts's
+     *  now-removed humanizeDomainSlug) — but `domain` is a composed/heuristic
+     *  slug, not a human-written phrase, so title-casing its tokens produced
+     *  labels (e.g. "Feed Integration Category") that LOOKED authored but
+     *  were really just capitalized internal tokens: a faked label. Field
+     *  kept optional/typed only so an older persisted CAS that still carries
+     *  it deserializes without error; no current builder writes it. */
     domain_label?: string;
     // Comprehension provenance is AI-only (docs/cas/DETERMINISM-BOUNDARY.md).
     // Left UNSET until AI runs — never coerced to 'deterministic' on empty
