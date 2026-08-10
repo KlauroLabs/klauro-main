@@ -1207,7 +1207,19 @@ const MIN_CLOSURE_SIZE_FOR_OVERLAP = 2;
  *  microservices collapsing into a single unit literally named "docker".
  *  Refused outright rather than merged, even if the measured overlap looks
  *  high — a real single-deployable repo's survivor keeps ITS OWN service
- *  name, never falls back to the packaging tool. */
+ *  name, never falls back to the packaging tool.
+ *
+ *  spec-purity:vocab-ok — this is a REJECT-list over our own OUTPUT, not a
+ *  keyword bag that assigns a category to a customer's code. Nothing here
+ *  classifies a repo, names a domain, or ranks a capability; the only thing a
+ *  match can do is REFUSE a merge, which is the conservative direction. A
+ *  false positive (a repo whose service is genuinely called "app") loses a
+ *  legitimate collapse and reports one extra unit — recoverable and visible.
+ *  A false negative erases real deployables silently, which is the incident
+ *  this guard exists to prevent. Same sanctioned shape as
+ *  isGenericCapabilityToken, which rejects mechanism words from capability
+ *  names: a stoplist over output is evidence-independent by construction,
+ *  whereas the forbidden shape is input vocabulary deciding a classification. */
 const BARE_TOOLING_NOUNS = new Set([
   'docker', 'dockerfile', 'container', 'containers', 'compose', 'image', 'images',
   'build', 'builder', 'dist', 'bin', 'artifact', 'artifacts', 'deploy', 'deployment',
