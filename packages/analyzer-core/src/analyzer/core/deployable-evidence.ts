@@ -420,14 +420,14 @@ function joinComposeAndContainerUnits(items: DeployableEvidence[]): DeployableEv
  * name into one ship unit. Real hosted defect (2026-08): a repo with two
  * compose files (a root `docker-compose.yml` and a
  * `infra/deploy/docker-compose.yml` override/deploy manifest) each declaring
- * a `build:`-carrying service named "kontinuum" produced TWO Tier-1
- * compose-service rows — `das:compose-service:root:kontinuum` and
- * `das:compose-service:deploy:kontinuum` — because dedupe() keys on
+ * a `build:`-carrying service under the same name produced TWO Tier-1
+ * compose-service rows — `das:compose-service:root:<name>` and
+ * `das:compose-service:deploy:<name>` — because dedupe() keys on
  * `tier::kind::root_path::name` and the two manifests resolve different
  * root_paths for the same logical service. Two independently-built Tier-1
  * ship declarations of the SAME kind sharing the exact same declared service
  * name is not realistic evidence of two distinct deployables (a repo does not
- * ship two unrelated services both named "kontinuum") — it is the same
+ * ship two unrelated services under one identical name) — it is the same
  * service declared more than once (a dev/prod compose split, an override
  * file, a duplicated k8s manifest). Runs once per kind, keeping the richest
  * row (most ships_paths union already applied via evidence, then most
