@@ -69,6 +69,43 @@ build/dist artifacts). Source repos verified via `git status`/`git fsck`
 before copying, none mutated. `washup` and `vocalverse` had pre-existing
 local modifications from the owner (not caused here); copied as-is.
 
+## Coordination note (mid-run, from the fix lane)
+
+Production is **frozen at 1.0.136 / `56cde09aa104`** until this report lands —
+every `analyzer_build` recorded below (and above) already matches that string
+for my own fresh submissions, so this run is self-proving as the baseline. A
+capability-recall fix (commit `6445460e`) has merged to master but is
+**not deployed**; this scorecard is deliberately the pre-fix baseline, not a
+mixed run. It targets `buildSystemCapabilities`'s `resourceGroups` candidate
+generation: previously built only from `productEntryPoints`, so a subsystem
+reached solely via an async/queue/cron seam could never become a candidate
+even with effect-evidence widening. Expect movement on async-only subsystems
+(notification/mail pipelines, sync jobs, chat/AI dispatch) on re-measure — no
+predicted movement on the deployable-boundary case below.
+
+**Correction to my own petclinic write-up (subject 1):** the fix lane
+isolated `PetclinicChatClient.java` and confirmed it correctly emits
+`POST /chatclient` with `chatclient` admitted as a non-generic resource key —
+route extraction is not the cause of the missing AI-chat capability. The real
+cause is a **deployable/multi-module-boundary gap** in
+`buildSystemCapabilities` (open in-code near line 23105, known to break 8
+tests when previously attempted). I did not claim route extraction was at
+fault above, but recording the corrected mechanism here for the record: the
+AI-chat capability miss on spring-petclinic-microservices is a
+module-boundary defect, not a route/entry-point extraction defect.
+
+**Subject substitution disclosure:** the fix lane flagged that a Rust subject
+(`~/dev/personal/money/rust-arb-bot`) was expected but "not found" by a
+different peer lane. It exists (confirmed above, `Cargo.toml` present) but is
+a `clap`-based CLI binary with its own `main`, not a library/SDK with no
+entry point — it fits the CLI-tool shape, which this run already covers via
+`kontinuum`. I used `simulation-engine` (a published-shaped **TypeScript**
+package, no Rust in this corpus fits the "no entry point, no deployable"
+library shape after excluding zerac/soon) for shape #5 instead, disclosed at
+the top of this doc. `hercules-backend` was independently re-confirmed and
+freshly re-analyzed by me (subject 3 above, `prj_PuhKIMhlxPJmhMZN`) — it is
+present and was not actually missing.
+
 ## Scorecard (filled in per subject as analyses complete)
 
 Status: IN PROGRESS. Rows populated below as each subject finishes analysis
