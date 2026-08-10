@@ -55,6 +55,26 @@ export interface ScaleGateBudgets {
    *  never met by delivering an incomplete analysis" doctrine: an analysis
    *  that finishes fast by producing too little is not a pass either. */
   minNodes: number;
+  /**
+   * task #118 (latency PREDICTABILITY, not just latency): ceiling, in
+   * milliseconds, on how long the DETERMINISTIC layers (L0-L4 — index,
+   * nodes/routes, call graph, entities, flows/capabilities; see
+   * layered-analysis.ts) take to become ready, measured from analysis
+   * accept to the L4 layer's completed_at on the analysis-status endpoint.
+   * This is deliberately a MUCH tighter budget than maxWallMs: deterministic
+   * work is CPU/memory-bound and now runs on its own lane pool
+   * (deterministicLanePool in analyzer.ts), fully decoupled from the
+   * AI-enrichment pool (aiEnrichmentLanePool) — so it must never inherit
+   * the unpredictable duration of another project's AI tail. maxWallMs alone
+   * cannot catch a queueing regression that reintroduces that coupling: a
+   * run can finish inside a generous overall budget while still having
+   * spent most of it queued behind someone else's AI call before its own
+   * deterministic work even started (exactly the measured production
+   * symptom this task exists to fix). Optional so existing callers/budgets
+   * that don't sample it (peakRssMb-style "not sampled" is a pass, not a
+   * fail) keep working; omit to skip this check entirely.
+   */
+  maxDeterministicReadyMs?: number;
 }
 
 export interface ScaleGateObservation {
@@ -67,6 +87,13 @@ export interface ScaleGateObservation {
   nodes: number | null;
   edges: number | null;
   stderrTail: string;
+  /** task #118: milliseconds from analysis accept to the L4 (last
+   *  deterministic) layer's completed_at, sampled from the analysis-status
+   *  endpoint alongside the blackbox trigger (same operational-sampling
+   *  exception as peakRssMb — see the module doc above). `null` means "not
+   *  sampled", which — like peakRssMb — is never treated as a failure on
+   *  its own; only evaluated when maxDeterministicReadyMs is set. */
+  deterministicReadyMs: number | null;
 }
 
 export type ScaleGateFindingReason =
@@ -75,7 +102,8 @@ export type ScaleGateFindingReason =
   | 'over-latency-budget'
   | 'over-memory-budget'
   | 'node-count-too-low'
-  | 'no-count-reported';
+  | 'no-count-reported'
+  | 'over-deterministic-latency-budget';
 
 export interface ScaleGateFinding {
   status: 'pass' | 'fail';
@@ -108,14 +136,22 @@ export function evaluateScaleGateObservation(
   } else if (observation.nodes < budgets.minNodes) {
     reasons.push('node-count-too-low');
   }
+  if (
+    budgets.maxDeterministicReadyMs !== undefined &&
+    observation.deterministicReadyMs !== null &&
+    observation.deterministicReadyMs > budgets.maxDeterministicReadyMs
+  ) {
+    reasons.push('over-deterministic-latency-budget');
+  }
 
   if (reasons.length === 0) {
     return {
       status: 'pass',
       reasons: [],
       detail: `${observation.repoLabel}: ${observation.nodes} nodes / ${observation.edges} edges in ` +
-        `${(observation.wallMs / 1000).toFixed(1)}s, peak RSS ` +
-        `${observation.peakRssMb === null ? 'not sampled' : `${observation.peakRssMb}MB`} — within budget.`,
+        `${(observation.wallMs / 1000).toFixed(1)}s (deterministic layers ready in ` +
+        `${observation.deterministicReadyMs === null ? 'not sampled' : `${(observation.deterministicReadyMs / 1000).toFixed(1)}s`}), ` +
+        `peak RSS ${observation.peakRssMb === null ? 'not sampled' : `${observation.peakRssMb}MB`} — within budget.`,
     };
   }
 
@@ -124,6 +160,7 @@ export function evaluateScaleGateObservation(
     reasons,
     detail: `${observation.repoLabel}: FAILED (${reasons.join(', ')}). ` +
       `wallMs=${observation.wallMs}/${budgets.maxWallMs}, ` +
+      `deterministicReadyMs=${observation.deterministicReadyMs ?? 'n/a'}/${budgets.maxDeterministicReadyMs ?? 'n/a'}, ` +
       `peakRssMb=${observation.peakRssMb ?? 'n/a'}/${budgets.maxPeakRssMb}, ` +
       `nodes=${observation.nodes ?? 'n/a'} (min ${budgets.minNodes}), ` +
       `exitCode=${observation.exitCode}, timedOut=${observation.timedOut}. ` +
@@ -143,9 +180,22 @@ export function evaluateScaleGateObservation(
  * with real headroom for host contention from a peer analysis (this box
  * runs at most one full analysis worker at a time — see
  * deriveAnalysisLaneCountFromHost in analyzer.ts).
+ *
+ * maxDeterministicReadyMs (task #118): 90s. Deliberately far tighter than
+ * maxWallMs. Deterministic work at THIS gate's scale (several thousand
+ * files) was directly measured at low-single-digit seconds of actual phase
+ * work (KLAURO_DEBUG_ANALYZER_PHASES phase log, a 94-file/132-file repo:
+ * ~1.5s of summed pp_-prefixed and language_-prefixed phases); 90s leaves generous headroom for
+ * legitimate deterministic cost at this gate's larger scale while still
+ * being an order of magnitude under maxWallMs — tight enough that a
+ * regression which re-couples the deterministic and AI-enrichment lane
+ * pools (making deterministic work wait behind another project's AI tail,
+ * the exact production symptom measured for task #118) trips this budget
+ * long before it would ever threaten maxWallMs.
  */
 export const DEFAULT_SCALE_GATE_BUDGETS: ScaleGateBudgets = {
   maxWallMs: 10 * 60_000, // 10 minutes
   maxPeakRssMb: 4500,
   minNodes: 1000,
+  maxDeterministicReadyMs: 90_000,
 };
