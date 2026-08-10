@@ -249,10 +249,20 @@ Common thread so far: capability *quality* (readability, entity-grounding) is fi
 
 ---
 
-### 9. rvc-webui (OSS, RVC-Project) — Data/ML, script-and-notebook-heavy, Python + Gradio
+### 9. rvc-webui (OSS, RVC-Project) — Data/ML, script-and-notebook-heavy, Python + FastAPI
 
-*(analysis in progress — see next commit)*
+- project `prj_t5wXvbsJX8WzNHOB`, my own submission, `analyzer_build: 1.0.136-dev+56cde09aa104`, fresh. Finished 2026-08-10T16:46:18Z, duration **32.55s**, `errors: 3`, cas_version 2.1.0, `comprehension.degraded: true`.
+- **This is the single worst capability-recall result measured today, and it is close to a "zero" result in spirit.** capability count: **1** — `"Manage Config Data"`. That one capability **has no `description` field at all** (every other capability sampled today, across all 8 other subjects, has a `description` string; this one is simply absent) — the exact "capability with no description" the brief asked me to flag, and `comprehension.capability_description_degradations: 1` confirms the product's own self-check caught it too.
+- **`flows_to_capabilities`: 0** (0 of 17 flows mapped) — total failure, not partial.
+- Real evidence of a rich feature set exists throughout the graph and is not reflected in the single capability: 15 real user-facing journeys were derived (`Run main -> VC` — voice conversion inference, `Configure audio -> audio_api.set_values`, `List input/output devices`, ONNX export, model-similarity comparison), and 87 orphan modules include `infer_lib_train_*` (model training), `infer_lib_rmvpe`/`infer_lib_jit_get_rmvpe` (pitch extraction), `infer_lib_uvr5_pack_*` (vocal/instrumental separation — a full sub-feature with 15+ of its own files), and `infer_lib_rtrvc` (realtime conversion). None of this — train a voice model, run realtime voice conversion, separate vocals from a track, export/compare models — appears as a capability. The one capability that *did* get generated is the least interesting one available (a settings object), while every substantive ML capability is invisible.
+- top-level `description` is actually good and specific: *"a voice conversion framework that allows users to list input and output devices, configure audio settings, and start or stop voice conversion processes... utilizes pre-trained models for voice conversion."* — the system-level description alone is closer to correct than the capability catalog is, another instance (like simulation-engine and hercules) of the description and capability list disagreeing about what the product does.
+- `primary_domain`: `"voice-conversion"` — good, readable.
+- Sub-CAS promotion worked correctly (2 qualified units, Docker+compose evidence, `coverage_ratio: 0.9817`) — the deployable-boundary mechanism is not the problem here; capability generation specifically is.
+- `database_entities`: 1 (`ConfigData`) — consistent with the 1-capability output; the entity inventory itself is thin, which may be root-causing the capability thinness (an ML/inference codebase's real "entities" are models/checkpoints/audio buffers, not ORM rows, and the entity extractor may not recognize that shape).
+- Verdict: **this is the clearest evidence in the whole run that "zero is never correct" is still being violated** — not literally zero, but one undescribed, uninteresting capability standing in for a feature-rich, well-known ML training/inference framework is functionally the same failure the owner named.
 
 ---
 
-*(scorecard row 10 to follow in this document as it completes)*
+### 10. rpg-game — odd shape: 2D multiplayer game, TypeScript client + Python server (substituted for the image-only `pixel-game`, see below)
+
+*(analysis in progress — see next commit; note: my originally-planned `pixel-game` subject turned out to contain only PNG/GIF sprite assets and no code at all once inspected — itself an interesting "near-zero code" edge case, but I substituted the actual game code at `~/dev/personal/rpg`, which has a real TypeScript client + Python server with an `ai` module, disclosed here per the substitution-disclosure rule)*
