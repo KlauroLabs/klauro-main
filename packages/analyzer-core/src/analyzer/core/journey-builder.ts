@@ -135,7 +135,17 @@ const METHOD_LIKE_TYPES = /(^|[_\s])(method|function|action)([_\s]|$)/;
 // emits the `renders` component tree, never a CASEntryPoint) — that is a
 // real, un-closed analyzer gap (a missing UI-screen-entry detector), stated
 // here rather than papered over with a broader match on this set.
-export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route', 'ipc', 'command']);
+// Shape-coverage audit (2026-08-10): a data/ML script or notebook repo's
+// outward face is not a route or a CLI framework command — it is "a file you
+// run". 'train' (ml-training-analyzer.ts: a train()/fit() function or
+// top-level training-loop call site a data scientist invokes directly) and
+// 'notebook-cell' (jupyter-notebook-analyzer.ts: an ordered Jupyter code
+// cell a human runs interactively, cell by cell) are exactly as
+// caller-initiated as 'cli' — a person runs `python train.py` or clicks
+// "Run" on a cell — not a framework lifecycle hook or a scheduler trigger.
+// Same widening pattern as the ipc/command addition above: an
+// already-closed ENTRY_POINT_TYPES kind, not a new keyword/vendor list.
+export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route', 'ipc', 'command', 'train', 'notebook-cell']);
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
 // Entry types eligible for the k8s CronJob -> command scheduling-evidence

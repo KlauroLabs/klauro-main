@@ -157,6 +157,13 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
 
         for (const entry of trainingEntries) {
           const entryNodeId = `mltrain_${this.sanitizeId(entry.name)}_${this.sanitizeId(file)}_${entry.line}`;
+          // Resolve the model this entry trains up front (not just when
+          // building the `trains` edge below) so the capability-generation
+          // pass in orchestrator.ts can key/name a training capability on the
+          // actual model ("Train Resnet") instead of collapsing every
+          // training entry in the repo onto one generic bucket.
+          const resolvedModelClass = entry.modelRef ||
+            (modelNodeIdByClass.size === 1 ? [...modelNodeIdByClass.keys()][0] : undefined);
 
           const node = this.createNodeBuilder(entryNodeId, entry.name, 'train')
             .withLevel(3, 'code')
@@ -175,7 +182,7 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
             `ML training entry point: ${entry.name}`,
             undefined,
             undefined,
-            { framework: entry.framework, kind: entry.kind },
+            { framework: entry.framework, kind: entry.kind, modelRef: resolvedModelClass },
             { node_id: entryNodeId, method_name: entry.name, file: entry.file, line: entry.line }
           ));
 

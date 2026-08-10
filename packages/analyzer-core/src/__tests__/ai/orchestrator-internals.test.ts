@@ -1381,6 +1381,87 @@ describe('architecture and capability inference', () => {
     expect(orch.inferResourceName({ type: 'message' } as any, messageKey)).toBe('Invoice Requested Handlers');
   });
 
+  it('keys a script/ML training entry point on the model it trains, not a repo-wide "train" bucket', () => {
+    // Root cause (2026-08-10 shape audit): before this fix, inferResourceKey's
+    // fallback for an unlisted entry type returned `String(ep.type)` — the
+    // literal string 'train' for EVERY training entry point in the repo,
+    // regardless of file or model. That collapsed a multi-model ML repo into
+    // ONE undescribed capability. Two different models in two different files
+    // must produce two different resource keys.
+    const resnetKey = orch.inferResourceKey({
+      id: 'entry-train-resnet',
+      type: 'train',
+      name: 'train',
+      source_node: 'node-resnet-train',
+      handler: { node_id: 'node-resnet-train', method_name: 'train', file: 'models/resnet/train.py' },
+      metadata: { framework: 'pytorch', kind: 'function', modelRef: 'ResnetClassifier' },
+    });
+    const bertKey = orch.inferResourceKey({
+      id: 'entry-train-bert',
+      type: 'train',
+      name: 'train',
+      source_node: 'node-bert-train',
+      handler: { node_id: 'node-bert-train', method_name: 'train', file: 'models/bert/train.py' },
+      metadata: { framework: 'pytorch', kind: 'function', modelRef: 'BertClassifier' },
+    });
+    expect(resnetKey).not.toBe('train');
+    expect(bertKey).not.toBe('train');
+    expect(resnetKey).not.toBe(bertKey);
+    expect(orch.inferResourceName({ type: 'train' } as any, resnetKey)).toMatch(/^Train /);
+  });
+
+  it('groups Jupyter notebook cells at the notebook, not per-cell', () => {
+    // Every code cell in one .ipynb shares handler.file — keying on the file
+    // (same altitude 'cli' scripts already get) naturally collapses dozens of
+    // per-cell entry points into ONE resource group per notebook instead of
+    // one pseudo-capability per cell.
+    const cell0Key = orch.inferResourceKey({
+      id: 'entry-notebook-cell-0',
+      type: 'notebook-cell',
+      name: 'Cell 0',
+      source_node: 'notebook_eda_cell_0',
+      handler: { node_id: 'notebook_eda_cell_0', method_name: 'Cell 0', file: 'notebooks/customer-churn-eda.ipynb' },
+    });
+    const cell1Key = orch.inferResourceKey({
+      id: 'entry-notebook-cell-1',
+      type: 'notebook-cell',
+      name: 'Cell 1',
+      source_node: 'notebook_eda_cell_1',
+      handler: { node_id: 'notebook_eda_cell_1', method_name: 'Cell 1', file: 'notebooks/customer-churn-eda.ipynb' },
+    });
+    expect(cell0Key).toBe(cell1Key);
+  });
+
+  it('treats train/notebook-cell entry points as capability-bearing (script/ML repos are not zero-capability substrate)', () => {
+    expect(orch.isCapabilityBearingEntryPoint({ type: 'train' } as any)).toBe(true);
+    expect(orch.isCapabilityBearingEntryPoint({ type: 'notebook-cell' } as any)).toBe(true);
+  });
+
+  it('generates a per-model training capability for a script/ML repo instead of collapsing to one undescribed capability', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'node-resnet-train', name: 'train', type: 'function', source: { file: 'models/resnet/train.py' } }),
+      node({ id: 'node-bert-train', name: 'train', type: 'function', source: { file: 'models/bert/train.py' } }),
+    ];
+    const entryPoints: CASEntryPoint[] = [
+      {
+        id: 'entry-train-resnet', source_node: 'node-resnet-train', type: 'train', name: 'train',
+        description: 'ML training entry point: train',
+        handler: { node_id: 'node-resnet-train', method_name: 'train', file: 'models/resnet/train.py', line: 10 },
+        metadata: { framework: 'pytorch', kind: 'function', modelRef: 'ResnetClassifier' },
+      } as CASEntryPoint,
+      {
+        id: 'entry-train-bert', source_node: 'node-bert-train', type: 'train', name: 'train',
+        description: 'ML training entry point: train',
+        handler: { node_id: 'node-bert-train', method_name: 'train', file: 'models/bert/train.py', line: 12 },
+        metadata: { framework: 'pytorch', kind: 'function', modelRef: 'BertClassifier' },
+      } as CASEntryPoint,
+    ];
+    const { capabilities } = await orch.buildSystemCapabilities(entryPoints, [], nodes, []);
+    expect(capabilities.length).toBeGreaterThanOrEqual(2);
+    const domains = capabilities.map((c: any) => c.related_domains?.[0]);
+    expect(new Set(domains).size).toBe(domains.length);
+  });
+
   it('does not auto-generate entity descriptions during the default analysis pass', async () => {
     const nodes: CASNode[] = [
       node({ id: 'driver-entity', name: 'Driver', type: 'entity', source: { file: 'src/fleet/driver.entity.ts' } }),

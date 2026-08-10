@@ -27083,6 +27083,34 @@ export class AnalyzerOrchestrator {
         String(ep.type);
     }
 
+    if (ep.type === 'train') {
+      // Root cause (2026-08-10 shape audit): the previous fallback
+      // (`return String(ep.type)`) keyed EVERY training entry point across
+      // the whole repo on the literal string 'train' — one resourceGroup for
+      // the entire codebase, which is what collapsed a multi-model ML repo
+      // into a single undescribed capability. Key on the model this entry
+      // trains when known (modelRef, set by ml-training-analyzer.ts), then
+      // fall back to the containing module/file — same per-script altitude
+      // 'cli' already gets, never a single repo-wide bucket.
+      const modelRef = ep.metadata?.modelRef as string | undefined;
+      return this.domainKeyFromEntryPointText(modelRef || '') ||
+        this.inferModuleResourceKeyFromPath(ep.handler?.file || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
+        'training';
+    }
+
+    if (ep.type === 'notebook-cell') {
+      // Altitude fix: group at the NOTEBOOK, not the cell — every code cell
+      // in a .ipynb shares the same handler.file, so keying on the file (like
+      // 'cli' scripts) naturally collapses a notebook's dozens of cells into
+      // ONE resource group per notebook instead of one candidate per cell
+      // (the struct-field-style over-fragmentation this same fix must not
+      // reintroduce in the other direction).
+      return this.inferModuleResourceKeyFromPath(ep.handler?.file || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
+        'notebook';
+    }
+
     return String(ep.type);
   }
 
@@ -27131,6 +27159,12 @@ export class AnalyzerOrchestrator {
       'http', 'websocket', 'ws_handler', 'cli', 'event', 'message',
       'schedule', 'scheduled', 'cron', 'queue', 'grpc', 'graphql',
       'page', 'route',
+      // Data/ML & notebook repos (2026-08-10 shape audit): 'train' and
+      // 'notebook-cell' are the outward face of a script/notebook repo
+      // (see USER_FACING_ENTRY_TYPES in journey-builder.ts for the same
+      // structural justification) — excluding them here is what collapsed
+      // an entire ML repo to a single undescribed fallback capability.
+      'train', 'notebook-cell',
     ].includes(type)) {
       return true;
     }
@@ -27221,6 +27255,14 @@ export class AnalyzerOrchestrator {
 
     if (ep.type === 'schedule') {
       return 'Scheduled Tasks';
+    }
+
+    if (ep.type === 'train') {
+      return resourceKey === 'training' ? 'Model Training' : `Train ${name}`;
+    }
+
+    if (ep.type === 'notebook-cell') {
+      return `${name} Analysis`;
     }
 
     return `${name} Management`;
