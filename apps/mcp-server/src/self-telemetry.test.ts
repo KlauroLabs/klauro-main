@@ -222,3 +222,50 @@ test('mirrorToCanonicalBucket: NEVER bootstrap-analyzes the canonical path', asy
     assert.equal(canonicalObservations.observations[0].correlation.status, 'unmatched');
   });
 });
+
+// ---------------------------------------------------------------------------
+// mapSdkEvent — direct CAS-id passthrough (Tier 4 join input boundary).
+//
+// getRuntimeEventContract (runtime-contract.ts) advertises `correlation_order:
+// ['static_id', 'entry_point_id', 'exit_point_id', 'call_chain_id', 'node_id',
+// 'signal', 'route', 'path', 'stack']` to every SDK integrator, and
+// correlateRuntimeEvent (product.ts) genuinely checks those fields FIRST.
+// Found live against the deployed product (POST /api/telemetry/runtime-
+// events/:projectId with static_id+node_id set): the ingested observation
+// echoed back with BOTH fields absent and correlation status "unmatched" —
+// mapSdkEvent was silently dropping the exact keys the product's own contract
+// told the caller to send, forcing every real SDK-reported event through
+// route/path/stack fuzzy matching only, regardless of what the caller knew.
+// This locks the fix in: every one of CasRuntimeEvent's direct-id fields must
+// survive the SDK-event -> TelemetryEvent translation unchanged.
+// ---------------------------------------------------------------------------
+test('mapSdkEvent forwards every direct CAS-id field (static_id/node_id/entry_point_id/exit_point_id/call_chain_id) unchanged', async () => {
+  const { mapSdkEvent } = await REQUIRE();
+  const mapped = mapSdkEvent({
+    type: 'request',
+    static_id: 'node:handleCreateOrder',
+    node_id: 'n_handleCreateOrder',
+    entry_point_id: 'ep_createOrder',
+    exit_point_id: 'ex_notifyWarehouse',
+    call_chain_id: 'chain_createOrder',
+    method: 'POST',
+    route: '/orders',
+    status_code: 201,
+    duration_ms: 12,
+  });
+  assert.equal(mapped.static_id, 'node:handleCreateOrder');
+  assert.equal(mapped.node_id, 'n_handleCreateOrder');
+  assert.equal(mapped.entry_point_id, 'ep_createOrder');
+  assert.equal(mapped.exit_point_id, 'ex_notifyWarehouse');
+  assert.equal(mapped.call_chain_id, 'chain_createOrder');
+});
+
+test('mapSdkEvent leaves direct CAS-id fields undefined (not fabricated) when the SDK event carries none', async () => {
+  const { mapSdkEvent } = await REQUIRE();
+  const mapped = mapSdkEvent({ type: 'request', method: 'GET', route: '/health', status_code: 200 });
+  assert.equal(mapped.static_id, undefined);
+  assert.equal(mapped.node_id, undefined);
+  assert.equal(mapped.entry_point_id, undefined);
+  assert.equal(mapped.exit_point_id, undefined);
+  assert.equal(mapped.call_chain_id, undefined);
+});

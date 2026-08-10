@@ -4385,3 +4385,118 @@ export function telemetryForNode(nodeId: string, metrics: RuntimeMetricLike[]): 
   const index = indexRuntimeMetrics(metrics);
   return telemetryForUnit(index, [nodeId]);
 }
+
+/**
+ * CAPABILITY-LEVEL rollup of Tier 4 telemetry, closing the gap the flow/step
+ * join alone leaves open: "which capabilities are exercised versus dormant"
+ * needs an aggregate ACROSS a capability's flows, not a fact per flow.
+ *
+ * Ground truth for "how many flows does this capability have" is
+ * `SystemCapability.related_flows` — computed once at analysis time,
+ * un-capped, and persisted (docs comment on that field). That set is the
+ * denominator; `flows` (already telemetry-joined by `attachTelemetryToFlows`)
+ * is whatever this call actually computed, which may be a capped/targeted
+ * subset. Coverage is reported honestly rather than assumed:
+ *   - 'full'    — every related flow_id was present in `flows` this call.
+ *   - 'partial' — some but not all related flow_ids were present.
+ *   - 'none'    — none of the capability's flows were computed this call
+ *                 (e.g. it was outside the browse window) — telemetry
+ *                 presence cannot be assessed, so `exercised` stays undefined.
+ *
+ * `dormant` is only ever asserted under 'full' coverage — per §8.3 of the
+ * spec, an unobserved path is not proof of dead code on partial evidence,
+ * and asserting dormancy from a capped window would be exactly that error.
+ */
+export interface CapabilityTelemetry {
+  capability_id: string;
+  /** Total flows this capability relates to (SystemCapability.related_flows.length). */
+  flows_total: number;
+  /** Of `flows_total`, how many were part of this call's computed flow set. */
+  flows_in_scope: number;
+  /** Of the in-scope flows, how many carried a real observation. */
+  flows_observed: number;
+  coverage: 'full' | 'partial' | 'none';
+  /** true when >=1 in-scope flow was observed; false only under 'full'
+   *  coverage with zero observed; undefined when coverage is 'none'. */
+  exercised?: boolean;
+  /** true only under 'full' coverage with zero observed flows — see doc above. */
+  dormant: boolean;
+  request_count: number;
+  error_rate: number;
+  p95_ms?: number;
+  last_seen?: string;
+  source?: string;
+  contributing_flow_ids: string[];
+}
+
+export function computeCapabilityTelemetry(
+  capabilities: Array<{ id: string; related_flows?: Array<{ flow_id: string }> }>,
+  flows: FlowConcept[],
+): CapabilityTelemetry[] {
+  const flowById = new Map(flows.map(f => [f.flow_id, f]));
+  const results: CapabilityTelemetry[] = [];
+
+  for (const capability of capabilities) {
+    const relatedFlowIds = (capability.related_flows || []).map(r => r.flow_id);
+    if (relatedFlowIds.length === 0) continue; // no known flows -> nothing to roll up, not a zero-observation claim
+
+    const inScopeIds = relatedFlowIds.filter(id => flowById.has(id));
+    const observedFlows = inScopeIds
+      .map(id => flowById.get(id)!)
+      .filter(f => f.contract.telemetry);
+
+    const coverage: CapabilityTelemetry['coverage'] =
+      inScopeIds.length === 0 ? 'none' : inScopeIds.length < relatedFlowIds.length ? 'partial' : 'full';
+
+    let requestCount = 0;
+    let weightedErrors = 0;
+    let maxP95: number | undefined;
+    let lastSeen: string | undefined;
+    const sources = new Set<string>();
+    for (const flow of observedFlows) {
+      const t = flow.contract.telemetry!;
+      requestCount += t.request_count;
+      weightedErrors += t.request_count * t.error_rate;
+      if (t.p95_ms != null) maxP95 = maxP95 == null ? t.p95_ms : Math.max(maxP95, t.p95_ms);
+      if (t.last_seen && (!lastSeen || t.last_seen > lastSeen)) lastSeen = t.last_seen;
+      sources.add(t.source);
+    }
+
+    results.push({
+      capability_id: capability.id,
+      flows_total: relatedFlowIds.length,
+      flows_in_scope: inScopeIds.length,
+      flows_observed: observedFlows.length,
+      coverage,
+      exercised: coverage === 'none' ? undefined : observedFlows.length > 0,
+      dormant: coverage === 'full' && observedFlows.length === 0,
+      request_count: requestCount,
+      error_rate: requestCount > 0 ? weightedErrors / requestCount : 0,
+      p95_ms: maxP95,
+      last_seen: lastSeen,
+      source: sources.size === 0 ? undefined : sources.size === 1 ? [...sources][0] : 'mixed',
+      contributing_flow_ids: observedFlows.map(f => f.flow_id),
+    });
+  }
+
+  return results;
+}
+
+/**
+ * "Paths that exist in source but never run in production" (§8.3 — telemetry
+ * annotates, it does not delete): flows that were actually computed AND for
+ * which real telemetry data exists for the scope (metrics non-empty), but
+ * which themselves carry no `contract.telemetry`. Never asserted when metrics
+ * is empty — absence of telemetry data entirely is a different fact than
+ * "instrumented and still silent", and conflating them would be exactly the
+ * kind of unearned dead-code claim §8.3 forbids.
+ */
+export function unexercisedFlows(
+  flows: FlowConcept[],
+  metrics: RuntimeMetricLike[],
+): Array<{ flow_id: string; name: string; entry_point: string }> {
+  if (!metrics || metrics.length === 0) return [];
+  return flows
+    .filter(f => !f.contract.telemetry)
+    .map(f => ({ flow_id: f.flow_id, name: f.name, entry_point: f.entry_point }));
+}

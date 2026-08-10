@@ -34,6 +34,22 @@ export interface TelemetryEvent {
   trace_id?: string;
   span_id?: string;
   parent_span_id?: string;
+  /**
+   * Direct CAS static-id correlation keys — the FIRST-choice match keys per
+   * getRuntimeEventContract's advertised `correlation_order`
+   * (runtime-contract.ts): a caller that already knows which CAS unit it's
+   * reporting on (an SDK wrapping an instrumented call, a runtime link the
+   * product itself generated) should never have to fall back to fuzzy
+   * route/function-hint matching. `correlateRuntimeEvent` (product.ts) has
+   * always checked these first; this event contract previously had nowhere
+   * to carry them, so every real caller was forced through the fuzzy path
+   * regardless of what it actually knew.
+   */
+  static_id?: string;
+  node_id?: string;
+  entry_point_id?: string;
+  exit_point_id?: string;
+  call_chain_id?: string;
   method?: string;
   route?: string;
   path?: string;
@@ -202,7 +218,14 @@ export function normalizeTelemetryEvent(cas: CASOutput, event: TelemetryEvent): 
     service_name: event.service_name,
     environment: event.environment,
     signal,
-    node_id: hintNode?.id,
+    static_id: event.static_id,
+    // An explicit node_id on the event is a stronger, caller-asserted fact
+    // than a function/file-hint-resolved guess — prefer it, fall back to the
+    // hint resolution that already existed for callers with no direct id.
+    node_id: event.node_id || hintNode?.id,
+    entry_point_id: event.entry_point_id,
+    exit_point_id: event.exit_point_id,
+    call_chain_id: event.call_chain_id,
     trace_id: event.trace_id,
     span_id: event.span_id,
     parent_span_id: event.parent_span_id,

@@ -136,6 +136,53 @@ test('ingestTelemetryBatch correlates events and reports unmatched hints instead
   });
 });
 
+// ---------------------------------------------------------------------------
+// Direct static_id/node_id/entry_point_id correlation (Tier 4 join input
+// boundary — see self-telemetry.test.ts's mapSdkEvent tests for the SDK-side
+// half of this fix). correlateRuntimeEvent (product.ts) has always checked
+// event.static_id/node_id/entry_point_id/exit_point_id/call_chain_id BEFORE
+// route/function-hint/stack fuzzy matching, but TelemetryEvent — the public
+// contract for BOTH the ingest_telemetry MCP tool and the SDK HTTP route —
+// had no field to carry them, so a caller that already knew its own static id
+// (an installed SDK wrapping an instrumented call site, or any integrator
+// reading getRuntimeEventContract's advertised correlation_order) could never
+// reach that path. This locks in that a direct id, with NO route/method/path
+// at all, resolves the observation on its own.
+// ---------------------------------------------------------------------------
+test('a TelemetryEvent carrying only static_id (no route/method/path) still resolves via direct correlation', async () => {
+  await withTempStorage(async root => {
+    const cas = buildCas(root);
+    const events: TelemetryEvent[] = [
+      { kind: 'request', static_id: 'node-create-invoice', duration_ms: 15, status: 200 },
+    ];
+
+    const result = await ingestTelemetryBatch(cas, root, events);
+
+    assert.equal(result.correlation_summary.matched + result.correlation_summary.partial, 1);
+    assert.equal(result.correlation_summary.unmatched, 0);
+    assert.equal(result.observations[0].correlation.best_match?.id, 'node-create-invoice');
+    // 'partial' here, not 'unmatched': a single direct-id hit with no
+    // corroborating runtime_static_link is real correlation (best_match IS
+    // set), just correlateRuntimeEvent's own matched-vs-partial distinction
+    // (product.ts) — the case this test guards is that it resolves AT ALL.
+    assert.equal(result.observations[0].correlation.status, 'partial');
+  });
+});
+
+test('an explicit node_id on the event wins over hint-resolution (caller-asserted fact beats a guess)', async () => {
+  await withTempStorage(async root => {
+    const cas = buildCas(root);
+    // function_hint would resolve to nothing (no node named this); node_id
+    // must still land the observation on the real node.
+    const events: TelemetryEvent[] = [
+      { kind: 'request', node_id: 'node-create-invoice', function_hint: 'thisFunctionDoesNotExist' },
+    ];
+
+    const result = await ingestTelemetryBatch(cas, root, events);
+    assert.equal(result.observations[0].correlation.best_match?.id, 'node-create-invoice');
+  });
+});
+
 test('ingestTelemetryBatch persists raw observations when there is NO analysis (cas=null)', async () => {
   await withTempStorage(async root => {
     // Simulate the "project not analyzed yet" path: pass cas=null. Raw runtime
