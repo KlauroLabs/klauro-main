@@ -117,6 +117,30 @@ fresh submissions with `analyzer_build` confirmed via `reuse_decision`.
 - **RECALL column**: missing capability — "Notify users of account/task/incident events" (or similar), backed by Notification + UserNotification + rails_mailer, present as entities but never promoted to a capability of its own.
 - Verdict: best-quality sample so far (8 clean, readable capabilities, near-total flow coverage, tests_present consistent) but the domain gap and the still-buried notification capability are real, and the domain=null is a distinct new defect worth a bug report on its own.
 
+### 3. hercules-backend (client, "HRx portal") — Web GraphQL, Python/Django, monorepo
+
+- project `prj_PuhKIMhlxPJmhMZN`, my own submission, `analyzer_build: 1.0.136-dev+56cde09aa104`, `reuse_decision.source: source_changed` (fresh). Finished 2026-08-10T16:35:23Z, duration **196.03s**, `errors: 2` (recorded, cause not surfaced blackbox), `analysis_version_status: current`, cas_version 2.1.0.
+- **Self-reported degraded**: `get_summary.comprehension.degraded: true` — `capability_naming_coverage: {total:11, authored:9, un_enriched:2}`, `capability_name_degradations: 3`, `capability_description_degradations: 1`. The product itself flags that part of its own capability catalog fell back to deterministic/un-enriched text.
+- capability count: **11** — Manage company profiles, Manage user permissions, Manage product inventory, Manage delivery scheduling, Manage invoicing and payments, Manage REMS programs, Manage custom pricing, Manage shipping methods, Manage specialty classifications, Manage Location, Manage Order Origin.
+- **Raw source path in description — confirmed, twice**: "Manage Location" → *"Location manages Location through 1 operation (e.g. **modules/users/schemas/types.py**)."*; "Manage Order Origin" → *"Order Origin manages OrderOrigin through 1 operation (e.g. **modules/orders/tasks.py**)."* Both are literal file paths inside a capability description shown to a non-technical reader — a hard violation of the bar, and exactly the `degraded`/un-enriched entries the summary flagged.
+- "Manage REMS programs" is `description_source: "deterministic"` — template text ("...creates and reads Rems, RemsType through 11 operations"), not AI-authored, mechanical/count-shaped rather than an outcome statement.
+- `primary_domain`: `"company-delivery-invoice"` — a real (if awkward) domain phrase, not raw mechanism; better than washup's null.
+- top-level description reads oddly mechanism-flavored: *"The intent to create a graphql query results in the generation of a graphql query, which can read records like company, delivery, form, GPO, or invoice data."* — circular/protocol-flavored phrasing a PM would not write.
+- `flows_to_capabilities`: 1.0 (89/89) on the flows that exist — but this ratio is blind to whole modules that never produced a flow at all (see recall below); `reachable_code_to_steps`: **0.5217** (84/161).
+- `tests_present`: false on all 11 capabilities; `health.tests.total = 0`. Consistent, no contradiction.
+- journeys: 21, all user-facing (0 system) — low relative to 146 entry_points/50 GraphQL operations, consistent with the low reachable-code-to-steps ratio.
+- **Known regression check — GPO / change_requests / fleet / FDB drug-database integrations: ALL FOUR STILL MISSING as capabilities**, despite the source modules genuinely existing (`modules/gpo`, `modules/change_requests`, `modules/fleet`, `modules/fdb` all confirmed present on disk pre-analysis):
+  - **GPO**: `GPO` appears as a database entity in the L3 inventory (Tier-1 evidence exists) but has zero capability of its own — folded into nothing.
+  - **change_requests**: an entire module with its own models/admin/schema/migrations (`module_modules_change_requests_*` visible only as *orphan nodes* in the sub-CAS accounting) — no capability, no visible entity name.
+  - **fleet**: **total invisibility** — no `Fleet`-named entity anywhere in the 55 `database_entities`, no capability, not even orphan-node evidence surfaced in this summary. The worst miss of the run.
+  - **FDB**: substantial async evidence exists — `celery.task.sync_fdb_products`, `sync_fdb_from_sftp_file`, `update_gcn_products` all appear as real communication-seam edges into `modules/fdb` — yet no "sync drug pricing/FDB database" capability was generated. The mechanism-level plumbing is visible in the graph; the user-facing outcome is not.
+- **RECALL column**: 4 missing capabilities — GPO compliance/approval management, change-request approval workflow, fleet management, and FDB drug-database sync — all four named in the regression brief, all four reproduce today on the current deployed analyzer.
+- Verdict: worst sample so far. Confirms the regression brief's Django repo exactly: 4/4 named capabilities still absent, plus two literal file-path leaks in capability descriptions the product's own `degraded` flag also caught. This is the strongest evidence in the run that capability recall is still broken for a real, complex GraphQL/Celery backend.
+
 ---
 
-*(scorecard rows 3-10 to follow in this document as each subject completes)*
+### Progress checkpoint (3 of 10 subjects scored)
+
+Common thread so far: capability *quality* (readability, entity-grounding) is fine to good on generated capabilities, but **recall is the real failure** — every subject tested against a known regression still reproduces it. Continuing with the remaining 7 shapes (native mobile, library/SDK, monorepo-multi-deployable, CLI, IaC, data/ML, odd/game) next.
+
+*(scorecard rows 4-10 to follow in this document as each subject completes)*
