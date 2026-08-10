@@ -225,7 +225,7 @@ test('slices carry their reachability closure, shared code is tagged and counted
 
 /**
  * Task #100 (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): the persisted
- * `cas.reachability_index` now includes 'invokes' edges, so DAS reuses it
+ * `cas.reachability_index` now includes 'invokes' edges, so sub-CAS-node slicing reuses it
  * (ReachabilityIndex.from) instead of always rebuilding its own. Proves two
  * things at once: (1) a unit's closure still follows an 'invokes' dispatch
  * edge the same way it always followed 'calls' (no regression), and (2) the
@@ -271,7 +271,7 @@ test('DAS closure follows invokes edges via the persisted index, and reuse == re
 /**
  * Task #100 compatibility proof: a CAS stored BEFORE 'invokes' was added to
  * the persisted index's closure carries a `reachability_index` with no
- * `includes_invokes_edges` flag. Before this fix, DAS ignored the persisted
+ * `includes_invokes_edges` flag. Before this fix, sub-CAS-node slicing ignored the persisted
  * index entirely and always rebuilt its own (invokes-inclusive) one, so such
  * an analysis already got the wider closure. Reuse-when-present must not
  * regress that: a stale, flag-less index must be rejected and rebuilt, never

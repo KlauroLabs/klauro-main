@@ -679,12 +679,12 @@ async function casEdgesForWorkspace(workspace: string): Promise<CasEdgeRef[]> {
 }
 
 /**
- * Best-effort WAS capabilities for capability-name arbitration (§WS-C). Resolves
+ * Best-effort workspace-level-CAS capabilities for capability-name arbitration (§WS-C). Resolves
  * the persisted workspace-analysis graph whose inputs cover `workspace` (same
  * resolver `resolve_workspace_analysis` uses) and trims its
  * `workspace_capabilities` to the coordination module's minimal
  * `WasCapabilityRef` shape. `workspace` may be a logical id with no matching
- * WAS analysis (or none has been run yet) — that is expected, not an error,
+ * workspace-level-CAS analysis (or none has been run yet) — that is expected, not an error,
  * so any failure or empty match falls back to `[]` and arbitration proceeds
  * exactly as before this cross-reference existed.
  */
@@ -1152,7 +1152,7 @@ const EXCLUDE_SECTIONS_PARAM = z
   .optional()
   .describe('Named sections to omit regardless of runtime mode, e.g. ["runtime","seams","topology"] (aliases like "telemetry","communication_seams" accepted). Excluded sections are skipped, not blanked.');
 
-// DAS retrieval scope (docs/cas/SPECIFICATION.md §0.4): on a promoted
+// Sub-CAS-node retrieval scope (docs/cas/SPECIFICATION.md §0.4): on a promoted
 // repo (>= 2 tier-qualified ship units, see deployable-analysis.ts), scope a
 // repo-level tool to exactly one das_unit_id's sliced facts instead of the
 // whole-repo rollup. Omitted on any repo (promoted or not) preserves today's
@@ -2167,13 +2167,13 @@ function registerTools(server: McpServer) {
     'run_workspace_analysis',
     {
       title: 'Run Workspace Analysis',
-      description: 'Build and persist a WAS-compliant Workspace analysis after every associated project/repo already has a CAS analysis. This composes completed CAS outputs only: projects, deployables, distribution units, interfaces, runtime topology, infrastructure overlay, integration links, data-flow paths, inferred insights, unmatched interfaces, workspace capabilities, entity indexes, health, risk, and AI-required workspace narrative.',
+      description: 'Build and persist a workspace-level CAS (a parent CAS composing its member repos\' CAS analyses) after every associated project/repo already has a CAS analysis. This composes completed CAS outputs only: projects, deployables, distribution units, interfaces, runtime topology, infrastructure overlay, integration links, data-flow paths, inferred insights, unmatched interfaces, workspace capabilities, entity indexes, health, risk, and AI-required workspace narrative.',
       inputSchema: {
         name: z.string().optional().describe('Workspace analysis name. Defaults to analyzed-workspace.'),
         paths: z.array(z.string()).optional().describe('Analyzed project paths to include. Omit to use all analyzed repositories.'),
         workspace_root: z.string().optional().describe('Optional workspace folder. When provided, include analyzed repos under this root and honor its .klaurorc source.exclude and .klauroignore policy.'),
         exclude: z.array(z.string()).optional().describe('Optional additional workspace exclude patterns, e.g. ["desktop-tray/**", "archives/**"].'),
-        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic WAS generation; the returned narrative is marked AI-required degraded.'),
+        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic workspace-level CAS generation; the returned narrative is marked AI-required degraded.'),
       } as any,
     } as any,
     async ({ name, paths, workspace_root, exclude, ai_enrichment }: any) => withErrorHandling(async () => {
@@ -2202,10 +2202,10 @@ function registerTools(server: McpServer) {
     'resolve_workspace_analysis',
     {
       title: 'Resolve Workspace Analysis',
-      description: 'Find the best persisted WAS analysis for one or more local paths. Use this before cross-repo work when the agent has a workspace folder but not a workspace analysis id.',
+      description: 'Find the best persisted workspace-level CAS for one or more local paths. Use this before cross-repo work when the agent has a workspace folder but not a workspace analysis id.',
       inputSchema: {
         path: z.string().optional().describe('Workspace, repo, or subfolder path to resolve.'),
-        paths: z.array(z.string()).optional().describe('Optional set of repo/workspace paths to match against WAS inputs.'),
+        paths: z.array(z.string()).optional().describe('Optional set of repo/workspace paths to match against workspace-level CAS inputs.'),
       } as any,
     } as any,
     async ({ path, paths }: any) => withErrorHandling(async () => {
@@ -2235,7 +2235,7 @@ function registerTools(server: McpServer) {
     'get_workspace_summary',
     {
       title: 'Get Workspace Summary',
-      description: 'Return a compact WAS human/agent summary: AI-required narrative status, product value, composition, health, capabilities, workflows, domains, entities, infrastructure overlay, risk, and freshness.',
+      description: 'Return a compact human/agent summary from the workspace-level CAS: AI-required narrative status, product value, composition, health, capabilities, workflows, domains, entities, infrastructure overlay, risk, and freshness.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
       } as any,
@@ -2314,7 +2314,7 @@ function registerTools(server: McpServer) {
     'get_workspace_analysis',
     {
       title: 'Get Workspace Analysis',
-      description: 'Load a persisted WAS-compliant Workspace analysis by id or name. Use detail_level=overview for the compact repo/app map, connections for deployable links and insights, evidence for interface/runtime evidence, or full for the complete graph.',
+      description: 'Load a persisted workspace-level CAS by id or name. Use detail_level=overview for the compact repo/app map, connections for deployable links and insights, evidence for interface/runtime evidence, or full for the complete graph.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
         detail_level: z.enum(['overview', 'connections', 'evidence', 'full']).optional().describe('Retrieval depth. Defaults to overview for MCP/API efficiency.'),
@@ -2331,7 +2331,7 @@ function registerTools(server: McpServer) {
     'get_workspace_agent_context',
     {
       title: 'Get Workspace Agent Context',
-      description: 'Load a compact WAS-backed context for cross-repo agent work. Use before broad multi-repo exploration: selected surfaces with deployable flags, source-backed runtime links, package/topology/inferred candidates, isolated surfaces, token budget, agent read-next guidance, and follow-up MCP calls.',
+      description: 'Load a compact workspace-level-CAS-backed context for cross-repo agent work. Use before broad multi-repo exploration: selected surfaces with deployable flags, source-backed runtime links, package/topology/inferred candidates, isolated surfaces, token budget, agent read-next guidance, and follow-up MCP calls.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
         task: z.object({
@@ -2355,7 +2355,7 @@ function registerTools(server: McpServer) {
     'get_workspace_freshness',
     {
       title: 'Get Workspace Freshness',
-      description: 'Check whether a persisted WAS is current against the CAS analyses for its input repos.',
+      description: 'Check whether a persisted workspace-level CAS is current against the CAS analyses for its input repos.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
       } as any,
@@ -2371,7 +2371,7 @@ function registerTools(server: McpServer) {
     'validate_was_contract',
     {
       title: 'Validate WAS Contract',
-      description: 'Score a persisted WAS for required sections, freshness, AI-required narrative enrichment, and relationship evidence readiness.',
+      description: 'Score a persisted workspace-level CAS for required sections, freshness, AI-required narrative enrichment, and relationship evidence readiness.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
       } as any,
@@ -2388,7 +2388,7 @@ function registerTools(server: McpServer) {
     'get_workspace_health',
     {
       title: 'Get Workspace Health',
-      description: 'Return workspace health, activity, telemetry, trust, and highest-priority risk areas from WAS.',
+      description: 'Return workspace health, activity, telemetry, trust, and highest-priority risk areas from the workspace-level CAS.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
       } as any,
@@ -2404,7 +2404,7 @@ function registerTools(server: McpServer) {
     'get_workspace_risk_context',
     {
       title: 'Get Workspace Risk Context',
-      description: 'Return WAS risk areas filtered by project, deployable, interface, severity, or target text, with MCP follow-up calls.',
+      description: 'Return workspace-level-CAS risk areas filtered by project, deployable, interface, severity, or target text, with MCP follow-up calls.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
         target: z.string().optional().describe('Optional project/deployable/interface/risk text filter.'),
@@ -2428,7 +2428,7 @@ function registerTools(server: McpServer) {
     'get_workspace_capability_map',
     {
       title: 'Get Workspace Capability Map',
-      description: 'Return whole-workspace domains, primary capabilities, workflows, and linked deployables from WAS.',
+      description: 'Return whole-workspace domains, primary capabilities, workflows, and linked deployables from the workspace-level CAS.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
         target: z.string().optional().describe('Optional capability/domain/workflow text filter.'),
@@ -2613,7 +2613,7 @@ function registerTools(server: McpServer) {
     'get_workspace_workflow',
     {
       title: 'Get Workspace Workflow',
-      description: 'Return a specific WAS workflow with connected deployables, interfaces, evidence, and repo-level drilldown calls.',
+      description: 'Return a specific workspace-level-CAS workflow with connected deployables, interfaces, evidence, and repo-level drilldown calls.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
         workflow_id_or_name: z.string().describe('Workflow id or name'),
@@ -2645,7 +2645,7 @@ function registerTools(server: McpServer) {
     compact: z.boolean().optional().describe('Compact projection with member repo names (default true).'),
     max_members: z.number().int().optional().describe('Max member-repo names per workspace in the compact shape (default 20).'),
   };
-  const listWorkspacesDescription = 'List persisted WAS-compliant Workspace analyses, with narrowing and pagination. Re-runs of the same workspace are collapsed to the richest entry per name by default, so a few real workspaces are not buried under hundreds of duplicates. Filter by name or min_repos; sort by repos (default), recent, or name; page with limit/offset. Reports total_indexed, matched, has_more, next_offset. IMPORTANT: this indexes LOCAL analysis files on this machine (~/.klauro/analyses/workspace-analyses/), including one-off benchmark/gauntlet runs (ids often look like "gauntlet-<name>-<runid>") that scan arbitrary local folders and are NOT the same thing as a live account workspace or its connected-project membership on mcp.klauro.com. A "soon" entry here can have a very different repo_count/member_repos than the real account workspace of the same name. Never tell a user "workspace X has N repos" based on this tool alone — cross-check the live account workspace (GET /api/workspaces/:id/projects, or the web app) before reporting repo counts tied to a named account workspace.';
+  const listWorkspacesDescription = 'List persisted workspace-level CAS analyses, with narrowing and pagination. Re-runs of the same workspace are collapsed to the richest entry per name by default, so a few real workspaces are not buried under hundreds of duplicates. Filter by name or min_repos; sort by repos (default), recent, or name; page with limit/offset. Reports total_indexed, matched, has_more, next_offset. IMPORTANT: this indexes LOCAL analysis files on this machine (~/.klauro/analyses/workspace-analyses/), including one-off benchmark/gauntlet runs (ids often look like "gauntlet-<name>-<runid>") that scan arbitrary local folders and are NOT the same thing as a live account workspace or its connected-project membership on mcp.klauro.com. A "soon" entry here can have a very different repo_count/member_repos than the real account workspace of the same name. Never tell a user "workspace X has N repos" based on this tool alone — cross-check the live account workspace (GET /api/workspaces/:id/projects, or the web app) before reporting repo counts tied to a named account workspace.';
 
   server.registerTool(
     'list_workspace_analyses',
@@ -2664,13 +2664,13 @@ function registerTools(server: McpServer) {
     'run_cross_codebase_analysis',
     {
       title: 'Run Cross-Codebase Analysis',
-      description: 'Deprecated name for run_workspace_analysis. Builds a WAS-compliant Workspace analysis from completed CAS outputs.',
+      description: 'Deprecated name for run_workspace_analysis. Builds a workspace-level CAS from completed CAS outputs.',
       inputSchema: {
         name: z.string().optional().describe('Workspace analysis name. Defaults to analyzed-workspace.'),
         paths: z.array(z.string()).optional().describe('Analyzed project paths to include. Omit to use all analyzed repositories.'),
         workspace_root: z.string().optional().describe('Optional workspace folder. When provided, include analyzed repos under this root and honor its .klaurorc source.exclude and .klauroignore policy.'),
         exclude: z.array(z.string()).optional().describe('Optional additional workspace exclude patterns.'),
-        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic WAS generation.'),
+        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic workspace-level CAS generation.'),
       } as any,
     } as any,
     async ({ name, paths, workspace_root, exclude, ai_enrichment }: any) => withErrorHandling(async () => {
@@ -2699,7 +2699,7 @@ function registerTools(server: McpServer) {
     'get_cross_codebase_analysis',
     {
       title: 'Get Cross-Codebase Analysis',
-      description: 'Deprecated name for get_workspace_analysis. Loads a persisted WAS-compliant Workspace analysis by id or name.',
+      description: 'Deprecated name for get_workspace_analysis. Loads a persisted workspace-level CAS by id or name.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
         detail_level: z.enum(['overview', 'connections', 'evidence', 'full']).optional().describe('Retrieval depth. Defaults to overview for MCP/API efficiency.'),
@@ -2802,7 +2802,7 @@ function registerTools(server: McpServer) {
       description: 'Single default agent-start payload. Returns readiness, start context, tool plan, agent context, and a ready-to-use prompt for Codex, Claude, Cursor, or any coding agent.',
       inputSchema: {
         path: z.string().describe('Project path'),
-        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name. When provided, include compact workspace context alongside repo CAS context.'),
+        workspace_analysis_id: z.string().optional().describe('Optional workspace-level CAS id/name. When provided, include compact workspace context alongside repo CAS context.'),
         task: z.object({
           task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
           target: z.string().optional(),
@@ -3078,7 +3078,7 @@ function registerTools(server: McpServer) {
       description: 'Task-scoped agent context with compact repo-local idiom context. Use for edits where matching local naming, placement, boundaries, testing, migrations, and framework style matters.',
       inputSchema: {
         path: z.string().describe('Project path'),
-        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name for compact workspace context.'),
+        workspace_analysis_id: z.string().optional().describe('Optional workspace-level CAS id/name for compact workspace context.'),
         task: z.object({
           task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
           target: z.string().optional(),
@@ -3111,7 +3111,7 @@ function registerTools(server: McpServer) {
       description: 'Product-level agent workspace for a task: orientation, target resolution, file-read plan, repo rules, evidence policy, validation plan, and next MCP calls. Use before broad source exploration.',
       inputSchema: {
         path: z.string().describe('Project path'),
-        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name for compact workspace context.'),
+        workspace_analysis_id: z.string().optional().describe('Optional workspace-level CAS id/name for compact workspace context.'),
         task: z.object({
           task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
           target: z.string().optional(),
@@ -3144,7 +3144,7 @@ function registerTools(server: McpServer) {
       description: 'Before an agent edits or presents a plan, evaluate whether the proposed change fits the codebase model, idioms, invariants, tests, migrations, auth/tenant boundaries, and risk surface.',
       inputSchema: {
         path: z.string().describe('Project path'),
-        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name for cross-repo blast-radius context.'),
+        workspace_analysis_id: z.string().optional().describe('Optional workspace-level CAS id/name for cross-repo blast-radius context.'),
         target: z.string().optional().describe('Node id, file path, or natural language target'),
         plan_text: z.string().optional().describe('Agent plan text to evaluate'),
         diff_text: z.string().optional().describe('Optional unified diff to evaluate'),
@@ -5963,7 +5963,7 @@ function registerTools(server: McpServer) {
   };
 
   /**
-   * CAS+WAS-backed advisory overlap for the local fab_* path. Return shape is a
+   * CAS-backed advisory overlap (repo- and workspace-level) for the local fab_* path. Return shape is a
    * strict superset of checkEditLock's EditLockConflict[] so existing callers
    * keep working unchanged; added fields are pure enrichment. Must degrade to
    * the plain path-only checkEditLock result on any failure — never fewer
@@ -5997,7 +5997,7 @@ function registerTools(server: McpServer) {
       }
       // Same-repo CAS (best-effort; empty CAS => literal symbol/path overlap).
       const cas = await partitionCasForPath(ws);
-      // Workspace WAS (best-effort; absent => cross-repo layer skipped).
+      // Workspace-level CAS (best-effort; absent => cross-repo layer skipped).
       let was: any | undefined;
       try {
         was = (await resolveWorkspaceAnalysisForPaths([ws])).selected ?? undefined;
@@ -6222,7 +6222,7 @@ function registerTools(server: McpServer) {
       async function localClaim(degradeWarning?: string) {
       // Belt-and-suspenders (papercut fix (b)): scan for overlap BEFORE claiming
       // so an agent that skips fab_check_collision still gets the advisory
-      // signal. Advisory — the claim proceeds regardless. Now CAS+WAS-backed
+      // signal. Advisory — the claim proceeds regardless. Now CAS-backed (repo- and workspace-level)
       // (blast-radius + cross-repo aware), a strict superset of the old
       // path-only checkEditLock; degrades gracefully and never throws.
       const conflicts = await advisoryOverlapConflicts(ws, agent_id, claimPaths, claimSymbols);
@@ -6378,11 +6378,11 @@ function registerTools(server: McpServer) {
           degradeNote = `Remote fabric check failed (${msg}) — DEGRADED to the LOCAL view: claims from other machines are NOT visible in this result. `;
         }
       }
-      // CAS+WAS-backed advisory overlap (blast-radius + cross-repo aware), a
+      // CAS-backed advisory overlap (repo- and workspace-level, blast-radius + cross-repo aware), a
       // strict superset of the old path-only checkEditLock; degrades gracefully
       // and never throws. This preflight is paths-only (no symbols input), so
       // pass [] for symbols — CAS still expands the paths' blast radius and the
-      // WAS still surfaces cross-repo shared-code/contract overlap.
+      // workspace-level CAS still surfaces cross-repo shared-code/contract overlap.
       const conflicts = await advisoryOverlapConflicts(ws, agent_id, paths || [], []);
       // degradeNote = remote was configured but the call failed (unreachable/401).
       // settings.localReason = remote was never in play (not configured/disabled/
@@ -7200,7 +7200,7 @@ function registerResources(server: McpServer) {
   server.registerResource(
     'workspace-analyses-list',
     'klauro://workspace-analyses',
-    { title: 'Workspace Analyses', description: 'Persisted WAS-compliant Workspace analyses generated from completed CAS analyses.', mimeType: 'application/json' } as any,
+    { title: 'Workspace Analyses', description: 'Persisted workspace-level CAS analyses generated from completed CAS analyses.', mimeType: 'application/json' } as any,
     async () => {
       const graphs = await listCrossCodebaseSystemGraphs();
       return { contents: [{ uri: 'klauro://workspace-analyses', text: JSON.stringify(graphs) }] };
@@ -7210,7 +7210,7 @@ function registerResources(server: McpServer) {
   server.registerResource(
     'workspace-analysis',
     new ResourceTemplate('klauro://workspace-analysis/{analysis_id_or_name}', { list: undefined }),
-    { title: 'Workspace Analysis', description: 'Persisted WAS-compliant Workspace analysis with projects, deployables, interfaces, integration links, runtime topology, insights, and unmatched interfaces.', mimeType: 'application/json' } as any,
+    { title: 'Workspace Analysis', description: 'Persisted workspace-level CAS with projects, deployables, interfaces, integration links, runtime topology, insights, and unmatched interfaces.', mimeType: 'application/json' } as any,
     async (uri, params) => {
       const graph = await loadCrossCodebaseSystemGraph(String(params.analysis_id_or_name));
       if (!graph) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Workspace analysis not found' }) }] };

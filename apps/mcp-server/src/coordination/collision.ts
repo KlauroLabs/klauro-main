@@ -1,7 +1,7 @@
 /**
  * The four collision detectors (§WS-D), composed into a single CollisionReport.
- * Pure: every input (active claims, in-flight snapshots, CAS edges, WAS
- * capabilities) is passed in by the caller. No transport, no storage.
+ * Pure: every input (active claims, in-flight snapshots, CAS edges,
+ * workspace-level-CAS capabilities) is passed in by the caller. No transport, no storage.
  */
 
 import type { SymbolChange } from './conceptual-conflict';
@@ -336,7 +336,7 @@ export function detectDeclaredContractDrift(
 /**
  * Compose the four WS-D detectors into a single CollisionReport. Pure and
  * side-effect free — the caller supplies the active claims, in-flight
- * snapshots, CAS edges, and WAS capabilities.
+ * snapshots, CAS edges, and workspace-level-CAS capabilities.
  */
 export function detectCollisions(
   activeClaims: WorkClaim[],

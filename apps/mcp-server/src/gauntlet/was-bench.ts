@@ -94,7 +94,7 @@ export async function runWasCrossRepoBench(fixtureDir: string): Promise<WasBench
   ];
 
   // Camp A + Camp B index a single repo — no cross-repo fusion of a client call to
-  // a server route. Un-attempted (categorical Camp-C / WAS win).
+  // a server route. Un-attempted (categorical Camp-C / workspace-level-CAS win).
   for (const armId of ['codebase-memory', 'scip-typescript', 'stack-graphs', 'embeddings-nomic']) {
     arms.push({ arm_id: armId, mode: 'engine', attempted: false, metrics: { quality: 0, time_ms: 1, tokens: toTokens(srcBytes) }, source: `was-bench:cross-repo-links:${armId}` });
     detail.push({ arm: armId, links: [], f1: 0, bytes: srcBytes, can_answer: false });

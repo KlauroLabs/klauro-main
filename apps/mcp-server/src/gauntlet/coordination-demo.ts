@@ -40,7 +40,7 @@ const CAS_EDGES: CasEdgeRef[] = [
   { id: 'e2', source: 'PricingEngine.computeTotal', target: 'CheckoutService.submitOrder', type: 'called_by' },
 ];
 
-/** Small inline WAS-capability fixture — just enough to exercise capability matching. */
+/** Small inline workspace-level-CAS-capability fixture — just enough to exercise capability matching. */
 const WAS_CAPABILITIES: WasCapabilityRef[] = [
   { id: 'cap-1', name: 'checkout-refactor', project_ids: ['proj-checkout'] },
 ];

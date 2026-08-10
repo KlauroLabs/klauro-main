@@ -9,7 +9,7 @@ import { saveAnalysis } from './storage';
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 
 /**
- * TASK (backend lane, DAS over HTTP): the web UI's deployable page was
+ * TASK (backend lane, sub-CAS nodes over HTTP): the web UI's deployable page was
  * approximating deployable-analysis.ts's phase-2 scoping
  * (getCachedDeployableAnalyses / scopeCasToDasUnit — already wired into 5 MCP
  * tools) client-side, because the real scoped surface was never exposed over
@@ -223,7 +223,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     // must carry sub_cas_nodes too. This is the endpoint hostedSummaryPayload
     // (hosted-analysis.ts) hits by default — before this fix it never
     // attached sub_cas_nodes, so a promoted repo queried the ordinary way (no
-    // scope/detail=full/runtime/exclude_sections) reported no DAS units at
+    // scope/detail=full/runtime/exclude_sections) reported no sub-CAS-node units at
     // all despite /das and the full-CAS path both having them. ---
     const analysisRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
     assert.equal(analysisRes.statusCode, 200);

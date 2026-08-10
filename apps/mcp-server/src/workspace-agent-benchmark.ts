@@ -1,5 +1,5 @@
 /**
- * Workspace (WAS) agent benchmark.
+ * Workspace-level-CAS agent benchmark.
  *
  * The single-repo agent benchmarks (agent-quality-benchmark) prove Klauro's
  * value on one codebase. Klauro's advantage is LARGEST on multi-repo workspace
@@ -10,7 +10,7 @@
  * gets the exact involved surfaces, the source-backed cross-repo connections, and
  * the entity paths directly.
  *
- * This harness builds the WAS for each workspace, generates cross-repo tasks from
+ * This harness builds the workspace-level CAS for each workspace, generates cross-repo tasks from
  * its facts, and measures the with-Klauro vs without-Klauro arms on the same
  * quality / token / file / time axes as the single-repo benchmark, plus the
  * workspace-specific "how many repos did each arm have to touch?" axis.
@@ -92,7 +92,7 @@ function projectName(graph: CrossCodebaseSystemGraph, id: string): string {
   return graph.codebases.find(codebase => codebase.id === id)?.name || id;
 }
 
-/** Generate cross-repo tasks from WAS facts (capabilities/entities/links that span repos). */
+/** Generate cross-repo tasks from workspace-level-CAS facts (capabilities/entities/links that span repos). */
 function generateWorkspaceTasks(graph: CrossCodebaseSystemGraph): WorkspaceTask[] {
   const tasks: WorkspaceTask[] = [];
 

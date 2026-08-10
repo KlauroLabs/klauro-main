@@ -671,7 +671,7 @@ export function buildCrossRepoRouteDrift(
 // side (from each repo's deterministically-extracted data_entities, which carry
 // {name, type} per field) and diffs them field-by-field. A field whose type
 // changed, was renamed, or was dropped between producer and consumer is a
-// contract drift at the seam. This is a WAS-level capability: a single-repo
+// contract drift at the seam. This is a workspace-level-CAS capability: a single-repo
 // indexer never sees both shapes at once, so it cannot compute the diff.
 //
 // Honest capability boundary: field NAMES and field TYPES are sourced from the

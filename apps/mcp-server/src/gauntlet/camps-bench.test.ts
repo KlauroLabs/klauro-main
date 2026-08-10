@@ -49,7 +49,7 @@ test('buildCampsReport: campC has real route wins, breadth is populated, campB n
       `Camp A ${p.lang}: Klauro F1 ${p.klauroF1} must be >= embedding ${p.embeddingF1} (never a loss)`);
   }
 
-  // Depth, WAS, full-grid, and telemetry overlays have dedicated tests. This
+  // Depth, workspace-level CAS, full-grid, and telemetry overlays have dedicated tests. This
   // aggregate intentionally stays scoped to Camps A/B/C plus breadth so it is not
   // a second full-gauntlet recomputation.
 });

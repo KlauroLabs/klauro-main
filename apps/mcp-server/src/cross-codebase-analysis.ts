@@ -94,8 +94,8 @@ export interface SystemCodebase {
    *  enhanced_system_purpose) — the workspace narrative prompt foregrounds this
    *  so the frame comes from the members' own evidence, never a canned frame. */
   primary_domain?: string;
-  /** AI-grounded member summary copied from the completed CAS. WAS composes
-   *  this member-owned meaning; it never re-infers a member from stack facts. */
+  /** AI-grounded member summary copied from the completed CAS. The workspace-level
+   *  CAS composes this member-owned meaning; it never re-infers a member from stack facts. */
   description?: string;
   languages: string[];
   frameworks: string[];
@@ -134,15 +134,15 @@ export interface SystemApplication {
    *  artifact evidence, and (if merged) the positive bundling evidence. */
   boundary_evidence?: string[];
   /** Present only when this application's owning CAS has promoted to a
-   *  Deployable-Analysis Workspace (docs/cas/SPECIFICATION.md §0.4) and
-   *  this application resolves to one of its DAS units: the three-hop
-   *  provenance `workspace -> CAS (codebase_id) -> DAS (this id)` (spec §4).
+   *  set of sub-CAS nodes (docs/cas/SPECIFICATION.md §0.4) and
+   *  this application resolves to one of its sub-CAS nodes: the three-hop
+   *  provenance `workspace -> CAS (codebase_id) -> sub-CAS node (this id)` (spec §4).
    *  A caller drills into the unit's own sliced capabilities/flows/entities
    *  via the owning codebase's repo-level tools with `scope: { das_unit_id }`
    *  (spec §6) instead of a new workspace-level endpoint. Additive and
    *  optional: absent whenever the owning CAS has not promoted (the common
    *  single-ship-unit case), so every other field on this row is populated
-   *  identically regardless of provenance — a WAS consumer never has to
+   *  identically regardless of provenance — a workspace-level-CAS consumer never has to
    *  branch on this field to read a deployable's facts, only to decide how
    *  much drilldown depth to trust (spec §4's "silent to the schema"). */
   source_das_unit_id?: string;
@@ -988,9 +988,9 @@ export const WAS_VERSION = '1.0.0';
 // Complexity model (deterministic, evidence-based — never AI, never a
 // keyword table; see docs cardinal "deterministic facts + AI interpretation
 // never hardcoded categorizer"). Every number below is read straight off
-// already-computed CAS/WAS facts (graph size, entry/exit surface, seam
+// already-computed CAS facts, repo- and workspace-level (graph size, entry/exit surface, seam
 // modality counts, dependency fan-out, entity/capability/deployable counts,
-// runtime-link density, DAS promotion). Same input always produces the same
+// runtime-link density, sub-CAS-node promotion). Same input always produces the same
 // score: no timestamps, no randomness, no AI call in this file.
 // ---------------------------------------------------------------------------
 
@@ -998,7 +998,7 @@ export const WAS_VERSION = '1.0.0';
  *  can see WHY a number is what it is without re-deriving it. */
 export interface ComplexitySubscore {
   score: number;
-  /** Evidence values (already-named CAS/WAS facts) this subscore averaged. */
+  /** Evidence values (already-named CAS facts, repo- and workspace-level) this subscore averaged. */
   inputs: Record<string, number>;
 }
 
@@ -1052,10 +1052,10 @@ export interface WorkspaceComplexitySubscores {
    *  a single codebase's `coupling` subscore. */
   runtime_link_density: ComplexitySubscore;
   /** Fraction (0-100) of applications whose deployable identity was
-   *  confirmed by DAS promotion (`source_das_unit_id` set) — a proxy for how
+   *  confirmed by sub-CAS-node promotion (`source_das_unit_id` set) — a proxy for how
    *  much of the workspace is verified multi-layer shipped topology versus
    *  single-CAS guesswork. Unlike the other subscores this is a ratio, not a
-   *  log-scaled count, because "half the fleet is DAS-verified" is already
+   *  log-scaled count, because "half the fleet is sub-CAS-node-verified" is already
    *  bounded 0-100 and log-scaling a fraction would distort it. */
   das_verified_fraction: ComplexitySubscore;
 }
@@ -1187,8 +1187,8 @@ export function computeCodebaseComplexity(codebase: SystemCodebase, repository: 
 }
 
 /** Deterministic workspace-level complexity: aggregates member composites
- *  and layers on cross-repo factors already carried by the WAS graph
- *  (runtime_links, application count, DAS-promoted member count). Absent
+ *  and layers on cross-repo factors already carried by the workspace-level
+ *  CAS graph (runtime_links, application count, sub-CAS-node-promoted member count). Absent
  *  (not zero) when there are no member codebases to score — an honest
  *  "no score" beats a fabricated 0. */
 export function computeWorkspaceComplexity(
@@ -1696,7 +1696,7 @@ function useSmallWorkspaceAiDefaultPasses(): boolean {
  * Guard against fake quality-gate rejections: if the AI layer never actually
  * attempted generation (feature-disabled canned string, or an empty response),
  * that is an enrichment error with a real cause — it must never be laundered
- * into "rejected by the WAS quality gate". Exported for tests.
+ * into "rejected by the workspace-level-CAS quality gate". Exported for tests.
  */
 export function assertRealWorkspaceAiAttempt(raw: string): void {
   const text = String(raw || '').trim();
@@ -3196,7 +3196,7 @@ export function isWorkspaceAiParseArtifactText(value: unknown): boolean {
  * a member CAS that rolled up an already-artifacted 'ai' description) can
  * deposit a structured blob into an item whose description_source is already
  * 'ai' — after which the grounded-description guards are skipped. This is the
- * single seam every WAS item passes through before persist: it routes ALL
+ * single seam every workspace-level-CAS item passes through before persist: it routes ALL
  * per-item descriptions (capability/domain/workflow/entity) AND the narrative
  * text through isWorkspaceAiParseArtifactText and, on rejection, leaves the
  * description honestly ABSENT (never the blob). Clearing to '' marks the item
@@ -3523,7 +3523,7 @@ export function workspaceNarrativeHardRejectReason(description: string, effectiv
 }
 
 /**
- * Grounding vocabulary that legitimizes marketing-flagged words in WAS prose —
+ * Grounding vocabulary that legitimizes marketing-flagged words in workspace-level-CAS prose —
  * the workspace's OWN derived semantics (domain/capability/codebase/entity
  * names). Parity with the element-description validator's grounded-words rule:
  * "compliance" survives in a compliance workspace, "comprehensive" never does.
@@ -3543,7 +3543,7 @@ function workspaceMarketingGroundingTokens(graph: WorkspaceAnalysisGraph | undef
 }
 
 /**
- * Unsupported-marketing-language lint for WAS narratives — REUSES the
+ * Unsupported-marketing-language lint for workspace-level-CAS narratives — REUSES the
  * project-tier mechanism (analyzer-core element-description-validator's
  * shared pattern + grounding rule), it is not a second list. Exported for
  * tests.
@@ -3840,7 +3840,7 @@ const WORKSPACE_GENERIC_DOMAIN_TOKENS = new Set([
 ]);
 
 /**
- * THE WAS narrative quality gate — single decision point used by the primary
+ * THE workspace-level-CAS narrative quality gate — single decision point used by the primary
  * enrichment pass and every repair attempt. Hard-reject markers always lose;
  * otherwise a narrative is accepted via any of three paths:
  *  (1) useful + fact-consistent (the original heuristic),
@@ -7752,7 +7752,7 @@ function tightenedWorkspaceCapabilityRole(
  * detector is entity/CRUD-centric and emits "Device Management / Network
  * Management" while the system's *defining* behavior — P2P connectivity,
  * coordinator relay, message brokering, agent control surface — lives only in
- * insights and runtime topology. These are exactly the WAS §8 acceptance facts.
+ * insights and runtime topology. These are exactly the workspace-level-CAS §8 acceptance facts.
  */
 function deriveArchitecturalCapabilitiesFromInsights(
   insights: SystemInsight[],
@@ -9830,12 +9830,12 @@ function isFixtureOrTestCasNode(node: any): boolean {
  * test/fixture nodes and NEVER on a product node. Exported for tests.
  */
 export function productFrameworksFromCas(cas: any): string[] {
-  // FOLLOW-UP (WAS adapter-shim residual): this fixture-path gate drops
+  // FOLLOW-UP (workspace-level-CAS adapter-shim residual): this fixture-path gate drops
   // frameworks seen only on test/fixture nodes, but NOT adapter shims on
   // product paths (e.g. django/fastapi from the klauro-sdk-py telemetry SDK's
   // KlauroDjangoMiddleware). The member's OWN description is correctly gated
   // via the shared selectProductFrameworkNames (query.ts productTechSignals);
-  // routing this WAS rollup through that shared gate needs the member CAS's
+  // routing this workspace-level-CAS rollup through that shared gate needs the member CAS's
   // analyzer_contributions wired through, deferred to avoid a rushed
   // integration. The workspace narrative for a telemetry-SDK-carrying repo may
   // still cite an adapter-shim framework until then.
@@ -10970,7 +10970,7 @@ function inferSystemInsights(
   // /\bagent\b|gateway|client-service|drop-server|coordinator/ (agentApps)
   // and /\bmcp\b/ (mcpApps) and asserted an "MCP-facing control surface for
   // agent workflows" purely from that name coincidence. There is no
-  // structural CAS/WAS evidence (interface kind, runtime component, protocol
+  // structural CAS evidence, repo- or workspace-level, (interface kind, runtime component, protocol
   // fact) for "agent-ness" anywhere in this analyzer, so per the
   // evidence-or-delete rule this insight is deleted outright rather than kept
   // as a name guess — and drop-server/client-service were client-product
@@ -11741,7 +11741,7 @@ function buildApplications(
   // above, purely from matching a path shape — with no check that the
   // directory actually surfaces as an application (a route/entry point, a
   // runtime/deployment component, or any other positive evidence beyond "a
-  // folder exists here"). Per the WAS spec, passive data/library packages and
+  // folder exists here"). Per docs/cas/SPECIFICATION.md §0, passive data/library packages and
   // structurally inert directories stay OUT of level-one application lists;
   // real deployables/services (already flagged `deployable: true`, or a
   // non-package/codebase kind reached only via a real keyword/path signal)
@@ -12564,8 +12564,8 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
 }
 
 /**
- * Tags each matching SystemApplication with its DAS unit id so a
- * WorkspaceDeployable carries workspace -> CAS -> DAS provenance
+ * Tags each matching SystemApplication with its sub-CAS node id so a
+ * WorkspaceDeployable carries workspace -> CAS -> sub-CAS-node provenance
  * (docs/cas/SPECIFICATION.md §0.4). Must run after resolveDeployables.
  * Matching is identity-based (root_path/member_root_paths vs path_hint||name),
  * not positional. Bundled-member applications are skipped — their primary
@@ -12587,7 +12587,7 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
     try {
       das = getCachedDeployableAnalyses(repository.cas);
     } catch {
-      continue; // Malformed/legacy CAS shape: no DAS link, never a hard failure for the workspace build.
+      continue; // Malformed/legacy CAS shape: no sub-CAS-node link, never a hard failure for the workspace build.
     }
     if (!das.promoted || das.sub_cas_nodes.units.length === 0) continue;
 
@@ -12600,13 +12600,13 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
       // app's own path (e.g. a name-resolution-failed generic container
       // whose Dockerfile bundles bin/<service>) beat the unit that IS this
       // app by name (its own compose-service unit) purely by array
-      // position — the service's WAS row drilled down into the wrong unit.
+      // position — the service's workspace-level-CAS row drilled down into the wrong unit.
       // A unit bearing the app's own cleaned name is the strongest identity
       // evidence and must win; root/member containment stays as fallback.
       const nameMatch = das.sub_cas_nodes.units.find(unit => distributionNamesMatch(app.name, unit.name));
       // A bundled-member app normally leaves the link to its bundle primary
-      // — but when the DAS itself promoted a unit under this app's OWN name,
-      // the two layers disagree (workspace bundling folded it, DAS ships it
+      // — but when sub-CAS-node promotion itself promoted a unit under this app's OWN name,
+      // the two layers disagree (workspace bundling folded it, the sub-CAS node ships it
       // standalone) and the identity evidence still holds: tag the app with
       // its own unit rather than hiding the linkage. Root-containment
       // fallbacks stay primary-only (containment under a shared root is not
@@ -12680,7 +12680,7 @@ function mergeDuplicateDasApplications(applications: SystemApplication[]): void 
 }
 
 /** Merges a monorepo subdir-derived application row with a standalone member
- *  uploaded from that same subdir, so the WAS doesn't show the same logical
+ *  uploaded from that same subdir, so the workspace-level CAS doesn't show the same logical
  *  app twice. Must run after resolveDeployables/linkDasUnits; annotates only
  *  (marks the subdir row merged_into the survivor), never removes rows.
  *  Requires two INDEPENDENT evidence signals (never name-only): (a) normalized

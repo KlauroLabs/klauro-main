@@ -33,7 +33,7 @@ export type WorkClaimStatus = 'active' | 'released' | 'superseded' | 'expired';
  *    flow-concepts mapping — never guessed when no flow claims the file.
  */
 export interface ConceptualCoordinate {
-  /** SystemCapability id (WAS/CAS system_capabilities), e.g. "cap::checkout". */
+  /** SystemCapability id (CAS system_capabilities, repo- or workspace-level), e.g. "cap::checkout". */
   capability_id?: string;
   /** FlowConcept id (packages/analyzer-core .../flow-concepts.ts), e.g. "flow::ep_checkout_post". */
   flow_id?: string;
@@ -225,7 +225,7 @@ export interface CasEdgeRef {
   type: string;
 }
 
-/** A minimal WAS capability, enough for capability-name matching (matches WorkspaceCapability). */
+/** A minimal workspace-level-CAS capability, enough for capability-name matching (matches WorkspaceCapability). */
 export interface WasCapabilityRef {
   id: string;
   name: string;

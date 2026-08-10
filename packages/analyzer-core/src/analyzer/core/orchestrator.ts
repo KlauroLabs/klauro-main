@@ -2883,7 +2883,7 @@ export class AnalyzerOrchestrator {
     //
     // This used to compare `analyzer_build` (base package version + git sha of
     // the WHOLE monorepo) directly: ANY commit — including MCP-tool-only or
-    // WAS-only releases that never touch the parse/graph pipeline — moved that
+    // workspace-level-CAS-only releases that never touch the parse/graph pipeline — moved that
     // stamp and forced a full rebuild of every analyzed project. Stage
     // fingerprints (see stage-fingerprint.ts) narrow the check to the two file
     // sets that can actually change parsed/derived output:
@@ -2896,7 +2896,7 @@ export class AnalyzerOrchestrator {
     //     analyzer contributions separately from the derived facts built on
     //     top of them, so there is no cheaper "keep parse, redo derive" path
     //     to take) — but this is a much narrower trigger than the whole-repo
-    //     build identity, since routine MCP-tool/WAS releases don't touch it.
+    //     build identity, since routine MCP-tool/workspace-level-CAS releases don't touch it.
     //
     // Legacy previous outputs stamped before this scheme (no parser_fingerprint
     // / derived_fingerprint persisted) cannot be proven equivalent at the layer

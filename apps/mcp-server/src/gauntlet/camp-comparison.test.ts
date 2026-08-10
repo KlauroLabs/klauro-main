@@ -84,7 +84,7 @@ test(
     // returns a COMPACT graph answer — it ties Klauro on quality AND tokens. We
     // record that honestly: who-calls is a co-equal, not a Klauro win. The
     // decisive edge over this tool is out-of-category (patterns, paradigm
-    // conformance, ORM/DI/components, WAS "why") — axes its 14 tools don't cover.
+    // conformance, ORM/DI/components, workspace-level-CAS "why") — axes its 14 tools don't cover.
     const cm = codebaseMemoryCallers(path.join(ROOT, 'callers-ts'), 'Account');
     assert.ok(cm, 'codebase-memory must resolve the TS fixture');
     assert.deepEqual([...cm!.files].sort(), ['aliased.ts', 'service.ts'], 'exact caller set, decoy excluded — ceiling tie with Klauro');

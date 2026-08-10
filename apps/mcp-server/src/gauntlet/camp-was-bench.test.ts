@@ -1,5 +1,5 @@
 /**
- * FIRST-CLASS WAS bench — measured, never faked.
+ * FIRST-CLASS workspace-level-CAS bench — measured, never faked.
  *
  * Asserts the cross-repo win is real on the ui-api-worker fixture:
  *   - reposCrossed >= 2 (it is a multi-repo workspace);

@@ -393,7 +393,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
   assert.equal(graph.spec_version, '1.0.0');
   assert.equal(graph.composition.kind, 'interconnected-system');
   assert.equal(graph.composition.recommended_primary_view, 'system-map');
-  // Comprehension is AI-only: the synchronous WAS builder leaves the narrative
+  // Comprehension is AI-only: the synchronous workspace-level-CAS builder leaves the narrative
   // description empty (a pre-AI placeholder). There is no deterministic workspace
   // description; enrichWorkspaceAnalysisNarrative writes it, or throws.
   assert.equal(graph.workspace_narrative.description, '');
@@ -433,7 +433,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
   assert.ok(overview.external_dependencies.some((dependency: any) => dependency.name === 'redis' && dependency.used === false));
   // mcp-agent-surface used to fire from name coincidence alone (an app named
   // "mcp-*" alongside apps named "agent"/"coordinator"/etc). There is no
-  // structural evidence for "agent-ness" anywhere in CAS/WAS, so the insight
+  // structural evidence for "agent-ness" anywhere in the CAS (repo- or workspace-level), so the insight
   // was deleted (evidence-or-delete) rather than kept as a name guess.
   assert.ok(!graph.system_insights.some(insight => insight.type === 'mcp-agent-surface'));
   assert.ok(graph.system_insights.some(insight => insight.type === 'declared-unused-infrastructure' && /redis/i.test(insight.title)));
@@ -1537,7 +1537,7 @@ test('preserves ordinary multi-part kebab repo names instead of treating them as
   assert.ok(graph.codebases.every(candidate => !candidate.name.startsWith('account-project-')));
 });
 
-// --- WAS narrative quality-gate calibration (live-prod regression fixtures) ---
+// --- workspace-level-CAS narrative quality-gate calibration (live-prod regression fixtures) ---
 
 function shopCas(): CASOutput {
   return cas({
@@ -1849,7 +1849,7 @@ test('a no-attempt AI response surfaces an honest enrichment error, never a fake
   delete process.env.KLAURO_OLLAMA_AUTO;
   // The feature-disabled canned string means NO model round-trip happened —
   // the 104ms live instant-degrade class. It must never be laundered into a
-  // "rejected by the WAS quality gate" narrative.
+  // "rejected by the workspace-level-CAS quality gate" narrative.
   aiService.generateComponentDescription = async () => 'AI description generation is disabled';
   try {
     const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
@@ -2043,7 +2043,7 @@ test('ambiguous general-purpose ports (Django 8000, pprof 6060) never assert a c
 // (1) the prompt context carries the workspace's OWN member domains and no
 //     hardcoded frame vocabulary, (2) a frame rejection re-prompts with
 //     feedback naming the actual rejected frame on a fresh cache key, and
-// (3) the WAS AI timeout is env-configurable with a generous default.
+// (3) the workspace-level-CAS AI timeout is env-configurable with a generous default.
 // ---------------------------------------------------------------------------
 
 function messagingGatewayCas(): CASOutput {
@@ -2228,7 +2228,7 @@ test('WAS AI latency threshold observes slow work without truncating completenes
   }
 });
 
-// --- WAS output-quality regressions (live 4-workspace audit fixtures) ---
+// --- workspace-level-CAS output-quality regressions (live 4-workspace audit fixtures) ---
 
 test('persist-seam guard: unparsed structured model output is never a description (JSON-leak class)', () => {
   // Verbatim shape of the live capability-description blob leak.
@@ -2528,7 +2528,7 @@ test('internal analysis phrasing stays out of the narrative relationship summary
 });
 
 // ============================================================================
-// WAS live-revalidation defect fixes (v1.0.66 4-workspace audit)
+// Workspace-level-CAS live-revalidation defect fixes (v1.0.66 4-workspace audit)
 // ============================================================================
 
 // The real hosted blob (Klauro/Clients/Personal): the model echoed the repair
@@ -2834,8 +2834,8 @@ test('DEFECT-#45: resolves runtime_links from compose depends_on edges and inter
   });
   assert.ok(hostPortLink, 'a host:port-addressed cross-service call must resolve into a runtime_link');
 
-  // 3) the corresponding application-level link is also promoted (the WAS
-  //    consumer surface most agents actually read).
+  // 3) the corresponding application-level link is also promoted (the
+  //    workspace-level-CAS consumer surface most agents actually read).
   const appNames = new Map(graph.applications.map(app => [app.id, app.name]));
   assert.ok(graph.application_links.some(link =>
     appNames.get(link.source_application_id) === 'gateway' && appNames.get(link.target_application_id) === 'widgets'));
@@ -3067,11 +3067,11 @@ test('LIVE-SHAPE: runtime_links survive a bare top-level-directory consumer (no 
 });
 
 // LIVE-SHAPE E2E (P1 follow-up): a member CAS with tier-1 ship units must
-// NEVER produce an empty workspace applications list, and the WAS-to-DAS
-// drilldown (source_das_unit_id) must resolve each service to its OWN unit.
+// NEVER produce an empty workspace applications list, and the
+// workspace-level-CAS-to-sub-CAS-node drilldown (source_das_unit_id) must resolve each service to its OWN unit.
 // Shape mirrors a real hosted compose+installer repo where the drilldown
 // regressed: every deployable-evidence row's root_path is the repo root
-// ('.', compose file and Dockerfiles all at root), a DAS-promoted repo
+// ('.', compose file and Dockerfiles all at root), a sub-CAS-node-promoted repo
 // (>= 2 tier-qualified units), and — the two defect triggers —
 //  (1) a name-resolution-FAILED generic container unit whose bundled member
 //      root is bin/<service>: with the old single mixed-predicate find(),
@@ -3079,13 +3079,13 @@ test('LIVE-SHAPE: runtime_links survive a bare top-level-directory consumer (no 
 //      source_das_unit_id via member-root containment, beating the unit that
 //      IS the service by name;
 //  (2) service apps that workspace-level bundling folded into a sibling
-//      (bundled_into set) while the DAS promoted them as standalone units —
+//      (bundled_into set) while sub-CAS-node promotion promoted them as standalone units —
 //      the old unconditional bundled-skip left their das linkage empty.
 test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das units link by name identity over member-root containment', () => {
   const system = cas({
     // Unique analysis_id: getCachedDeployableAnalyses keys its LRU on
     // analysis_id, and the shared cas() helper stamps every fixture with the
-    // same 'analysis' id — without this override the DAS pass would replay a
+    // same 'analysis' id — without this override the sub-CAS-node pass would replay a
     // PREVIOUS fixture's cached units into this test.
     analysis_id: 'fleet2-analysis',
     system: { id: 'fleet2', name: 'fleet2-system', type: 'application', root_path: '/tmp/fleet2' },
@@ -3145,7 +3145,7 @@ test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das
   assert.match(coordinatorApp!.source_das_unit_id!, /compose-service.*coordinator/, `coordinator must link to its own unit, got ${coordinatorApp!.source_das_unit_id}`);
 
   // Defect (2): even if workspace bundling folded agent into a sibling, a
-  // DAS unit under agent's own name is identity evidence and must link.
+  // sub-CAS node under agent's own name is identity evidence and must link.
   assert.ok(agentApp!.source_das_unit_id, 'agent must carry a das unit link on a promoted repo');
   assert.match(agentApp!.source_das_unit_id!, /agent/, `agent must link to its own unit, got ${agentApp!.source_das_unit_id}`);
 });
@@ -3155,7 +3155,7 @@ test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das
 // apps/<name> SUBDIRS (one row per platform app, named after the subdir).
 // Two OTHER members are standalone projects uploaded FROM two of those same
 // subdirs, each with its own dedicated CAS. Without mergeCrossMemberSubdir
-// Applications the WAS shows a duplicate row for each: the coarse
+// Applications the workspace-level CAS shows a duplicate row for each: the coarse
 // subdir-derived row from the monorepo and the standalone member's own row.
 //
 // REGRESSION-SHAPE NOTE (caught on live v1.0.122 verification): every member
