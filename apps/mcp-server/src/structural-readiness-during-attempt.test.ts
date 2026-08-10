@@ -15,9 +15,12 @@
  * (i.e. it is THIS attempt's own fresh output, not a stale leftover — the
  * exact case task #129 correctly guards against), and L0-L4 are all
  * 'ready' with L5 specifically 'pending' (not yet landed, not errored),
- * the routes now report a distinct 'structurally_ready' status carrying the
- * real summary, instead of hiding genuinely fresh, queryable data behind
- * 'populating' for the whole AI tail. No completeness is traded: L5 is
+ * the routes now report a distinct 'queryable' status (TASK #143: renamed
+ * from 'structurally_ready' once this was wired through get_summary,
+ * resolve_agent_analysis and `klauro status` — see hosted-analysis.ts and
+ * status-report.ts) carrying the real summary, instead of hiding genuinely
+ * fresh, queryable data behind 'populating' for the whole AI tail. No
+ * completeness is traded: L5 is
  * unchanged and still lands on its own schedule: `layers_ready` in the
  * response says exactly what is and is not ready, per this repo's existing
  * honesty vocabulary (comprehension.degraded / capability_description_

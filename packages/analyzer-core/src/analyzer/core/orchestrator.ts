@@ -248,13 +248,33 @@ function aiConcurrencyLimit(): number {
 // its OWN clock from when the AI phase starts (aiPhaseStart in
 // preprocessProject), never against deterministic parse time. This ceiling
 // leaves headroom under the ~3-minute hard analysis budget for the
-// deterministic phases this stage runs alongside plus final assembly.
-// Overridable for tests/tuning; the fixed per-attempt bounds inside
-// awaitAiBoundedThenUncapped (40s x 3 = 120s worst case for the bounded
-// phase) already fit comfortably under this default.
+// deterministic phases this stage runs alongside, the REST of L5 (system
+// narrative + element descriptions, which run after the catalog resolves —
+// see the catalogOutcome await in applyAIInterpretation), and final assembly.
+//
+// TASK #143 RECONCILIATION: this was 150_000 (150s), leaving only ~30s of
+// the 180s hard analysis cap for everything else once the catalog itself hit
+// its ceiling — and before this task, hitting the ceiling did not actually
+// stop at 150s: the "guaranteed completion" final attempt inside
+// awaitAiBoundedThenUncapped ran with NO cap of its own even when a hard
+// deadline was supplied, so a real client repo (4,810 files/85,652 nodes)
+// measured 264.6s total wall clock against this 150s budget. That gap is
+// fixed at the source (awaitAiBoundedThenUncapped now bounds its final
+// attempt by the remaining time under hardDeadlineAt instead of running
+// uncapped), so this constant now means what it says. Lowered to 100_000
+// (100s) to leave real headroom for the rest of L5 and final assembly under
+// the 180s ceiling — the per-attempt bounds inside awaitAiBoundedThenUncapped
+// (40s x 3 = 120s worst case for the bounded phase alone) mean a repo whose
+// provider is genuinely slow will still hit this ceiling before exhausting
+// its 3 bounded attempts on a healthy connection; that is the intended
+// "abandon and report the honest gap" path (see
+// runCapabilityCatalogWithQualityGate's deadlineExceeded branch and
+// remote-analyzer-service.ts's comprehensionPartial reporting), not a
+// regression — a budget must never be met by silently shipping less, but it
+// also must never be missed by an unbounded amount.
 const CATALOG_HARD_DEADLINE_MS = (() => {
   const configured = Number(process.env.KLAURO_AI_CATALOG_HARD_DEADLINE_MS || '');
-  return Number.isFinite(configured) && configured > 0 ? configured : 150_000;
+  return Number.isFinite(configured) && configured > 0 ? configured : 100_000;
 })();
 
 // Distinguishable, greppable marker (this file's existing convention for
@@ -11358,10 +11378,50 @@ export class AnalyzerOrchestrator {
       console.error(`[Klauro] ${operation}: all bounded attempts were cut off or failed AND the hard deadline has been reached; abandoning instead of starting the uncapped final attempt`);
       throwDeadlineExceeded();
     }
-    // Every bounded, abandonable attempt was cut off or failed, but there is
-    // still time before the hard deadline. Completeness is preserved here,
-    // not compromised: one final attempt runs with NO timeout, guaranteeing a
-    // real answer eventually rather than a degraded/synthetic one.
+    // TASK #143: when a hard deadline is set, the "final attempt" must stay
+    // bounded BY that deadline — a genuinely uncapped attempt here is exactly
+    // what let a 150s catalog deadline observably overshoot to 264.6s wall
+    // clock on a real client repo (bounded attempts exhausted just under the
+    // deadline, then the "guaranteed" final attempt ran uncapped for another
+    // 100+s past it). The completeness invariant this was built to protect
+    // (never silently truncate a HEALTHY provider) is preserved for every
+    // caller that does NOT pass hardDeadlineAt; for one that does, the caller
+    // has explicitly opted into "abandon and fall back to the deterministic
+    // layer, honestly reported" over "finish no matter how long it takes" —
+    // see runCapabilityCatalogWithQualityGate, whose caller now reports a
+    // deadline-truncated partial result as 'ready' with the specific gap
+    // named, not a scary terminal 'degraded', so this bound is no longer the
+    // "incomplete analysis pretending to be done" the doctrine forbids.
+    if (opts.hardDeadlineAt !== undefined) {
+      const remaining = opts.hardDeadlineAt - Date.now();
+      if (remaining <= 0) {
+        console.error(`[Klauro] ${operation}: hard deadline reached after all bounded attempts; abandoning rather than starting the final attempt`);
+        throwDeadlineExceeded();
+      }
+      console.error(`[Klauro] ${operation}: all ${opts.maxBoundedAttempts} bounded attempts (${opts.perAttemptTimeoutMs}ms each) were cut off or failed; committing to one final attempt capped at the ${remaining}ms remaining under the hard deadline`);
+      const finalAttemptStartedAt = Date.now();
+      const FINAL_TIMED_OUT = Symbol('ai-final-attempt-hard-deadline-timeout');
+      let finalTimer: NodeJS.Timeout | undefined;
+      try {
+        const raced = await Promise.race<T | typeof FINAL_TIMED_OUT>([
+          attemptFactory(opts.maxBoundedAttempts + 1),
+          new Promise<typeof FINAL_TIMED_OUT>(resolve => {
+            finalTimer = setTimeout(() => resolve(FINAL_TIMED_OUT), remaining);
+            finalTimer.unref?.();
+          }),
+        ]);
+        if (raced === FINAL_TIMED_OUT) {
+          console.error(`[Klauro] ${operation}: final attempt did not finish within the ${remaining}ms remaining under the hard deadline (elapsed ${Date.now() - finalAttemptStartedAt}ms); abandoning rather than exceeding the analysis latency budget`);
+          throwDeadlineExceeded();
+        }
+        return raced as T;
+      } finally {
+        if (finalTimer) clearTimeout(finalTimer);
+      }
+    }
+    // No hard deadline supplied by this caller: completeness is preserved
+    // exactly as before — one final attempt runs with NO timeout, guaranteeing
+    // a real answer eventually rather than a degraded/synthetic one.
     console.error(`[Klauro] ${operation}: all ${opts.maxBoundedAttempts} bounded attempts (${opts.perAttemptTimeoutMs}ms each) were cut off or failed; committing to one final uncapped attempt — completion is guaranteed, latency is not`);
     return this.awaitAiWithoutCutoff(attemptFactory(opts.maxBoundedAttempts + 1), operation, opts.slowWarnMs);
   }

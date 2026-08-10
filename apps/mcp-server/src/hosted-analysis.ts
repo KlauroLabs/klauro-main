@@ -54,8 +54,28 @@ export interface HostedAnalysisStateSummary {
 export interface HostedAnalysisState {
   /** 'failed' = a structural layer (L1..L4) errored: the analysis crashed and
    *  no structure exists. Distinct from 'populating' (still coming) so a
-   *  crashed run is a visible terminal state, never an infinite wait. */
-  status: 'ready' | 'populating' | 'failed' | 'no_analysis';
+   *  crashed run is a visible terminal state, never an infinite wait.
+   *
+   *  TASK #143: 'queryable' = L0-L4 (the deterministic core-graph/agent-
+   *  context ladder) landed and are durably saved; L5 (AI comprehension) is
+   *  still running. `summary` on this status carries a REAL compact summary
+   *  (capabilities, entry points) built from the already-landed CAS, not
+   *  just counts — a caller should treat this as "usable now, description/
+   *  capability-naming quality may still improve" rather than waiting for
+   *  'ready'. Before this was wired through here, this whole status was
+   *  computed server-side but never reached get_summary/resolve_agent_
+   *  analysis — a caller polling this surface saw 'populating' (nothing
+   *  useful) for the entire ~50-265s AI tail even though L0-L4 (and a real
+   *  answer) had been ready for ~20s.
+   *
+   *  'degraded' = the AI comprehension pass ITSELF failed (provider/
+   *  grounding failure, no deterministic fallback) — a genuine, complete
+   *  failure. Distinct from a capability-catalog PARTIAL shortfall (some,
+   *  not all, capabilities missed AI enrichment under budget pressure),
+   *  which now reports 'ready' with `comprehension.partial` naming the
+   *  exact gap (see remote-analyzer-service.ts) rather than this terminal
+   *  status — a mostly-successful result must never read as broken. */
+  status: 'ready' | 'queryable' | 'populating' | 'degraded' | 'failed' | 'no_analysis';
   project_id?: string;
   analysis_id?: string;
   summary?: HostedAnalysisStateSummary;
@@ -520,6 +540,11 @@ export async function hostedSummaryPayload(binding: HostedProjectBinding): Promi
   try {
     const state = await fetchHostedAnalysisState(binding);
     if (state.status === 'no_analysis' || !state.summary) return null;
+    // TASK #143: 'queryable' carries a real compact summary (see
+    // buildQueryableSummary in remote-analyzer-service.ts) — served through
+    // exactly the same shape as 'ready'/'degraded' so get_summary callers do
+    // not need special-case handling, just an honest `hosted_status` to
+    // explain why capability naming/descriptions may still be filling in.
     return { ...state.summary, hosted_status: state.status };
   } catch {
     return null;

@@ -2828,26 +2828,25 @@ async function handleAccountApi(
     if (lastAttempt?.state === 'in-progress') {
       const structural = structuralReadinessDuringAttempt(entry, lastAttempt);
       if (structural) {
+        // TASK #143: this used to ship only a handful of counts (name/
+        // node_count/edge_count) — technically non-'populating' but useless
+        // for an actual query (no capabilities, no entry points), so a
+        // caller polling during this genuinely-queryable L0-L4-ready/
+        // L5-pending window still saw nothing worth reading and kept
+        // waiting for the full L5 tail anyway. L1-4 have already landed a
+        // real CAS on disk at this point (analyzer.ts's layered pipeline
+        // saves right after the 'rest' phase) — build the SAME compact
+        // summary the 'ready'/'degraded' path below serves, so a customer
+        // polling at ~T+20s gets the real architecture/capability answer,
+        // not just a progress counter.
         return {
           statusCode: 200,
           body: {
-            // Distinct from both 'populating' (nothing usable yet) and
-            // 'ready' (fully comprehended) — L0-L4 are this attempt's own
-            // fresh output; L5 (AI enrichment) is still running. Never
-            // reused for a stale/foreign entry — see
-            // structuralReadinessDuringAttempt.
-            status: 'structurally_ready',
+            status: 'queryable',
             project_id: project.id,
             analysis_id: project.analysis_id,
             last_attempt: lastAttempt,
-            summary: {
-              name: entry!.name,
-              analysis_timestamp: entry!.analyzed_at,
-              node_count: entry!.node_count,
-              edge_count: entry!.edge_count,
-              cas_version: entry!.cas_version,
-              layers_ready: entry!.layers_ready,
-            },
+            summary: await buildQueryableSummary(analysisWorkspace, entry!),
           },
         };
       }
@@ -2933,28 +2932,26 @@ async function handleAccountApi(
     if (earlyLastAttempt?.state === 'in-progress') {
       // Same progressive-readiness overlay as GET .../analysis-status (see
       // structuralReadinessDuringAttempt's doc comment): a lightweight entry
-      // check — not the heavier `getAnalysis` full-CAS read below — so this
-      // still avoids the cost the #129 fix was written to skip, while no
-      // longer hiding a genuinely fresh L0-L4 landing behind bare
-      // 'populating' for the whole L5 (AI) tail.
+      // check gates whether this window applies at all, so a repo still mid
+      // L0-L4 (or a stale/foreign entry — #129) pays no extra cost and falls
+      // straight through to 'populating' below. Only once the gate passes —
+      // genuinely this attempt's own fresh L0-L4 landing, L5 still pending —
+      // is the heavier `getAnalysis`+buildSummary read (buildQueryableSummary)
+      // worth its cost: TASK #143 found the previous counts-only summary here
+      // technically satisfied "not populating" but gave a polling caller
+      // nothing actually queryable (no capabilities, no entry points), which
+      // defeated the entire point of this early-readiness window.
       const earlyEntry = await getAnalysisEntry(analysisWorkspace).catch(() => null);
       const structural = structuralReadinessDuringAttempt(earlyEntry, earlyLastAttempt);
       if (structural) {
         return {
           statusCode: 200,
           body: {
-            status: 'structurally_ready',
+            status: 'queryable',
             project_id: project.id,
             analysis_id: project.analysis_id,
             last_attempt: earlyLastAttempt,
-            summary: {
-              name: earlyEntry!.name,
-              analysis_timestamp: earlyEntry!.analyzed_at,
-              node_count: earlyEntry!.node_count,
-              edge_count: earlyEntry!.edge_count,
-              cas_version: earlyEntry!.cas_version,
-              layers_ready: earlyEntry!.layers_ready,
-            },
+            summary: await buildQueryableSummary(analysisWorkspace, earlyEntry!),
           },
         };
       }
@@ -3025,15 +3022,42 @@ async function handleAccountApi(
       const comprehensionAttempted = cas.ai_enrichment === 'ready'
         || cas.ai_enrichment === 'synchronous'
         || cas.ai_enrichment === 'error';
-      const comprehensionDegraded = aiDegraded
-        || descriptionDegradations.length > 0
-        || nameDegradations.length > 0
-        || Boolean(comprehensionAttempted && naming && naming.total > 0 && naming.authored === 0);
+      // TASK #143: 'degraded' as a TERMINAL status must mean the comprehension
+      // PASS ITSELF failed (aiDegraded — provider/grounding failure, no
+      // deterministic fallback exists) — that is a real, complete failure a
+      // customer needs to know about and possibly retry. A PARTIAL shortfall
+      // (the pass ran, most capabilities were AI-named, a handful were not —
+      // "2 of 12 capabilities shipped without AI enrichment") is a different
+      // thing entirely: the structure is complete, comprehension mostly
+      // succeeded, and the analysis is fully usable. Before this split, both
+      // cases reported the identical terminal 'degraded', so a customer had
+      // no way to tell "the AI never ran" from "the AI ran and got 10/12" —
+      // and a budget-pressured repo that legitimately finished 10/12 read
+      // exactly as broken as one where AI enrichment failed outright. See
+      // docs/cas/SPECIFICATION.md's honesty vocabulary and the latency
+      // doctrine: a budget must never be met by delivering an incomplete
+      // analysis that LOOKS complete — the fix here is the opposite defect
+      // (a mostly-complete analysis that looked terminally broken).
+      const { comprehensionFailed, comprehensionPartial } = classifyComprehensionOutcome({
+        aiDegraded,
+        comprehensionAttempted,
+        namingTotal: naming?.total,
+        namingAuthored: naming?.authored,
+        nameDegradationCount: nameDegradations.length,
+        descriptionDegradationCount: descriptionDegradations.length,
+      });
+      const comprehensionDegraded = comprehensionFailed || comprehensionPartial;
+      const unenrichedCapabilityNames = comprehensionPartial
+        ? (cas.system_capabilities || [])
+            .filter(capability => capability.name_source !== 'ai' && capability.name_source !== 'manual' && capability.name_source !== 'reused')
+            .map(capability => capability.name)
+            .filter((name): name is string => Boolean(name))
+        : [];
       const status = structuralErrors.length > 0
         ? 'failed'
         : cas.layers_ready && !cas.layers_ready.complete && hasPendingLayer
           ? 'populating'
-          : comprehensionDegraded
+          : comprehensionFailed
             ? 'degraded'
             : 'ready';
       // Additive last-attempt visibility (defect #41): a reanalyze of an
@@ -3058,7 +3082,7 @@ async function handleAccountApi(
                 failed_layers: structuralErrors.map(layer => layer.layer),
               }
             : {}),
-          ...(aiDegraded
+          ...(comprehensionFailed
             ? {
                 ai_enrichment: 'error',
                 ai_enrichment_error:
@@ -3070,13 +3094,24 @@ async function handleAccountApi(
           ...(comprehensionDegraded
             ? {
                 comprehension: {
+                  // TASK #143: 'degraded' here is the per-item detail flag
+                  // (kept for existing consumers), NOT the top-level
+                  // `status` — a comprehensionPartial result reports
+                  // `status: 'ready'`, never terminal 'degraded'.
                   degraded: true,
+                  partial: comprehensionPartial,
                   ...(naming ? { capability_naming_coverage: naming } : {}),
                   capability_name_degradations: nameDegradations.length,
                   capability_description_degradations: descriptionDegradations.length,
-                  detail: aiDegraded
+                  // TASK #143 item 2: honest gaps name exactly which
+                  // capabilities lack enrichment — never a generic count
+                  // alone, never a silent/placeholder name.
+                  ...(unenrichedCapabilityNames.length > 0 ? { unenriched_capabilities: unenrichedCapabilityNames } : {}),
+                  detail: comprehensionFailed
                     ? 'The AI comprehension pass failed; capability names and descriptions are un-enriched deterministic facts.'
-                    : 'Part of the capability catalog could not be AI-enriched; those entries carry deterministic evidence text, not authored comprehension.',
+                    : unenrichedCapabilityNames.length > 0
+                      ? `${unenrichedCapabilityNames.length} of ${naming?.total ?? '?'} capabilities could not be AI-enriched within budget; those entries carry deterministic evidence text, not authored comprehension. The analysis is otherwise complete and fully queryable.`
+                      : 'Part of the capability catalog could not be AI-enriched; those entries carry deterministic evidence text, not authored comprehension.',
                 },
               }
             : {}),
@@ -4794,8 +4829,20 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
     tarball: `${base}/dist/klauro-latest.tgz`,
     tarball_path: '/dist/klauro-latest.tgz',
     min_node: minNode,
+    // No ceiling is advertised unless the on-disk manifest genuinely sets one.
+    // The shipped customer tarball (`.customer-package/package.json`, built by
+    // build-bundle.mjs) has `dependencies: {}` and zero native addons, so
+    // nothing about the client install is Node-version-bounded above
+    // min_node — verified empirically: `npm install -g` of the published
+    // tarball succeeds and runs on both Node 24 and Node 26. A fixed upper
+    // bound here previously defaulted to 24 even though write-release-manifest.mjs
+    // never set one; that was a fabricated ceiling, not a measured one, and it
+    // actively contradicted docs/audits/2026-08-10-tsgo-node26-audit.md (Node 24
+    // fails to COMPILE tree-sitter from source — a fact about building the
+    // HOSTED analyzer in this repo, not about running the client). Do not
+    // reintroduce a max_node default here without a measurement backing it.
     max_node: maxNode,
-    supported_node_range: `${minNode}-${maxNode}`,
+    supported_node_range: maxNode === null ? `${minNode}+` : `${minNode}-${maxNode}`,
     published_at: (manifest.published_at as string) || null,
     binaries,
     ...flatBinaryFields,
@@ -4814,16 +4861,22 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
   response.end(JSON.stringify(body));
 }
 
-export function resolveHostedReleaseNodeRange(manifest: Record<string, unknown>): { minNode: number; maxNode: number } {
+// Returns the Node range to advertise to installers/updaters. `maxNode` is
+// `null` — no ceiling — unless the on-disk manifest supplies a valid one;
+// write-release-manifest.mjs deliberately never sets max_node (see its
+// comment), because the customer tarball has no native addon to be bounded
+// by. Do not resurrect a hardcoded default max here: the customer path is
+// verified to run unmodified on Node 24 and Node 26 (see
+// docs/audits/2026-08-10-tsgo-node26-audit.md), so a fabricated "24" ceiling
+// is actively false, not conservative.
+export function resolveHostedReleaseNodeRange(manifest: Record<string, unknown>): { minNode: number; maxNode: number | null } {
   const manifestMin = Number(manifest.min_node);
   const manifestMax = Number(manifest.max_node);
   const minNode = Number.isInteger(manifestMin) && manifestMin > 0 ? manifestMin : 18;
-  const maxNode = manifest.max_node === undefined
-    ? 24
-    : Number.isInteger(manifestMax) && manifestMax >= minNode && manifestMax <= 99
-      ? manifestMax
-      : null;
-  return maxNode === null ? { minNode: 18, maxNode: 24 } : { minNode, maxNode };
+  const maxNode = Number.isInteger(manifestMax) && manifestMax >= minNode && manifestMax <= 99
+    ? manifestMax
+    : null;
+  return { minNode, maxNode };
 }
 
 function bearerToken(request: http.IncomingMessage): string | undefined {
@@ -4884,6 +4937,67 @@ function workspacePath(dataDir: string, analysisId: string): string {
 // this way (no entry, stale entry, structural layers not all ready, or L5 is
 // not simply 'pending' — an L5 error/ready entry is handled by the callers'
 // normal landed-analysis path, not this in-progress overlay).
+// TASK #143: the compact summary served during the 'queryable' window
+// (L0-L4 ready, L5 still pending). Falls back to entry-only counts if the
+// full CAS somehow cannot be read (e.g. a race with a concurrent write) —
+// never throws and never blocks the caller from at least seeing the
+// counts-and-layers view that used to be all this window offered.
+async function buildQueryableSummary(
+  analysisWorkspace: string,
+  entry: { name: string; analyzed_at: string; node_count: number; edge_count: number; cas_version?: string; layers_ready?: unknown },
+): Promise<Record<string, unknown>> {
+  try {
+    const cas = await getAnalysis(analysisWorkspace);
+    const summary = buildSummary(cas, { detail: 'compact' }) as Record<string, unknown>;
+    return { ...summary, layers_ready: entry.layers_ready };
+  } catch {
+    return {
+      name: entry.name,
+      analysis_timestamp: entry.analyzed_at,
+      node_count: entry.node_count,
+      edge_count: entry.edge_count,
+      cas_version: entry.cas_version,
+      layers_ready: entry.layers_ready,
+    };
+  }
+}
+
+// TASK #143: pure classification, extracted for unit testing the same way
+// structuralReadinessDuringAttempt below is — the honesty split between a
+// terminal comprehension FAILURE (the AI pass itself errored; no
+// deterministic fallback exists) and a PARTIAL enrichment shortfall (the
+// pass ran, most capabilities were AI-named, a handful were not, under
+// budget pressure). Only the former may ever produce the terminal 'degraded'
+// status; the latter reports 'ready' with the specific gap named (see the
+// `/analysis` route's `comprehension.unenriched_capabilities`).
+export function classifyComprehensionOutcome(input: {
+  aiDegraded: boolean;
+  comprehensionAttempted: boolean;
+  namingTotal?: number;
+  namingAuthored?: number;
+  nameDegradationCount: number;
+  descriptionDegradationCount: number;
+}): { comprehensionFailed: boolean; comprehensionPartial: boolean } {
+  const comprehensionFailed = input.aiDegraded;
+  // TASK #143 defect found while writing this function's own test: the prior
+  // inline check only asked "did the pass author NOTHING at all"
+  // (namingAuthored === 0) — so the exact prod scenario ("2 of 12
+  // capabilities shipped without AI enrichment") satisfied none of these
+  // conditions and was reported as fully healthy, not even 'degraded'. Item
+  // 2 of this task ("honest gaps, never silent ones") requires ANY shortfall
+  // (authored < total, not just authored === 0) to surface.
+  const comprehensionPartial = !input.aiDegraded && (
+    input.descriptionDegradationCount > 0
+    || input.nameDegradationCount > 0
+    || Boolean(
+        input.comprehensionAttempted
+        && input.namingTotal !== undefined && input.namingTotal > 0
+        && input.namingAuthored !== undefined && input.namingAuthored < input.namingTotal
+      )
+  );
+  return { comprehensionFailed, comprehensionPartial };
+}
+
 export function structuralReadinessDuringAttempt(
   entry: { layers_ready?: { layers?: Array<{ layer: string; status: string }>; generated_at?: string } } | null | undefined,
   lastAttempt: { started_at?: string } | null | undefined,

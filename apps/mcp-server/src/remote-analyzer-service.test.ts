@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { requestConsumesMutationRateLimit, resolveHostedReleaseNodeRange, revisionMatchesSnapshot, stampRepoFacts, stampRepoFactsFromLastKnownOrMarkAbsent } from './remote-analyzer-service';
+import { classifyComprehensionOutcome, requestConsumesMutationRateLimit, resolveHostedReleaseNodeRange, revisionMatchesSnapshot, stampRepoFacts, stampRepoFactsFromLastKnownOrMarkAbsent } from './remote-analyzer-service';
 import type { RemoteProjectRevision } from './remote-analyzer-protocol';
 import { getAnalysis } from './analyzer';
 import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -53,11 +53,17 @@ function withTempWorkspace(run: (workspace: string) => Promise<void>): Promise<v
   });
 }
 
-test('hosted release manifest preserves a valid widened Node range and repairs legacy manifests', () => {
+test('hosted release manifest advertises no fabricated Node ceiling', () => {
+  // A genuinely-published, valid max_node is honored as-is.
   assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18, max_node: 24 }), { minNode: 18, maxNode: 24 });
-  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18 }), { minNode: 18, maxNode: 24 });
-  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 24, max_node: 18 }), { minNode: 18, maxNode: 24 });
-  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18, max_node: 999 }), { minNode: 18, maxNode: 24 });
+  // No max_node in the manifest (the normal case — write-release-manifest.mjs
+  // never sets one, since the customer tarball has no native addon to bound)
+  // means no ceiling, not a fabricated 24: the client path is verified to run
+  // on Node 24 and Node 26 unmodified.
+  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18 }), { minNode: 18, maxNode: null });
+  // An invalid max (below min, or absurdly high) is dropped, not repaired to 24.
+  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 24, max_node: 18 }), { minNode: 24, maxNode: null });
+  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18, max_node: 999 }), { minNode: 18, maxNode: null });
 });
 
 test('status polling and other reads do not consume the hosted mutation rate limit', () => {
@@ -259,4 +265,80 @@ test('stampRepoFactsFromLastKnownOrMarkAbsent: does not overwrite an already-sta
     assert.deepEqual(cas.system.repo_facts, { contributor_count: 1, first_commit_at: '2021-01-01T00:00:00Z', last_commit_at: '2021-06-01T00:00:00Z' });
     assert.equal(cas.system.repo_facts_status, undefined);
   });
+});
+
+/**
+ * TASK #143: the beta-blocking defect measured on a real 4,810-file/85,652-
+ * node client repo was `status: 'degraded'` with 2 of 12 capabilities
+ * shipped without AI enrichment — an honest-but-terminal-sounding label that
+ * read identically to a fully-failed AI comprehension pass. These cases must
+ * stay distinguishable: only a genuine AI-pass failure (aiDegraded) may ever
+ * produce comprehensionFailed (the only input the `/analysis` route's status
+ * computation uses to select the terminal 'degraded' status); a partial
+ * shortfall must always classify as comprehensionPartial instead, which the
+ * route reports as 'ready' with the gap named.
+ */
+test('classifyComprehensionOutcome: a real AI-pass failure is comprehensionFailed, never comprehensionPartial', () => {
+  const result = classifyComprehensionOutcome({
+    aiDegraded: true,
+    comprehensionAttempted: true,
+    namingTotal: 12,
+    namingAuthored: 0,
+    nameDegradationCount: 0,
+    descriptionDegradationCount: 0,
+  });
+  assert.equal(result.comprehensionFailed, true);
+  assert.equal(result.comprehensionPartial, false);
+});
+
+test('classifyComprehensionOutcome: 2 of 12 capabilities un-enriched is a partial shortfall, never the terminal failure', () => {
+  const result = classifyComprehensionOutcome({
+    aiDegraded: false,
+    comprehensionAttempted: true,
+    namingTotal: 12,
+    namingAuthored: 10,
+    nameDegradationCount: 0,
+    descriptionDegradationCount: 0,
+  });
+  assert.equal(result.comprehensionFailed, false);
+  assert.equal(result.comprehensionPartial, true);
+});
+
+test('classifyComprehensionOutcome: a comprehension pass that ran and authored NOTHING is still the audited full failure shape (partial, not silently "ready")', () => {
+  const result = classifyComprehensionOutcome({
+    aiDegraded: false,
+    comprehensionAttempted: true,
+    namingTotal: 12,
+    namingAuthored: 0,
+    nameDegradationCount: 0,
+    descriptionDegradationCount: 0,
+  });
+  assert.equal(result.comprehensionFailed, false);
+  assert.equal(result.comprehensionPartial, true);
+});
+
+test('classifyComprehensionOutcome: structure-only mode (comprehension never attempted) degrades neither flag', () => {
+  const result = classifyComprehensionOutcome({
+    aiDegraded: false,
+    comprehensionAttempted: false,
+    namingTotal: undefined,
+    namingAuthored: undefined,
+    nameDegradationCount: 0,
+    descriptionDegradationCount: 0,
+  });
+  assert.equal(result.comprehensionFailed, false);
+  assert.equal(result.comprehensionPartial, false);
+});
+
+test('classifyComprehensionOutcome: fully healthy comprehension (no degradations) is neither failed nor partial', () => {
+  const result = classifyComprehensionOutcome({
+    aiDegraded: false,
+    comprehensionAttempted: true,
+    namingTotal: 12,
+    namingAuthored: 12,
+    nameDegradationCount: 0,
+    descriptionDegradationCount: 0,
+  });
+  assert.equal(result.comprehensionFailed, false);
+  assert.equal(result.comprehensionPartial, false);
 });

@@ -29,9 +29,19 @@ import { listActiveSessions } from './session-lock';
 /** 'failed' = a structural layer errored: the analysis crashed server-side.
  *  Distinct from 'populating' so a crashed run is visible, not an endless
  *  "in progress" (prod 2026-07-16: a torn deploy killed every analysis and
- *  status read 'populating' forever). */
+ *  status read 'populating' forever).
+ *
+ *  TASK #143: this type used to omit BOTH 'queryable' (L0-L4 landed, L5
+ *  still running — see hosted-analysis.ts's HostedAnalysisState, the fuller
+ *  twin of this interface) and 'degraded' (the AI comprehension pass itself
+ *  failed) even though GET /api/projects/{id}/analysis-status can return
+ *  either — so `klauro status` silently fell through to generic local-store
+ *  wording for both instead of surfacing them. Kept as a SEPARATE interface
+ *  from hosted-analysis.ts's (not merged) because this one intentionally
+ *  carries a slimmer `summary` for the CLI's one-line rendering; the status
+ *  UNION itself must stay in sync with the server's actual vocabulary. */
 export interface HostedAnalysisState {
-  status: 'ready' | 'populating' | 'failed' | 'no_analysis';
+  status: 'ready' | 'queryable' | 'populating' | 'degraded' | 'failed' | 'no_analysis';
   project_id?: string;
   analysis_id?: string;
   analysis_error?: string;
@@ -93,12 +103,33 @@ export function buildAnalysisStatusLine(input: {
   if (hosted?.status === 'populating') {
     return `Analysis: server analysis in progress (populating)${input.hostedProjectId ? ` · hosted project ${input.hostedProjectId}` : ''} — results appear shortly`;
   }
+  // TASK #143: L0-L4 (architecture, entry points, capabilities) already
+  // landed and are queryable right now via get_summary/resolve_agent_
+  // analysis — AI enrichment (naming/description polish) is still running.
+  // Before this branch existed, 'queryable' fell through to the generic
+  // "not analyzed" local-store wording below, hiding a genuinely usable
+  // analysis behind the exact message a customer sees when nothing has run
+  // at all.
+  if (hosted?.status === 'queryable') {
+    const system = hosted.summary?.name || local.system || 'analyzed';
+    return `Analysis: ${system} · structure ready on server, AI enrichment still running · queryable now`;
+  }
   // A crashed server-side analysis must SAY SO (and what to do), never masquerade
   // as "in progress" — zero dead ends: every error a customer can hit says the
   // next step.
   if (hosted?.status === 'failed') {
     const why = hosted.analysis_error ? ` — ${hosted.analysis_error}` : '';
     return `Analysis: server analysis FAILED${input.hostedProjectId ? ` · hosted project ${input.hostedProjectId}` : ''}${why} · retry with \`klauro analyze .\`; if it persists run \`klauro support-bundle .\``;
+  }
+  // TASK #143: 'degraded' = the AI comprehension pass ITSELF failed (not a
+  // partial capability-catalog shortfall — that now reports 'ready', see
+  // remote-analyzer-service.ts's comprehensionPartial split). The structure
+  // is real and queryable; only comprehension is missing, so this is
+  // distinct wording from 'failed', not silently folded into "analyzed".
+  if (hosted?.status === 'degraded') {
+    const system = hosted.summary?.name || local.system || 'analyzed';
+    const when = hosted.summary?.analysis_timestamp || local.analyzed_at;
+    return `Analysis: ${system} · structure ready, AI comprehension DEGRADED${hosted.analysis_error ? ` — ${hosted.analysis_error}` : ''}${when ? ` · ${when}` : ''} · retry with \`klauro analyze . --force\` to regenerate comprehension`;
   }
   if (hosted?.status === 'ready') {
     const system = hosted.summary?.name || local.system || 'analyzed';
