@@ -528,6 +528,34 @@ export interface CASNode {
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
   tags?: string[];
+  /**
+   * Tier 2 GAP FIX (docs/SPEC-ABSTRACTION-TIERS.md tier 2, group 2:
+   * "framework-conferred node roles"): a closed-vocabulary classification of
+   * what CONVENTION this unit plays — see NODE_ROLES for the full set and
+   * per-role rationale. Deterministic, assigned by analyzer/core/node-roles.ts
+   * from tier-1 facts only (nodes/edges/entry_points/exit_points); never from
+   * AI, never from the node's own name/casing. Absent means no role evidence
+   * was found, not "role: none" — an honest gap, per the refusal-over-
+   * fabrication rule that applies at every tier.
+   */
+  role?: CASNodeRole;
+  /**
+   * `framework-evidence` when a real ecosystem convention conferred the role
+   * (a decorator, a base class/interface, an already-typed node from a
+   * framework analyzer). `structural-evidence` when NO framework fired and
+   * the role came from bare structural shape alone (a wrapping position in
+   * the request chain, a directory+filename convention, an entry-point
+   * grouping) — the framework-less path every role must have. Mirrors
+   * CASDataEntityKind's `kind_source` precedent exactly.
+   */
+  role_source?: 'framework-evidence' | 'structural-evidence';
+  /**
+   * Citation for `role`: the actual decorator/interface/base-class/tag name,
+   * or the structural fact (entry-point id + type, directory pattern,
+   * wrapping-chain call name), that proves it. Mandatory whenever `role` is
+   * set — an uncited role is the fabrication class this codebase purges.
+   */
+  role_evidence?: string;
   /** Structural importance — deterministic seeded random-walk centrality over
    *  the call graph, normalized [0,1] (1 = most important node in this CAS).
    *  Computed in the graph stage from structure only, NEVER AI-derived.
@@ -782,6 +810,62 @@ export const EXIT_POINT_TYPES = [
 ] as const;
 
 export type CASExitPointType = typeof EXIT_POINT_TYPES[number];
+
+/**
+ * Single source of truth for tier-2 framework-conferred NODE ROLES (docs/
+ * SPEC-ABSTRACTION-TIERS.md, tier 2, group 2: "the meaning a convention
+ * assigns to a unit"). Mirrors the ENTRY_POINT_TYPES / EXIT_POINT_TYPES
+ * pattern exactly: `CASNode['role']` below is DERIVED from this array, and
+ * any validator that checks role membership MUST check this same array —
+ * see analyzer/core/node-roles.ts, which is the only writer of `CASNode.role`.
+ *
+ * `route-handler` and `persisted-entity` are deliberately NOT in this list —
+ * they already have a home (CASEntryPoint['type'] and CASDataEntityKind
+ * respectively) and duplicating them here would give one concept two fields
+ * that can disagree. This vocabulary covers the roles that had NO field at
+ * all before this pass: the largest remaining tier-2 gap.
+ *
+ * Every role must be reachable two ways — from a framework's own convention
+ * (a decorator, a base class, an interface) AND from bare structural
+ * evidence with no framework present (a wrapping position in a request
+ * chain, a directory+filename convention, a grouping shape) — see
+ * node-roles.ts `role_source` for which path fired. A role assigned without
+ * a framework signal is not a downgrade; `structural-evidence` is an honest
+ * label for the framework-less path, exactly like CASDataEntityKind's
+ * `shape-inference` vs `framework-evidence` precedent.
+ */
+export const NODE_ROLES = [
+  // Groups >=2 route/API entry points under one owning unit (class, struct,
+  // or file) — the concept `@Controller` and a Go file full of
+  // `http.HandleFunc` registrations both structurally satisfy.
+  'controller',
+  // Sits in the request chain BEFORE a handler runs, wrapping/forwarding
+  // rather than terminating the request. Not auth-classified (see `guard`).
+  'middleware',
+  // A middleware/interceptor whose classified purpose is authentication or
+  // authorization (see CASGuardKind) — the request-chain position of
+  // `middleware`, narrowed by what it actually protects.
+  'guard',
+  // A boundary unit that receives external traffic and forwards it onward
+  // to another surface (a websocket gateway, an API-gateway route) rather
+  // than terminating it in the unit's own business logic.
+  'gateway',
+  // The handler of a schema-backed dispatch (GraphQL field resolver) — a
+  // dispatch mechanism distinct from a path+verb route.
+  'resolver',
+  // A schema-change artefact — identified by directory convention (a
+  // `migrations`-shaped path) plus its operations (a DDL/schema-change
+  // shape), never by name alone.
+  'migration',
+  // The handler of a timer/cron registration (CASEntryPoint type
+  // `schedule`) rather than an inbound request.
+  'scheduled-job',
+  // The handler of an event-subscription registration (CASEntryPoint type
+  // `event`) rather than an inbound request.
+  'event-listener',
+] as const;
+
+export type CASNodeRole = typeof NODE_ROLES[number];
 
 export interface CASExitPoint {
   id: string;
@@ -4042,6 +4126,10 @@ export interface CASFlowGraph {
   };
 }
 
+// v2.0.0 is the recursive-CAS major: one structure that nests via sub-CAS
+// nodes (docs/cas/SPECIFICATION.md §0), plus CASNode.role/role_source/
+// role_evidence carrying the closed NODE_ROLES vocabulary. Greenfield rename —
+// no compatibility path for pre-2.0.0 analyses; they are re-analysed.
 export const CAS_VERSION = '2.0.0';
 
 export interface CASFlowLayer {

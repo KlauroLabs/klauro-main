@@ -44,6 +44,19 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'framework-identity.ts': 2,
   'dependency-roles.ts': 2,
   'paradigm-conformance.ts': 2,
+  'node-roles.ts': 2,
+  // Re-tiered 3 -> 2 in the same commit that registered node-roles.ts: its
+  // own imports are a single tier-1 TYPE (CASGuardKind) and it classifies a
+  // wrapper NAME by structural convention (auth/rate-limit/validation
+  // vocabulary) — the textbook tier-2 "convention" shape, not a
+  // comprehension (capability/flow/entity) concept. It was reachable only
+  // from journey-builder.ts (tier 3) before this commit, which is presumably
+  // why it landed there; it is already imported directly by ~25 tier-1
+  // language/framework analyzers (go-analyzer.ts among them) and by
+  // node-roles.ts (tier 2) here, both of which the tier-1-importing-tier-3
+  // shape would have made illegal reads. Moving it to its actual tier fixes
+  // the registry rather than working around it.
+  'guard-classification.ts': 2,
 
   // --- tier 3 ---
   'capability-detector.ts': 3,
@@ -53,7 +66,6 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'flow-graph-builder.ts': 3,
   'flow-concepts.ts': 3,
   'journey-builder.ts': 3,
-  'guard-classification.ts': 3,
 };
 
 function extractLocalImportSpecifiers(source: string): string[] {
