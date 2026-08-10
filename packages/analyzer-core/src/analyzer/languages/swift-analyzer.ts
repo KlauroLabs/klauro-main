@@ -178,6 +178,7 @@ export class SwiftAnalyzer extends BaseAnalyzer {
     this.emitFileNodes(info, nodes, edges, entryPoints, typeIndex);
     this.emitConformanceEdges([info], typeIndex, edges);
     this.emitCallEdges(info, content, functionIndex, edges);
+    this.applyTestFileBoundary(nodes);
 
     const imports = info.imports.map(imp => imp.module);
     const exports = info.types.map(t => t.name);
@@ -235,6 +236,7 @@ export class SwiftAnalyzer extends BaseAnalyzer {
         const content = await fs.readFile(info.fullPath, 'utf-8').catch(() => '');
         if (content) this.emitCallEdges(info, content, functionIndex, edges);
       }
+      this.applyTestFileBoundary(nodes);
 
       const warnings = this.collectAnalysisWarnings();
       // 'dto' covers structs reclassified as data-entity shapes (see
@@ -1278,6 +1280,36 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       'swift-entry-points',
       'swift-data-entities',
     ];
+  }
+
+  /**
+   * Tags every node in a Swift test file with `metadata.is_test`,
+   * `category: 'test'`, and a `test-code` tag, mirroring the TS/JS
+   * analyzer's applyTestSourceBoundary and the Go analyzer's
+   * applyTestFileBoundary. Swift/XCTest's own conventions (universal —
+   * never a keyword/brand check): files named `*Tests.swift`, or any file
+   * under a Swift Package Manager `Tests/**` root (the standard
+   * `Tests/<Target>Tests/` layout) or an Xcode `*Tests/` test-target
+   * directory. Without this, Swift test functions carried no test-owned
+   * marker, so the cross-language test-coverage graph walk could never
+   * start a traversal from this analyzer's own function nodes.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isSwiftTestPath(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isSwiftTestPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    const basename = normalized.split('/').pop() || normalized;
+    return /(?:^|\/)Tests\//i.test(normalized) ||
+      /Tests\.swift$/i.test(basename);
   }
 }
 

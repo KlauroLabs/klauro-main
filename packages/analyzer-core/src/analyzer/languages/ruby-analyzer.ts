@@ -248,6 +248,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
     this.emitFileNodes(analysis, context.relativePath, nodes, edges);
     this.buildInheritanceEdges([analysis], nodes, edges);
     this.buildCallEdges([analysis], edges);
+    this.applyTestFileBoundary(nodes);
 
     const imports = analysis.requires.map(item => item.target);
     const exports = [
@@ -308,6 +309,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
 
       this.buildInheritanceEdges(fileAnalyses, nodes, edges);
       this.buildCallEdges(fileAnalyses, edges);
+      this.applyTestFileBoundary(nodes);
 
       const gems = await this.extractGems(context.projectPath);
 
@@ -1296,5 +1298,35 @@ export class RubyAnalyzer extends BaseAnalyzer {
     } catch {
     }
     return [...gems];
+  }
+
+  /**
+   * Tags every node in a Ruby test file with `metadata.is_test`, `category:
+   * 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
+   * applyTestSourceBoundary and the Go analyzer's applyTestFileBoundary.
+   * Ruby's own conventions (Minitest and RSpec, both universal — never a
+   * keyword/brand check): files under a `test/` directory ending in
+   * `_test.rb` (Minitest), and files under a `spec/` directory ending in
+   * `_spec.rb` (RSpec). Without this, Ruby test methods carried no
+   * test-owned marker, so the cross-language test-coverage graph walk could
+   * never start a traversal from this analyzer's own method nodes.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isRubyTestPath(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isRubyTestPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    return /(?:^|\/)test\/.*_test\.rb$/i.test(normalized) ||
+      /(?:^|\/)spec\/.*_spec\.rb$/i.test(normalized) ||
+      /_test\.rb$/i.test(normalized) ||
+      /_spec\.rb$/i.test(normalized);
   }
 }

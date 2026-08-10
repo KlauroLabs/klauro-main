@@ -282,15 +282,19 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       case 'playwright':
       case 'selenium':
         return /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/.test(lower) ||
-          /\/(?:__tests__|test|tests|spec|e2e)\//.test(lower);
+          /(?:^|\/)(?:__tests__|test|tests|spec|e2e)\//.test(lower);
       case 'pytest':
       case 'unittest':
         return /(?:^|\/)(?:test_.*|.*_test)\.py$/.test(lower) ||
-          /\/(?:test|tests)\/.*\.py$/.test(lower);
+          /(?:^|\/)(?:test|tests)\/.*\.py$/.test(lower);
       case 'go-test':
         return /_test\.go$/.test(lower);
       case 'rust-test':
-        return /(?:_test\.rs$|\/(?:tests|src)\/.*\.rs$)/.test(lower);
+        // (?:^|\/) — not just \/ — or the extremely common top-level
+        // `src/lib.rs` / `src/main.rs` / top-level `tests/*.rs` layout
+        // (no parent directory before `src`/`tests`) never matches, and
+        // rust-test suite discovery silently misses most single-crate repos.
+        return /(?:_test\.rs$|(?:^|\/)(?:tests|src)\/.*\.rs$)/.test(lower);
       case 'junit':
       case 'testng':
         return /tests?\.(?:java|kt)$/.test(lower);
@@ -298,11 +302,19 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       case 'nunit':
         return /tests?\.cs$/.test(lower);
       case 'rspec':
-        return /_spec\.rb$/.test(lower) || /\/spec\/.*\.rb$/.test(lower);
+        return /_spec\.rb$/.test(lower) || /(?:^|\/)spec\/.*\.rb$/.test(lower);
       case 'minitest':
-        return /_test\.rb$/.test(lower) || /\/test\/.*\.rb$/.test(lower);
+        return /_test\.rb$/.test(lower) || /(?:^|\/)test\/.*\.rb$/.test(lower);
       case 'phpunit':
-        return /test\.php$/.test(lower) || /\/tests\/.*\.php$/.test(lower);
+        return /test\.php$/.test(lower) || /(?:^|\/)tests\/.*\.php$/.test(lower);
+      case 'xctest':
+        // Kept in sync with the xctest FrameworkRule's filePatterns above —
+        // this switch is the actual gate (filePatterns is otherwise unused
+        // by matchesRule/fileMatchesPatterns), which is itself a latent
+        // footgun: adding a FrameworkRule alone silently does nothing until
+        // a case is added here too. Out of scope to refactor for task #126,
+        // but worth flagging — see the report on this defect.
+        return /tests\.swift$/.test(lower) || /(?:^|\/)tests\/.*\.swift$/.test(lower);
       default:
         return false;
     }
@@ -707,6 +719,19 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         filePatterns: ['**/*Test.php', '**/tests/**/*.php'],
         evidence: [/PHPUnit\\Framework\\TestCase/, /extends\s+TestCase/, /@test\b/],
         casePatterns: [/(?:@test[\s\S]{0,40}?)?\bpublic\s+function\s+(test[A-Za-z0-9_]*)\s*\(/gm]
+      },
+      {
+        // XCTest was previously unregistered here entirely — Swift test
+        // files never produced suite/case `test` nodes, so `test_summary`
+        // undercounted Swift tests independently of the node-tagging fix
+        // in swift-analyzer.ts's applyTestFileBoundary. Both fixes are
+        // needed: this one for suite/case discovery, that one for the
+        // coverage-graph walk to find a test-owned root to traverse from.
+        framework: 'xctest',
+        language: 'swift',
+        filePatterns: ['**/*Tests.swift', '**/Tests/**/*.swift'],
+        evidence: [/import\s+XCTest/, /XCTestCase/, /XCTAssert/],
+        casePatterns: [/\bfunc\s+(test[A-Za-z0-9_]*)\s*\(\s*\)/gm]
       }
     ];
   }
