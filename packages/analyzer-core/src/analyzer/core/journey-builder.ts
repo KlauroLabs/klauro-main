@@ -13,6 +13,7 @@ import {
 } from '../../types/cas.types';
 import { classifyGuardKind } from './guard-classification';
 import { dedupeAdjacentWords } from './flow-concepts';
+import type { FlowConcept } from './flow-concepts';
 
 export interface UserJourneyInput {
   nodes: CASNode[];
@@ -22,6 +23,27 @@ export interface UserJourneyInput {
   callChains: CASCallChain[];
   dataEntities?: CASDataEntity[];
   changeRisks?: CASChangeRisk[];
+  /**
+   * The already-computed flow set (flow-concepts.ts computeFlowConcepts) —
+   * PRESENT on the production orchestrator path. Journeys collapse into
+   * Flows as a derived view (docs/cas/SPECIFICATION.md §0; comprehension
+   * tier = Capability/Flow/Step/Entity, journeys are not a fifth member):
+   * when `flows` is supplied, a journey is only surfaced for an entry point
+   * that has a corresponding flow (a projection that CAN be derived), and it
+   * inherits that flow's `capability_relationships` directly — the fix for
+   * capability<->journey linkage being structurally empty. An entry point
+   * with no matching flow (no real terminal call chain — the shape of a raw
+   * IaC/ops artifact like an Ansible play, or plumbing a flow's own
+   * terminality-based generation never anchors on) emits NOTHING rather than
+   * a mechanical placeholder.
+   *
+   * Omitted on the legacy pre-flow-projection call surface (existing unit
+   * tests exercising the classification/naming/effects walk in isolation) —
+   * that path keeps its prior full-surface behavior so those tests keep
+   * validating the walk mechanics without needing a FlowConcept fixture for
+   * every case. Every production caller (orchestrator.ts) supplies `flows`.
+   */
+  flows?: FlowConcept[];
 }
 
 export interface UserJourneyOptions {
@@ -271,6 +293,31 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
 
   const cronScheduleIndex = buildCronScheduleIndex(input.nodes);
 
+  // Flow index: a flow's `entry_point` is the resolved entry_point_id when one
+  // exists, else the chain's raw entry node_id (see flow-concepts.ts
+  // buildTerminalFlows: `chain.entry_point.entry_point_id || chain.entry_point.node_id`)
+  // — so a CASEntryPoint is matched against its own id AND its handler/source
+  // node ids, the same three keys the call-chain index above uses.
+  const flowsByEntryKey = new Map<string, FlowConcept[]>();
+  for (const flow of input.flows || []) {
+    const list = flowsByEntryKey.get(flow.entry_point) || [];
+    list.push(flow);
+    flowsByEntryKey.set(flow.entry_point, list);
+  }
+  const flowsForEntryPoint = (entryPoint: CASEntryPoint): FlowConcept[] => {
+    const matches: FlowConcept[] = [];
+    const seen = new Set<string>();
+    for (const key of [entryPoint.id, entryPoint.handler?.node_id, entryPoint.source_node]) {
+      if (!key) continue;
+      for (const flow of flowsByEntryKey.get(key) || []) {
+        if (seen.has(flow.flow_id)) continue;
+        seen.add(flow.flow_id);
+        matches.push(flow);
+      }
+    }
+    return matches;
+  };
+
   const entryPointIsHandlerOrSource = (entryPoint: CASEntryPoint, nodeId: string) =>
     entryPoint.source_node === nodeId || entryPoint.handler?.node_id === nodeId;
 
@@ -373,6 +420,30 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
         ? 'user-facing'
         : 'system';
 
+    // FLOW-PROJECTION GATE (docs/cas/SPECIFICATION.md §0 — journeys collapse
+    // into Flows as a derived view, not a fifth comprehension-tier member).
+    // When the caller supplied the computed flow set: (1) a journey can only
+    // be surfaced when a projection actually EXISTS — an entry point with no
+    // corresponding flow (no real terminal call chain a flow could anchor
+    // on — the shape of a raw IaC/ops artifact like an Ansible play) emits
+    // nothing rather than a mechanical placeholder; (2) only the
+    // 'user-facing' kind is a JOURNEY in the product sense — a 'system'
+    // journey_kind means the entry is mechanism (an operational script, a
+    // generic bootstrap, or any entry type outside USER_FACING_ENTRY_TYPES),
+    // the same reasoning the capability model applies (mechanism belongs in
+    // tier 1 as an ICELOT Effect/Constraint, never a product-facing surface).
+    // 'scheduled' stays gated the same way: a real product-relevant
+    // scheduled job still needs a derivable flow to be shown at all.
+    const matchingFlows = input.flows ? flowsForEntryPoint(entryPoint) : undefined;
+    if (input.flows) {
+      if (matchingFlows!.length === 0) continue; // no projection derivable — emit nothing
+      if (journeyKind !== 'user-facing') continue; // mechanism — not a journey
+    }
+
+    const capabilityRelationships = matchingFlows?.length
+      ? dedupeCapabilityRelationships(matchingFlows.flatMap(flow => flow.capability_relationships || []))
+      : undefined;
+
     const criticality = scoreCriticality(effects, securityBoundaries.length, journeyKind, chains);
 
     built.push({
@@ -408,6 +479,8 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
         criticality,
         call_chain_ids: chains.map(chain => chain.id),
         exit_point_ids: effects.exitPointIds,
+        ...(matchingFlows?.length ? { derived_from_flow_id: matchingFlows[0].flow_id } : {}),
+        ...(capabilityRelationships?.length ? { capability_relationships: capabilityRelationships } : {}),
       },
     });
   }
@@ -646,6 +719,22 @@ function nodeAliases(nodeId: string, graph: JourneyGraph): string[] {
   }
   graph.aliasCache.set(nodeId, aliases);
   return aliases;
+}
+
+/** Union a journey's matching flows' capability_relationships, deduped by
+ *  capability_id (first occurrence wins — flows are iterated in the stable
+ *  order flowsForEntryPoint produced them). */
+function dedupeCapabilityRelationships(
+  relationships: NonNullable<FlowConcept['capability_relationships']>
+): NonNullable<CASUserJourney['capability_relationships']> {
+  const seen = new Set<string>();
+  const out: NonNullable<CASUserJourney['capability_relationships']> = [];
+  for (const rel of relationships) {
+    if (seen.has(rel.capability_id)) continue;
+    seen.add(rel.capability_id);
+    out.push({ capability_id: rel.capability_id, role: rel.role, rationale: rel.rationale, evidence: rel.evidence });
+  }
+  return out;
 }
 
 function dedupeChains(chains: CASCallChain[]): CASCallChain[] {

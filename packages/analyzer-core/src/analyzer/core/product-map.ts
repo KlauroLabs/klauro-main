@@ -136,6 +136,12 @@ function linkJourneysToCapability(
   const capabilityEntities = new Set(capabilityEntityNames.map(normalizeEntityName));
 
   return journeys.filter(journey => {
+    // PRIMARY: the journey is a flow-derived view (journey-builder.ts) and
+    // inherited that flow's own capability_relationships directly — the
+    // same evidence-gated M:N edge flows_to_capabilities measures (0.8384
+    // live on a real repo). This is the strongest link: it is the actual
+    // relationship the flow layer already proved, not a re-derived guess.
+    if (journey.capability_relationships?.some(rel => rel.capability_id === capability.id)) return true;
     // Entry-point family: the capability's own operations reference this
     // journey's entry point — the strongest, structural attachment.
     if (entryPointIds.has(journey.entry_point_id)) return true;
