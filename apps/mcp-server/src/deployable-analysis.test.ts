@@ -484,3 +484,151 @@ test('sliceDeployableAnalysis: single-unit call still produces a CASOutput-shape
   assert.ok(Array.isArray(slice.slice.entry_points));
   assert.equal(slice.slice.system, cas.system);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-08-10 regression: collapseDuplicateClosureUnits over-collapsed a real
+// multi-service repo into one unit named after the packaging tool
+// ---------------------------------------------------------------------------
+
+/**
+ * A ten-service-shaped microservices monorepo fixture: 3 real first-party
+ * Spring-Cloud-style services (each its own directory, its own files, its
+ * own entry point) plus 2 third-party monitoring services (grafana-server,
+ * prometheus-server) declared the way a docker-compose `image: grafana/grafana`
+ * row is — a Tier-1 compose-service evidence row with NO first-party source
+ * of its own, root_path '.', and evidence lines that never resolve to a
+ * concrete file. This is exactly the shape v1.0.138 broke on: two services
+ * with no first-party closure of their own.
+ */
+function buildMicroservicesFixtureCas(): CASOutput {
+  const nodes: CASNode[] = [
+    node('AS1', 'admin-server/src/main/java/Admin.java'),
+    node('AS2', 'admin-server/src/main/java/AdminOther.java'),
+    node('AG1', 'api-gateway/src/main/java/Gateway.java'),
+    node('AG2', 'api-gateway/src/main/java/GatewayOther.java'),
+    node('CS1', 'customers-service/src/main/java/Customers.java'),
+    node('CS2', 'customers-service/src/main/java/CustomersOther.java'),
+  ];
+  const edges: CASEdge[] = [];
+  const entry_points: CASEntryPoint[] = [
+    entryPoint('ep_admin', 'admin-server/src/main/java/Admin.java', 'AS1'),
+    entryPoint('ep_gateway', 'api-gateway/src/main/java/Gateway.java', 'AG1'),
+    entryPoint('ep_customers', 'customers-service/src/main/java/Customers.java', 'CS1'),
+  ];
+  const deployable_evidence: DeployableEvidence[] = [
+    { root_path: 'admin-server', name: 'admin-server', tier: 1, kind: 'compose-service', evidence: ['Compose service: admin-server (docker-compose.yml)'] },
+    { root_path: 'api-gateway', name: 'api-gateway', tier: 1, kind: 'compose-service', evidence: ['Compose service: api-gateway (docker-compose.yml)'] },
+    { root_path: 'customers-service', name: 'customers-service', tier: 1, kind: 'compose-service', evidence: ['Compose service: customers-service (docker-compose.yml)'] },
+    // Third-party images: no first-party source directory, so their evidence
+    // never resolves an entry file or a concrete root of their own.
+    { root_path: '.', name: 'grafana-server', tier: 1, kind: 'compose-service', evidence: ['Compose service: grafana-server (docker-compose.yml)', 'image: grafana/grafana'] },
+    { root_path: '.', name: 'prometheus-server', tier: 1, kind: 'compose-service', evidence: ['Compose service: prometheus-server (docker-compose.yml)', 'image: prom/prometheus'] },
+  ];
+
+  return {
+    cas_version: '1.0.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'test-analysis-microservices',
+    system: { id: 'sys2', name: 'petclinic-like', type: 'monorepo', root_path: '.' },
+    nodes,
+    edges,
+    entry_points,
+    exit_points: [],
+    analyzer_contributions: [],
+    progressive_levels: { total_levels: 1 },
+    deployable_evidence,
+  } as unknown as CASOutput;
+}
+
+test('REGRESSION collapseDuplicateClosureUnits: a third-party image service with no first-party closure never absorbs or is absorbed by a named sibling', () => {
+  const cas = buildMicroservicesFixtureCas();
+  const { promoted, units, sub_cas_nodes } = buildDeployableAnalyses(cas);
+
+  // All 5 evidence rows are real, distinct ship declarations. None of them
+  // duplicate each other's artifact, so none should be collapsed.
+  assert.deepEqual(sub_cas_nodes.duplicate_units_collapsed, []);
+  assert.equal(sub_cas_nodes.qualified_unit_count, 5);
+  assert.equal(promoted, true);
+  assert.deepEqual(
+    units.map(u => u.das_unit_name).sort(),
+    ['admin-server', 'api-gateway', 'customers-service', 'grafana-server', 'prometheus-server'],
+  );
+
+  // The invariant the previous lane's own postmortem flags as the tell:
+  // a real slice covers something. grafana-server's blanket-fallback closure
+  // is a courtesy (never claimed as evidence of identity), not zero, but the
+  // named first-party services must each keep their OWN exclusive nodes.
+  const admin = units.find(u => u.das_unit_name === 'admin-server')!;
+  assert.deepEqual(admin.slice.nodes.map(n => n.id).sort(), ['AS1', 'AS2']);
+  const gateway = units.find(u => u.das_unit_name === 'api-gateway')!;
+  assert.deepEqual(gateway.slice.nodes.map(n => n.id).sort(), ['AG1', 'AG2']);
+});
+
+test('REGRESSION collapseDuplicateClosureUnits: two universal-closure image rows do not merge with each other either (no discriminating evidence on either side)', () => {
+  const cas = buildMicroservicesFixtureCas();
+  const { sub_cas_nodes } = buildDeployableAnalyses(cas);
+  assert.equal(
+    sub_cas_nodes.duplicate_units_collapsed.some(d => d.dropped_name === 'grafana-server' || d.dropped_name === 'prometheus-server'),
+    false,
+  );
+});
+
+test('collapseDuplicateClosureUnits: a near-empty closure is not admissible evidence of duplication (min closure size)', () => {
+  const cas = buildMicroservicesFixtureCas();
+  // A sixth row whose concrete root resolves to a directory with no CAS
+  // nodes at all (a config-only folder, e.g. docker/otel-collector holding
+  // just a YAML file) — its closure is a legitimately empty/near-empty set,
+  // not evidence that it IS admin-server just because admin-server's own
+  // small closure would trivially "contain" it.
+  const evidence = [
+    ...cas.deployable_evidence!,
+    { root_path: 'docker/otel-collector', name: 'otel-collector', tier: 1, kind: 'compose-service' as const, evidence: ['Compose service: otel-collector (docker-compose.yml)'] },
+  ];
+  const withEmptyRow = { ...cas, deployable_evidence: evidence } as CASOutput;
+  const { sub_cas_nodes, units } = buildDeployableAnalyses(withEmptyRow);
+  assert.deepEqual(sub_cas_nodes.duplicate_units_collapsed, []);
+  assert.equal(units.length, 6);
+});
+
+test('collapseDuplicateClosureUnits: a collapse whose survivor would be a bare tooling noun is refused outright', () => {
+  const cas = buildMicroservicesFixtureCas();
+  // Two evidence rows describing the SAME real artifact (admin-server) — one
+  // named for the service, one a generic top-level row literally named
+  // "docker" that happens to share admin-server's exact root and files
+  // (e.g. a duplicate Tier-1 row from an unmerged override manifest). Real
+  // duplication, but the survivor-naming guard must still refuse to let the
+  // bare-tooling-noun row be the one that survives.
+  const dockerDupe: DeployableEvidence = {
+    root_path: 'admin-server', name: 'docker', tier: 1, kind: 'compose-service',
+    evidence: ['Compose service: admin-server (docker-compose.yml)', 'Compose service: admin-server (docker-compose.override.yml)'],
+  };
+  const withDupe = { ...cas, deployable_evidence: [...cas.deployable_evidence!, dockerDupe] } as CASOutput;
+  const { sub_cas_nodes } = buildDeployableAnalyses(withDupe);
+  assert.equal(sub_cas_nodes.duplicate_units_collapsed.some(d => d.kept_name === 'docker'), false);
+});
+
+test('collapseDuplicateClosureUnits still collapses a genuine same-artifact duplicate (triple-counting fix preserved)', () => {
+  const cas = buildFixtureCas();
+  // 'api' declared twice under two evidence rows resolving the identical
+  // closure (a compose row and a container row the evidence layer failed to
+  // join) — both rows carry real, discriminating evidence (their own entry
+  // files), so the overlap here IS trustworthy.
+  const apiTwin: DeployableEvidence = {
+    root_path: 'apps/api', name: 'api-container-twin', tier: 1, kind: 'container',
+    evidence: ['Dockerfile ENTRYPOINT (apps/api/Dockerfile)', 'entry: apps/api/handler.ts'],
+  };
+  const withTwin = {
+    ...cas,
+    deployable_evidence: [...cas.deployable_evidence!, apiTwin],
+  } as CASOutput;
+  const { sub_cas_nodes, units, promoted } = buildDeployableAnalyses(withTwin);
+  assert.equal(promoted, true);
+  // 5 qualified rows in (api, worker, tool1, tool2, api-container-twin) minus
+  // the one genuine duplicate collapsed away.
+  assert.equal(sub_cas_nodes.qualified_unit_count, 4);
+  assert.equal(units.length, 4);
+  assert.equal(sub_cas_nodes.duplicate_units_collapsed.length, 1);
+  const collapsed = sub_cas_nodes.duplicate_units_collapsed[0];
+  assert.deepEqual([collapsed.dropped_name, collapsed.kept_name].sort(), ['api', 'api-container-twin'].sort());
+  assert.equal(sub_cas_nodes.graph_node_count, 7);
+});
