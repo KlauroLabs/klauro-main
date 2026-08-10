@@ -195,6 +195,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   // restart erased every claim and reset seq. Warn LOUDLY at startup whenever
   // the coord dir is not under this server's persistent data root.
   warnIfEphemeralCoordDir({ dataRoot: dataDir });
+  // STRANDED-ANALYSIS (defect class #41 continuation): reap any analysis
+  // attempt records left 'in-progress' by a PREVIOUS process incarnation
+  // (this one has not started any background work yet, so any such record
+  // found here is necessarily abandoned unless it's still within the
+  // heartbeat staleness grace period — see reapAbandonedAttempt). Runs async,
+  // fire-and-forget: must never delay server startup / port binding.
+  void reapStaleAttemptRecordsOnStartup(dataDir);
   const accounts = new AccountStore(dataDir);
   // Server-side auto-refreshed Workspace Analysis (WAS): rebuilds are
   // debounced/coalesced per account workspace and run async — see
@@ -600,6 +607,23 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const backgroundClientId = authorization.clientId;
           setImmediate(async () => {
             let attachedEarly = false;
+            // STRANDED-ANALYSIS (defect class #41 continuation): the FIRST
+            // analyze async path historically wrote no attempt record at all
+            // — only /reanalyze did — so a process death here (SIGTERM mid
+            // background work, or any other crash before this function's own
+            // catch runs) left GET .../status reporting 'populating' forever
+            // with no error and nothing to reap it. Mirror the /reanalyze
+            // pattern: write 'in-progress' now, heartbeat while the pipeline
+            // runs, and always land a terminal 'succeeded'/'failed' write.
+            const attemptRecordPath = projectAttemptRecordPath(acceptedWorkspace);
+            const attemptStartedAt = new Date().toISOString();
+            const attemptSnapshot: ReanalyzeAttemptRecord = {
+              state: 'in-progress',
+              trigger: 'analyze',
+              started_at: attemptStartedAt,
+            };
+            await writeAttemptRecord(attemptRecordPath, { ...attemptSnapshot, heartbeat_at: attemptStartedAt });
+            const stopHeartbeat = startAttemptHeartbeat(attemptRecordPath, attemptSnapshot);
             try {
               const displayName = resolveDisplayName(body.snapshot.project_name, body.project_path);
 
@@ -688,12 +712,29 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 mode: 'async',
               });
               void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
+              const attemptFinishedAt = new Date().toISOString();
+              await writeAttemptRecord(attemptRecordPath, {
+                state: 'succeeded',
+                trigger: 'analyze',
+                started_at: attemptStartedAt,
+                finished_at: attemptFinishedAt,
+                duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
+              });
             } catch (error) {
               const detail = error instanceof Error ? error.message : String(error);
               console.error(`[Klauro] async analyze failed for ${acceptedAnalysisId}: ${detail}`);
               // Make the failure VISIBLE to pollers instead of leaving the
               // ladder 'pending' forever (see markBackgroundAnalysisFailed).
               await markBackgroundAnalysisFailed(acceptedWorkspace, detail);
+              const attemptFinishedAt = new Date().toISOString();
+              await writeAttemptRecord(attemptRecordPath, {
+                state: 'failed',
+                trigger: 'analyze',
+                started_at: attemptStartedAt,
+                finished_at: attemptFinishedAt,
+                duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
+                reason: detail.slice(0, 300),
+              });
               await appendAuditLog(dataDir, {
                 event: 'analyze_async_failed',
                 analysis_id: acceptedAnalysisId,
@@ -701,6 +742,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 error: detail.slice(0, 500),
               }).catch(() => {});
             } finally {
+              stopHeartbeat();
               if (snapshotIdentity && activeCommittedSnapshots.get(acceptedAnalysisId) === snapshotIdentity) {
                 activeCommittedSnapshots.delete(acceptedAnalysisId);
               }
@@ -723,8 +765,17 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         const workspace = workspacePath(dataDir, analysisId);
+        const attemptRecordPath = projectAttemptRecordPath(workspace);
+        // STRANDED-ANALYSIS (defect class #41 continuation): reap lazily on
+        // every poll too, not only at process startup — this is what
+        // surfaces a restart-abandoned analysis to a poller within one
+        // heartbeat-staleness window (see ATTEMPT_STALE_THRESHOLD_MS)
+        // instead of waiting for someone to restart the server again before
+        // the startup sweep gets another chance to look. Never touches a
+        // record whose heartbeat is still fresh, and never fails a landed CAS.
+        await reapAbandonedAttempt(workspace, attemptRecordPath);
         const entry = await getAnalysisEntry(workspace);
-        const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+        const lastAttempt = await readAttemptRecord(attemptRecordPath);
         const layers = entry?.layers_ready?.layers || [];
         const failedLayers = layers.filter(layer => layer.status === 'error');
         const complete = Boolean(
@@ -732,8 +783,18 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           && (entry.layers_ready?.complete ?? true)
           && !activeCommittedSnapshots.has(analysisId),
         );
+        // A first-analyze crash before L0 ever landed leaves NO CAS at all
+        // (entry === null), so markBackgroundAnalysisFailed has no 'pending'
+        // layer to flip to 'error' and failedLayers stays empty — the last
+        // attempt's own terminal 'failed' state (written by the catch block
+        // above, or by reapAbandonedAttempt just now) is the only signal of
+        // that failure. Only consulted when there is no landed CAS
+        // (complete is checked first) and no CAS-layer failure already
+        // covers it, so a landed analysis is never overridden by a stale
+        // attempt record.
+        const abandonedWithNoCas = !complete && failedLayers.length === 0 && lastAttempt?.state === 'failed';
         writeJson(response, 200, {
-          status: failedLayers.length > 0 ? 'failed' : complete ? 'ready' : 'populating',
+          status: failedLayers.length > 0 ? 'failed' : complete ? 'ready' : abandonedWithNoCas ? 'failed' : 'populating',
           analysis_id: analysisId,
           ...(entry ? {
             summary: {
@@ -891,12 +952,18 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           setImmediate(async () => {
             const startedAt = new Date().toISOString();
-            await writeAttemptRecord(attemptRecordPath, {
+            const syncAttemptSnapshot: ReanalyzeAttemptRecord = {
               state: 'in-progress',
               trigger: 'sync',
               queued_at: queuedAt,
               started_at: startedAt,
-            });
+            };
+            await writeAttemptRecord(attemptRecordPath, { ...syncAttemptSnapshot, heartbeat_at: startedAt });
+            // STRANDED-ANALYSIS: heartbeat while this sync's background work
+            // runs, same as the analyze/reanalyze paths — see
+            // startAttemptHeartbeat's doc comment for why a short heartbeat
+            // interval is safe even for a long-running sync.
+            const stopHeartbeat = startAttemptHeartbeat(attemptRecordPath, syncAttemptSnapshot);
             try {
               const result = await completeSync(prepared, body);
               await recordCompletedSync(dataDir, accounts, body, result, authorization.clientId);
@@ -930,6 +997,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 project_id: body.project_id,
                 error: detail.slice(0, 500),
               }).catch(() => {});
+            } finally {
+              stopHeartbeat();
             }
           });
           return;
@@ -2715,6 +2784,12 @@ async function handleAccountApi(
       return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     }
     const analysisWorkspace = workspacePath(dataDir, project.analysis_id);
+    // STRANDED-ANALYSIS (defect class #41 continuation): lazily reap on every
+    // poll, same as GET /v1/analyses/:id/status — this is the account/web
+    // path's equivalent read, so it needs the same fast (no-restart-required)
+    // recovery. Never touches a record whose heartbeat is still fresh, and
+    // never fails a landed CAS (see reapAbandonedAttempt's doc comment).
+    await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
     try {
       const cas = await getAnalysis(analysisWorkspace);
       const summary = buildSummary(cas, { detail: 'compact' });
@@ -3580,13 +3655,22 @@ async function handleAccountApi(
         return;
       }
 
-      await writeAttemptRecord(attemptRecordPath, {
+      const reanalyzeAttemptSnapshot: ReanalyzeAttemptRecord = {
         state: 'in-progress',
         trigger: 'reanalyze',
         queued_at: attemptQueuedAt,
         queue_position: attemptQueuePosition,
         started_at: attemptStartedAt,
-      });
+      };
+      await writeAttemptRecord(attemptRecordPath, { ...reanalyzeAttemptSnapshot, heartbeat_at: attemptStartedAt });
+      // STRANDED-ANALYSIS: heartbeat while this reanalyze's background work
+      // runs. The per-phase writes below (onPhase) already refresh the
+      // record on phase boundaries, but a single phase — especially L5 AI
+      // enrichment — can run for a while with no boundary to piggyback on;
+      // this interval is what keeps the record's liveness signal independent
+      // of phase-transition timing. Stopped in the finally below on every
+      // exit path (success, failure, or the early workspace-missing return).
+      const stopReanalyzeHeartbeat = startAttemptHeartbeat(attemptRecordPath, reanalyzeAttemptSnapshot);
 
       // Real-content check, done AFTER the write above (not a bare
       // fs.pathExists earlier in this callback): writeAttemptRecord persists
@@ -3634,6 +3718,7 @@ async function handleAccountApi(
             error: detail.slice(0, 500),
           }).catch(() => {});
         }
+        stopReanalyzeHeartbeat();
         return;
       }
 
@@ -3783,6 +3868,8 @@ async function handleAccountApi(
             error: detail.slice(0, 500),
           }).catch(() => {});
         }
+      } finally {
+        stopReanalyzeHeartbeat();
       }
     });
 
@@ -4595,7 +4682,10 @@ type ReanalyzeAttemptState = 'in-progress' | 'succeeded' | 'failed';
 
 interface ReanalyzeAttemptRecord {
   state: ReanalyzeAttemptState;
-  trigger: 'reanalyze' | 'sync';
+  // 'analyze' is the FIRST-analyze async path (POST /v1/analyze, async:
+  // true) — see STRANDED-ANALYSIS below. It shares this exact sidecar
+  // shape/writer with 'reanalyze' so both are reapable by the same code.
+  trigger: 'reanalyze' | 'sync' | 'analyze';
   /** When the request was accepted (202'd), before the background work has
    *  necessarily started executing — see `started_at` below. */
   queued_at?: string;
@@ -4615,6 +4705,22 @@ interface ReanalyzeAttemptRecord {
   duration_ms?: number;
   reason?: string;
   /**
+   * STRANDED-ANALYSIS (defect class #41 continuation): last time this
+   * record's owning process affirmatively proved it was still alive and
+   * working, refreshed periodically (see ATTEMPT_HEARTBEAT_INTERVAL_MS)
+   * while state is 'in-progress' — NOT just at phase boundaries, since a
+   * single phase (e.g. L5 AI enrichment) can legitimately run for a while
+   * with no phase transition to piggyback a write on. A server-process
+   * restart (SIGTERM/SIGKILL, e.g. a routine deploy) kills the timer that
+   * refreshes this field along with everything else in the process, so an
+   * unrefreshed heartbeat is what distinguishes "still genuinely running"
+   * from "the process that owned this died" — see reapAbandonedAttempt.
+   * Absent on records written before this field existed; reapAbandonedAttempt
+   * falls back to started_at for those, which is still correct (just a wider
+   * detection window on old data).
+   */
+  heartbeat_at?: string;
+  /**
    * Present only for a version-bump full rebuild. This sidecar file
    * (projectAttemptRecordPath) is the SAME on-disk path analyzer.ts's
    * internal version-rebuild tracking writes to (internalRebuildAttemptPath —
@@ -4627,6 +4733,143 @@ interface ReanalyzeAttemptRecord {
    */
   stored_version?: string;
   current_version?: string;
+}
+
+// --- STRANDED-ANALYSIS reap (defect class #41 continuation) -----------------
+// An async analysis (first-analyze OR reanalyze) interrupted by a server
+// restart never gets to run its own catch block, so markBackgroundAnalysisFailed
+// never fires and the attempt record is left at 'in-progress' forever — GET
+// .../status then reports 'populating' forever with no error, indistinguishable
+// from a genuinely running analysis. Fix: a periodic heartbeat while the
+// background work is alive, so an attempt record whose heartbeat has gone
+// stale is provably abandoned (the process that would refresh it is gone),
+// and can be safely reaped to 'failed' — UNLESS the CAS actually landed in the
+// meantime, in which case the record is corrected to 'succeeded' instead of
+// destroying a genuinely complete analysis.
+//
+// Interval/threshold choice: the layered pipeline itself now runs INSIDE the
+// heap-capped analysis WORKER, not this API process (see runLayeredAnalysis's
+// call sites below) — so the API process's event loop is free to fire an
+// interval timer on schedule even while a whale-scale analysis (measured
+// 159-181s end to end) is running. That makes a SHORT, tight threshold safe:
+// it does not need to guess at how long an analysis might legitimately take
+// (which would force a multi-minute threshold and delay real-failure
+// visibility by that much) — it only needs to guess at how long the API
+// process's own timer might plausibly be delayed by event-loop jitter or a
+// GC pause, which is a small-seconds question, not a minutes question.
+// 20s interval / 90s threshold (4.5x the interval) leaves generous margin for
+// that jitter while still surfacing a genuinely abandoned attempt within
+// ~1.5 minutes of the process dying, regardless of how long the analysis
+// itself would have taken to finish.
+const ATTEMPT_HEARTBEAT_INTERVAL_MS = 20_000;
+const ATTEMPT_STALE_THRESHOLD_MS = 90_000;
+
+/**
+ * Starts a periodic heartbeat that refreshes `heartbeat_at` on the attempt
+ * record at `filePath` while background work is in flight. Returns a stop
+ * function; callers MUST call it in a `finally` once the attempt reaches a
+ * terminal state, so a heartbeat never outlives the work it describes.
+ * `snapshot` supplies the static fields (state/trigger/queued_at/etc.) as of
+ * attempt start — heartbeat writes only refresh heartbeat_at on top of it,
+ * never regress a terminal state a concurrent writer already landed.
+ */
+function startAttemptHeartbeat(filePath: string, snapshot: ReanalyzeAttemptRecord): () => void {
+  const timer = setInterval(() => {
+    void writeAttemptRecord(filePath, { ...snapshot, heartbeat_at: new Date().toISOString() });
+  }, ATTEMPT_HEARTBEAT_INTERVAL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  return () => clearInterval(timer);
+}
+
+/**
+ * Reaps a single attempt record at `attemptRecordPath` if it is 'in-progress'
+ * and its heartbeat has gone stale (see ATTEMPT_STALE_THRESHOLD_MS) — a
+ * process that was still alive and working would have refreshed it well
+ * within that window. Never touches a record that is not 'in-progress', and
+ * never touches one whose heartbeat is still fresh (it may genuinely be
+ * running). Before declaring failure, checks whether `workspace`'s CAS
+ * actually landed and completed in the meantime (a landed-but-unrecorded
+ * race: the process could have died in the gap between the CAS write and the
+ * attempt record's own 'succeeded' write) — if so, corrects the record to
+ * 'succeeded' instead of destroying a genuinely complete analysis. Best
+ * effort: never throws.
+ */
+async function reapAbandonedAttempt(workspace: string, attemptRecordPath: string): Promise<void> {
+  try {
+    const record = await readAttemptRecord(attemptRecordPath);
+    if (!record || record.state !== 'in-progress') return;
+    const heartbeatIso = record.heartbeat_at || record.started_at;
+    const heartbeatMs = Date.parse(heartbeatIso);
+    const ageMs = Number.isFinite(heartbeatMs) ? Date.now() - heartbeatMs : Infinity;
+    if (ageMs < ATTEMPT_STALE_THRESHOLD_MS) return; // could still be genuinely running
+
+    const entry = await getAnalysisEntry(workspace).catch(() => null);
+    const landed = Boolean(entry && (entry.layers_ready?.complete ?? true));
+    const finishedAt = new Date().toISOString();
+    if (landed) {
+      // The CAS landed; only the attempt record's own terminal write never
+      // happened (process died in that narrow gap). Correct the record —
+      // never mark a completed analysis as failed.
+      await writeAttemptRecord(attemptRecordPath, {
+        ...record,
+        state: 'succeeded',
+        finished_at: finishedAt,
+        reason: undefined,
+      });
+      return;
+    }
+    const detail = `Analysis attempt was interrupted by a server restart (no heartbeat since ${heartbeatIso}).`;
+    // Flips any still-'pending' CAS layers to 'error' too, so a partially-landed
+    // analysis (e.g. L0 landed, L1-4 did not) is consistent across both signals
+    // the status route reads. A no-op when no CAS exists yet at all (matches
+    // this function's own existing best-effort contract).
+    await markBackgroundAnalysisFailed(workspace, detail);
+    await writeAttemptRecord(attemptRecordPath, {
+      ...record,
+      state: 'failed',
+      finished_at: finishedAt,
+      duration_ms: Date.parse(finishedAt) - Date.parse(record.started_at),
+      reason: detail.slice(0, 300),
+    });
+  } catch {
+    /* best-effort: reaping a stale attempt must never throw or block a caller */
+  }
+}
+
+/**
+ * Startup sweep (STRANDED-ANALYSIS fix, option 2): scans every project
+ * workspace directory for a `.reanalyze-attempt.json` sidecar and reaps it if
+ * abandoned. Runs once, fire-and-forget, right after the data dir is known —
+ * a fresh process has not itself started any work yet, so ANY 'in-progress'
+ * record this finds necessarily belongs to a previous incarnation; the
+ * heartbeat-staleness check inside reapAbandonedAttempt is what protects
+ * against a false-positive on a record whose owning process is mid-restart
+ * (e.g. a rolling deploy where the old process is still finishing up).
+ * Best effort: a scan failure (e.g. workspaces dir not yet created on a
+ * brand-new data dir) must never block startup.
+ */
+async function reapStaleAttemptRecordsOnStartup(dataDir: string): Promise<void> {
+  try {
+    const workspacesDir = path.join(dataDir, 'workspaces');
+    if (!(await fs.pathExists(workspacesDir))) return;
+    const entries = await fs.readdir(workspacesDir, { withFileTypes: true }).catch(() => []);
+    let reaped = 0;
+    for (const dirent of entries) {
+      if (!dirent.isDirectory()) continue;
+      const workspace = path.join(workspacesDir, dirent.name);
+      const attemptRecordPath = projectAttemptRecordPath(workspace);
+      if (!(await fs.pathExists(attemptRecordPath))) continue;
+      const before = await readAttemptRecord(attemptRecordPath);
+      await reapAbandonedAttempt(workspace, attemptRecordPath);
+      const after = await readAttemptRecord(attemptRecordPath);
+      if (before?.state === 'in-progress' && after?.state !== 'in-progress') reaped += 1;
+    }
+    if (reaped > 0) {
+      console.error(`[Klauro] startup reap: ${reaped} abandoned analysis attempt(s) resolved (see .reanalyze-attempt.json per workspace)`);
+    }
+  } catch (error) {
+    console.error(`[Klauro] startup attempt-record reap failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 // Lightweight, ADDITIVE-ONLY observability counter — not a concurrency gate.
