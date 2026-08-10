@@ -231,11 +231,49 @@ const CONTEXT_SHAPE_PATTERNS = [
   new RegExp(`\\bbenchmarked\\s+(?:against|on|with)\\s+['"\`]?(${NAME_TOKEN})`, 'gi'),
 ];
 
+/**
+ * Does this token, AS WRITTEN, carry a signal that it is a NAME rather than prose?
+ *
+ * The context patterns above locate the phrase ("a client repo …") and then capture
+ * the first word-shaped token within 40 characters. That lazy window is why the
+ * phrase alone is not enough evidence: on the real comment
+ *
+ *     // deadline was supplied, so a real client repo (4,810 files/85,652 nodes)
+ *
+ * it matched "client repo", skipped " (4,810 ", and captured `files` — blocking a
+ * deploy over ordinary English. `bounded` tripped it the same way on another line.
+ * Both comments were already correctly generic: they describe a subject repo
+ * without naming it, which is exactly what the rule asks for.
+ *
+ * Filtering that by extending GENERIC_STOPWORDS would be the wrong fix twice over:
+ * it is unbounded (every English word that can follow the phrase), and a hardcoded
+ * word list deciding a classification is the precise defect class this project has
+ * spent the day removing from the product. So use STRUCTURE instead of vocabulary.
+ *
+ * A product/repo name appearing in prose is essentially always marked as a name —
+ * quoted, backticked, capitalised, or multi-segment (`spring-petclinic`,
+ * `acme.widgets`). Bare lowercase single-word English is prose. Requiring one of
+ * those signals keeps every real case the detector exists for (`the client repo
+ * "acme-widgets"`, `the client's codebase AcmeCorp`) while prose stops blocking
+ * deploys — which matters because a gate that cries wolf gets bypassed, and then
+ * it protects nothing.
+ */
+function hasNameSignal(raw: string, line: string, tokenIndex: number): boolean {
+  if (/[-_.]/.test(raw)) return true;                       // multi-segment: spring-petclinic
+  if (/^[A-Z]/.test(raw)) return true;                       // proper noun: AcmeCorp
+  const preceding = tokenIndex > 0 ? line[tokenIndex - 1] : '';
+  return preceding === '"' || preceding === "'" || preceding === '`';
+}
+
 function findContextShapeMatches(line: string): string[] {
   const found: string[] = [];
   for (const pattern of CONTEXT_SHAPE_PATTERNS) {
     for (const match of line.matchAll(pattern)) {
-      const token = (match[1] || '').toLowerCase();
+      const raw = match[1] || '';
+      if (!raw) continue;
+      const tokenIndex = line.indexOf(raw, match.index ?? 0);
+      if (!hasNameSignal(raw, line, tokenIndex)) continue;
+      const token = raw.toLowerCase();
       if (isPlausibleName(token)) found.push(token);
     }
   }
