@@ -612,6 +612,11 @@ function productTechSignals(cas: CASOutput): { languages: string[]; frameworks: 
   // ("authentication and authorization") as frameworks the system is built with.
   const frameworks = selectProductFrameworkNames(
     cas.nodes || [],
+    // edges are load-bearing: a framework surface is recognized via the role of
+    // the node that structurally OWNS a handler (file/struct, through containment
+    // edges), because grouping assigns role='controller' to the owner, never to
+    // the individual handler. Omitting edges silently shifts every later argument.
+    cas.edges || [],
     analyzerTypeMap(cas.analyzer_contributions || []),
     node => isPrimaryProductNodeForQuery(node as CASNode),
     10,
