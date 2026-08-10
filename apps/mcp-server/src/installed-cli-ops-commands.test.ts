@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 
 // --- P0 follow-up (2026-07-28) ------------------------------------------
@@ -375,4 +375,138 @@ test('an explicit path that does not exist, or is not a directory, fails with a 
   const notADir = await runInstalledCli(['analyze', __filename]);
   assert.notEqual(notADir.status, 0);
   assert.match(notADir.stdout + notADir.stderr, /path is not a directory/);
+});
+
+// ---------------------------------------------------------------------------
+// P0 follow-up (2026-08-09): `klauro init --force /some/path` silently wrote
+// `.klaurorc` into CWD instead of `/some/path`, and — far worse — "resolved"
+// the target as cwd for the hosted-placement call too, so it silently
+// created/bound a NEW hosted project against the wrong directory. Root
+// cause: the positional path was read as a hardcoded `process.argv[3]`
+// rather than scanned for; a flag preceding the path meant argv[3] was the
+// flag itself (starts with `-`), so `target` silently fell back to `.`. No
+// error, no warning — just a stray config file and a junk hosted project
+// bound to whatever directory the command happened to run from. Hit for
+// real via `klauro init --force <scratch-path>` writing `.klaurorc` into an
+// unrelated parent working directory.
+//
+// Fix: resolvePositionalArg() in installed-cli.ts scans past every
+// recognized flag (and the VALUE slot of any flag that takes one) to find
+// the first bare argument, independent of where it falls in argv. These
+// tests pin both orderings to the same resolved path, prove a value-taking
+// flag never swallows the path (the case a naive "first non-flag arg" fix
+// gets wrong), and prove `.klaurorc` is never written to cwd when a path is
+// given explicitly — using `init` in an env with no stored/env-var auth
+// token, which stays fully local (no network) since it skips hosted
+// placement and only exercises writeDefaultKlauroConfig.
+// ---------------------------------------------------------------------------
+
+/** `init` with no auth token available anywhere resolves and writes config
+ *  entirely locally (see the `if (token && !projectId)` guard around
+ *  ensureHostedPlacement in installed-cli.ts) — safe to run in a test
+ *  without touching the network or creating a real hosted project. `cwd`
+ *  lets each case run from a directory distinct from the target path, which
+ *  is the whole point: a bug that falls back to cwd is invisible unless
+ *  cwd != target. */
+function runInstalledCliIsolated(args: string[], cwd: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise(resolve => {
+    const noAuthDir = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-no-auth-'));
+    const env = { ...process.env, KLAURO_AUTH_CONFIG_PATH: path.join(noAuthDir, 'auth.json') };
+    delete env.KLAURO_ACCOUNT_TOKEN;
+    delete env.KLAURO_AUTH_TOKEN;
+    delete env.KLAURO_ANALYZER_TOKEN;
+    const child = spawn(process.execPath, [shippedCli, ...args], { stdio: ['ignore', 'pipe', 'pipe'], cwd, env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('close', status => {
+      rmSync(noAuthDir, { recursive: true, force: true });
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+test('`klauro init` resolves the same path whether a flag precedes or follows the positional argument', async () => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-cwd-'));
+  const targetA = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-target-a-'));
+  const targetB = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-target-b-'));
+  try {
+    // flag BEFORE positional
+    const flagFirst = await runInstalledCliIsolated(['init', '--force', '--json', targetA], cwd);
+    assert.equal(flagFirst.status, 0, `klauro init --force --json <path> failed: ${flagFirst.stderr}`);
+    const flagFirstPayload = JSON.parse(flagFirst.stdout) as { path: string };
+    assert.equal(path.resolve(flagFirstPayload.path), path.resolve(targetA), 'flag-before-positional must resolve the given path, not cwd');
+
+    // positional BEFORE flag
+    const positionalFirst = await runInstalledCliIsolated(['init', targetB, '--force', '--json'], cwd);
+    assert.equal(positionalFirst.status, 0, `klauro init <path> --force --json failed: ${positionalFirst.stderr}`);
+    const positionalFirstPayload = JSON.parse(positionalFirst.stdout) as { path: string };
+    assert.equal(path.resolve(positionalFirstPayload.path), path.resolve(targetB), 'positional-before-flag must resolve the given path');
+
+    // Both orderings wrote INTO the target directories, never into cwd.
+    assert.doesNotMatch(readFileSync(path.join(targetA, '.klaurorc'), 'utf8'), /^$/, 'target A must have received .klaurorc');
+    assert.doesNotMatch(readFileSync(path.join(targetB, '.klaurorc'), 'utf8'), /^$/, 'target B must have received .klaurorc');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(targetA, { recursive: true, force: true });
+    rmSync(targetB, { recursive: true, force: true });
+  }
+});
+
+test('`.klaurorc` is never written to cwd when an explicit path is given — the actual incident, reproduced', async () => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-incident-cwd-'));
+  const target = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-incident-target-'));
+  try {
+    // Exact repro shape from the report: flag(s) before the positional path.
+    const result = await runInstalledCliIsolated(['init', '--force', target], cwd);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(!existsSync(path.join(cwd, '.klaurorc')), '.klaurorc must never land in cwd when a path was given explicitly');
+    assert.ok(existsSync(path.join(target, '.klaurorc')), '.klaurorc must land in the given target directory');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('a value-taking flag before the positional path does not swallow the path as its value', async () => {
+  // `--project-id p_123 /some/path` must resolve path=/some/path, not
+  // path=p_123 — the case a naive "first non-flag arg is the path" fix gets
+  // wrong, because it would treat p_123 as `-`-free too if it mis-stepped
+  // past --project-id without also skipping p_123.
+  const target = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-valueflag-target-'));
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-valueflag-cwd-'));
+  try {
+    const result = await runInstalledCliIsolated(['init', '--project-id', 'p_test123', '--force', '--json', target], cwd);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as { path: string; project_id: string };
+    assert.equal(path.resolve(payload.path), path.resolve(target), 'the flag VALUE (p_test123) must not be mistaken for the path');
+    assert.equal(payload.project_id, 'p_test123', 'the path must not be mistaken for the flag value either');
+  } finally {
+    rmSync(target, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('other path-taking subcommands share the same order-independent positional parsing (upload-manifest)', async () => {
+  // upload-manifest needs no auth/network and reports its resolved root
+  // directly in the manifest, so it is a clean, side-effect-free way to
+  // prove the fix generalizes across PATH_COMMANDS rather than pinning only
+  // `init`. Uses the real shipped binary against this checked-out repo
+  // itself (read-only listing, no writes) from an UNRELATED cwd.
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'klauro-upload-manifest-cwd-'));
+  const target = path.resolve(__dirname, '..'); // apps/mcp-server — a real git-tracked dir
+  try {
+    const flagFirst = runInstalledCliSync(['upload-manifest', '--json', target]);
+    assert.equal(flagFirst.status, 0, flagFirst.stderr);
+    const flagFirstManifest = JSON.parse(flagFirst.stdout) as { root: string };
+    assert.equal(path.resolve(flagFirstManifest.root), target, 'flag-before-positional must resolve the given path for upload-manifest too');
+
+    const positionalFirst = runInstalledCliSync(['upload-manifest', target, '--json']);
+    assert.equal(positionalFirst.status, 0, positionalFirst.stderr);
+    const positionalFirstManifest = JSON.parse(positionalFirst.stdout) as { root: string };
+    assert.equal(path.resolve(positionalFirstManifest.root), target);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

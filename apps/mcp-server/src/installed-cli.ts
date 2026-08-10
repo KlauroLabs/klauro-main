@@ -137,6 +137,31 @@ function validateFlags(command: string, argv: string[]): void {
   }
 }
 
+/** Finds the positional path argument regardless of where it falls relative
+ *  to flags — `klauro init --force /some/path` and `klauro init /some/path
+ *  --force` must resolve identically. The naive version of this (`argv[3]`)
+ *  only worked for the second ordering: with a flag first, argv[3] is the
+ *  flag itself, which starts with `-`, so the target silently fell back to
+ *  cwd instead of the given path — no error, no path field on the config
+ *  that matched what was asked for, just a `.klaurorc` written into (and a
+ *  hosted project bound to) whatever directory the command happened to run
+ *  from. Skips every recognized flag, and — critically — skips the VALUE
+ *  slot of any flag in FLAGS_WITH_VALUES too, so `klauro init --project-id
+ *  p_123 /some/path` resolves path=/some/path, not path=p_123. Relies on
+ *  validateFlags() having already run and rejected any unrecognized flag,
+ *  so every `-`-prefixed token reaching this loop is a known flag. */
+function resolvePositionalArg(argv: string[]): string | undefined {
+  for (let i = 3; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg.startsWith('-')) {
+      if (FLAGS_WITH_VALUES.has(arg)) i += 1; // skip its value too
+      continue;
+    }
+    return arg;
+  }
+  return undefined;
+}
+
 /** An explicit path argument must resolve to a real directory before any
  *  command acts on it — see the `klauro analyze --help` incident in the
  *  block comment above: silently proceeding on a wrong/nonexistent path is
@@ -195,8 +220,8 @@ async function main() {
     return;
   }
   validateFlags(command, process.argv);
-  const rawPathArg = process.argv[3];
-  const target = path.resolve(rawPathArg && !rawPathArg.startsWith('-') ? rawPathArg : '.');
+  const rawPathArg = resolvePositionalArg(process.argv);
+  const target = path.resolve(rawPathArg ?? '.');
   validateTargetPath(command, rawPathArg, target);
   const json = process.argv.includes('--json');
   if (command === 'version' || command === '--version' || command === '-v') return output({ version: formatBuildIdentity() }, json);
@@ -247,7 +272,7 @@ async function main() {
   }
   if (command === 'support-bundle') {
     const result = await buildSupportBundle({
-      projectPath: process.argv[3] && !process.argv[3].startsWith('-') ? target : undefined,
+      projectPath: rawPathArg ? target : undefined,
       outputPath: value('--output'),
     });
     return output(json ? result : formatSupportBundleResult(result), json);
