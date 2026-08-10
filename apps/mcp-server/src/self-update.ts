@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { listActiveSessions } from './session-lock';
+import { isNewerVersion } from './stale-client-hint';
 
 /**
  * `klauro update` lives HERE, not in cli.ts, because cli.ts is the DEVELOPER
@@ -276,16 +277,28 @@ export async function runSelfUpdate(options: SelfUpdateOptions): Promise<SelfUpd
     }
     write(`Current klauro: ${current}\n`);
     write(latest ? `Latest available: ${latest} (${serverUrl})\n` : `Latest available: unknown (could not reach ${serverUrl}/dist/latest.json)\n`);
-    if (latest && latest === current && !options.force) write('You are on the latest version.\n');
-    else if (latest && latest !== current) write('A newer version is available. Run: klauro update\n');
+    // #142: `latest !== current` fired in BOTH directions, so a server whose
+    // advertised /dist/latest.json trailed this client (a stalled/partial
+    // deploy) was reported as "a newer version is available" — backwards.
+    // isNewerVersion() is the direction-aware comparator this file's own
+    // caller (stale-client-hint.ts) already relies on.
+    if (latest && !isNewerVersion(latest, current)) write('You are on the latest version.\n');
+    else if (latest && isNewerVersion(latest, current)) write('A newer version is available. Run: klauro update\n');
     return { status: 'checked', current, latest };
   }
 
   write(`Current klauro: ${current}\n`);
   write(latest ? `Latest available: ${latest} (${serverUrl})\n` : `Latest available: unknown (could not reach ${serverUrl}/dist/latest.json)\n`);
 
-  if (latest && latest === current && !options.force) {
-    write('Already on the latest version. Use --force to reinstall anyway.\n');
+  if (latest && !isNewerVersion(latest, current) && !options.force) {
+    // Covers both the real up-to-date case (latest === current) AND #142's
+    // case (the server's advertised version trails this client, e.g. a
+    // stalled deploy) — neither should install anything. `--force` still
+    // reinstalls/downgrades explicitly, matching the flag's documented
+    // meaning ("reinstall anyway") for the equal case, and now also gates
+    // the trailing-server case behind the same explicit opt-in instead of
+    // downgrading silently.
+    write(latest === current ? 'Already on the latest version. Use --force to reinstall anyway.\n' : `This client (${current}) is already ahead of what ${serverUrl} advertises (${latest}) — not downgrading. Use --force to install it anyway.\n`);
     return { status: 'up-to-date', current, latest };
   }
 
