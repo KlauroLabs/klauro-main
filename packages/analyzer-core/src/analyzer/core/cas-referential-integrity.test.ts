@@ -162,34 +162,29 @@ test('flow_summary references CALL CHAIN ids, not flow ids — and each maps ont
   }
 });
 
-test('INVARIANT: workflow references resolve — primary/supporting workflow ids exist in the workflow collection', () => {
-  // Workflows are entry-point GROUPINGS, not stepped units (CASWorkflow has no
-  // `steps` field and never has — flows are the stepped unit, and they are now
-  // materialized in flow_graph.flows). What must hold is that nothing points at
-  // a workflow that isn't shipped.
-  const workflows = [
-    { id: 'workflow_shell_script:_deploy', entry_points: ['entry_cli_deploy'], call_chains: ['chain:entry_cli_deploy'] },
-    { id: 'workflow_main', entry_points: ['entry_cli_main'], call_chains: ['chain:entry_cli_main'] },
+test('INVARIANT: workflow references resolve — primary/supporting workflow ids exist in flow_graph.flows', () => {
+  // Workflows collapsed into a derived view over flows
+  // (docs/cas/SPECIFICATION.md §0.5.1) — there is no separate stored
+  // workflow collection anymore. `primary_workflow_id`/`supporting_workflow_ids`
+  // on EnhancedSystemPurpose now name FLOW ids (flow_graph.flows,
+  // CASFlowRef.flow_id), so what must hold is that nothing points at a flow
+  // that isn't shipped.
+  const flows = [
+    { flow_id: 'flow::chain:entry_cli_deploy', name: 'Deploy', entry_point: 'entry_cli_deploy', step_count: 2 },
+    { flow_id: 'flow::chain:entry_cli_main', name: 'Main', entry_point: 'entry_cli_main', step_count: 1 },
   ];
   const enhancedSystemPurpose = {
-    primary_workflow_id: 'workflow_shell_script:_deploy',
-    supporting_workflow_ids: ['workflow_main'],
+    primary_workflow_id: 'flow::chain:entry_cli_deploy',
+    supporting_workflow_ids: ['flow::chain:entry_cli_main'],
   };
 
-  const known = new Set(workflows.map(workflow => workflow.id));
+  const known = new Set(flows.map(flow => flow.flow_id));
   const references = [
     enhancedSystemPurpose.primary_workflow_id,
     ...enhancedSystemPurpose.supporting_workflow_ids,
   ].filter(Boolean);
 
   assert.deepEqual(references.filter(id => !known.has(id)), []);
-  // Every shipped workflow carries real anchoring evidence rather than being an
-  // empty shell — this is what "0 steps" was actually asking about.
-  for (const workflow of workflows) {
-    assert.ok(workflow.entry_points.length > 0, `${workflow.id} has no entry points`);
-    assert.ok(workflow.call_chains.length > 0, `${workflow.id} has no call chains`);
-    assert.ok(!('steps' in workflow), 'workflows must not emit a phantom steps field');
-  }
 });
 
 test('flow_graph.flows is populated even when no flow carries a capability link', () => {
