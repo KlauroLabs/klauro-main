@@ -20,6 +20,7 @@
     "start": "tsx src/index.ts",
     "build": "node scripts/build-bundle.mjs",
     "build:hosted": "node scripts/build-bundle.mjs --hosted",
+    "build:sea": "node scripts/build-sea-binaries.mjs",
     "smoke:bundle": "npm run build && node scripts/smoke-bundle.mjs",
     "product-footprint": "node scripts/product-footprint.mjs",
     "product-check": "npm run build && node scripts/product-footprint.mjs --no-storage",
@@ -165,6 +166,7 @@
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.3.1",
     "esbuild": "^0.27.2",
+    "postject": "1.0.0-alpha.6",
     "tsx": "^4.19.0",
     "typescript": "^5.9.2"
   },

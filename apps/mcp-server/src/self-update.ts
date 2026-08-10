@@ -28,6 +28,13 @@ export interface ReleaseManifest {
   max_node?: number;
   supported_node_range?: string;
   published_at?: string | null;
+  /** Self-contained per-platform binaries (Node SEA) — see
+   *  scripts/build-sea-binaries.mjs. Keyed by the same platform id
+   *  `resolveSeaPlatformId()` computes client-side (e.g. "macos-arm64").
+   *  Server-relative paths, resolved against serverUrl the same way
+   *  tarball_path is. Absent on a manifest from a server that has not
+   *  published binaries yet — callers must fall back to the npm tarball. */
+  binaries?: Record<string, { path: string; sha256: string }>;
 }
 
 /** The commands the shipped CLI accepts for self-update. Any remediation text
@@ -40,51 +47,39 @@ export const SELF_UPDATE_COMMANDS = ['update', 'upgrade', 'self-update'] as cons
 export const KLAURO_INSTALL_ONELINER = 'curl -fsSL https://mcp.klauro.com/install.sh | sh';
 
 /**
- * Node support gate shared by `klauro update` (and mirrored in install.sh):
- * the native tree-sitter dependency (0.25.x, no shipped prebuilds, binding.gyp
- * pins -std=c++17) fails to compile against Node 23+ headers (v8config.h:
- * "C++20 or later required" — verified empirically against the 22/23/24/25/26
- * header sets). Failing AFTER download, mid-`npm install -g`, buries that in a
- * node-gyp stack trace; this gate turns it into one actionable sentence BEFORE
- * anything is touched. The hosted manifest's min_node/max_node override the
- * baked-in defaults so a future WASM/prebuild release widens the range without
- * shipping a new CLI.
+ * §NODE-GATE-PHANTOM (2026-08-09) — There used to be an upper Node-version
+ * refusal here (and its twin in install.sh), justified by "the native
+ * tree-sitter dependency doesn't compile past Node 22". That reasoning is
+ * real for the HOSTED analyzer/server image, where tree-sitter genuinely
+ * gets compiled — it is NOT real here: `klauro update` (like install.sh)
+ * only ever `npm install`s the published customer tarball, and that
+ * tarball's package.json has `dependencies: {}` and
+ * `optionalDependencies: {}` — inspected directly, zero `.node` binaries,
+ * zero native compile step, ever, on any Node version. The upper bound was
+ * refusing installs for a compile that was never going to happen on this
+ * code path. Verified empirically: v1.0.131's tarball runs unmodified on
+ * Node 26 (`node package/dist/cli.cjs version` succeeds).
+ *
+ * So: no upper bound, and no KLAURO_SKIP_NODE_CHECK escape hatch — a switch
+ * that exists only to bypass a refusal that should not exist is two defects,
+ * not a feature. A floor is kept (package.json declares `engines: {"node":
+ * ">=18"}`) but as a WARNING, not a refusal: nothing in this codebase has
+ * verified Node <18 actually fails to run the bundle, and a refusal is for
+ * "this cannot work", never "this is unproven" (see also
+ * self-contained-binary self-update below, which sidesteps this entirely —
+ * it never runs npm install and so never reaches this check at all).
  */
 export const DEFAULT_MIN_NODE = 18;
-export const DEFAULT_MAX_NODE = 22;
 
-export function resolveSupportedNodeRange(
-  manifest: Pick<ReleaseManifest, 'min_node' | 'max_node'> | null,
-): { min: number; max: number; range: string } {
-  const min = manifest?.min_node;
-  const max = manifest?.max_node;
-  if (!Number.isInteger(min) || !Number.isInteger(max) || min! < 1 || max! < min! || max! > 99) {
-    return { min: DEFAULT_MIN_NODE, max: DEFAULT_MAX_NODE, range: `${DEFAULT_MIN_NODE}-${DEFAULT_MAX_NODE}` };
-  }
-  return { min: min!, max: max!, range: `${min}-${max}` };
-}
-
-export function checkNodeSupportedForNativeBuild(
-  nodeMajor: number,
-  manifest: Pick<ReleaseManifest, 'min_node' | 'max_node' | 'supported_node_range'> | null,
-): { ok: boolean; min: number; max: number; message?: string } {
-  const { min, max, range } = resolveSupportedNodeRange(manifest);
-  if (!Number.isInteger(nodeMajor) || nodeMajor < min) {
+export function checkNodeVersionForUpdate(nodeMajor: number): { ok: boolean; min: number; message?: string } {
+  if (!Number.isInteger(nodeMajor) || nodeMajor < DEFAULT_MIN_NODE) {
     return {
-      ok: false, min, max,
-      message: `Klauro currently supports Node ${range}; you have ${nodeMajor}. Upgrade Node (e.g. \`nvm install ${max} && nvm use ${max}\` or \`volta install node@${max}\`) and re-run.`,
+      ok: false,
+      min: DEFAULT_MIN_NODE,
+      message: `klauro's package.json declares Node ${DEFAULT_MIN_NODE}+ (you have ${nodeMajor}); this has not been verified to fail below that, but it also has not been tested. Upgrading is the supported path: nvm install ${DEFAULT_MIN_NODE} && nvm use ${DEFAULT_MIN_NODE}, or volta install node@${DEFAULT_MIN_NODE}.`,
     };
   }
-  if (nodeMajor > max) {
-    return {
-      ok: false, min, max,
-      message: `Klauro currently supports Node ${range}; you have ${nodeMajor}. ` +
-        `Klauro's native tree-sitter parser does not compile on Node ${max + 1}+ yet. ` +
-        `Install a supported Node (e.g. \`nvm install ${max} && nvm use ${max}\` or \`volta install node@${max}\`) and re-run, ` +
-        `or set KLAURO_SKIP_NODE_CHECK=1 to bypass at your own risk.`,
-    };
-  }
-  return { ok: true, min, max };
+  return { ok: true, min: DEFAULT_MIN_NODE };
 }
 
 export async function fetchReleaseManifest(serverUrl: string): Promise<ReleaseManifest | null> {
@@ -294,6 +289,14 @@ export async function runSelfUpdate(options: SelfUpdateOptions): Promise<SelfUpd
     return { status: 'up-to-date', current, latest };
   }
 
+  // Self-contained (Node SEA) binary: replace the running executable
+  // directly, no npm/node/node-gyp involved at all. Checked FIRST — a binary
+  // install has no dist/ to `npm install -g` over, and none of the
+  // npm-target-resolution logic below applies to it.
+  if (isRunningAsSeaBinary()) {
+    return runBinarySelfUpdate({ serverUrl, manifest, current, latest, write, json: options.json });
+  }
+
   // Detect running MCP sessions BEFORE installing: this is a best-effort
   // announcement (session-lock.ts), not a lock — it never blocks the update,
   // it only changes what we print afterward so the human gets an explicit
@@ -304,14 +307,13 @@ export async function runSelfUpdate(options: SelfUpdateOptions): Promise<SelfUpd
   // first on PATH.
   const target = resolveSelfUpdateTarget();
 
-  // Node-range gate (same range install.sh enforces, manifest-overridable):
-  // node-gyp compiles the native tree-sitter deps against the node that RUNS
-  // npm, so gate on that version, before anything downloads.
+  // Node-floor check only (see §NODE-GATE-PHANTOM above) — a warning on
+  // stderr, never a refusal; nothing here has verified below-18 fails.
   const buildNodeVersion = detectBuildNodeVersion(target);
   const buildNodeMajor = Number.parseInt(buildNodeVersion.replace(/^v/, '').split('.')[0], 10);
-  const nodeSupport = checkNodeSupportedForNativeBuild(buildNodeMajor, manifest);
-  if (!nodeSupport.ok && process.env.KLAURO_SKIP_NODE_CHECK !== '1') {
-    throw new Error(`Cannot update: ${nodeSupport.message} (update would build with ${buildNodeVersion} at ${target.nodeBin || process.execPath})`);
+  const nodeCheck = checkNodeVersionForUpdate(buildNodeMajor);
+  if (!nodeCheck.ok) {
+    process.stderr.write(`Warning: ${nodeCheck.message} Continuing anyway — this is a floor that has not been proven to matter, not a known-broken combination.\n`);
   }
 
   write(`\nInstalling ${tarballUrl} ...\n`);
@@ -371,4 +373,134 @@ export async function runSelfUpdate(options: SelfUpdateOptions): Promise<SelfUpd
     write(`\nklauro updated ${transition} (installation at ${target.prefix}). No running MCP sessions were detected on this machine, but restart Claude Code (or your MCP client) before your next session to load the new server.\n`);
   }
   return { status: 'updated', current, latest, prefix: target.prefix };
+}
+
+// ---------------------------------------------------------------------------
+// Self-contained (Node SEA) binary self-update.
+//
+// `klauro update` for the npm-installed client is "run npm install -g over
+// the running prefix" (above). A binary install has no npm, no prefix, no
+// node_modules — the binary IS the install. Updating it means: download the
+// new platform binary, verify its checksum, and atomically swap it in for
+// the file that is currently running. This is the same pattern rustup,
+// deno upgrade, and nvm's binary installs use.
+// ---------------------------------------------------------------------------
+
+/** True when this process is itself a Node SEA binary — see
+ *  installed-cli.ts's resolveMcpRegistrationCommand for the other place this
+ *  same detection matters (what `klauro install` registers). */
+export function isRunningAsSeaBinary(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return (require('node:sea') as { isSea(): boolean }).isSea();
+  } catch {
+    return false;
+  }
+}
+
+/** Maps this process's OS/arch to the platform id used in the release
+ *  manifest's `binaries` map and in the built filenames
+ *  (scripts/build-sea-binaries.mjs's TARGETS[].id) — must stay in sync with
+ *  both. */
+export function resolveSeaPlatformId(platform: NodeJS.Platform = process.platform, arch: string = process.arch): string | null {
+  const archId = arch === 'arm64' ? 'arm64' : arch === 'x64' ? 'x64' : null;
+  if (!archId) return null;
+  if (platform === 'darwin') return `macos-${archId}`;
+  if (platform === 'linux') return `linux-${archId}`;
+  if (platform === 'win32' && archId === 'x64') return 'win-x64';
+  return null;
+}
+
+async function runBinarySelfUpdate(options: {
+  serverUrl: string;
+  manifest: ReleaseManifest | null;
+  current: string;
+  latest: string | null;
+  write: (text: string) => void;
+  json?: boolean;
+}): Promise<SelfUpdateResult> {
+  const { serverUrl, manifest, current, latest, write, json } = options;
+  const platformId = resolveSeaPlatformId();
+  const runningPath = process.execPath;
+
+  if (!platformId) {
+    throw new Error(
+      `Cannot self-update: no self-contained binary is published for ${process.platform}/${process.arch}. ` +
+      `Reinstall manually from ${serverUrl}, or if a native npm/Node toolchain is available on this machine, ` +
+      `install the npm-distributed client instead: npm install -g ${resolveTarballUrl(serverUrl, manifest)}`,
+    );
+  }
+  const binaryEntry = manifest?.binaries?.[platformId];
+  if (!binaryEntry) {
+    throw new Error(
+      `Cannot self-update: the release manifest at ${serverUrl}/dist/latest.json does not list a binary for ${platformId} ` +
+      `(server may predate the self-contained binary release, or the current release manifest omitted it — check with support-bundle / doctor).`,
+    );
+  }
+
+  const binaryUrl = /^https?:\/\//i.test(binaryEntry.path) ? binaryEntry.path : `${serverUrl.replace(/\/+$/, '')}${binaryEntry.path.startsWith('/') ? '' : '/'}${binaryEntry.path}`;
+  write(`\nDownloading ${binaryUrl} ...\n`);
+
+  const response = await fetch(binaryUrl);
+  if (!response.ok) throw new Error(`Download failed: HTTP ${response.status} for ${binaryUrl}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+
+  const crypto = await import('node:crypto');
+  const actualSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (actualSha256 !== binaryEntry.sha256) {
+    throw new Error(`Checksum mismatch for ${binaryUrl}: expected ${binaryEntry.sha256}, got ${actualSha256}. Refusing to install — try again, and if this persists, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`);
+  }
+  write(`Checksum verified (sha256=${actualSha256}).\n`);
+
+  const dir = path.dirname(runningPath);
+  const tmpPath = path.join(dir, `.klauro-update-${process.pid}.tmp`);
+  fs.writeFileSync(tmpPath, bytes, { mode: 0o755 });
+  fs.chmodSync(tmpPath, 0o755);
+
+  const sessionsBeforeUpdate = listActiveSessions();
+
+  if (process.platform === 'win32') {
+    // Windows will not let a running .exe be overwritten or deleted while
+    // it is the running image — verified against how nvm-windows/rustup
+    // solve this, NOT tested against this specific binary (no Windows
+    // available in the environment that built this). Move the running
+    // binary aside first (Windows DOES allow renaming a running exe, just
+    // not deleting/overwriting it), then place the new one at the original
+    // path; the old file is cleaned up as best-effort and, if that fails,
+    // is simply orphaned beside the new binary rather than blocking the
+    // update.
+    const oldAside = `${runningPath}.old-${process.pid}`;
+    fs.renameSync(runningPath, oldAside);
+    fs.renameSync(tmpPath, runningPath);
+    try { fs.unlinkSync(oldAside); } catch { /* best-effort; a stray .old-<pid> file is harmless */ }
+  } else {
+    // POSIX: renaming over a running executable's path is safe — the
+    // process currently executing keeps running against the OLD inode
+    // (already mapped into memory / held open), and the new file takes the
+    // name for the NEXT invocation. No "stop the presses" step needed.
+    fs.renameSync(tmpPath, runningPath);
+  }
+
+  if (json) {
+    write(`${JSON.stringify({
+      status: 'updated',
+      previous_version: current,
+      version: latest,
+      binary: runningPath,
+      platform: platformId,
+      running_sessions_detected: sessionsBeforeUpdate.length,
+      running_session_pids: sessionsBeforeUpdate.map(s => s.pid),
+      restart_required: true,
+    }, null, 2)}\n`);
+    return { status: 'updated', current, latest, prefix: dir };
+  }
+
+  const transition = `${current} -> ${latest ?? 'the latest version'}`;
+  write(
+    `\nklauro updated ${transition} (binary at ${runningPath}).\n` +
+    (sessionsBeforeUpdate.length > 0
+      ? `Detected ${sessionsBeforeUpdate.length} running MCP session(s) still on the OLD build — restart Claude Code (or your MCP client) now to load the new server.\n`
+      : `Restart Claude Code (or your MCP client) before your next session to load the new server.\n`),
+  );
+  return { status: 'updated', current, latest, prefix: dir };
 }

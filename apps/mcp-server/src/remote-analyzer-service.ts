@@ -4535,7 +4535,14 @@ async function serveTarball(response: http.ServerResponse, requested: string): P
     writeText(response, 404, 'text/plain; charset=utf-8', 'not found');
     return;
   }
-  const allowed = requested === 'klauro-latest.tgz' || /^klauro-[\w.\-]+\.tgz$/.test(requested);
+  // .tgz: the npm-fallback tarball. Extensionless/.exe/.sha256: the
+  // self-contained per-platform binaries (build-sea-binaries.mjs's outExe
+  // names, e.g. klauro-macos-arm64, klauro-win-x64.exe) and their checksum
+  // sidecars — install.sh/install.ps1 and self-update.ts's binary self-update
+  // fetch these directly.
+  const allowed = requested === 'klauro-latest.tgz'
+    || /^klauro-[\w.\-]+\.tgz$/.test(requested)
+    || /^klauro-(macos|linux|win)-(arm64|x64)(\.exe)?(\.sha256)?$/.test(requested);
   if (!allowed) {
     writeText(response, 404, 'text/plain; charset=utf-8', 'not found');
     return;
@@ -4563,8 +4570,9 @@ async function serveTarball(response: http.ServerResponse, requested: string): P
     return;
   }
 
+  const isBinary = !requested.endsWith('.tgz');
   response.writeHead(200, corsHeaders({
-    'content-type': 'application/gzip',
+    'content-type': isBinary ? 'application/octet-stream' : 'application/gzip',
     'content-length': String(stat.size),
     'content-disposition': `attachment; filename="${requested}"`,
     // The stable klauro-latest.tgz filename changes contents across releases,
@@ -4592,6 +4600,20 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
   }
   const base = publicBaseUrl(request);
   const { minNode, maxNode } = resolveHostedReleaseNodeRange(manifest);
+  // Self-contained per-platform binaries (§NODE-GATE-PHANTOM / build-sea-binaries.mjs)
+  // — the PRIMARY install path. Passed through verbatim from the on-disk
+  // manifest written by write-release-manifest.mjs: the nested `binaries` map
+  // for JSON consumers (self-update.ts's binary self-update), and flat
+  // `bin_<platform>_path`/`bin_<platform>_sha256` fields for install.sh (a
+  // POSIX-sh script with no JSON parser). Both absent — not defaulted to
+  // anything — when the deployed manifest predates this release or was
+  // packaged without running `npm run build:sea` first; every consumer of
+  // this field falls back to the npm tarball in that case.
+  const binaries = (manifest.binaries as Record<string, { path: string; sha256: string }>) || {};
+  const flatBinaryFields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(manifest)) {
+    if (key.startsWith('bin_') && typeof value === 'string') flatBinaryFields[key] = value;
+  }
   const body = {
     version: (manifest.version as string) || null,
     tarball: `${base}/dist/klauro-latest.tgz`,
@@ -4600,6 +4622,8 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
     max_node: maxNode,
     supported_node_range: `${minNode}-${maxNode}`,
     published_at: (manifest.published_at as string) || null,
+    binaries,
+    ...flatBinaryFields,
     // Build identity of the published tarball, so "is the CLI channel in sync
     // with the deployed server" is answerable from the manifest instead of by
     // installing it (deploy.sh's client-channel gate, 2026-07-27 audit).

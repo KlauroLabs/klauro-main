@@ -5,59 +5,59 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import {
-  checkNodeSupportedForNativeBuild,
+  checkNodeVersionForUpdate,
   buildAnalysisStatusLine,
-  DEFAULT_MAX_NODE,
   DEFAULT_MIN_NODE,
   detectBuildNodeVersion,
   buildUpdateSpawnEnv,
-  resolveSupportedNodeRange,
+  isRunningAsSeaBinary,
+  resolveSeaPlatformId,
 } from './cli';
 import { isNetworkUnreachableError, requireConnectorEntitlement, unreachableServerError } from './connector-auth';
 
 // ---------------------------------------------------------------------------
-// P0: Node-version gate (install.sh + `klauro update`)
-// The verified ceiling: tree-sitter 0.25.x (no shipped prebuilds, binding.gyp
-// pins -std=c++17) compiles against Node 22 headers and fails on 23/24/25/26
-// with v8config.h "C++20 or later required".
+// §NODE-GATE-PHANTOM (2026-08-09): there is no longer an upper Node-version
+// ceiling on the CLIENT — the published tarball has `dependencies: {}` /
+// `optionalDependencies: {}` and zero `.node` binaries, so nothing ever
+// compiles on `npm install -g` regardless of Node version (verified: v1.0.131
+// runs unmodified on Node 26). The tree-sitter/C++20 compile ceiling this
+// section used to test is real for the HOSTED analyzer/server image, not
+// here. The primary install path is now the self-contained (Node SEA)
+// binary, which needs no machine Node at all — see
+// installed-sea-entry.test.ts / self-update.test.ts for that path.
 // ---------------------------------------------------------------------------
 
-test('checkNodeSupportedForNativeBuild: 18-22 pass with the baked-in defaults', () => {
-  for (const major of [18, 20, 22]) {
-    assert.equal(checkNodeSupportedForNativeBuild(major, null).ok, true, `node ${major} should be supported`);
+test('checkNodeVersionForUpdate: no upper bound — even very new Node majors pass', () => {
+  for (const major of [18, 20, 22, 24, 26, 30]) {
+    assert.equal(checkNodeVersionForUpdate(major).ok, true, `node ${major} should not be refused`);
   }
   assert.equal(DEFAULT_MIN_NODE, 18);
-  assert.equal(DEFAULT_MAX_NODE, 22);
 });
 
-test('checkNodeSupportedForNativeBuild: 23+ fail with an actionable message (no manifest)', () => {
-  for (const major of [23, 24, 25, 26]) {
-    const result = checkNodeSupportedForNativeBuild(major, null);
-    assert.equal(result.ok, false, `node ${major} must be gated`);
-    assert.match(result.message || '', /Klauro currently supports Node 18-22; you have \d+/);
-    assert.match(result.message || '', /nvm install 22|volta install node@22/);
-  }
-});
-
-test('checkNodeSupportedForNativeBuild: too-old node fails with an upgrade message', () => {
-  const result = checkNodeSupportedForNativeBuild(16, null);
+test('checkNodeVersionForUpdate: below the declared floor is a non-blocking warning, not "ok: false forever"', () => {
+  const result = checkNodeVersionForUpdate(16);
   assert.equal(result.ok, false);
   assert.match(result.message || '', /you have 16/);
+  // The caller (runSelfUpdate) treats !ok as a stderr warning and proceeds
+  // anyway — see self-update.test.ts — never as a thrown refusal.
 });
 
-test('checkNodeSupportedForNativeBuild: the hosted manifest widens the range without a new CLI', () => {
-  const manifest = { min_node: 18, max_node: 24, supported_node_range: '18-24' };
-  assert.equal(checkNodeSupportedForNativeBuild(24, manifest).ok, true);
-  const gated = checkNodeSupportedForNativeBuild(26, manifest);
-  assert.equal(gated.ok, false);
-  assert.match(gated.message || '', /18-24/);
+test('isRunningAsSeaBinary: false under plain node (this test itself is not a SEA binary)', () => {
+  assert.equal(isRunningAsSeaBinary(), false);
 });
 
-test('update node gate accepts only a complete coherent hosted range', () => {
-  assert.deepEqual(resolveSupportedNodeRange({ min_node: 18, max_node: 24 }), { min: 18, max: 24, range: '18-24' });
-  assert.deepEqual(resolveSupportedNodeRange({ min_node: 18 }), { min: 18, max: 22, range: '18-22' });
-  assert.deepEqual(resolveSupportedNodeRange({ min_node: 24, max_node: 18 }), { min: 18, max: 22, range: '18-22' });
-  assert.deepEqual(resolveSupportedNodeRange({ min_node: 18, max_node: 999 }), { min: 18, max: 22, range: '18-22' });
+test('resolveSeaPlatformId: maps known OS/arch pairs to the published binary ids', () => {
+  assert.equal(resolveSeaPlatformId('darwin', 'arm64'), 'macos-arm64');
+  assert.equal(resolveSeaPlatformId('darwin', 'x64'), 'macos-x64');
+  assert.equal(resolveSeaPlatformId('linux', 'x64'), 'linux-x64');
+  assert.equal(resolveSeaPlatformId('linux', 'arm64'), 'linux-arm64');
+  assert.equal(resolveSeaPlatformId('win32', 'x64'), 'win-x64');
+});
+
+test('resolveSeaPlatformId: unknown combinations return null rather than guessing', () => {
+  assert.equal(resolveSeaPlatformId('linux', 'ia32'), null);
+  assert.equal(resolveSeaPlatformId('win32', 'arm64'), null);
+  assert.equal(resolveSeaPlatformId('freebsd', 'x64'), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -90,31 +90,29 @@ test('detectBuildNodeVersion: falls back to processVersion when no nodeBin was r
   assert.equal(detectBuildNodeVersion({ nodeBin: undefined }, { processVersion: 'v20.9.0' }), 'v20.9.0');
 });
 
-test('detectBuildNodeVersion + checkNodeSupportedForNativeBuild: an unsupported ACTIVE node is refused with the actionable message even when process.version looks fine', async () => {
+test('detectBuildNodeVersion + checkNodeVersionForUpdate: resolves the ACTUAL prefix node (not process.version) and a very new major is never refused', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-update-node-'));
   try {
-    // Simulates the field bug: the process running `klauro update` reports a
-    // supported version, but the prefix that actually owns the install (and
-    // will run npm/node-gyp) carries an unsupported node.
+    // #59 was about resolving the RIGHT node (the one that actually runs the
+    // install), not about refusing it — the resolution behavior below is
+    // still worth pinning even though nothing here gets refused anymore.
     const nodeBin = await writeFakeNodeShim(dir, 'v26.4.0');
     const version = detectBuildNodeVersion({ nodeBin }, { processVersion: 'v22.11.0' });
+    assert.equal(version, 'v26.4.0', 'must resolve the prefix node, not the unrelated process.version fallback');
     const major = Number.parseInt(version.replace(/^v/, '').split('.')[0], 10);
-    const result = checkNodeSupportedForNativeBuild(major, null);
-    assert.equal(result.ok, false);
-    assert.match(result.message || '', /Klauro currently supports Node 18-22; you have 26/);
-    assert.match(result.message || '', /nvm install 22|volta install node@22/);
+    assert.equal(checkNodeVersionForUpdate(major).ok, true, 'no upper bound — Node 26 is not refused');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
 
-test('detectBuildNodeVersion + checkNodeSupportedForNativeBuild: a supported resolved node proceeds past the gate', async () => {
+test('detectBuildNodeVersion + checkNodeVersionForUpdate: a below-floor resolved node warns but is still "not ok" for the caller to act on', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-update-node-'));
   try {
-    const nodeBin = await writeFakeNodeShim(dir, 'v20.15.0');
+    const nodeBin = await writeFakeNodeShim(dir, 'v16.20.0');
     const version = detectBuildNodeVersion({ nodeBin });
     const major = Number.parseInt(version.replace(/^v/, '').split('.')[0], 10);
-    assert.equal(checkNodeSupportedForNativeBuild(major, null).ok, true);
+    assert.equal(checkNodeVersionForUpdate(major).ok, false);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -263,89 +261,155 @@ test('requireConnectorEntitlement: an unreachable server-url reports "Could not 
 });
 
 // ---------------------------------------------------------------------------
-// P0: install.sh gate — run the REAL script with fake `node`/`npm` shims on
-// PATH and assert it refuses unsupported majors BEFORE npm install starts.
+// P0: install.sh — self-contained binary is the PRIMARY install path, no
+// machine Node/npm required at all; npm is only an EMERGENCY fallback for a
+// platform with no published binary (or a broken one). Run the REAL script
+// against a fake local "server" directory served over file://, so this
+// exercises actual curl/sha256sum/mktemp calls, not a mocked shell.
 // ---------------------------------------------------------------------------
 
 const installShPath = path.resolve(__dirname, '..', 'scripts', 'install.sh');
 
-async function runInstallShWithFakeNode(nodeVersion: string, options: { manifest?: object; env?: Record<string, string> } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-install-gate-'));
+/** The same OS/arch -> platform-id mapping install.sh computes, so tests work
+ *  on whatever machine runs them instead of assuming macOS/arm64. */
+function currentPlatformKey(): string {
+  const osId = process.platform === 'darwin' ? 'macos' : process.platform === 'linux' ? 'linux' : '';
+  const archId = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : '';
+  return osId && archId ? `${osId}_${archId}` : '';
+}
+
+async function runInstallSh(options: {
+  /** When set, a fake "server" directory is created with dist/latest.json and,
+   *  if `fakeBinary` is given, dist/klauro-<platform> populated from it — the
+   *  install.sh path under test is driven entirely by what this manifest
+   *  advertises, exactly like the real server. */
+  manifest?: Record<string, unknown>;
+  /** Shell script content for the fake downloadable binary (must handle a
+   *  `version` argv and exit 0 for install.sh's smoke test to pass). Omit to
+   *  test the "no binary available" / checksum-mismatch fallback paths. */
+  fakeBinary?: string;
+  /** Node/npm shims on PATH for the npm-fallback path. Omit to test that the
+   *  binary path never needs them at all. */
+  fakeNode?: { version: string };
+  env?: Record<string, string>;
+} = {}) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-install-sh-'));
+  const home = path.join(dir, 'home');
+  await fs.mkdir(home, { recursive: true });
   const bin = path.join(dir, 'bin');
   await fs.mkdir(bin, { recursive: true });
   const npmMarker = path.join(dir, 'npm-was-called');
-  await fs.writeFile(path.join(bin, 'node'), `#!/bin/sh\necho "${nodeVersion}"\n`, { mode: 0o755 });
-  await fs.writeFile(path.join(bin, 'npm'), `#!/bin/sh\ntouch "${npmMarker}"\nexit 0\n`, { mode: 0o755 });
-  // Manifest served over file:// so the test exercises the real curl consult
-  // path with zero network.
-  let klauroUrl = 'http://127.0.0.1:1'; // unreachable fast → baked-in defaults
+  if (options.fakeNode) {
+    await fs.writeFile(path.join(bin, 'node'), `#!/bin/sh\necho "${options.fakeNode.version}"\n`, { mode: 0o755 });
+    await fs.writeFile(path.join(bin, 'npm'), `#!/bin/sh\ntouch "${npmMarker}"\nexit 0\n`, { mode: 0o755 });
+  }
+
+  let klauroUrl = 'file:///nonexistent-klauro-test-server'; // no manifest reachable → npm fallback path
   if (options.manifest) {
-    await fs.mkdir(path.join(dir, 'dist'), { recursive: true });
-    await fs.writeFile(path.join(dir, 'dist', 'latest.json'), JSON.stringify(options.manifest));
+    const platformKey = currentPlatformKey();
+    const manifest = { ...options.manifest };
+    if (options.fakeBinary && platformKey) {
+      await fs.mkdir(path.join(dir, 'dist'), { recursive: true });
+      const binaryPath = path.join(dir, 'dist', `klauro-${platformKey.replace('_', '-')}`);
+      await fs.writeFile(binaryPath, options.fakeBinary, { mode: 0o755 });
+      const crypto = await import('node:crypto');
+      const sha256 = crypto.createHash('sha256').update(await fs.readFile(binaryPath)).digest('hex');
+      (manifest as Record<string, string>)[`bin_${platformKey}_path`] = `/dist/klauro-${platformKey.replace('_', '-')}`;
+      (manifest as Record<string, string>)[`bin_${platformKey}_sha256`] = sha256;
+    } else {
+      await fs.mkdir(path.join(dir, 'dist'), { recursive: true });
+    }
+    await fs.writeFile(path.join(dir, 'dist', 'latest.json'), JSON.stringify(manifest));
     klauroUrl = `file://${dir}`;
   }
+
   const result = spawnSync('sh', [installShPath], {
     encoding: 'utf8',
     timeout: 30000,
     env: {
-      ...process.env,
-      PATH: `${bin}:${process.env.PATH}`,
+      PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      HOME: home,
+      SHELL: '/bin/sh',
       KLAURO_URL: klauroUrl,
+      KLAURO_INSTALL_DIR: path.join(home, '.klauro', 'bin'),
       ...options.env,
     },
   });
   const npmCalled = await fs.access(npmMarker).then(() => true, () => false);
+  const installedBinaryPath = path.join(home, '.klauro', 'bin', 'klauro');
+  const binaryInstalled = await fs.access(installedBinaryPath).then(() => true, () => false);
   await fs.rm(dir, { recursive: true, force: true });
-  return { status: result.status, output: `${result.stdout}${result.stderr}`, npmCalled };
+  return { status: result.status, output: `${result.stdout}${result.stderr}`, npmCalled, binaryInstalled };
 }
 
-test('install.sh: Node 26 is refused with a plain message BEFORE npm install runs', async () => {
-  const run = await runInstallShWithFakeNode('v26.4.0');
-  assert.notEqual(run.status, 0);
-  assert.match(run.output, /Klauro currently supports Node 18-22; you have 26/);
-  assert.match(run.output, /nvm install 22/);
-  assert.equal(run.npmCalled, false, 'npm install must never start on an unsupported node');
-});
-
-test('install.sh: Node 22 passes the gate and reaches npm install', async () => {
-  const run = await runInstallShWithFakeNode('v22.11.0');
-  assert.equal(run.status, 0, run.output);
-  assert.equal(run.npmCalled, true);
-});
-
-test('install.sh: Node 17 is refused (floor still enforced)', async () => {
-  const run = await runInstallShWithFakeNode('v17.9.1');
-  assert.notEqual(run.status, 0);
-  assert.match(run.output, /too old/);
-  assert.equal(run.npmCalled, false);
-});
-
-test('install.sh: the hosted manifest max_node widens the range', async () => {
-  const run = await runInstallShWithFakeNode('v24.1.0', {
-    manifest: { version: '9.9.9', min_node: 18, max_node: 24, supported_node_range: '18-24' },
+test('install.sh: no machine Node/npm on PATH — a valid binary manifest entry installs with zero npm calls', async () => {
+  const run = await runInstallSh({
+    manifest: { version: '9.9.9' },
+    fakeBinary: '#!/bin/sh\necho "{\\"version\\":\\"9.9.9\\"}"\nexit 0\n',
+    // Deliberately NOT providing fakeNode: proves the binary path never
+    // shells out to node/npm at all, on a PATH that has neither.
   });
   assert.equal(run.status, 0, run.output);
-  assert.equal(run.npmCalled, true);
+  assert.equal(run.npmCalled, false, 'the binary path must never invoke npm');
+  assert.equal(run.binaryInstalled, true, run.output);
 });
 
-test('install.sh: an incomplete hosted range cannot accidentally widen support', async () => {
-  const run = await runInstallShWithFakeNode('v24.1.0', { manifest: { version: '9.9.9', min_node: 18 } });
-  assert.notEqual(run.status, 0);
-  assert.match(run.output, /supports Node 18-22/);
-  assert.equal(run.npmCalled, false);
+test('install.sh: checksum mismatch refuses the binary and falls back to npm', async () => {
+  // Built manually (not via runInstallSh's helper) so the manifest can
+  // advertise a deliberately WRONG sha256 for a real downloadable binary.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-install-sh-bad-sha-'));
+  try {
+    const home = path.join(dir, 'home');
+    const bin = path.join(dir, 'bin');
+    await fs.mkdir(home, { recursive: true });
+    await fs.mkdir(bin, { recursive: true });
+    const npmMarker = path.join(dir, 'npm-was-called');
+    await fs.writeFile(path.join(bin, 'node'), `#!/bin/sh\necho "v20.10.0"\n`, { mode: 0o755 });
+    await fs.writeFile(path.join(bin, 'npm'), `#!/bin/sh\ntouch "${npmMarker}"\nexit 0\n`, { mode: 0o755 });
+    const platformKey = currentPlatformKey();
+    await fs.mkdir(path.join(dir, 'dist'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'dist', `klauro-${platformKey.replace('_', '-')}`), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await fs.writeFile(path.join(dir, 'dist', 'latest.json'), JSON.stringify({
+      version: '9.9.9',
+      [`bin_${platformKey}_path`]: `/dist/klauro-${platformKey.replace('_', '-')}`,
+      [`bin_${platformKey}_sha256`]: '0'.repeat(64), // definitely wrong
+    }));
+    const result = spawnSync('sh', [installShPath], {
+      encoding: 'utf8', timeout: 30000,
+      env: { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, SHELL: '/bin/sh', KLAURO_URL: `file://${dir}` },
+    });
+    assert.match(`${result.stdout}${result.stderr}`, /Checksum mismatch/);
+    assert.match(`${result.stdout}${result.stderr}`, /EMERGENCY FALLBACK/);
+    const npmCalled = await fs.access(npmMarker).then(() => true, () => false);
+    assert.equal(npmCalled, true, 'a bad checksum must fall back to npm, not silently install unverified bits');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
-test('install.sh: a contradictory hosted range falls back to the baked safety gate', async () => {
-  const run = await runInstallShWithFakeNode('v24.1.0', { manifest: { version: '9.9.9', min_node: 24, max_node: 18 } });
-  assert.notEqual(run.status, 0);
-  assert.match(run.output, /supports Node 18-22/);
-  assert.equal(run.npmCalled, false);
-});
-
-test('install.sh: KLAURO_SKIP_NODE_CHECK=1 bypasses the ceiling (documented escape hatch)', async () => {
-  const run = await runInstallShWithFakeNode('v26.4.0', { env: { KLAURO_SKIP_NODE_CHECK: '1' } });
+test('install.sh: no binary published for this platform falls back to npm, clearly labeled EMERGENCY', async () => {
+  const run = await runInstallSh({ fakeNode: { version: 'v20.10.0' } });
   assert.equal(run.status, 0, run.output);
   assert.equal(run.npmCalled, true);
+  assert.match(run.output, /EMERGENCY FALLBACK/);
+});
+
+test('install.sh: npm fallback with no Node at all fails loudly with an actionable message (no silent hang)', async () => {
+  const run = await runInstallSh({}); // no manifest, no fakeNode — nothing on PATH
+  assert.notEqual(run.status, 0);
+  assert.match(run.output, /Node\.js is not installed/);
+});
+
+test('install.sh: npm fallback below the declared Node floor WARNS but still proceeds (no refusal)', async () => {
+  const run = await runInstallSh({ fakeNode: { version: 'v16.20.0' } });
+  assert.equal(run.status, 0, run.output);
+  assert.match(run.output, /Warning:.*older than klauro's declared minimum/);
+  assert.equal(run.npmCalled, true, 'a below-floor Node must still be allowed to try — this is a warning, not a gate');
+});
+
+test('install.sh: KLAURO_SKIP_NODE_CHECK is gone — setting it does nothing (no upper bound left to skip)', async () => {
+  const run = await runInstallSh({ fakeNode: { version: 'v20.10.0' }, env: { KLAURO_SKIP_NODE_CHECK: '1' } });
+  assert.doesNotMatch(run.output, /KLAURO_SKIP_NODE_CHECK/, 'the escape hatch text must not appear anywhere — there is nothing left to skip');
 });
 
 // ---------------------------------------------------------------------------

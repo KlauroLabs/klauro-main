@@ -25,6 +25,35 @@ function value(flag: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+/**
+ * What `klauro install` registers as the MCP server launch command — differs
+ * by distribution channel:
+ *
+ *  - npm-installed client: `node <package>/dist/index.cjs` (unchanged,
+ *    exactly what every registration up to and including 1.0.131 wrote).
+ *  - self-contained (Node SEA) binary, from `curl .../install | sh`: there is
+ *    no `dist/` directory beside a single embedded executable, so the
+ *    registered command is the binary ITSELF (`process.execPath` inside a
+ *    SEA build IS the klauro binary's own path) invoked with the
+ *    `__mcp_server` sentinel argv that installed-sea-entry.ts dispatches on
+ *    to start the same server logic instead of the CLI.
+ *
+ * `node:sea` (stable Node 21.7+/22+) is the documented way to tell these
+ * apart at runtime; it is absent from older Node, so failure to load it is
+ * read as "not running inside a SEA binary" rather than an error.
+ */
+export function resolveMcpRegistrationCommand(): string[] {
+  let isSea = false;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    isSea = (require('node:sea') as { isSea(): boolean }).isSea();
+  } catch {
+    isSea = false;
+  }
+  if (isSea) return [process.execPath, '__mcp_server'];
+  return [process.execPath, path.join(__dirname, 'index.cjs')];
+}
+
 // ---------------------------------------------------------------------------
 // Flag validation + `--help`, generalised across every subcommand.
 //
@@ -249,14 +278,25 @@ async function main() {
     return output({ status: 'ready', path: target, config_file: config.configPath, project_id: projectId, workspace_id: workspaceId, next: `klauro analyze ${target}` }, json);
   }
   if (command === 'install') {
-    const bundle = path.join(__dirname, 'index.cjs');
+    const mcpCommand = resolveMcpRegistrationCommand();
     const scope = value('--claude-scope') || 'user';
     const results: Record<string, unknown> = {};
-    const claude = spawnSync('claude', ['mcp', 'add', '--scope', scope, 'klauro', '--', process.execPath, bundle], { encoding: 'utf8' });
+    // Best-effort remove of any existing registration BEFORE re-adding.
+    // Without this, `claude mcp add`/`codex mcp add` on an already-registered
+    // name either no-ops or errors depending on client version, so re-running
+    // `klauro install` after upgrading from the npm client to the
+    // self-contained binary (or back) would leave the OLD command (`node
+    // .../dist/index.cjs`, now possibly gone) registered forever — an MCP
+    // that silently stops loading is worse than one that fails loudly, and
+    // this is how that gets avoided: always re-register clean. Failure here
+    // is fine (nothing registered yet) and ignored.
+    spawnSync('claude', ['mcp', 'remove', '--scope', scope, 'klauro'], { encoding: 'utf8' });
+    spawnSync('codex', ['mcp', 'remove', 'klauro'], { encoding: 'utf8' });
+    const claude = spawnSync('claude', ['mcp', 'add', '--scope', scope, 'klauro', '--', ...mcpCommand], { encoding: 'utf8' });
     results.claude = claude.error?.message || claude.stderr?.trim() || claude.stdout?.trim() || `exit ${claude.status}`;
-    const codex = spawnSync('codex', ['mcp', 'add', 'klauro', '--', process.execPath, bundle], { encoding: 'utf8' });
+    const codex = spawnSync('codex', ['mcp', 'add', 'klauro', '--', ...mcpCommand], { encoding: 'utf8' });
     results.codex = codex.error?.message || codex.stderr?.trim() || codex.stdout?.trim() || `exit ${codex.status}`;
-    return output({ status: claude.status === 0 || codex.status === 0 ? 'installed' : 'manual-registration-required', bundle, results }, json);
+    return output({ status: claude.status === 0 || codex.status === 0 ? 'installed' : 'manual-registration-required', command: mcpCommand.join(' '), results }, json);
   }
   if (command === 'auth-status' || command === 'whoami') {
     // Round-trips to GET /api/me instead of only checking that a token FILE
