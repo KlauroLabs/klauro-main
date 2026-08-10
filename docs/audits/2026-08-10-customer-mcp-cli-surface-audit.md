@@ -6,7 +6,11 @@ Scope: the surface a paying customer actually touches.
 - MCP shipped to customers: `apps/mcp-server/src/installed-client-server.ts` (`INSTALLED_TOOL_NAMES`, 40 tools).
 - `apps/mcp-server/src/server.ts` (~179 tools) is the hosted-only surface — intentionally a different surface, not audited for count parity per the brief.
 
-Method: built the real bundle (`npm run build` → `dist/cli.cjs`) on Node 22.22.0 (never 26 — CLAUDE.md), ran it against scratch git repos, with auth isolated via `KLAURO_AUTH_CONFIG_PATH` pointed at a scratch file. Never ran `klauro login` for real, never touched `/opt/homebrew/bin/klauro`, `~/.klaurorc`, `~/.claude.json`, or `~/.klauro/auth.json`. Work done in an isolated `git worktree` on branch `audit/mcp-cli-surface-0810`, seeded from master `8ca33695`.
+Method: two passes.
+1. Initial pass built and ran the bundle locally on Node 22.22.0 (never 26) before the owner's standing rule change mid-session ("don't run on my computer — run on the VPS").
+2. Every subsequent build, typecheck, and CLI exercise ran on the VPS via `vps-ci.sh` inside `node:22-bookworm` — including, for the highest-fidelity check, downloading and running the **actual published customer tarball** (`https://mcp.klauro.com/dist/klauro-latest.tgz`, confirmed 1.0.138, matching `/dist/latest.json`) rather than a local build, so several results below are against the literal artifact a customer installs. Local `node_modules`/`dist` were deleted after the first pass.
+
+Auth isolated via `KLAURO_AUTH_CONFIG_PATH` pointed at a scratch file, exactly as `installed-cli-ops-commands.test.ts` does. Never ran `klauro login` for real, never created an account, never touched `/opt/homebrew/bin/klauro`, `~/.klaurorc`, `~/.claude.json`, or `~/.klauro/auth.json`. Work done in an isolated `git worktree` on branch `audit/mcp-cli-surface-0810`, seeded from master `8ca33695`.
 
 Everything under "KNOWN DEFECTS IN THIS AREA" in the brief (#49, #129, #132, #134, the login dead-end, the cross-account dead-end, `signed_in: true` with a dead token) is **already fixed on master** — the fixing commits are ancestors of `8ca33695` (`4d640241`, `7e6629af`, `080365ed`, `3b99146d`, `ab621a89`). Below is verification of those fixes plus what the audit found beyond them.
 
@@ -27,7 +31,7 @@ All cells run against the real `dist/cli.cjs`.
 
 Findings from the matrix:
 - **The #49/positional-arg-swallowing class is fixed and holds up under adversarial ordering** (`init --project-id prj_fake123 /path`, `status --server-url http://x /path`, flags before/after/interleaved). Verified `resolvePositionalArg`/`validateFlags` against real runs, not just by reading the code.
-- **Low severity — unrecognized top-level command exits 0.** `klauro frobnicate` prints usage and exits `0`, identical to `klauro --help`. A script or CI step that mistypes a subcommand gets silent "success" instead of a nonzero exit. `apps/mcp-server/src/installed-cli.ts:554` (`printUsage()` at the end of `main()`, no `process.exitCode` set for the unmatched-command path).
+- **Low severity — unrecognized top-level command exits 0.** `klauro frobnicate` prints usage and exits `0`, identical to `klauro --help`. A script or CI step that mistypes a subcommand gets silent "success" instead of a nonzero exit. `apps/mcp-server/src/installed-cli.ts:554` (`printUsage()` at the end of `main()`, no `process.exitCode` set for the unmatched-command path). Confirmed against the published 1.0.138 tarball, not just a local build.
 - **Low severity — undocumented command aliases.** `remote-analyze` (alias for `analyze`) and `sync` (alias for `remote-sync`) are fully wired in `COMMAND_FLAGS`/`PATH_COMMANDS` but never appear in `USAGE_TEXT`. Not broken, just surface a customer can stumble into (e.g. guessing `klauro sync`) that isn't documented, and a second name for the same operation is one more thing to keep straight. `apps/mcp-server/src/installed-cli.ts:104-107` vs `187-224`.
 
 ## New defect found and fixed: plain-text mode silently ignored by six commands
@@ -76,7 +80,41 @@ Next: klauro analyze /path/to/repo
 
 The `init` fix also closes a first-run gap (see walkthrough below): it now says explicitly when hosted binding was skipped for lack of a session, instead of unconditionally declaring `"status": "ready"`.
 
-`typecheck` clean on the touched files; full bundle rebuilt and re-verified against the scratch repos above.
+Confirmed the "before" behavior against the **actual published tarball** (1.0.138, downloaded from `https://mcp.klauro.com/dist/klauro-latest.tgz` inside `node:22-bookworm` on the VPS, not a local build) — same JSON dump on `klauro version` with no `--json`. Not an artifact of a local build.
+
+`typecheck` clean on the touched files (VPS, `node:22-bookworm`); full bundle rebuilt and re-verified there against scratch repos.
+
+## New defect found and fixed: `klauro update` could silently downgrade on a stalled/partial deploy (#142)
+
+The brief asked specifically to check whether the CLI warns when its own version leads the server's — the scenario from #142, where a failed deploy twice left the published client advertising a version ahead of the server. It does not warn correctly: it gets the direction backwards.
+
+`status-report.ts`'s `update_available` and `self-update.ts`'s `--check`/real-update paths all compared `latest !== current` — true in **both** directions, not just "the server has something newer." A direction-aware comparator, `isNewerVersion()`, already exists in `stale-client-hint.ts` (unit-tested: `first-run-auth-and-staleness.test.ts`) and is used correctly there — it was simply never imported into `status-report.ts` or `self-update.ts`.
+
+Reproduced on the VPS with a scratch HTTP server standing in for a stalled deploy (`/dist/latest.json` advertising `1.0.100` while the running client was built as `1.0.138`) — before the fix:
+
+```
+$ klauro status --server-url http://<stalled-server>
+Release:  1.0.100 available — run: klauro update
+$ klauro update --check --server-url http://<stalled-server>
+A newer version is available. Run: klauro update
+$ klauro update --server-url http://<stalled-server>
+[...would have downloaded and installed 1.0.100 over the running 1.0.138 — an actual downgrade]
+```
+
+After the fix (`apps/mcp-server/src/status-report.ts`, `apps/mcp-server/src/self-update.ts`, commit `6f291cd2`), same scenario:
+
+```
+$ klauro status --server-url http://<stalled-server>
+Release:  up to date (1.0.100)
+$ klauro update --check --server-url http://<stalled-server>
+You are on the latest version.
+$ klauro update --server-url http://<stalled-server>
+This client (1.0.138) is already ahead of what http://<stalled-server> advertises (1.0.100) — not downgrading. Use --force to install it anyway.
+```
+
+`klauro update` now refuses to install a server-advertised version that is not strictly newer, unless `--force` is passed — matching the flag's existing "reinstall anyway" contract for the equal-version case, extended to cover the trailing-server case instead of downgrading silently.
+
+`typecheck` clean (VPS); rebuilt and re-verified live against the scratch mock server above, not just read.
 
 ## B. Naming and shape coherence — customer MCP surface (`installed-client-server.ts`)
 
@@ -104,17 +142,18 @@ No new dead ends found past this point that weren't already fixed. The one first
 
 ## D. Ranked fix list
 
-1. **[Fixed this session]** `version`/`upload-manifest`/`index`/`init`/`install`/`logout`/`login` ignored the plain-text default and always dumped JSON — highest-likelihood hit because `version` and `upload-manifest` are two of the first commands anyone runs (sanity-check the install; preview what will be uploaded before trusting `analyze`). `apps/mcp-server/src/installed-cli.ts`, commit `6db74a65`.
-2. **[Fixed this session, as a side effect of #1]** `klauro init` before `klauro login` reported unconditional `"status": "ready"` with no signal that hosted binding was skipped — a customer who runs `init` before `login` (a very natural ordering) would only discover the gap later, at `analyze` time. Now stated explicitly in `init`'s own output.
-3. **[Not fixed — low severity, recommend fixing]** `klauro <unrecognized-command>` exits `0`. A one-line fix (`process.exitCode = 1` on the fallthrough path in `main()`, `installed-cli.ts:554`) closes a real but low-frequency script-safety gap.
-4. **[Not fixed — cosmetic]** `remote-analyze`/`sync` are undocumented aliases for `analyze`/`remote-sync`. Either document them in `USAGE_TEXT` or remove the alias surface; leaving it silent is the only issue.
-5. **[Verified fixed, no action needed]** Everything listed under "KNOWN DEFECTS" in the audit brief (#49 positional-arg swallowing, #134 upload-scope guard, #132 `--force`, #129 accepted-vs-complete, the login dead-end, `signed_in: true` with a dead token) — all confirmed fixed and holding up under adversarial live testing, not just code reading.
-6. **[No defect found]** MCP customer surface naming/shape coherence (part B) — clean; no action needed.
+1. **[Fixed this session]** `klauro update` could silently downgrade a customer whose client version led a stalled/partial deploy's advertised server version (#142) — `status`/`update --check` also misreported "a newer version is available" in that case. Direction-blind `!==` comparison replaced with the codebase's own existing (but previously unused here) `isNewerVersion()`. Highest severity of anything found: this one, followed literally, would have made a customer's install *worse*. `apps/mcp-server/src/status-report.ts`, `apps/mcp-server/src/self-update.ts`, commit `6f291cd2`. Reproduced against a live stalled-deploy simulation before and after the fix on the VPS.
+2. **[Fixed this session]** `version`/`upload-manifest`/`index`/`init`/`install`/`logout`/`login` ignored the plain-text default and always dumped JSON — highest-likelihood-to-be-seen of anything found, because `version` and `upload-manifest` are two of the first commands anyone runs (sanity-check the install; preview what will be uploaded before trusting `analyze`). `apps/mcp-server/src/installed-cli.ts`, commit `6db74a65`. Confirmed against the published tarball, not just a local build.
+3. **[Fixed this session, as a side effect of #2]** `klauro init` before `klauro login` reported unconditional `"status": "ready"` with no signal that hosted binding was skipped — a customer who runs `init` before `login` (a very natural ordering) would only discover the gap later, at `analyze` time. Now stated explicitly in `init`'s own output.
+4. **[Not fixed — low severity, recommend fixing]** `klauro <unrecognized-command>` exits `0`. A one-line fix (`process.exitCode = 1` on the fallthrough path in `main()`, `installed-cli.ts:554`) closes a real but low-frequency script-safety gap.
+5. **[Not fixed — cosmetic]** `remote-analyze`/`sync` are undocumented aliases for `analyze`/`remote-sync`. Either document them in `USAGE_TEXT` or remove the alias surface; leaving it silent is the only issue.
+6. **[Verified fixed, no action needed]** Everything listed under "KNOWN DEFECTS" in the audit brief (#49 positional-arg swallowing, #134 upload-scope guard, #132 `--force`, #129 accepted-vs-complete, the login dead-end, `signed_in: true` with a dead token) — all confirmed fixed and holding up under adversarial live testing, not just code reading.
+7. **[No defect found]** MCP customer surface naming/shape coherence (part B) — clean; no action needed.
 
 ## Constraints followed
 
 - Isolated `git worktree add` at `/Users/michaelshattuck/dev/unravl-worktrees/audit-mcp-cli-surface`, branch `audit/mcp-cli-surface-0810` off master `8ca33695`. No `git stash` used.
-- `npm ci` run at the worktree root and in `apps/mcp-server` only (Node 22.22.0 via `nvm`, never 26).
-- No analysis run on this Mac; no deploy; test repos were scratch git init's under `/private/tmp/klauro-audit-isolated/`, never the shared session scratchpad (which is a busy multi-session directory — confirmed via `ls` before running anything destructive-adjacent there, then moved off it).
-- Auth isolated via `KLAURO_AUTH_CONFIG_PATH`; `klauro login` never run for real; `/opt/homebrew/bin/klauro`, `~/.klaurorc`, `~/.claude.json`, `~/.klauro/auth.json` never touched. `klauro install` (which registers into `~/.claude.json`/Codex config) was deliberately never run.
-- Committed early (`6db74a65`) with the fix and verification in the same session.
+- First pass ran `npm ci`/build/typecheck locally (Node 22.22.0 via `nvm`, never 26); after the owner's mid-session standing rule change, all subsequent installs, builds, typechecks, and CLI runs moved to the VPS via `vps-ci.sh` inside `node:22-bookworm` (capped `--memory=3g --cpus=2`), including installing and running the actual published customer tarball. Local `node_modules`/`dist`/`.customer-package` deleted after the first pass; no further installs or builds ran on the laptop.
+- No analysis run anywhere for this audit; no deploy. Test repos were scratch git init's (`/private/tmp/klauro-audit-isolated/` locally, `/tmp/proj` inside the VPS container), never the shared session scratchpad (a busy multi-session directory — confirmed via `ls` before running anything there, then moved off it) and never the shared `/opt/klauro-ci` clones other than through the runner's own per-branch worktree.
+- Auth isolated via `KLAURO_AUTH_CONFIG_PATH` (scratch file, both locally and in-container); `klauro login` never run for real, no account created; `/opt/homebrew/bin/klauro`, `~/.klaurorc`, `~/.claude.json`, `~/.klauro/auth.json` never touched. `klauro install` (which registers into `~/.claude.json`/Codex config) was deliberately never run.
+- Committed early and often: `6db74a65` (plain-text fix), `b498fc67` (report), `6f291cd2` (#142 version-skew fix).
