@@ -449,12 +449,37 @@ or kept as a deliberate lighter-weight signal found:
   already present in the flow's step→function graph — the telemetry event
   itself never has to carry a `flow_id`. So a `RuntimeFact` is one adapter
   function away from the same join, not blocked from it by its wire shape.
-- **A separate, unrelated dead path was found in passing**: a *third* SDK
-  file, `packages/analyzer-core/src/sdk/javascript/klauro-sdk.ts`, POSTs to
-  `/api/telemetry/ingest` — a route no server file implements. It hasn't been
-  touched since the original monorepo reorg commit and is referenced only
-  from `docs/SECURITY-PRIVACY.md`. It is not part of either live pipeline;
-  flagged separately, not fixed here.
+- **A separate, unrelated dead path was found in passing, then fixed rather
+  than removed.** A *third* SDK file, `packages/analyzer-core/src/sdk/
+  javascript/klauro-sdk.ts`, POSTed to `/api/telemetry/ingest` — a route no
+  server file implements. Reachability check confirmed it dead by every
+  measure: excluded from `packages/analyzer-core/tsconfig.json`'s `include`
+  (`src/sdk/**/*` is explicitly excluded), not referenced by
+  `apps/mcp-server/scripts/build-bundle.mjs`, absent from all three shipped
+  bundles (`dist/{cli,index,server}.cjs` — zero string hits for both the
+  class name and the route), not imported by any source, test, or fixture in
+  the repo (its sibling `klauro-express-middleware.ts` in the same directory
+  is self-contained and does not import it either), and never published —
+  `analyzer-core`'s `package.json` is `"private": true` and does not list it
+  in any `files`/`exports`. Git history: 3 commits total, all pre-dating the
+  monorepo reorg (`191d5bc9`); it was never wired to a real endpoint even at
+  authorship. Per product-owner direction this pass, it was corrected in
+  place instead of deleted: endpoint `api.klauro.io` → `mcp.klauro.com`,
+  route `/api/telemetry/ingest` → `/api/telemetry/runtime-events/:projectId`,
+  and its per-item `{version, payload: {type, data}, metadata}` envelope →
+  the real `{ events: CasRuntimeEvent[] }` batch body, with Trace/Metric/
+  ErrorReport items downgraded onto `CasRuntimeEvent` and `CASRuntimeEvent`
+  items (already that shape) passed through with their correlation ids
+  intact. `docs/SECURITY-PRIVACY.md` §5 is updated to match and now leads
+  with the real, published `@klauro/telemetry` egress path, describing this
+  file as an internal reference implementation rather than a shipped
+  integration. A second, adjacent defect surfaced while tracing this:
+  `runtime-contract.ts`'s `getRuntimeEventContract().sdk_contract.method`
+  advertised `recordCasEvent` — this dead file's method name, not
+  `@klauro/telemetry`'s actual `recordEvent` — to any caller of the
+  `get_runtime_event_contract` MCP tool/resource; corrected to `recordEvent`
+  in the same pass. It remains true that neither of these files is part of
+  either live pipeline described above.
 
 **Adjudication: (b) is the technically correct target** — keep
 `/v1/telemetry/ingest`'s intake (spans are still a reasonable lightweight

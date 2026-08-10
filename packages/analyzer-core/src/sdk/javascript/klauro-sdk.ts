@@ -3,6 +3,30 @@ import { EventEmitter } from 'events';
 import * as http from 'http';
 import * as https from 'https';
 
+/**
+ * Legacy, unpublished telemetry client. Not part of any build (excluded from
+ * this package's tsconfig `include`), not imported anywhere else in this
+ * repo, and not what `get_runtime_sdk_package` generates for customers —
+ * that generator points at the installable `@klauro/telemetry` package
+ * (`packages/klauro-sdk-js`), which is the one that actually ships.
+ *
+ * This file used to POST to `/api/telemetry/ingest`, a route no server file
+ * ever implemented, in an envelope shape (`{version, payload: {type, data},
+ * metadata}`) the real backend does not parse. Both are fixed below to match
+ * the one ingest route that exists — `/api/telemetry/runtime-events/:projectId`
+ * (`apps/mcp-server/src/remote-analyzer-service.ts`) — and its
+ * `{ events: CasRuntimeEvent[] }` body shape (`packages/klauro-sdk-js/src/types.ts`,
+ * advertised by `get_runtime_event_contract`), so that anyone who does end up
+ * wiring this class up, or copying code out of it, gets a working request
+ * instead of a silent 404. It still offers heavier auto-instrumentation
+ * (raw http/https patching, console/timers/db interceptors) that
+ * `@klauro/telemetry` deliberately does not — see this file's `autoInstrument`
+ * vs. the manual-instrumentation + framework-middleware design in
+ * `packages/klauro-sdk-js`. If this auto-instrumentation is ever wanted for
+ * real customers, fold it into `@klauro/telemetry` as an opt-in module rather
+ * than shipping a second, competing client — do not resurrect this file as a
+ * standalone package.
+ */
 export interface KlauroConfig {
   projectId: string;
   apiKey: string;
@@ -138,7 +162,9 @@ export class KlauroSDK extends EventEmitter {
     this.config = {
       projectId: config.projectId,
       apiKey: config.apiKey,
-      endpoint: config.endpoint || 'https://api.klauro.io',
+      // https://api.klauro.io was never a real host; the hosted service
+      // lives at mcp.klauro.com, same default as @klauro/telemetry.
+      endpoint: config.endpoint || 'https://mcp.klauro.com',
       environment: config.environment || 'production',
       serviceName: config.serviceName || 'default',
       batchSize: config.batchSize || 100,
@@ -551,17 +577,17 @@ export class KlauroSDK extends EventEmitter {
   }
 
   private async sendBatch(batch: Array<TraceContext | Metric | ErrorReport | CASRuntimeEvent>): Promise<void> {
-    await Promise.all(batch.map(item => this.sendTelemetryMessage(item)));
-  }
-
-  private async sendTelemetryMessage(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): Promise<void> {
-    const response = await fetch(`${this.config.endpoint}/api/telemetry/ingest`, {
+    const events = batch.map(item => this.toCasRuntimeEvent(item));
+    const response = await fetch(this.ingestUrl(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.config.apiKey}`,
       },
-      body: JSON.stringify(this.toTelemetryMessage(item)),
+      // The real ingest route (`apps/mcp-server/src/remote-analyzer-service.ts`,
+      // matched via `route.startsWith('/api/telemetry/runtime-events/')`)
+      // reads `{ events: CasRuntimeEvent[] }`, not a per-item envelope.
+      body: JSON.stringify({ events }),
     });
 
     if (!response.ok) {
@@ -569,44 +595,75 @@ export class KlauroSDK extends EventEmitter {
     }
   }
 
-  private toTelemetryMessage(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent) {
-    const payloadType = this.payloadType(item);
-    return {
-      version: '1.0',
-      timestamp: Date.now(),
-      projectId: this.config.projectId,
-      type: payloadType,
-      payload: {
-        type: payloadType,
-        data: this.payloadData(item),
-      },
-      metadata: {
-        sdkVersion: '1.0.0',
-        runtime: `node:${process.version}`,
-        hostname: process.env.HOSTNAME || '',
+  /** projectId is a URL path segment on this route, not a body field. */
+  private ingestUrl(): string {
+    return `${this.config.endpoint.replace(/\/+$/, '')}/api/telemetry/runtime-events/${encodeURIComponent(this.config.projectId)}`;
+  }
+
+  /**
+   * Map every buffered item onto `CasRuntimeEvent` — the one shape the
+   * backend's `mapSdkEvent` (`apps/mcp-server/src/self-telemetry.ts`)
+   * understands and correlates on via `static_id`/`node_id`/`entry_point_id`/
+   * `exit_point_id`/`call_chain_id` (`getRuntimeEventContract`'s
+   * `correlation_order`). `CASRuntimeEvent` items already are that shape —
+   * including whichever correlation ids the caller set via `recordCasEvent` /
+   * `recordCasRequest` / `recordCasExit` — and pass through unchanged. The
+   * older Trace/Metric/ErrorReport shapes are this SDK's own concepts with no
+   * direct CAS correlation id, so they downgrade to the closest
+   * `CasRuntimeEvent` and only correlate via route/path/signal fuzzy matching.
+   */
+  private toCasRuntimeEvent(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): CASRuntimeEvent {
+    if (this.isCasRuntimeEvent(item)) {
+      return {
+        schema_version: item.schema_version || '1.0.0',
+        timestamp: item.timestamp || new Date().toISOString(),
+        service_name: item.service_name || this.config.serviceName,
+        environment: item.environment || this.config.environment,
+        ...item,
+      };
+    }
+
+    if ('traceId' in item && 'spanId' in item) {
+      return {
+        type: 'exit',
+        timestamp: new Date().toISOString(),
+        service_name: this.config.serviceName,
         environment: this.config.environment,
-      },
-    };
-  }
+        signal: item.name,
+        trace_id: item.traceId,
+        span_id: item.spanId,
+        parent_span_id: item.parentSpanId,
+        duration_ms: typeof item.attributes?.duration_ms === 'number' ? item.attributes.duration_ms : undefined,
+        attributes: item.attributes,
+      };
+    }
 
-  private payloadType(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): 'metric' | 'trace' | 'event' {
-    if ('value' in item && 'name' in item) return 'metric';
-    if ('traceId' in item && 'spanId' in item) return 'trace';
-    return 'event';
-  }
-
-  private payloadData(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): Record<string, unknown> {
     if ('error' in item) {
       return {
         type: 'error',
         timestamp: new Date(item.timestamp).toISOString(),
+        service_name: this.config.serviceName,
+        environment: this.config.environment,
         error_message: item.error.message,
         stack: item.stackTrace,
-        severity: item.severity,
-        attributes: item.context,
+        attributes: { ...item.context, severity: item.severity },
       };
     }
-    return item as unknown as Record<string, unknown>;
+
+    // Metric.
+    return {
+      type: 'custom',
+      timestamp: new Date(item.timestamp).toISOString(),
+      service_name: this.config.serviceName,
+      environment: this.config.environment,
+      signal: item.name,
+      attributes: { ...item.tags, metric_type: 'gauge', metric_value: item.value, unit: item.unit },
+    };
+  }
+
+  private isCasRuntimeEvent(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): item is CASRuntimeEvent {
+    return typeof (item as CASRuntimeEvent).type === 'string' &&
+      ['request', 'error', 'exit', 'log', 'custom'].includes((item as CASRuntimeEvent).type);
   }
 
   shutdown(): void {
