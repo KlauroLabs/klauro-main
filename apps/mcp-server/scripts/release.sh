@@ -87,6 +87,21 @@ if [ "${RELEASE_ALLOW_DIRTY:-0}" != "1" ]; then
 fi
 mark_step "clean-tree-gate"
 
+# Spec-purity gate. Until this pass, this gate (client/corpus name leaks +
+# hardcoded-vocabulary-table shape, see spec-purity-gate-cli.ts) only ran on
+# the VPS deploy path (infrastructure/vps/deploy.sh) — never on the tarball a
+# customer actually `npm install`s via this script. That is a different
+# artifact built from the same tree; a name/vocab violation could ship to
+# every installed customer while the VPS-deployed copy stayed clean. Run it
+# here, before packing, so a violation blocks the release instead of the
+# deploy. See docs/audits/2026-08-10-spec-vs-implementation-audit.md §C.1.
+echo "==> Checking spec/source purity for the released bundle (see spec-purity-gate-cli.ts)"
+if ! ( npx tsx src/spec-purity-gate-cli.ts "$REPO_ROOT" ); then
+  echo "ERROR: refusing to release — spec-purity gate failed on the tree this tarball is built from." >&2
+  exit 1
+fi
+mark_step "spec-purity-gate"
+
 # --- Idempotent resume ---------------------------------------------------
 # If HEAD is already an uncommitted-nothing-left "Release vX.Y.Z" commit for
 # the version currently sitting in package.json, AND that version has no git
