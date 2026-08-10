@@ -123,9 +123,14 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
+    // Test files are included (not excluded) — they are tagged via
+    // applyTestFileBoundary rather than dropped from the graph entirely.
+    // Previously excluding `**/test/**` and `**/*Test.java` here meant Java
+    // test methods never became nodes at all, so the cross-language
+    // test-coverage graph walk had nothing to traverse from.
     const files = await glob(['**/*.java'], {
       cwd: projectPath,
-      ignore: [...this.getJavaIgnorePatterns({ projectPath }), '**/test/**', '**/*Test.java'],
+      ignore: this.getJavaIgnorePatterns({ projectPath }),
       nodir: true
     });
     return files.sort();
@@ -145,6 +150,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
     this.detectSpringPatterns(nodes, edges, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
     await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+    this.applyTestFileBoundary(nodes);
 
     const imports = this.extractImports(content).map(imp => imp.importPath);
     const exports = nodes
@@ -177,9 +183,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
+      // Test files are included (not excluded) — see getRelevantFiles for
+      // why: they're tagged via applyTestFileBoundary, not dropped.
       const javaFiles = await glob(['**/*.java'], {
         cwd: context.projectPath,
-        ignore: [...this.getJavaIgnorePatterns(context), '**/test/**', '**/*Test.java'],
+        ignore: this.getJavaIgnorePatterns(context),
         nodir: true
       });
       javaFiles.sort();
@@ -196,6 +204,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       this.buildInheritanceRelationships(nodes, edges);
 
       await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+      this.applyTestFileBoundary(nodes);
 
       const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
@@ -2348,5 +2357,36 @@ export class JavaAnalyzer extends BaseAnalyzer {
       'experimental-code-detection',
       'technical-debt-analysis'
     ];
+  }
+
+  /**
+   * Tags every node in a Java test file with `metadata.is_test`, `category:
+   * 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
+   * applyTestSourceBoundary and the Go analyzer's applyTestFileBoundary.
+   * Java/JVM's own conventions (JUnit/TestNG, universal — never a
+   * keyword/brand check): files named `*Test.java` or `*Tests.java`, or any
+   * file under a Maven/Gradle src/test/java source root. This method ALSO
+   * exists because Java test files used to be excluded from the glob
+   * entirely (getRelevantFiles / analyze()'s old ignore patterns for the
+   * test directory and *Test.java) — worse than TS/Dart/Go's original gap,
+   * since Java test methods never became nodes at all, not just untagged
+   * ones. Both exclusions were removed; this tagging is what replaces them.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isJavaTestPath(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isJavaTestPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    const basename = normalized.split('/').pop() || normalized;
+    return /(?:^|\/)src\/test\/java\//i.test(normalized) ||
+      /Tests?\.java$/i.test(basename);
   }
 }

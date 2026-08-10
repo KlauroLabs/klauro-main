@@ -371,6 +371,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     if (extraction) {
       this.linkFileElements(extraction, nodes, edges, new Set(edges.map(edge => edge.id)), exitPoints, methodCalls);
     }
+    this.applyTestFileBoundary(nodes);
 
     const imports = [...content.matchAll(/^\s*(?:pub\s+)?use\s+([^;]+);/gm)].map(match => match[1].trim());
     const exports = nodes
@@ -427,6 +428,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           `Rust cross-file linking deferred for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus after ${rustFiles.length} prioritized files; run deep-context/full analysis for exhaustive Rust call edges`
         );
       }
+      this.applyTestFileBoundary(nodes);
 
       this.createExitPointsForLibraries(libraries, exitPoints, nodes);
 
@@ -1469,11 +1471,48 @@ export class RustAnalyzer extends BaseAnalyzer {
     return impls;
   }
 
+  /**
+   * Rust has no filename convention for unit tests — `#[test]`-attributed
+   * functions and their helpers commonly live inside the SAME file as the
+   * production code they test, inside a `#[cfg(test)] mod tests { ... }`
+   * block (the idiomatic, universal Rust convention — never a
+   * keyword/brand check). A function directly attributed `#[test]` /
+   * `#[tokio::test]` / `#[async_std::test]` is already caught by the
+   * per-function `isTest` check below, but helper functions INSIDE that
+   * `mod tests` block (fixtures, builders) carry no attribute of their own
+   * and would otherwise be missed. This scans for `#[cfg(test)]` followed
+   * by a `mod <name> {` and returns each such block's brace-matched line
+   * range so callers can test whether a function falls inside one.
+   */
+  private findCfgTestModuleRanges(lines: string[]): Array<[number, number]> {
+    const ranges: Array<[number, number]> = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].trim().startsWith('#[cfg(test)]')) continue;
+      let modLine = -1;
+      for (let j = i; j < Math.min(lines.length, i + 5); j++) {
+        if (/\bmod\s+\w+/.test(lines[j])) { modLine = j; break; }
+      }
+      if (modLine === -1) continue;
+      let braceCount = 0;
+      let foundStart = false;
+      for (let j = modLine; j < lines.length; j++) {
+        if (lines[j].includes('{')) { braceCount++; foundStart = true; }
+        if (lines[j].includes('}')) braceCount--;
+        if (foundStart && braceCount === 0) {
+          ranges.push([modLine, j]);
+          break;
+        }
+      }
+    }
+    return ranges;
+  }
+
   private async extractFunctions(content: string, relativePath: string, nodes: CASNode[], entryPoints: CASEntryPoint[]): Promise<RustFunction[]> {
     const functions: RustFunction[] = [];
     const lines = content.split('\n');
 
     const implContext = this.findImplContext(lines);
+    const cfgTestModuleRanges = this.findCfgTestModuleRanges(lines);
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -1488,7 +1527,9 @@ export class RustAnalyzer extends BaseAnalyzer {
           const signature = this.parseFunctionSignature(trimmedLine);
 
           const prevLines = lines.slice(Math.max(0, i - 5), i).join('\n');
-          const isTest = prevLines.includes('#[test]') || prevLines.includes('#[tokio::test]') || prevLines.includes('#[async_std::test]');
+          const isAttributedTest = prevLines.includes('#[test]') || prevLines.includes('#[tokio::test]') || prevLines.includes('#[async_std::test]');
+          const isInCfgTestModule = cfgTestModuleRanges.some(([start, end]) => i >= start && i <= end);
+          const isTest = isAttributedTest || isInCfgTestModule;
           const documentation = this.extractDocumentation(lines, i, relativePath);
 
           let fnEnd = i;
@@ -1582,6 +1623,18 @@ export class RustAnalyzer extends BaseAnalyzer {
           functionNode.implementation_status = this.determineImplementationStatus(body, prevLines, fnName);
           const todos = this.extractTodos(body, relativePath, fnName, bodyStartLine + 1, nodeId);
           if (todos.length > 0) functionNode.todos = todos;
+          if (isTest) {
+            // `metadata.is_test` (snake_case) is what the cross-language
+            // test-coverage graph walk's isTestOwnedNode() checks — the
+            // camelCase `isTest` above is this analyzer's own long-standing
+            // attribute name and is kept for backward compatibility, but it
+            // was never read by the coverage walk, so #[test] functions
+            // never became traversal roots despite being "detected".
+            functionNode.metadata = { ...functionNode.metadata, is_test: true };
+            functionNode.category = 'test';
+            functionNode.subcategories = [...new Set([...(functionNode.subcategories || []), functionNode.type, 'test-code'])];
+            functionNode.tags = [...new Set([...(functionNode.tags || []), 'test-code'])];
+          }
           nodes.push(functionNode);
 
           if (isMain) {
@@ -3074,5 +3127,34 @@ export class RustAnalyzer extends BaseAnalyzer {
       detectedRustVersion = 'unknown';
     }
     return detectedRustVersion || 'unknown';
+  }
+
+  /**
+   * Tags every node in a Cargo `tests/` integration-test file (Rust's own
+   * convention — each file under the crate-root `tests/` directory compiles
+   * as its own test binary, universal to Cargo, never a keyword/brand
+   * check) with `metadata.is_test`, `category: 'test'`, and a `test-code`
+   * tag. This is the file-level complement to the per-function tagging in
+   * extractFunctions (which catches `#[test]`-attributed functions and
+   * `#[cfg(test)] mod tests` blocks, Rust's OTHER test convention — the
+   * in-file one with no filename signal at all). Integration-test files
+   * can contain helper functions with no `#[test]` attribute of their own
+   * (e.g. `tests/common/mod.rs`) that this directory-level pass also
+   * catches.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isRustIntegrationTestPath(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isRustIntegrationTestPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    return /(?:^|\/)tests\//i.test(normalized);
   }
 }

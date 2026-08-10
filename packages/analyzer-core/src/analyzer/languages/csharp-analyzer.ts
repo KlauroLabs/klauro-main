@@ -193,9 +193,14 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
+    // Test files are included here (excludeTests=false) — they are tagged
+    // via applyTestFileBoundary rather than dropped, so test methods remain
+    // visible to the cross-language test-coverage graph walk. See
+    // applyTestFileBoundary's doc comment for the customer-visible defect
+    // this fixes.
     const files = await glob(['**/*.cs'], {
       cwd: projectPath,
-      ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
+      ignore: this.getCSharpIgnorePatterns({ projectPath }, false),
       nodir: true
     });
     return files.sort();
@@ -269,6 +274,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       nodes.filter(node => node.type === 'class' || node.type === 'worker'),
       context.projectPath
     );
+    this.applyTestFileBoundary(nodes);
 
     const usings = this.extractUsings(content).map(using => using.namespace);
     const exports = nodes
@@ -301,9 +307,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
+      // excludeTests=false: test files are analyzed and tagged (via
+      // applyTestFileBoundary) rather than dropped from the graph entirely.
       const csharpFiles = await glob(['**/*.cs'], {
         cwd: context.projectPath,
-        ignore: this.getCSharpIgnorePatterns(context, true),
+        ignore: this.getCSharpIgnorePatterns(context, false),
         nodir: true
       });
       csharpFiles.sort();
@@ -324,6 +332,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       this.linkEnumUsages(nodes, edges);
 
       await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+      this.applyTestFileBoundary(nodes);
 
       const casLibraries = libraries.map((lib: any) => ({
         id: `lib_${this.sanitizeId(lib.name)}`,
@@ -2150,9 +2159,12 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
+    // excludeTests=false: call edges FROM test methods into production code
+    // must be built, or the cross-language test-coverage graph walk has no
+    // edges to traverse even after test nodes are tagged.
     const csharpFiles = await glob(['**/*.cs'], {
       cwd: projectPath,
-      ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
+      ignore: this.getCSharpIgnorePatterns({ projectPath }, false),
       nodir: true
     });
     csharpFiles.sort();
@@ -3037,5 +3049,36 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       'aspnet-core-detection',
       'entity-framework-detection'
     ];
+  }
+
+  /**
+   * Tags every node in a C# test file with `metadata.is_test`, `category:
+   * 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
+   * applyTestSourceBoundary and the Go analyzer's applyTestFileBoundary.
+   * .NET's own conventions (xUnit/NUnit/MSTest, all universal — never a
+   * keyword/brand check): files named `*Test.cs` or `*Tests.cs`, or any
+   * file under a `Tests/` or `.Tests` project directory (the standard
+   * `MyProject.Tests` sibling-project layout). Without this, C# test
+   * methods carried no test-owned marker, so the cross-language
+   * test-coverage graph walk could never start a traversal from this
+   * analyzer's own method nodes.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isCSharpTestPath(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isCSharpTestPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    const basename = normalized.split('/').pop() || normalized;
+    return /Tests?\.cs$/i.test(basename) ||
+      /(?:^|\/)[^/]*\.Tests(?:\.[^/]+)?\//i.test(normalized) ||
+      /(?:^|\/)tests?\//i.test(normalized);
   }
 }

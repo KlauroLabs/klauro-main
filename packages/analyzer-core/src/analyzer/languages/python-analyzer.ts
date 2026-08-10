@@ -181,6 +181,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
     this.buildCallGraph(nodes, edges, entryPoints, exitPoints);
+    this.applyTestFileBoundary(nodes);
 
     const imports = this.extractImports(content).map(imp => imp.module);
     const exports = nodes
@@ -239,6 +240,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
           `Python cross-file call graph deferred for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus after ${pythonFiles.length} prioritized files; run deep-context/full analysis for exhaustive Python call edges`
         );
       }
+      this.applyTestFileBoundary(nodes);
 
       const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
@@ -2141,5 +2143,35 @@ export class PythonAnalyzer extends BaseAnalyzer {
                    status === 'stub' ? { estimated_percentage: 10 } :
                    { estimated_percentage: 0 }
     };
+  }
+
+  /**
+   * Tags every node in a Python test file with `metadata.is_test`,
+   * `category: 'test'`, and a `test-code` tag, mirroring the TS/JS
+   * analyzer's applyTestSourceBoundary and the Go analyzer's
+   * applyTestFileBoundary. Python's own conventions (pytest and unittest,
+   * both universal — never a keyword/brand check): modules named
+   * `test_*.py` or `*_test.py`, or any module under a `tests/` or `test/`
+   * directory. Without this, Python test functions carried no test-owned
+   * marker, so the cross-language test-coverage graph walk could never
+   * start a traversal from this analyzer's own function nodes.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isPythonTestPath(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isPythonTestPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    const basename = normalized.split('/').pop() || normalized;
+    return /(?:^|\/)tests?\//i.test(normalized) ||
+      /^test_[^/]+\.py$/i.test(basename) ||
+      /_test\.py$/i.test(basename);
   }
 }

@@ -189,6 +189,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     this.emitFileNodes(info, nodes, edges, entryPoints);
     this.emitInheritanceEdges(fileInfos, nodes, edges);
     await this.emitCallEdges(fileInfos, nodes, edges);
+    this.applyTestFileBoundary(nodes);
 
     const imports = info.imports.map(i => i.importPath);
     const exports = [
@@ -246,6 +247,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       this.emitImportEdges(fileInfos, nodes, edges, exitPoints);
       await this.emitCallEdges(fileInfos, nodes, edges);
       await this.emitManifestEntryPoints(context, fileInfos, entryPoints);
+      this.applyTestFileBoundary(nodes);
 
       const warnings = this.collectAnalysisWarnings();
       const composeCount = nodes.filter(n => n.tags?.includes('compose-fn')).length;
@@ -1602,6 +1604,36 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       'kotlin-imports',
       'entry-point-detection',
     ];
+  }
+
+  /**
+   * Tags every node in a Kotlin test file with `metadata.is_test`,
+   * `category: 'test'`, and a `test-code` tag, mirroring the TS/JS
+   * analyzer's applyTestSourceBoundary and the Go analyzer's
+   * applyTestFileBoundary. Kotlin/JVM's own conventions (JUnit/Kotest,
+   * universal — never a keyword/brand check): files named `*Test.kt` or
+   * `*Tests.kt`, or any file under a Gradle `src/test/kotlin/**` /
+   * `src/androidTest/**` source root. Without this, Kotlin test functions
+   * carried no test-owned marker, so the cross-language test-coverage graph
+   * walk could never start a traversal from this analyzer's own function
+   * nodes.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isKotlinTestPath(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isKotlinTestPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    const basename = normalized.split('/').pop() || normalized;
+    return /(?:^|\/)src\/(?:test|androidTest)\//i.test(normalized) ||
+      /Tests?\.kts?$/i.test(basename);
   }
 }
 
