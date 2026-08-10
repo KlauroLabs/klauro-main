@@ -258,7 +258,17 @@ else
     SEA_BIN_FILES="$(node -p "require('./dist-sea/manifest.json').targets.map(t => './dist-sea/' + t.file).join(' ')")"
     SEA_SHA_FILES="$(node -p "require('./dist-sea/manifest.json').targets.map(t => './dist-sea/' + t.file + '.sha256').join(' ')")"
     echo "==> Uploading tarball + latest.json + $SEA_BIN_COUNT SEA binaries to $VPS_HOST:/opt/klauro/downloads/"
-    SSHOPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20"
+    # ControlMaster multiplexing, mirroring deploy.sh (which has never hit the
+    # 2026-08-09 upload failure precisely because of this). The VPS has NO
+    # fail2ban and NO explicit sshd limits — verified — so the refusals were
+    # sshd's DEFAULT `MaxStartups 10:30:100`: past 10 concurrent UNAUTHENTICATED
+    # connections, new ones are dropped with rising probability, which sshpass
+    # surfaces as "Permission denied, please try again". A fleet of parallel
+    # agent lanes each opening its own connection exceeds 10 easily. Reusing one
+    # authenticated connection for every step removes the cause rather than
+    # raising a server-side DoS guard. retry_with_backoff below still covers
+    # genuinely transient network faults.
+    SSHOPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=/tmp/klauro-rel-%C -o ControlPersist=180"
     # shellcheck disable=SC2086  # SEA_BIN_FILES/SEA_SHA_FILES are intentionally
     # word-split: each is a space-separated list of relative paths with no
     # spaces of its own (filenames are generated, not user input).
