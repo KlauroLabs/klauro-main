@@ -2586,15 +2586,18 @@ describe('architecture and capability inference', () => {
   });
 
   it('still escalates severity and adds a security-sensitive factor from REAL structural security evidence, even with a domain-neutral name', () => {
-    const nodes: CASNode[] = [
-      node({
-        id: 'widget-controller',
-        name: 'WidgetController',
-        type: 'controller',
-        source: { file: 'src/Controller/WidgetController.php' },
-        security: { authentication_required: true, authorization_roles: ['admin'] },
-      } as any),
-    ];
+    const widgetController = node({
+      id: 'widget-controller',
+      name: 'WidgetController',
+      type: 'controller',
+      source: { file: 'src/Controller/WidgetController.php' },
+    }) as any;
+    // node() (the shared test builder above) only forwards a fixed field
+    // set and does not know about `security` — set it directly so this
+    // node carries REAL structural security evidence, not a name/keyword
+    // match, which is the whole point of this test.
+    widgetController.security = { authentication_required: true, authorization_roles: ['admin'] };
+    const nodes: CASNode[] = [widgetController];
     const edges: CASEdge[] = [];
     const entryPoints = [{
       id: 'widget-http',
