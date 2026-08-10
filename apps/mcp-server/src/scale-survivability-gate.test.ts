@@ -17,6 +17,7 @@ function observation(overrides: Partial<ScaleGateObservation> = {}): ScaleGateOb
     nodes: 50_000,
     edges: 70_000,
     stderrTail: '',
+    deterministicReadyMs: 20_000,
     ...overrides,
   };
 }
@@ -82,6 +83,31 @@ test('evaluateScaleGateObservation: fails when no counts were reported at all, d
   assert.strictEqual(finding.status, 'fail');
   assert.ok(finding.reasons.includes('no-count-reported'));
   assert.ok(!finding.reasons.includes('node-count-too-low'));
+});
+
+test('evaluateScaleGateObservation (task #118): fails when deterministic layers (L0-L4) take too long to become ready, even though the FULL run is inside maxWallMs — the queueing-regression case', () => {
+  const finding = evaluateScaleGateObservation(
+    observation({
+      wallMs: 150_000, // comfortably inside maxWallMs (10 min)
+      deterministicReadyMs: DEFAULT_SCALE_GATE_BUDGETS.maxDeterministicReadyMs! + 1,
+    }),
+    DEFAULT_SCALE_GATE_BUDGETS,
+  );
+  assert.strictEqual(finding.status, 'fail');
+  assert.deepStrictEqual(finding.reasons, ['over-deterministic-latency-budget']);
+});
+
+test('evaluateScaleGateObservation: does not fail on deterministic-readiness when it was not sampled (deterministicReadyMs null) — absence is not a violation', () => {
+  const finding = evaluateScaleGateObservation(observation({ deterministicReadyMs: null }), DEFAULT_SCALE_GATE_BUDGETS);
+  assert.ok(!finding.reasons.includes('over-deterministic-latency-budget'));
+});
+
+test('evaluateScaleGateObservation: skips the deterministic-readiness check entirely when maxDeterministicReadyMs is not configured', () => {
+  const finding = evaluateScaleGateObservation(
+    observation({ deterministicReadyMs: 999_999_999 }),
+    { ...DEFAULT_SCALE_GATE_BUDGETS, maxDeterministicReadyMs: undefined },
+  );
+  assert.ok(!finding.reasons.includes('over-deterministic-latency-budget'));
 });
 
 test('evaluateScaleGateObservation: reports every violated budget at once instead of stopping at the first', () => {

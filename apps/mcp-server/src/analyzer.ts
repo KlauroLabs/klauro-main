@@ -1170,9 +1170,12 @@ export async function analyzeProjectDeferred(
   }
 
   // Fire-and-forget: run the AI phase in the background, then re-save the
-  // upgraded CAS. Guarded by the project lock + a bounded lane permit + a
-  // catch so it can never crash.
-  const enrichment = withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
+  // upgraded CAS. Guarded by the project lock + a bounded AI-enrichment lane
+  // permit (task #118: a SEPARATE pool from the deterministic one — see
+  // aiEnrichmentLanePool above — so this I/O-bound pass never occupies a
+  // deterministic-analysis slot another project's fast parse is waiting on)
+  // + a catch so it can never crash.
+  const enrichment = withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
     await dedicatedOrch.enrichAnalysisAI(output);
     await saveAnalysis(projectPath, output);
     clearFreshnessSummaryCache();
@@ -1192,7 +1195,7 @@ export async function analyzeProjectDeferred(
     // a grounding-gate rejection) an operator needs to act on.
     output.ai_enrichment_error = message;
     try {
-      await withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
+      await withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
         await saveAnalysis(projectPath, output);
         clearFreshnessSummaryCache();
         await saveAnalysisSnapshot(projectPath, output);
@@ -1711,67 +1714,147 @@ interface LaneWaiter {
   enqueuedAt: number;
 }
 
-let permitsInUse = 0;
-let laneWaiters: LaneWaiter[] = [];
+/**
+ * Size-aware, starvation-bounded counting semaphore, factored out so it can
+ * be instantiated TWICE (task #118 — see deterministicLanePool /
+ * aiEnrichmentLanePool below) instead of once. Behavior is unchanged from
+ * the original single-pool implementation; this is a pure extraction.
+ */
+function createLanePool(getCapacity: () => number) {
+  let permitsInUse = 0;
+  let waiters: LaneWaiter[] = [];
 
-/** Picks the waiter that should get the next freed permit: the oldest
- *  waiter past the starvation threshold if any, otherwise the smallest
- *  sizeHint (ties broken by earliest arrival). Returns -1 if the queue is
- *  empty. */
-function pickNextWaiterIndex(): number {
-  if (laneWaiters.length === 0) return -1;
-  const now = Date.now();
-  const maxWaitMs = getQueueMaxWaitMs();
+  /** Picks the waiter that should get the next freed permit: the oldest
+   *  waiter past the starvation threshold if any, otherwise the smallest
+   *  sizeHint (ties broken by earliest arrival). Returns -1 if the queue is
+   *  empty. */
+  function pickNextWaiterIndex(): number {
+    if (waiters.length === 0) return -1;
+    const now = Date.now();
+    const maxWaitMs = getQueueMaxWaitMs();
 
-  let promotedIdx = -1;
-  let promotedEnqueuedAt = Infinity;
-  for (let i = 0; i < laneWaiters.length; i++) {
-    const waiter = laneWaiters[i];
-    if (now - waiter.enqueuedAt >= maxWaitMs && waiter.enqueuedAt < promotedEnqueuedAt) {
-      promotedIdx = i;
-      promotedEnqueuedAt = waiter.enqueuedAt;
+    let promotedIdx = -1;
+    let promotedEnqueuedAt = Infinity;
+    for (let i = 0; i < waiters.length; i++) {
+      const waiter = waiters[i];
+      if (now - waiter.enqueuedAt >= maxWaitMs && waiter.enqueuedAt < promotedEnqueuedAt) {
+        promotedIdx = i;
+        promotedEnqueuedAt = waiter.enqueuedAt;
+      }
     }
-  }
-  if (promotedIdx !== -1) return promotedIdx;
+    if (promotedIdx !== -1) return promotedIdx;
 
-  let bestIdx = 0;
-  for (let i = 1; i < laneWaiters.length; i++) {
-    const candidate = laneWaiters[i];
-    const best = laneWaiters[bestIdx];
-    if (
-      candidate.sizeHint < best.sizeHint ||
-      (candidate.sizeHint === best.sizeHint && candidate.enqueuedAt < best.enqueuedAt)
-    ) {
-      bestIdx = i;
+    let bestIdx = 0;
+    for (let i = 1; i < waiters.length; i++) {
+      const candidate = waiters[i];
+      const best = waiters[bestIdx];
+      if (
+        candidate.sizeHint < best.sizeHint ||
+        (candidate.sizeHint === best.sizeHint && candidate.enqueuedAt < best.enqueuedAt)
+      ) {
+        bestIdx = i;
+      }
     }
+    return bestIdx;
   }
-  return bestIdx;
+
+  function acquire(sizeHint: number): Promise<void> {
+    const capacity = getCapacity();
+    // The memory guard only ever caps the SECOND+ concurrent slot at 1 — a lone
+    // in-flight analysis is never gated by it.
+    const effectiveCapacity = permitsInUse >= 1 && isMemoryTight() ? 1 : capacity;
+    if (permitsInUse < effectiveCapacity) {
+      permitsInUse += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      waiters.push({ resolve, sizeHint, enqueuedAt: Date.now() });
+    });
+  }
+
+  function release(): void {
+    const idx = pickNextWaiterIndex();
+    if (idx !== -1) {
+      // Hand the freed permit straight to the chosen waiter (permitsInUse stays
+      // the same — it never actually dropped below capacity).
+      const [waiter] = waiters.splice(idx, 1);
+      waiter.resolve();
+      return;
+    }
+    permitsInUse = Math.max(0, permitsInUse - 1);
+  }
+
+  function reset(): void {
+    permitsInUse = 0;
+    waiters = [];
+  }
+
+  function inUse(): number {
+    return permitsInUse;
+  }
+
+  return { acquire, release, reset, inUse };
 }
 
+// --- task #118: two INDEPENDENT pools, not one -----------------------------
+//
+// PROBLEM (measured, blackbox, prod): a 94-file Electron app analysis was
+// observed queued for ~40s behind ANOTHER project's analysis before its own
+// deterministic phase even started — even though its own deterministic work
+// took ~1.5s and the peer analysis ahead of it was already past its
+// deterministic phase and deep into AI enrichment (a slow, externally
+// network-bound call to the AI provider). A 526-file Go repo analyzed when
+// the queue was empty finished in a fraction of that time. Wall-clock was
+// therefore dominated by which OTHER project's unpredictable AI-tail
+// happened to be queued ahead, not by this project's own size — exactly the
+// "size does not predict time" symptom task #118 exists to fix.
+//
+// ROOT CAUSE: deterministic parsing (CPU/memory-heavy — the reason this pool
+// exists at all, see DEFAULT_ANALYSIS_LANES above) and AI enrichment
+// (I/O-bound: waiting on an external HTTP provider, not the host's CPU or
+// RAM) drew permits from the SAME single-slot semaphore
+// (KLAURO_ANALYSIS_CONCURRENCY, pinned to 1 in production). analyzeProjectDeferred
+// already released and re-acquired the permit BETWEEN its deterministic and
+// AI phases (so the two phases don't hold one continuous permit) — but
+// re-acquiring from the SAME 1-slot pool means an AI phase that grabs the
+// lone slot still blocks every other project's deterministic work (which
+// has no CPU/memory reason to wait on it) for its own full, unpredictable
+// duration.
+//
+// FIX: AI enrichment gets its OWN pool (aiEnrichmentLanePool), sized by
+// KLAURO_AI_ENRICHMENT_CONCURRENCY rather than KLAURO_ANALYSIS_CONCURRENCY.
+// Because AI enrichment does not contend for the host's CPU/RAM the way
+// parsing does, its default capacity is materially higher than the
+// deterministic pool's — see DEFAULT_AI_ENRICHMENT_LANES. Deterministic work
+// for ANY project can now always proceed as soon as a deterministic slot is
+// free, never blocked behind another project's AI tail; AI enrichment across
+// several projects can genuinely overlap instead of serializing 1-at-a-time.
+const DEFAULT_AI_ENRICHMENT_LANES = 4;
+
+function getAiEnrichmentLaneCount(): number {
+  const raw = process.env.KLAURO_AI_ENRICHMENT_CONCURRENCY ?? process.env.KLAURO_AI_ENRICHMENT_LANES;
+  if (raw === undefined || raw === '') return DEFAULT_AI_ENRICHMENT_LANES;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_AI_ENRICHMENT_LANES;
+}
+
+const deterministicLanePool = createLanePool(getAnalysisLaneCount);
+const aiEnrichmentLanePool = createLanePool(getAiEnrichmentLaneCount);
+
 function acquireLanePermit(sizeHint: number): Promise<void> {
-  const capacity = getAnalysisLaneCount();
-  // The memory guard only ever caps the SECOND+ concurrent slot at 1 — a lone
-  // in-flight analysis is never gated by it.
-  const effectiveCapacity = permitsInUse >= 1 && isMemoryTight() ? 1 : capacity;
-  if (permitsInUse < effectiveCapacity) {
-    permitsInUse += 1;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    laneWaiters.push({ resolve, sizeHint, enqueuedAt: Date.now() });
-  });
+  return deterministicLanePool.acquire(sizeHint);
 }
 
 function releaseLanePermit(): void {
-  const idx = pickNextWaiterIndex();
-  if (idx !== -1) {
-    // Hand the freed permit straight to the chosen waiter (permitsInUse stays
-    // the same — it never actually dropped below capacity).
-    const [waiter] = laneWaiters.splice(idx, 1);
-    waiter.resolve();
-    return;
-  }
-  permitsInUse = Math.max(0, permitsInUse - 1);
+  deterministicLanePool.release();
+}
+
+function acquireAiEnrichmentLanePermit(sizeHint: number): Promise<void> {
+  return aiEnrichmentLanePool.acquire(sizeHint);
+}
+
+function releaseAiEnrichmentLanePermit(): void {
+  aiEnrichmentLanePool.release();
 }
 
 /** Best-effort size hint for queue ordering: the previously-analyzed node
@@ -1956,18 +2039,21 @@ function describeLastRunLogState(projectPath: string): string {
  * Also races fn against the wall-clock watchdog (see above). `projectPath`
  * (when passed) is used only in watchdog log lines and run-log lookups.
  */
-async function withLanePermit<T>(
+async function withPoolPermit<T>(
+  acquire: (sizeHint: number) => Promise<void>,
+  release: () => void,
   fn: () => Promise<T>,
-  sizeHint: number = Number.POSITIVE_INFINITY,
-  projectPath: string = 'analysis'
+  sizeHint: number,
+  projectPath: string,
+  watchdogLabel: string
 ): Promise<T> {
-  await acquireLanePermit(sizeHint);
+  await acquire(sizeHint);
   const startedAtMs = Date.now();
   const watchdogMs = getAnalysisWatchdogMs();
   const timer = setTimeout(() => {
     const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
     console.error(
-      `[Klauro] SLOW ANALYSIS: ${projectPath} has been running ${elapsedMinutes}m, exceeding ` +
+      `[Klauro] SLOW ${watchdogLabel}: ${projectPath} has been running ${elapsedMinutes}m, exceeding ` +
       `KLAURO_ANALYSIS_WATCHDOG_MS=${watchdogMs}ms. Last known state: ${describeLastRunLogState(projectPath)}. ` +
       `The analysis remains in progress and retains its lock and lane; elapsed time never truncates or fails CAS work.`
     );
@@ -1977,8 +2063,43 @@ async function withLanePermit<T>(
     return await fn();
   } finally {
     clearTimeout(timer);
-    releaseLanePermit();
+    release();
   }
+}
+
+/**
+ * Runs fn bounded to KLAURO_ANALYSIS_CONCURRENCY concurrent DETERMINISTIC
+ * analyses (default 2), smallest-project-first with age-based starvation
+ * promotion. A crashing analysis releases its permit like any other and
+ * never blocks the pool. Also races fn against the wall-clock watchdog (see
+ * above). `projectPath` (when passed) is used only in watchdog log lines and
+ * run-log lookups.
+ *
+ * task #118: this pool is now deliberately SEPARATE from
+ * withAiEnrichmentLanePermit's — see the aiEnrichmentLanePool comment above
+ * for why deterministic (CPU/memory-heavy) and AI-enrichment (I/O-bound)
+ * work must never share one gate.
+ */
+function withLanePermit<T>(
+  fn: () => Promise<T>,
+  sizeHint: number = Number.POSITIVE_INFINITY,
+  projectPath: string = 'analysis'
+): Promise<T> {
+  return withPoolPermit(acquireLanePermit, releaseLanePermit, fn, sizeHint, projectPath, 'ANALYSIS');
+}
+
+/**
+ * Same shape as withLanePermit, but drawn from the INDEPENDENT AI-enrichment
+ * pool (KLAURO_AI_ENRICHMENT_CONCURRENCY, default DEFAULT_AI_ENRICHMENT_LANES)
+ * so a slow/queued AI pass never occupies a deterministic-analysis slot and
+ * never makes another project's fast deterministic work wait on it.
+ */
+function withAiEnrichmentLanePermit<T>(
+  fn: () => Promise<T>,
+  sizeHint: number = Number.POSITIVE_INFINITY,
+  projectPath: string = 'analysis'
+): Promise<T> {
+  return withPoolPermit(acquireAiEnrichmentLanePermit, releaseAiEnrichmentLanePermit, fn, sizeHint, projectPath, 'AI ENRICHMENT');
 }
 
 /**
@@ -1996,19 +2117,27 @@ function withAnalysisLane<T>(
   return withLanePermit(() => fn(createOrchestrator()), sizeHint, describe);
 }
 
-/** Test-only: reset lane pool state (e.g. after changing
- *  KLAURO_ANALYSIS_CONCURRENCY / KLAURO_ANALYSIS_LANES). */
+/** Test-only: reset BOTH lane pools' state (e.g. after changing
+ *  KLAURO_ANALYSIS_CONCURRENCY / KLAURO_ANALYSIS_LANES /
+ *  KLAURO_AI_ENRICHMENT_CONCURRENCY / KLAURO_AI_ENRICHMENT_LANES). */
 export function __resetAnalysisLanesForTests(): void {
-  permitsInUse = 0;
-  laneWaiters = [];
+  deterministicLanePool.reset();
+  aiEnrichmentLanePool.reset();
   memoryGuardOverrideForTests = null;
 }
 
-/** Test-only: exercise the lane pool directly without a real analysis
- *  pipeline (used to verify concurrency, ordering, and crash isolation with
- *  fake slow/failing functions). */
+/** Test-only: exercise the deterministic lane pool directly without a real
+ *  analysis pipeline (used to verify concurrency, ordering, and crash
+ *  isolation with fake slow/failing functions). */
 export function __withLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number, describe?: string): Promise<T> {
   return withLanePermit(fn, sizeHint, describe);
+}
+
+/** Test-only: exercise the INDEPENDENT AI-enrichment lane pool directly (task
+ *  #118) — same shape as __withLanePermitForTests but proves the two pools
+ *  never contend with each other for permits. */
+export function __withAiEnrichmentLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number, describe?: string): Promise<T> {
+  return withAiEnrichmentLanePermit(fn, sizeHint, describe);
 }
 
 /** Test-only: exercise the OUTER worker-dispatch watchdog directly, without a
@@ -2029,10 +2158,16 @@ export async function __readInternalRebuildAttemptForTests(projectPath: string):
   return readInternalRebuildAttempt(projectPath);
 }
 
-/** Test-only: current in-use permit count, for asserting overlap/exclusivity
- *  without timing-dependent sleeps. */
+/** Test-only: current in-use permit count on the deterministic pool, for
+ *  asserting overlap/exclusivity without timing-dependent sleeps. */
 export function __getLanePermitsInUseForTests(): number {
-  return permitsInUse;
+  return deterministicLanePool.inUse();
+}
+
+/** Test-only: current in-use permit count on the AI-enrichment pool (task
+ *  #118) — separate from the deterministic pool's counter above. */
+export function __getAiEnrichmentLanePermitsInUseForTests(): number {
+  return aiEnrichmentLanePool.inUse();
 }
 
 export async function analyzeProjectIncremental(

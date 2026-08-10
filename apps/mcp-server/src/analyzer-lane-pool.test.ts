@@ -5,6 +5,8 @@ import {
   __setMemoryGuardOverrideForTests,
   __withLanePermitForTests,
   __getLanePermitsInUseForTests,
+  __withAiEnrichmentLanePermitForTests,
+  __getAiEnrichmentLanePermitsInUseForTests,
 } from './analyzer';
 
 function sleep(ms: number): Promise<void> {
@@ -208,5 +210,63 @@ test('a crashing job releases its permit and does not block the next job', async
     const result = await __withLanePermitForTests(async () => 'ok');
     assert.equal(result, 'ok');
     assert.ok(Date.now() - startedAt < 200, 'permit released by a crashing job must be immediately reusable');
+  });
+});
+
+// --- task #118: deterministic pool and AI-enrichment pool must be independent ---
+//
+// Regression coverage for the measured, blackbox production symptom: a small
+// project's deterministic analysis was observed queued for ~40s behind
+// another project's slow AI-enrichment tail, even though the deterministic
+// pool had a free slot in spirit (the peer project was already past its own
+// deterministic phase). Root cause: both phases drew permits from the SAME
+// single-slot semaphore. Fix: withAiEnrichmentLanePermit draws from an
+// INDEPENDENT pool (KLAURO_AI_ENRICHMENT_CONCURRENCY), so it can never
+// occupy — or wait behind — a deterministic-analysis slot.
+test('an AI-enrichment permit never blocks or is blocked by the deterministic pool', async () => {
+  __resetAnalysisLanesForTests();
+  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_AI_ENRICHMENT_CONCURRENCY: '1' }, async () => {
+    let deterministicStartedWhileAiWasRunning = false;
+
+    // Simulate a peer project's long AI-enrichment tail holding the AI pool.
+    let resolveAi!: () => void;
+    const aiJob = __withAiEnrichmentLanePermitForTests(
+      () => new Promise<void>((resolve) => { resolveAi = resolve; }),
+    );
+    await sleep(5); // let the AI job actually acquire its permit first
+
+    // A DIFFERENT project's deterministic analysis must proceed immediately —
+    // it must never queue behind the AI job above, because they are
+    // different pools.
+    const startedAt = Date.now();
+    const deterministicJob = __withLanePermitForTests(async () => {
+      deterministicStartedWhileAiWasRunning = __getAiEnrichmentLanePermitsInUseForTests() === 1;
+      return 'deterministic-ok';
+    });
+
+    assert.equal(await deterministicJob, 'deterministic-ok');
+    assert.ok(Date.now() - startedAt < 200, 'deterministic work must not wait on an in-flight AI-enrichment permit');
+    assert.equal(deterministicStartedWhileAiWasRunning, true, 'deterministic job ran concurrently with the still-running AI job, proving the pools are independent');
+
+    resolveAi();
+    await aiJob;
+  });
+});
+
+test('a queued deterministic job never gets diverted onto the AI-enrichment pool, and vice versa', async () => {
+  __resetAnalysisLanesForTests();
+  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_AI_ENRICHMENT_CONCURRENCY: '2' }, async () => {
+    assert.equal(__getLanePermitsInUseForTests(), 0);
+    assert.equal(__getAiEnrichmentLanePermitsInUseForTests(), 0);
+
+    await __withLanePermitForTests(async () => {
+      assert.equal(__getLanePermitsInUseForTests(), 1);
+      assert.equal(__getAiEnrichmentLanePermitsInUseForTests(), 0, 'a deterministic permit must never register on the AI pool');
+    });
+
+    await __withAiEnrichmentLanePermitForTests(async () => {
+      assert.equal(__getAiEnrichmentLanePermitsInUseForTests(), 1);
+      assert.equal(__getLanePermitsInUseForTests(), 0, 'an AI permit must never register on the deterministic pool');
+    });
   });
 });
