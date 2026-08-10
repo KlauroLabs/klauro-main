@@ -42,7 +42,8 @@ import { remoteActive } from './coordination/remote-transport';
 import { getActiveClaims } from './coordination/local-store';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
-import { promptLine, promptPassword, readAllStdin } from './password-prompt';
+import { missingEmailMessage, missingPasswordMessage, promptLine, promptPassword, readAllStdin } from './password-prompt';
+import { extractServerUrlFlag, getStaleClientUpdateHint } from './stale-client-hint';
 import {
   buildAnalysisStatusLine,
   buildConnectionReport,
@@ -860,8 +861,9 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
   const password = args.passwordStdin
     ? await readAllStdin()
     : (args.password || await promptPassword('Password: '));
-  if (!email) throw new Error('login requires --email or an entered email');
-  if (!password) throw new Error('login requires --password, --password-stdin, or an entered password');
+  const interactive = Boolean(process.stdin.isTTY);
+  if (!email) throw new Error(missingEmailMessage({ interactive, register: Boolean(args.register) }));
+  if (!password) throw new Error(missingPasswordMessage({ interactive, register: Boolean(args.register) }));
   const endpoint = args.register ? '/api/auth/register' : '/api/auth/login';
   let response: Response;
   try {
@@ -2040,8 +2042,8 @@ function printHelp(): void {
     '  klauro support-bundle [/path/to/repo] [--output bundle.tar.gz] [--json]',
     '',
     'Account:',
-    '  klauro login --email you@example.com [--password-stdin | --password value] [--server-url url] [--register]',
-    '    (password is prompted with echo off; --password-stdin reads it from a pipe for scripting)',
+    '  klauro login [--email you@example.com] [--password-stdin | --password value] [--server-url url] [--register]',
+    '    (prompts for email/password with echo off if not given; --password-stdin reads the password from a pipe for scripts)',
     '  klauro whoami [--server-url url] [--json]',
     '  klauro auth-status [--server-url url] [--json]',
     '  klauro logout [--server-url url] [--json]',
@@ -2621,7 +2623,7 @@ function formatDoctor(doctor: Awaited<ReturnType<typeof getAgentDoctor>>): strin
   return `${lines.join('\n')}\n`;
 }
 
-main().catch(error => {
+main().catch(async error => {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   const runLogPath = getAnalysisRunLogPath();
@@ -2629,5 +2631,17 @@ main().catch(error => {
     process.stderr.write(`Analysis run log: ${runLogPath}\n`);
   }
   process.stderr.write('For diagnostics, run: klauro support-bundle <project-path> and send the bundle to support.\n');
+  // Staleness-on-failure (see stale-client-hint.ts's header comment): only
+  // ever runs here, after a real failure has already been printed, never on
+  // the happy path and never blocking longer than the module's own bounded
+  // timeout. A failure inside this check must never replace or hide the
+  // error above it.
+  try {
+    const hint = await getStaleClientUpdateHint({
+      serverUrl: normalizeServerUrl(extractServerUrlFlag(process.argv) || loadStoredConnectorAuth().defaultServerUrl),
+      currentVersion: getBuildIdentity().base_version,
+    });
+    if (hint) process.stderr.write(`${hint}\n`);
+  } catch { /* never let the hint itself fail the process */ }
   process.exit(1);
 });
