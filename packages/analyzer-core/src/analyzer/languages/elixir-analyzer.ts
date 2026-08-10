@@ -113,6 +113,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     for (const mod of info.modules) moduleIndex.set(mod.qualifiedName, mod);
 
     this.emitFileNodes(info, nodes, edges, entryPoints, exitPoints);
+    if (this.isElixirTestFile(info.relativePath)) this.applyTestFileBoundary(nodes);
     this.emitDependencyEdges([info], moduleIndex, edges);
     this.emitCallEdges([info], moduleIndex, edges);
 
@@ -183,7 +184,11 @@ export class ElixirAnalyzer extends BaseAnalyzer {
       }
 
       for (const info of fileInfos) {
+        const before = nodes.length;
         this.emitFileNodes(info, nodes, edges, entryPoints, exitPoints);
+        if (this.isElixirTestFile(info.relativePath)) {
+          this.applyTestFileBoundary(nodes.slice(before));
+        }
       }
 
       this.emitDependencyEdges(fileInfos, moduleIndex, edges);
@@ -223,6 +228,44 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     });
     if (stopEarly && files.length > 0) return files.slice(0, 1);
     return [...new Set(files)];
+  }
+
+  /**
+   * Mix's own test-file convention: `mix test` only ever runs files under a
+   * `test/` directory, and the near-universal naming inside it is
+   * `*_test.exs` — never a shared cross-language filename heuristic. ExUnit's
+   * `test "..." do ... end` blocks are macro invocations, not `def`s, so this
+   * analyzer's line-based parser (matchFunctionHead only matches
+   * def/defp/defmacro heads) never produces a node for the case itself —
+   * only `def`/`defp` HELPER functions declared inside a test file do. Tagging
+   * by file membership (not by a per-function heuristic) is what makes those
+   * helpers test-owned.
+   */
+  private isElixirTestFile(relativePath: string): boolean {
+    const lower = relativePath.toLowerCase();
+    return /_test\.exs$/.test(lower) || /(^|\/)test\/.*\.exs?$/.test(lower);
+  }
+
+  /**
+   * Tags every node belonging to an ExUnit test file with `metadata.is_test`,
+   * `category: 'test'`, and a `test-code` tag, mirroring go-analyzer.ts's
+   * applyTestFileBoundary. Without this, Elixir test-helper functions (which
+   * DO carry `calls` edges into production code via emitCallEdges) carried no
+   * test-owned marker of any kind, so the cross-language coverage-graph walk
+   * (test-framework-analyzer.ts's isTestOwnedNode / graphNodesForSuite) could
+   * never start a traversal from this analyzer's own function nodes — only
+   * from TestFrameworkAnalyzer's synthetic suite/case nodes, which carry no
+   * `calls` edges of their own. See also the 'exunit' FrameworkRule added to
+   * test-framework-analyzer.ts, needed for the SAME reason XCTest needed one
+   * for Swift: without it no suite/case is ever discovered for Elixir at all.
+   */
+  private applyTestFileBoundary(fileNodes: CASNode[]): void {
+    for (const node of fileNodes) {
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
   }
 
   // ---- Parsing -------------------------------------------------------------

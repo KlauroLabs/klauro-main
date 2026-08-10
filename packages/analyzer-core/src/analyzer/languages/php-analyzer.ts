@@ -246,6 +246,39 @@ export class PHPAnalyzer extends BaseAnalyzer {
     ];
   }
 
+  /**
+   * Tags every node in a PHPUnit test file — `*Test.php` (PHPUnit's own class
+   * suffix convention) or any file under a `tests/` directory (the
+   * Laravel/Symfony/PHPUnit default `<testsuite>` root configured in
+   * phpunit.xml) — with `metadata.is_test`, `category: 'test'`, and a
+   * `test-code` tag, mirroring go-analyzer.ts's applyTestFileBoundary and
+   * using the SAME convention TestFrameworkAnalyzer's own phpunit rule
+   * already matches on (fileMatchesPatterns' 'phpunit' case) — never a
+   * keyword/brand check, and never a shared cross-language filename
+   * heuristic. Without this, PHPUnit test methods (which the AST call graph
+   * above already resolves calls FROM) carried no test-owned marker, so the
+   * cross-language coverage-graph walk (test-framework-analyzer.ts's
+   * isTestOwnedNode / graphNodesForSuite) could never start a traversal from
+   * this analyzer's own method/function nodes — only from
+   * TestFrameworkAnalyzer's synthetic suite/case nodes, which carry no
+   * `calls` edges of their own.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !this.isPhpTestFile(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
+  }
+
+  private isPhpTestFile(file: string): boolean {
+    const lower = file.toLowerCase();
+    return /test\.php$/.test(lower) || /(^|\/)tests\/.*\.php$/.test(lower);
+  }
+
   private async readFileCached(fullPath: string): Promise<string> {
     const cached = this.fileContentCache.get(fullPath);
     if (cached !== undefined) return cached;
@@ -267,6 +300,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     await this.analyzePHPFile(context.filePath, context.relativePath, nodes, edges, entryPoints, exitPoints, namespaces, context);
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
+    this.applyTestFileBoundary(nodes);
     await this.analyzeCallGraphFastFallback(
       context.projectPath,
       [context.relativePath],
@@ -327,6 +361,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       this.buildNamespaceHierarchy(namespaces, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
+      this.applyTestFileBoundary(nodes);
 
       await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 

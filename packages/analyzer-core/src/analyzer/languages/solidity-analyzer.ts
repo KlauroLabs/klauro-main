@@ -124,6 +124,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     const fileById = new Map<string, SolFileInfo>([[info.relativePath, info]]);
 
     this.emitFileNodes(info, content, nodes, edges, entryPoints, exitPoints);
+    if (this.isSolidityTestFile(info.relativePath)) this.applyTestFileBoundary(nodes);
     this.emitInheritanceEdges([info], edges);
     this.emitCallEdges([info], edges);
     this.emitImportEdges([info], context.projectPath, fileById, edges);
@@ -174,7 +175,11 @@ export class SolidityAnalyzer extends BaseAnalyzer {
 
       for (const info of fileInfos) {
         const content = await fs.readFile(info.fullPath, 'utf-8').catch(() => '');
+        const before = nodes.length;
         this.emitFileNodes(info, content, nodes, edges, entryPoints, exitPoints);
+        if (this.isSolidityTestFile(info.relativePath)) {
+          this.applyTestFileBoundary(nodes.slice(before));
+        }
       }
 
       this.emitInheritanceEdges(fileInfos, edges);
@@ -210,6 +215,41 @@ export class SolidityAnalyzer extends BaseAnalyzer {
       nodir: true
     });
     return files;
+  }
+
+  /**
+   * Foundry/Hardhat's own Solidity test conventions: Foundry's `forge test`
+   * default naming is `*.t.sol`, and both toolchains conventionally keep
+   * Solidity test contracts under a `test/`/`tests/` directory — never a
+   * shared cross-language filename heuristic (Hardhat's OWN unit tests are
+   * usually JS/TS, out of scope for this analyzer entirely).
+   */
+  private isSolidityTestFile(relativePath: string): boolean {
+    const lower = relativePath.toLowerCase();
+    return /\.t\.sol$/.test(lower) || /(^|\/)tests?\/.*\.sol$/.test(lower);
+  }
+
+  /**
+   * Tags every node belonging to a Foundry/Hardhat Solidity test file with
+   * `metadata.is_test`, `category: 'test'`, and a `test-code` tag, mirroring
+   * go-analyzer.ts's applyTestFileBoundary. Without this, Solidity test
+   * functions (which DO carry `calls`/instance-call edges into production
+   * contracts via emitCallEdges) carried no test-owned marker of any kind,
+   * so the cross-language coverage-graph walk (test-framework-analyzer.ts's
+   * isTestOwnedNode / graphNodesForSuite) could never start a traversal from
+   * this analyzer's own function nodes — only from TestFrameworkAnalyzer's
+   * synthetic suite/case nodes, which carry no `calls` edges of their own.
+   * See also the 'foundry' FrameworkRule added to test-framework-analyzer.ts,
+   * needed for the SAME reason XCTest needed one for Swift: without it no
+   * suite/case is ever discovered for Solidity at all.
+   */
+  private applyTestFileBoundary(fileNodes: CASNode[]): void {
+    for (const node of fileNodes) {
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
+    }
   }
 
   // ---- Parsing -------------------------------------------------------------
