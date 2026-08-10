@@ -291,6 +291,15 @@ async function runInstallSh(options: {
   /** Node/npm shims on PATH for the npm-fallback path. Omit to test that the
    *  binary path never needs them at all. */
   fakeNode?: { version: string };
+  /** Places a `klauro` on PATH (in the same `bin` dir used for node/npm
+   *  shims, so it is earlier on PATH than anything install.sh's own PATH
+   *  edit could ever reach) BEFORE install.sh runs, reproducing the shadow
+   *  incident. 'owned-symlink' reproduces the real npm-global shape exactly
+   *  (`<bin>/klauro -> ../lib/node_modules/@klauro/mcp-server/dist/cli.cjs`)
+   *  so the takeover logic's positive-identification check has something
+   *  real to match. 'unrelated' is some other program that happens to be
+   *  named klauro and must never be touched. */
+  existingKlauro?: { kind: 'owned-symlink' | 'unrelated'; script?: string; unwritableDir?: boolean };
   env?: Record<string, string>;
 } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-install-sh-'));
@@ -302,6 +311,32 @@ async function runInstallSh(options: {
   if (options.fakeNode) {
     await fs.writeFile(path.join(bin, 'node'), `#!/bin/sh\necho "${options.fakeNode.version}"\n`, { mode: 0o755 });
     await fs.writeFile(path.join(bin, 'npm'), `#!/bin/sh\ntouch "${npmMarker}"\nexit 0\n`, { mode: 0o755 });
+  }
+
+  let existingKlauroPath: string | null = null;
+  if (options.existingKlauro) {
+    if (options.existingKlauro.kind === 'owned-symlink') {
+      const pkgDir = path.join(dir, 'lib', 'node_modules', '@klauro', 'mcp-server', 'dist');
+      await fs.mkdir(pkgDir, { recursive: true });
+      const cliPath = path.join(pkgDir, 'cli.cjs');
+      await fs.writeFile(
+        cliPath,
+        options.existingKlauro.script ?? '#!/bin/sh\necho "{\\"version\\":\\"1.0.99+oldstalesha\\"}"\n',
+        { mode: 0o755 },
+      );
+      existingKlauroPath = path.join(bin, 'klauro');
+      await fs.symlink(path.relative(bin, cliPath), existingKlauroPath);
+    } else {
+      existingKlauroPath = path.join(bin, 'klauro');
+      await fs.writeFile(
+        existingKlauroPath,
+        options.existingKlauro.script ?? '#!/bin/sh\necho "some other program also named klauro"\nexit 0\n',
+        { mode: 0o755 },
+      );
+    }
+    if (options.existingKlauro.unwritableDir) {
+      await fs.chmod(bin, 0o555);
+    }
   }
 
   let klauroUrl = 'file:///nonexistent-klauro-test-server'; // no manifest reachable → npm fallback path
@@ -338,8 +373,30 @@ async function runInstallSh(options: {
   const npmCalled = await fs.access(npmMarker).then(() => true, () => false);
   const installedBinaryPath = path.join(home, '.klauro', 'bin', 'klauro');
   const binaryInstalled = await fs.access(installedBinaryPath).then(() => true, () => false);
+
+  let existingKlauroLinkTarget: string | null = null;
+  let existingKlauroRanOutput: string | null = null;
+  if (existingKlauroPath) {
+    if (options.existingKlauro?.unwritableDir) {
+      await fs.chmod(bin, 0o755); // restore so cleanup/inspection below can proceed
+    }
+    existingKlauroLinkTarget = await fs.readlink(existingKlauroPath).catch(() => null);
+    try {
+      existingKlauroRanOutput = spawnSync(existingKlauroPath, ['version'], { encoding: 'utf8' }).stdout ?? null;
+    } catch {
+      existingKlauroRanOutput = null;
+    }
+  }
+
   await fs.rm(dir, { recursive: true, force: true });
-  return { status: result.status, output: `${result.stdout}${result.stderr}`, npmCalled, binaryInstalled };
+  return {
+    status: result.status,
+    output: `${result.stdout}${result.stderr}`,
+    npmCalled,
+    binaryInstalled,
+    existingKlauroLinkTarget,
+    existingKlauroRanOutput,
+  };
 }
 
 test('install.sh: no machine Node/npm on PATH — a valid binary manifest entry installs with zero npm calls', async () => {
@@ -379,7 +436,7 @@ test('install.sh: checksum mismatch refuses the binary and falls back to npm', a
       env: { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, SHELL: '/bin/sh', KLAURO_URL: `file://${dir}` },
     });
     assert.match(`${result.stdout}${result.stderr}`, /Checksum mismatch/);
-    assert.match(`${result.stdout}${result.stderr}`, /EMERGENCY FALLBACK/);
+    assert.match(`${result.stdout}${result.stderr}`, /Installing via npm instead, which requires Node\.js/);
     const npmCalled = await fs.access(npmMarker).then(() => true, () => false);
     assert.equal(npmCalled, true, 'a bad checksum must fall back to npm, not silently install unverified bits');
   } finally {
@@ -387,17 +444,84 @@ test('install.sh: checksum mismatch refuses the binary and falls back to npm', a
   }
 });
 
-test('install.sh: no binary published for this platform falls back to npm, clearly labeled EMERGENCY', async () => {
+test('install.sh: no binary published for this platform falls back to npm and tells the user Node.js is required', async () => {
   const run = await runInstallSh({ fakeNode: { version: 'v20.10.0' } });
   assert.equal(run.status, 0, run.output);
   assert.equal(run.npmCalled, true);
-  assert.match(run.output, /EMERGENCY FALLBACK/);
+  assert.match(run.output, /No prebuilt klauro is available/);
+  assert.match(run.output, /Installing via npm instead, which requires Node\.js/);
+});
+
+// ---------------------------------------------------------------------------
+// PATH-resolution takeover: a successful "Installed klauro" message that a
+// stale `klauro` earlier on PATH still shadows is not a success — see the
+// real incident this reproduces at the top of this suite's git history.
+// install.sh must resolve what `klauro` will actually execute, take over
+// its own prior npm-global install when it finds one (verified by symlink
+// target, not by path guessing), and refuse to claim success otherwise.
+// ---------------------------------------------------------------------------
+
+test('install.sh: no pre-existing klauro anywhere on PATH — clean install, no shadow noise', async () => {
+  const run = await runInstallSh({
+    manifest: { version: '9.9.9' },
+    fakeBinary: '#!/bin/sh\necho "{\\"version\\":\\"9.9.9\\"}"\nexit 0\n',
+  });
+  assert.equal(run.status, 0, run.output);
+  assert.equal(run.binaryInstalled, true, run.output);
+  assert.doesNotMatch(run.output, /Repointed shadowing/);
+  assert.doesNotMatch(run.output, /not a recognized klauro-brand install/);
+  assert.doesNotMatch(run.output, /This install is NOT complete/);
+});
+
+test('install.sh: a klauro-owned npm-global symlink earlier on PATH is taken over — klauro resolves to the new version in the SAME shell', async () => {
+  const run = await runInstallSh({
+    manifest: { version: '9.9.9' },
+    fakeBinary: '#!/bin/sh\necho "{\\"version\\":\\"9.9.9\\"}"\nexit 0\n',
+    existingKlauro: { kind: 'owned-symlink' },
+  });
+  assert.equal(run.status, 0, run.output);
+  assert.equal(run.binaryInstalled, true, run.output);
+  assert.match(run.output, /Repointed shadowing klauro installs/);
+  assert.match(run.output, /klauro now resolves to/);
+  assert.match(run.output, /npm ls -g/, 'must say the package manager record is now stale');
+  // The proof that matters: without any shell restart, the exact file that
+  // was on PATH before install.sh ran now points at the freshly-installed
+  // binary, and actually running it returns the NEW version, not the old
+  // stale 1.0.99 one baked into the fixture.
+  assert.notEqual(run.existingKlauroLinkTarget, null);
+  assert.match(String(run.existingKlauroRanOutput), /9\.9\.9/);
+});
+
+test('install.sh: an unverified klauro earlier on PATH is left untouched and the install FAILS loudly, not a false success', async () => {
+  const run = await runInstallSh({
+    manifest: { version: '9.9.9' },
+    fakeBinary: '#!/bin/sh\necho "{\\"version\\":\\"9.9.9\\"}"\nexit 0\n',
+    existingKlauro: { kind: 'unrelated' },
+  });
+  assert.notEqual(run.status, 0, 'a shadowing binary we cannot prove is ours must fail the install, not warn-and-succeed');
+  assert.match(run.output, /not a recognized klauro-brand install/);
+  assert.match(run.output, /This install is NOT complete/);
+  // Left untouched: still the original fixture script, not repointed.
+  assert.equal(run.existingKlauroLinkTarget, null);
+  assert.doesNotMatch(String(run.existingKlauroRanOutput), /9\.9\.9/);
+});
+
+test('install.sh: a klauro-owned symlink in an unwritable directory fails loudly with the exact sudo command, no silent success', async () => {
+  const run = await runInstallSh({
+    manifest: { version: '9.9.9' },
+    fakeBinary: '#!/bin/sh\necho "{\\"version\\":\\"9.9.9\\"}"\nexit 0\n',
+    existingKlauro: { kind: 'owned-symlink', unwritableDir: true },
+  });
+  assert.notEqual(run.status, 0, run.output);
+  assert.match(run.output, /is not writable/);
+  assert.match(run.output, /sudo ln -sf/);
+  assert.match(run.output, /This install is NOT complete/);
 });
 
 test('install.sh: npm fallback with no Node at all fails loudly with an actionable message (no silent hang)', async () => {
   const run = await runInstallSh({}); // no manifest, no fakeNode — nothing on PATH
   assert.notEqual(run.status, 0);
-  assert.match(run.output, /Node\.js is not installed/);
+  assert.match(run.output, /can't be installed on .* without Node\.js/);
 });
 
 test('install.sh: npm fallback below the declared Node floor WARNS but still proceeds (no refusal)', async () => {
