@@ -203,4 +203,112 @@ describe('GoAnalyzer HTTP route extraction', () => {
     expect(names.filter(n => n === 'GET /users')).toHaveLength(1);
     expect(names.filter(n => n === 'GET /health')).toHaveLength(1);
   });
+
+  it('extracts a real Gin builder route with an explicit handler argument', () => {
+    const content = [
+      `package main`,
+      `import "github.com/gin-gonic/gin"`,
+      `func register(r *gin.Engine) {`,
+      `  r.GET("/v1/feeds", getFeeds)`,
+      `  r.POST("/accounts/ClientLogin", clientLoginHandler)`,
+      `}`,
+    ].join('\n');
+
+    const routes = extractRoutes(content);
+    const names = routes.map(r => r.name);
+
+    expect(names).toContain('GET /v1/feeds');
+    expect(names).toContain('POST /accounts/ClientLogin');
+  });
+
+  it('does not treat r.Form.Get / r.Header.Get form-and-header accessor reads as route registrations', () => {
+    // Real shape observed on a live production repo: these accessor calls
+    // share the .GET/.Get method-name shape with Gin/Echo/Fiber route
+    // builders, but read a value and bind nothing — no handler argument.
+    const content = [
+      `package accounts`,
+      `import "github.com/gin-gonic/gin"`,
+      `func clientLoginHandler(w http.ResponseWriter, r *http.Request) {`,
+      `  r.ParseForm()`,
+      `  email := r.Form.Get("Email")`,
+      `  passwd := r.Form.Get("Passwd")`,
+      `  output := r.Form.Get("output")`,
+      `  proto := r.Header.Get("X-Forwarded-Proto")`,
+      `  q := r.URL.Query().Get("output")`,
+      `  _ = email`,
+      `  _ = passwd`,
+      `  _ = output`,
+      `  _ = proto`,
+      `  _ = q`,
+      `}`,
+    ].join('\n');
+
+    const routes = extractRoutes(content);
+    const names = routes.map(r => r.name);
+
+    expect(names).not.toContain('GET Email');
+    expect(names).not.toContain('GET Passwd');
+    expect(names).not.toContain('GET output');
+    expect(names).not.toContain('GET X-Forwarded-Proto');
+    expect(routes).toHaveLength(0);
+  });
+
+  it('does not treat a single-argument accessor call as a route even when a real router is present in the same file', () => {
+    // The web-framework gate (gin-gonic/gin present) alone must not be
+    // sufficient — the call itself still needs a handler argument and a
+    // path-shaped first argument.
+    const content = [
+      `package main`,
+      `import "github.com/gin-gonic/gin"`,
+      `func register(r *gin.Engine) {`,
+      `  r.GET("/v1/feeds", getFeeds)`,
+      `}`,
+      `func handler(r *http.Request) {`,
+      `  session := r.Header.Get("Authorization")`,
+      `  _ = session`,
+      `}`,
+    ].join('\n');
+
+    const routes = extractRoutes(content);
+    const names = routes.map(r => r.name);
+
+    expect(names).toContain('GET /v1/feeds');
+    expect(names).not.toContain('GET Authorization');
+    expect(routes).toHaveLength(1);
+  });
+
+  it('keeps one handler bound to multiple genuinely distinct paths as separate routes', () => {
+    const content = [
+      `package main`,
+      `import "github.com/gin-gonic/gin"`,
+      `func register(r *gin.Engine) {`,
+      `  r.GET("/v1/feeds", listResource)`,
+      `  r.GET("/v1/categories", listResource)`,
+      `  r.GET("/v1/entries", listResource)`,
+      `}`,
+    ].join('\n');
+
+    const routes = extractRoutes(content);
+    const names = routes.map(r => r.name);
+
+    expect(names).toContain('GET /v1/feeds');
+    expect(names).toContain('GET /v1/categories');
+    expect(names).toContain('GET /v1/entries');
+    expect(routes).toHaveLength(3);
+    expect(routes.every(r => r.handler?.method_name === 'listResource')).toBe(true);
+  });
+
+  it('rejects a builder-shaped call whose path argument does not look like a path (no leading slash)', () => {
+    const content = [
+      `package main`,
+      `import "github.com/gin-gonic/gin"`,
+      `func register(r *gin.Engine) {`,
+      `  cfg.GET("timeout", someHandler)`,
+      `}`,
+    ].join('\n');
+
+    const routes = extractRoutes(content);
+
+    expect(routes).toHaveLength(0);
+  });
 });

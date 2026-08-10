@@ -1758,17 +1758,36 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     // Gin/Echo all-caps `r.GET(...)`, Fiber PascalCase `app.Get(...)`. Capture
     // receiver (group prefix) + the arg tail (per-route auth mw).
-    const builderRe = /\b(\w+)\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|Get|Post|Put|Delete|Patch|Head|Options)\s*\(\s*"([^"]+)"\s*((?:,[^)]*)?)\)/g;
+    //
+    // Structural discriminator (not a name/keyword guess): a real route
+    // registration BINDS A PATH TO A HANDLER, so the call must carry at
+    // least one argument after the path string — the handler (optionally
+    // preceded by middleware). `r.Form.Get("Email")` and `r.Header.Get(
+    // "X-Forwarded-Proto")` are accessor reads that take exactly one
+    // argument and bind nothing; the mandatory trailing comma-group below
+    // (`,[^)]*` — no longer optional) excludes them structurally, without
+    // naming a single field/header. The path argument is also required to
+    // look like a path (leading `/`) once the group prefix is resolved,
+    // since accessor keys ("Email", "output", "Passwd") are never paths.
+    const builderRe = /\b(\w+)\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|Get|Post|Put|Delete|Patch|Head|Options)\s*\(\s*"([^"]+)"\s*(,[^)]*)\)/g;
     let m: RegExpExecArray | null;
     while ((m = builderRe.exec(content)) !== null) {
       const recv = m[1];
       const argsTail = m[4] || '';
+      const argsList = argsTail.replace(/^,/, '').split(',').map(s => s.trim()).filter(Boolean);
+      if (argsList.length === 0) continue;
+      // The handler is the last positional argument (middleware precedes
+      // it, Gin/Echo/Fiber convention). It must itself look like a callable
+      // reference — a bare/dotted identifier or an inline func literal —
+      // not another string/number literal, which would signal this isn't
+      // actually a handler-binding call.
+      const handlerExpr = argsList[argsList.length - 1];
+      if (!/^[A-Za-z_][\w.]*$|^func\s*\(/.test(handlerExpr)) continue;
+      const resolvedPath = resolvePrefix(recv) + m[3];
+      if (!resolvedPath.startsWith('/')) continue;
       const authed = inheritsAuth(recv) || [...argsTail.matchAll(/\b([A-Za-z_]\w*)\b/g)]
         .some(id => isAuthenticationGuardName(id[1]));
-      // Convention (Gin/Echo/Fiber): variadic middleware precede the final
-      // positional argument, which is the actual route handler.
-      const argsList = argsTail.replace(/^,/, '').split(',').map(s => s.trim()).filter(Boolean);
-      push(m[2], resolvePrefix(recv) + m[3], authed, argsList[argsList.length - 1]);
+      push(m[2], resolvedPath, authed, handlerExpr);
     }
 
     // Gorilla mux: `r.HandleFunc("/users", h).Methods("GET", "POST")`. Capture the

@@ -2022,3 +2022,77 @@ describe('buildUserJourneys coherent single guard verdict', () => {
     expect(boundaries.some(b => b.kind === 'authentication')).toBe(false);
   });
 });
+
+describe('buildUserJourneys external_services evidence-only standard', () => {
+  const nodes: CASNode[] = [
+    node('n_ctrl', 'AccountsController', 'controller'),
+    node('n_svc', 'AccountsService', 'service'),
+  ];
+  const entryPoint: CASEntryPoint = {
+    id: 'entry_client_login',
+    source_node: 'n_ctrl',
+    type: 'http',
+    name: 'POST /accounts/ClientLogin',
+    trigger: { method: 'POST', path: '/accounts/ClientLogin' },
+  } as CASEntryPoint;
+  const edges: CASEdge[] = [edge('e1', 'n_ctrl', 'n_svc', 'calls')];
+
+  function journeyFor(exitPoint: CASExitPoint) {
+    const { journeys } = buildUserJourneys({
+      nodes,
+      edges,
+      entryPoints: [entryPoint],
+      exitPoints: [exitPoint],
+      callChains: [chain('chain_login', 'n_ctrl', 'entry_client_login', [['n_ctrl', 0], ['n_svc', 1]], 'exit_x', 'n_svc')],
+      dataEntities: [],
+    });
+    expect(journeys).toHaveLength(1);
+    return journeys[0];
+  }
+
+  it('omits a same-process helper/stdlib exit point with no resolved target (raw source-expression name, e.g. hmac/store calls)', () => {
+    const journey = journeyFor({
+      id: 'exit_x',
+      source_node: 'n_svc',
+      type: 'sdk',
+      name: 'External call: hmac.New(sha256.New, []byte(username+password)).Sum',
+    } as CASExitPoint);
+
+    expect(journey.terminal_effects.external_services).toEqual([]);
+  });
+
+  it('omits a same-process store/accessor call even when it reads as a clean identifier (e.g. r.Form.Get, h.store.SetLastLogin)', () => {
+    const journey = journeyFor({
+      id: 'exit_x',
+      source_node: 'n_svc',
+      type: 'sdk',
+      name: 'External call: h.store.SetLastLogin',
+    } as CASExitPoint);
+
+    expect(journey.terminal_effects.external_services).toEqual([]);
+  });
+
+  it('includes a genuine external destination that resolved a structured service_id', () => {
+    const journey = journeyFor({
+      id: 'exit_x',
+      source_node: 'n_svc',
+      type: 'api',
+      name: 'External call: stripe.Charge',
+      target: { service_id: 'stripe' },
+    } as CASExitPoint);
+
+    expect(journey.terminal_effects.external_services).toEqual(['stripe']);
+  });
+
+  it('includes a genuine external destination that resolved a structured sdk field', () => {
+    const journey = journeyFor({
+      id: 'exit_x',
+      source_node: 'n_svc',
+      type: 'sdk',
+      name: 'External call: sendgrid.Send',
+      target: { sdk: 'sendgrid' },
+    } as CASExitPoint);
+
+    expect(journey.terminal_effects.external_services).toEqual(['sendgrid']);
+  });
+});

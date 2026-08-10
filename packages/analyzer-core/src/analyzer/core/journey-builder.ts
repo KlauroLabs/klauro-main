@@ -14,6 +14,7 @@ import {
 import { classifyGuardKind } from './guard-classification';
 import { dedupeAdjacentWords } from './flow-concepts';
 import type { FlowConcept } from './flow-concepts';
+import { isLanguageBuiltinExitPoint } from './language-builtins';
 
 export interface UserJourneyInput {
   nodes: CASNode[];
@@ -964,8 +965,21 @@ function collectTerminalEffects(
     }
     if (exitPoint.type === 'message' || exitPoint.type === 'event') {
       messagesEmitted.add(exitPoint.name);
-    } else {
-      externalServices.add(exitPoint.target?.service_id || exitPoint.name);
+    } else if (
+      (exitPoint.target?.service_id || exitPoint.target?.sdk) &&
+      !isLanguageBuiltinExitPoint(exitPoint)
+    ) {
+      // Same evidence-only standard as data-lineage.ts's resolveRecipientService:
+      // a resolved external destination (service_id/sdk, set only by analyzers
+      // that confirmed a genuine outbound call), never the raw exit-point name.
+      // The raw name is a source expression ("External call: hmac.New(...)",
+      // "External call: r.Form.Get", "External call: h.store.SetLastLogin") —
+      // same-process helper/stdlib/local-store calls read as clean identifiers
+      // too, and none of those set target, so falling back to name mislabels
+      // in-process calls (and can leak argument text like credential
+      // concatenation) as external services in this customer-facing field. No
+      // resolved destination means omit, not guess.
+      externalServices.add(exitPoint.target!.service_id || exitPoint.target!.sdk!);
     }
     // Frontend journeys terminate at the data behind the API call, not the
     // component making it: resolve the endpoint's resource noun to a data
