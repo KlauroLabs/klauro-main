@@ -2521,6 +2521,44 @@ function titleCaseWords(raw: string): string {
   return dedupeAdjacentWords(title);
 }
 
+/** A route parameter name that self-declares its value is a content-derived,
+ *  immutable identifier — the mechanism static-asset pipelines use to
+ *  cache-bust (`/js/:checksum/:filename`) and the mechanism proxy passthrough
+ *  handlers use to name an opaque forwarded target (`/proxy/:encodedDigest/
+ *  :encodedURL`). A structural shape test on the PARAMETER'S OWN name, not a
+ *  lookup against a product-domain word list. */
+const IMMUTABLE_CONTENT_PARAM = /(checksum|digest|fingerprint|etag)/i;
+
+/** A concrete (non-parameter) final path segment ending in a well-known
+ *  static-artifact file extension — the shape of a request for a literal
+ *  asset file, never a JSON/HTML API response. */
+const STATIC_ASSET_EXTENSION = /\.(?:ico|css|map|woff2?|ttf|eot|manifest|json)$/i;
+
+/**
+ * True when an entry point's own declared route shape self-identifies as
+ * static-asset or proxy-passthrough plumbing: an immutable-content route
+ * parameter, or a fixed static-file extension on the final path segment.
+ * Callers must ALSO require zero entity evidence and zero grounded business
+ * steps before treating a route as asset/proxy plumbing — this function only
+ * answers the path-shape half of that test, and intentionally does not match
+ * on any product-domain vocabulary, so `GET /v1/entries` and `POST /v1/import`
+ * (ordinary path, no content-hash param, no static extension) never qualify
+ * regardless of how thin their derived flow evidence is.
+ */
+function isAssetOrProxyPlumbingRoute(ep: CASEntryPoint): boolean {
+  const path = ep.trigger?.path;
+  if (!path) return false;
+  const segments = path.split('/').filter(Boolean);
+  if (segments.some(seg => (seg.startsWith(':') || seg.startsWith('{')) && IMMUTABLE_CONTENT_PARAM.test(seg))) {
+    return true;
+  }
+  const last = segments[segments.length - 1];
+  if (last && !last.startsWith(':') && !last.startsWith('{') && STATIC_ASSET_EXTENSION.test(last)) {
+    return true;
+  }
+  return false;
+}
+
 function flowNameForEntryPoint(ep: CASEntryPoint): string {
   // Prefer the RESOLVED HANDLER's own name over the entry's synthesized
   // name/id when one exists — react/vue/angular/svelte-analyzer.ts stamp the
@@ -3270,8 +3308,10 @@ function buildTerminalFlows(
     }
 
     const flowEntryScope = new Set([chain.entry_point.entry_point_id, chain.entry_point.node_id].filter(Boolean) as string[]);
+    let anyStepGrounded = false;
     const steps: FlowStep[] = segments.map((seg, i) => {
       const { name, description, grounded } = nameStepForRole(seg.role, seg.nodes, exitPointsByNode, allLineage);
+      if (grounded) anyStepGrounded = true;
       if (!grounded) {
         gaps.push(`Step "${name}" carries no validate/persist/dispatch/call/respond/entity/verb evidence — honest fallback grouping used, not a fabricated role.`);
       }
@@ -3343,8 +3383,23 @@ function buildTerminalFlows(
     const contract = aggregateFlowContract(steps);
     let terminus: FlowConcept['terminus'];
     if (exit) {
-      const produces = exit.target?.service_id || exit.target?.resource || exit.target?.endpoint
-        || exit.name || exit.type;
+      // Same evidence-only standard as journey-builder's collectTerminalEffects
+      // and data-lineage's resolveRecipientService: a resolved destination
+      // (service_id/resource/endpoint, set only by analyzers that confirmed a
+      // genuine external call) or nothing. `exit.name` on an unresolved 'sdk'
+      // exit is a raw source expression ("External call: errors.New",
+      // "External call: h.store.DeleteCredentialByHandle") — stdlib and
+      // same-process calls that never populate `target`. Falling back to it
+      // here is exactly what leaked raw source into customer-facing flow
+      // names via disambiguateFlowNames's terminus.produces qualifier. An
+      // unresolved sdk-type exit falls back to its own type (e.g. "sdk")
+      // instead of the source text; every other exit type still uses its name
+      // (those are resolved facts, not raw call expressions).
+      const resolvedTarget = exit.target?.service_id || exit.target?.resource || exit.target?.endpoint;
+      const hasResolvedDestination = Boolean(resolvedTarget);
+      const produces = resolvedTarget
+        || (exit.type === 'sdk' && !hasResolvedDestination ? exit.type : exit.name)
+        || exit.type;
       terminus = { exit_point_id: exit.id, kind: exit.type, produces, node_id: terminusNodeId };
       // Provenance for terminus-folded facet entries: attributed to the step
       // whose functions contain the terminus node (the last step is the
@@ -3368,7 +3423,10 @@ function buildTerminalFlows(
           stampTerminus('state_change', label);
         }
       } else {
-        if (!contract.side_effects.external_integrations.includes(label)) {
+        // An unresolved sdk call (no service_id/resource/endpoint) is not
+        // evidence of an external integration — same standard as above, it
+        // just never became a customer-facing side-effect fact.
+        if ((exit.type !== 'sdk' || hasResolvedDestination) && !contract.side_effects.external_integrations.includes(label)) {
           contract.side_effects.external_integrations.push(label);
           stampTerminus('external_integration', label);
         }
@@ -3388,10 +3446,45 @@ function buildTerminalFlows(
     // M:N capability relationships (role on the EDGE — doctrine: flow roles
     // are relational, not intrinsic). capability_id stays populated as the
     // primary relationship's capability for back-compat.
-    const flowEntities = unionEntities(
-      unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id)),
-      rootEp?.type === 'cli' ? cliOneHopEntities(allNodeIds) : []
-    );
+    const directFlowEntities = unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id));
+    // ZERO-ENTITY FALLBACK HOP: a handler that delegates persistence/lookup one
+    // call away through a `delegates_to`/`queries` edge (a repository/service
+    // field, common in Go/Java/C# handler->store patterns) is invisible to the
+    // direct trace + family rollup above, which only follow calls/invokes/uses/
+    // renders — see CLI_ONE_HOP_CALLEE_EDGE_TYPES's doc comment for the
+    // identical shape already fixed for `cli` entries. Restricting this hop to
+    // the case where direct evidence came up EMPTY (rather than enabling it for
+    // every HTTP flow, which the CLI-only gate above was deliberately scoped to
+    // avoid — see makeCliOneHopEntities' comment on ubiquity-entity smearing)
+    // means it can only rescue a flow that currently contributes ZERO entity
+    // evidence; a flow that already resolved real entities directly is
+    // untouched, so this cannot inflate or loosen any flow that already links.
+    const flowEntities = directFlowEntities.length > 0
+      ? unionEntities(directFlowEntities, rootEp?.type === 'cli' ? cliOneHopEntities(allNodeIds) : [])
+      : cliOneHopEntities(allNodeIds);
+
+    // ASSET/PROXY PLUMBING EXCLUSION: a route can never be a customer-legible
+    // journey/flow when it carries NO business evidence at all — no entity
+    // this repo tracks, and no step whose role resolved to validate/persist/
+    // dispatch/call/respond/entity/verb (every step fell back to the honest
+    // "no evidence" grouping) — AND its own route shape self-declares as a
+    // content-addressed or fixed static artifact: a path segment/param name
+    // that denotes an immutable content identifier (checksum/hash/digest/
+    // fingerprint/etag — the mechanism a build pipeline uses to cache-bust
+    // js/css/image bundles and CDN passthroughs), or a final path segment
+    // ending in a well-known static-file extension. This is a shape test on
+    // the route's OWN declared parameters/extension, never a lookup against
+    // an invented word list, so it cannot mistake a real resource route
+    // (`GET /v1/entries`, `POST /v1/import`) for asset plumbing: those carry
+    // entity evidence and normal path segments with no content-hash param and
+    // no static extension. A route with zero business evidence but an
+    // ordinary path (no hash param, no static extension) is left alone —
+    // structural signal absent means this exclusion does not apply, however
+    // thin the flow looks; that thinness is a separate (linkage) concern.
+    if (rootEp && flowEntities.length === 0 && !anyStepGrounded && isAssetOrProxyPlumbingRoute(rootEp)) {
+      continue;
+    }
+
     const capabilityRelationships = deriveCapabilityRelationships({
       capabilities,
       entryPointId: rootEp?.id || chain.entry_point.entry_point_id,
@@ -4139,8 +4232,10 @@ function computeEntryPointFlows(
     }
 
     const flowEntryScope = new Set([ep.id, ep.handler?.node_id || ep.source_node].filter(Boolean) as string[]);
+    let anyStepGrounded = false;
     const steps: FlowStep[] = segments.map((seg, i) => {
       const { name, description, grounded } = nameStepForRole(seg.role, seg.nodes, exitPointsByNode, allLineage);
+      if (grounded) anyStepGrounded = true;
       if (!grounded) {
         gaps.push(`Step "${name}" carries no validate/persist/dispatch/call/respond/entity/verb evidence — honest fallback grouping used, not a fabricated role.`);
       }
@@ -4207,10 +4302,19 @@ function computeEntryPointFlows(
     const allNodeIds = new Set(chain.map(c => c.node.id));
     // M:N capability relationships (role on the EDGE); capability_id stays the
     // primary relationship's capability for back-compat.
-    const flowEntities = unionEntities(
-      entitiesForNodes(allNodeIds, cas),
-      ep.type === 'cli' ? cliOneHopEntities(allNodeIds) : []
-    );
+    // ZERO-ENTITY FALLBACK HOP — see buildTerminalFlows' identical rationale:
+    // only rescues flows whose direct trace found no entities at all; never
+    // widens a flow that already resolved real entities.
+    const directEntryFlowEntities = entitiesForNodes(allNodeIds, cas);
+    const flowEntities = directEntryFlowEntities.length > 0
+      ? unionEntities(directEntryFlowEntities, ep.type === 'cli' ? cliOneHopEntities(allNodeIds) : [])
+      : cliOneHopEntities(allNodeIds);
+
+    // ASSET/PROXY PLUMBING EXCLUSION — see buildTerminalFlows' identical rule.
+    if (flowEntities.length === 0 && !anyStepGrounded && isAssetOrProxyPlumbingRoute(ep)) {
+      continue;
+    }
+
     const capabilityRelationships = deriveCapabilityRelationships({
       capabilities,
       entryPointId: ep.id,

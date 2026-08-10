@@ -27,11 +27,16 @@ import type {
  *   - chain_cli_terminal (cli, entry-to-exit chain whose call_path records
  *     ONLY the handler node) -> buildTerminalFlows path
  * A THIRD entry point (ep_http_dead_end, same delegates_to shape but type
- * 'http') proves the supplement is CLI-scoped — an HTTP flow with the
- * identical delegation shape stays entity-less, by design (no per-flow
- * document-frequency ubiquity guard exists at the flow layer, unlike the
- * capability-building one-hop pass, so widening past cli would risk smearing
- * entities across unrelated HTTP flows).
+ * 'http') proves the supplement now also rescues a non-CLI flow — but ONLY
+ * when the direct trace + family rollup came up with ZERO entities (the same
+ * dead-end shape live import/export/discover/users/me HTTP handlers hit: a
+ * handler that delegates persistence/lookup one hop through a repository/
+ * service field, invisible to entitiesForNodes on the directly traced path).
+ * A flow that already resolved real entities directly is never touched by
+ * this hop — restricting it to the already-empty case is what keeps it from
+ * smearing entities across ordinary HTTP flows the way an unconditional
+ * widen would (no per-flow document-frequency ubiquity guard exists at the
+ * flow layer, unlike the capability-building one-hop pass).
  */
 function node(overrides: Partial<CASNode> & { id: string; name: string; type: string }): CASNode {
   return { qualified_name: overrides.name, ...overrides } as CASNode;
@@ -149,10 +154,10 @@ describe('computeFlowConcepts — CLI one-hop entity association', () => {
     expect(flow!.entities).toContain('FMCSADataTransfer');
   });
 
-  test('the one-hop supplement is CLI-scoped: an HTTP flow with the identical delegation shape stays entity-less', () => {
+  test('the one-hop supplement rescues a non-CLI dead-end too: an HTTP flow with the identical delegation shape and zero direct entities still recovers the delegated entity', () => {
     const flow = flows.find(f => f.entry_point === 'ep_http_dead_end');
     expect(flow).toBeDefined();
-    expect(flow!.entities).not.toContain('FMCSADataTransfer');
+    expect(flow!.entities).toContain('FMCSADataTransfer');
   });
 
   test('the recovered entity is real evidence, not a guess: it flows through to capability_relationships via entity overlap', () => {
