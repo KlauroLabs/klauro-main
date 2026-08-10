@@ -5710,6 +5710,53 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(out.map((c: any) => c.name)).toContain('Deploy and manage binaries');
   });
 
+  // #119 audit finding: `hasRealOperationAnchor` let ANY capability with a
+  // real (non-CI/non-distribution) entry point skip the entity-anchor check
+  // entirely — regardless of whether it had any entity evidence at all. Live
+  // reproduction: a Spring Boot resilience/circuit-breaker capability named
+  // "Provide system fallback" shipped with `entities: []` and a single
+  // `POST /fallback` route (an ordinary controller endpoint, not
+  // distribution/CI-shaped) — the route alone was treated as sufficient
+  // product evidence. A real, reachable entry point proves reachability,
+  // never that anything on it is a product record.
+  it('PURPOSE GATE (#119): a real HTTP route with ZERO entity evidence is demoted, not kept on route-presence alone ("Provide system fallback")', async () => {
+    const nodes = [realNode('fallback_controller')];
+    const entryPoints = [entryPoint('entry_fallback', 'fallback_controller', 'http')];
+    const cataloged = [
+      cap({
+        name: 'Provide system fallback', category: 'supporting',
+        related_entities: [], // <- the defect's exact shape: no entity anchor at all
+        operations: [
+          { entry_point_id: 'entry_fallback', entry_point_type: 'http', action: 'runs' },
+        ],
+      }),
+      // A real product capability alongside it, so the "never let the gate
+      // empty the catalog" safeguard doesn't restore the demoted one.
+      cap({ name: 'Manages Voice interactions', category: 'core', related_entities: ['ChannelSetup'] }),
+    ];
+    const dataEntities = [entity('ChannelSetup', 'request-dto')];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], dataEntities, entryPoints, nodes);
+    expect(out.map((c: any) => c.name)).not.toContain('Provide system fallback');
+    expect(out.map((c: any) => c.name)).toContain('Manages Voice interactions');
+  });
+
+  it('PURPOSE GATE (#119): a real HTTP route WITH entity evidence is still kept — the fix only closes the zero-entity gap', async () => {
+    const nodes = [realNode('fallback_controller')];
+    const entryPoints = [entryPoint('entry_fallback', 'fallback_controller', 'http')];
+    const dataEntities = [entity('FallbackResponse', 'api-response')];
+    const cataloged = [
+      cap({
+        name: 'Provide system fallback', category: 'supporting',
+        related_entities: ['FallbackResponse'],
+        operations: [
+          { entry_point_id: 'entry_fallback', entry_point_type: 'http', action: 'runs' },
+        ],
+      }),
+    ];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], dataEntities, entryPoints, nodes);
+    expect(out.map((c: any) => c.name)).toContain('Provide system fallback');
+  });
+
   it('PURPOSE GATE (R8-B): name fallback only applies when there is no resolvable entity OR operation anchor at all', async () => {
     // No entities, no entry-point/node maps supplied at all (operations
     // reference an entry_point_id but there's nothing to resolve it against)
@@ -5809,6 +5856,158 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
       expect(out).toHaveLength(1);
       expect(purpose.description_capability_gaps).toBeUndefined();
     });
+  });
+});
+
+// #119 audit follow-up: rollupSystemCapabilityDependencies populates the
+// previously-dead `system_capabilities[].depends_on`/`depended_by` schema
+// (CASCapabilityDependency) from the already-computed per-flow
+// `capability_relationships` role signal, replacing the "related_flows[]
+// .role in-degree" proxy the capability/mechanism audit (2026-08-09) used to
+// test terminality. These tests (a) verify the rollup mechanics in
+// isolation, and (b) reproduce the audit's exact Repo A shape (a Go feed
+// reader: 3 real capabilities, "Manage User Accounts" as the one clean
+// terminality win, "Authenticate with WebAuthn" as the falsification case)
+// against the REAL dependency graph instead of the proxy, to check whether
+// the audit's "terminality is inert on WebAuthn" finding survives.
+describe('rollupSystemCapabilityDependencies (#119: real capability-dependency graph, replaces the related_flows[].role proxy)', () => {
+  const flow = (
+    flow_id: string,
+    capability_id: string,
+    relationships: Array<{ capability_id: string; role: string }>,
+  ): any => ({ flow_id, capability_id, capability_relationships: relationships.map(r => ({ ...r, rationale: 'x' })) });
+
+  const cap = (id: string, name: string, related_entities: string[] = []): any => ({
+    id, name, description: 'x'.repeat(30), category: 'core', operations: [],
+    related_entities, related_domains: [], criticality: 'medium', criticality_factors: [],
+  });
+
+  it('aggregates a single supporting flow into a (P depends_on C) edge and the inverse depended_by', () => {
+    const capabilities = [cap('P', 'Manage RSS Feeds', ['Feed']), cap('C', 'Manage User Accounts', ['User'])];
+    const flows = [
+      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
+    ];
+    orch.rollupSystemCapabilityDependencies(flows, capabilities);
+    const p = capabilities.find((c: any) => c.id === 'P');
+    const c = capabilities.find((c: any) => c.id === 'C');
+    expect(p.depends_on).toHaveLength(1);
+    expect(p.depends_on[0]).toMatchObject({ from_capability: 'P', to_capability: 'C', strength: 'optional' });
+    expect(c.depended_by).toEqual(['P']);
+    // The dependency edge is never written onto C's own depends_on (C does
+    // not depend on P just because P depends on it).
+    expect(c.depends_on).toBeUndefined();
+    expect(p.depended_by).toBeUndefined();
+  });
+
+  it('rolls multiple overlapping flows between the same pair into ONE edge with call_count and upgrades strength past the threshold', () => {
+    const capabilities = [cap('P', 'Manage RSS Feeds'), cap('C', 'Manage User Accounts')];
+    const flows = [
+      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
+      flow('f2', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
+      flow('f3', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
+    ];
+    orch.rollupSystemCapabilityDependencies(flows, capabilities);
+    const p = capabilities.find((c: any) => c.id === 'P');
+    expect(p.depends_on).toHaveLength(1);
+    expect(p.depends_on[0].evidence.call_count).toBe(3);
+    expect(p.depends_on[0].strength).toBe('common'); // count > 2
+  });
+
+  it('never fabricates an edge to a capability id that is not in the real system_capabilities list (dangling/pruned relationship)', () => {
+    const capabilities = [cap('P', 'Manage RSS Feeds')];
+    const flows = [
+      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'GHOST', role: 'supporting' }]),
+    ];
+    orch.rollupSystemCapabilityDependencies(flows, capabilities);
+    expect(capabilities[0].depends_on).toBeUndefined();
+  });
+
+  it('leaves depends_on/depended_by OMITTED (not []) for a capability with zero dependency evidence — same convention as related_flows', () => {
+    const capabilities = [cap('P', 'Manage RSS Feeds'), cap('Q', 'Discover and Subscribe to New Feeds')];
+    const flows = [flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }])]; // no supporting relation at all
+    orch.rollupSystemCapabilityDependencies(flows, capabilities);
+    expect(capabilities.find((c: any) => c.id === 'P').depends_on).toBeUndefined();
+    expect(capabilities.find((c: any) => c.id === 'Q').depended_by).toBeUndefined();
+  });
+
+  // THE FALSIFICATION RE-RUN: reproduces the audit's Repo A numbers
+  // (Manage RSS Feeds 148/3, Read and Organize Feed Entries 150/2, Discover
+  // and Subscribe 51/0, Manage User Accounts 97/9 [highest], Secure API
+  // Access 10/0, Authenticate with WebAuthn 99/0, Schedule Feed Updates
+  // 2/0, Manage Session Security 7/0) as a REAL depends_on/depended_by graph
+  // instead of the related_flows[].role in-degree proxy, and asks the same
+  // question the audit asked: does terminality (now measured as real
+  // dependency in-degree) separate WebAuthn/Session-Security from the two
+  // real, also-zero-in-degree capabilities (Discover-and-Subscribe, Secure
+  // API Access)?
+  it('FALSIFICATION RE-RUN (repo A shape): real depended_by in-degree still does not separate mechanism-but-isolated from real-but-isolated capabilities', () => {
+    const names: Record<string, string> = {
+      feeds: 'Manage RSS Feeds', entries: 'Read and Organize Feed Entries',
+      discover: 'Discover and Subscribe to New Feeds', accounts: 'Manage User Accounts',
+      apikeys: 'Secure API Access', webauthn: 'Authenticate with WebAuthn',
+      schedule: 'Schedule Feed Updates', session: 'Manage Session Security',
+    };
+    const capabilities = Object.entries(names).map(([id, name]) => cap(id, name));
+
+    const flows: any[] = [];
+    let n = 0;
+    const addFlows = (ownerId: string, count: number, supportsOf: string[] = []) => {
+      for (let i = 0; i < count; i++) {
+        flows.push(flow(`f${n++}`, ownerId, [
+          { capability_id: ownerId, role: 'primary' },
+          ...supportsOf.map(target => ({ capability_id: target, role: 'supporting' })),
+        ]));
+      }
+    };
+    // "Manage User Accounts" is the one real terminality win: the audit
+    // measured 9 incoming related_flows[].role='supporting' entries — but
+    // that proxy counts per-FLOW, not per-capability, so several of those 9
+    // flows can (and in the audit's own numbers, do) belong to the SAME
+    // other capability. The real depends_on/depended_by graph this method
+    // builds is capability-PAIR-granular by design (evidence.call_count
+    // rolls up repeat flows between the same pair into ONE edge — see the
+    // "rolls multiple overlapping flows... into ONE edge" test above), so
+    // its in-degree number is "how many OTHER capabilities depend on this
+    // one" rather than "how many flows". Modeled here with every other
+    // capability in the repo (7 distinct, matching Repo A's real
+    // capability count minus Manage User Accounts itself) each contributing
+    // a supporting-relation flow into 'accounts' — still the same real,
+    // measurable, non-lexical, high-relative-to-everyone-else-in-this-repo
+    // signal the audit's proxy was gesturing at, on the more precise graph.
+    const dependents = ['feeds', 'entries', 'discover', 'apikeys', 'webauthn', 'schedule', 'session'];
+    for (const dependent of dependents) {
+      addFlows(dependent, 1, ['accounts']);
+    }
+    // The rest of each capability's own primary flows, no supporting edges
+    // into anyone (matches the audit's "0 incoming" reading for these).
+    addFlows('feeds', 140);
+    addFlows('entries', 145);
+    addFlows('discover', 51);
+    addFlows('apikeys', 10);
+    addFlows('webauthn', 99);
+    addFlows('schedule', 2);
+    addFlows('session', 7);
+    addFlows('accounts', 90);
+
+    orch.rollupSystemCapabilityDependencies(flows, capabilities);
+    const byId = new Map(capabilities.map((c: any) => [c.id, c]));
+    const inDegree = (id: string) => (byId.get(id)!.depended_by || []).length;
+
+    // The one real class-(b) win the audit found: Manage User Accounts has
+    // real, measurable, non-lexical incoming-dependency evidence — every
+    // OTHER capability in the repo depends on it.
+    expect(inDegree('accounts')).toBe(dependents.length);
+
+    // The falsification: on the REAL graph, WebAuthn and Session Security
+    // still have ZERO incoming capability dependencies — structurally
+    // indistinguishable from Discover-and-Subscribe and Secure-API-Access,
+    // which ARE real capabilities and are ALSO zero in-degree. Rolling up
+    // the real graph does not manufacture a signal that was never in the
+    // per-flow data to begin with.
+    expect(inDegree('webauthn')).toBe(0);
+    expect(inDegree('session')).toBe(0);
+    expect(inDegree('discover')).toBe(0);
+    expect(inDegree('apikeys')).toBe(0);
   });
 });
 

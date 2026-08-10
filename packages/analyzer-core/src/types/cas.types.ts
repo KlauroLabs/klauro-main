@@ -3668,6 +3668,35 @@ export interface SystemCapability {
    * uncomputed — callers treat absent as "uncomputed" and empty as a genuine zero.
    */
   related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
+  /**
+   * Real capability-dependency edges FOR THIS capability list specifically
+   * (`system_capabilities`, the AI-curated catalog every consumer/audit
+   * actually reads) — NOT the same collection as `CASCapability.depends_on`
+   * on `flow_graph.capabilities`, which is a separate, older, structurally
+   * DIFFERENT capability list (CapabilityDetector's grouping heuristics, not
+   * the AI catalog) and has its own independently-populated dependency
+   * schema built by CapabilityDependencyBuilder.
+   *
+   * Rolled up from the already-computed, flow-granular
+   * `related_flows[].role` signal (deriveCapabilityRelationships in
+   * flow-concepts.ts): when a flow's PRIMARY owner is capability P but the
+   * SAME flow also appears with role `'supporting'` in capability C's own
+   * `related_flows`, that is real evidence that P's flow reaches into C's
+   * entities — i.e. P depends on C. Aggregating that per-flow signal into
+   * capability-pair edges (one edge per (P, C) pair, evidence.call_count =
+   * number of overlapping flows) is exactly the rollup the capability/
+   * mechanism audit (2026-08-09) flagged as the missing step: "the raw
+   * ingredient is already computed, just not rolled up." Populated once at
+   * analysis time in deriveEntryPointContractAndCapability (orchestrator.ts),
+   * same pass that materializes `related_flows`. Omitted (never []) when no
+   * dependency evidence exists for this capability — same "absent means
+   * uncomputed, empty means genuine zero" convention as `related_flows`.
+   */
+  depends_on?: CASCapabilityDependency[];
+  /** Inverse of `depends_on`: capability ids of every OTHER capability whose
+   *  own `depends_on` names this capability as a `to_capability`. Same
+   *  provenance/omission convention as `depends_on`. */
+  depended_by?: string[];
 }
 
 export interface SystemPurpose {
