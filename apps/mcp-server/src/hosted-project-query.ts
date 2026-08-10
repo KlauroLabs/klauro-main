@@ -66,6 +66,11 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
     limit: z.number().int().positive().max(200).optional(),
   }).strict(),
   run_answer_pack: z.object({ pack: z.literal('mastery').optional() }).strict(),
+  get_module_health: z.object({
+    kind: z.enum(['size-outlier', 'change-concentration', 'fan-in-hotspot', 'mixed-concerns', 'danger-composite']).optional(),
+    severity: z.enum(['info', 'warning', 'error']).optional(),
+    limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
+  }).strict(),
 } as const;
 
 export type HostedProjectQueryTool = keyof typeof HOSTED_PROJECT_QUERY_SCHEMAS;
@@ -144,6 +149,11 @@ export async function executeHostedProjectQuery(input: {
       break;
     case 'run_answer_pack':
       result = runAnswerPack(input.cas, input.projectPath, args.pack || 'mastery');
+      break;
+    case 'get_module_health':
+      result = query.getModuleHealth(input.cas, {
+        kind: args.kind, severity: args.severity, limit: args.limit, offset: args.offset,
+      });
       break;
   }
 

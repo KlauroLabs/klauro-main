@@ -21,7 +21,37 @@ export const INSTALLED_TOOL_NAMES = [
   'get_codebase_idioms', 'get_behavioral_invariants', 'validate_codebase_idioms',
   'validate_behavioral_invariants', 'run_answer_pack', 'get_agent_revision_tracks', 'start_watch', 'stop_watch',
   'get_watch_status', 'list_watches', 'poll_watch_changes',
+  // Coordination fabric (task #130): advisory same-machine-or-cross-machine
+  // awareness claims over the hosted /v1/coordination/* API — the product's
+  // stated moat, previously wired into server.ts (the hosted-only MCP
+  // surface) but never reachable from this shipped client.
+  'get_module_health',
+  'fab_claim_work', 'fab_extend', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work',
+  'check_conceptual_conflicts', 'plan_intent_merge', 'plan_parallel_work',
+  // Account-workspace (parent-CAS) composition: the guided customer path
+  // SPECIFICATION.md §0.12 item 7 says does not exist yet — these wrap the
+  // already-hosted /api/workspaces/* endpoints (auto-rebuilt server-side),
+  // giving an agent an analyze_codebase-shaped flow for "I have several
+  // repos" (list_workspaces -> run_workspace_analysis -> get_workspace_analysis).
+  'list_workspaces', 'run_workspace_analysis', 'get_workspace_analysis',
 ] as const;
+
+const symbolChangeSchema = z.object({
+  symbol_id: z.string(),
+  name: z.string(),
+  file: z.string(),
+  change_kind: z.enum(['signature', 'return_type', 'nullability', 'param', 'rename', 'split', 'move', 'delete', 'body', 'add']),
+  before: z.object({
+    signature: z.string().optional(), return_type: z.string().optional(), nullable: z.boolean().optional(),
+    name: z.string().optional(), split_into: z.array(z.string()).optional(),
+    body_tags: z.array(z.enum(['early-return', 'guard', 'appends-after', 'other'])).optional(),
+  }).optional(),
+  after: z.object({
+    signature: z.string().optional(), return_type: z.string().optional(), nullable: z.boolean().optional(),
+    name: z.string().optional(), split_into: z.array(z.string()).optional(),
+    body_tags: z.array(z.enum(['early-return', 'guard', 'appends-after', 'other'])).optional(),
+  }).optional(),
+});
 
 function json(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
@@ -77,6 +107,55 @@ async function hostedProjectQuery(projectPath: string, tool: string, args: Recor
     throw new Error(`Klauro's hosted server reported an error for ${operation}. Target: ${redactUrl(url)}. Detail: ${payload.error || 'no detail provided'}.`);
   }
   return payload.result;
+}
+
+/**
+ * Coordination-fabric and account-workspace calls are not scoped to one
+ * bound project's analysis (unlike hostedProjectGet/Query above) — they hit
+ * the hosted server's own `/v1/coordination/*` and `/api/workspaces/*`
+ * surfaces directly, using the same server URL + Bearer token resolution as
+ * every other hosted call in this file. `path` is only used to resolve which
+ * hosted server/credential to talk to (via .klaurorc); it is never uploaded
+ * or analyzed.
+ */
+async function hostedServerAndToken(projectPath: string): Promise<{ serverUrl: string; token: string | undefined; projectId: string | undefined }> {
+  const loaded = await loadKlauroConfig(projectPath);
+  const serverUrl = resolveAnalyzerUrl(loaded)!.replace(/\/+$/, '');
+  const token = connectorToken(undefined, serverUrl);
+  return { serverUrl, token, projectId: loaded.config.project.id };
+}
+
+async function hostedCoordinationCall(projectPath: string, route: string, body: Record<string, unknown>) {
+  const { serverUrl, token } = await hostedServerAndToken(projectPath);
+  const url = `${serverUrl}${route}`;
+  const operation = `POST ${route}`;
+  const response = await hostedFetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(body),
+  }, { operation });
+  if (!response.ok) throw new Error(await describeHttpFailure(response, { url, operation }));
+  return readHostedJson(response, { url, operation });
+}
+
+async function hostedCoordinationGet(projectPath: string, route: string, params: Record<string, unknown> = {}) {
+  const { serverUrl, token } = await hostedServerAndToken(projectPath);
+  const url = new URL(`${serverUrl}${route}`);
+  for (const [key, value] of Object.entries(params)) if (value !== undefined) url.searchParams.set(key, String(value));
+  const operation = `GET ${route}`;
+  const response = await hostedFetch(url, { headers: token ? { authorization: `Bearer ${token}` } : {} }, { operation });
+  if (!response.ok) throw new Error(await describeHttpFailure(response, { url: url.toString(), operation }));
+  return readHostedJson(response, { url: url.toString(), operation });
+}
+
+/** Default coordination workspace id: an explicit `workspace` argument wins;
+ *  otherwise the bound hosted project id (stable across machines for the
+ *  same repo) so agents on the same project land in the same room without
+ *  having to agree on a string out of band. */
+async function resolveCoordinationWorkspace(projectPath: string, explicitWorkspace: string | undefined): Promise<string> {
+  if (explicitWorkspace && explicitWorkspace.trim()) return explicitWorkspace.trim();
+  const { projectId } = await hostedServerAndToken(projectPath);
+  return projectId || path.basename(projectPath);
 }
 
 /** Parse a 2xx hosted body. A truncated or non-JSON 2xx body (an edge that
@@ -353,5 +432,167 @@ export function createServer(): McpServer {
   register('get_watch_status', { description: 'Get one in-flight watch status.', inputSchema: { watch_id: z.string() } }, async ({ watch_id }: any) => json(watcher.getWatchStatus(watch_id)));
   register('list_watches', { description: 'List in-flight watches.', inputSchema: {} }, async () => json(watcher.listWatches()));
   register('poll_watch_changes', { description: 'Poll coalesced file changes accepted for hosted analysis.', inputSchema: { watch_id: z.string(), since: z.string().optional() } }, async ({ watch_id, since }: any) => json(watcher.pollWatchChanges(watch_id, since)));
+
+  register('get_module_health', {
+    description: 'Which parts of this system are dangerous to touch, and why. Every finding is a file that is a statistical OUTLIER within this codebase\'s OWN file-size/90-day-churn/cross-file-fan-in/capability-anchor-count distribution (median + MAD modified z-score), never a fixed cutoff. is_healthy is true only when zero findings. available is false when the analysis has fewer than 10 resolvable-source files.',
+    inputSchema: {
+      path: z.string(), kind: z.enum(['size-outlier', 'change-concentration', 'fan-in-hotspot', 'mixed-concerns', 'danger-composite']).optional(),
+      severity: z.enum(['info', 'warning', 'error']).optional(), limit: z.number().optional(), offset: z.number().optional(),
+    },
+  }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'get_module_health', args)));
+
+  // -- Coordination fabric (advisory, over the hosted /v1/coordination/* API) --
+  // Same product surface as server.ts's fab_* tools; thin HTTP calls only, no
+  // local claim store or CAS blast-radius expansion runs on this machine —
+  // that enrichment already lives server-side behind these same routes.
+
+  register('fab_claim_work', {
+    description: 'ADVISORY awareness claim (CLI-parity for `fab.ts claim`) — announces intent to peers over the hosted coordination fabric, never blocks or queues, takes no lease. The claim always succeeds; overlap with another agent\'s active claim comes back as `conflicts`/`warning` inline. Call fab_release_work when done.',
+    inputSchema: {
+      path: z.string(), agent_id: z.string().describe('Stable identifier for the calling agent/session'),
+      intent: z.string().describe('Short description of the work being claimed'),
+      paths: z.array(z.string()).optional().describe('File/dir paths this work will touch'),
+      symbols: z.array(z.string()).optional().describe('Symbol/node ids this work will touch'),
+      workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
+      agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional(),
+      ttl_ms: z.number().optional().describe('Claim TTL in ms (default 30 min, WAN-appropriate)'),
+    },
+  }, async ({ path: projectPath, agent_id, intent, paths, symbols, workspace, agent_kind, ttl_ms }: any) => {
+    const ws = await resolveCoordinationWorkspace(projectPath, workspace);
+    const result: any = await hostedCoordinationCall(projectPath, '/v1/coordination/claim', {
+      mode: 'advisory', workspace: ws, agent_id, intent, paths: paths || [], symbols: symbols || [],
+      agent_kind: agent_kind || 'claude', ttl_ms,
+    });
+    return json({ ...result, workspace: ws });
+  });
+
+  register('fab_extend', {
+    description: 'Extend an ACTIVE advisory claim mid-task ("I also need to touch X") without losing claim identity — reads the claim\'s current active scope back from the fabric, unions in the added paths/symbols, and re-claims under the same claim_id. This is also how a path-less exploration claim localizes.',
+    inputSchema: {
+      path: z.string(), agent_id: z.string().describe('Agent whose active advisory claim to extend'),
+      add_paths: z.array(z.string()).optional(), add_symbols: z.array(z.string()).optional(),
+      workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
+    },
+  }, async ({ path: projectPath, agent_id, add_paths, add_symbols, workspace }: any) => {
+    const ws = await resolveCoordinationWorkspace(projectPath, workspace);
+    const active: any = await hostedCoordinationGet(projectPath, '/v1/coordination/active', { workspace: ws });
+    const mine = (active?.active || []).find((c: any) => c.agent_id === agent_id);
+    const paths = [...new Set([...(mine?.paths || []), ...(add_paths || [])])];
+    const symbols = [...new Set([...(mine?.symbols || []), ...(add_symbols || [])])];
+    const result: any = await hostedCoordinationCall(projectPath, '/v1/coordination/claim', {
+      mode: 'advisory', workspace: ws, agent_id, intent: mine?.intent || '',
+      claim_id: mine?.claim_id, paths, symbols, agent_kind: mine?.agent_kind || 'claude',
+    });
+    return json({ ...result, workspace: ws, paths, symbols, note: mine ? undefined : 'No prior active claim found for this agent_id — extended from an empty scope; call fab_claim_work first for an intent-carrying claim.' });
+  });
+
+  register('fab_check_collision', {
+    description: 'ADVISORY read-only preflight (pairs with fab_claim_work) — do the proposed paths overlap any OTHER active agent\'s claim on the hosted coordination fabric? Takes no claim. Awareness-only, never a gate.',
+    inputSchema: {
+      path: z.string(), agent_id: z.string().describe('Your agent_id (excluded from the overlap scan)'),
+      paths: z.array(z.string()).describe('Proposed file/dir paths to check for overlap'),
+      workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
+    },
+  }, async ({ path: projectPath, agent_id, paths, workspace }: any) => {
+    const ws = await resolveCoordinationWorkspace(projectPath, workspace);
+    const result = await hostedCoordinationCall(projectPath, '/v1/coordination/check', { workspace: ws, agent_id, paths });
+    return json({ ...(result as any), workspace: ws });
+  });
+
+  register('fab_release_work', {
+    description: 'ADVISORY release (counterpart to fab_claim_work) — clears every advisory claim this agent holds on the hosted coordination fabric so peers see the scope free again. Call the moment you are done or handing off.',
+    inputSchema: {
+      path: z.string(), agent_id: z.string().describe('Agent id whose claims to release'),
+      workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
+    },
+  }, async ({ path: projectPath, agent_id, workspace }: any) => {
+    const ws = await resolveCoordinationWorkspace(projectPath, workspace);
+    const result = await hostedCoordinationCall(projectPath, '/v1/coordination/release', { workspace: ws, agent_id });
+    return json({ ...(result as any), workspace: ws });
+  });
+
+  register('fab_list_active_work', {
+    description: 'List every active advisory claim on the hosted coordination fabric for a workspace: each agent\'s intent and claimed paths/symbols. Call before starting work to see who else is here and what they are touching.',
+    inputSchema: {
+      path: z.string(), workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
+    },
+  }, async ({ path: projectPath, workspace }: any) => {
+    const ws = await resolveCoordinationWorkspace(projectPath, workspace);
+    const result = await hostedCoordinationGet(projectPath, '/v1/coordination/active', { workspace: ws });
+    return json({ ...(result as any), workspace: ws });
+  });
+
+  register('check_conceptual_conflicts', {
+    description: 'Detects semantic incoherence textual/merge conflicts CANNOT — two changes that each compile and merge cleanly but are JOINTLY incoherent (e.g. one agent retyping a function\'s return type while another edits a caller that assumes the old contract). Persists your reported `changes` (SymbolChange[]) to the hosted fabric so OTHER agents\' next check can detect conflicts with you, and returns the conflicts that involve YOU. Unlike server.ts\'s ambient git-diff capture, this client reports only what you pass explicitly in `changes` — call it whenever your edit changes a symbol\'s CONTRACT or STRUCTURE.',
+    inputSchema: {
+      path: z.string(), agent_id: z.string().describe('Your stable agent/session id'),
+      agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional(),
+      intent: z.string().describe('Short description of the work you are about to do'),
+      changes: z.array(symbolChangeSchema).describe('The symbol changes you are about to make (or are making), with before/after shape where known'),
+      workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
+    },
+  }, async ({ path: projectPath, agent_id, agent_kind, intent, changes, workspace }: any) => {
+    const ws = await resolveCoordinationWorkspace(projectPath, workspace);
+    const result = await hostedCoordinationCall(projectPath, '/v1/coordination/conceptual-conflicts', {
+      workspace: ws, agent_id, agent_kind: agent_kind || 'claude', intent, changes: changes || [],
+    });
+    return json({ ...(result as any), workspace: ws });
+  });
+
+  register('plan_intent_merge', {
+    description: 'When agents finish overlapping work, reconcile by INTENT rather than by textual 3-way diff — the higher-level question of whether the changes COHERE. Returns a MergePlan: auto_mergeable, needs_resolution, duplicate_work. Uses every OTHER active agent\'s persisted conceptual-conflict state for `workspace` (from check_conceptual_conflicts) unless you pass `states` explicitly.',
+    inputSchema: {
+      path: z.string(), agent_id: z.string().describe('Your stable agent/session id (excluded from the persisted-state lookup)'),
+      states: z.array(z.object({ agent_id: z.string(), intent: z.string(), changes: z.array(symbolChangeSchema) })).optional()
+        .describe('Explicit agent states to plan a merge over. Omit to use every other agent\'s persisted conceptual-conflict state.'),
+      workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
+    },
+  }, async ({ path: projectPath, agent_id, states, workspace }: any) => {
+    const ws = await resolveCoordinationWorkspace(projectPath, workspace);
+    const result = await hostedCoordinationCall(projectPath, '/v1/coordination/intent-merge', { workspace: ws, agent_id, states });
+    return json({ ...(result as any), workspace: ws });
+  });
+
+  register('plan_parallel_work', {
+    description: 'Given a pending task list, compute the maximally-parallel non-conflicting batching up front — run BEFORE any agent starts, so a fleet can be routed to avoid most collisions rather than merely surviving them. Pass each task\'s declared target_symbols/target_paths when known; pass `path` so the hosted CAS-backed heuristic can match real identifiers/file mentions in free-text `intent`, and so declared footprints get expanded one hop of call-graph blast radius before conflicts are computed.',
+    inputSchema: {
+      path: z.string().describe('Project path — resolves the hosted server and, when include_blast_radius is on, the CAS used for blast-radius expansion.'),
+      tasks: z.array(z.object({
+        id: z.string(), intent: z.string(),
+        target_symbols: z.array(z.string()).optional(), target_paths: z.array(z.string()).optional(),
+        flow_id: z.string().optional(), capability_id: z.string().optional(),
+      })).describe('Pending tasks to partition into maximally-parallel non-conflicting batches'),
+      include_blast_radius: z.boolean().optional().describe('Expand each task footprint by one hop of CAS call-graph edges. Default true.'),
+    },
+  }, async ({ path: projectPath, tasks, include_blast_radius }: any) => {
+    const { projectId } = await hostedServerAndToken(projectPath);
+    const result = await hostedCoordinationCall(projectPath, '/v1/coordination/plan-parallel-work', {
+      tasks, path: projectId || projectPath, include_blast_radius,
+    });
+    return json(result);
+  });
+
+  // -- Account-workspace (parent-CAS) composition --
+  // Wraps the already-hosted /api/workspaces/* endpoints (auto-rebuilt
+  // server-side on member-project analysis landing). This is the reachable
+  // customer path SPECIFICATION.md §0.12 item 7 says is missing: an
+  // analyze_codebase-shaped flow for composing several analyzed repos into
+  // one queryable parent analysis.
+
+  register('list_workspaces', {
+    description: 'List the hosted account workspaces (groups of analyzed projects) visible to the signed-in Klauro account, each with its member project count. Use to find a workspace_id for run_workspace_analysis/get_workspace_analysis.',
+    inputSchema: { path: z.string().describe('Any bound project path, used only to resolve the hosted server and credentials.') },
+  }, async ({ path: projectPath }: any) => json(await hostedCoordinationGet(projectPath, '/api/workspaces')));
+
+  register('run_workspace_analysis', {
+    description: 'Trigger a hosted rebuild of the parent CAS for an account workspace (a workspace-level CAS composing its member repos\' CAS analyses: projects, deployables, interfaces, runtime topology, cross-repo links, workspace capabilities, entities, health, risk, AI narrative). Accepted 202 and runs in the background — poll get_workspace_analysis for status:\'ready\'. This is the multi-repo analog of analyze_codebase.',
+    inputSchema: { path: z.string().describe('Any bound project path, used only to resolve the hosted server and credentials.'), workspace_id: z.string().describe('Hosted account workspace id (from list_workspaces).') },
+  }, async ({ path: projectPath, workspace_id }: any) => json(await hostedCoordinationCall(projectPath, `/api/workspaces/${encodeURIComponent(workspace_id)}/reanalyze`, {})));
+
+  register('get_workspace_analysis', {
+    description: 'Load the persisted parent CAS for a hosted account workspace: status (none/pending/ready), member projects, AI-required narrative, and the full workspace-level CAS graph. Call run_workspace_analysis first if status is \'none\'.',
+    inputSchema: { path: z.string().describe('Any bound project path, used only to resolve the hosted server and credentials.'), workspace_id: z.string().describe('Hosted account workspace id (from list_workspaces).') },
+  }, async ({ path: projectPath, workspace_id }: any) => json(await hostedCoordinationGet(projectPath, `/api/workspaces/${encodeURIComponent(workspace_id)}/analysis`)));
+
   return server;
 }

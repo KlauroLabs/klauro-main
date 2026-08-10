@@ -21,6 +21,7 @@ import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSe
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
+import { planIntentMerge, type MergePlan } from './coordination/intent-merge';
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
@@ -1589,6 +1590,44 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           fidelity_note: body.path
             ? undefined
             : 'No `path` supplied: partitioned on declared target_symbols/target_paths only — no CAS blast-radius expansion, no intent inference. Pass `path` for full fidelity.',
+        });
+        return;
+      }
+
+      // POST /v1/coordination/intent-merge — cross-machine mirror of
+      // server.ts's `plan_intent_merge` MCP tool (git-ambient path only: this
+      // process has no checkout of the caller's repo, so there is no ambient
+      // diff to capture here — same honest reduction the
+      // conceptual-conflicts route above already makes). Reconciles by INTENT
+      // rather than textual diff: reuses the SAME persisted
+      // `__conceptual__` claim-log state that
+      // /v1/coordination/conceptual-conflicts populates (via
+      // otherAgentConceptualStatesHttp), so callers should report their
+      // changes there at least once before calling this. Explicit `states` in
+      // the body bypasses the persisted-state lookup entirely, matching the
+      // MCP tool's own `states` override.
+      if (request.method === 'POST' && route === '/v1/coordination/intent-merge') {
+        const body = await readJsonBody<{
+          workspace: string; agent_id: string; states?: AgentInFlightState[];
+        }>(request, maxBodyBytes);
+        if (!body.workspace || !body.agent_id) {
+          writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
+          return;
+        }
+        const explicitStates = Array.isArray(body.states) && body.states.length > 0;
+        const cas = await conceptualConflictCasForWorkspaceHttp(body.workspace);
+        const planStates: AgentInFlightState[] = explicitStates
+          ? (body.states as AgentInFlightState[])
+          : await otherAgentConceptualStatesHttp(body.workspace, body.agent_id);
+        const plan: MergePlan = planIntentMerge(planStates, cas);
+        writeJson(response, 200, {
+          workspace: body.workspace,
+          attribution_source: 'git-ambient',
+          agents_considered: [...new Set(planStates.map((s) => s.agent_id))],
+          plan,
+          note: planStates.length === 0
+            ? 'No agent states found (none passed explicitly, none persisted for this workspace). Call /v1/coordination/conceptual-conflicts first, or pass `states` explicitly.'
+            : undefined,
         });
         return;
       }
