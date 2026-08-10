@@ -922,4 +922,130 @@ describe('DjangoAnalyzer', () => {
       expect(await analyzer.canAnalyze(root)).toBe(true);
     });
   });
+
+  describe('GraphQL (graphene) entry point ids across Django apps', () => {
+    let projectPath: string;
+
+    const writeApp = async (appName: string, fieldSource: string) => {
+      const appDir = path.join(projectPath, 'modules', appName);
+      await fs.ensureDir(appDir);
+      await fs.writeFile(
+        path.join(appDir, 'apps.py'),
+        `from django.apps import AppConfig\nclass Config(AppConfig):\n    name = "modules.${appName}"\n`
+      );
+      await fs.writeFile(
+        path.join(appDir, 'models.py'),
+        'from django.db import models\nclass Widget(models.Model):\n    name = models.CharField(max_length=10)\n'
+      );
+      await fs.ensureDir(path.join(appDir, 'schemas'));
+      await fs.writeFile(path.join(appDir, 'schemas', 'queries.py'), fieldSource);
+    };
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'django-analyzer-graphene-'));
+      await fs.writeFile(path.join(projectPath, 'requirements.txt'), 'Django==4.2\ngraphene-django==3.0\n');
+      await fs.writeFile(path.join(projectPath, 'manage.py'), '');
+      await fs.ensureDir(path.join(projectPath, 'hrxportal'));
+      await fs.writeFile(path.join(projectPath, 'hrxportal', 'settings.py'), 'INSTALLED_APPS = []\n');
+      await fs.writeFile(path.join(projectPath, 'hrxportal', 'urls.py'), 'urlpatterns = []\n');
+    });
+
+    afterEach(async () => {
+      await fs.remove(projectPath);
+    });
+
+    it('emits an entry point for a graphene ObjectType field with no resolve_<field> method (DjangoCRUDObjectTypeWithRoles-style .ReadField()/.BatchReadField() factory fields, as used by the real GPO query surface)', async () => {
+      await writeApp(
+        'special_pricing',
+        'import graphene\nclass GPOs(graphene.ObjectType):\n    gpo = graphene.Field(GPOType)\n    gpos = graphene.List(GPOType)\n'
+      );
+
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const names = (contribution.entry_points || []).map(e => (e.metadata as any)?.graphql_operation);
+      expect(names).toContain('gpo');
+      expect(names).toContain('gpos');
+    });
+
+    it('does not collide entry point ids when two different Django apps each expose a same-named GraphQL field (a name-only entry point id let the second app silently overwrite the first in every id-keyed incremental merge Map in orchestrator.ts)', async () => {
+      const fieldSource = 'import graphene\nclass Items(graphene.ObjectType):\n    item = graphene.Field(WidgetType)\n    items = graphene.List(WidgetType)\n';
+      await writeApp('app_a', fieldSource);
+      await writeApp('app_b', fieldSource);
+
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const itemEntries = (contribution.entry_points || []).filter(
+        e => (e.metadata as any)?.graphql_operation === 'item'
+      );
+      const ids = itemEntries.map(e => e.id);
+
+      expect(itemEntries).toHaveLength(2);
+      expect(new Set(ids).size).toBe(2);
+      expect(itemEntries.map(e => (e.metadata as any)?.app).sort()).toEqual(['app_a', 'app_b']);
+    });
+  });
+
+  describe('Django REST via a plain django.views.View (not DRF), included via urls.py include()', () => {
+    let projectPath: string;
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'django-analyzer-view-include-'));
+      await fs.writeFile(path.join(projectPath, 'requirements.txt'), 'Django==4.2\n');
+      await fs.writeFile(path.join(projectPath, 'manage.py'), '');
+
+      const apiDir = path.join(projectPath, 'modules', 'api');
+      await fs.ensureDir(apiDir);
+      await fs.writeFile(
+        path.join(apiDir, 'apps.py'),
+        'from django.apps import AppConfig\nclass Config(AppConfig):\n    name = "modules.api"\n'
+      );
+      await fs.writeFile(path.join(apiDir, 'models.py'), '');
+      await fs.writeFile(
+        path.join(apiDir, 'views.py'),
+        [
+          'from django.views import View',
+          'from django.http import HttpResponse',
+          '',
+          'class FleetOrderAPI(View):',
+          '    @staticmethod',
+          '    def get(request, id):',
+          '        return HttpResponse("ok")',
+          '',
+        ].join('\n')
+      );
+      await fs.writeFile(
+        path.join(apiDir, 'urls.py'),
+        [
+          'from django.urls import path',
+          'from django.views.decorators.csrf import csrf_exempt',
+          'from modules.api.views import FleetOrderAPI',
+          '',
+          'urlpatterns = [',
+          '    path("fleet-order/<id>", csrf_exempt(FleetOrderAPI.as_view())),',
+          ']',
+        ].join('\n')
+      );
+
+      await fs.ensureDir(path.join(projectPath, 'hrxportal'));
+      await fs.writeFile(path.join(projectPath, 'hrxportal', 'settings.py'), 'INSTALLED_APPS = []\n');
+      await fs.writeFile(
+        path.join(projectPath, 'hrxportal', 'urls.py'),
+        [
+          'from django.urls import include, path',
+          '',
+          'urlpatterns = [',
+          '    path("api/", include("modules.api.urls")),',
+          ']',
+        ].join('\n')
+      );
+    });
+
+    afterEach(async () => {
+      await fs.remove(projectPath);
+    });
+
+    it('extracts the plain-View REST endpoint reached through include(), not just DRF APIView routes', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const paths = (contribution.entry_points || []).map(e => (e.trigger as any)?.path);
+      expect(paths).toContain('/api/fleet-order/<id>');
+    });
+  });
 });
