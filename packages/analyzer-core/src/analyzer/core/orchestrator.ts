@@ -88,6 +88,7 @@ import {
 } from '../../types/cas.types';
 import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS, type ArtifactTypeResult } from './artifact-type';
 import { collectDeployableEvidence } from './deployable-evidence';
+import { attachDeployable } from './entry-point-deployable';
 import { determineSystemType as determineSystemTypeImpl } from './system-type';
 import { isIdentifierShapedRepoBasename } from './deployable-evidence/util';
 import { buildDependencyManifest } from './dependency-manifest';
@@ -2336,6 +2337,15 @@ export class AnalyzerOrchestrator {
       // not win here.
       displayName: systemName,
     });
+    // Wire entry-point-deployable.ts's attachDeployable (a pure, tested
+    // function that has existed unwired since it was built — deployable_id/
+    // deployable_name were declared on CASEntryPoint but nothing ever called
+    // the attributor, so every shipped entry point had them unset). Spliced
+    // in place so every downstream consumer of `allEntryPoints` (validation,
+    // contract/capability derivation, the final CAS field) sees the
+    // attribution — never guesses: entry points with no resolvable file or
+    // no matching deployable root are returned unchanged (fields left unset).
+    allEntryPoints.splice(0, allEntryPoints.length, ...attachDeployable(allEntryPoints, deployableEvidence, allNodes));
     const topLevelShipUnits = deployableEvidence.filter(item =>
       item.tier === 1 && item.kind !== 'build-image' && !item.bundled_into
     );
@@ -3821,6 +3831,11 @@ export class AnalyzerOrchestrator {
       exitPoints,
       displayName: systemName,
     });
+    // See the matching comment on the full-analysis path (attachDeployable
+    // wiring) — same attribution, applied on the incremental-rebuild path so
+    // deployable_id/deployable_name are populated after an incremental run
+    // too, not only a full one.
+    entryPoints = attachDeployable(entryPoints, deployableEvidence, nodes);
     const incrementalTopLevelShipUnits = deployableEvidence.filter(item =>
       item.tier === 1 && item.kind !== 'build-image' && !item.bundled_into
     );
