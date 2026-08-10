@@ -498,7 +498,13 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       entryPoint,
       journey: {
         id: `journey_${entryPoint.id}`,
-        name: buildJourneyName(entryPoint, effects),
+        // A journey's name is the underlying flow's own name when a flow was
+        // matched (docs/cas/SPECIFICATION.md §0.5.1 — journeys are a derived
+        // view, the name is the flow's own fact, never independently
+        // computed). buildJourneyName stays the fallback for the
+        // pre-flow-projection call surface (input.flows omitted) that unit
+        // tests still exercise directly.
+        name: matchingFlows?.length ? matchingFlows[0].name : buildJourneyName(entryPoint, effects),
         journey_kind: journeyKind,
         entry_point_id: entryPoint.id,
         entry: {

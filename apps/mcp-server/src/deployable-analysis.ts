@@ -5,7 +5,6 @@ import type {
   CASExitPoint,
   CASDataEntity,
   CASEntityLineage,
-  CASWorkflow,
   CASUserJourney,
   CASFlowGraph,
   SystemCapability,
@@ -770,10 +769,6 @@ function scopeCapabilitiesToSlice<T extends SystemCapability>(
   });
 }
 
-function filterWorkflows(workflows: CASWorkflow[] | undefined, includedEntryPointIds: Set<string>): CASWorkflow[] {
-  return (workflows || []).filter(w => (w.entry_points || []).some(id => includedEntryPointIds.has(id)));
-}
-
 function filterUserJourneys(journeys: CASUserJourney[] | undefined, includedEntryPointIds: Set<string>): CASUserJourney[] {
   return (journeys || []).filter(j => includedEntryPointIds.has(j.entry_point_id));
 }
@@ -1042,7 +1037,6 @@ export interface SubCasNodeSlice {
     | 'system_capabilities'
     | 'behavior_surfaces'
     | 'flow_graph'
-    | 'workflows'
     | 'user_journeys'
     | 'communication_seams'
   > & { deployable_evidence: DeployableEvidence[] };
@@ -1135,7 +1129,6 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
         scopedFlowGraph.flowIds,
       ),
       flow_graph: scopedFlowGraph.graph,
-      workflows: filterWorkflows(cas.workflows, includedEntryPointIds),
       user_journeys: filterUserJourneys(cas.user_journeys, includedEntryPointIds),
       communication_seams: filterCommunicationSeams(cas.communication_seams, includedEntryPointIds, includedExitPointIds, includedEntityIds),
       deployable_evidence: [deployable, ...bundledMembersOf(deployable, allEvidence)],

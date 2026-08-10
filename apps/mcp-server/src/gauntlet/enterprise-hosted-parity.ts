@@ -254,8 +254,12 @@ function assertProjectSemanticQuality(appCas: CASOutput, infraCas: CASOutput): v
     .map(concept => concept.name)
     .filter(name => /^(?:dotnet|aspnet|mvc|sqlalchemy|microsoft|framework|schema|model|mapping)$/i.test(name));
   invariant(coreTechnologyDomains.length === 0, `domain concepts promoted technology vocabulary to core: ${coreTechnologyDomains.join(', ')}`);
-  const primaryWorkflow = (appCas.workflows || []).find(workflow => workflow.id === appPurpose.primary_workflow_id);
-  invariant(!/^(?:main|application|server|bootstrap)$/i.test(String(primaryWorkflow?.name || '')), `generic process bootstrap outranked the product workflow: ${primaryWorkflow?.name || 'missing'}`);
+  // `primary_workflow_id` names a FLOW id now (flow_graph.flows, CASFlowRef)
+  // — workflows collapsed into a derived view over flows
+  // (docs/cas/SPECIFICATION.md §0.5.1), there is no stored workflow list to
+  // look the id up in.
+  const primaryFlow = (appCas.flow_graph?.flows || []).find(flow => flow.flow_id === appPurpose.primary_workflow_id);
+  invariant(!/^(?:main|application|server|bootstrap)$/i.test(String(primaryFlow?.name || '')), `generic process bootstrap outranked the product workflow: ${primaryFlow?.name || 'missing'}`);
 }
 
 function assertWorkspaceSemanticQuality(workspace: any): void {

@@ -119,7 +119,7 @@ function buildAnalysisMetadata(projectPath: string, cas: CASOutput): Record<stri
       external_services: cas.external_services?.length || 0,
       test_suites: cas.test_suites?.length || 0,
       call_chains: cas.call_chains?.length || 0,
-      workflows: cas.workflows?.length || 0,
+      journeys: cas.user_journeys?.length || 0,
       analysis_errors: cas.analysis_errors?.length || 0,
     },
     analysis_phases: cas.analysis_phases,

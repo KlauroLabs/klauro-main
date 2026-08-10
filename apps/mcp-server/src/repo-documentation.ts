@@ -181,14 +181,20 @@ function buildRepoMarkdown(cas: CASOutput, durationMs: number): string {
     lines.push('_No domain concepts detected._');
   }
   lines.push('');
-  const workflows = (cas.workflows || cas.workflow_graph?.workflows || [])
-    .filter(workflow => workflow.classification === 'primary')
+  // "Workflow" is not a stored CAS structure (docs/cas/SPECIFICATION.md
+  // §0.5.1) — the top user-facing journeys are the same read, sourced from
+  // `user_journeys` (the derived view over `flows`) instead.
+  const journeys = (cas.user_journeys || [])
+    .filter(journey => journey.journey_kind === 'user-facing')
     .slice(0, 8);
-  if (workflows.length > 0) {
-    lines.push('Top workflows:');
+  if (journeys.length > 0) {
+    lines.push('Top journeys:');
     lines.push('');
-    for (const workflow of workflows) {
-      lines.push(`- **${workflow.name}** (${workflow.workflow_type}, ${workflow.criticality}) — ${workflow.description}`);
+    for (const journey of journeys) {
+      const trigger = journey.entry.method && journey.entry.path_or_trigger
+        ? `${journey.entry.method} ${journey.entry.path_or_trigger}`
+        : journey.entry.path_or_trigger || journey.entry.type;
+      lines.push(`- **${journey.name}** (${journey.entry.type}, ${journey.criticality}) — ${trigger}`);
     }
     lines.push('');
   }
