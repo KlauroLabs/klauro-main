@@ -121,8 +121,18 @@ services:
       # spawnAnalysisWorker) so both the in-process and forked paths fail at
       # the same, already-proven-safe threshold.
       NODE_OPTIONS: --max-old-space-size=4096
+      # ai.config.ts defaults REDIS_HOST to 'localhost', which inside this
+      # container is the container itself — nothing listens there, so every
+      # analysis logged "Redis unavailable (ECONNREFUSED 127.0.0.1:6379); using
+      # in-memory cache" and silently fell back to a PER-PROCESS map. The AI
+      # response cache has therefore never worked in production: it was empty on
+      # every restart and shared by nothing. Point it at the service below.
+      REDIS_HOST: redis
     expose:
       - "8787"
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - /opt/klauro/data:/data
       # Release artifacts (tarball + latest.json) live on the host; the api
@@ -144,6 +154,45 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # The AI response cache's backing store. Absent until 2026-08-10: the code has
+  # always dialed Redis and always fallen back to an in-memory map, so the
+  # documented "path-insensitive 24h AI response cache" was per-process and
+  # evaporated on every deploy. Two consequences worth stating, because both were
+  # being counted as already-solved: repeat analyses re-paid full AI latency (the
+  # AI phase is 67-99% of wall-clock), and no horizontally-scaled worker could
+  # ever share a cache entry with another.
+  #
+  # maxmemory-policy allkeys-lru so a full cache degrades by evicting cold
+  # entries rather than refusing writes — a cache that starts erroring is worse
+  # than one that forgets. 512mb leaves the box's ~6.4Gi headroom intact
+  # alongside the api's 4096mb heap ceiling; over-committing this VPS has
+  # OOM-killed systemd and sshd before.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >-
+      redis-server
+      --save 60 1
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - /opt/klauro/redis-data:/data
+    # Not published to the host: only the api talks to it, over the compose
+    # network. An exposed unauthenticated Redis is a well-known compromise path.
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   caddy:
     image: caddy:2-alpine
