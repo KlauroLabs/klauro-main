@@ -194,4 +194,18 @@ Common thread so far: capability *quality* (readability, entity-grounding) is fi
 
 ---
 
-*(scorecard rows 5-10 to follow in this document as each subject completes)*
+### 5. simulation-engine — Library/SDK, no entry point, no deployable
+
+- project `prj_QYeeFjQkO_-OY_Cs`, my own submission, `analyzer_build: 1.0.136-dev+56cde09aa104`, fresh. Finished 2026-08-10T16:39:16Z, duration **44.50s**, `errors: 1`, cas_version 2.1.0.
+- **Deployable-boundary detection is correct**: `sub_cas_nodes.promoted: false`, `qualified_unit_count: 0`, `reason: "No tier-qualified ship unit found: no deployable_evidence row declares a ship or build artifact of its own."` — the product correctly recognizes this is not a deployable. `entry_points: 1` (lifecycle only), `journeys.total: 0` — also correct for a library with no HTTP/user-facing surface.
+- `primary_domain`: `"cybersecurity-training"`, and the system-level `description` is genuinely good: *"The Simulation Engine is a library designed to create and manage 2D top-down simulations for IT and cybersecurity training... transforms configuration inputs... into interactive simulation outputs..."* — this is exactly right and matches the actual repo purpose (confirmed by reading its README: a browser-based vulnerable-web-app simulator for SQLi/XSS/command-injection training).
+- **Capability count: 10 — this is the direct, named anti-pattern the owner called out, reproduced exactly.** The owner's bar: *"the correct answer is ~1-2 readable capabilities, NOT zero and NOT struct-field names like 'Manage Encrypted Packet Headers'."* The 10 generated here are: Configure Desktop Environment, Define System Hardware, Visualize Network Topology, Set Up Training Scenarios, Manage Email Communications, Organize Rack Units, Monitor Exploitation Progress, Customize Window States, Apply Dashboard Themes, Handle Process Management. At least 5 of these (Configure Desktop Environment, Organize Rack Units, Customize Window States, Apply Dashboard Themes, Handle Process Management) are one-entity, config-object-shaped capabilities — structurally identical to the "Manage Encrypted Packet Headers" anti-pattern named in the brief, not outcomes a PM would list as the library's product purpose.
+- **Description/capability-catalog mismatch**: the system-level description correctly frames this as a library (consumer configures it, gets simulation output), but the capability catalog instead reads like a deployed desktop application's feature list (Configure Desktop Environment, Customize Window States) rather than the library's actual public API surface (create a scenario, run a simulation, subscribe to engine events). The two halves of the same analysis disagree about what kind of thing this is.
+- `flows_to_capabilities`: 0.9783 (45/46). `reachable_code_to_steps`: 1.0.
+- `tests_present`/`health.tests`: both show 0/false consistently (no contradiction here, unlike subject 4).
+- No raw source/vendor names in the 10 capability names/descriptions themselves — the defect here is architectural (fragmentation), not a mechanism-leak-in-text defect.
+- Verdict: **this is the clearest, most direct reproduction of a named owner concern in the whole run.** Deployable-boundary and entry-point detection are both correct for this shape, but capability generation over-fragments a library's config surface into 10 pseudo-capabilities instead of converging on 1-2 real ones ("Simulate common web-app vulnerabilities for hands-on training" / "Configure custom training scenarios and network topologies").
+
+---
+
+*(scorecard rows 6-10 to follow in this document as each subject completes)*
