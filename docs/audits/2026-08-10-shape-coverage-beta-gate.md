@@ -143,4 +143,18 @@ fresh submissions with `analyzer_build` confirmed via `reuse_decision`.
 
 Common thread so far: capability *quality* (readability, entity-grounding) is fine to good on generated capabilities, but **recall is the real failure** — every subject tested against a known regression still reproduces it. Continuing with the remaining 7 shapes (native mobile, library/SDK, monorepo-multi-deployable, CLI, IaC, data/ML, odd/game) next.
 
-*(scorecard rows 4-10 to follow in this document as each subject completes)*
+### 4. openclaw-android — Native mobile, Kotlin/Jetpack Compose, no HTTP surface
+
+- project `prj__ePndWvT_0jk4uIy`, my own submission, `analyzer_build: 1.0.136-dev+56cde09aa104`, fresh. Finished 2026-08-10T16:37:19Z, duration **7.06s**, `errors: 2`, cas_version 2.1.0.
+- **ComposeAnalyzer entry-point fix confirmed generalizing to a new subject**: `entry_points: 7` (`page:4, event:1, lifecycle:2`), with real Compose-screen journeys (`journey_compose_entry_compose_component_.../ChatSessionsDialog...`, `.../RootScreen...`). Prior sessions noted ComposeAnalyzer used to emit **zero** entry points on Android apps (the confirmed cause of a 2/6 score elsewhere); this repo shows real page/lifecycle entry points and journeys, not zero. Positive signal that fix generalizes.
+- capability count: **3** — Connect to Gateway, Chat with Gateway, Parse Talk Directives. All readable, entity-grounded, no mechanism/vendor leak in the copy.
+- `primary_domain`: **null**; system-level `description`: **empty string `""`**, `description_source: null` — the AI enrichment ran (L5 marked ready) but produced no system purpose at all. Distinct defect from washup's null-domain case: here the *description itself* is blank, not just the domain.
+- **Under-generation relative to entity evidence**: the entity/data inventory contains `ElevenLabsVoice`, `CameraHudState`, `Capture`, `Snapshot`, `PendingImageAttachment`, `OutgoingAttachment`, `InlineImage`, `ToolDisplaySummary`, `ToolDisplayConfig`, `StatusActivity` — real evidence of camera-capture, voice/TTS, image-attachment, and tool-call-display features — none of which is reflected in any of the 3 capabilities. `flows_to_capabilities: 0.8409` (37/44, 7 flows unmapped) is consistent with this.
+- **RECALL column**: at least 2-3 missing capabilities — "Capture and send camera/image attachments", "Voice/text-to-speech responses", "Display tool-call status/results" — all backed by real entities the graph already extracted but never promoted past Tier 1.
+- **`tests_present` vs `health.tests` contradiction, confirmed**: `orient_capsule.dimensions.tests = {available:true, count:13}` (13 test-related nodes exist) but `health.tests = {total:0, passing:0, failing:0}` and every capability shows `tests_present:false`. The two halves of the same response disagree about whether tests exist.
+- `reachable_code_to_steps`: 1.0 (perfect). No HTTP routes (correct for this shape — `routes.available:false`).
+- Verdict: best evidence in the run that a specific named regression fix (Compose entry points) is real and generalizes. But the system purpose is blank, capability count looks low against the entity evidence (voice/camera/tool-display all missing), and there's an internal `tests_present`/`health.tests` contradiction in the same payload.
+
+---
+
+*(scorecard rows 5-10 to follow in this document as each subject completes)*
