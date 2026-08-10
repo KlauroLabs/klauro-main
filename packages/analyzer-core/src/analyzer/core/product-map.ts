@@ -76,6 +76,56 @@ function journeyPrimaryEntityNames(journey: CASUserJourney): Set<string> {
   return read;
 }
 
+/**
+ * ALL entities a journey's call path touches — read OR write — unlike
+ * journeyPrimaryEntityNames' narrower "what it terminally PRODUCES" set.
+ * journeyPrimaryEntityNames exists to keep journey<->capability DISPLAY
+ * attribution (the `journeys` list a capability ships, and risk_level)
+ * precise: pasting a journey onto every capability it merely brushes against
+ * would make that list noise. tests_present is a different, coarser question
+ * — "is ANY of this capability's surface exercised by a test at all" — where
+ * a journey that only READS one of the capability's entities (e.g. "list API
+ * keys" exercising the APIKey capability's read path without ever writing
+ * one) is still real, honest evidence of coverage. Restricting tests_present
+ * to the same primary-produced-only set as display attribution silently
+ * dropped that evidence and was one source of capabilities reporting
+ * tests_present:false while their own entity's journeys carried real
+ * tests_covering counts in the same response.
+ */
+function journeyTouchedEntityNames(journey: CASUserJourney): Set<string> {
+  const touched = new Set<string>();
+  for (const terminal of journey.terminal_entities || []) touched.add(normalizeEntityName(terminal.name));
+  for (const name of journey.terminal_effects?.entities_written || []) touched.add(normalizeEntityName(name));
+  for (const name of journey.terminal_effects?.entities_read || []) touched.add(normalizeEntityName(name));
+  return touched;
+}
+
+/**
+ * Whether ANY journey carries real test evidence for this capability, using a
+ * DELIBERATELY wider net than `linked` (see journeyTouchedEntityNames):
+ * structural entry-point family (same as linkJourneysToCapability's strongest
+ * branch) OR any-entity-touched overlap, not just primary-produced. `linked`
+ * stays the strict, precise list used for display/risk; this is the coarser
+ * boolean the cross-surface invariant (capabilities/journeys/health.tests
+ * must never contradict each other) depends on.
+ */
+function capabilityHasTestEvidence(
+  capability: SystemCapability,
+  journeys: CASUserJourney[],
+  capabilityEntities: Set<string>
+): boolean {
+  const entryPointIds = new Set(capability.operations.map(operation => operation.entry_point_id));
+  return journeys.some(journey => {
+    if ((journey.tests_covering || []).length === 0) return false;
+    if (entryPointIds.has(journey.entry_point_id)) return true;
+    if (capabilityEntities.size === 0) return false;
+    for (const name of journeyTouchedEntityNames(journey)) {
+      if (capabilityEntities.has(name)) return true;
+    }
+    return false;
+  });
+}
+
 function linkJourneysToCapability(
   capability: SystemCapability,
   capabilityEntityNames: string[],
@@ -126,7 +176,9 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
     const linkedSorted = [...linked].sort(
       (a, b) => criticalityRank(a.criticality) - criticalityRank(b.criticality) || a.name.localeCompare(b.name)
     );
-    const testsPresent = linked.some(journey => (journey.tests_covering || []).length > 0);
+    const capabilityEntities = new Set(entityNames.map(normalizeEntityName));
+    const testsPresent = linked.some(journey => (journey.tests_covering || []).length > 0)
+      || capabilityHasTestEvidence(capability, journeys, capabilityEntities);
     return {
       name: capability.name,
       description: capability.description,

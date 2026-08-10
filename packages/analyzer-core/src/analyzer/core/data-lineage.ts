@@ -45,35 +45,35 @@ function toRepoRelativeAccessorFile(file: string | undefined): string | undefine
 }
 
 /**
- * Resolve a customer-facing recipient identity from an exit point, never the
- * raw exit point name unless it already reads as a clean identifier.
+ * Resolve a customer-facing recipient identity from an exit point using only
+ * EVIDENCE that the call actually leaves the process, never the shape of its
+ * name.
  *
- * `service_id`/`sdk` are structured identity fields and always safe. The
- * fallback to `exitPoint.name` is not: several language analyzers' chained-
- * expression extraction (Go/C#/Java/PHP/Solidity `External call: <target>`
- * labels) can glue an entire source expression — including inlined
- * multi-line SQL — into that name when the call target itself is a chain
- * rather than a plain identifier. `exposure_highlights.external_recipients`
- * is a security-facing field; dumping that raw source there is the worst
- * place for an extraction artifact to leak (sibling class to the
- * orphan_node_ids raw-id dump, already fixed once). A clean label reads as
- * `word[.:/-]word...` with no whitespace and no quote/statement punctuation;
- * anything else is treated as unresolved and DROPPED rather than surfaced,
- * per the "resolved identity or omit the entry, never raw source" rule.
+ * `service_id`/`sdk` are structured identity fields set exclusively by
+ * analyzers that resolve a genuine outbound destination — a real SDK/HTTP
+ * client call (outbound-http-client-analyzer.ts), a message/queue publish
+ * (messaging-analyzer.ts), a provisioned cloud resource, etc. Those analyzers
+ * always populate `target`, so this is a strict identity read, never a guess.
+ *
+ * A prior version of this function ALSO accepted the exit point's bare NAME
+ * whenever it merely *looked* like a clean identifier
+ * (`word[.:/-]word...`, no whitespace/punctuation). That shape test cannot
+ * tell "external service" from "in-process call": several language
+ * analyzers' chained-call extraction (Go/C#/Java/PHP/Solidity `External
+ * call: <target>` labels — e.g. go-analyzer.ts's isExternalLibraryCall, which
+ * explicitly tags calls into fmt/errors/json/reflect/crypto/time and any
+ * other non-local-package call as an exit point) means every standard-library
+ * helper and even a same-process struct method (`s.db.Exec`) reads as a
+ * clean identifier too, and NONE of those set `target` — so the shape
+ * fallback let stdlib/local calls stand in as "external recipients" of
+ * sensitive data next to real third-party SDKs, in a SECURITY-FACING field.
+ * There is no string shape that reliably means "external"; only structured
+ * destination evidence does. Absent it, the call is DROPPED rather than
+ * guessed at — an empty `external_recipients` list is an honest "unresolved
+ * from this analysis", a wrong one is a security misstatement.
  */
 function resolveRecipientService(exitPoint: CASExitPoint): string | undefined {
-  const structured = exitPoint.target?.service_id || exitPoint.target?.sdk;
-  if (structured) return structured;
-  const name = exitPoint.name;
-  if (!name) return undefined;
-  const label = name.startsWith('External call: ') ? name.slice('External call: '.length) : name;
-  const trimmed = label.trim();
-  if (!trimmed) return undefined;
-  const looksLikeCleanIdentifier =
-    trimmed.length <= 80 &&
-    !/[\s'"`;(){}\n\r]/.test(trimmed) &&
-    /^[A-Za-z0-9_$][\w$.:/<>#-]*$/.test(trimmed);
-  return looksLikeCleanIdentifier ? trimmed : undefined;
+  return exitPoint.target?.service_id || exitPoint.target?.sdk || undefined;
 }
 
 const WRITE_EDGE_TYPES = new Set(['writes', 'creates', 'updates', 'deletes', 'persists', 'saves', 'mutates']);
