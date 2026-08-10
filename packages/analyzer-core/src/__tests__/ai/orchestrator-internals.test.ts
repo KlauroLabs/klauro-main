@@ -7340,6 +7340,88 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('keeps a well-formed AI capability whose name exactly matches an already-clean, evidence-anchored deterministic candidate area (express-mongoose coverage-gate regression, 2026-08-09)', async () => {
+    // REGRESSION: the exact-match branch of isRawCandidateLabelName used to
+    // reject ANY AI item whose name verbatim-matched a candidateAreas string,
+    // on the theory that a match means the AI lazily echoed a raw/mechanical
+    // deterministic label. That assumption broke once the deterministic
+    // candidate-naming pipeline started producing well-formed purpose phrases
+    // of its own (bare-noun repair, terminal-grounded naming): on the
+    // express-mongoose analysis-truth fixture (a single "User" entity behind
+    // two CRUD routes), BOTH the deterministic candidate and the AI's own
+    // independent answer legitimately read "Manage User" — real evidence
+    // (1 entity, non-empty operations), not a raw echo. All 3 retry cycles
+    // produced the identical, correctly-anchored name, so the nudge/retry
+    // loop could never recover: the catalog collapsed to zero, and
+    // coverage-gate.test.ts's real express-mongoose run failed the
+    // flows_to_capabilities floor (1.0 measured on 2026-07-13 -> 0). Fix:
+    // an exact match is only treated as a raw echo when the CANDIDATE AREA
+    // itself looks mechanically raw (looksMechanicallyRawCapabilityLabel) —
+    // "Manage User" doesn't, so agreement is corroboration, not echoing.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'Manage User', description: 'Lets users create and update their profiles with email and name details.', category: 'core', entities: ['User'] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Express Mongoose Truth',
+        enhancedSystemPurpose: { primary_domain: 'user-management', core_concepts: [] },
+        frameworks: ['express', 'mongoose'], userJourneys: [],
+        dataEntities: [{ id: 'entity_user', name: 'User' }],
+        candidateCapabilities: [
+          {
+            name: 'Manage User',
+            related_entities: ['entity_user'],
+            operations: [
+              { entry_point_id: 'entry_route_get_0', entry_point_type: 'http', action: 'Read' },
+              { entry_point_id: 'entry_route_post_1', entry_point_type: 'http', action: 'Create' },
+            ],
+          },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(1);
+      expect(catalog[0].name).toBe('Manage User');
+      expect(catalog[0].related_entities).toContain('entity_user');
+      expect(catalog[0].operations.length).toBeGreaterThan(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('still rejects an exact match against a candidate area when the candidate area itself is mechanically raw ("Run .NET Main entry point")', async () => {
+    // Defense-in-depth companion to the fix above: narrowing the exact-match
+    // branch to "candidate area itself looks raw" must not reopen the
+    // original defect it was guarding against — a candidate area that IS
+    // mechanical (matches looksMechanicallyRawCapabilityLabel) still rejects
+    // an exact-match AI echo of it.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'Run .NET Main entry point', description: 'Runs the .NET Main entry point of the application.', category: 'core', entities: [] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Hoggan Scientific',
+        enhancedSystemPurpose: { primary_domain: 'medical-device', core_concepts: [] },
+        frameworks: ['WPF'], userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [
+          { name: 'Run .NET Main entry point', related_entities: [], operations: [{ entry_point_id: 'entry_main', entry_point_type: 'internal', action: 'Run' }] },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('sanitizes arrow-chain journey echoes to their purpose head instead of shipping the trace (real rpg/server Python CAS, v1.0.96)', async () => {
     // Measured live: the model echoed JOURNEY names verbatim as capability
     // names — all six caps were "action -> outcome" traces ("Create attack ->

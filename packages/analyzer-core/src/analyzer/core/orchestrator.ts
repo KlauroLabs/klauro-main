@@ -12228,7 +12228,60 @@ export class AnalyzerOrchestrator {
   private isRawCandidateLabelName(name: string, candidateAreas: string[]): boolean {
     const trimmed = name.trim();
     if (!trimmed) return true;
-    if (candidateAreas.some(area => area.trim().toLowerCase() === trimmed.toLowerCase())) return true;
+    if (this.looksMechanicallyRawCapabilityLabel(trimmed)) return true;
+    // An exact match against a deterministic candidate area is suspicious
+    // only when that candidate area is ITSELF a raw/mechanical label (a
+    // route/module/call-chain name the AI merely parroted back without any
+    // real comprehension). The deterministic naming pipeline now also
+    // produces well-formed purpose phrases for its candidates (bare-noun
+    // repair, terminal-grounded naming, ...), so an exact match against an
+    // already-clean candidate label is the AI CORROBORATING real structural
+    // evidence, not echoing raw text — rejecting it unconditionally
+    // collapsed the whole catalog to zero on the express-mongoose fixture
+    // (2026-08-09 coverage-gate regression): the single-entity CRUD
+    // candidate area and the AI's own answer both legitimately read "Manage
+    // User", and every one of 3 retry cycles produced the identical,
+    // correctly-anchored name, so the nudge/retry loop could never recover.
+    // "Itself raw" is judged by two independent tells, either one enough:
+    // (a) one of the specific mechanical shapes above, or (b) NOT shaped like
+    // human-authored prose at all (letters/spaces/apostrophes only, 2+ words)
+    // — the fallback the raw-label guard was originally written to catch:
+    // snake_case/slug identifiers and other code-shaped strings that carry
+    // no file extension or arrow but are still plainly not a purpose phrase
+    // (e.g. "run_shell_script_release_sh_docker_read_2_more" — no space, no
+    // literal ".sh", no "N more" with a space, yet unmistakably raw).
+    if (candidateAreas.some(area => {
+      const areaTrimmed = area.trim();
+      return areaTrimmed.toLowerCase() === trimmed.toLowerCase()
+        && (this.looksMechanicallyRawCapabilityLabel(areaTrimmed) || !this.looksLikePurposePhraseShape(areaTrimmed));
+    })) return true;
+    return false;
+  }
+
+  /**
+   * Shape test for "reads like human-authored prose": letters, spaces, and
+   * apostrophes only, at least two words. Excludes snake_case/kebab-case
+   * identifiers, single tokens, and anything carrying digits or code
+   * punctuation (dots, underscores, hyphens, slashes) — the shapes a
+   * deterministic candidate label takes when it is still a raw route/module/
+   * call-chain slug rather than AI- or repair-authored purpose language.
+   * Used only to judge whether an EXACT match against a candidate area is
+   * suspicious (see isRawCandidateLabelName) — never applied to the AI name
+   * directly, which is judged by looksMechanicallyRawCapabilityLabel instead.
+   */
+  private looksLikePurposePhraseShape(trimmed: string): boolean {
+    return /^[A-Za-z][A-Za-z' ]*$/.test(trimmed) && trimmed.split(/\s+/).length >= 2;
+  }
+
+  /**
+   * The actual raw/mechanical shape tells — file-extension fragments, "+N
+   * more" truncations, "shell script" mentions, call-graph arrow chains, and
+   * runtime-entry-point mechanics. Split out from isRawCandidateLabelName so
+   * the SAME tells can judge a candidate area's own label before treating an
+   * exact match against it as evidence of echoing (see the doc comment on
+   * the exact-match branch above).
+   */
+  private looksMechanicallyRawCapabilityLabel(trimmed: string): boolean {
     if (/\b\d+\s+more$/i.test(trimmed)) return true;
     if (/\.(sh|bash|zsh|py|rb|ts|tsx|jsx?|json|ya?ml|env|dockerfile)\b/i.test(trimmed)) return true;
     if (/\bshell\s+script\b/i.test(trimmed)) return true;
