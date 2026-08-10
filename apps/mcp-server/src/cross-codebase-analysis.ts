@@ -8569,12 +8569,10 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
     }
   }
 
-  for (const workflow of cas.workflows || []) {
-    if (isWeakTerminalCapabilitySignal(workflow.id) || isWeakTerminalCapabilitySignal(workflow.name)) continue;
-    const score = workflow.classification === 'primary' ? 8 : workflow.classification === 'supporting' ? 3 : 0;
-    addCapability(workflow.id || workflow.name, score, `workflow:${workflow.classification || 'unknown'}:${workflow.name || workflow.id}`);
-    for (const entity of workflow.entities_touched || []) addName(entity, score > 0 ? score : 1, `workflow_entity:${workflow.name || workflow.id}:${entity}`);
-  }
+  // Workflows are not a separate stored structure (docs/cas/SPECIFICATION.md
+  // §0.5.1) — the `journey` loop above already seeds the same terminal
+  // entity/capability signal from `cas.user_journeys`, which is what
+  // `cas.workflows` used to duplicate.
 
   propagateNearTerminalEntitySignals(cas, terminalNameSeeds, addName);
   propagateNearTerminalCapabilitySignals(cas, terminalCapabilitySeeds, addCapability);
@@ -9188,7 +9186,24 @@ function buildWorkspaceWorkflows(
     const apps = applications.filter(app => app.codebase_id === projectId);
     const appByProjectId = new Map(apps.map(app => [app.id, app]));
     const lookupIndex = lookupIndexes.get(repository.cas)!;
-    for (const workflow of repository.cas.workflows || []) {
+    // Workflows are not a stored CAS structure (docs/cas/SPECIFICATION.md
+    // §0.5.1) — this workspace rollup now reads through `user_journeys`
+    // (the derived, user-facing view over `flows`), reshaped into the same
+    // `entry_points`/`exit_points`/`entities_touched` vocabulary the
+    // criticality/description helpers below already expect.
+    for (const journey of repository.cas.user_journeys || []) {
+      const workflow = {
+        id: journey.id,
+        name: journey.name,
+        classification: (journey.journey_kind === 'user-facing' ? 'primary' : 'supporting') as 'primary' | 'supporting' | 'internal',
+        criticality: journey.criticality,
+        entry_points: journey.entry_point_id ? [journey.entry_point_id] : [],
+        exit_points: journey.exit_point_ids || [],
+        entities_touched: [
+          ...(journey.terminal_effects?.entities_written || []),
+          ...(journey.terminal_effects?.entities_read || []),
+        ],
+      };
       if (isRuntimeEndpointSemanticName(workflow.name || workflow.id || '')) continue;
       const deployableIds = new Set<string>();
       const entries = (workflow.entry_points || [])

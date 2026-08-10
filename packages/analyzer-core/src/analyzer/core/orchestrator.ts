@@ -45,8 +45,6 @@ import {
   CASCallChain,
   SystemCapability,
   SystemPurpose,
-  CASWorkflow,
-  CASWorkflowGraph,
   CASDomainConcept,
   EnhancedSystemPurpose,
   CASFlowGraph,
@@ -142,7 +140,6 @@ import { CallGraphBuilder } from './call-graph-builder';
 import { internalizeInRepoCalls } from './in-repo-call-resolution';
 import { appendAll, replaceArrayContents } from './bulk-array-ops';
 import { DomainExtractor } from './domain-extractor';
-import { WorkflowDetector } from './workflow-detector';
 import { CapabilityDetector } from './capability-detector';
 import {
   isBareNounCapabilityLabel as sharedIsBareNounCapabilityLabel,
@@ -2115,14 +2112,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    const workflowDetector = new WorkflowDetector();
-    const workflows = workflowDetector.detectWorkflows(allEntryPoints, callChains, allNodes, allEdges, allExitPoints);
-    workflowDetector.classifyWorkflows(workflows, domainConcepts);
-    const workflowGraph = workflowDetector.buildDependencyGraph(workflows, callChains, allNodes);
-    logTiming('pp_workflows', phaseStart);
-    await yieldToEventLoop();
-
-    phaseStart = startPhase();
     const structuralImportance = this.computeAndStampStructuralImportance(allNodes, allEdges, allEntryPoints);
     logTiming('pp_structuralImportance', phaseStart);
     await yieldToEventLoop();
@@ -2258,8 +2247,6 @@ export class AnalyzerOrchestrator {
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
       domainConcepts,
-      workflows,
-      workflowGraph,
       domainExtractor,
       dbEntityNames,
       entryPointSummary,
@@ -2472,7 +2459,7 @@ export class AnalyzerOrchestrator {
       allEntryPoints,
       allExitPoints,
       externalServices,
-      workflows,
+      userJourneyResult.journeys,
       systemCapabilities,
       runtimeStaticLinks,
       repositoryLinks,
@@ -2647,8 +2634,6 @@ export class AnalyzerOrchestrator {
         evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
       },
       call_chains: callChains.length > 0 ? callChains : undefined,
-      workflows: workflows.length > 0 ? workflows : undefined,
-      workflow_graph: workflowGraph,
       user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
       user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
@@ -3729,11 +3714,6 @@ export class AnalyzerOrchestrator {
       capabilityNames: systemCapabilities.map(capability => capability.name).filter(Boolean),
     });
 
-    const workflowDetector = new WorkflowDetector();
-    const workflows = workflowDetector.detectWorkflows(entryPoints, callChains, nodes, edges, exitPoints);
-    workflowDetector.classifyWorkflows(workflows, domainConcepts);
-    const workflowGraph = workflowDetector.buildDependencyGraph(workflows, callChains, nodes);
-
     const structuralImportance = this.computeAndStampStructuralImportance(nodes, edges, entryPoints);
 
     const flowGraph = this.buildFlowGraph(
@@ -3833,7 +3813,7 @@ export class AnalyzerOrchestrator {
       entryPoints,
       exitPoints,
       externalServices,
-      workflows,
+      userJourneyResult.journeys,
       systemCapabilities,
       runtimeStaticLinks,
       repositoryLinks,
@@ -3888,8 +3868,6 @@ export class AnalyzerOrchestrator {
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
       domainConcepts,
-      workflows,
-      workflowGraph,
       domainExtractor,
       incrDbEntityNames,
       incrEntryPointSummary,
@@ -4083,8 +4061,6 @@ export class AnalyzerOrchestrator {
       call_chains: callChains.length > 0 ? callChains : undefined,
       flow_coverage: flowCoverage.length > 0 ? flowCoverage : undefined,
       test_gaps: testGaps.length > 0 ? testGaps : undefined,
-      workflows: workflows.length > 0 ? workflows : undefined,
-      workflow_graph: workflowGraph,
       user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
       user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
@@ -5009,17 +4985,23 @@ export class AnalyzerOrchestrator {
     changedEntryPoints: CASEntryPoint[],
     changedExitPoints: CASExitPoint[]
   ) {
-    const affected_workflows = (output.workflows || [])
-      .filter(workflow =>
-        workflow.entry_points.some(id => affectedEntryPointIds.has(id)) ||
-        workflow.call_chains.some(id => affectedCallChainIds.has(id)) ||
-        workflow.services_used.some(id => changedNodeIds.has(id)) ||
-        workflow.entities_touched.some(id => changedNodeIds.has(id))
+    // Journeys collapsed workflows into a derived view over flows
+    // (docs/cas/SPECIFICATION.md §0.5.1) — the same "changed nodes/entry
+    // points participate in this path" question is answered by walking
+    // journey.entry_point_id / call_chain_ids / steps / terminal_entities,
+    // the flow-sourced facets a journey carries in place of the old
+    // entry_points/call_chains/services_used/entities_touched arrays.
+    const affected_journeys = (output.user_journeys || [])
+      .filter(journey =>
+        affectedEntryPointIds.has(journey.entry_point_id) ||
+        journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
+        journey.steps.some(step => changedNodeIds.has(step.node_id)) ||
+        journey.terminal_entities.some(entity => !!entity.node_id && changedNodeIds.has(entity.node_id))
       )
-      .map(workflow => ({
-        id: workflow.id,
-        name: workflow.name,
-        reason: 'Changed nodes or entry points participate in this workflow'
+      .map(journey => ({
+        id: journey.id,
+        name: journey.name,
+        reason: 'Changed nodes or entry points participate in this journey'
       }));
 
     const affected_capabilities = (output.system_capabilities || [])
@@ -5077,14 +5059,14 @@ export class AnalyzerOrchestrator {
     ];
 
     const risk_reasons: string[] = [];
-    if (affected_workflows.length > 0) risk_reasons.push(`${affected_workflows.length} workflow(s) affected`);
+    if (affected_journeys.length > 0) risk_reasons.push(`${affected_journeys.length} journey(s) affected`);
     if (affected_capabilities.length > 0) risk_reasons.push(`${affected_capabilities.length} capability/capabilities affected`);
     if (affected_data_entities.length > 0) risk_reasons.push(`${affected_data_entities.length} data entity/entities affected`);
     if (affected_runtime_links.length > 0) risk_reasons.push(`${affected_runtime_links.length} runtime signal(s) affected`);
     if (changed_contracts.length > 0) risk_reasons.push(`${changed_contracts.length} externally visible contract(s) changed`);
 
     return {
-      affected_workflows,
+      affected_journeys,
       affected_capabilities,
       affected_data_entities,
       affected_runtime_links,
@@ -5226,7 +5208,7 @@ export class AnalyzerOrchestrator {
       addedNodes.length,
       modifiedNodes.length,
       deletedNodes.length,
-      affectedEntryPoints.length + semanticImpact.affected_workflows.length
+      affectedEntryPoints.length + semanticImpact.affected_journeys.length
     );
 
     return {
@@ -5470,7 +5452,7 @@ export class AnalyzerOrchestrator {
       addedNodes.length,
       modifiedNodes.length,
       deletedNodes.length,
-      affectedEntryPoints.length + semanticImpact.affected_workflows.length
+      affectedEntryPoints.length + semanticImpact.affected_journeys.length
     );
 
     return {
@@ -5614,16 +5596,16 @@ export class AnalyzerOrchestrator {
     changedEntryPoints: CASEntryPoint[],
     changedExitPoints: CASExitPoint[]
   ): ChangeSemanticImpact {
-    const affected_workflows = (currentOutput.workflows || [])
-      .filter(workflow =>
-        affectedCallChainIds.has(workflow.id) ||
-        workflow.entry_points.some(entryPointId => affectedEntryPointIds.has(entryPointId))
+    const affected_journeys = (currentOutput.user_journeys || [])
+      .filter(journey =>
+        journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
+        affectedEntryPointIds.has(journey.entry_point_id)
       )
       .slice(0, 20)
-      .map(workflow => ({
-        id: workflow.id,
-        name: workflow.name,
-        reason: 'Workflow is connected to a changed file or entry point'
+      .map(journey => ({
+        id: journey.id,
+        name: journey.name,
+        reason: 'Journey is connected to a changed file or entry point'
       }));
     const affected_capabilities = (currentOutput.system_capabilities || [])
       .filter(capability =>
@@ -5670,11 +5652,11 @@ export class AnalyzerOrchestrator {
       })),
     ];
     const risk_reasons: string[] = [];
-    if (affected_workflows.length > 0) risk_reasons.push('Changed nodes are connected to workflow paths');
+    if (affected_journeys.length > 0) risk_reasons.push('Changed nodes are connected to journey paths');
     if (affected_data_entities.length > 0) risk_reasons.push('Changed nodes participate in data entity lifecycle');
     if (changed_contracts.length > 0) risk_reasons.push('Entry or exit contracts changed');
     return {
-      affected_workflows,
+      affected_journeys,
       affected_capabilities,
       affected_data_entities,
       affected_runtime_links,
@@ -15365,17 +15347,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  private isKnownCapabilityDomainNoun(token: string): boolean {
-    return new Set([
-      'account', 'accounts', 'asset', 'assets', 'booking', 'bookings', 'case', 'cases',
-      'customer', 'customers', 'driver', 'drivers', 'employee', 'employees', 'invoice',
-      'invoices', 'lead', 'leads', 'member', 'members', 'order', 'orders', 'payment',
-      'payments', 'portfolio', 'portfolios', 'profile', 'profiles', 'project', 'projects',
-      'report', 'reports', 'shipment', 'shipments', 'ticket', 'tickets', 'trade', 'trades',
-      'transaction', 'transactions', 'trip', 'trips', 'user', 'users', 'vehicle', 'vehicles',
-      'vendor', 'vendors', 'workflow', 'workflows',
-    ]).has(token);
-  }
 
   private isCodeIdentifierSubjectToken(token: string): boolean {
     if (token.length <= 3) return true;
@@ -17972,8 +17943,6 @@ export class AnalyzerOrchestrator {
   private buildEnhancedSystemPurpose(
     basePurpose: SystemPurpose,
     domainConcepts: CASDomainConcept[],
-    workflows: CASWorkflow[],
-    workflowGraph: CASWorkflowGraph,
     domainExtractor: DomainExtractor,
     databaseEntities: string[],
     entryPointSummary: { type: string; count: number }[],
@@ -18024,7 +17993,22 @@ export class AnalyzerOrchestrator {
       projectPath,
     );
 
-    const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
+    // `primary_workflow_id` / `supporting_workflow_ids` predate the
+    // journeys/workflows collapse (docs/cas/SPECIFICATION.md §0.5.1) and
+    // named a stored CASWorkflow's id. There is no stored workflow anymore —
+    // both fields now name FLOWS (flow_graph.flows, CASFlowRef), ranked by
+    // criticality then step count: the primary flow is the single
+    // highest-ranked one, supporting flows are the next-ranked ones below
+    // it. This is a read-time projection over `flows`, not a persisted
+    // parallel graph.
+    const criticalityRank: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+    const rankedFlows = [...(flowGraph.flows || [])].sort((a, b) => {
+      const byCriticality = (criticalityRank[b.criticality || 'low'] ?? 0) - (criticalityRank[a.criticality || 'low'] ?? 0);
+      if (byCriticality !== 0) return byCriticality;
+      return (b.step_count || 0) - (a.step_count || 0);
+    });
+    const primaryWorkflowId = rankedFlows[0]?.flow_id;
+    const supportingWorkflowIds = rankedFlows.slice(1, 6).map(flow => flow.flow_id);
 
     return {
       ...basePurpose,
@@ -18039,8 +18023,8 @@ export class AnalyzerOrchestrator {
       // provenance must never be written.
       primary_domain: '',
       inferred_description: '',
-      primary_workflow_id: workflowGraph.primary_workflow_id,
-      supporting_workflow_ids: supportingWorkflows.map(w => w.id)
+      primary_workflow_id: primaryWorkflowId,
+      supporting_workflow_ids: supportingWorkflowIds
     };
   }
 
@@ -31537,7 +31521,7 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[],
     externalServices: CASExternalService[],
-    workflows: CASWorkflow[],
+    journeys: CASUserJourney[],
     capabilities: SystemCapability[],
     runtimeLinks: CASRuntimeStaticLink[],
     repositoryLinks: CASCrossRepositoryLink[],
@@ -31633,27 +31617,32 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    for (const workflow of workflows) {
-      const evidence = workflow.entry_points.length > 0
-        ? workflow.entry_points.map(entryPointId => ({
+    // Journeys ARE the fact-worthy user-facing paths now (workflows collapsed
+    // into a derived view over flows — docs/cas/SPECIFICATION.md §0.5.1); a
+    // fact about "this path exists and is user-facing/system/scheduled" is
+    // the same claim a workflow fact used to make, sourced from the same
+    // entry point.
+    for (const journey of journeys) {
+      const evidence = journey.entry_point_id
+        ? [{
           kind: 'graph' as const,
-          source: entryPointId,
+          source: journey.entry_point_id,
           confidence: 0.75
-        }))
+        }]
         : [{
           kind: 'graph' as const,
-          source: workflow.id,
+          source: journey.id,
           confidence: 0.6
         }];
 
       facts.push({
-        id: `fact_workflow_${workflow.id}`,
-        subject_type: 'workflow',
-        subject_id: workflow.id,
-        fact_type: 'workflow',
-        claim: `${workflow.name} is a ${workflow.classification} ${workflow.workflow_type} workflow`,
+        id: `fact_journey_${journey.id}`,
+        subject_type: 'journey',
+        subject_id: journey.id,
+        fact_type: 'journey',
+        claim: `${journey.name} is a ${journey.criticality}-criticality ${journey.journey_kind} journey`,
         confidence: 0.75,
-        produced_by: 'WorkflowDetector',
+        produced_by: analyzerName,
         evidence
       });
     }

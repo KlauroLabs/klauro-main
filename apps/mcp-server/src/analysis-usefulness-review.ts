@@ -253,7 +253,7 @@ export async function reviewAnalysisUsefulness(cas: CASOutput, projectPath: stri
       primary_domain: cas.enhanced_system_purpose?.primary_domain,
       description: cas.enhanced_system_purpose?.inferred_description || cas.system?.description,
       capability_count: cas.system_capabilities?.length || 0,
-      workflow_count: cas.workflows?.length || 0,
+      workflow_count: cas.user_journeys?.length || 0,
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
       architectural_pattern_count: cas.architecture_summary?.architectural_patterns?.length || 0,
@@ -298,7 +298,7 @@ export function reviewAnalysisUsefulnessStatic(cas: CASOutput, projectPath: stri
       primary_domain: cas.enhanced_system_purpose?.primary_domain,
       description: cas.enhanced_system_purpose?.inferred_description || cas.system?.description,
       capability_count: cas.system_capabilities?.length || 0,
-      workflow_count: cas.workflows?.length || 0,
+      workflow_count: cas.user_journeys?.length || 0,
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
       architectural_pattern_count: cas.architecture_summary?.architectural_patterns?.length || 0,
@@ -772,7 +772,7 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
 
 function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {
   const capabilities = cas.system_capabilities || [];
-  const workflows = cas.workflows || [];
+  const workflows = cas.user_journeys || [];
   const required = profile.kind === 'library-package' || profile.kind === 'test-package' || profile.kind === 'infrastructure' ? 1 : 2;
   let score = 0;
   const details: string[] = [];
@@ -1071,7 +1071,7 @@ function scoreIdiomAndInvariantGuidance(cas: CASOutput, agentContext: any, profi
 
 export function scoreDuplicationAvoidance(cas: CASOutput, agentContext: any, profile: AnalysisProfile): UsefulnessGate {
   const capabilities = cas.system_capabilities || [];
-  const workflows = cas.workflows || [];
+  const workflows = cas.user_journeys || [];
   const concepts = cas.domain_concepts || [];
   const selected = agentContext?.selected_node;
   const contextText = JSON.stringify({

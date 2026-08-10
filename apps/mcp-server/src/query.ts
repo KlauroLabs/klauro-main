@@ -3,6 +3,7 @@ import type {
   CASCallChain, CASMethodCall, CASDecorator, CASIntent,
   CASChangeRisk, ChangeRiskFactor, CASTemporalStability, CASFlowCoverage,
   CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
+  CASUserJourney,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
 import { ReachabilityIndex, reachabilityEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
@@ -1827,26 +1828,40 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
   };
 }
 
-export function getWorkflows(cas: CASOutput, workflowId?: string) {
-  if (workflowId) {
-    const workflow = (cas.workflows || []).find(w => w.id === workflowId);
-    return { workflow: workflow || null };
-  }
-  const workflows = cas.workflows || [];
+// "Workflow" is not a stored CAS structure (docs/cas/SPECIFICATION.md
+// §0.5.1 — tier-3 comprehension has exactly four members: Capability, Flow,
+// Step, Entity; journeys/workflows are derived, presentation-only views
+// over `flows`). This is a read-time projection over `cas.user_journeys` —
+// the same journey a `get_user_journeys` caller sees, reshaped into the
+// workflow-summary vocabulary this tool's existing callers expect. Nothing
+// here is a second stored source of truth.
+function journeyToWorkflowSummary(journey: CASUserJourney) {
   return {
-    total: workflows.length,
-    workflows: workflows.map(w => ({
-      id: w.id,
-      name: w.name,
-      workflow_type: w.workflow_type,
-      classification: w.classification,
-      criticality: w.criticality,
-      entry_point_count: w.entry_points?.length || 0,
-      chain_count: w.call_chains?.length || 0,
-      entity_count: w.entities_touched?.length || 0,
-      service_count: w.services_used?.length || 0,
-    })),
-    workflow_graph: cas.workflow_graph || null,
+    id: journey.id,
+    name: journey.name,
+    workflow_type: journey.journey_kind,
+    classification: journey.journey_kind === 'user-facing' ? 'primary' as const : 'supporting' as const,
+    criticality: journey.criticality,
+    entry_point_count: journey.entry_point_id ? 1 : 0,
+    chain_count: journey.call_chain_ids?.length || 0,
+    entity_count: journey.terminal_entities?.length || 0,
+    service_count: journey.terminal_effects?.external_services?.length || 0,
+  };
+}
+
+export function getWorkflows(cas: CASOutput, workflowId?: string) {
+  const journeys = cas.user_journeys || [];
+  if (workflowId) {
+    const journey = journeys.find(j => j.id === workflowId);
+    return { workflow: journey ? journeyToWorkflowSummary(journey) : null };
+  }
+  return {
+    total: journeys.length,
+    workflows: journeys.map(journeyToWorkflowSummary),
+    // No stored dependency graph exists anymore; a real workflow-dependency
+    // read would need its own flow-continuation-based projection, not yet
+    // built. Absent, not fabricated.
+    workflow_graph: null,
   };
 }
 

@@ -287,21 +287,18 @@ test('workspace analysis composes completed CAS outputs without source reads', (
       confidence: 0.86,
       evidence: ['entry:admin', 'entity:agent'],
     }] as any,
-    workflows: [{
-      id: 'workflow:agent-registration',
+    user_journeys: [{
+      id: 'journey:agent-registration',
       name: 'Agent Registration',
-      description: 'Drop server registers agents through the admin API before agent workflows can proceed.',
-      workflow_type: 'command',
-      entry_points: ['entry:admin'],
-      call_chains: [],
-      exit_points: [],
-      entities_touched: ['Agent'],
-      services_used: ['admin-api'],
+      journey_kind: 'user-facing',
+      entry_point_id: 'entry:admin',
+      call_chain_ids: [],
+      exit_point_ids: [],
+      terminal_entities: [],
+      terminal_effects: { entities_written: ['Agent'], entities_read: [], messages_emitted: [], external_services: [] },
       classification: 'primary',
       criticality: 'critical',
-      dependencies: [],
-      dependents: [],
-    }],
+    }] as any,
   });
   const adminUi = cas({
     analysis_id: 'analysis:admin-ui',
@@ -667,13 +664,13 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
         sensitive_fields: ['token'],
         exposure: { sensitive: true },
       }] as any,
-      workflows: [{
-        id: 'workflow:agent-enrollment',
+      user_journeys: [{
+        id: 'journey:agent-enrollment',
         name: 'Agent Enrollment',
-        description: 'Deterministic workflow text.',
-        entry_points: ['entry:agent'],
-        exit_points: [],
-        entities_touched: ['Agent'],
+        journey_kind: 'user-facing',
+        entry_point_id: 'entry:agent',
+        exit_point_ids: [],
+        terminal_effects: { entities_written: ['Agent'], entities_read: [], messages_emitted: [], external_services: [] },
         criticality: 'critical',
       }] as any,
     });
@@ -3325,13 +3322,13 @@ test('WAS lookup indexing visits a 50k-node CAS once and uses bounded reference 
       target: { endpoint: `https://service-${index}.example/items` },
       operation: { method: 'GET' },
     } as any)),
-    workflows: Array.from({ length: referenceCount }, (_, index) => ({
+    user_journeys: Array.from({ length: referenceCount }, (_, index) => ({
       id: `workflow-${index}`,
       name: `Process item ${index}`,
-      classification: 'supporting',
-      entry_points: [`entry-${index}`],
-      exit_points: [`exit-${index}`],
-      entities_touched: [],
+      journey_kind: 'system',
+      entry_point_id: `entry-${index}`,
+      exit_point_ids: [`exit-${index}`],
+      terminal_effects: { entities_written: [], entities_read: [], messages_emitted: [], external_services: [] },
     } as any)),
     change_risks: Array.from({ length: referenceCount }, (_, index) => ({
       node_id: `node-${index + referenceCount * 2}`,
@@ -3401,13 +3398,13 @@ test('indexed WAS lookups preserve complete interface, workflow, alias, and risk
       target: { endpoint: 'https://orders-worker.example/events' },
       operation: { method: 'POST' },
     } as any],
-    workflows: [{
+    user_journeys: [{
       id: 'orders-workflow',
       name: 'Process orders',
-      classification: 'primary',
-      entry_points: ['entry-orders'],
-      exit_points: ['exit-orders'],
-      entities_touched: ['Order'],
+      journey_kind: 'user-facing',
+      entry_point_id: 'entry-orders',
+      exit_point_ids: ['exit-orders'],
+      terminal_effects: { entities_written: ['Order'], entities_read: [], messages_emitted: [], external_services: [] },
     } as any],
     change_risks: [{
       node_id: 'orders-risk',

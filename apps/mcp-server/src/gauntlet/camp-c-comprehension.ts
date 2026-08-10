@@ -333,11 +333,11 @@ const EMISSION_SPECS: EmissionSpec[] = [
   },
   {
     key: 'journeys',
-    label: 'User journeys & workflows (C2)',
-    description: 'user_journeys + workflows + workflow_graph + flow_graph/flow_summary — how the system flows end-to-end.',
+    label: 'User journeys (C2)',
+    description: 'user_journeys (the derived, user-facing view over flow_graph/flow_summary — docs/cas/SPECIFICATION.md §0.5.1) — how the system flows end-to-end.',
     campABCannot:
       'a user journey is an end-to-end flow across layers; symbol graphs see local calls and embeddings retrieve snippets — neither composes an entry→…→terminal-entity journey.',
-    fields: ['user_journeys', 'workflows', 'workflow_graph', 'flow_graph', 'flow_summary'],
+    fields: ['user_journeys', 'flow_graph', 'flow_summary'],
   },
   {
     key: 'behaviors',

@@ -132,7 +132,7 @@ const LAYER_DEFINITIONS: Array<{ layer: CASLayerStatus['layer']; name: string; f
   { layer: 'L1', name: 'Nodes, entry points, routes', fields: ['nodes', 'entry_points', 'route_table'] },
   { layer: 'L2', name: 'Call graph / edges', fields: ['edges', 'method_calls', 'call_chains'] },
   { layer: 'L3', name: 'Entities, lineage, database schema', fields: ['data_entities', 'data_lineage', 'database_schema'] },
-  { layer: 'L4', name: 'Flows, capabilities, contracts', fields: ['flow_graph', 'system_capabilities', 'workflows'] },
+  { layer: 'L4', name: 'Flows, capabilities, contracts', fields: ['flow_graph', 'system_capabilities', 'user_journeys'] },
   { layer: 'L5', name: 'AI enrichment', fields: ['enhanced_system_purpose', 'system_purpose.description_source'] },
 ];
 
