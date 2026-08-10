@@ -222,4 +222,19 @@ Common thread so far: capability *quality* (readability, entity-grounding) is fi
 
 ---
 
-*(scorecard rows 7-10 to follow in this document as each subject completes)*
+### 7. kontinuum — intended as "CLI tool, no HTTP" but turned out hybrid (CLI + real HTTP API)
+
+- project `prj_NlukoM4NhiDxn_Dl`, my own submission, `analyzer_build: 1.0.136-dev+56cde09aa104`, fresh (`snapshot_source: committed-head` — a `.git` directory survived my rsync exclude for this one subject only; not a product defect, a copy-hygiene slip on my side, disclosed here). Finished 2026-08-10T16:43:29Z, duration **85.30s**, `errors: 1`, cas_version 2.1.0.
+- **Disclosure**: I picked this repo as the CLI-tool shape from its README framing ("local-first personal intelligence substrate", `bin` entries), but the analysis correctly shows it is actually hybrid — `system_type: "backend-service"`, `architecture_type: "MCP server"`, 161 HTTP routes and a real `docker-compose`/Dockerfile-backed deployable, plus a genuine 8-entry-point `Shell Cli Surface`. It is not a pure headless-CLI sample; treat the CLI-specific findings below as the useful signal from this subject, not the whole picture.
+- **Sub-CAS promotion worked here** (4 qualified units, Docker+compose+bin evidence) — reinforces the hypothesis from subject 6: Docker/compose-shaped boundary evidence is what the promotion mechanism actually keys on; Electron/VS-Code-only evidence (claudius) does not qualify.
+- capability count: **9**, all named `Manage {Entity}` (Manage Remote Memory, Manage Operational Project, Manage Conversation Import, Manage Task, Manage Priority Arbitration, Manage Shared Recall Item, Manage Agent Profile, Manage Evaluation Fixture, Manage Claim) — a uniform CRUD-over-entity naming pattern, not outcome language. The system's own description states its purpose as preserving *"durable knowledge, provenance, decisions, project context, and agent learning independently of any one language model"* — none of the 9 capability names says anything like that; they read as generated from the entity list, not the product description sitting right next to them in the same payload.
+- **RECALL column — CLI surface specifically missed**: 8 real CLI entry points exist (`Shell Cli Surface` behavior surface) and the README documents concrete CLI verbs (`ingest-text`, `health`, `kernel-summary`, `eval-runs`) but **zero of the 12 journeys are CLI-triggered** — all 12 are HTTP-route journeys. No capability like "Ingest and preserve durable knowledge via CLI" exists; the CLI surface this shape was chosen to test is present in `entry_points_by_type.cli: 8` but invisible in every downstream comprehension artifact (capabilities, journeys).
+- top-level description is mostly good (matches the README's own framing closely) but ends with a mechanism-flavored trailing clause: *"The intent 'List conversation seed reports' yields a ConversationImport record, which is written as part of the process."* — a technical implementation detail leaking into an otherwise readable description.
+- `primary_domain`: `"personal-intelligence-substrate"` — good.
+- `flows_to_capabilities`: **0.6296** (51/81, 30 unmapped). `reachable_code_to_steps`: **0.5764**.
+- `tests_present`: true only on 1 of 9 capabilities despite `health.tests: {total:239, passing:239}` — real tests exist project-wide but are attributed to almost none of the capability rows.
+- Verdict: this subject didn't end up isolating the CLI shape cleanly (it's a hybrid), but the one clean CLI-specific finding it does provide is unambiguous: a real, documented CLI surface with 8 entry points produced zero CLI-attributed capabilities or journeys — everything downstream of L1 forgot the CLI existed.
+
+---
+
+*(scorecard rows 8-10 to follow in this document as each subject completes)*
