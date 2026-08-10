@@ -74,6 +74,28 @@ const WALK_EXCLUDED_NODE_TYPES = new Set([
   'use', 'import', 'namespace', 'file', 'variable', 'property', 'constant',
   'class_constant', 'interface_constant', 'enum_case', 'template', 'module', 'package'
 ]);
+// linkRouteHandlers (orchestrator.ts) stamps every entry-registration ->
+// resolved-handler edge it mints with one of these `relationship` values —
+// regardless of whether the registration node is unique per entry (a
+// per-route node) or SHARED by many entries (a file that registers every
+// route, a controller class with many actions, a CLI file with many
+// commands). Measured live (task/#next, miniflux VPS analysis): when the
+// registration node is shared, its outgoing edges are "every sibling entry's
+// handler", so an unqualified walk from a shared source_node fans out to
+// every other route registered in the same file — "Update entry" (PUT
+// /v1/entries) inherited createUserHandler, createAPIKeyHandler,
+// createFeedHandler, ... and reported writes to User/APIKey/Feed alongside
+// Entry. The independent Rails measurement showed the same shape (4/7
+// capabilities sharing byte-identical 22-entity/51-journey lists) — same
+// mechanism, a controller class fanning out to every sibling action.
+// The handler this walk actually cares about is already seeded directly
+// (`addNode(entryPoint.handler?.node_id, 0)` below) — these edges only
+// exist to CONNECT a registration node to its handler in the first place,
+// never to carry the walk onward through the registration node's other
+// wiring. Skipped below unless the edge target IS this entry's own handler.
+const REGISTRATION_HANDLER_EDGE_RELATIONSHIPS = new Set([
+  'route_handler', 'command_handler', 'graphql_resolver', 'task_handler', 'inline_handler_call'
+]);
 const JUNK_CALL_TARGET_NAMES = new Set([
   'if', 'else', 'elseif', 'for', 'foreach', 'while', 'do', 'switch', 'match', 'case',
   'try', 'catch', 'finally', 'return', 'throw', 'new', 'clone', 'echo', 'print',
@@ -847,6 +869,14 @@ function collectPathNodeIds(
     const outgoing = graph.traversalBySource.get(nodeId) || [];
     for (const edge of outgoing) {
       if (visited.has(edge.target)) continue;
+      // A registration-node -> handler edge that isn't THIS entry's own
+      // handler is a sibling's wiring, riding along because the two entries
+      // share a registration node (route file, controller class, CLI file).
+      // See REGISTRATION_HANDLER_EDGE_RELATIONSHIPS above.
+      const relationship = (edge.metadata as any)?.attributes?.relationship;
+      if (REGISTRATION_HANDLER_EDGE_RELATIONSHIPS.has(relationship) && edge.target !== entryPoint.handler?.node_id) {
+        continue;
+      }
       const target = graph.nodesById.get(edge.target);
       if (!target || WALK_EXCLUDED_NODE_TYPES.has(target.type)) continue;
       if (isLowConfidenceTarget(target, graph)) continue;

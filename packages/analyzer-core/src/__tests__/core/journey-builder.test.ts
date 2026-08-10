@@ -737,6 +737,107 @@ describe('buildUserJourneys', () => {
   });
 });
 
+// REGRESSION GUARD (task/#next, miniflux + Rails VPS analysis): a shared
+// registration node — a Go file that registers every route, a Rails
+// controller class with many actions — carries a `route_handler`-relationship
+// `calls` edge to EVERY sibling entry's resolved handler (linkRouteHandlers
+// mints one such edge per entry point, all sourced at that entry's
+// source_node). Before this fix, journey-builder's own walk seeded from
+// entryPoint.source_node at depth 0 and followed ALL of a shared source_node's
+// outgoing edges — including its siblings' route_handler edges — so every
+// journey rooted at that shared node inherited every sibling handler's whole
+// downstream path. Symptom measured live: "Update entry" (PUT /v1/entries)
+// reported entities_written for User/APIKey/Feed/Category alongside Entry,
+// and capability_ids identical across unrelated journeys (Rails: 4/7
+// capabilities sharing byte-identical 22-entity lists). The fix filters
+// REGISTRATION_HANDLER_EDGE_RELATIONSHIPS edges out of the walk unless the
+// edge target is THIS entry's own already-seeded handler.
+describe('buildUserJourneys: sibling fan-out through a shared registration node', () => {
+  it('does not pull in a sibling handler registered on the same file/class node', () => {
+    const registrationFile = node('file_api_go', 'api.go', 'file');
+    const updateEntryHandler = node('fn_update_entry', 'setEntryStatusAndStarredHandler', 'function');
+    const createUserHandler = node('fn_create_user', 'createUserHandler', 'function');
+    const createAPIKeyHandler = node('fn_create_apikey', 'createAPIKeyHandler', 'function');
+    const entryEntity = node('entity_entry', 'Entry', 'entity');
+    const userEntity = node('entity_user', 'User', 'entity');
+    const apiKeyEntity = node('entity_apikey', 'APIKey', 'entity');
+
+    const nodes: CASNode[] = [
+      registrationFile, updateEntryHandler, createUserHandler, createAPIKeyHandler,
+      entryEntity, userEntity, apiKeyEntity,
+    ];
+
+    const routeHandlerEdge = (id: string, target: string): CASEdge => ({
+      id, source: registrationFile.id, target, type: 'calls',
+      metadata: { attributes: { framework: 'go', relationship: 'route_handler' } },
+    } as CASEdge);
+
+    const edges: CASEdge[] = [
+      // linkRouteHandlers mints one of these per entry point, ALL sourced at
+      // the shared file node — this is the exact shape that fanned out.
+      routeHandlerEdge('e_route_update', updateEntryHandler.id),
+      routeHandlerEdge('e_route_create_user', createUserHandler.id),
+      routeHandlerEdge('e_route_create_apikey', createAPIKeyHandler.id),
+      edge('e_writes_entry', updateEntryHandler.id, entryEntity.id, 'writes'),
+      edge('e_writes_user', createUserHandler.id, userEntity.id, 'writes'),
+      edge('e_writes_apikey', createAPIKeyHandler.id, apiKeyEntity.id, 'writes'),
+    ];
+
+    const updateEntryEntry: CASEntryPoint = {
+      id: 'entry_go_route_api_go_PUT__v1_entries',
+      source_node: registrationFile.id,
+      type: 'http',
+      name: 'PUT /v1/entries',
+      trigger: { method: 'PUT', path: '/v1/entries' },
+      handler: { node_id: updateEntryHandler.id, method_name: 'setEntryStatusAndStarredHandler', file: 'api.go' },
+      security: { authenticated: true },
+    } as CASEntryPoint;
+
+    const createUserEntry: CASEntryPoint = {
+      id: 'entry_go_route_api_go_POST__v1_users',
+      source_node: registrationFile.id,
+      type: 'http',
+      name: 'POST /v1/users',
+      trigger: { method: 'POST', path: '/v1/users' },
+      handler: { node_id: createUserHandler.id, method_name: 'createUserHandler', file: 'api.go' },
+      security: { authenticated: true },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      nodes,
+      edges,
+      entryPoints: [updateEntryEntry, createUserEntry],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_entry', name: 'Entry', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+        { id: 'entity_user', name: 'User', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+        { id: 'entity_apikey', name: 'APIKey', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    });
+
+    expect(journeys).toHaveLength(2);
+    const updateJourney = journeys.find(j => j.entry_point_id === updateEntryEntry.id)!;
+    const createUserJourney = journeys.find(j => j.entry_point_id === createUserEntry.id)!;
+
+    const updateStepIds = updateJourney.steps.map(s => s.node_id);
+    expect(updateStepIds).toContain(updateEntryHandler.id);
+    expect(updateStepIds).not.toContain(createUserHandler.id);
+    expect(updateStepIds).not.toContain(createAPIKeyHandler.id);
+    expect(updateJourney.terminal_effects.entities_written).toEqual(['Entry']);
+
+    const createUserStepIds = createUserJourney.steps.map(s => s.node_id);
+    expect(createUserStepIds).not.toContain(updateEntryHandler.id);
+    expect(createUserStepIds).not.toContain(createAPIKeyHandler.id);
+    expect(createUserJourney.terminal_effects.entities_written).toEqual(['User']);
+
+    // The two journeys must not carry identical entity lists.
+    expect(updateJourney.terminal_effects.entities_written).not.toEqual(
+      createUserJourney.terminal_effects.entities_written
+    );
+  });
+});
+
 describe('buildUserJourneys frontend entry naming', () => {
   const pageEntry = (
     id: string,
