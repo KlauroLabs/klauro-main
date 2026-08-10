@@ -15327,17 +15327,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  private isKnownCapabilityDomainNoun(token: string): boolean {
-    return new Set([
-      'account', 'accounts', 'asset', 'assets', 'booking', 'bookings', 'case', 'cases',
-      'customer', 'customers', 'driver', 'drivers', 'employee', 'employees', 'invoice',
-      'invoices', 'lead', 'leads', 'member', 'members', 'order', 'orders', 'payment',
-      'payments', 'portfolio', 'portfolios', 'profile', 'profiles', 'project', 'projects',
-      'report', 'reports', 'shipment', 'shipments', 'ticket', 'tickets', 'trade', 'trades',
-      'transaction', 'transactions', 'trip', 'trips', 'user', 'users', 'vehicle', 'vehicles',
-      'vendor', 'vendors', 'workflow', 'workflows',
-    ]).has(token);
-  }
 
   private isCodeIdentifierSubjectToken(token: string): boolean {
     if (token.length <= 3) return true;
