@@ -3736,6 +3736,34 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
     disposition: 'rebuilt-from-evidence' | 'dropped';
   }>;
   /**
+   * DESCRIPTION-VS-CAPABILITY CROSS-CHECK: the AI-authored system description
+   * (`inferred_description`) and the shipped `system_capabilities` list are
+   * two independent surfaces over the same evidence, and the AI catalog step
+   * can silently drop a data-entity-anchored capability the description
+   * itself names (measured live: a C# repo whose description centers on
+   * "Device"/"Asset" shipped zero capability for either despite rich CRUD
+   * entity families for both). `core_concepts` is the structural,
+   * evidence-derived subject list the description was grounded from — never
+   * a curated keyword table. Each entry here is a `core_concepts` subject
+   * that matched a real `data_entities` record (persisted-entity/api-response
+   * kind, non-empty lifecycle) with NO capability anchored on it after
+   * reconciliation.
+   *   - 'reinjected-from-candidate': a pre-AI deterministic candidate for
+   *     this entity existed and already passed the structural-anchoring gate
+   *     — it was restored into `system_capabilities` rather than fabricated.
+   *   - 'no-structural-candidate': the entity is named in the description and
+   *     carries product evidence, but no capability candidate ever existed
+   *     for it (the anchoring gate never had anything to admit) — nothing was
+   *     built; this is a visible admission that the description may be
+   *     overreaching, not a silent contradiction.
+   */
+  description_capability_gaps?: Array<{
+    entity_id: string;
+    entity_name: string;
+    disposition: 'reinjected-from-candidate' | 'no-structural-candidate';
+    capability_id?: string;
+  }>;
+  /**
    * How much of the shipped capability catalog carries an AUTHORED name
    * (AI/manual/reused) versus an un-enriched deterministic placeholder. The
    * honest counterpart to a `ready` status: a catalog that is 228 placeholders

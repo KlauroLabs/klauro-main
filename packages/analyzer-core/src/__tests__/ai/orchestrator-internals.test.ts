@@ -5725,6 +5725,91 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(names).not.toContain('Run CI pipeline');
     expect(names).toContain('Manages Voice interactions');
   });
+
+  // DESCRIPTION-VS-CAPABILITY CROSS-CHECK (measured live: a C# repo whose
+  // AI-authored description centers on "Device"/"Asset" shipped ZERO
+  // capability for either despite rich CRUD entity families for both). The
+  // AI catalog step can silently drop an entity-anchored candidate; this
+  // restores it from the pre-AI candidate snapshot (which already passed the
+  // structural-anchoring gate) when the description's OWN core_concepts name
+  // that entity and the catalog has nothing covering it.
+  describe('DESCRIPTION-VS-CAPABILITY CROSS-CHECK: reinjectDescriptionAnchoredCapabilities', () => {
+    const productEntity = (name: string, over: Record<string, unknown> = {}): any => ({
+      id: name, name, kind: 'persisted-entity',
+      lifecycle: { created_by: ['fn_create'], read_by: ['fn_read'], updated_by: [], deleted_by: [] },
+      ...over,
+    });
+
+    it('restores a dropped entity-anchored capability the description names, from an already-anchored candidate', async () => {
+      const dataEntities = [productEntity('Device'), productEntity('Asset')];
+      // The AI catalog only kept a User capability — Device/Asset vanished.
+      const cataloged = [cap({ name: 'Manage user accounts', category: 'core', related_entities: ['User'] })];
+      const candidates = [
+        cap({ id: 'cand_device', name: 'Manage devices', category: 'core', related_entities: ['Device'], operations: [{ entry_point_id: 'ep1', entry_point_type: 'http', action: 'GET' }] }),
+        cap({ id: 'cand_asset', name: 'Manage assets', category: 'core', related_entities: ['Asset'], operations: [{ entry_point_id: 'ep2', entry_point_type: 'http', action: 'GET' }] }),
+      ];
+      const purpose: any = { core_concepts: ['Device', 'Asset', 'User'] };
+      const out = orch.reconcileCatalogedCapabilities(cataloged, candidates, dataEntities, [], [], purpose);
+      const names = out.map((c: any) => c.name);
+      expect(names).toContain('Manage devices');
+      expect(names).toContain('Manage assets');
+      expect(purpose.description_capability_gaps).toEqual(expect.arrayContaining([
+        expect.objectContaining({ entity_name: 'Device', disposition: 'reinjected-from-candidate' }),
+        expect.objectContaining({ entity_name: 'Asset', disposition: 'reinjected-from-candidate' }),
+      ]));
+    });
+
+    it('never fabricates: a described, evidenced entity with NO structural candidate is recorded as a gap, not built', async () => {
+      const dataEntities = [productEntity('Device')];
+      const cataloged = [cap({ name: 'Manage user accounts', category: 'core', related_entities: ['User'] })];
+      const purpose: any = { core_concepts: ['Device'] };
+      // No candidate anchored on Device at all.
+      const out = orch.reconcileCatalogedCapabilities(cataloged, [], dataEntities, [], [], purpose);
+      expect(out).toHaveLength(1);
+      expect(out[0].name).toBe('Manage user accounts');
+      expect(purpose.description_capability_gaps).toEqual([
+        expect.objectContaining({ entity_name: 'Device', disposition: 'no-structural-candidate' }),
+      ]);
+    });
+
+    it('is a no-op when the entity is already covered by an existing capability', async () => {
+      const dataEntities = [productEntity('Device')];
+      const cataloged = [cap({ name: 'Manage devices', category: 'core', related_entities: ['Device'] })];
+      const candidates = [cap({ id: 'cand_device', name: 'Should not be used', related_entities: ['Device'] })];
+      const purpose: any = { core_concepts: ['Device'] };
+      const out = orch.reconcileCatalogedCapabilities(cataloged, candidates, dataEntities, [], [], purpose);
+      expect(out).toHaveLength(1);
+      expect(out[0].name).toBe('Manage devices');
+      expect(purpose.description_capability_gaps).toBeUndefined();
+    });
+
+    it('never reinjects a behavior-surface candidate through this path either (defense-in-depth)', async () => {
+      const dataEntities = [productEntity('Device')];
+      const cataloged: any[] = [];
+      const candidates = [cap({
+        id: 'cand_device', name: 'Device Surface', evidence_kind: 'behavior-surface',
+        related_entities: ['Device'],
+      })];
+      const purpose: any = { core_concepts: ['Device'] };
+      const out = orch.reconcileCatalogedCapabilities(cataloged, candidates, dataEntities, [], [], purpose);
+      expect(out.some((c: any) => c.evidence_kind === 'behavior-surface')).toBe(false);
+      expect(purpose.description_capability_gaps).toEqual([
+        expect.objectContaining({ entity_name: 'Device', disposition: 'no-structural-candidate' }),
+      ]);
+    });
+
+    it('ignores entities with no product evidence (kind or lifecycle) even if the description names them', async () => {
+      const dataEntities = [
+        { id: 'RuntimeConfig', name: 'RuntimeConfig', kind: 'request-dto', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+        { id: 'GhostEntity', name: 'GhostEntity', kind: 'persisted-entity', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      ] as any[];
+      const cataloged = [cap({ name: 'Manage user accounts', category: 'core', related_entities: ['User'] })];
+      const purpose: any = { core_concepts: ['RuntimeConfig', 'GhostEntity'] };
+      const out = orch.reconcileCatalogedCapabilities(cataloged, [], dataEntities, [], [], purpose);
+      expect(out).toHaveLength(1);
+      expect(purpose.description_capability_gaps).toBeUndefined();
+    });
+  });
 });
 
 describe('comprehension-input gates: test/fixture sources never seed meaning (live Klauro-self leak)', () => {
