@@ -1413,7 +1413,7 @@ describe('architecture and capability inference', () => {
     ];
 
     expect(orch.filterPrimaryProductEntryPoints(entryPoints, nodes, projectRoot).map((entry: any) => entry.id)).toEqual(['cli-entry']);
-    expect(orch.frameworkNamesForPurpose(contributions, nodes, projectRoot)).toEqual([]);
+    expect(orch.frameworkNamesForPurpose(contributions, nodes, [], projectRoot)).toEqual([]);
   });
 
   it('strips analyzer display-name artifacts and admits only framework-analyzer application surfaces', async () => {
@@ -1439,7 +1439,7 @@ describe('architecture and capability inference', () => {
       } as CASNode,
     ];
 
-    const names = orch.frameworkNamesForPurpose(contributions, nodes, projectRoot);
+    const names = orch.frameworkNamesForPurpose(contributions, nodes, [], projectRoot);
     expect(names).toContain('React Router');
     expect(names).not.toContain('rust');
     expect(names.join(' ')).not.toMatch(/enhanced/i);
@@ -5926,7 +5926,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
       // Library-analyzer CATEGORY label stamped onto a product route → excluded (not a framework).
       gateNode({ id: 'auth-route', name: 'login', type: 'route', metadata: { framework: 'authentication and authorization' }, source: { file: 'src/auth/auth.controller.ts', line: 1 }, analyzers: ['auth'] }),
     ];
-    const frameworks = orch.frameworkNamesForPurpose(contributions, frameworkNodes, projectPath);
+    const frameworks = orch.frameworkNamesForPurpose(contributions, frameworkNodes, [], projectPath);
     expect(frameworks).toContain('NestJS');
     expect(frameworks).not.toContain('Django');
     expect(frameworks).not.toContain('FastAPI');

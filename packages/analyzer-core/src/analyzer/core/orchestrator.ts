@@ -2013,7 +2013,7 @@ export class AnalyzerOrchestrator {
     // names like "proof-of-concept" and dropped real ones like "Acme
     // Scientific".)
     systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
-    const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
+    const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, allEdges, projectPath);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
     // Comprehension derivation (terminal signal, capability catalog, purpose,
@@ -3623,7 +3623,7 @@ export class AnalyzerOrchestrator {
     // freshly recomputed domain concepts, workflows, and flow graph. Without
     // this it would be carried forward verbatim from previousOutput and drift
     // out of sync with the rest of the analysis on every incremental run.
-    const incrFrameworkNames = this.frameworkNamesForPurpose(previousOutput.analyzer_contributions || [], nodes, projectPath);
+    const incrFrameworkNames = this.frameworkNamesForPurpose(previousOutput.analyzer_contributions || [], nodes, edges, projectPath);
     const incrDbEntityNames = databaseSchema.entities.map(e => e.name);
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
@@ -8500,9 +8500,10 @@ export class AnalyzerOrchestrator {
    * ("authentication and authorization"). The structural inventory
    * (system.technologies.frameworks) is unaffected — it MAY keep the raw mix.
    */
-  private frameworkNamesForPurpose(contributions: any[], nodes: CASNode[], projectPath: string): string[] {
+  private frameworkNamesForPurpose(contributions: any[], nodes: CASNode[], edges: CASEdge[], projectPath: string): string[] {
     return selectProductFrameworkNames(
       nodes,
+      edges,
       analyzerTypeMap(contributions),
       node => Boolean(node.source?.file) && this.isPrimaryProductNodeForProject(node as CASNode, projectPath),
       8,
