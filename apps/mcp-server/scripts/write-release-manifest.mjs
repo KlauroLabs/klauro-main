@@ -16,7 +16,7 @@
  * deployed server build instead of being taken on trust.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,15 +34,44 @@ function headSha() {
   }
 }
 
+// Self-contained per-platform binaries (Node SEA — scripts/build-sea-binaries.mjs)
+// are the PRIMARY install path as of this release (see install.sh); the npm
+// tarball above is now the emergency fallback for a platform with no binary.
+// build-sea-binaries.mjs writes dist-sea/manifest.json with each target's
+// sha256; fold that into latest.json as both a nested `binaries` map (for
+// JSON consumers — self-update.ts's binary self-update) and flat
+// `bin_<platform>_path`/`bin_<platform>_sha256` fields (so install.sh, a
+// POSIX-sh script with no JSON parser, can read them with sed). Absent
+// gracefully if scripts/build-sea-binaries.mjs was not run before packaging
+// — install.sh and self-update.ts both fall back to the npm tarball when no
+// binary fields are present for a platform.
+const seaManifestPath = path.join(packageRoot, 'dist-sea', 'manifest.json');
+const binaries = {};
+const flatBinaryFields = {};
+if (existsSync(seaManifestPath)) {
+  const seaManifest = JSON.parse(readFileSync(seaManifestPath, 'utf8'));
+  for (const target of seaManifest.targets || []) {
+    binaries[target.id] = { path: `/dist/${target.file}`, sha256: target.sha256 };
+    const key = target.id.replace(/-/g, '_');
+    flatBinaryFields[`bin_${key}_path`] = `/dist/${target.file}`;
+    flatBinaryFields[`bin_${key}_sha256`] = target.sha256;
+  }
+}
+
 const manifest = {
   version,
   git_sha: headSha(),
   tarball: `${baseUrl}/dist/klauro-latest.tgz`,
   tarball_path: '/dist/klauro-latest.tgz',
+  // min_node/max_node/supported_node_range are kept ONLY for backward
+  // compatibility with CLIs older than this release that still read them —
+  // no code on the current client reads max_node as a refusal boundary
+  // anymore (see self-update.ts's §NODE-GATE-PHANTOM). min_node reflects
+  // package.json's declared `engines`.
   min_node: 18,
-  max_node: 24,
-  supported_node_range: '18-24',
   published_at: new Date().toISOString(),
+  binaries,
+  ...flatBinaryFields,
   // Remediation strings served to clients. `update_command` is only correct
   // for clients that HAVE the command — every release through 1.0.127 did not
   // (see self-update.ts), so the reinstall one-liner ships alongside it.
@@ -54,4 +83,4 @@ const manifest = {
 const dir = path.join(packageRoot, '.pack');
 mkdirSync(dir, { recursive: true });
 writeFileSync(path.join(dir, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-process.stdout.write(`latest.json: version ${manifest.version} sha ${manifest.git_sha} published_at ${manifest.published_at}\n`);
+process.stdout.write(`latest.json: version ${manifest.version} sha ${manifest.git_sha} published_at ${manifest.published_at}, ${Object.keys(binaries).length} platform binaries\n`);

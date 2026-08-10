@@ -738,14 +738,14 @@ async function confirmDestructiveAction(description: string, preApproved: boolea
  */
 export {
   DEFAULT_MIN_NODE,
-  DEFAULT_MAX_NODE,
-  resolveSupportedNodeRange,
-  checkNodeSupportedForNativeBuild,
+  checkNodeVersionForUpdate,
   filterNpmNoise,
   resolveSelfUpdateTarget,
   detectBuildNodeVersion,
   buildUpdateSpawnEnv,
   resolveTarballUrl,
+  isRunningAsSeaBinary,
+  resolveSeaPlatformId,
   type ReleaseManifest,
 } from './self-update';
 

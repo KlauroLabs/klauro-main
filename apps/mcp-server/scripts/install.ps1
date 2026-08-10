@@ -3,11 +3,22 @@
 #
 #   irm https://mcp.klauro.com/install.ps1 | iex
 #
-# Installs the `klauro` command globally from the Klauro analyzer server.
+# Installs a SELF-CONTAINED `klauro.exe` — no Node.js, no npm, on any Windows
+# x64 machine. See install.sh's top-of-file comment for why: the published
+# client has never had a native dependency to compile, on any platform; the
+# binary embeds its own runtime (Node "single executable application").
 #
+# Falls back to the old npm-based install (EMERGENCY only, clearly labeled)
+# when no binary is published for this platform, or the download/verify/
+# smoke-test fails. NOTE: the win-x64 binary is built the same verified way
+# as the other platforms (see scripts/build-sea-binaries.mjs) but has not
+# been execution-verified on real Windows as of this writing — this script's
+# smoke-test-then-fallback below exists specifically so a bad binary release
+# degrades to the still-working npm path instead of bricking the install.
 $ErrorActionPreference = 'Stop'
 
 if (-not $env:KLAURO_URL) { $KlauroUrl = 'https://mcp.klauro.com' } else { $KlauroUrl = $env:KLAURO_URL }
+$InstallDir = if ($env:KLAURO_INSTALL_DIR) { $env:KLAURO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Klauro\bin' }
 
 Write-Host ''
 Write-Host '  Klauro installer'
@@ -15,49 +26,93 @@ Write-Host '  ================'
 Write-Host "  Installing the klauro CLI/MCP from $KlauroUrl"
 Write-Host ''
 
-# --- Require Node >= 18 ---------------------------------------------------
-$node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) {
-  Write-Host 'Error: Node.js is not installed.'
-  Write-Host 'Klauro requires Node.js 18 or newer. Install it from https://nodejs.org'
-  exit 1
-}
-
-$nodeVersion = (& node -v).Trim()
-$nodeMajor = 0
-if ($nodeVersion -match '^v(\d+)') {
-  $nodeMajor = [int]$Matches[1]
-} else {
-  Write-Host "Error: could not determine the Node.js version (got '$nodeVersion')."
-  Write-Host 'Klauro requires Node.js 18 or newer. See https://nodejs.org'
-  exit 1
-}
-
-if ($nodeMajor -lt 18) {
-  Write-Host "Error: Node.js $nodeVersion is too old."
-  Write-Host 'Klauro requires Node.js 18 or newer. Upgrade at https://nodejs.org'
-  exit 1
-}
-
-# --- Require npm ----------------------------------------------------------
-$npm = Get-Command npm -ErrorAction SilentlyContinue
-if (-not $npm) {
-  Write-Host 'Error: npm is not installed.'
-  Write-Host 'npm ships with Node.js. Install Node.js 18+ from https://nodejs.org'
-  exit 1
-}
-
-Write-Host "  Using Node.js $nodeVersion"
-Write-Host ''
-Write-Host '  Installing @klauro/mcp-server globally...'
-Write-Host '  (this may take a minute -- native tree-sitter deps compile on install)'
-Write-Host ''
-
-& npm install -g "$KlauroUrl/dist/klauro-latest.tgz"
-if ($LASTEXITCODE -ne 0) {
+function Install-NpmFallback {
   Write-Host ''
-  Write-Host 'Error: npm install failed. See the output above.'
-  exit $LASTEXITCODE
+  Write-Host '  EMERGENCY FALLBACK: no verified self-contained binary is available.'
+  Write-Host '  Falling back to the npm-based install. This is not the primary supported path.'
+  Write-Host ''
+  $node = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $node) {
+    Write-Host 'Error: Node.js is not installed, and no self-contained binary is available.'
+    Write-Host 'Install Node.js from https://nodejs.org, then re-run this installer.'
+    exit 1
+  }
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  if (-not $npm) {
+    Write-Host 'Error: npm is not installed. npm ships with Node.js — install it from https://nodejs.org and re-run.'
+    exit 1
+  }
+  $nodeVersion = (& node -v).Trim()
+  if ($nodeVersion -match '^v(\d+)') {
+    $nodeMajor = [int]$Matches[1]
+    if ($nodeMajor -lt 18) {
+      Write-Host "Warning: Node.js $nodeVersion is older than klauro's declared minimum (18)."
+      Write-Host 'This has not been verified to fail -- continuing anyway.'
+    }
+  }
+  Write-Host "  Using Node.js $nodeVersion"
+  Write-Host '  Installing @klauro/mcp-server globally via npm...'
+  & npm install -g "$KlauroUrl/dist/klauro-latest.tgz"
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ''
+    Write-Host 'Error: npm install failed. See the output above.'
+    exit $LASTEXITCODE
+  }
+}
+
+$installedVia = $null
+try {
+  $manifestJson = Invoke-RestMethod -Uri "$KlauroUrl/dist/latest.json" -TimeoutSec 10 -ErrorAction Stop
+  $binaryPath = $manifestJson.'bin_win_x64_path'
+  $binarySha256 = $manifestJson.'bin_win_x64_sha256'
+} catch {
+  $binaryPath = $null
+  $binarySha256 = $null
+}
+
+if ($binaryPath) {
+  try {
+    $binaryUrl = if ($binaryPath -match '^https?://') { $binaryPath } else { "$KlauroUrl$binaryPath" }
+    Write-Host "  Platform: win-x64"
+    Write-Host "  Downloading $binaryUrl ..."
+    $tmpFile = New-TemporaryFile
+    Invoke-WebRequest -Uri $binaryUrl -OutFile $tmpFile.FullName -TimeoutSec 300
+
+    if ($binarySha256) {
+      $actualHash = (Get-FileHash -Path $tmpFile.FullName -Algorithm SHA256).Hash.ToLower()
+      if ($actualHash -ne $binarySha256.ToLower()) {
+        throw "Checksum mismatch: expected $binarySha256, got $actualHash"
+      }
+      Write-Host '  Checksum verified.'
+    }
+
+    # Smoke-test BEFORE installing it as `klauro` -- a bad/corrupted binary
+    # must fall back to npm, never leave a broken `klauro.exe` in place.
+    $smoke = & $tmpFile.FullName version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "Downloaded binary failed a basic smoke test (klauro version): $smoke"
+    }
+
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $finalPath = Join-Path $InstallDir 'klauro.exe'
+    Move-Item -Path $tmpFile.FullName -Destination $finalPath -Force
+    Write-Host "  Installed self-contained klauro to $finalPath (no Node.js required)."
+    $installedVia = 'binary'
+
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath -notlike "*$InstallDir*") {
+      [Environment]::SetEnvironmentVariable('Path', "$InstallDir;$userPath", 'User')
+      Write-Host "  Added $InstallDir to your user PATH. Restart your terminal to pick it up."
+    }
+  } catch {
+    Write-Host "  Binary install failed: $_"
+    $installedVia = $null
+  }
+}
+
+if ($installedVia -ne 'binary') {
+  Install-NpmFallback
+  $installedVia = 'npm'
 }
 
 Write-Host ''

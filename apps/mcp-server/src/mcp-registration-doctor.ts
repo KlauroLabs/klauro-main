@@ -150,17 +150,23 @@ export interface BootProbeResult {
 }
 
 /**
- * Best-effort boot probe: spawns `node <entryPath>` with stdin closed and a
- * tight timeout, and classifies the outcome from stderr text emitted by
- * index.ts's reportGrammarHealth(). Never lets the process hang past maxMs.
+ * Best-effort boot probe: spawns `node <entryPath>` (or, for a self-contained
+ * SEA-binary registration, `<entryPath> __mcp_server` — see spawnArgs below)
+ * with stdin closed and a tight timeout, and classifies the outcome from
+ * stderr text emitted by index.ts's reportGrammarHealth(). Never lets the
+ * process hang past maxMs.
  */
 export function probeMcpBoot(options: {
   entryPath: string;
   maxMs?: number;
   nodePath?: string;
   env?: NodeJS.ProcessEnv;
+  /** Override the spawned argv when entryPath is itself the executable (the
+   *  self-contained binary registration), not a script `node` runs. Default
+   *  behaviour (`node <entryPath>`) is unchanged when this is omitted. */
+  spawnArgs?: string[];
 }): Promise<BootProbeResult> {
-  const { entryPath, maxMs = 4000, nodePath = process.execPath, env = process.env } = options;
+  const { entryPath, maxMs = 4000, nodePath = process.execPath, env = process.env, spawnArgs } = options;
   return new Promise(resolve => {
     if (!fs.existsSync(entryPath)) {
       resolve({ status: 'fail', detail: `Entry point does not exist: ${entryPath}` });
@@ -174,10 +180,9 @@ export function probeMcpBoot(options: {
     // must execute. Closing stdin immediately below triggers index.ts's
     // `stdin.on('end', () => process.exit(0))` so the process exits promptly
     // once we've captured its stderr, instead of idling as a live MCP server.
-    const child = spawn(nodePath, [entryPath], {
-      env: { ...env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const child = spawnArgs
+      ? spawn(entryPath, spawnArgs, { env: { ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
+      : spawn(nodePath, [entryPath], { env: { ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
 
     const finish = (result: BootProbeResult) => {
       if (settled) return;
@@ -296,7 +301,14 @@ export async function checkMcpRegistration(options: {
   // Prefer the entry that actually points at something (real command/args) for
   // the entry-point-resolvable and boot checks below.
   const primary = registeredIn[0];
-  const configuredEntryPoint = resolveConfiguredEntryPoint(primary.entry);
+  // A self-contained (Node SEA) install registers the binary itself as
+  // `command`, invoked as `<binary> __mcp_server` — there is no `.cjs`/`.js`
+  // script arg for resolveConfiguredEntryPoint to find, and no dist/ on disk
+  // to fall back to (packagedEntry legitimately does not exist for a
+  // binary-only install). Detect that shape and check/boot the BINARY,
+  // never dist/index.cjs, or every binary install would report "fail".
+  const binaryMode = isBinaryModeMcpEntry(primary.entry);
+  const configuredEntryPoint = binaryMode ? primary.entry?.command : resolveConfiguredEntryPoint(primary.entry);
   const entryPointToCheck = configuredEntryPoint ?? packagedEntry;
   const entryExists = fs.existsSync(entryPointToCheck);
 
@@ -321,7 +333,11 @@ export async function checkMcpRegistration(options: {
     };
   }
 
-  const bootResult = await probeMcpBoot({ entryPath: entryPointToCheck, maxMs: options.bootMaxMs ?? 4000 });
+  const bootResult = await probeMcpBoot({
+    entryPath: entryPointToCheck,
+    maxMs: options.bootMaxMs ?? 4000,
+    ...(binaryMode ? { spawnArgs: ['__mcp_server'] } : {}),
+  });
   const bootStatus: 'pass' | 'warn' | 'fail' = bootResult.status === 'ok' ? 'pass' : bootResult.status;
 
   return {
@@ -330,7 +346,9 @@ export async function checkMcpRegistration(options: {
     detail: `Registered in ${registeredIn.map(r => r.configPath).join(', ')} (${registrationSummary}); entry point exists at ${entryPointToCheck}. Boot probe: ${bootResult.detail} ${uncheckedNote}`,
     fix: bootStatus === 'pass'
       ? undefined
-      : `Rebuild the bundle (npm --prefix ${options.packageRoot} run build) and re-run \`node ${entryPointToCheck}\` manually to see full stderr output.`,
+      : binaryMode
+        ? `Re-run \`${entryPointToCheck} __mcp_server\` manually to see full stderr output, or reinstall: curl -fsSL https://mcp.klauro.com/install | sh`
+        : `Rebuild the bundle (npm --prefix ${options.packageRoot} run build) and re-run \`node ${entryPointToCheck}\` manually to see full stderr output.`,
   };
 }
 
@@ -340,4 +358,18 @@ function resolveConfiguredEntryPoint(entry: RegisteredMcpEntry | undefined): str
   // that looks like a path to a .cjs/.js file.
   const candidate = entry.args.find(a => /\.(cjs|mjs|js)$/.test(a));
   return candidate;
+}
+
+/**
+ * True for a self-contained-binary registration: `klauro install` (see
+ * installed-cli.ts's resolveMcpRegistrationCommand) registers
+ * `command: <path to the klauro binary>`, `args: ['__mcp_server']` when
+ * running from inside a Node SEA build, instead of `command: node`,
+ * `args: [<path>/dist/index.cjs]`. No `.cjs`/`.js` arg exists to resolve in
+ * that shape, and the sentinel `__mcp_server` argv is the client-side half of
+ * the same dispatch installed-sea-entry.ts reads on the other end.
+ */
+function isBinaryModeMcpEntry(entry: RegisteredMcpEntry | undefined): boolean {
+  if (!entry?.args?.length) return false;
+  return entry.args.includes('__mcp_server') && !entry.args.some(a => /\.(cjs|mjs|js)$/.test(a));
 }

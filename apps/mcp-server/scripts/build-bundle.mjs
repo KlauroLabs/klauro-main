@@ -133,6 +133,16 @@ const cliResult = await build({ ...shared, entryPoints: ['src/installed-cli.ts']
 chmodSync(path.join(output, 'cli.cjs'), 0o755);
 await build({ ...shared, entryPoints: ['src/bootstrap.ts'], outfile: 'dist/index.cjs', external: ['./server.cjs'] });
 
+// Single-file bundle for the self-contained (Node SEA) binary — see
+// scripts/build-sea-binary.mjs. Same installed-client-boundary plugin as the
+// npm-shipped cli.cjs/server.cjs, so a hosted-only import (analyzer.ts,
+// orchestrator, tree-sitter, ...) fails this build exactly like it would
+// fail those, before it can ever reach a customer's machine either way.
+// Written OUTSIDE dist/ (dist-sea/, not dist/) so it never rides along in the
+// npm tarball's `files: ['dist/']` — it exists only as an input to the SEA
+// binary build, not something an npm-installed client ever runs.
+const seaEntryResult = await build({ ...shared, entryPoints: ['src/installed-sea-entry.ts'], outfile: 'dist-sea/klauro-sea-entry.cjs', plugins: [installedBoundary], metafile: true });
+
 // §AUTH-LIFECYCLE (2026-08-08) — build-time backstop against the SAME class
 // of defect twice now: a command built entirely in cli.ts (the dev CLI) and
 // never ported to installed-cli.ts, the only file bundled here. The unit
@@ -176,7 +186,7 @@ const forbidden = [
   /packages\/analyzer-core\/src\/analyzer\/(languages|frameworks|libraries|embedding|ast|packs)\//,
   /packages\/analyzer-core\/src\/analyzer\/core\/(orchestrator|tree-sitter|native-parse|generic-tree-sitter|graph-builder|enhanced-call-graph)/,
 ];
-const inputs = [...Object.keys(serverResult.metafile.inputs), ...Object.keys(cliResult.metafile.inputs)].map(value => value.replace(/\\/g, '/'));
+const inputs = [...Object.keys(serverResult.metafile.inputs), ...Object.keys(cliResult.metafile.inputs), ...Object.keys(seaEntryResult.metafile.inputs)].map(value => value.replace(/\\/g, '/'));
 const violations = [...new Set(inputs.filter(input => forbidden.some(pattern => pattern.test(input))))];
 if (violations.length) throw new Error(`Installed client contains hosted analyzer modules:\n${violations.join('\n')}`);
 

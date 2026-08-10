@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { checkMcpRegistration, type EnvironmentCheck } from './mcp-registration-doctor';
-import { checkNodeSupportedForNativeBuild, fetchReleaseManifest, type ReleaseManifest } from './self-update';
+import { checkNodeVersionForUpdate, fetchReleaseManifest, isRunningAsSeaBinary, type ReleaseManifest } from './self-update';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from './remote-analyzer-protocol';
 
@@ -136,13 +136,19 @@ export function evaluateCliVersion(current: string, manifest: ReleaseManifest | 
   );
 }
 
-export function evaluateNodeVersionForClient(nodeVersion: string, manifest: ReleaseManifest | null): EnvironmentCheck {
-  const major = Number.parseInt(nodeVersion.replace(/^v/, '').split('.')[0], 10);
-  const result = checkNodeSupportedForNativeBuild(major, manifest);
-  if (result.ok) {
-    return checkResult('node-version', 'pass', `Node ${nodeVersion} is within the supported range (${result.min}-${result.max}).`);
+export function evaluateNodeVersionForClient(nodeVersion: string, _manifest: ReleaseManifest | null): EnvironmentCheck {
+  // Self-contained (Node SEA) binary: the running "Node" IS the klauro
+  // binary's embedded runtime, not something the machine installed or could
+  // be short of — there is nothing to check.
+  if (isRunningAsSeaBinary()) {
+    return checkResult('node-version', 'pass', `Running the self-contained klauro binary (embedded Node ${nodeVersion}); no machine Node install required.`);
   }
-  return checkResult('node-version', 'fail', result.message || `Node ${nodeVersion} is not in the supported range (${result.min}-${result.max}).`);
+  const major = Number.parseInt(nodeVersion.replace(/^v/, '').split('.')[0], 10);
+  const result = checkNodeVersionForUpdate(major);
+  if (result.ok) {
+    return checkResult('node-version', 'pass', `Node ${nodeVersion} (minimum: ${result.min}). No upper bound — the installed client has no native dependencies to compile.`);
+  }
+  return checkResult('node-version', 'warn', result.message || `Node ${nodeVersion} is below the declared minimum (${result.min}), unverified.`);
 }
 
 export async function runClientDoctor(options: {
