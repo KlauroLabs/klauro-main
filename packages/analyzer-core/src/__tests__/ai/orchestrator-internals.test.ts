@@ -1386,6 +1386,38 @@ describe('architecture and capability inference', () => {
     expect(entities[0].description_generation).toBeUndefined();
   });
 
+  it('sensitive-field detection is evidence-based on declared type, not a "token"/"key" substring match', () => {
+    // Real hosted defect (2026-08): compactTokenBudget/estimatedTokens/
+    // tokenEfficiency are all LLM token-budgeting INTEGERS, not credentials —
+    // substring-matching "token" flagged them as sensitive_fields anyway. A
+    // numeric declared type is direct structural evidence a field is not a
+    // credential (real secrets are always strings), independent of any name
+    // list — see isFieldSensitiveByEvidence in orchestrator.ts.
+    const nodes: CASNode[] = [
+      node({ id: 'packet-entity', name: 'AgentWorkPacket', type: 'entity', source: { file: 'src/fleet/packet.entity.ts' } }),
+      node({ id: 'packet-token-budget', name: 'compactTokenBudget', type: 'property', parent: 'packet-entity', signature: { return_type: 'number' } as any }),
+      node({ id: 'packet-est-tokens', name: 'estimatedTokens', type: 'property', parent: 'packet-entity', signature: { return_type: 'number' } as any }),
+      node({ id: 'packet-token-efficiency', name: 'tokenEfficiency', type: 'property', parent: 'packet-entity', signature: { return_type: 'number' } as any }),
+      // True positives: string-typed credential/PII fields must still be flagged.
+      node({ id: 'packet-api-key', name: 'apiKey', type: 'property', parent: 'packet-entity', signature: { return_type: 'string' } as any }),
+      node({ id: 'packet-password', name: 'password', type: 'property', parent: 'packet-entity', signature: { return_type: 'string' } as any }),
+      node({ id: 'packet-bearer-token', name: 'bearerToken', type: 'property', parent: 'packet-entity', signature: { return_type: 'string' } as any }),
+    ];
+
+    const entities = orch.buildDataEntities(nodes, []);
+    const packet = entities.find((e: any) => e.name === 'AgentWorkPacket');
+    expect(packet).toBeDefined();
+    const fieldByName = new Map<string, any>((packet as any).fields.map((f: any) => [f.name, f]));
+
+    expect(fieldByName.get('compactTokenBudget')?.is_sensitive).toBe(false);
+    expect(fieldByName.get('estimatedTokens')?.is_sensitive).toBe(false);
+    expect(fieldByName.get('tokenEfficiency')?.is_sensitive).toBe(false);
+
+    expect(fieldByName.get('apiKey')?.is_sensitive).toBe(true);
+    expect(fieldByName.get('password')?.is_sensitive).toBe(true);
+    expect(fieldByName.get('bearerToken')?.is_sensitive).toBe(true);
+  });
+
   it('excludes nested fixture entities from product data entities while preserving fixture-root analysis', async () => {
     const projectRoot = '/repo/apps/mcp-server';
     const nodes: CASNode[] = [

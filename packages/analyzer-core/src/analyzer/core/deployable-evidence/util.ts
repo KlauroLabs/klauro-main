@@ -134,8 +134,19 @@ export function isIdentifierShapedRepoBasename(basename: string): boolean {
  * `prj_`/`wsp_`/... prefix check and per-token (dash/underscore-split) hash
  * check. Every caller of this function inherits the fix for free.
  */
+/**
+ * The sentinel this module falls back to when a deployable's own evidence
+ * carries no usable name. It is a SENTINEL meaning "name resolution failed",
+ * not a real service identity — callers that join/merge Tier-1 rows by name
+ * (deployable-evidence.ts's joinComposeAndContainerUnits) must treat it as
+ * carrying zero identity information: requiring name-equality against this
+ * literal is never meaningful, since two placeholder rows are not thereby
+ * "the same name" and a real-named sibling row will never equal it either.
+ */
+export const UNNAMED_SERVICE_PLACEHOLDER = 'unnamed-service';
+
 export function safeDeployableName(basename: string): string {
-  if (isIdentifierShapedRepoBasename(basename)) return 'unnamed-service';
+  if (isIdentifierShapedRepoBasename(basename)) return UNNAMED_SERVICE_PLACEHOLDER;
   return basename;
 }
 

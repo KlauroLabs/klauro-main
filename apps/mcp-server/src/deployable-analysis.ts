@@ -995,6 +995,26 @@ export interface SubCasNodeIndex {
   orphan_node_count: number;
   orphan_node_ids: string[];
   counts_note: string;
+  /** INVARIANT (spec §7 addendum): distinct qualified units whose reachability
+   *  closures overlap almost entirely (>= DUPLICATE_CLOSURE_OVERLAP_RATIO of
+   *  the smaller closure) are describing the SAME shipped artifact reached via
+   *  two different evidence rows, not two artifacts — e.g. a compose-service
+   *  row and an unrelated bin row that both close over the whole repo. The
+   *  richer-evidence unit survives; the rest are dropped from `units` before
+   *  slicing/counting and logged here so a caller can tell "we collapsed a
+   *  real duplicate" apart from "there really is only one unit". This is the
+   *  backstop the counts_note invariant (exclusive+shared+orphan===graph)
+   *  does NOT catch: that identity held even while three units each claimed
+   *  ~the whole graph, because it sums exclusive/shared correctly regardless
+   *  of how many *units* point at the same nodes. */
+  duplicate_units_collapsed: Array<{ dropped_id: string; dropped_name: string; kept_id: string; kept_name: string; overlap_ratio: number }>;
+  /** Raw node ids repeated more than once in orphan_node_ids before
+   *  deduplication — a non-zero count means the parent CAS's node graph
+   *  itself contains two+ node objects sharing one id (a graph-construction
+   *  bug upstream, most often two un-merged deployable-evidence rows each
+   *  emitting a `deployable:<name>` summary node keyed only by name). The
+   *  list below is already deduplicated; this count is the tripwire. */
+  orphan_node_id_duplicate_count: number;
 }
 
 /** HOW SHARED CODE IS REPRESENTED (spec §2.2, decided here and stated once):
@@ -1144,6 +1164,98 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
 }
 
 // ---------------------------------------------------------------------------
+// Duplicate-closure invariant (spec §7 addendum)
+// ---------------------------------------------------------------------------
+
+/** Two qualified units whose reachability closures overlap at least this much
+ *  (intersection / smaller-closure-size) are treated as the same shipped
+ *  artifact reached through two different evidence rows, never two distinct
+ *  ones — evidence-based on measured graph overlap, not on name or kind, so
+ *  it also catches a kind MISMATCH (e.g. a compose-service row and an
+ *  unrelated bin row both closing over ~the whole repo) that a same-kind or
+ *  same-root-path check alone would miss. 0.95 leaves room for the small
+ *  asymmetry two independently-seeded closures of the same artifact can have
+ *  (a couple of files reached via one unit's seed but not the other's) while
+ *  still being far above anything two genuinely different services would
+ *  share by accident. */
+const DUPLICATE_CLOSURE_OVERLAP_RATIO = 0.95;
+
+/**
+ * Evidence-richness ranking for which of two overlapping units survives: a
+ * concrete (non-'.') root beats a degenerate repo-root match, then more
+ * boundary evidence lines, then original evidence-array order (deterministic
+ * across re-runs of the same evidence list).
+ */
+function richerUnit(a: DeployableEvidence, b: DeployableEvidence, allEvidence: DeployableEvidence[]): DeployableEvidence {
+  const aConcrete = a.root_path && a.root_path !== '.' ? 1 : 0;
+  const bConcrete = b.root_path && b.root_path !== '.' ? 1 : 0;
+  if (aConcrete !== bConcrete) return aConcrete > bConcrete ? a : b;
+  if (a.evidence.length !== b.evidence.length) return a.evidence.length > b.evidence.length ? a : b;
+  return allEvidence.indexOf(a) <= allEvidence.indexOf(b) ? a : b;
+}
+
+/**
+ * The invariant the plain exclusive+shared+orphan===graph_node_count check
+ * (DAS_COUNTS_NOTE) does NOT catch: it holds even when N qualified units all
+ * point at ~the same nodes, because it only ever sums per-NODE attribution,
+ * never counts how many *units* independently claim a node as their seed
+ * basis. This pass measures pairwise closure overlap directly and collapses
+ * near-total overlaps before any per-unit count is computed, so
+ * qualified_unit_count and sum_of_unit_node_counts are never inflated by the
+ * same artifact being counted twice (or three times) over.
+ */
+function collapseDuplicateClosureUnits(
+  qualified: DeployableEvidence[],
+  rawSlices: SubCasNodeSlice[],
+): {
+  qualified: DeployableEvidence[];
+  rawSlices: SubCasNodeSlice[];
+  duplicatesCollapsed: Array<{ dropped_id: string; dropped_name: string; kept_id: string; kept_name: string; overlap_ratio: number }>;
+} {
+  const closures = rawSlices.map(s => new Set(s.slice.nodes.map(n => n.id)));
+  const dropped = new Set<number>();
+  const duplicatesCollapsed: Array<{ dropped_id: string; dropped_name: string; kept_id: string; kept_name: string; overlap_ratio: number }> = [];
+
+  for (let i = 0; i < qualified.length; i++) {
+    if (dropped.has(i)) continue;
+    for (let j = i + 1; j < qualified.length; j++) {
+      if (dropped.has(j)) continue;
+      const a = closures[i];
+      const b = closures[j];
+      const smaller = Math.min(a.size, b.size);
+      if (smaller === 0) continue;
+      let intersection = 0;
+      const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+      for (const id of small) if (large.has(id)) intersection++;
+      const overlapRatio = intersection / smaller;
+      if (overlapRatio < DUPLICATE_CLOSURE_OVERLAP_RATIO) continue;
+
+      const survivor = richerUnit(qualified[i], qualified[j], qualified);
+      const loserIdx = survivor === qualified[i] ? j : i;
+      const keptIdx = survivor === qualified[i] ? i : j;
+      dropped.add(loserIdx);
+      duplicatesCollapsed.push({
+        dropped_id: rawSlices[loserIdx].sub_cas_node_id,
+        dropped_name: qualified[loserIdx].name,
+        kept_id: rawSlices[keptIdx].sub_cas_node_id,
+        kept_name: qualified[keptIdx].name,
+        overlap_ratio: Math.round(overlapRatio * 10000) / 10000,
+      });
+      if (loserIdx === i) break; // i itself was dropped; move to next i
+    }
+  }
+
+  if (!dropped.size) return { qualified, rawSlices, duplicatesCollapsed: [] };
+
+  const keptIndices = qualified.map((_, idx) => idx).filter(idx => !dropped.has(idx));
+  return {
+    qualified: keptIndices.map(idx => qualified[idx]),
+    rawSlices: keptIndices.map(idx => rawSlices[idx]),
+    duplicatesCollapsed,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // buildDeployableAnalyses (all units + sub_cas_nodes + shared-code attribution)
 // ---------------------------------------------------------------------------
 
@@ -1157,7 +1269,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
  */
 export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalysesResult {
   const allEvidence = cas.deployable_evidence || [];
-  const qualified = tierQualifiedShipUnits(allEvidence);
+  let qualified = tierQualifiedShipUnits(allEvidence);
 
   if (qualified.length < PROMOTION_THRESHOLD) {
     return {
@@ -1179,6 +1291,8 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
         orphan_node_count: 0,
         orphan_node_ids: [],
         counts_note: DAS_COUNTS_NOTE,
+        duplicate_units_collapsed: [],
+        orphan_node_id_duplicate_count: 0,
       },
       units: [],
     };
@@ -1188,7 +1302,43 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
 
   // Slice every unit once (reachability closure), then compute shared
   // attribution across all of them, then re-tag each slice's nodes.
-  const rawSlices = qualified.map(unit => sliceDeployableAnalysis(cas, unit));
+  const rawSlicesBeforeDedup = qualified.map(unit => sliceDeployableAnalysis(cas, unit));
+
+  const { qualified: qualifiedDeduped, rawSlices, duplicatesCollapsed } =
+    collapseDuplicateClosureUnits(qualified, rawSlicesBeforeDedup);
+  qualified = qualifiedDeduped;
+
+  // The dedup pass can itself take a CAS below the promotion threshold (three
+  // evidence rows all describing one artifact collapse to one unit) — spec §1
+  // still applies after collapsing: a single real deployable must not promote,
+  // even though the RAW evidence count looked like >= 2 before dedup.
+  if (qualified.length < PROMOTION_THRESHOLD) {
+    const collapsedNote = duplicatesCollapsed.length
+      ? ` (collapsed ${duplicatesCollapsed.length} duplicate-closure unit(s) that were the same shipped artifact counted more than once: ${duplicatesCollapsed.map(d => `"${d.dropped_name}" -> "${d.kept_name}"`).join(', ')})`
+      : '';
+    return {
+      promoted: false,
+      sub_cas_nodes: {
+        promoted: false,
+        units: [],
+        qualified_unit_count: qualified.length,
+        promotion_threshold: PROMOTION_THRESHOLD,
+        reason: `${qualified.length} tier-qualified ship unit found after duplicate-closure collapse — below the promotion threshold of ${PROMOTION_THRESHOLD}, so this CAS is its own single deployable and needs no per-unit slicing.${collapsedNote}`,
+        graph_node_count: (cas.nodes || []).length,
+        covered_node_count: 0,
+        coverage_ratio: 0,
+        exclusive_node_count: 0,
+        shared_node_count: 0,
+        sum_of_unit_node_counts: 0,
+        orphan_node_count: 0,
+        orphan_node_ids: [],
+        counts_note: DAS_COUNTS_NOTE,
+        duplicate_units_collapsed: duplicatesCollapsed,
+        orphan_node_id_duplicate_count: 0,
+      },
+      units: [],
+    };
+  }
 
   const unitsReachability: UnitReachability[] = qualified.map((unit, i) => ({
     index: i,
@@ -1231,7 +1381,13 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
   // per-unit totals that sum past the graph.
   const reachedAnywhere = new Set<string>();
   for (const u of unitsReachability) for (const id of u.reachable) reachedAnywhere.add(id);
-  const orphanIds = (cas.nodes || []).filter(n => !reachedAnywhere.has(n.id)).map(n => n.id);
+  const rawOrphanIds = (cas.nodes || []).filter(n => !reachedAnywhere.has(n.id)).map(n => n.id);
+  const orphanIds = [...new Set(rawOrphanIds)];
+  // A non-zero gap here means the parent CAS's node list itself contains two+
+  // node objects sharing one id — the underlying bug is upstream (graph
+  // construction), not in this counting pass, but it must not be allowed to
+  // silently disappear as "the same orphan id reported three times".
+  const orphanNodeIdDuplicateCount = rawOrphanIds.length - orphanIds.length;
 
   const perUnitCounts = unitsReachability.map(() => ({ exclusive: 0, shared: 0, ownedShared: 0 }));
   let exclusiveTotal = 0;
@@ -1276,7 +1432,10 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
     })),
     qualified_unit_count: qualified.length,
     promotion_threshold: PROMOTION_THRESHOLD,
-    reason: `${qualified.length} tier-qualified ship units resolved (>= ${PROMOTION_THRESHOLD}), so this CAS has promoted sub-CAS nodes.`,
+    reason: `${qualified.length} tier-qualified ship units resolved (>= ${PROMOTION_THRESHOLD}), so this CAS has promoted sub-CAS nodes.`
+      + (duplicatesCollapsed.length
+        ? ` (collapsed ${duplicatesCollapsed.length} duplicate-closure unit(s) before counting: ${duplicatesCollapsed.map(d => `"${d.dropped_name}" -> "${d.kept_name}"`).join(', ')})`
+        : ''),
     graph_node_count: graphNodeCount,
     covered_node_count: coveredNodeCount,
     coverage_ratio: graphNodeCount === 0 ? 0 : Math.round((coveredNodeCount / graphNodeCount) * 10000) / 10000,
@@ -1286,6 +1445,8 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
     orphan_node_count: orphanIds.length,
     orphan_node_ids: orphanIds.slice(0, 50),
     counts_note: DAS_COUNTS_NOTE,
+    duplicate_units_collapsed: duplicatesCollapsed,
+    orphan_node_id_duplicate_count: orphanNodeIdDuplicateCount,
   };
 
   return { promoted: true, sub_cas_nodes, units };
