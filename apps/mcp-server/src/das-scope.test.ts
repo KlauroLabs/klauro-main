@@ -10,14 +10,14 @@ import { buildCrossCodebaseSystemGraph, type CrossCodebaseInput } from './cross-
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 
 /**
- * DAS PHASE 2 — product-surface wiring tests (docs/cas/SPECIFICATION.md §0.4/§0.8
+ * SUB-CAS-NODE PHASE 2 — product-surface wiring tests (docs/cas/SPECIFICATION.md §0.4/§0.8
  * §4, §6). Phase 1 (deployable-analysis.test.ts) proves the slicing primitive
  * in isolation; this file proves the pieces phase 2 wires it INTO:
  *  - get_summary's sub_cas_nodes discovery surface + scoped-vs-rollup counts,
  *  - scope propagating cleanly through query.ts's existing read functions
  *    (search_nodes's contract, via query.searchNodes),
  *  - the unknown-id / non-promoted error paths a caller actually sees,
- *  - WAS's source_das_unit_id linkage (spec §4's three-hop provenance).
+ *  - the workspace-level CAS's source_das_unit_id linkage (spec §4's three-hop provenance).
  */
 
 function node(id: string, file: string): CASNode {
@@ -193,7 +193,7 @@ test('scopeCasToDasUnit: non-promoted repo reports WHY (not just an empty list) 
   assert.equal(scopeCasToDasUnit(cas, undefined), cas);
   assert.throws(
     () => scopeCasToDasUnit(cas, { das_unit_id: 'das:anything' }),
-    /has not promoted to a Deployable-Analysis Workspace/
+    /has not promoted any sub-CAS nodes/
   );
 });
 

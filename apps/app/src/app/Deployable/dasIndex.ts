@@ -45,7 +45,7 @@ function isTier1(e: DeployableEvidence): boolean {
  *  analysis.ts's tierQualifiedShipUnits (which owns the doc comment and the
  *  rationale): standalone AND declaring a ship-or-build artifact of its own —
  *  never "how many other runnables exist". Kept in lockstep with that module so
- *  the web UI's unit list is the same list the API's das_index reports. */
+ *  the web UI's unit list is the same list the API's sub_cas_nodes reports. */
 function isBuildTarget(e: DeployableEvidence): boolean {
   return e.tier === 2 && e.kind === 'bin';
 }

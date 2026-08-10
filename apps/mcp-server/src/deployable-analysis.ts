@@ -70,7 +70,7 @@ function isTier1ShipDeclaration(e: DeployableEvidence): boolean {
 
 /**
  * THE QUALIFICATION PREDICATE, stated plainly: a DeployableEvidence row is a
- * DAS unit when it is standalone (no `bundled_into`) AND its own evidence
+ * sub-CAS-node unit when it is standalone (no `bundled_into`) AND its own evidence
  * declares a ship-or-build artifact — a Tier-1 ship declaration (Dockerfile
  * ENTRYPOINT/CMD, compose service, k8s/serverless manifest, installer
  * manifest, CI deploy job) or a Tier-2 `bin` row (a build target a manifest or
@@ -188,7 +188,7 @@ export function tierQualifiedShipUnits(evidence: DeployableEvidence[] | undefine
  * single-deployable CAS (the overwhelming common case, spec §7 "single-
  * deployable CAS is a valid, common, terminal state") MUST NOT promote —
  * this function returns false for 0 or 1 qualified units, never emitting a
- * one-entry DAS-unit list masquerading as a rollup.
+ * one-entry sub-CAS-node list masquerading as a rollup.
  */
 const PROMOTION_THRESHOLD = 2;
 
@@ -197,7 +197,7 @@ export function shouldPromote(cas: Pick<CASOutput, 'deployable_evidence'>): bool
 }
 
 // ---------------------------------------------------------------------------
-// Stable DAS unit identity (spec §7 "no phantom units")
+// Stable sub-CAS-node identity (spec §7 "no phantom units")
 // ---------------------------------------------------------------------------
 
 /**
@@ -352,7 +352,7 @@ function evidenceDeclaredFiles(unit: DeployableEvidence): string[] {
 
 /**
  * Rows that declare THE SAME artifact as `unit` (see
- * dedupeBuildTargetIdentities): only one of them is a DAS unit, but the
+ * dedupeBuildTargetIdentities): only one of them is a sub-CAS node, but the
  * dropped twin's evidence still describes the same binary, so its declared
  * entry file is legitimate seeding evidence for the surviving unit.
  */
@@ -378,13 +378,13 @@ interface CasSliceContext {
 const sliceContexts = new WeakMap<CASOutput, CasSliceContext>();
 
 /**
- * DAS closures are computed with the REACHABILITY INDEX
+ * Sub-CAS-node closures are computed with the REACHABILITY INDEX
  * (analyzer-core/core/reachability-index.ts): one Tarjan+PLL build per CAS,
  * then O(answer) `affectedSet` enumeration per unit — instead of the previous
  * per-unit re-scan of the whole edge list, which is the exhaustive-scan defect
  * class that index exists to retire.
  *
- * The DAS closure needs the call graph `callEdgePairs` defines ('calls' edges
+ * The sub-CAS-node closure needs the call graph `callEdgePairs` defines ('calls' edges
  * + resolved method_calls) PLUS 'invokes' edges, which some analyzers emit
  * for a dispatch/registration call — a closure that stopped at 'calls' would
  * silently lose that dispatch-reached code from a unit's own contents. The
@@ -392,12 +392,12 @@ const sliceContexts = new WeakMap<CASOutput, CasSliceContext>();
  * is built over exactly that same edge set (`reachabilityEdgePairs`), so when
  * the CAS carries one this rehydrates it (`ReachabilityIndex.from`) instead of
  * rebuilding — the whole reason a second Tarjan+PLL pass existed was that the
- * persisted index used to be missing 'invokes'; now that it isn't, DAS reuses
- * it like every other reachability consumer.
+ * persisted index used to be missing 'invokes'; now that it isn't, sub-CAS-node
+ * slicing reuses it like every other reachability consumer.
  *
  * Reuse is gated on `includes_invokes_edges`, NOT on presence alone: an
  * analysis stored before that flag existed carries a persisted index built
- * over 'calls' + method_calls only, and DAS used to ALWAYS rebuild its own
+ * over 'calls' + method_calls only, and sub-CAS-node slicing used to ALWAYS rebuild its own
  * (invokes-inclusive) index regardless of what was persisted — trusting an
  * old index just because it exists would silently hand such a unit a
  * narrower closure than it used to get, which is exactly the kind of
@@ -1059,7 +1059,7 @@ export interface BuildDeployableAnalysesResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Slice one tier-qualified deployable's DAS unit out of the repo's own CAS.
+ * Slice one tier-qualified deployable's sub-CAS node out of the repo's own CAS.
  * Pure/derived-only: reads `cas`'s already-extracted facts, walks the
  * already-extracted call graph, and projects the already-extracted
  * capability/flow/entity/seam layers onto the resulting node subset. Never
@@ -1150,7 +1150,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
 /**
  * Top-level entry point: evaluate the promotion rule, and if it fires, slice
  * every tier-qualified unit plus tag cross-unit shared code (spec §2.2) and
- * build the rollup `sub_cas_nodes` (spec §3's "the list of DAS unit
+ * build the rollup `sub_cas_nodes` (spec §3's "the list of sub-CAS-node
  * ids/names/tiers/boundary evidence itself"). Returns `promoted: false` with
  * empty arrays for the common single-deployable case — never a synthesized
  * one-entry unit list.
@@ -1276,7 +1276,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
     })),
     qualified_unit_count: qualified.length,
     promotion_threshold: PROMOTION_THRESHOLD,
-    reason: `${qualified.length} tier-qualified ship units resolved (>= ${PROMOTION_THRESHOLD}), so this CAS is a Deployable-Analysis Workspace.`,
+    reason: `${qualified.length} tier-qualified ship units resolved (>= ${PROMOTION_THRESHOLD}), so this CAS has promoted sub-CAS nodes.`,
     graph_node_count: graphNodeCount,
     covered_node_count: coveredNodeCount,
     coverage_ratio: graphNodeCount === 0 ? 0 : Math.round((coveredNodeCount / graphNodeCount) * 10000) / 10000,
@@ -1323,7 +1323,7 @@ export function resolveDasScope(cas: CASOutput, dasUnitId: string): DasUnitSlice
  * tool call instead of once per analysis. A tiny recency-ordered LRU (not a
  * persistence layer — phase-1's "recompute-on-request" posture is unchanged,
  * see the module doc comment) makes repeat calls within one analysis's
- * lifetime cheap without introducing a stored DAS artifact. Keyed on
+ * lifetime cheap without introducing a stored sub-CAS-node artifact. Keyed on
  * `analysis_id` (stable per stored analysis) with a content-shaped fallback
  * for CAS objects built in-memory without one (e.g. test fixtures, proposal
  * previews) so the cache degrades to "no reuse" instead of throwing.
@@ -1362,7 +1362,7 @@ export interface DasScopeParam {
 /**
  * Resolves an optional scope: { das_unit_id } against a repo-level CAS (spec
  * §6). Returns the parent cas unchanged when scope is omitted. When given,
- * returns a CASOutput-shaped object with the DAS unit's sliced fields
+ * returns a CASOutput-shaped object with the sub-CAS node's sliced fields
  * overlaid on the parent CAS — repo-rollup-only facts with no unit-scoped
  * meaning pass through unchanged, so counts/nodes/entries reflect the unit,
  * never the rollup. Throws (never a silent empty result) when the CAS hasn't
@@ -1374,13 +1374,13 @@ export function scopeCasToDasUnit(cas: CASOutput, scope: DasScopeParam | undefin
   const { promoted, sub_cas_nodes, units } = getCachedDeployableAnalyses(cas);
   if (!promoted) {
     throw new Error(
-      'This analysis has not promoted to a Deployable-Analysis Workspace (it resolves fewer than 2 tier-qualified ship units), so scope.das_unit_id does not apply. Omit scope to query the whole repo.'
+      'This analysis has not promoted any sub-CAS nodes (it resolves fewer than 2 tier-qualified ship units), so scope.das_unit_id does not apply. Omit scope to query the whole repo.'
     );
   }
   const unit = units.find(u => u.das_unit_id === scope.das_unit_id);
   if (!unit) {
     const available = sub_cas_nodes.units.map(u => `${u.id} (${u.name})`).join(', ') || 'none';
-    throw new Error(`Unknown scope.das_unit_id '${scope.das_unit_id}'. Available DAS units for this analysis: ${available}.`);
+    throw new Error(`Unknown scope.das_unit_id '${scope.das_unit_id}'. Available sub-CAS-node units for this analysis: ${available}.`);
   }
   return { ...cas, ...unit.slice } as CASOutput;
 }
