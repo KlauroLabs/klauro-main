@@ -58,17 +58,40 @@ if (existsSync(seaManifestPath)) {
   }
 }
 
+// min_node is read from the CUSTOMER package.json's own `engines.node`
+// (.customer-package/package.json, written by build-bundle.mjs) rather than
+// hardcoded here a second time — that file is what actually ships, so it is
+// the one enforced place this claim lives. Deliberately NOT this repo's dev
+// apps/mcp-server/package.json or packages/analyzer-core/package.json:
+// those declare `engines: {"node": ">=22.0.0 <23.0.0"}` because THEY build a
+// native tree-sitter addon (see docs/audits/2026-08-10-tsgo-node26-audit.md),
+// but the customer tarball has `dependencies: {}` and no native addon at
+// all, so its Node floor is unrelated and far wider.
+const customerPackageJsonPath = path.join(packageRoot, '.customer-package', 'package.json');
+if (!existsSync(customerPackageJsonPath)) {
+  throw new Error(`write-release-manifest.mjs: ${customerPackageJsonPath} is missing — run "npm run build" first so the customer package.json (with its engines.node) exists to read from.`);
+}
+const customerPackageJson = JSON.parse(readFileSync(customerPackageJsonPath, 'utf8'));
+const customerEngineRange = customerPackageJson.engines && customerPackageJson.engines.node;
+const minNodeMatch = /(\d+)/.exec(String(customerEngineRange || ''));
+if (!minNodeMatch) {
+  throw new Error(`write-release-manifest.mjs: could not parse a Node minimum out of customer package.json engines.node (${JSON.stringify(customerEngineRange)}).`);
+}
+const minNode = Number(minNodeMatch[1]);
+
 const manifest = {
   version,
   git_sha: headSha(),
   tarball: `${baseUrl}/dist/klauro-latest.tgz`,
   tarball_path: '/dist/klauro-latest.tgz',
-  // min_node/max_node/supported_node_range are kept ONLY for backward
-  // compatibility with CLIs older than this release that still read them —
-  // no code on the current client reads max_node as a refusal boundary
-  // anymore (see self-update.ts's §NODE-GATE-PHANTOM). min_node reflects
-  // package.json's declared `engines`.
-  min_node: 18,
+  // max_node is deliberately NOT set: the customer tarball has no native
+  // addon to be bounded by, and is verified to run unmodified on Node 24 and
+  // Node 26 (see docs/audits/2026-08-10-tsgo-node26-audit.md). The server's
+  // resolveHostedReleaseNodeRange() (remote-analyzer-service.ts) advertises
+  // "no ceiling" whenever this field is absent — do not add one here without
+  // a measurement backing it; a previous fabricated default of 24 actively
+  // contradicted that audit.
+  min_node: minNode,
   published_at: new Date().toISOString(),
   binaries,
   ...flatBinaryFields,
