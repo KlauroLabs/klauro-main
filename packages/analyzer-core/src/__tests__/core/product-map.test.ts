@@ -219,6 +219,25 @@ describe('buildProductMap', () => {
     ]);
   });
 
+  it('never carries identity.description_source when neither inferred_description nor system.description has text (same invariant as capabilities)', () => {
+    // A stray `enhanced_system_purpose.description_source` (e.g. 'ai') with no
+    // backing `inferred_description` text, and no `cas.system.description`
+    // fallback either, must not ship identity.description_source — same
+    // provenance-must-agree-with-text invariant as buildCapabilities.
+    const cas = {
+      ...fullCas,
+      system: { ...fullCas.system, description: undefined },
+      enhanced_system_purpose: {
+        ...fullCas.enhanced_system_purpose,
+        inferred_description: '',
+        description_source: 'ai',
+      },
+    } as unknown as CASOutput;
+    const map = buildProductMap(cas);
+    expect(map.identity.description).toBe('');
+    expect(map.identity.description_source).toBeUndefined();
+  });
+
   it('orders capabilities by criticality and carries description provenance', () => {
     expect(map.capabilities.map(capability => capability.name)).toEqual(['Billing', 'Reporting']);
     expect(map.capabilities[0].description_source).toBe('ai');

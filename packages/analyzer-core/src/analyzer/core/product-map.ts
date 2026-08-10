@@ -687,6 +687,7 @@ function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | un
 
 export function buildProductMap(cas: CASOutput): CASProductMap {
   const purpose = cas.enhanced_system_purpose;
+  const identityDescription = purpose?.inferred_description || cas.system?.description || '';
   const unanalyzedLanguages = [...(cas.system?.technologies?.unanalyzed_languages || [])].sort(
     (a, b) => b.share_of_source - a.share_of_source || a.name.localeCompare(b.name)
   );
@@ -709,8 +710,17 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
       // 'deterministic' on empty output — never claim a deterministic authorship
       // for a comprehension field.
       domain_source: purpose?.domain_source,
-      description: purpose?.inferred_description || cas.system?.description || '',
-      description_source: purpose?.description_source || (cas.system?.description ? 'manual' : undefined),
+      description: identityDescription,
+      // Same invariant as resolveCapabilityDescriptionProvenance above, applied
+      // to the SYSTEM identity: a provenance can only ever describe text that
+      // actually exists. `purpose?.description_source` is trusted (its own
+      // write sites already keep it in lockstep with `inferred_description`),
+      // but the `|| 'manual'` default below must key off the SAME text this
+      // view actually ships (`identityDescription`), not `cas.system?.description`
+      // alone — otherwise `purpose.inferred_description` empty + `cas.system
+      // .description` empty + a stray `purpose.description_source` still
+      // truthy would ship provenance for the empty string this view assembles.
+      description_source: identityDescription ? (purpose?.description_source || 'manual') : undefined,
       unanalyzed_languages: unanalyzedLanguages,
       ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
     },
