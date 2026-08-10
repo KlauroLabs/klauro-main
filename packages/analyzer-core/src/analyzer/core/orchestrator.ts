@@ -11833,6 +11833,7 @@ export class AnalyzerOrchestrator {
     dataEntities: CASDataEntity[],
     entryPoints: CASEntryPoint[] = [],
     nodes: CASNode[] = [],
+    purpose?: EnhancedSystemPurpose,
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
     // Defense-in-depth: a behavior-surface item must never enter the ranked
@@ -11876,7 +11877,112 @@ export class AnalyzerOrchestrator {
 
     // (2) DEDUP. Re-run the name + entity-set dedup (with the strengthened
     // verb-variant pass) on the AI output — it never ran on the catalog.
-    return this.dedupeSystemCapabilitiesByName(gated);
+    const deduped = this.dedupeSystemCapabilitiesByName(gated);
+
+    // (3) DESCRIPTION-VS-CAPABILITY CROSS-CHECK. See
+    // `description_capability_gaps` on EnhancedSystemPurpose for the full
+    // rationale. Restores, from already-anchored candidates, any capability
+    // the AI catalog step silently dropped for an entity the AI's OWN
+    // description names as a core subject.
+    return this.reinjectDescriptionAnchoredCapabilities(deduped, candidates, dataEntities, purpose);
+  }
+
+  /**
+   * DESCRIPTION-VS-CAPABILITY CROSS-CHECK (see `description_capability_gaps`
+   * on EnhancedSystemPurpose). `purpose.core_concepts` is structural,
+   * evidence-derived vocabulary (domain concepts + database entities +
+   * project text signal — see `buildEnhancedSystemPurpose` /
+   * `rankCoreConcepts`), never a curated business-noun table, and it is the
+   * SAME evidence the AI description prose was grounded from. This method
+   * never invents a capability: it only restores a candidate that already
+   * passed `CapabilityDetector`'s structural-anchoring gate (present in
+   * `candidates`) for an entity the description itself names but which the
+   * post-catalog list (`cataloged`) no longer covers. When no such candidate
+   * exists, nothing is built — the gap is recorded, not fabricated.
+   */
+  private reinjectDescriptionAnchoredCapabilities(
+    cataloged: SystemCapability[],
+    candidates: SystemCapability[],
+    dataEntities: CASDataEntity[],
+    purpose?: EnhancedSystemPurpose,
+  ): SystemCapability[] {
+    const coreConcepts = purpose?.core_concepts || [];
+    if (coreConcepts.length === 0 || dataEntities.length === 0) return cataloged;
+
+    const wordsOf = (value: string): string[] => value
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]+/g, ' ')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    const singularize = (word: string): string => word.length > 3 && word.endsWith('s') && !word.endsWith('ss')
+      ? word.slice(0, -1)
+      : word;
+    const conceptTokens = new Set(coreConcepts.flatMap(wordsOf).map(singularize).filter(token => token.length >= 3));
+    if (conceptTokens.size === 0) return cataloged;
+
+    const coveredEntityIds = new Set(cataloged.flatMap(capability => capability.related_entities || []));
+    const hasLifecycleEvidence = (entity: CASDataEntity): boolean => {
+      const lifecycle = entity.lifecycle;
+      if (!lifecycle) return false;
+      return (lifecycle.created_by?.length || 0) > 0
+        || (lifecycle.read_by?.length || 0) > 0
+        || (lifecycle.updated_by?.length || 0) > 0
+        || (lifecycle.deleted_by?.length || 0) > 0;
+    };
+    const isProductEntity = (entity: CASDataEntity): boolean =>
+      (entity.kind === 'persisted-entity' || entity.kind === 'api-response') && hasLifecycleEvidence(entity);
+    const nameMatchesDescription = (entity: CASDataEntity): boolean => {
+      const entityTokens = wordsOf(entity.name).map(singularize).filter(token => token.length >= 3);
+      return entityTokens.some(token => conceptTokens.has(token));
+    };
+
+    const describedUncoveredEntities = dataEntities.filter(entity =>
+      !coveredEntityIds.has(entity.id) && isProductEntity(entity) && nameMatchesDescription(entity));
+    if (describedUncoveredEntities.length === 0) return cataloged;
+
+    const result = [...cataloged];
+    const catalogedIds = new Set(result.map(capability => capability.id));
+    const gaps: NonNullable<EnhancedSystemPurpose['description_capability_gaps']> = [];
+
+    for (const entity of describedUncoveredEntities) {
+      // Prefer the richest already-anchored candidate (most operations) so a
+      // thin partial match never wins over a fuller one for the same entity.
+      const matchingCandidates = candidates
+        .filter(candidate =>
+          candidate.evidence_kind !== 'behavior-surface' &&
+          (candidate.related_entities || []).includes(entity.id))
+        .sort((left, right) => (right.operations?.length || 0) - (left.operations?.length || 0));
+      const candidate = matchingCandidates[0];
+      if (candidate && !catalogedIds.has(candidate.id)) {
+        result.push({
+          ...candidate,
+          criticality_factors: Array.from(new Set([
+            ...(candidate.criticality_factors || []),
+            'description-anchored-reinjection',
+          ])),
+        });
+        catalogedIds.add(candidate.id);
+        gaps.push({
+          entity_id: entity.id,
+          entity_name: entity.name,
+          disposition: 'reinjected-from-candidate',
+          capability_id: candidate.id,
+        });
+      } else if (!candidate) {
+        gaps.push({
+          entity_id: entity.id,
+          entity_name: entity.name,
+          disposition: 'no-structural-candidate',
+        });
+      }
+    }
+
+    if (purpose && gaps.length > 0) {
+      purpose.description_capability_gaps = [...(purpose.description_capability_gaps || []), ...gaps];
+    }
+
+    return result;
   }
 
   private normalizePolyglotCapabilityName(
@@ -12679,7 +12785,7 @@ export class AnalyzerOrchestrator {
         ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
       });
       const cycleReconciled = extracted.length > 0
-        ? this.reconcileCatalogedCapabilities(extracted, args.candidateSnapshot, args.dataEntities, args.entryPoints, args.nodes)
+        ? this.reconcileCatalogedCapabilities(extracted, args.candidateSnapshot, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose)
         : [];
       if (cycleReconciled.length > reconciled.length) reconciled = cycleReconciled;
       qualityFailure = this.catalogQualityFailure(reconciled, distinctFamilyCount);
