@@ -639,7 +639,13 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        const entryPointId = `entry_graphql_mutation_${this.sanitizeId(mutation.name)}`;
+        // Namespaced by the app-scoped mutationId, not the bare field name: two
+        // different Django apps (or two ObjectType containers in one app) can
+        // declare a same-named field (e.g. both expose "create"), and a
+        // name-only id collided across them, silently dropping one entry
+        // point in every downstream id-keyed merge (see orchestrator.ts
+        // previousEntryPointsById/entryPointById Maps).
+        const entryPointId = `entry_${mutationId}`;
         const resolverMethodName = mutation.resolverMethod || 'mutate';
         entryPoints.push(this.createEntryPoint(
           entryPointId,
@@ -710,7 +716,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        const entryPointId = `entry_graphql_query_${this.sanitizeId(query.name)}`;
+        // Namespaced by the app-scoped queryId — see the matching comment on
+        // the mutation entry point id above for why a bare-name id is wrong.
+        const entryPointId = `entry_${queryId}`;
         const resolverMethodName = 'resolve';
         entryPoints.push(this.createEntryPoint(
           entryPointId,
