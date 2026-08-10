@@ -102,4 +102,90 @@ describe('awaitAiBoundedThenUncapped (task #107 capability-catalog latency bound
     // waiting out perAttemptTimeoutMs.
     expect(Date.now() - startedAt).toBeLessThan(200);
   });
+
+  // TASK #107 HARD CUTOFF: the three tests above prove the pre-existing
+  // completeness invariant is untouched. These prove the NEW hard-deadline
+  // gate added on top of it, in both directions per the task's own
+  // requirement: it must fire (and degrade honestly, not silently) under a
+  // slow/degraded path, and it must NOT fire — behavior must be byte-for-byte
+  // the old completeness-guaranteeing behavior — on a healthy run that never
+  // approaches the deadline.
+
+  it('does NOT fire on a healthy run: with a hardDeadlineAt far in the future, behavior is unchanged (completes normally)', async () => {
+    let calls = 0;
+    const attemptFactory = async (attemptIndex: number) => {
+      calls += 1;
+      return delay(10, `OK_${attemptIndex}`);
+    };
+    const result = await orch.awaitAiBoundedThenUncapped(attemptFactory, 'test-op-healthy', {
+      perAttemptTimeoutMs: 5000,
+      maxBoundedAttempts: 3,
+      slowWarnMs: 10000,
+      hardDeadlineAt: Date.now() + 60_000,
+    });
+    expect(result).toBe('OK_1');
+    expect(calls).toBe(1);
+  });
+
+  it('does NOT fire on a healthy run that legitimately needs the guaranteed-completion final attempt, as long as it starts before the deadline', async () => {
+    let boundedCalls = 0;
+    const attemptFactory = async (attemptIndex: number) => {
+      if (attemptIndex <= 3) {
+        boundedCalls += 1;
+        return delay(200, `SHOULD_NEVER_WIN_${attemptIndex}`);
+      }
+      return delay(20, 'REAL_FINAL_ANSWER_WITHIN_DEADLINE');
+    };
+    const result = await orch.awaitAiBoundedThenUncapped(attemptFactory, 'test-op-healthy-final', {
+      perAttemptTimeoutMs: 40,
+      maxBoundedAttempts: 3,
+      slowWarnMs: 10000,
+      // Bounded phase costs ~3*40ms = 120ms; deadline is comfortably after
+      // that, so the completeness-guaranteeing final attempt must still run.
+      hardDeadlineAt: Date.now() + 5000,
+    });
+    expect(boundedCalls).toBe(3);
+    expect(result).toBe('REAL_FINAL_ANSWER_WITHIN_DEADLINE');
+  });
+
+  it('FIRES when the hard deadline has already passed before the first attempt: abandons immediately, never starts an attempt, degrades honestly (distinguishable error, not a silent empty/truncated result)', async () => {
+    let attemptsStarted = 0;
+    const attemptFactory = async () => {
+      attemptsStarted += 1;
+      return delay(10, 'SHOULD_NEVER_RUN');
+    };
+    await expect(orch.awaitAiBoundedThenUncapped(attemptFactory, 'test-op-expired', {
+      perAttemptTimeoutMs: 1000,
+      maxBoundedAttempts: 3,
+      slowWarnMs: 10000,
+      hardDeadlineAt: Date.now() - 1,
+    })).rejects.toThrow('ai-catalog-hard-deadline-exceeded');
+    expect(attemptsStarted).toBe(0);
+  });
+
+  it('FIRES mid-flight: once the deadline passes during the bounded phase, no further attempts start — including the would-be-guaranteed final attempt — and the abandonment is reported via a distinguishable error, not silent completion', async () => {
+    let calls = 0;
+    let finalAttemptStarted = false;
+    const startedAt = Date.now();
+    // Deadline lands after attempt 1's bound elapses but long before 3 bounded
+    // attempts (or the guaranteed final one) could otherwise complete.
+    const hardDeadlineAt = startedAt + 60;
+    const attemptFactory = async (attemptIndex: number) => {
+      calls += 1;
+      if (attemptIndex === 4) finalAttemptStarted = true;
+      // Every attempt stalls well past its bound (degraded-provider shape).
+      return delay(500, `SHOULD_NEVER_WIN_${attemptIndex}`);
+    };
+    await expect(orch.awaitAiBoundedThenUncapped(attemptFactory, 'test-op-mid-deadline', {
+      perAttemptTimeoutMs: 40,
+      maxBoundedAttempts: 3,
+      slowWarnMs: 10000,
+      hardDeadlineAt,
+    })).rejects.toThrow('ai-catalog-hard-deadline-exceeded');
+    expect(finalAttemptStarted).toBe(false);
+    // Abandoned close to the deadline, not after riding out all 3*40ms bounded
+    // attempts plus a 500ms "final" attempt.
+    expect(Date.now() - startedAt).toBeLessThan(400);
+    expect(calls).toBeLessThan(3);
+  });
 });
