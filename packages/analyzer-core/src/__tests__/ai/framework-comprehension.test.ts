@@ -47,7 +47,7 @@ describe('selectProductFrameworkNames — comprehension framework gate', () => {
       // scheduled library — library analyzer → dropped even though scheduled_job is a surface.
       { id: 'i', type: 'scheduled_job', metadata: { framework: 'nestjs-schedule' }, source: { file: 'src/jobs/scan.service.ts' }, analyzers: ['cron'] },
     ];
-    const result = selectProductFrameworkNames(nodes, analyzerTypeMap(contributions), productPathPredicate);
+    const result = selectProductFrameworkNames(nodes, [], analyzerTypeMap(contributions), productPathPredicate);
     expect(result).toEqual(['node-http', 'react']);
   });
 
@@ -62,7 +62,7 @@ describe('selectProductFrameworkNames — comprehension framework gate', () => {
       { analyzer_id: 'django', analyzer_type: 'framework' },
       { analyzer_id: 'flask', analyzer_type: 'framework' },
     ];
-    const result = selectProductFrameworkNames(nodes, analyzerTypeMap(contribs), productPathPredicate);
+    const result = selectProductFrameworkNames(nodes, [], analyzerTypeMap(contribs), productPathPredicate);
     expect(result).toEqual(['fastapi']);
   });
 
@@ -70,7 +70,7 @@ describe('selectProductFrameworkNames — comprehension framework gate', () => {
     const nodes = [
       { id: 'x', type: 'middleware', metadata: { framework: 'fastapi' }, source: { file: 'src/mw.py' }, analyzers: ['fastapi'] },
     ];
-    expect(selectProductFrameworkNames(nodes, analyzerTypeMap([{ analyzer_id: 'fastapi', analyzer_type: 'framework' }]), productPathPredicate)).toEqual([]);
+    expect(selectProductFrameworkNames(nodes, [], analyzerTypeMap([{ analyzer_id: 'fastapi', analyzer_type: 'framework' }]), productPathPredicate)).toEqual([]);
   });
 
   it('surface set covers common web/UI surfaces and excludes shims', () => {

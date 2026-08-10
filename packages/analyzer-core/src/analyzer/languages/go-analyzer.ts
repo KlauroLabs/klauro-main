@@ -1783,6 +1783,25 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
   }
 
+  /**
+   * Detects gin/echo/gorilla/fiber usage from real handler-signature evidence
+   * (a parameter typed `gin.Context`, `echo.Context`, `mux.Vars`, `fiber.Ctx`,
+   * etc — not a name/keyword match on the function itself). Two prior defects
+   * meant this evidence never reached `system.technologies.frameworks`, so a
+   * Go app that genuinely uses gin/echo/gorilla/fiber reported `frameworks:
+   * []` — indistinguishable from a hand-rolled net/http app:
+   *   1. The gate below read `node.metadata?.attributes?.parameters`, but
+   *      processGoFunction (below) never writes parameters there — it calls
+   *      `.withSignature({ parameters, ... })`, which lands at
+   *      `node.signature.parameters`. The gate's condition was therefore
+   *      never true for any real function node, framework or not.
+   *   2. Even with (1) fixed, `metadata.framework` was stamped only on the
+   *      synthetic `${framework}_handler` entry point this method creates,
+   *      never on the underlying CASNode (`node`) itself — the entry point
+   *      alone is invisible to framework-comprehension.ts's
+   *      selectProductFrameworkNames, which reads `node.metadata?.framework`
+   *      off CAS NODES only, never entry points.
+   */
   private detectFrameworkPatterns(nodes: CASNode[], _edges: CASEdge[], entryPoints: any[]): void {
     const frameworkPatterns = {
       gin: ['gin.Engine', 'gin.Context', 'gin.HandlerFunc'],
@@ -1792,13 +1811,14 @@ export class GoAnalyzer extends BaseAnalyzer {
     };
 
     for (const node of nodes) {
-      if (!node || typeof node !== 'object') return;
+      if (!node || typeof node !== 'object') continue;
 
-      if (node.type === 'function' && node.metadata?.attributes?.parameters) {
-        const parameters = node.metadata.attributes.parameters as GoParameter[];
+      if (node.type === 'function' && node.signature?.parameters?.length) {
+        const parameters = node.signature.parameters;
 
         for (const [framework, patterns] of Object.entries(frameworkPatterns)) {
-          if (patterns.some(pattern => parameters.some(p => p.type.includes(pattern)))) {
+          if (patterns.some(pattern => parameters.some(p => p.type?.includes(pattern)))) {
+            node.metadata = { ...node.metadata, framework };
             entryPoints.push({
               id: `entry_${framework}_${node.id}`,
               name: `${framework.charAt(0).toUpperCase() + framework.slice(1)} handler: ${node.name}`,
