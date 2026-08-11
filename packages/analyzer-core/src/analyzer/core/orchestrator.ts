@@ -14189,12 +14189,33 @@ export class AnalyzerOrchestrator {
       projectTextConcepts: projectTextSignal.concepts,
       deployableCount,
       artifactType,
+      // "Read-only" must be judged from the COMPLETE entry surface, not from
+      // whichever capabilities survived cataloging.
+      //
+      // Measured live 2026-08-11: a repo whose routers declare POST and DELETE
+      // endpoints was judged read-only because its catalog had collapsed to two
+      // capabilities and neither carried a mutating operation. The gate then
+      // rejected the AI's (correct) mention of managing and configuring agents as
+      // a `read-only-product-mutation-claim`, and the customer's payload shipped
+      // identity.description = "" — a blank on the most important field, caused
+      // by a lossy Tier-3 projection standing in for a Tier-1 fact.
+      //
+      // Entry points are the complete, deterministic record of how this system can
+      // be invoked; capabilities are a summary of them that may drop many. A repo
+      // with a DELETE route is not read-only no matter how the catalog turned out,
+      // so the mutation test now reads entry points and exit points directly and
+      // treats the capability operations as one more corroborating source.
       readOnlyProduct: observedReadOnly || (() => {
+        const MUTATING_METHOD = /^(?:POST|PUT|PATCH|DELETE)$/i;
+        const READ_METHOD = /^(?:GET|HEAD|OPTIONS)$/i;
         const operations = systemCapabilities.flatMap(capability => capability.operations || []);
+        const entryMethod = (entry: CASEntryPoint): string => String(entry.trigger?.method || '');
         const hasRead = operations.some(operation => /^(?:view|read|list|get|show|access|analyze|review)$/i.test(operation.action || '') ||
-          /^(?:GET|HEAD|OPTIONS)$/i.test(operation.trigger?.method || ''));
+          READ_METHOD.test(operation.trigger?.method || '')) ||
+          entryPoints.some(entry => READ_METHOD.test(entryMethod(entry)));
         const hasMutation = operations.some(operation => /^(?:create|update|delete|write|modify|submit|configure|manage|mutate)$/i.test(operation.action || '') ||
-          /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')) ||
+          MUTATING_METHOD.test(operation.trigger?.method || '')) ||
+          entryPoints.some(entry => MUTATING_METHOD.test(entryMethod(entry))) ||
           dataEntities.some(entity => entity.lifecycle.created_by.length > 0 || entity.lifecycle.updated_by.length > 0 || entity.lifecycle.deleted_by.length > 0);
         return hasRead && !hasMutation;
       })(),
