@@ -3059,7 +3059,33 @@ export async function runAnalysis(projectPath: string, options: RunAnalysisOptio
   if (analysisRunsInProcess()) {
     return runAnalysisInProcess(projectPath, options);
   }
-  const run = workerJobChain.then(() => withOuterWorkerWatchdog(projectPath, () => dispatchWorkerJob(projectPath, options)));
+  // STAGE TIMING at the pipeline boundary. The orchestrator logs its own
+  // breakdown, but everything around it was invisible: measured 2026-08-11 on a
+  // 5,284-file repo, the orchestrator reported 172.6s (inside the 180s budget)
+  // while the customer waited 336s — so ~163s lived out here and no log
+  // attributed a millisecond of it. Two candidates this makes visible:
+  //  - QUEUE: workerJobChain is SERIAL, so a job can sit behind another one
+  //    entirely silently (head-of-line blocking has been a real defect here).
+  //  - WORKER: fork + startup + the run itself + the worker's own save.
+  // Latency work was aimed at the orchestrator three times today because that
+  // was the only part anyone could see.
+  const queuedAt = Date.now();
+  const run = workerJobChain.then(() => {
+    const queueWaitMs = Date.now() - queuedAt;
+    const dispatchedAt = Date.now();
+    return withOuterWorkerWatchdog(projectPath, () => dispatchWorkerJob(projectPath, options))
+      .then(summary => {
+        console.error(
+          `[Klauro] analysis pipeline: queue_wait=${queueWaitMs}ms worker=${Date.now() - dispatchedAt}ms total=${Date.now() - queuedAt}ms`,
+        );
+        return summary;
+      }, error => {
+        console.error(
+          `[Klauro] analysis pipeline FAILED: queue_wait=${queueWaitMs}ms worker=${Date.now() - dispatchedAt}ms total=${Date.now() - queuedAt}ms`,
+        );
+        throw error;
+      });
+  });
   workerJobChain = run.catch(() => undefined);
   return run;
 }
