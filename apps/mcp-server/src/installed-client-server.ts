@@ -57,6 +57,67 @@ function json(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
 }
 
+/** Files/exclusions listed verbatim before the rollup takes over. Enough to
+ *  eyeball that the right KIND of file was picked; the counts carry the rest. */
+const MANIFEST_SAMPLE_LIMIT = 25;
+/** Directory rows kept, largest first — a long tail of 1-file directories tells
+ *  a customer nothing the totals do not. */
+const MANIFEST_DIRECTORY_LIMIT = 25;
+
+/**
+ * Bounds `get_upload_manifest` and, more usefully, answers the question a
+ * customer actually asks of it.
+ *
+ * Measured 2026-08-11 on a real ML repo: the raw manifest serialised to
+ * 4,234,202 characters / 21,737 file paths, which no agent can consume — on the
+ * one tool agents are instructed to call before uploading. Worse, the answer was
+ * in there and unfindable: 21,381 of those paths sat under an installed
+ * `site-packages` tree. The rollup surfaces that in a single row.
+ *
+ * Counts and byte totals are exact; only the per-file enumeration is capped, and
+ * the response says how many rows it dropped so nothing looks complete when it
+ * is not.
+ */
+function summarizeUploadManifest(manifest: Record<string, any>): Record<string, unknown> {
+  const files: Array<{ path?: string; bytes?: number }> = Array.isArray(manifest.files) ? manifest.files : [];
+  const excluded: Array<{ path?: string; reason?: string }> = Array.isArray(manifest.excluded) ? manifest.excluded : [];
+
+  const byDirectory = new Map<string, { files: number; bytes: number }>();
+  for (const file of files) {
+    // Group by the top TWO segments: one segment buries everything under `src`,
+    // while the full path is what made this unreadable in the first place.
+    const segments = String(file.path || '').split('/');
+    const key = segments.length > 1 ? segments.slice(0, 2).join('/') : (segments[0] || '.');
+    const row = byDirectory.get(key) || { files: 0, bytes: 0 };
+    row.files += 1;
+    row.bytes += Number(file.bytes) || 0;
+    byDirectory.set(key, row);
+  }
+  const directories = [...byDirectory.entries()]
+    .map(([directory, row]) => ({ directory, files: row.files, bytes: row.bytes }))
+    .sort((a, b) => b.files - a.files || a.directory.localeCompare(b.directory));
+
+  const exclusionReasons = new Map<string, number>();
+  for (const entry of excluded) {
+    const reason = String(entry.reason || 'unknown');
+    exclusionReasons.set(reason, (exclusionReasons.get(reason) || 0) + 1);
+  }
+
+  const { files: _files, excluded: _excluded, ...rest } = manifest;
+  return {
+    ...rest,
+    file_count: files.length,
+    total_bytes: files.reduce((sum, file) => sum + (Number(file.bytes) || 0), 0),
+    excluded_count: excluded.length,
+    excluded_by_reason: Object.fromEntries([...exclusionReasons.entries()].sort((a, b) => b[1] - a[1])),
+    largest_directories: directories.slice(0, MANIFEST_DIRECTORY_LIMIT),
+    directories_omitted: Math.max(0, directories.length - MANIFEST_DIRECTORY_LIMIT),
+    files_sample: files.slice(0, MANIFEST_SAMPLE_LIMIT).map(file => file.path),
+    files_omitted_from_sample: Math.max(0, files.length - MANIFEST_SAMPLE_LIMIT),
+    note: 'Counts and byte totals are exact. Per-file rows are sampled — use largest_directories to see where the bulk sits, and .klauroignore to exclude what you do not want uploaded.',
+  };
+}
+
 /**
  * Every hosted read tool routes through hostedProjectGet, and every hosted
  * query tool through hostedProjectQuery. That makes these two functions the
@@ -309,9 +370,18 @@ export function createServer(): McpServer {
   }, async ({ path, confirm_scope }: any) => json(await syncWorkingTreeRemotely({ projectPath: path, requireBoundProject: true, confirmScope: Boolean(confirm_scope) })));
 
   register('get_upload_manifest', {
-    description: 'Preview exactly which source files would be uploaded. This reads files but performs no parsing or analysis.',
+    description: 'Preview which source files would be uploaded, as counts plus a per-directory breakdown and a sample. Reads files but performs no parsing or analysis.',
     inputSchema: { path: z.string(), dirty_tree: z.boolean().optional() },
-  }, async ({ path, dirty_tree }: any) => json(await buildUploadManifest(path, dirty_tree ? 'dirty-tree' : 'full')));
+    // Measured 2026-08-11 on a real ML repo: this returned 4,234,202 characters —
+    // 21,737 individual file paths — because it serialised the raw manifest. Every
+    // other tool on this surface is budgeted; this one handed a customer's coding
+    // agent a 4MB payload that blows its context, on the tool agents are told to
+    // call BEFORE uploading. A preview nobody can read is not a preview.
+    //
+    // The per-directory rollup is also what a customer actually needs: on that
+    // same repo it says "21,381 files under a site-packages tree" in one line,
+    // which is the answer to "why is my upload enormous?" that 21,737 paths bury.
+  }, async ({ path, dirty_tree }: any) => json(summarizeUploadManifest(await buildUploadManifest(path, dirty_tree ? 'dirty-tree' : 'full'))));
 
   register('resolve_agent_analysis', {
     description: 'Resolve the bound hosted project and return its analysis readiness and compact hosted summary.',

@@ -440,6 +440,23 @@ export function defaultExcludePatterns(): string[] {
     '**/.venv/**',
     '**/venv/**',
     '**/env/**',
+    // Installed Python dependencies, excluded by STRUCTURE rather than by the
+    // directory name a project happens to use. Measured 2026-08-11 on a real ML
+    // repo: get_upload_manifest selected 21,381 `site-packages` paths because its
+    // virtualenv is not called `venv`/`.venv` — so a customer would have uploaded
+    // ~21k files of third-party Python, inflating the snapshot, the node graph,
+    // every AI batch, and their bill.
+    //
+    // `site-packages` / `dist-packages` are the interpreter's own install
+    // locations: their presence identifies installed dependencies no matter what
+    // the parent directory is called, which is why matching the marker
+    // generalises where matching a name cannot. Same defect class as vendored
+    // third-party CSS contributing 2,708 of one repo's 3,943 nodes.
+    '**/site-packages/**',
+    '**/dist-packages/**',
+    // Extracted wheels/eggs are installed artifacts too, not authored source.
+    '**/*.egg-info/**',
+    '**/*.dist-info/**',
     '**/.tox/**',
     '**/.dart_tool/**',
     '**/.gradle/**',
