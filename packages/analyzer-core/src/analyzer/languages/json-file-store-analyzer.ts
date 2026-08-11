@@ -47,13 +47,80 @@ interface DetectedStore {
   roundTrip: boolean;
 }
 
-/** Writes whose payload we can see: fs.writeFile / writeFileSync / promises.writeFile / fs.outputJson-style. */
-const WRITE_CALL = /\b(?:writeFileSync|writeFile|outputFileSync|outputFile)\s*\(\s*([^,]{1,200}?)\s*,\s*([\s\S]{0,400}?)\)/g;
-/** Reads whose result we can see being parsed. */
-const READ_CALL = /\b(?:readFileSync|readFile)\s*\(\s*([^,)]{1,200}?)\s*[,)]/g;
-/** `writeJson`/`readJson` (fs-extra) serialise implicitly — the JSON is the API. */
-const WRITE_JSON_CALL = /\b(?:writeJsonSync|writeJson|outputJsonSync|outputJson)\s*\(\s*([^,]{1,200}?)\s*,\s*([\s\S]{0,400}?)\)/g;
-const READ_JSON_CALL = /\b(?:readJsonSync|readJson)\s*\(\s*([^,)]{1,200}?)\s*[,)]/g;
+const WRITE_CALLEES = ['writeFileSync', 'writeFile', 'outputFileSync', 'outputFile'];
+const READ_CALLEES = ['readFileSync', 'readFile'];
+/** fs-extra's writeJson/readJson serialise implicitly — the JSON is the API. */
+const WRITE_JSON_CALLEES = ['writeJsonSync', 'writeJson', 'outputJsonSync', 'outputJson'];
+const READ_JSON_CALLEES = ['readJsonSync', 'readJson'];
+
+interface CallSite {
+  args: string[];
+  index: number;
+}
+
+/**
+ * Every call to `callee` with its argument list split on TOP-LEVEL commas.
+ *
+ * A regex cannot do this and the first version of this file tried: the very shape
+ * that matters most, `writeFileSync(path.join(dir, 'state.json'), ...)`, contains a
+ * comma INSIDE its first argument, so a `[^,]+` group captured `path.join(dir`
+ * and the file name was never seen. Balanced scanning is the only correct reader
+ * of an argument list, and it is cheap.
+ */
+function findCalls(content: string, callees: string[]): CallSite[] {
+  const sites: CallSite[] = [];
+  for (const callee of callees) {
+    // Word-boundary + optional whitespace before '(' — matches fs.writeFileSync(,
+    // writeFileSync(, await fsp.writeFile( alike.
+    const pattern = new RegExp(`\\b${callee}\\s*\\(`, 'g');
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+      const open = match.index + match[0].length - 1;
+      let depth = 0;
+      let close = -1;
+      let quote: string | undefined;
+      for (let i = open; i < content.length; i++) {
+        const character = content[i];
+        if (quote) {
+          if (character === '\\') { i++; continue; }
+          if (character === quote) quote = undefined;
+          continue;
+        }
+        if (character === '"' || character === "'" || character === '`') { quote = character; continue; }
+        if (character === '(' || character === '[' || character === '{') depth++;
+        else if (character === ')' || character === ']' || character === '}') {
+          depth--;
+          if (depth === 0) { close = i; break; }
+        }
+      }
+      if (close < 0) continue; // unbalanced source: skip, never guess
+      sites.push({ args: splitTopLevelArgs(content.slice(open + 1, close)), index: match.index });
+    }
+  }
+  return sites.sort((a, b) => a.index - b.index);
+}
+
+/** Split an argument list on commas that are not inside brackets or a string. */
+function splitTopLevelArgs(argumentList: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let quote: string | undefined;
+  let start = 0;
+  for (let i = 0; i <= argumentList.length; i++) {
+    const character = argumentList[i];
+    if (i === argumentList.length) { args.push(argumentList.slice(start)); break; }
+    if (quote) {
+      if (character === '\\') { i++; continue; }
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') { quote = character; continue; }
+    if (character === '(' || character === '[' || character === '{') depth++;
+    else if (character === ')' || character === ']' || character === '}') depth--;
+    else if (character === ',' && depth === 0) { args.push(argumentList.slice(start, i)); start = i + 1; }
+  }
+  return args.map(argument => argument.trim()).filter(argument => argument.length > 0);
+}
 
 /**
  * The JSON filename a path expression ends in, or undefined.
@@ -138,45 +205,69 @@ export function serializedFieldNames(payload: string): string[] {
 export function detectJsonFileStores(content: string): DetectedStore[] {
   const lineOf = (index: number): number => content.slice(0, index).split('\n').length;
 
+  // A path expression is often a variable (`const STATE = path.join(dir,
+  // 'google-state.json')` then `writeFileSync(STATE, ...)`), so resolve
+  // single-assignment constants whose initialiser names a .json file. Without this
+  // the round-trip is invisible in the most common way people write a store.
+  const aliases = new Map<string, string>();
+  // One statement may declare several stores (`const A = 'a.json', B = 'b.json'`),
+  // so the declaration is split on top-level commas before each declarator is read
+  // — taking the statement whole would give every name the first file's identity.
+  const DECLARATION = /\b(?:const|let|var)\s+([^;\n]{1,400})/g;
+  let declaration: RegExpExecArray | null;
+  while ((declaration = DECLARATION.exec(content)) !== null) {
+    for (const declarator of splitTopLevelArgs(declaration[1])) {
+      const assignment = /^([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([\s\S]+)$/.exec(declarator);
+      if (!assignment) continue;
+      const fileName = jsonFileNameFrom(assignment[2]);
+      if (fileName) aliases.set(assignment[1], fileName);
+    }
+  }
+  const resolveFileName = (expression: string): string | undefined => {
+    const direct = jsonFileNameFrom(expression);
+    if (direct) return direct;
+    const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/.exec(expression.trim());
+    return identifier ? aliases.get(identifier[0]) : undefined;
+  };
+
   const written = new Map<string, { line: number; fields: string[] }>();
-  const collectWrites = (pattern: RegExp, payloadIsJson: boolean): void => {
-    pattern.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(content)) !== null) {
-      const fileName = jsonFileNameFrom(match[1]);
+  const collectWrites = (callees: string[], payloadIsJson: boolean): void => {
+    for (const site of findCalls(content, callees)) {
+      if (site.args.length < 2) continue;
+      const fileName = resolveFileName(site.args[0]);
       if (!fileName) continue;
-      const payload = match[2] || '';
+      const payload = site.args[1];
       // A plain writeFile of a non-JSON payload is not a JSON store.
       if (!payloadIsJson && !/JSON\.stringify/.test(payload)) continue;
       const fields = serializedFieldNames(payload);
       const existing = written.get(fileName);
       if (!existing || (existing.fields.length === 0 && fields.length > 0)) {
-        written.set(fileName, { line: lineOf(match.index), fields });
+        written.set(fileName, { line: lineOf(site.index), fields });
       }
     }
   };
-  collectWrites(WRITE_CALL, false);
-  collectWrites(WRITE_JSON_CALL, true);
+  collectWrites(WRITE_CALLEES, false);
+  collectWrites(WRITE_JSON_CALLEES, true);
 
   const read = new Set<string>();
-  const collectReads = (pattern: RegExp, impliesParse: boolean): void => {
-    pattern.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(content)) !== null) {
-      const fileName = jsonFileNameFrom(match[1]);
+  const collectReads = (callees: string[], impliesParse: boolean): void => {
+    for (const site of findCalls(content, callees)) {
+      if (site.args.length === 0) continue;
+      const fileName = resolveFileName(site.args[0]);
       if (!fileName) continue;
       if (!impliesParse) {
-        // Require the read to be parsed as JSON somewhere — the call itself is
-        // shape-blind, so a `readFileSync` of a template is not a store read.
-        // Looking at the surrounding window keeps this local and cheap.
-        const window = content.slice(Math.max(0, match.index - 200), match.index + 400);
+        // The call itself is shape-blind, so require the content to be parsed as
+        // JSON: a readFileSync of a template is not a store read. JSON.parse may
+        // wrap the call, follow it, or sit in the same accessor, so a local window
+        // around the call is the right scope — repo-wide would be meaningless.
+        const window = content.slice(Math.max(0, site.index - 240), site.index + 400);
         if (!/JSON\.parse/.test(window)) continue;
       }
       read.add(fileName);
     }
   };
-  collectReads(READ_CALL, false);
-  collectReads(READ_JSON_CALL, true);
+  collectReads(READ_CALLEES, false);
+  collectReads(READ_JSON_CALLEES, true);
 
   const stores: DetectedStore[] = [];
   for (const [fileName, write] of written) {
