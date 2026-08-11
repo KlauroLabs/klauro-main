@@ -1061,7 +1061,8 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
   //    source while ENTRYPOINT/CMD is something the author wrote deliberately.
   //
   // REFINED 2026-08-11, measured: `CMD ["node", "server.js"]` in a directory
-  // named `zerac-ui` shipped the alias `server`. The rank above is right about
+  // whose name WAS the product's own name shipped the alias `server`, losing the
+  // repo's real identity. The rank above is right about
   // WHY the declaration usually wins — the author wrote it — but wrong to treat
   // every declared token as equally identifying. `server`, `main`, `app`,
   // `index` name the CONVENTION for where a program starts, not which program
