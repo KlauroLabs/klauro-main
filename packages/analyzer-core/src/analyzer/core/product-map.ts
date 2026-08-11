@@ -203,6 +203,39 @@ function journeyTouchedEntityNames(journey: CASUserJourney): Set<string> {
  * boolean the cross-surface invariant (capabilities/journeys/health.tests
  * must never contradict each other) depends on.
  */
+/**
+ * Test evidence for a capability, asked directly of its own operations — no
+ * journey required.
+ *
+ * Both journey-based legs (`journeyHasFileTestEvidence` and
+ * `capabilityHasTestEvidence`) are `journeys.some(...)` at heart, so a
+ * capability with no linked journey could never report tests, whatever its code
+ * looked like. Measured live 2026-08-10 on a 92,582-node repo: 7 of 8
+ * capabilities said `tests_present: false` while the same analysis reported
+ * 12,632 passing tests, and 6 of those 8 had zero linked journeys. "No journey"
+ * was rendering as "no tests" — a false negative on the field a customer uses
+ * to decide whether a capability is safe to change, which is worse than an
+ * unknown because it looks like a finding.
+ *
+ * Uses the same `testedStems` convention the journey leg already trusts: the
+ * `*Test.java` <-> `*.java` (and `foo.test.ts` <-> `foo.ts`) stem pairing every
+ * xUnit-family framework relies on. Evidence-gated, not a guess: it fires only
+ * when a discovered test suite's stem matches the stem of the file implementing
+ * one of this capability's own entry points.
+ */
+function capabilityHasOperationFileTestEvidence(
+  capability: SystemCapability,
+  testedStems: Set<string>,
+  entryPointFileById: Map<string, string>
+): boolean {
+  if (testedStems.size === 0) return false;
+  for (const operation of capability.operations || []) {
+    const file = operation.entry_point_id ? entryPointFileById.get(operation.entry_point_id) : undefined;
+    if (file && testedStems.has(fileStem(file))) return true;
+  }
+  return false;
+}
+
 function capabilityHasTestEvidence(
   capability: SystemCapability,
   journeys: CASUserJourney[],
@@ -286,6 +319,22 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   const capabilityOrder = new Map((cas.system_capabilities || []).map((capability, index) => [capability.name, index]));
   const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
   const testedStems = testedFileStems(cas.test_suites);
+  // Entry-point → its own code file, so a capability's test evidence can be
+  // checked WITHOUT going through a journey. Measured live on a 92,582-node
+  // repo (2026-08-10): 7 of 8 capabilities reported `tests_present: false`
+  // beside `health.tests: 12,632 passing`, because every path to `true` ran
+  // through `journeys.some(...)` — and 6 of those 8 capabilities had no linked
+  // journey at all. So "no journey" was silently rendering as "no tests",
+  // which is a false negative about the one field a customer uses to judge
+  // whether a capability is safe to change.
+  const entryPointFileById = new Map<string, string>();
+  for (const entryPoint of cas.entry_points || []) {
+    const file = entryPoint.handler?.node_id
+      ? nodesById.get(entryPoint.handler.node_id)?.source?.file
+      : undefined;
+    const sourceFile = file || (entryPoint.source_node ? nodesById.get(entryPoint.source_node)?.source?.file : undefined);
+    if (entryPoint.id && sourceFile) entryPointFileById.set(entryPoint.id, sourceFile);
+  }
 
   const capabilities = (cas.system_capabilities || []).map(capability => {
     const entityNames = (capability.related_entities || []).map(reference => entityNameById.get(reference) || reference);
@@ -296,7 +345,17 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
     const capabilityEntities = new Set(entityNames.map(normalizeEntityName));
     const testsPresent = linked.some(journey =>
       (journey.tests_covering || []).length > 0 || journeyHasFileTestEvidence(journey, testedStems, nodesById)
-    ) || capabilityHasTestEvidence(capability, journeys, capabilityEntities, testedStems, nodesById);
+    )
+      || capabilityHasTestEvidence(capability, journeys, capabilityEntities, testedStems, nodesById)
+      // Journey-independent leg. Both legs above require a journey to exist;
+      // this one asks the question directly of the capability's OWN operations:
+      // does a discovered test suite's file stem match the file implementing
+      // this capability's entry point? Same `testedStems` convention the
+      // journey leg already trusts (the *Test.java <-> *.java stem pairing every
+      // xUnit-family framework relies on), applied one level up so a capability
+      // with real code and real neighbouring tests is not reported untested
+      // merely because journey linkage did not reach it.
+      || capabilityHasOperationFileTestEvidence(capability, testedStems, entryPointFileById);
     return {
       name: capability.name,
       description: capability.description,

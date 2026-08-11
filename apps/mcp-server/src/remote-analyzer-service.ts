@@ -3047,12 +3047,32 @@ async function handleAccountApi(
         descriptionDegradationCount: descriptionDegradations.length,
       });
       const comprehensionDegraded = comprehensionFailed || comprehensionPartial;
-      const unenrichedCapabilityNames = comprehensionPartial
+      // Enrichment has TWO independent dimensions — name and description — and
+      // this list used to report only names. Measured live on a 92,582-node repo
+      // (2026-08-10): all 8 names were AI-authored, so this came back EMPTY and
+      // `capability_naming_coverage` read `{total: 8, authored: 8, un_enriched: 0}`
+      // — while one capability's DESCRIPTION was deterministic machinery text
+      // ("sends Sessions, SessionsPatch, GatewaySessionEntry through 12 CLI
+      // commands"). The customer therefore saw `partial: true` sitting next to
+      // "8 of 8 authored, 0 un-enriched" and no named gap: three fields that
+      // contradict each other, which reads as a broken product rather than an
+      // honest shortfall. Name the capability whose enrichment fell short on
+      // EITHER dimension, and say which one.
+      const isEnriched = (source: string | undefined): boolean =>
+        source === 'ai' || source === 'manual' || source === 'reused';
+      const unenrichedCapabilityDetails = comprehensionPartial
         ? (cas.system_capabilities || [])
-            .filter(capability => capability.name_source !== 'ai' && capability.name_source !== 'manual' && capability.name_source !== 'reused')
-            .map(capability => capability.name)
-            .filter((name): name is string => Boolean(name))
+            .map(capability => {
+              const nameShort = !isEnriched(capability.name_source);
+              const descriptionShort = !isEnriched(capability.description_source);
+              if (!nameShort && !descriptionShort) return undefined;
+              const missing = nameShort && descriptionShort ? 'name and description'
+                : nameShort ? 'name' : 'description';
+              return capability.name ? { name: capability.name, missing } : undefined;
+            })
+            .filter((entry): entry is { name: string; missing: string } => Boolean(entry))
         : [];
+      const unenrichedCapabilityNames = unenrichedCapabilityDetails.map(entry => entry.name);
       const status = structuralErrors.length > 0
         ? 'failed'
         : cas.layers_ready && !cas.layers_ready.complete && hasPendingLayer
@@ -3098,19 +3118,32 @@ async function handleAccountApi(
                   // (kept for existing consumers), NOT the top-level
                   // `status` — a comprehensionPartial result reports
                   // `status: 'ready'`, never terminal 'degraded'.
-                  degraded: true,
+                  // `degraded` was hardcoded `true` here, so a PARTIAL result —
+                  // the pass ran, structure is complete, one description fell
+                  // back — published `degraded: true, partial: true` together.
+                  // A customer reads "degraded" as "this analysis is bad", which
+                  // is wrong and is the single most alarming field in the whole
+                  // payload. Terminal `status` already distinguishes the two
+                  // (see below); this detail flag must agree with it, so it now
+                  // means what it says: the comprehension PASS failed.
+                  degraded: comprehensionFailed,
                   partial: comprehensionPartial,
                   ...(naming ? { capability_naming_coverage: naming } : {}),
                   capability_name_degradations: nameDegradations.length,
                   capability_description_degradations: descriptionDegradations.length,
                   // TASK #143 item 2: honest gaps name exactly which
                   // capabilities lack enrichment — never a generic count
-                  // alone, never a silent/placeholder name.
-                  ...(unenrichedCapabilityNames.length > 0 ? { unenriched_capabilities: unenrichedCapabilityNames } : {}),
+                  // alone, never a silent/placeholder name. Now carries WHICH
+                  // dimension fell short per capability, because name and
+                  // description degrade independently and reporting only one
+                  // produced a payload whose own fields disagreed.
+                  ...(unenrichedCapabilityDetails.length > 0
+                    ? { unenriched_capabilities: unenrichedCapabilityDetails }
+                    : {}),
                   detail: comprehensionFailed
                     ? 'The AI comprehension pass failed; capability names and descriptions are un-enriched deterministic facts.'
-                    : unenrichedCapabilityNames.length > 0
-                      ? `${unenrichedCapabilityNames.length} of ${naming?.total ?? '?'} capabilities could not be AI-enriched within budget; those entries carry deterministic evidence text, not authored comprehension. The analysis is otherwise complete and fully queryable.`
+                    : unenrichedCapabilityDetails.length > 0
+                      ? `${unenrichedCapabilityDetails.length} of ${naming?.total ?? '?'} capabilities fell short of full AI enrichment (${unenrichedCapabilityDetails.map(e => `${e.name}: ${e.missing}`).join('; ')}); those fields carry deterministic evidence text, not authored comprehension. The analysis is otherwise complete and fully queryable.`
                       : 'Part of the capability catalog could not be AI-enriched; those entries carry deterministic evidence text, not authored comprehension.',
                 },
               }
