@@ -996,18 +996,40 @@ export async function saveAnalysis(
   const wholeStartedAt = Date.now();
   await writeCompressedJsonAtomic(filePath, output, { spaces: 0 });
   const wholeMs = Date.now() - wholeStartedAt;
+  // Write the segmented sidecar ONCE, when the CAS is actually complete.
+  //
+  // Measured on prod (92,586 nodes / 135,974 edges): FIVE saveAnalysis calls per
+  // analysis — the progressive pipeline persists L0, then each layer as it lands,
+  // which is a real feature (early queryability + crash durability). Each save
+  // was rebuilding the whole sidecar from scratch: 34.9s of the run's 68.2s total
+  // serialization, and only the LAST rebuild is ever read.
+  //
+  // Safe because the sidecar is DERIVED, not authoritative — the catch below has
+  // always said so, and the whole compressed file above is written on every save
+  // regardless. So an intermediate save that skips segments still leaves a fully
+  // readable analysis; readers just lose section-narrowing until the run finishes.
+  //
+  // Gated on the DATA, not a flag threaded through callers, so no call site can
+  // forget it and a future caller inherits the behaviour: complete -> write,
+  // explicitly incomplete -> skip, absent (non-layered/incremental paths that
+  // never populate layers_ready) -> write, preserving the old behaviour exactly.
+  const layersReady = output.layers_ready;
+  const segmentsWorthWriting = !layersReady || layersReady.complete === true;
   const segmentedStartedAt = Date.now();
-  try {
-    await writeSegmentedAnalysis(filePath, output);
-  } catch (error) {
-    console.warn(`[Klauro] segmented analysis write failed for ${projectPath}; authoritative analysis remains available: ${error instanceof Error ? error.message : String(error)}`);
+  if (segmentsWorthWriting) {
+    try {
+      await writeSegmentedAnalysis(filePath, output);
+    } catch (error) {
+      console.warn(`[Klauro] segmented analysis write failed for ${projectPath}; authoritative analysis remains available: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   const segmentedMs = Date.now() - segmentedStartedAt;
   // Only log when it is actually material — a small repo saving in 40ms does not
   // need a line per save, but a whale spending a minute here must be visible.
   if (wholeMs + segmentedMs >= 1000) {
     console.error(
-      `[Klauro] saveAnalysis(${track}): whole=${wholeMs}ms segmented=${segmentedMs}ms ` +
+      `[Klauro] saveAnalysis(${track}): whole=${wholeMs}ms ` +
+      `segmented=${segmentsWorthWriting ? `${segmentedMs}ms` : 'skipped(incomplete)'} ` +
       `nodes=${(output.nodes || []).length} edges=${(output.edges || []).length}`,
     );
   }

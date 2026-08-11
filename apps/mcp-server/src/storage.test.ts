@@ -202,3 +202,55 @@ test('parsed CAS cache evicts by entry budget and refuses an object over the mem
     else process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES = previousBytes;
   }
 });
+
+// Measured on prod (2026-08-11, 92,586 nodes / 135,974 edges): FIVE saveAnalysis
+// calls per analysis, each rebuilding the segmented sidecar from scratch —
+// 34.9s of the run's 68.2s total serialization, where only the final rebuild is
+// ever read. The progressive saves themselves are a feature (early queryability,
+// crash durability); rebuilding a DERIVED sidecar on each one is not.
+//
+// These pin the gate in all three states, because getting it wrong in either
+// direction is silent: skip too eagerly and queries lose section-narrowing
+// forever, skip never and a whale pays 35s of waste per run.
+async function savedSectionsExist(storagePath: string, projectPath: string): Promise<boolean> {
+  const entries = await fs.readdir(storagePath);
+  const sections = entries.filter(name => name.endsWith('.sections'));
+  return sections.length > 0;
+}
+
+test('a COMPLETE layered CAS writes the segmented sidecar', async () => {
+  await withStoragePath(async storagePath => {
+    const cas = casFixture('complete-cas');
+    (cas as unknown as { layers_ready: unknown }).layers_ready = { complete: true, layers: [] };
+    await saveAnalysis('/tmp/complete-project', cas);
+    assert.equal(await savedSectionsExist(storagePath, '/tmp/complete-project'), true);
+  });
+});
+
+test('an INCOMPLETE layered CAS skips the sidecar but stays fully readable', async () => {
+  await withStoragePath(async storagePath => {
+    const cas = casFixture('partial-cas');
+    (cas as unknown as { layers_ready: unknown }).layers_ready = { complete: false, layers: [] };
+    await saveAnalysis('/tmp/partial-project', cas);
+    assert.equal(
+      await savedSectionsExist(storagePath, '/tmp/partial-project'),
+      false,
+      'an intermediate progressive save must not pay to rebuild a sidecar that will be superseded',
+    );
+    // The whole compressed file is authoritative and always written, so the
+    // analysis must still load in full — that is what makes skipping safe.
+    clearLoadedAnalysisCache();
+    const loaded = await loadAnalysis('/tmp/partial-project');
+    assert.ok(loaded, 'the analysis must still be readable without a sidecar');
+    assert.equal((loaded!.nodes || []).length, 1);
+  });
+});
+
+test('a CAS with no layers_ready keeps the previous always-write behaviour', async () => {
+  await withStoragePath(async storagePath => {
+    // Non-layered / incremental paths never populate layers_ready; they must not
+    // silently lose their sidecar.
+    await saveAnalysis('/tmp/legacy-project', casFixture('legacy-cas'));
+    assert.equal(await savedSectionsExist(storagePath, '/tmp/legacy-project'), true);
+  });
+});
