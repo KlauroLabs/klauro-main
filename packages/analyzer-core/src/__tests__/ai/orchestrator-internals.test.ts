@@ -9612,17 +9612,23 @@ describe('domain-claim gate (replaces descriptionContradictsPurposeFamily\'s har
   // grounds it — for ANY repo, including this one, with no repo-identity
   // check anywhere in the path.
   it('folds the sixth family (codebase-analysis / "cas graph" / "agent contexts") into the same generic evidence gate as every other family, with no self-identity exception', () => {
-    const description = 'A codebase analysis system that builds a CAS graph of every module and produces agent contexts for downstream tools. It tracks relationships between files and exposes them through an MCP server.';
+    // FIXTURE CORRECTED 2026-08-11. This used to end "...produces agent contexts
+    // for downstream tools", and the rejection it asserted came from the modifier
+    // window reading `agent contexts for downstream` as premodifiers of the head
+    // noun `tools`. Both halves of that were wrong: `agent contexts` is the object
+    // of `produces` (a preposition separates it from `tools`), and `downstream` is
+    // a POSITIONAL adjective that makes no claim evidence could confirm. With both
+    // corrected, this sentence's leading claim — "A codebase analysis system" with
+    // zero supporting evidence — turns out to be gated by NOTHING, so the
+    // assertion had been passing on an accident (filed as its own task).
+    //
+    // The stated intent is that the sixth family gets no self-identity exception,
+    // so the claim now sits where the gate actually enforces one: as a real
+    // premodifier of a type head.
+    const description = 'A codebase analysis system that builds a CAS graph of every module and produces agent contexts through a codebase-analysis pipeline. It tracks relationships between files and exposes them through an MCP server.';
     const rejected = orch.validateAIInterpretation(description, { primary_domain: 'codebase-analysis', core_concepts: [] }, {});
     expect(rejected.ok).toBe(false);
-    // Reason TIGHTENED 2026-08-11, same verdict: `for` joined the preposition run
-    // in clauseBreakers (it was missing while every neighbour was present). In
-    // "produces agent contexts FOR downstream tools", `agent contexts` is the
-    // object of `produces`, not a modifier of the head noun `tools` — only
-    // `downstream` premodifies it. Naming just the genuine premodifier is the
-    // whole point of the modifier window, so the reason no longer reports two
-    // clauses' worth of tokens as one type claim.
-    expect(rejected.reason).toBe('ungrounded-system-type: downstream');
+    expect(rejected.reason).toBe('ungrounded-system-type: codebase-analysis');
 
     const grounded = orch.validateAIInterpretation(
       description,
