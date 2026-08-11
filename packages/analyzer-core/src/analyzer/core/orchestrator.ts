@@ -272,6 +272,19 @@ function aiConcurrencyLimit(): number {
 // remote-analyzer-service.ts's comprehensionPartial reporting), not a
 // regression — a budget must never be met by silently shipping less, but it
 // also must never be missed by an unbounded amount.
+/**
+ * How many candidates survive when NOTHING in a fallback catalog is grounded in an
+ * outcome. Not a quality target — a damage limit.
+ *
+ * Measured 2026-08-11: a real repo published 24 module-named candidates
+ * (`Manage Net`, `View Infer Web`) with `authored: 0 of 24` because the guard that
+ * was supposed to catch this only recognised entity-shaped CRUD. Publishing two
+ * dozen filenames as a product capability catalog is worse than publishing three,
+ * and "zero is essentially never correct" forbids publishing none — so the honest
+ * position is a small, evidence-ranked set with the shortfall reported.
+ */
+const UNGROUNDED_FALLBACK_KEEP = 3;
+
 const CATALOG_HARD_DEADLINE_MS = (() => {
   const configured = Number(process.env.KLAURO_AI_CATALOG_HARD_DEADLINE_MS || '');
   return Number.isFinite(configured) && configured > 0 ? configured : 100_000;
@@ -13065,12 +13078,41 @@ export class AnalyzerOrchestrator {
    * actually authored (name_source ai/manual/reused, no repair marker) is never
    * caught by it.
    */
+  /**
+   * True when a fallback candidate is not grounded in a user-visible outcome and
+   * so must not be published as a capability.
+   *
+   * WHY THE ORIGINAL SHAPE OF THIS TEST WAS WRONG — measured live 2026-08-11:
+   * it required the name's subject to MATCH a known entity, because the case I had
+   * in hand was 165 `Manage <Entity>` rows on one repo. A later run of a different
+   * repo published 24 candidates named after Python modules — `Manage Net`,
+   * `View Infer Web`, `Manage Attentions Onnx`, `Manage Common` — with ZERO
+   * related entities and `authored: 0 of 24`. Matching no entity, they failed the
+   * entity test, `crudShare` computed as 0, and the guard declared the catalog
+   * outcome-shaped. It caught the better case and waved through the worse one.
+   *
+   * The principle is not "reject CRUD-per-entity". It is that a capability is an
+   * outcome a user gets. A name lifted from a filename, with no entity behind it
+   * and no authored comprehension, is further from an outcome than `Manage Song`
+   * ever was. So the test now asks the general question — is there ANY grounding
+   * — in two forms:
+   *   - ungrounded: repaired name, no entities AND no operations. Nothing at all
+   *     ties it to something a user does; the subject is a source-file token.
+   *   - single-entity: repaired name whose whole identity is one table (the
+   *     original case, retained).
+   */
   private isSingleEntityCrudCapability(capability: SystemCapability): boolean {
     const repaired = (capability.criticality_factors || []).includes('bare-noun-purpose-repaired');
     if (!repaired) return false;
-    if ((capability.related_entities?.length || 0) > 1) return false;
     const source = capability.name_source;
     if (source === 'ai' || source === 'manual' || source === 'reused') return false;
+    // UNGROUNDED: no entity and no operation is not a thin capability, it is a
+    // module name wearing a verb. Checked before the single-entity test because
+    // it is the strictly weaker evidence position.
+    if ((capability.related_entities?.length || 0) === 0 && (capability.operations?.length || 0) === 0) {
+      return true;
+    }
+    if ((capability.related_entities?.length || 0) > 1) return false;
     // The repair prefixes a purpose verb onto the raw subject; strip it back off
     // and ask whether what remains is simply an entity this analysis already
     // catalogues. Normalised so "Open Claw Chat Session Entry" matches
@@ -13158,10 +13200,36 @@ export class AnalyzerOrchestrator {
     if (crudShare > 0.5 && outcomeShaped.length > 0) {
       console.error(
         `[Klauro] capability fallback: ${validDeterministic.length - outcomeShaped.length} of ${validDeterministic.length} ` +
-        `deterministic candidates are single-entity CRUD labels (${Math.round(crudShare * 100)}%); publishing the ` +
+        `deterministic candidates are ungrounded or single-entity labels (${Math.round(crudShare * 100)}%); publishing the ` +
         `${outcomeShaped.length} outcome-shaped entries instead of the raw candidate list`,
       );
       validDeterministic.splice(0, validDeterministic.length, ...outcomeShaped);
+    } else if (outcomeShaped.length === 0 && validDeterministic.length > UNGROUNDED_FALLBACK_KEEP) {
+      // NOTHING is grounded — the case the `outcomeShaped.length > 0` condition
+      // above silently let through, publishing all 24 module-named candidates on a
+      // real repo (measured 2026-08-11, `authored: 0 of 24`).
+      //
+      // Two rules are in tension here and both must hold. "Zero capabilities is
+      // essentially never correct" forbids emptying the list; "a capability is an
+      // outcome a user gets" forbids publishing two dozen filenames. The
+      // resolution is to degrade in COUNT and CONFIDENCE, never in shape: keep the
+      // few best-evidenced candidates and drop the tail.
+      //
+      // Ranked by evidence actually present (operations, then entities), not by
+      // name — a name is what we distrust in this branch. The comprehension
+      // payload already reports `partial` with `authored: 0`, so the shortfall
+      // stays visible rather than being smoothed over by a fuller-looking list.
+      const ranked = [...validDeterministic].sort((a, b) =>
+        (b.operations?.length || 0) - (a.operations?.length || 0)
+        || (b.related_entities?.length || 0) - (a.related_entities?.length || 0)
+        || String(a.name || '').localeCompare(String(b.name || '')));
+      const kept = ranked.slice(0, UNGROUNDED_FALLBACK_KEEP);
+      console.error(
+        `[Klauro] capability fallback: NONE of ${validDeterministic.length} deterministic candidates are grounded in an ` +
+        `outcome (no entities, no operations, no authored name); keeping the ${kept.length} best-evidenced rather than ` +
+        `publishing the raw candidate list as a catalog`,
+      );
+      validDeterministic.splice(0, validDeterministic.length, ...kept);
     }
     if (validDeterministic.length > 0) {
       systemCapabilities.splice(

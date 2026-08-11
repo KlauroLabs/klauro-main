@@ -8721,6 +8721,64 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     expect(names).not.toContain('Wizard');
   });
 
+  it('applyDeterministicCapabilityFallback: does not publish a catalog of ungrounded module names', () => {
+    // REGRESSION, measured live 2026-08-11 on a real ML repo: the AI naming pass
+    // authored 0 of 24, and the fallback published 24 candidates named after
+    // Python modules — "Manage Net", "View Infer Web", "Manage Attentions Onnx",
+    // "Manage Common" — replacing 2 good capabilities. The altitude guard that
+    // exists to stop exactly this missed it, because it only recognised
+    // ENTITY-shaped CRUD: these matched no entity, so crudShare computed as 0 and
+    // the catalog was declared outcome-shaped. It caught the better case and waved
+    // through the worse one.
+    //
+    // A name lifted from a filename with no entity and no operation behind it is
+    // further from "an outcome a user gets" than "Manage Song" ever was.
+    const moduleNamed = (name: string) => ({
+      id: `cap_${name.toLowerCase().replace(/\s+/g, '_')}`,
+      name,
+      related_entities: [],
+      operations: [],
+      criticality_factors: [],
+    });
+    const candidateSnapshot: any[] = [
+      // One genuinely grounded candidate, plus a pile of module names.
+      { id: 'cap_song', name: 'Song', related_entities: ['entity_song'], operations: [{ entry_point_id: 'ep_1', action: 'create' }], criticality_factors: [] },
+      moduleNamed('Net'), moduleNamed('Infer Web'), moduleNamed('Gui V1'),
+      moduleNamed('Attentions Onnx'), moduleNamed('Common'), moduleNamed('Get Hubert'),
+    ];
+    const systemCapabilities: any[] = [];
+    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities);
+
+    const names = systemCapabilities.map((capability: any) => capability.name);
+    for (const junk of ['Manage Net', 'View Infer Web', 'Manage Gui V1', 'Manage Attentions Onnx', 'Manage Common']) {
+      expect(names).not.toContain(junk);
+    }
+    // The grounded one survives — degrade in count and confidence, never in shape.
+    expect(names).toContain('Manage Song');
+  });
+
+  it('applyDeterministicCapabilityFallback: keeps a small evidence-ranked set when NOTHING is grounded, never the raw list', () => {
+    // The second hole in the same guard: when no candidate is outcome-shaped, the
+    // `outcomeShaped.length > 0` condition failed and it published everything.
+    // Two rules are in tension and both must hold — "zero is essentially never
+    // correct" forbids emptying the list, and "a capability is an outcome" forbids
+    // publishing two dozen filenames. So: keep the few best-evidenced.
+    const candidateSnapshot: any[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `cap_mod_${index}`,
+      name: `Module ${index}`,
+      related_entities: [],
+      // Give a couple of them operations so the ranking has something real to sort
+      // on — the tie-break must be evidence, never the name.
+      operations: index < 2 ? [{ entry_point_id: `ep_${index}`, action: 'run' }] : [],
+      criticality_factors: [],
+    }));
+    const systemCapabilities: any[] = [];
+    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities);
+
+    expect(systemCapabilities.length).toBeGreaterThan(0);
+    expect(systemCapabilities.length).toBeLessThanOrEqual(3);
+  });
+
   it('applyDeterministicCapabilityFallback: derives a read-only purpose and humanized entity subject', () => {
     const candidateSnapshot: any[] = [{
       id: 'cap_enterpriseorders',
