@@ -13035,6 +13035,43 @@ export class AnalyzerOrchestrator {
    * behavior surface is split by handler module rather than shipped as one
    * merged blob.
    */
+  /**
+   * True when a capability is really just CRUD over ONE data entity — the shape
+   * a candidate list takes before comprehension raises it to an outcome.
+   *
+   * Evidence-based, not a word list: the test is that the name is a bare
+   * purpose-prefix repair (`bare-noun-purpose-repaired`, stamped by the repair
+   * above) over a subject that IS one of this analysis's own entity names, with
+   * no second entity to relate it to. "Manage Order" beside entity `Order` and
+   * nothing else is a table; "Place an order and take payment" is an outcome.
+   *
+   * Deliberately narrow: it requires the repair marker AND an entity-name match
+   * AND <=1 related entity, so a genuine single-entity capability that comprehension
+   * actually authored (name_source ai/manual/reused, no repair marker) is never
+   * caught by it.
+   */
+  private isSingleEntityCrudCapability(capability: SystemCapability): boolean {
+    const repaired = (capability.criticality_factors || []).includes('bare-noun-purpose-repaired');
+    if (!repaired) return false;
+    if ((capability.related_entities?.length || 0) > 1) return false;
+    const source = capability.name_source;
+    if (source === 'ai' || source === 'manual' || source === 'reused') return false;
+    // The repair prefixes a purpose verb onto the raw subject; strip it back off
+    // and ask whether what remains is simply an entity this analysis already
+    // catalogues. Normalised so "Open Claw Chat Session Entry" matches
+    // `OpenClawChatSessionEntry`.
+    const subject = String(capability.name || '').replace(/^(manage|view)\s+/i, '');
+    if (!subject) return false;
+    const normalise = (value: string): string => value.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const normalisedSubject = normalise(subject);
+    if (!normalisedSubject) return false;
+    return (this.fallbackEntityNameIndex || new Set<string>()).has(normalisedSubject);
+  }
+
+  /** Normalised entity names for the analysis in flight, used by the altitude
+   *  guard to recognise a capability whose whole identity is one table. */
+  private fallbackEntityNameIndex?: Set<string>;
+
   private applyDeterministicCapabilityFallback(
     candidateSnapshot: SystemCapability[],
     behaviorSurfaces: SystemCapability[],
@@ -13050,6 +13087,14 @@ export class AnalyzerOrchestrator {
     // repaired or dropped here — same as the AI-catalog-item guard above,
     // just with `related_entities`/`operations` as the anchor evidence
     // instead of a catalog item's raw `entities` field.
+    // Index this analysis's own entity names so the altitude guard below can
+    // recognise "the capability IS a table" without any hardcoded vocabulary —
+    // the comparison is against evidence from THIS repo, nothing global.
+    this.fallbackEntityNameIndex = new Set(
+      (dataEntities || [])
+        .map(entity => String(entity.name || '').replace(/[^a-z0-9]/gi, '').toLowerCase())
+        .filter(Boolean),
+    );
     const candidatesWithEntityAnchors = candidateSnapshot
       .map(capability => ({ ...capability, name: collapseDuplicateAdjacentWords(String(capability.name || '')) }))
       .map(capability => this.attachFallbackEntityAnchor(capability, dataEntities));
@@ -13069,6 +13114,40 @@ export class AnalyzerOrchestrator {
         };
       })
       .filter((capability): capability is SystemCapability => Boolean(capability));
+    // ALTITUDE GUARD — the candidate list is INPUT, not a catalog.
+    //
+    // Measured live 2026-08-10 across three runs of one repo at one commit:
+    // 8 capabilities, then 3, then 165. The counts tracked how much of the AI
+    // naming pass completed. When the 100s catalog deadline truncates it, this
+    // fallback published every surviving candidate — 165 entries, 158 of them
+    // "supporting", named `Manage <Entity>` / `View <Entity>` one per data
+    // entity ("Manage Message Send", "View Chat Event", "Device Auth Payload").
+    //
+    // That is CRUD-per-table: data, not outcomes. A capability is an outcome a
+    // user gets, readable by a non-technical person — so an entity-shaped list
+    // is not a lower-confidence version of the right answer, it is a DIFFERENT
+    // and much worse shape. Publishing it turned a timeout into a 20x swing in
+    // customer-visible output, which is exactly "meeting a budget by delivering
+    // a worse analysis".
+    //
+    // So: when a fallback catalog is dominated by single-entity CRUD labels,
+    // publish only the entries that carry genuine outcome evidence and let the
+    // comprehension payload report the shortfall (comprehension.partial +
+    // unenriched_capabilities already name it per dimension). Degrade in
+    // CONFIDENCE and COUNT, never in shape — and never to zero, which is why
+    // the strongest entries are kept rather than the whole list dropped.
+    const outcomeShaped = validDeterministic.filter(capability => !this.isSingleEntityCrudCapability(capability));
+    const crudShare = validDeterministic.length > 0
+      ? (validDeterministic.length - outcomeShaped.length) / validDeterministic.length
+      : 0;
+    if (crudShare > 0.5 && outcomeShaped.length > 0) {
+      console.error(
+        `[Klauro] capability fallback: ${validDeterministic.length - outcomeShaped.length} of ${validDeterministic.length} ` +
+        `deterministic candidates are single-entity CRUD labels (${Math.round(crudShare * 100)}%); publishing the ` +
+        `${outcomeShaped.length} outcome-shaped entries instead of the raw candidate list`,
+      );
+      validDeterministic.splice(0, validDeterministic.length, ...outcomeShaped);
+    }
     if (validDeterministic.length > 0) {
       systemCapabilities.splice(
         0,
