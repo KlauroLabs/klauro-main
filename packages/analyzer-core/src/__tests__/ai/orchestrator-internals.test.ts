@@ -2905,6 +2905,39 @@ describe('architecture and capability inference', () => {
     expect(String(fabricatedVerdict.reason)).toMatch(/ungrounded-system-type/);
   });
 
+  it('does not enforce a relative clause\'s finite verb as a system-type claim (prod: ungrounded-system-type: interacts-local)', async () => {
+    // The exact live failure, 2026-08-11: a CLI/gateway repo's system
+    // description was ACCEPTED on the first pass, then rejected as
+    // `ungrounded-system-type: interacts-local`, and the customer's payload
+    // shipped identity.description = "" — the most important field, blank.
+    //
+    // Cause: "a command-line tool that INTERACTS with a LOCAL gateway" put the
+    // relative clause's verb into the modifier window for the head noun
+    // "gateway". `interacts` simply was not in the finiteVerbConnectors
+    // hand-list, which is the wrong mechanism — every unseen repo brings a verb
+    // it lacks. A relative pronoun's POSITION identifies the next token as that
+    // clause's verb without needing to know the verb.
+    const purpose = { primary_domain: 'agent-onboarding', core_concepts: ['gateway', 'onboarding', 'agent', 'wizard'] };
+    const grounding = {
+      systemName: 'gatewaykit',
+      frameworks: ['express'],
+      libraries: ['commander'],
+      databaseEntities: [],
+      structuralTokens: ['gateway', 'onboarding', 'agent', 'wizard', 'token'],
+      projectTextSummary: 'command-line onboarding for a local agent gateway',
+    };
+    const description = 'GatewayKit is a tool that sets up a user interface, gateway manager, and onboarding process for the agent runtime it wraps. Users can manage and monitor their agents through it, and the onboarding wizard generates a token for authentication. GatewayKit operates as a command-line tool that interacts with a local gateway to manage the agents.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
+
+    // The relative-clause allowance must not become a bypass: an ungrounded type
+    // claim inside a relative clause is still a fabrication, because only the
+    // clause's VERB is skipped — its own attributive modifiers are still enforced.
+    const fabricated = 'GatewayKit is a tool that operates as a high-frequency derivatives-trading gateway for the agent runtime it wraps. Users manage agents through the onboarding wizard, which generates a token for authentication.';
+    const fabricatedVerdict = orch.validateGeneratedAIInterpretation(fabricated, purpose, grounding);
+    expect(fabricatedVerdict.ok).toBe(false);
+    expect(String(fabricatedVerdict.reason)).toMatch(/ungrounded-system-type/);
+  });
+
   it('does not treat a final preposition before a type head as a fabricated system type', async () => {
     const purpose = { primary_domain: 'deployment-infrastructure', core_concepts: ['deployment', 'terraform', 'kubernetes', 'queue'] };
     const grounding = {

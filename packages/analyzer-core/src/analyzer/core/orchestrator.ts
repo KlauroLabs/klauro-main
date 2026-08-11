@@ -16730,7 +16730,12 @@ export class AnalyzerOrchestrator {
       'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would', 'not',
       'that', 'which', 'who', 'whose', 'when', 'where', 'while', 'than', 'then',
       'if', 'because', 'although', 'though', 'once', 'also', 'both',
+      // 'with'/'for'/'from'/'to' were missing from this preposition run while
+      // every one of their neighbours was present — a plain gap, and the reason
+      // "interacts WITH a local gateway" put two clauses' worth of tokens in one
+      // modifier window. Same closed function-word class as the rest of the line.
       'as', 'at', 'by', 'of', 'in', 'on', 'onto', 'into', 'over', 'via', 'through',
+      'with', 'for', 'from', 'to',
       'between', 'across', 'within', 'without', 'against', 'during', 'after',
       'before', 'under', 'about', 'around', 'per', 'like',
       'it', 'its', 'they', 'their', 'this', 'these', 'those',
@@ -16795,7 +16800,25 @@ export class AnalyzerOrchestrator {
       for (let i = rawTokens.length - 1; i >= 0; i--) {
         const nonFinalParticiple = i < rawTokens.length - 1 && /[a-z]{3,}ing$/.test(rawTokens[i]);
         if (nonFinalParticiple || clauseBreakers.has(rawTokens[i]) || finiteVerbConnectors.has(rawTokens[i])) {
-          attributiveTokens = rawTokens.slice(i + 1);
+          // GRAMMAR, NOT VOCABULARY (fixed 2026-08-11). A RELATIVE PRONOUN is
+          // immediately followed by its clause's finite verb, whatever that verb
+          // happens to be — "a tool that INTERACTS with a local gateway", "an
+          // agent that RECONCILES state". That verb is a predicate, never an
+          // attributive modifier of the type head, so it must not be enforced as
+          // a type claim.
+          //
+          // Measured live: a CLI repo's accepted, well-grounded system
+          // description was rejected as `ungrounded-system-type:
+          // interacts-local` and the customer got a BLANK system description —
+          // the most important field in the payload — because `interacts` was
+          // not in the finiteVerbConnectors hand-list below. That list is the
+          // wrong mechanism for this: every new repo brings a verb it does not
+          // contain, so it fails open on exactly the repos nobody has tried yet.
+          // A relative pronoun's position tells us the next token is a verb
+          // without needing to know which verb it is.
+          const relativePronouns = new Set(['that', 'which', 'who', 'whose']);
+          const skipRelativeClauseVerb = relativePronouns.has(rawTokens[i]) && i + 1 < rawTokens.length;
+          attributiveTokens = rawTokens.slice(skipRelativeClauseVerb ? i + 2 : i + 1);
           break;
         }
       }
