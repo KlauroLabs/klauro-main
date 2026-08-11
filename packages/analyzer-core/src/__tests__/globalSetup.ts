@@ -28,24 +28,36 @@
  * `npm ci --ignore-scripts` skipping native builds — copy the tree-sitter
  * natives from the main tree's node_modules, or reinstall with scripts
  * enabled under a supported Node version.
+ *
+ * ------------------------------------------------------------------------------
+ * THE CHECK MUST RUN IN A CHILD PROCESS. THIS IS NOT AN OPTIMIZATION.
+ *
+ * Measured 2026-08-11 on a clean Node 22 / linux-x64 CI container: this file
+ * used to `require('tree-sitter')` directly, here, in jest's PARENT process.
+ * Doing so binds the native addon's node-marshalling state to the parent realm.
+ * Every test file then loads the addon inside jest's own sandbox realm, where
+ * `parser.parse(src)` returns a real `Tree` object whose `rootNode` is
+ * `undefined` — no throw, no warning. Result: 22 suites and 89 tests red, every
+ * one of them a `TypeError: Cannot read properties of undefined (reading
+ * 'type')` from deep inside an extractor, all sharing ONE root cause.
+ *
+ * Proven by bisecting the jest config against a fixed diagnostic: with this
+ * file as `globalSetup`, `parse().rootNode` is `undefined`; with it removed
+ * (setup.ts, clearMocks, restoreMocks, detectOpenHandles all still on), the
+ * same probe returns `program`. Nothing else in the config matters.
+ *
+ * So the guard written to stop engineers from misdiagnosing a wall of red WAS
+ * the cause of a wall of red, and its own banner instructed them not to dismiss
+ * it. The probe now runs in a `spawnSync`'d child so the addon is never loaded
+ * in the parent realm, and it asserts the predicate that actually matters —
+ * that a parse yields a usable `rootNode` — instead of only that `require`
+ * returned something.
+ * ------------------------------------------------------------------------------
  */
 export default async function globalSetup(): Promise<void> {
   if (process.env.KLAURO_SKIP_NATIVE_ADDON_PRECHECK === '1') return;
 
-  const failures: string[] = [];
-
-  const tryRequire = (moduleId: string): void => {
-    try {
-      require(moduleId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failures.push(`  - require('${moduleId}') failed: ${message.split('\n')[0]}`);
-    }
-  };
-
-  tryRequire('tree-sitter');
-  tryRequire('tree-sitter-typescript');
-  tryRequire('tree-sitter-javascript');
+  const failures = probeNativeAddonInChildProcess();
 
   if (failures.length === 0) return;
 
@@ -89,4 +101,69 @@ export default async function globalSetup(): Promise<void> {
     `Native tree-sitter addon unavailable under Node ${process.version} — see banner above. ` +
     'Test suite aborted before running any test file.'
   );
+}
+
+/**
+ * Loads each grammar and PARSES a trivial source in a throwaway child process,
+ * reporting one line per module that could not be loaded or that produced an
+ * unusable tree. Nothing is required into this process — see the realm-binding
+ * note above for why that is the whole point.
+ *
+ * A load failure and an unusable-tree failure are reported distinctly because
+ * they have different fixes: the first is a missing/incompatible native build,
+ * the second is a core-vs-grammar ABI mismatch (or a realm problem, which is
+ * what this file itself used to cause).
+ */
+function probeNativeAddonInChildProcess(): string[] {
+  const { spawnSync } = require('child_process') as typeof import('child_process');
+
+  // Runs in the child. Kept as a single-quoted-free source string so it can be
+  // passed via `node -e` without shell quoting hazards (spawnSync with an argv
+  // array does not involve a shell, but the string still must not contain a
+  // literal newline-sensitive construct).
+  const probeSource = `
+    const results = [];
+    for (const grammar of ['typescript', 'javascript']) {
+      const moduleId = 'tree-sitter-' + grammar;
+      try {
+        const Parser = require('tree-sitter');
+        const language = require(moduleId);
+        const parser = new Parser();
+        parser.setLanguage(grammar === 'typescript' ? language.typescript : language);
+        const tree = parser.parse('const a = 1;');
+        const rootType = tree && tree.rootNode ? tree.rootNode.type : null;
+        if (!rootType) {
+          results.push({ moduleId, kind: 'unusable-tree' });
+        }
+      } catch (error) {
+        results.push({ moduleId, kind: 'load-failed', message: String(error && error.message || error).split('\\n')[0] });
+      }
+    }
+    process.stdout.write(JSON.stringify(results));
+  `;
+
+  const probe = spawnSync(process.execPath, ['-e', probeSource], {
+    cwd: __dirname,
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+
+  if (probe.error) {
+    return [`  - could not spawn the native-addon probe: ${probe.error.message}`];
+  }
+  if (probe.status !== 0) {
+    const detail = (probe.stderr || '').trim().split('\n')[0] || `exit code ${probe.status}`;
+    return [`  - the native-addon probe process failed: ${detail}`];
+  }
+
+  let results: Array<{ moduleId: string; kind: string; message?: string }>;
+  try {
+    results = JSON.parse(probe.stdout || '[]');
+  } catch {
+    return [`  - the native-addon probe produced unreadable output: ${(probe.stdout || '').slice(0, 200)}`];
+  }
+
+  return results.map(result => result.kind === 'load-failed'
+    ? `  - require('${result.moduleId}') failed: ${result.message}`
+    : `  - ${result.moduleId} loaded but parse() produced a tree with no rootNode (core/grammar ABI mismatch)`);
 }
