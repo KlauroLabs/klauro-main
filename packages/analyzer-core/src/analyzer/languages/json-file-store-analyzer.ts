@@ -190,7 +190,12 @@ export function serializedFieldNames(payload: string): string[] {
     if (nesting !== 0) continue;
     if (i === body.length || character === ',') {
       const segment = body.slice(keyStart, i);
-      const key = /^\s*(?:['"`]?)([A-Za-z_$][A-Za-z0-9_$]*)(?:['"`]?)\s*:/.exec(segment);
+      // `name: value`, `'name': value`, and SHORTHAND `name` are all field
+      // declarations — shorthand is how most real serialisation is written
+      // (`JSON.stringify({ topics, updatedAt })`) and missing it made the field
+      // list empty for exactly the payloads that were easiest to read.
+      // A spread (`...rest`) names no field and is skipped.
+      const key = /^\s*(?:['"`]?)([A-Za-z_$][A-Za-z0-9_$]*)(?:['"`]?)\s*(?::|$)/.exec(segment);
       if (key) fields.push(key[1]);
       keyStart = i + 1;
     }
