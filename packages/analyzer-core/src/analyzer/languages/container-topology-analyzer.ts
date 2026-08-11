@@ -4,7 +4,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as yaml from 'js-yaml';
-import { isHashOrIdShapedToken } from '../core/deployable-evidence/util';
+import { isHashOrIdShapedToken, isIdentifierShapedRepoBasename, UNNAMED_SERVICE_PLACEHOLDER } from '../core/deployable-evidence/util';
 
 interface ComposeService {
   name: string;
@@ -1041,24 +1041,38 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
   const projectBase = path.basename(projectPath);
   const dockerfileDir = path.basename(path.dirname(relativeFile));
   let base: string;
-  if (projectBase && !isHashOrIdShapedToken(projectBase)) {
-    base = projectBase;
-  } else if (dockerfileDir && dockerfileDir !== '.' && !isHashOrIdShapedToken(dockerfileDir)) {
+  // ORDER = evidence strength, and it must not be "whatever is cheapest to read".
+  //
+  // Measured 2026-08-10, reproduced in isolation: a production snapshot dir named
+  // `prj_<id>` was ACCEPTED here as a legitimate name, because this function
+  // tested `isHashOrIdShapedToken` (narrow: hex/UUID/no-vowel blobs) while
+  // `safeDeployableName` downstream rejects with `isIdentifierShapedRepoBasename`
+  // (broad: also `prj_`/`wsp_`-prefixed storage ids). Two functions disagreeing
+  // about what an id looks like meant the storage id won rank 1, the real
+  // evidence below was never consulted, and the downstream guard then replaced
+  // the id with `unnamed-service` — publishing a nameless primary ship unit on a
+  // 92,582-node repo while its own CMD named the app.
+  //
+  // Fixed two ways, both repo-agnostic:
+  //  - ONE id-shape test (the broad one) everywhere, so no name can pass one
+  //    check and fail the next;
+  //  - the author's own DECLARATION (the run command) outranks a directory
+  //    basename, because a directory name is an accident of how we stored the
+  //    source while ENTRYPOINT/CMD is something the author wrote deliberately.
+  const declared = serviceNameFromCommand(command);
+  if (declared) {
+    base = declared;
+  } else if (dockerfileDir && dockerfileDir !== '.' && !isIdentifierShapedRepoBasename(dockerfileDir)) {
     base = dockerfileDir;
+  } else if (projectBase && !isIdentifierShapedRepoBasename(projectBase)) {
+    base = projectBase;
   } else {
-    // ROOT Dockerfile in a hash-named snapshot: both legs above fail — the
-    // project dir is the analysis-id hash and the Dockerfile's dir is ".".
-    // Measured live 2026-08-10: a 92,582-node repo's primary ship unit
-    // (92,575 of those nodes) was published to the customer as
-    // "unnamed-service" for exactly this reason, while the Dockerfile itself
-    // said ENTRYPOINT ["node", "<app>.mjs", "gateway", ...].
-    //
-    // The command IS real ship evidence — it names the thing that runs — so
-    // prefer it over a placeholder. Never a keyword table: this reads the
-    // author's own declaration and takes its script/binary basename, which is
-    // why generic interpreters and shells are skipped rather than matched
-    // against a vocabulary of "good" names.
-    base = serviceNameFromCommand(command) || 'unnamed-service';
+    // Nothing the author declared is usable: no run command names a specific
+    // binary, the Dockerfile sits at the root, and the only directory available
+    // is the storage id. Stay honest rather than inventing something — the
+    // caller's `safeDeployableName` publishes this placeholder, and the
+    // deployable payload carries the boundary evidence that explains it.
+    base = UNNAMED_SERVICE_PLACEHOLDER;
   }
   return base.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
 }
