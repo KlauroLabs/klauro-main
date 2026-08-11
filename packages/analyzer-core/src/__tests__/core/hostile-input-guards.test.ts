@@ -195,7 +195,14 @@ describe('hostile input guards', () => {
       expect(manifestWarning?.severity).toBe('warning');
     });
 
-    it('reports permission-denied subdirectories without throwing', async () => {
+    // Root ignores mode 0o000, so the OS never produces the EACCES this test
+    // exists to observe — and the assertion then fails for a reason that has
+    // nothing to do with the product. Containers run as uid 0 by default, which
+    // is how this showed up as red in CI while passing on a developer machine.
+    // Skipping with a stated reason is the honest disposition; asserting
+    // "no warning" instead would encode the opposite of the intended behaviour.
+    const itUnlessRoot = typeof process.getuid === 'function' && process.getuid() === 0 ? it.skip : it;
+    itUnlessRoot('reports permission-denied subdirectories without throwing', async () => {
       const secret = path.join(tempDir, 'secret');
       await fs.mkdirp(secret);
       await fs.writeFile(path.join(secret, 'hidden.ts'), 'export const hidden = true;\n');

@@ -153,7 +153,7 @@ export class DockerfileAnalyzer extends ContainerTopologyAnalyzer {
         add_sources: addSources,
         workdir,
         build_context: path.dirname(relativeFile) === '.' ? '' : path.dirname(relativeFile),
-        service_aliases: [inferServiceName(projectPath, relativeFile, entrypoint || cmd)],
+        service_aliases: inferServiceAliases(projectPath, relativeFile, entrypoint || cmd),
         subcategories: ['container-topology', 'dockerfile'],
       }),
     ];
@@ -1059,13 +1059,29 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
   //  - the author's own DECLARATION (the run command) outranks a directory
   //    basename, because a directory name is an accident of how we stored the
   //    source while ENTRYPOINT/CMD is something the author wrote deliberately.
+  //
+  // REFINED 2026-08-11, measured: `CMD ["node", "server.js"]` in a directory
+  // named `zerac-ui` shipped the alias `server`. The rank above is right about
+  // WHY the declaration usually wins — the author wrote it — but wrong to treat
+  // every declared token as equally identifying. `server`, `main`, `app`,
+  // `index` name the CONVENTION for where a program starts, not which program
+  // it is; they would be the alias for a huge fraction of all repos, which is
+  // the definition of a name that identifies nothing. A real directory name
+  // beats a conventional entry stem, and the stem is still kept as a secondary
+  // alias so topology joins that match on it keep working.
   const declared = serviceNameFromCommand(command);
-  if (declared) {
-    base = declared;
+  const declaredIdentifies = declared && !isConventionalEntryStem(declared);
+  if (declaredIdentifies) {
+    base = declared!;
   } else if (dockerfileDir && dockerfileDir !== '.' && !isIdentifierShapedRepoBasename(dockerfileDir)) {
     base = dockerfileDir;
   } else if (projectBase && !isIdentifierShapedRepoBasename(projectBase)) {
     base = projectBase;
+  } else if (declared) {
+    // Every real directory name available is a storage id, so a conventional
+    // entry stem — weak as it is — is still better evidence than a placeholder:
+    // it at least came from something the author wrote.
+    base = declared;
   } else {
     // Nothing the author declared is usable: no run command names a specific
     // binary, the Dockerfile sits at the root, and the only directory available
@@ -1087,6 +1103,51 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
  * Returns undefined rather than guessing when nothing specific is present, so
  * the caller's placeholder still applies and no invented name ever ships.
  */
+/**
+ * Does this token name WHERE a program starts rather than WHICH program it is?
+ *
+ * `server`, `main`, `app`, `index` are the conventional entry-file stems of most
+ * ecosystems. As a ship-unit alias they identify nothing — they would be the
+ * name of an enormous share of all repos — so they must not outrank a real
+ * directory name (see inferServiceName).
+ *
+ * spec-purity:vocab-ok — a closed ECOSYSTEM fact (conventional program-entry
+ * filenames), in the same family as the GENERIC_RUNTIMES and TASK_RUNNERS
+ * stoplists below. It only DEMOTES weak output; it never assigns a category and
+ * cannot decide what a repo is or does.
+ */
+function isConventionalEntryStem(token: string): boolean {
+  const CONVENTIONAL_ENTRY_STEMS = new Set([
+    'server', 'serve', 'main', 'app', 'application', 'index', 'start', 'run',
+    'bootstrap', 'entry', 'entrypoint', 'init', 'cli', 'bin', 'daemon',
+    'worker', 'service', 'program',
+  ]);
+  return CONVENTIONAL_ENTRY_STEMS.has(token.trim().toLowerCase());
+}
+
+/**
+ * Every alias this image can legitimately be joined on, PREFERRED FIRST.
+ *
+ * `service_aliases[0]` becomes the ship unit's published name (see
+ * deployable-evidence/providers/container.ts), while the infra-topology linker
+ * matches on any entry. Those two jobs pull in opposite directions — naming
+ * wants the most identifying token, joining wants every token anyone might
+ * reference — so this returns the ranked name first and keeps the rest instead
+ * of discarding real evidence to satisfy the ranking.
+ */
+function inferServiceAliases(projectPath: string, relativeFile: string, command?: string): string[] {
+  const normalize = (value: string): string => value.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
+  const preferred = inferServiceName(projectPath, relativeFile, command);
+  const candidates = [
+    preferred,
+    ...[serviceNameFromCommand(command), path.basename(path.dirname(relativeFile)), path.basename(projectPath)]
+      .filter((value): value is string => Boolean(value) && value !== '.')
+      .filter(value => !isIdentifierShapedRepoBasename(value))
+      .map(normalize),
+  ];
+  return Array.from(new Set(candidates.filter(Boolean)));
+}
+
 function serviceNameFromCommand(command?: string): string | undefined {
   if (!command) return undefined;
   // Tolerates both exec-form JSON (["node","app.js"]) and shell form.

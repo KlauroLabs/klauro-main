@@ -1,5 +1,3 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import { parseSqlTables } from '../../analyzer/languages/sql-schema-analyzer';
 
 // WHY: measured 2026-08-11 on a real repo. `.sql` was claimed by no language and
@@ -39,34 +37,31 @@ CREATE TABLE ghost_table (id INT);
 
 test('tables and columns are extracted from real-world DDL', () => {
   const tables = parseSqlTables(REAL_SHAPE);
-  assert.deepEqual(tables.map(t => t.name), ['voice_profiles', 'generation_jobs']);
+  expect(tables.map(t => t.name)).toEqual(['voice_profiles', 'generation_jobs']);
 
   const profiles = tables[0];
-  assert.equal(profiles.columns.length, 8, 'every declared column, and no constraint rows');
+  expect(profiles.columns.length).toBe(8); // every declared column, and no constraint rows
   const byName = new Map(profiles.columns.map(c => [c.name, c]));
-  assert.equal(byName.get('id')?.primaryKey, true);
-  assert.equal(byName.get('user_id')?.nullable, false, 'NOT NULL is an explicit declaration');
-  assert.equal(byName.get('display_name')?.nullable, true, 'absent NOT NULL means nullable');
-  assert.deepEqual(byName.get('user_id')?.references, { table: 'users', column: 'id' });
+  expect(byName.get('id')?.primaryKey).toBe(true);
+  expect(byName.get('user_id')?.nullable).toBe(false); // NOT NULL is an explicit declaration
+  expect(byName.get('display_name')?.nullable).toBe(true); // absent NOT NULL means nullable
+  expect(byName.get('user_id')?.references).toEqual({ table: 'users', column: 'id' });
   // NUMERIC(10,2) must not split on its internal comma.
-  assert.equal(byName.get('price')?.type, 'NUMERIC(10,2)');
+  expect(byName.get('price')?.type).toBe('NUMERIC(10,2)');
 });
 
 test('table-level PRIMARY KEY and FOREIGN KEY constraints are honoured', () => {
   const jobs = parseSqlTables(REAL_SHAPE)[1];
   const byName = new Map(jobs.columns.map(c => [c.name, c]));
-  assert.equal(byName.get('id')?.primaryKey, true, 'PRIMARY KEY (id) declared at table level');
-  assert.deepEqual(
-    byName.get('song_version_id')?.references,
-    { table: 'song_versions', column: 'id' },
-    'FOREIGN KEY ... REFERENCES is the deterministic ground for ERD cardinality',
-  );
+  expect(byName.get('id')?.primaryKey).toBe(true); // PRIMARY KEY (id) declared at table level
+  // FOREIGN KEY ... REFERENCES is the deterministic ground for ERD cardinality.
+  expect(byName.get('song_version_id')?.references).toEqual({ table: 'song_versions', column: 'id' });
 });
 
 test('commented-out declarations are not evidence', () => {
   const names = parseSqlTables(REAL_SHAPE).map(t => t.name);
-  assert.ok(!names.includes('ghost_table'), 'block-commented CREATE TABLE must be ignored');
-  assert.ok(!names.includes('also_ghost'), 'line-commented CREATE TABLE must be ignored');
+  expect(names).not.toContain('ghost_table'); // block-commented CREATE TABLE must be ignored
+  expect(names).not.toContain('also_ghost'); // line-commented CREATE TABLE must be ignored
 });
 
 test('a re-declared table across migrations is one entity, not several', () => {
@@ -75,7 +70,7 @@ test('a re-declared table across migrations is one entity, not several', () => {
     DROP TABLE songs;
     CREATE TABLE songs (id INT PRIMARY KEY, title TEXT, artist TEXT);
   `);
-  assert.equal(tables.length, 1, 'the canonical first declaration wins');
+  expect(tables.length).toBe(1); // the canonical first declaration wins
 });
 
 test('schema-qualified and quoted identifiers resolve to the bare table name', () => {
@@ -83,10 +78,10 @@ test('schema-qualified and quoted identifiers resolve to the bare table name', (
     CREATE TABLE public."Audio_Files" ("Id" INT PRIMARY KEY, path TEXT NOT NULL);
     CREATE TABLE \`backtick_table\` (id INT PRIMARY KEY, x TEXT);
   `);
-  assert.deepEqual(tables.map(t => t.name), ['Audio_Files', 'backtick_table']);
+  expect(tables.map(t => t.name)).toEqual(['Audio_Files', 'backtick_table']);
 });
 
 test('files with no table declaration yield nothing rather than a guess', () => {
-  assert.equal(parseSqlTables('SELECT * FROM songs; INSERT INTO songs VALUES (1);').length, 0);
-  assert.equal(parseSqlTables('CREATE TABLE broken (id INT').length, 0, 'unbalanced parens are skipped, not guessed');
+  expect(parseSqlTables('SELECT * FROM songs; INSERT INTO songs VALUES (1);').length).toBe(0);
+  expect(parseSqlTables('CREATE TABLE broken (id INT').length).toBe(0); // unbalanced parens are skipped, not guessed
 });
