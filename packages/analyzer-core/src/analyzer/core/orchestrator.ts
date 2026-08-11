@@ -28511,6 +28511,42 @@ export class AnalyzerOrchestrator {
         };
       }
 
+      // LIBRARY, before the shrug. Measured live 2026-08-11 on a real npm package
+      // (`main`, no `bin`, 300 nodes, 2 entities): it fell to
+      // 'general-application' with evidence "No distinctive patterns detected",
+      // and the cost was not cosmetic. An ungrounded type gives the narrative
+      // stage nothing to describe, the model reached for compound modifiers to
+      // cover the gap ("interacts-local"), the grounding gate correctly rejected
+      // the fabrication, and the analysis shipped a BLANK system description with
+      // `domain: null` — the single most customer-visible field in the payload,
+      // empty, on a 300-node repo where there is no excuse for it.
+      //
+      // Being consumed as a library IS a distinctive pattern, and it is decidable
+      // from evidence already here: nothing invokes this as a program (no HTTP,
+      // no CLI, no page/route, no scheduled or event entry — `test` and
+      // `lifecycle` excluded because a harness and a load-time hook are not
+      // invocation surfaces), yet there is real analysed code with declared
+      // entities or capabilities. Code that runs nothing on its own but defines
+      // domain types is consumed BY other code. Same reasoning as
+      // determineSystemType's tier-3 branch in system-type.ts, expressed with the
+      // inputs this method actually receives rather than by duplicating its
+      // deployable-evidence plumbing.
+      const invocationEntryPoints = entryPoints.filter(entry =>
+        entry.type !== 'test' && entry.type !== 'lifecycle');
+      const hasAnalysedSubstance = productDataEntities.length > 0 || capabilities.length > 0;
+      if (invocationEntryPoints.length === 0 && hasAnalysedSubstance) {
+        return {
+          primary_type: 'library',
+          confidence: 0.6,
+          evidence: [
+            'no invocation entry points (no HTTP, CLI, page, scheduled or event surface)',
+            `${productDataEntities.length} declared data entit${productDataEntities.length === 1 ? 'y' : 'ies'}`,
+            `${capabilities.length} capability candidate${capabilities.length === 1 ? '' : 's'}`,
+          ],
+          secondary_types: undefined,
+        };
+      }
+
       return {
         primary_type: 'general-application',
         confidence: 0.2,
