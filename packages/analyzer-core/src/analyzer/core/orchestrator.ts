@@ -16983,7 +16983,23 @@ export class AnalyzerOrchestrator {
     // repository in existence. The defect it guards against is a property of
     // the description, not of one repository's industry — the gate is dropped
     // and the check now applies wherever it applies.
-    if (/\b(boilerplate|prefetch strategies?|main grounded concepts are\s+(?:network|routing|access|checkout))\b/i.test(cleaned)) {
+    // REMOVED (2026-08-11, same hardcoded-knowledge class as the two removals
+    // above): `boilerplate` was a trigger word here, and it produced a live false
+    // rejection on a real dependency-injection library. "Reduces boilerplate" is
+    // the standard, accurate way to describe what a wiring/DI package DOES —
+    // developer plumbing is that product's subject matter, not an evasion of it.
+    // The rejection cost the customer the entire system description: the analysis
+    // shipped `description: null` and `domain: null` on a 300-node repo, because a
+    // single ordinary English value-word was treated as proof the description
+    // described the wrong thing.
+    //
+    // The two surviving patterns are structural RECITALS — "prefetch strategies",
+    // and "main grounded concepts are network/routing/access/checkout" — which are
+    // evidence of describing the scaffolding instead of the product regardless of
+    // what the product is. A lone value-word is not, and the distinction inverts
+    // for any repo whose product IS infrastructure (the same inversion already
+    // documented for IaC repos at `ungrounded-system-type: provisions-manages`).
+    if (/\b(prefetch strategies?|main grounded concepts are\s+(?:network|routing|access|checkout))\b/i.test(cleaned)) {
       return { ok: false, reason: 'description-leans-on-framework-plumbing' };
     }
     const genericConceptListEnding = /\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b(?:,\s*(?:and\s+)?\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b){1,4}\.?$/i.test(cleaned);
