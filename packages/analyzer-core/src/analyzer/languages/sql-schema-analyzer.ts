@@ -1,6 +1,8 @@
 import { AnalysisContext, BaseAnalyzer, FileAnalysisContext, FileAnalysisResult } from '../core/base-analyzer';
 import { CASEdge, CASEntryPoint, CASExitPoint, CASNode } from '../../types/cas.types';
 import { cachedGlob as glob } from '../core/glob-cache';
+import * as fs from 'fs-extra';
+import * as path from 'path';
 
 /**
  * SQL DDL as an entity source.
@@ -276,6 +278,16 @@ export class SqlSchemaAnalyzer extends BaseAnalyzer {
 
   protected getLevelName(level: number): string {
     return level <= 3 ? 'schema' : 'schema detail';
+  }
+
+  /** Unreadable file is skipped, never fatal: one bad path must not fail an
+   *  analysis (matches the sibling template analyzers). */
+  private async safeRead(projectPath: string, relativeFile: string): Promise<string | undefined> {
+    try {
+      return await fs.readFile(path.join(projectPath, relativeFile), 'utf8');
+    } catch {
+      return undefined;
+    }
   }
 
   private async analyzeSchemaFile(projectPath: string, relativeFile: string): Promise<CASNode[]> {
