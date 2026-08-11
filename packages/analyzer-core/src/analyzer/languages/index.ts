@@ -12,6 +12,7 @@ export { RubyAnalyzer } from './ruby-analyzer';
 export { DartAnalyzer } from './dart-analyzer';
 export { TerraformAnalyzer } from './terraform-analyzer';
 export { CloudFormationAnalyzer } from './cloudformation-analyzer';
+export { SqlSchemaAnalyzer } from './sql-schema-analyzer';
 export { CCppAnalyzer } from './c-cpp-analyzer';
 export { KotlinAnalyzer } from './kotlin-analyzer';
 export { SwiftAnalyzer } from './swift-analyzer';
@@ -64,6 +65,7 @@ export const LanguageAnalyzers = {
   // registry entry + LANGUAGE_SPECS grammar, so leaving it unmapped routes it to
   // the breadth walker instead.
   cloudformation: 'CloudFormationAnalyzer',
+  'sql-schema': 'SqlSchemaAnalyzer',
   c: 'CCppAnalyzer',
   cpp: 'CCppAnalyzer',
   kotlin: 'KotlinAnalyzer',
@@ -235,6 +237,17 @@ export const ANALYZER_METADATA = [
     name: 'CloudFormationAnalyzer',
     languages: ['cloudformation'],
     frameworks: ['aws-cloudformation'],
+    priority: 85,
+    category: 'language'
+  },
+  {
+    // A CREATE TABLE is the strongest entity evidence a repo can offer, so this
+    // runs at ORM-analyzer priority rather than as an afterthought: a raw-SQL
+    // backend previously produced ZERO entities, which collapsed
+    // capability<->flow linkage to 0/38 on a real repo.
+    name: 'SqlSchemaAnalyzer',
+    languages: ['sql'],
+    frameworks: ['sql-ddl'],
     priority: 85,
     category: 'language'
   },

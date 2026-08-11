@@ -28,6 +28,7 @@ import { RubyAnalyzer } from '../languages/ruby-analyzer';
 import { DartAnalyzer } from '../languages/dart-analyzer';
 import { TerraformAnalyzer } from '../languages/terraform-analyzer';
 import { CloudFormationAnalyzer } from '../languages/cloudformation-analyzer';
+import { SqlSchemaAnalyzer } from '../languages/sql-schema-analyzer';
 import { CCppAnalyzer } from '../languages/c-cpp-analyzer';
 import { KotlinAnalyzer } from '../languages/kotlin-analyzer';
 import { SwiftAnalyzer } from '../languages/swift-analyzer';
@@ -405,6 +406,17 @@ export class CASAnalyzerService {
           content: [/AWSTemplateFormatVersion/, /Resources:\s*[\s\S]*Type:\s*AWS::/, /"Resources"\s*:\s*\{[\s\S]*"Type"\s*:\s*"AWS::/]
         },
         analyzer: new CloudFormationAnalyzer()
+      },
+      {
+        id: 'sql-schema',
+        name: 'SQL Schema Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['**/*.sql', '**/*.ddl'],
+          content: [/CREATE\s+(?:GLOBAL\s+|LOCAL\s+)?(?:TEMP(?:ORARY)?\s+|UNLOGGED\s+)?TABLE/i]
+        },
+        analyzer: new SqlSchemaAnalyzer()
       },
       {
         id: 'c-cpp',

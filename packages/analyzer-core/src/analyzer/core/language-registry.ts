@@ -38,6 +38,14 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
     manifests: ['package.json']
   },
   {
+    // `.sql` was claimed by NO language and read by NOTHING before 2026-08-11:
+    // a repo whose schema lives in DDL had its entities invisible, and the
+    // comprehension tiers above them collapsed as a result.
+    id: 'sql',
+    extensions: ['sql', 'ddl'],
+    displayName: 'SQL',
+  },
+  {
     id: 'typescript',
     extensions: ['ts', 'tsx'],
     manifests: []
