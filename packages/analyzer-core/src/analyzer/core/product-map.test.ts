@@ -313,3 +313,86 @@ test('INVARIANT: file-adjacency test evidence (no traced call edge) still satisf
   const map = buildProductMap(cas);
   assert.equal(map.capabilities[0].tests_present, true);
 });
+
+// Measured live 2026-08-10 on a 92,582-node repo (v1.0.143): 7 of 8 capabilities
+// reported tests_present:false while the SAME analysis reported health.tests
+// 12,632 passing — and 6 of those 8 had zero linked journeys. Every path to
+// `true` was ultimately `journeys.some(...)`, so "no journey reached this
+// capability" silently rendered as "this capability has no tests". A false
+// negative here is worse than an unknown: a customer reads it as a finding and
+// concludes the code is unsafe to change.
+//
+// Paired, both directions — matching stem must pass, non-matching must NOT, so
+// the fix cannot degenerate into "assume tested".
+test('capability tests_present is true from its OWN operations when NO journey links to it', () => {
+  const cas = baseCas({
+    nodes: [
+      { id: 'handler1', type: 'method', name: 'pollFeeds', source: { file: 'src/feed/poller.ts' } },
+    ],
+    entry_points: [
+      { id: 'ep-orphan', type: 'schedule', name: 'poll', source_node: 'handler1', handler: { node_id: 'handler1' } },
+    ],
+    // Deliberately empty: this is the shape that used to force a false negative.
+    user_journeys: [],
+    test_suites: [
+      { name: 'poller', file_path: 'src/feed/poller.test.ts', tests: [] },
+    ],
+    system_capabilities: [
+      {
+        id: 'cap-orphan',
+        name: 'Ingest Feeds On A Schedule',
+        description: 'Periodically fetches new feed items so readers see fresh content.',
+        category: 'core',
+        criticality: 'high',
+        operations: [{ entry_point_id: 'ep-orphan', entry_point_type: 'schedule', action: 'poll' }],
+        related_entities: [],
+      },
+    ],
+    data_entities: [],
+  });
+  const map = buildProductMap(cas);
+  const capability = map.capabilities.find(entry => entry.name === 'Ingest Feeds On A Schedule');
+  assert.ok(capability, 'capability should be present');
+  assert.equal(capability!.journeys.length, 0, 'precondition: no journey links to this capability');
+  assert.equal(
+    capability!.tests_present,
+    true,
+    'a capability whose own entry-point file has a sibling test suite is tested, journey or not',
+  );
+});
+
+test('capability tests_present stays false when no test suite matches its own operation files', () => {
+  const cas = baseCas({
+    nodes: [
+      { id: 'handler2', type: 'method', name: 'sweep', source: { file: 'src/sweep/runner.ts' } },
+    ],
+    entry_points: [
+      { id: 'ep-untested', type: 'schedule', name: 'sweep', source_node: 'handler2', handler: { node_id: 'handler2' } },
+    ],
+    user_journeys: [],
+    // A real suite exists, but for UNRELATED code — the stem must not match.
+    test_suites: [
+      { name: 'poller', file_path: 'src/feed/poller.test.ts', tests: [] },
+    ],
+    system_capabilities: [
+      {
+        id: 'cap-untested',
+        name: 'Sweep Expired Sessions',
+        description: 'Removes sessions that have passed their expiry so stale access ends.',
+        category: 'supporting',
+        criticality: 'medium',
+        operations: [{ entry_point_id: 'ep-untested', entry_point_type: 'schedule', action: 'sweep' }],
+        related_entities: [],
+      },
+    ],
+    data_entities: [],
+  });
+  const map = buildProductMap(cas);
+  const capability = map.capabilities.find(entry => entry.name === 'Sweep Expired Sessions');
+  assert.ok(capability, 'capability should be present');
+  assert.equal(
+    capability!.tests_present,
+    false,
+    'evidence-gated: an unrelated test suite must not make this capability look tested',
+  );
+});
