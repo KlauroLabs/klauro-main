@@ -452,7 +452,60 @@ function dayKey(timestamp: string): string {
   return safe.toISOString().slice(0, 10);
 }
 
+/**
+ * Day-file readers accept BOTH formats: the legacy `<day>.json` array and the
+ * append-only `<day>.jsonl` this writer now produces. Newest-first ordering is
+ * preserved for callers that rely on it (see loadIngestedTelemetry's early
+ * `limit` break) by reversing the append-ordered JSONL lines.
+ */
+const DAY_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}\.jsonl?$/;
+
+function dayFromFileName(name: string): string {
+  return name.replace(/\.jsonl?$/, '');
+}
+
+async function readDayObservations(filePath: string): Promise<RuntimeObservation[]> {
+  try {
+    if (filePath.endsWith('.jsonl')) {
+      const raw = await fs.readFile(filePath, 'utf8');
+      const parsed: RuntimeObservation[] = [];
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          parsed.push(JSON.parse(trimmed) as RuntimeObservation);
+        } catch {
+          // A torn final line is expected if the process died mid-append —
+          // skip it rather than discarding the whole day, which is the entire
+          // durability advantage of append-only over read-modify-write.
+        }
+      }
+      // Appended chronologically; callers expect newest first.
+      return parsed.reverse();
+    }
+    const array = await fs.readJson(filePath);
+    return Array.isArray(array) ? array : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Appends observations WITHOUT reading or rewriting the day file.
+ *
+ * Measured live on prod 2026-08-11: `local ingest of 1 event(s) took 29126ms`
+ * and `2 event(s) took 27549ms`. The old implementation read the whole day file,
+ * merged, and atomically REWROTE it on every ingest, then ran a compaction pass
+ * over 14 days of files — so appending one event cost a full parse + stringify +
+ * write of a 4.1MB, 5,000-observation array. O(existing) per event, on the
+ * production API process, in-line with customer analyses.
+ *
+ * Append-only makes it O(new events). The per-day cap is still enforced, just
+ * lazily during compaction instead of on every write — a cap is a storage bound,
+ * not a reason to rewrite megabytes per event.
+ */
 export async function appendIngestedTelemetry(projectPath: string, observations: RuntimeObservation[]): Promise<void> {
+  if (observations.length === 0) return;
   const dir = ingestedTelemetryDir(projectPath);
   await fs.ensureDir(dir);
 
@@ -463,20 +516,9 @@ export async function appendIngestedTelemetry(projectPath: string, observations:
   }
 
   for (const [day, dayObservations] of byDay) {
-    const filePath = path.join(dir, `${day}.json`);
-    let existing: RuntimeObservation[] = [];
-    if (await fs.pathExists(filePath)) {
-      try {
-        existing = await fs.readJson(filePath);
-      } catch {
-        existing = [];
-      }
-    }
-    const merged = [...dayObservations, ...existing].slice(0, MAX_OBSERVATIONS_PER_DAY);
-    await writeJsonAtomic(filePath, merged);
+    const lines = dayObservations.map(observation => `${JSON.stringify(observation)}\n`).join('');
+    await fs.appendFile(path.join(dir, `${day}.jsonl`), lines, 'utf8');
   }
-
-  await compactIngestedTelemetry(projectPath);
 }
 
 export async function compactIngestedTelemetry(projectPath: string, retentionDays = RETENTION_DAYS): Promise<{ removed_days: string[] }> {
@@ -484,13 +526,27 @@ export async function compactIngestedTelemetry(projectPath: string, retentionDay
   if (!(await fs.pathExists(dir))) return { removed_days: [] };
 
   const cutoff = dayKey(new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString());
-  const expired = (await fs.readdir(dir))
-    .filter(name => /^\d{4}-\d{2}-\d{2}\.json$/.test(name))
-    .filter(name => name.replace(/\.json$/, '') < cutoff);
+  const allDayFiles = (await fs.readdir(dir)).filter(name => DAY_FILE_PATTERN.test(name));
+  const expired = allDayFiles.filter(name => dayFromFileName(name) < cutoff);
+  // The per-day cap moved here from appendIngestedTelemetry: enforcing it on
+  // every write meant reading and rewriting a 4.1MB array per event (measured
+  // 29s for ONE event on prod). Trimming during compaction keeps the storage
+  // bound while leaving the write path O(new events).
+  for (const name of allDayFiles) {
+    if (dayFromFileName(name) < cutoff) continue;
+    if (!name.endsWith('.jsonl')) continue;
+    const filePath = path.join(dir, name);
+    const observations = await readDayObservations(filePath);
+    if (observations.length <= MAX_OBSERVATIONS_PER_DAY) continue;
+    // readDayObservations returns newest-first; keep the newest N and rewrite
+    // in append (chronological) order so the format stays consistent.
+    const kept = observations.slice(0, MAX_OBSERVATIONS_PER_DAY).reverse();
+    await fs.writeFile(filePath, kept.map(item => `${JSON.stringify(item)}\n`).join(''), 'utf8');
+  }
   for (const name of expired) {
     await fs.remove(path.join(dir, name));
   }
-  return { removed_days: expired.map(name => name.replace(/\.json$/, '')).sort() };
+  return { removed_days: expired.map(dayFromFileName).sort() };
 }
 
 /** Bounded number of persisted day-files a single backfill pass will rewrite. */
@@ -564,7 +620,7 @@ export async function backfillIngestedTelemetry(
   if (!(await fs.pathExists(dir))) return result;
 
   const dayFiles = (await fs.readdir(dir))
-    .filter(name => /^\d{4}-\d{2}-\d{2}\.json$/.test(name))
+    .filter(name => DAY_FILE_PATTERN.test(name))
     .sort()
     .reverse()
     .slice(0, BACKFILL_MAX_DAYS);
@@ -599,8 +655,20 @@ export async function backfillIngestedTelemetry(
     }
 
     if (dayUpgraded) {
-      await writeJsonAtomic(filePath, observations);
-      result.days_rewritten.push(name.replace(/\.json$/, ''));
+      // Write back in the file's OWN format. Backfill rewrites a whole day after
+      // upgrading correlations, so emitting a JSON array into a `.jsonl` file
+      // would corrupt every observation in it — the readers would then parse the
+      // array's single line and silently return nothing. Rare path, total data
+      // loss if wrong, so it branches explicitly rather than assuming.
+      if (filePath.endsWith('.jsonl')) {
+        // readDayObservations handed these back newest-first; restore append
+        // (chronological) order on disk.
+        const chronological = [...observations].reverse();
+        await fs.writeFile(filePath, chronological.map(item => `${JSON.stringify(item)}\n`).join(''), 'utf8');
+      } else {
+        await writeJsonAtomic(filePath, observations);
+      }
+      result.days_rewritten.push(dayFromFileName(name));
     }
   }
 
@@ -613,14 +681,14 @@ export async function loadIngestedTelemetry(projectPath: string, options: Teleme
   if (!(await fs.pathExists(dir))) return [];
 
   const dayFiles = (await fs.readdir(dir))
-    .filter(name => /^\d{4}-\d{2}-\d{2}\.json$/.test(name))
+    .filter(name => DAY_FILE_PATTERN.test(name))
     .sort()
     .reverse();
 
   let observations: RuntimeObservation[] = [];
   for (const name of dayFiles) {
     try {
-      const dayObservations: RuntimeObservation[] = await fs.readJson(path.join(dir, name));
+      const dayObservations = await readDayObservations(path.join(dir, name));
       observations.push(...dayObservations);
     } catch {
       continue;

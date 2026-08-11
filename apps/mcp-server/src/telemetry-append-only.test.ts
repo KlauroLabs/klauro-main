@@ -1,0 +1,77 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'fs-extra';
+import * as os from 'os';
+import * as path from 'path';
+import { appendIngestedTelemetry, compactIngestedTelemetry, ingestedTelemetryDir, loadIngestedTelemetry } from './telemetry-ingestion';
+import type { RuntimeObservation } from './product';
+
+// Measured on prod 2026-08-11: "local ingest of 1 event(s) took 29126ms". The
+// writer read a 4.1MB / 5,000-observation day file, merged, and atomically
+// REWROTE it on every ingest — O(existing) per event, in-line on the API process
+// while customer analyses ran. These tests pin the properties that make that
+// impossible to reintroduce: appends must not rewrite, legacy files must stay
+// readable, and the per-day cap must still hold.
+function observation(id: string, recordedAt: string): RuntimeObservation {
+  return {
+    id,
+    project_path: '/tmp/does-not-matter',
+    recorded_at: recordedAt,
+    source: 'ingested',
+    event: { type: 'request', timestamp: recordedAt, schema_version: 'ingested-1' },
+    correlation: { status: 'unmatched' },
+  } as unknown as RuntimeObservation;
+}
+
+async function scratchProject(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), 'klauro-telemetry-'));
+}
+
+test('appending does not rewrite prior observations (append-only, O(new))', async () => {
+  const projectPath = await scratchProject();
+  const day = '2026-08-11T10:00:00.000Z';
+  await appendIngestedTelemetry(projectPath, [observation('first', day)]);
+  const dir = ingestedTelemetryDir(projectPath);
+  const file = path.join(dir, '2026-08-11.jsonl');
+  const afterFirst = await fs.readFile(file, 'utf8');
+
+  await appendIngestedTelemetry(projectPath, [observation('second', day)]);
+  const afterSecond = await fs.readFile(file, 'utf8');
+
+  assert.ok(afterSecond.startsWith(afterFirst), 'the existing bytes must be untouched — a rewrite is the 29s defect');
+  assert.equal(afterSecond.trim().split('\n').length, 2);
+  const loaded = await loadIngestedTelemetry(projectPath);
+  assert.deepEqual(loaded.map(item => item.id), ['second', 'first'], 'newest-first ordering preserved for callers');
+  await fs.remove(projectPath);
+});
+
+test('legacy .json day files stay readable alongside new .jsonl', async () => {
+  const projectPath = await scratchProject();
+  const dir = ingestedTelemetryDir(projectPath);
+  await fs.ensureDir(dir);
+  // A day written by the OLD implementation.
+  await fs.writeJson(path.join(dir, '2026-08-09.json'), [observation('legacy', '2026-08-09T10:00:00.000Z')]);
+  await appendIngestedTelemetry(projectPath, [observation('modern', '2026-08-11T10:00:00.000Z')]);
+
+  const loaded = await loadIngestedTelemetry(projectPath);
+  const ids = loaded.map(item => item.id);
+  assert.ok(ids.includes('legacy'), 'existing customer telemetry must not become invisible');
+  assert.ok(ids.includes('modern'));
+  await fs.remove(projectPath);
+});
+
+test('the per-day cap still holds, enforced during compaction not on every write', async () => {
+  const projectPath = await scratchProject();
+  const day = '2026-08-11T10:00:00.000Z';
+  // 5,001 observations: one over MAX_OBSERVATIONS_PER_DAY.
+  const batch = Array.from({ length: 5001 }, (_, index) => observation(`obs-${index}`, day));
+  await appendIngestedTelemetry(projectPath, batch);
+  const beforeCompaction = await loadIngestedTelemetry(projectPath);
+  assert.equal(beforeCompaction.length, 5001, 'the write path is deliberately uncapped — that is what makes it O(new)');
+
+  await compactIngestedTelemetry(projectPath);
+  const afterCompaction = await loadIngestedTelemetry(projectPath);
+  assert.equal(afterCompaction.length, 5000, 'compaction restores the storage bound');
+  assert.equal(afterCompaction[0].id, 'obs-5000', 'the NEWEST observations are the ones kept');
+  await fs.remove(projectPath);
+});
