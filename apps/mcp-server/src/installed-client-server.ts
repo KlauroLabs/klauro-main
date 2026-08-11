@@ -78,7 +78,7 @@ const MANIFEST_DIRECTORY_LIMIT = 25;
  * the response says how many rows it dropped so nothing looks complete when it
  * is not.
  */
-function summarizeUploadManifest(manifest: Record<string, any>): Record<string, unknown> {
+export function summarizeUploadManifest(manifest: Record<string, any>): Record<string, unknown> {
   const files: Array<{ path?: string; bytes?: number }> = Array.isArray(manifest.files) ? manifest.files : [];
   const excluded: Array<{ path?: string; reason?: string }> = Array.isArray(manifest.excluded) ? manifest.excluded : [];
 
