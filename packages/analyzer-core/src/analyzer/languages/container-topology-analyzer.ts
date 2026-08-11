@@ -153,7 +153,7 @@ export class DockerfileAnalyzer extends ContainerTopologyAnalyzer {
         add_sources: addSources,
         workdir,
         build_context: path.dirname(relativeFile) === '.' ? '' : path.dirname(relativeFile),
-        service_aliases: [inferServiceName(projectPath, relativeFile)],
+        service_aliases: [inferServiceName(projectPath, relativeFile, entrypoint || cmd)],
         subcategories: ['container-topology', 'dockerfile'],
       }),
     ];
@@ -1031,7 +1031,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function inferServiceName(projectPath: string, relativeFile: string): string {
+function inferServiceName(projectPath: string, relativeFile: string, command?: string): string {
   // Production analyze snapshots the source to an on-disk dir named after the
   // analysisId HASH, so path.basename(projectPath) can be hash-shaped rather
   // than a real service name. Prefer it when it's a legitimate name; when
@@ -1046,9 +1046,66 @@ function inferServiceName(projectPath: string, relativeFile: string): string {
   } else if (dockerfileDir && dockerfileDir !== '.' && !isHashOrIdShapedToken(dockerfileDir)) {
     base = dockerfileDir;
   } else {
-    base = 'unnamed-service';
+    // ROOT Dockerfile in a hash-named snapshot: both legs above fail — the
+    // project dir is the analysis-id hash and the Dockerfile's dir is ".".
+    // Measured live 2026-08-10: a 92,582-node repo's primary ship unit
+    // (92,575 of those nodes) was published to the customer as
+    // "unnamed-service" for exactly this reason, while the Dockerfile itself
+    // said ENTRYPOINT ["node", "openclaw.mjs", "gateway", ...].
+    //
+    // The command IS real ship evidence — it names the thing that runs — so
+    // prefer it over a placeholder. Never a keyword table: this reads the
+    // author's own declaration and takes its script/binary basename, which is
+    // why generic interpreters and shells are skipped rather than matched
+    // against a vocabulary of "good" names.
+    base = serviceNameFromCommand(command) || 'unnamed-service';
   }
   return base.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
+}
+
+/**
+ * The ship unit's name as its own ENTRYPOINT/CMD declares it.
+ *
+ * Takes the first token that names something specific to THIS image, skipping
+ * interpreters and shells (which name the runtime, not the service) and flags.
+ * `["node", "openclaw.mjs", "gateway"]` yields `openclaw`;
+ * `["/usr/local/bin/openclaw-cleanup-smoke"]` yields `openclaw-cleanup-smoke`.
+ * Returns undefined rather than guessing when nothing specific is present, so
+ * the caller's placeholder still applies and no invented name ever ships.
+ */
+function serviceNameFromCommand(command?: string): string | undefined {
+  if (!command) return undefined;
+  // Tolerates both exec-form JSON (["node","app.js"]) and shell form.
+  const tokens = command
+    .replace(/[[\]",]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter(token => !token.startsWith('-'));
+  // Runtimes/shells name the interpreter, not the deployable.
+  //
+  // spec-purity:vocab-ok — this is a closed ECOSYSTEM fact (the set of language
+  // runtimes, package managers and init shims that can appear as argv[0]), not a
+  // business/domain keyword bag, and it REJECTS bad output rather than assigning
+  // a category. Nothing here decides what a repo is or does; it only prevents
+  // naming a ship unit "node" or "sh". The cardinal rule bans hardcoded
+  // brand/domain categorizers — a stoplist over another ecosystem's own
+  // vocabulary is the opposite: it keeps that vocabulary OUT of our output.
+  const GENERIC_RUNTIMES = new Set([
+    'sh', 'bash', 'zsh', 'ash', 'dash', 'env', 'exec',
+    'node', 'nodejs', 'npm', 'npx', 'pnpm', 'yarn', 'bun', 'deno',
+    'python', 'python3', 'py', 'pip', 'uv', 'ruby', 'bundle', 'rake',
+    'java', 'dotnet', 'go', 'php', 'perl', 'gunicorn', 'uvicorn', 'supervisord',
+    'tini', 'dumb-init', 'entrypoint.sh', 'docker-entrypoint.sh', 'start.sh',
+  ]);
+  for (const token of tokens) {
+    const basename = path.basename(token);
+    const withoutExtension = basename.replace(/\.(mjs|cjs|js|ts|py|rb|sh|jar|exe)$/i, '');
+    if (!withoutExtension) continue;
+    if (GENERIC_RUNTIMES.has(basename.toLowerCase()) || GENERIC_RUNTIMES.has(withoutExtension.toLowerCase())) continue;
+    if (isHashOrIdShapedToken(withoutExtension)) continue;
+    return withoutExtension;
+  }
+  return undefined;
 }
 
 function inferServiceReference(key: string, value: string): string | null {
