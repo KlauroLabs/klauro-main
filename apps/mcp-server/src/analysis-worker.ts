@@ -101,6 +101,18 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
   if (process.env.KLAURO_TEST_ANALYSIS_WORKER_STALL === 'before-start') {
     await new Promise<void>(() => undefined);
   }
+  // SEGMENT TIMING. The parent now reports the worker span, and the orchestrator
+  // reports its own phase breakdown, but nothing attributed the gap BETWEEN them.
+  // Measured on prod (5,284-file repo): worker=320s with the orchestrator's own
+  // "Analysis completed in" at 163s — leaving ~157s inside this function
+  // unaccounted, which is the largest single unknown in the pipeline.
+  //
+  // This function has three awaited segments, each persisting as it lands
+  // (l0 -> rest -> enrichment), so the missing time belongs to one of them and
+  // guessing which has already cost three misdirected attempts today. Time each.
+  const workerStartedAt = Date.now();
+  let l0DoneAt = workerStartedAt;
+  let restDoneAt = workerStartedAt;
   const layered = await analyzeProjectLayered(
     request.projectPath,
     request.displayName,
@@ -110,6 +122,7 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
 
   try {
     await layered.l0;
+    l0DoneAt = Date.now();
     sendPhase(request.id, 'l0', 'succeeded');
   } catch (error) {
     // analyzeProjectLayered's own L0 path already swallows the common
@@ -130,6 +143,7 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
   let deferred: Awaited<typeof layered.rest>;
   try {
     deferred = await layered.rest;
+    restDoneAt = Date.now();
     sendPhase(request.id, 'rest', 'succeeded');
   } catch (error) {
     sendPhase(request.id, 'rest', 'failed', errorMessage(error));
@@ -155,6 +169,12 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
     aiEnrichment === 'error' ? deferred.output.ai_enrichment_error : undefined,
   );
 
+  const enrichmentDoneAt = Date.now();
+  console.error(
+    `[Klauro] worker segments: l0=${l0DoneAt - workerStartedAt}ms ` +
+    `rest=${restDoneAt - l0DoneAt}ms enrichment=${enrichmentDoneAt - restDoneAt}ms ` +
+    `total=${enrichmentDoneAt - workerStartedAt}ms`,
+  );
   return summarizeLayeredAnalysis(request.projectPath, deferred.output);
 }
 
