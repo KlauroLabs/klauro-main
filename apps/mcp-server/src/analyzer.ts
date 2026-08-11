@@ -21,6 +21,7 @@ import { DartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/langu
 import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer';
 import { CloudFormationAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/cloudformation-analyzer';
 import { SqlSchemaAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/sql-schema-analyzer';
+import { JsonFileStoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/json-file-store-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer';
 import { AnsibleAnalyzer, PulumiAnalyzer, HelmAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer';
 import { CaddyAnalyzer, NginxAnalyzer, ApacheAnalyzer, HAProxyAnalyzer, TraefikAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer';
@@ -416,6 +417,17 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         content: [/CREATE\s+(?:GLOBAL\s+|LOCAL\s+)?(?:TEMP(?:ORARY)?\s+|UNLOGGED\s+)?TABLE/i],
       },
       analyzer: new SqlSchemaAnalyzer(),
+    },
+    {
+      id: 'json-file-store',
+      name: 'JSON File Store Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['**/*.js', '**/*.mjs', '**/*.cjs', '**/*.ts', '**/*.mts', '**/*.cts'],
+        content: [/write(?:File|Json)(?:Sync)?\s*\(/],
+      },
+      analyzer: new JsonFileStoreAnalyzer(),
     },
     {
       id: 'dockerfile',

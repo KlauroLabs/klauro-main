@@ -13,6 +13,7 @@ export { DartAnalyzer } from './dart-analyzer';
 export { TerraformAnalyzer } from './terraform-analyzer';
 export { CloudFormationAnalyzer } from './cloudformation-analyzer';
 export { SqlSchemaAnalyzer } from './sql-schema-analyzer';
+export { JsonFileStoreAnalyzer } from './json-file-store-analyzer';
 export { CCppAnalyzer } from './c-cpp-analyzer';
 export { KotlinAnalyzer } from './kotlin-analyzer';
 export { SwiftAnalyzer } from './swift-analyzer';
@@ -258,6 +259,19 @@ export const ANALYZER_METADATA = [
     languages: ['sql'],
     frameworks: ['sql-ddl'],
     priority: 85,
+    category: 'language'
+  },
+  {
+    // A JSON file the code both writes and reads back is a persistent store — the
+    // filesystem's CREATE TABLE. Registered as a SUPPLEMENT to the JS/TS analyzer,
+    // never as the owner of those languages: it reads only fs/JSON call shapes and
+    // must not displace real code extraction (see the deep-ownership warnings on
+    // LanguageAnalyzers above — mapping a language to an analyzer that does not
+    // fully extract it is exactly the trap those comments describe).
+    name: 'JsonFileStoreAnalyzer',
+    languages: ['javascript', 'typescript'],
+    frameworks: ['json-file-store'],
+    priority: 40,
     category: 'language'
   },
   {
