@@ -1095,6 +1095,20 @@ function serviceNameFromCommand(command?: string): string | undefined {
     .split(/\s+/)
     .filter(Boolean)
     .filter(token => !token.startsWith('-'));
+  // A TASK RUNNER's arguments are script/target names, not binaries: `npm start`
+  // declares the script "start", `rake deploy` the task "deploy". Taking the
+  // next token there produced the ship-unit name "start" — junk, and worse than
+  // the directory name it displaced. So when argv[0] is a task runner, this
+  // command declares NO binary and we must fall through to the next rank.
+  //
+  // spec-purity:vocab-ok — closed ECOSYSTEM fact (task runners), not a
+  // business/domain bag; it only suppresses bad output and can never categorise
+  // a repo.
+  const TASK_RUNNERS = new Set([
+    'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx', 'deno',
+    'make', 'rake', 'mix', 'poetry', 'uv', 'pipenv', 'hatch', 'tox',
+    'gradle', 'gradlew', 'mvn', 'sbt', 'cargo', 'composer', 'bundle', 'go',
+  ]);
   // Runtimes/shells name the interpreter, not the deployable.
   //
   // spec-purity:vocab-ok — this is a closed ECOSYSTEM fact (the set of language
@@ -1111,12 +1125,14 @@ function serviceNameFromCommand(command?: string): string | undefined {
     'java', 'dotnet', 'go', 'php', 'perl', 'gunicorn', 'uvicorn', 'supervisord',
     'tini', 'dumb-init', 'entrypoint.sh', 'docker-entrypoint.sh', 'start.sh',
   ]);
+  const leader = tokens.length ? path.basename(tokens[0]).toLowerCase() : '';
+  if (TASK_RUNNERS.has(leader)) return undefined;
   for (const token of tokens) {
     const basename = path.basename(token);
     const withoutExtension = basename.replace(/\.(mjs|cjs|js|ts|py|rb|sh|jar|exe)$/i, '');
     if (!withoutExtension) continue;
     if (GENERIC_RUNTIMES.has(basename.toLowerCase()) || GENERIC_RUNTIMES.has(withoutExtension.toLowerCase())) continue;
-    if (isHashOrIdShapedToken(withoutExtension)) continue;
+    if (isIdentifierShapedRepoBasename(withoutExtension)) continue;
     return withoutExtension;
   }
   return undefined;
