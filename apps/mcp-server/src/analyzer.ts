@@ -20,6 +20,7 @@ import { ElixirAnalyzer } from '../../../packages/analyzer-core/src/analyzer/lan
 import { DartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/dart-analyzer';
 import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer';
 import { CloudFormationAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/cloudformation-analyzer';
+import { SqlSchemaAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/sql-schema-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer';
 import { AnsibleAnalyzer, PulumiAnalyzer, HelmAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer';
 import { CaddyAnalyzer, NginxAnalyzer, ApacheAnalyzer, HAProxyAnalyzer, TraefikAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer';
@@ -396,6 +397,25 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         content: [/AWSTemplateFormatVersion/, /Resources:\s*[\s\S]*Type:\s*AWS::/, /"Resources"\s*:\s*\{[\s\S]*"Type"\s*:\s*"AWS::/],
       },
       analyzer: new CloudFormationAnalyzer(),
+    },
+    {
+      // THE LIVE LIST. Registered first in cas-analyzer.service.ts, whose own
+      // header says it is "NOT a registration path for the real product" — so the
+      // analyzer parsed correctly in unit tests, typechecked, deployed twice, and
+      // never ran: `SQL Schema Analyzer ran? false`, entities stuck at 3,
+      // flows_to_capabilities stuck at 0/38. Exactly the failure that file warns
+      // about (McpToolRegistrationAnalyzer was once registered ONLY there and
+      // silently never ran), and scripts/verify-live-analyzer-registration.ts
+      // exists to catch it — I did not run it.
+      id: 'sql-schema',
+      name: 'SQL Schema Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['**/*.sql', '**/*.ddl'],
+        content: [/CREATE\s+(?:GLOBAL\s+|LOCAL\s+)?(?:TEMP(?:ORARY)?\s+|UNLOGGED\s+)?TABLE/i],
+      },
+      analyzer: new SqlSchemaAnalyzer(),
     },
     {
       id: 'dockerfile',
