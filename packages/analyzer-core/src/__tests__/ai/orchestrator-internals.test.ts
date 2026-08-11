@@ -9615,7 +9615,14 @@ describe('domain-claim gate (replaces descriptionContradictsPurposeFamily\'s har
     const description = 'A codebase analysis system that builds a CAS graph of every module and produces agent contexts for downstream tools. It tracks relationships between files and exposes them through an MCP server.';
     const rejected = orch.validateAIInterpretation(description, { primary_domain: 'codebase-analysis', core_concepts: [] }, {});
     expect(rejected.ok).toBe(false);
-    expect(rejected.reason).toBe('ungrounded-system-type: agent-contexts-downstream');
+    // Reason TIGHTENED 2026-08-11, same verdict: `for` joined the preposition run
+    // in clauseBreakers (it was missing while every neighbour was present). In
+    // "produces agent contexts FOR downstream tools", `agent contexts` is the
+    // object of `produces`, not a modifier of the head noun `tools` — only
+    // `downstream` premodifies it. Naming just the genuine premodifier is the
+    // whole point of the modifier window, so the reason no longer reports two
+    // clauses' worth of tokens as one type claim.
+    expect(rejected.reason).toBe('ungrounded-system-type: downstream');
 
     const grounded = orch.validateAIInterpretation(
       description,
