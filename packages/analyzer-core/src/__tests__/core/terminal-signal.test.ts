@@ -255,21 +255,25 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
 
   test('buildEnhancedSystemPurpose does not seed a deterministic comprehension domain or description (AI-only)', () => {
     const orch = new AnalyzerOrchestrator() as any;
+    // Bound POSITIONALLY to buildEnhancedSystemPurpose's 15 parameters, one per
+    // line with the parameter it fills. This call had silently drifted: it passed
+    // 16 arguments against an older ordering, so `domainExtractor` received `[]`
+    // and the whole test died on `domainExtractor.getCoreConcepts is not a
+    // function` — it asserted nothing for as long as it was red. Keep the labels;
+    // they are what makes the next signature change visible instead of silent.
     const purpose = orch.buildEnhancedSystemPurpose(
-      { primary_type: 'application', confidence: 0.7, evidence: [] },
-      [{ id: 'concept_portfolio', name: 'Portfolio', type: 'entity', confidence: 0.9 }],
-      [],
-      { primary_workflow_id: undefined },
-      {
+      /* basePurpose        */ { primary_type: 'application', confidence: 0.7, evidence: [] },
+      /* domainConcepts     */ [{ id: 'concept_portfolio', name: 'Portfolio', type: 'entity', confidence: 0.9 }],
+      /* domainExtractor    */ {
         getCoreConcepts: () => [{ name: 'Portfolio' }],
         inferPrimaryDomain: () => 'portfolio-management',
       },
-      [],
-      [],
-      [],
-      [],
-      [],
-      {
+      /* databaseEntities   */ [],
+      /* entryPointSummary  */ [],
+      /* frameworks         */ [],
+      /* externalServices   */ [],
+      /* systemCapabilities */ [],
+      /* flowGraph          */ {
         capabilities: [],
         dependencies: [],
         topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
@@ -277,17 +281,17 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
         layers: [],
         system_insights: { detected_patterns: [], primary_entry_type: 'unknown', data_flow_type: 'unknown' },
       },
-      'portfolio-app',
-      { concepts: ['Portfolio'], evidence: [], primaryDomain: 'portfolio-management' },
-      [],
-      '',
-      {
+      /* systemName         */ 'portfolio-app',
+      /* projectTextSignal  */ { concepts: ['Portfolio'], evidence: [], primaryDomain: 'portfolio-management' },
+      /* nodes              */ [],
+      /* projectPath        */ '',
+      /* terminalSignal     */ {
         ranked_entities: [{ name: 'Message', score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 }],
         ranked_stages: [],
         ranked_capabilities: [],
         domain_seed_text: 'message message message message message',
       },
-      []
+      /* exitPoints         */ []
     );
 
     // Comprehension is AI-only: the builder must NOT keyword-classify a domain
