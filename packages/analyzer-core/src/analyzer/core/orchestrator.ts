@@ -16828,6 +16828,21 @@ export class AnalyzerOrchestrator {
       // a bare -ed past participle ("allowed", "managed", "deployed") is a
       // predicate, not a TYPE claim — only genuine content modifiers of a
       // recognized type head are enforced.
+      // A POSITIONAL/RELATIONAL adjective says WHERE something sits relative to
+      // the system — not WHAT KIND of system it is. "a local gateway", "downstream
+      // tools", "an internal service" make no factual claim that evidence could
+      // confirm or refute, so enforcing them as type claims produces rejections
+      // no repo can ever satisfy: the customer's payload loses its system
+      // description because the model correctly described a topology.
+      //
+      // Same category of exclusion as the participles and predicates above (a
+      // grammatical class, closed and repo-agnostic), NOT a domain vocabulary —
+      // nothing here can decide what a repo is or does; it only stops a
+      // non-claim from being treated as one.
+      const positionalModifiers = new Set([
+        'local', 'remote', 'internal', 'external', 'upstream', 'downstream',
+        'inbound', 'outbound', 'central', 'shared', 'nearby', 'onsite',
+      ]);
       const modifierTokens = attributiveTokens
         .filter(token =>
           token.length >= 4 &&
@@ -16836,6 +16851,7 @@ export class AnalyzerOrchestrator {
           !this.isGenericCapabilityToken(token) &&
           !participleConnectors.has(token) &&
           !finiteVerbConnectors.has(token) &&
+          !positionalModifiers.has(token) &&
           !/[a-z]{3,}ed$/.test(token));
       if (modifierTokens.length === 0) continue;
       // Grounded if ANY distinctive modifier token (or its 5-char stem) appears
