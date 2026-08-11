@@ -2576,9 +2576,24 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     const totalTime = Date.now() - startTime;
-    if (process.env.KLAURO_DEBUG_ANALYSIS_TIMINGS === '1') {
-      console.error(`[Klauro] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
-    }
+    // UNCONDITIONAL, and deliberately so: this is the only line that shows where
+    // an analysis actually spent its time, and it was gated behind
+    // KLAURO_DEBUG_ANALYSIS_TIMINGS=1 — never set in production. So while
+    // KLAURO_DEBUG_ANALYZER_PHASES=1 WAS set (per-phase `pp_*` lines visible), the
+    // aggregate was invisible, and the per-phase lines only account for the
+    // post-processing stages. Measured 2026-08-11 on a 5,284-file repo: 376s total
+    // with ~90s across all pp_* phases, leaving ~285s unattributable from logs.
+    //
+    // The project has hard latency budgets (~10s average, 60s for an average repo,
+    // never >3 min). A budget that cannot be observed in production cannot be
+    // enforced, and "assert an outcome without checking it" is the exact defect
+    // class this codebase keeps producing. One line per analysis is a trivial cost
+    // for making the budget measurable; the noisy per-phase stream stays gated.
+    const overBudget = totalTime > 180_000;
+    console.error(
+      `[Klauro] Analysis completed in ${totalTime}ms${overBudget ? ' (OVER the 180s hard budget)' : ''}. Breakdown:`,
+      JSON.stringify(timings),
+    );
 
     // Tier 2 GAP FIX §6.3 — see dependency-roles.ts. Computed once here so it
     // is not derived twice inside the output literal below.
