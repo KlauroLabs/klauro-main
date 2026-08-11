@@ -3055,39 +3055,55 @@ async function withOuterWorkerWatchdog<T>(
   }
 }
 
+/**
+ * The ONE place a worker job is queued, dispatched, watchdogged and timed.
+ *
+ * runAnalysis and runLayeredAnalysis each carried their own copy of this
+ * queue-and-dispatch block. I instrumented one of them and measured nothing,
+ * because /v1/analyze uses the OTHER — the same "fix landed in the copy
+ * production does not use" defect this codebase has produced 15 times over.
+ * Extracting the shared choke point fixes the duplication and makes the timing
+ * unmissable for every path, present and future.
+ *
+ * Why the timing matters: measured on prod, the orchestrator reported 169.8s
+ * (inside the 180s budget) while the customer waited 381s. Everything outside
+ * the orchestrator -- serial queue wait, fork, startup, the worker's own save --
+ * was unattributed, so three separate attempts at "latency" today aimed at the
+ * only stage that was already compliant.
+ */
+function queueWorkerJob<T>(
+  projectPath: string,
+  label: string,
+  dispatch: () => Promise<T>,
+): Promise<T> {
+  const queuedAt = Date.now();
+  const run = workerJobChain.then(() => {
+    // workerJobChain is SERIAL: this delta is time spent waiting behind another
+    // job, which head-of-line blocking has made large here before.
+    const queueWaitMs = Date.now() - queuedAt;
+    const dispatchedAt = Date.now();
+    const report = (outcome: string): void => {
+      console.error(
+        `[Klauro] analysis pipeline (${label}, ${outcome}): queue_wait=${queueWaitMs}ms ` +
+        `worker=${Date.now() - dispatchedAt}ms total=${Date.now() - queuedAt}ms`,
+      );
+    };
+    return withOuterWorkerWatchdog(projectPath, dispatch).then(
+      result => { report('ok'); return result; },
+      // Logged on failure too: a run that dies after minutes of queueing is
+      // exactly the case where the number is needed.
+      error => { report('FAILED'); throw error; },
+    );
+  });
+  workerJobChain = run.catch(() => undefined);
+  return run;
+}
+
 export async function runAnalysis(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {
   if (analysisRunsInProcess()) {
     return runAnalysisInProcess(projectPath, options);
   }
-  // STAGE TIMING at the pipeline boundary. The orchestrator logs its own
-  // breakdown, but everything around it was invisible: measured 2026-08-11 on a
-  // 5,284-file repo, the orchestrator reported 172.6s (inside the 180s budget)
-  // while the customer waited 336s — so ~163s lived out here and no log
-  // attributed a millisecond of it. Two candidates this makes visible:
-  //  - QUEUE: workerJobChain is SERIAL, so a job can sit behind another one
-  //    entirely silently (head-of-line blocking has been a real defect here).
-  //  - WORKER: fork + startup + the run itself + the worker's own save.
-  // Latency work was aimed at the orchestrator three times today because that
-  // was the only part anyone could see.
-  const queuedAt = Date.now();
-  const run = workerJobChain.then(() => {
-    const queueWaitMs = Date.now() - queuedAt;
-    const dispatchedAt = Date.now();
-    return withOuterWorkerWatchdog(projectPath, () => dispatchWorkerJob(projectPath, options))
-      .then(summary => {
-        console.error(
-          `[Klauro] analysis pipeline: queue_wait=${queueWaitMs}ms worker=${Date.now() - dispatchedAt}ms total=${Date.now() - queuedAt}ms`,
-        );
-        return summary;
-      }, error => {
-        console.error(
-          `[Klauro] analysis pipeline FAILED: queue_wait=${queueWaitMs}ms worker=${Date.now() - dispatchedAt}ms total=${Date.now() - queuedAt}ms`,
-        );
-        throw error;
-      });
-  });
-  workerJobChain = run.catch(() => undefined);
-  return run;
+  return queueWorkerJob(projectPath, 'analyze', () => dispatchWorkerJob(projectPath, options));
 }
 
 /**
@@ -3148,7 +3164,6 @@ export async function runLayeredAnalysis(
       else process.env.KLAURO_FORCE_AI_REFRESH = previousForceAiRefresh;
     }
   }
-  const run = workerJobChain.then(() => withOuterWorkerWatchdog(projectPath, () => dispatchLayeredWorkerJob(projectPath, options)));
-  workerJobChain = run.catch(() => undefined);
+  const run = queueWorkerJob(projectPath, 'layered', () => dispatchLayeredWorkerJob(projectPath, options));
   return run;
 }
