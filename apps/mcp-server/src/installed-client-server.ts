@@ -53,8 +53,54 @@ const symbolChangeSchema = z.object({
   }).optional(),
 });
 
-function json(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
+/**
+ * Hard ceiling on any single tool response from this surface.
+ *
+ * Generous on purpose: real analysis slices are large and this must never clip a
+ * legitimate answer. It exists to catch the UNBOUNDED case — a tool that
+ * serialises an entire collection — which is a defect, not a big answer.
+ */
+const MAX_TOOL_RESPONSE_CHARS = 400_000;
+
+/**
+ * Every tool on this surface returns through here, which makes it the one place
+ * a response-size budget can be enforced for all of them at once.
+ *
+ * Measured 2026-08-11: `get_upload_manifest` returned 4,234,202 characters
+ * (21,737 file paths) against a real ML repo, on the tool agents are told to call
+ * BEFORE uploading. It blew the caller's context — the agent got an error and no
+ * manifest, so the tool was worse than absent. That tool is now summarised at
+ * source, but nothing stopped the NEXT unbounded tool from doing the same thing,
+ * and this surface has 40+ of them.
+ *
+ * So: bound it here rather than trusting 40 handlers to each remember. An
+ * over-budget response is replaced by an honest, actionable error naming the tool
+ * and the size — never a silently truncated payload, which would be a
+ * plausible-looking half-answer, and this codebase has spent a day proving that a
+ * confident partial answer is worse than a clear failure.
+ */
+function json(value: unknown, toolName?: string) {
+  const text = JSON.stringify(value);
+  if (text.length > MAX_TOOL_RESPONSE_CHARS) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          error: 'tool_response_over_budget',
+          tool: toolName || 'unknown',
+          response_chars: text.length,
+          budget_chars: MAX_TOOL_RESPONSE_CHARS,
+          detail:
+            `This tool produced ${text.length} characters, over the ${MAX_TOOL_RESPONSE_CHARS}-character ` +
+            'response budget, so it was withheld rather than truncated — a partial payload would look ' +
+            'complete and be acted on. This is a product defect: the tool should summarise or paginate ' +
+            'at source. Narrow the request (a specific path, entity, or section) as a workaround, and ' +
+            'report the tool name.',
+        }),
+      }],
+    };
+  }
+  return { content: [{ type: 'text' as const, text }] };
 }
 
 /** Files/exclusions listed verbatim before the rollup takes over. Enough to
@@ -116,6 +162,14 @@ export function summarizeUploadManifest(manifest: Record<string, any>): Record<s
     files_omitted_from_sample: Math.max(0, files.length - MANIFEST_SAMPLE_LIMIT),
     note: 'Counts and byte totals are exact. Per-file rows are sampled — use largest_directories to see where the bulk sits, and .klauroignore to exclude what you do not want uploaded.',
   };
+}
+
+/** Test seam for the response budget above. The budget guards every tool on this
+ *  surface, so it needs a test — but `json` is internal by design, and exporting
+ *  the real thing beats duplicating its logic in a test where the copy could
+ *  drift from what ships. */
+export function jsonForTest(value: unknown, toolName?: string) {
+  return json(value, toolName);
 }
 
 /**

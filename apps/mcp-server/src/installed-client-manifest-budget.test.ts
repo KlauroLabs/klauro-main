@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeUploadManifest } from './installed-client-server';
+import { jsonForTest, summarizeUploadManifest } from './installed-client-server';
 
 // Measured 2026-08-11 against a real ML repo: get_upload_manifest returned
 // 4,234,202 characters — 21,737 individual file paths — on the tool agents are
@@ -68,4 +68,29 @@ test('a small manifest is not distorted by the bound', () => {
   assert.equal(summary.files_sample.length, 6, 'nothing sampled away when everything fits');
   assert.equal(summary.files_omitted_from_sample, 0);
   assert.equal(summary.directories_omitted, 0);
+});
+
+// The budget above lives at the json() choke point every tool on this surface
+// returns through, so one test covers all 40+ of them. Measured 2026-08-11:
+// get_upload_manifest returned 4,234,202 characters and the caller got an error
+// with no manifest at all — the tool was worse than absent. Nothing stopped the
+// next unbounded tool from repeating it.
+test('an over-budget tool response is withheld with an actionable error, never truncated', () => {
+  // A payload no agent can consume, shaped like a real unbounded collection.
+  const oversized = { rows: Array.from({ length: 60_000 }, (_, i) => ({ path: `pkg/mod_${i}.py`, bytes: i })) };
+  const result = jsonForTest(oversized, 'get_upload_manifest');
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.error, 'tool_response_over_budget');
+  assert.equal(payload.tool, 'get_upload_manifest', 'the failing tool must be named so it can be fixed');
+  assert.ok(payload.response_chars > payload.budget_chars);
+  // Crucially NOT a truncated payload: a half-answer that looks whole is the
+  // failure mode this codebase spent a day removing.
+  assert.equal(payload.rows, undefined, 'no partial data may survive — it would be acted on as complete');
+  assert.match(String(payload.detail), /narrow the request/i);
+});
+
+test('a normal-sized response passes through untouched', () => {
+  const normal = { capabilities: ['Manage Feeds', 'Schedule Imports'], file_count: 12 };
+  const payload = JSON.parse(jsonForTest(normal, 'get_summary').content[0].text);
+  assert.deepEqual(payload, normal, 'the budget must be invisible to every legitimate answer');
 });
