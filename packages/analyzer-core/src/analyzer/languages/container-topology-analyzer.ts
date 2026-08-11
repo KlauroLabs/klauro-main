@@ -1051,7 +1051,7 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
     // Measured live 2026-08-10: a 92,582-node repo's primary ship unit
     // (92,575 of those nodes) was published to the customer as
     // "unnamed-service" for exactly this reason, while the Dockerfile itself
-    // said ENTRYPOINT ["node", "openclaw.mjs", "gateway", ...].
+    // said ENTRYPOINT ["node", "<app>.mjs", "gateway", ...].
     //
     // The command IS real ship evidence — it names the thing that runs — so
     // prefer it over a placeholder. Never a keyword table: this reads the
@@ -1068,8 +1068,8 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
  *
  * Takes the first token that names something specific to THIS image, skipping
  * interpreters and shells (which name the runtime, not the service) and flags.
- * `["node", "openclaw.mjs", "gateway"]` yields `openclaw`;
- * `["/usr/local/bin/openclaw-cleanup-smoke"]` yields `openclaw-cleanup-smoke`.
+ * `["node", "gateway-app.mjs", "serve"]` yields `gateway-app`;
+ * `["/usr/local/bin/cleanup-smoke"]` yields `cleanup-smoke`.
  * Returns undefined rather than guessing when nothing specific is present, so
  * the caller's placeholder still applies and no invented name ever ships.
  */
