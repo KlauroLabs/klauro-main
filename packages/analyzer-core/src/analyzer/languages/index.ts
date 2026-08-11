@@ -65,7 +65,16 @@ export const LanguageAnalyzers = {
   // registry entry + LANGUAGE_SPECS grammar, so leaving it unmapped routes it to
   // the breadth walker instead.
   cloudformation: 'CloudFormationAnalyzer',
-  'sql-schema': 'SqlSchemaAnalyzer',
+  // Key MUST be the LANGUAGE_REGISTRY id ('sql'), not the analyzer's own id
+  // ('sql-schema'). Keyed wrong on the first attempt, and the failure was silent
+  // in exactly the way this file already warns about three times above: 'sql' went
+  // unmapped, the generic tree-sitter walker claimed .sql and emitted 6 shapeless
+  // nodes, SqlSchemaAnalyzer never ran, and entities stayed at 3 while the summary
+  // cheerfully listed 'Generic Tree-sitter' among the languages. Deep-owning here
+  // is correct because SqlSchemaAnalyzer really does glob **/*.sql — the trap the
+  // scala/fsharp/hcl comments describe is mapping a language to an analyzer that
+  // does NOT glob it.
+  sql: 'SqlSchemaAnalyzer',
   c: 'CCppAnalyzer',
   cpp: 'CCppAnalyzer',
   kotlin: 'KotlinAnalyzer',
