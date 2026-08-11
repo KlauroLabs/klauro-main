@@ -100,4 +100,43 @@ describe('determineSystemType (extracted, tier-2 module)', () => {
     const deployableEvidence: DeployableEvidence[] = [];
     expect(determineSystemType(entryPoints, deployableEvidence)).toBe('application');
   });
+
+  it('a package whose ONLY entry points are lifecycle hooks is a library, not an application', () => {
+    // Measured live 2026-08-11 on a real npm library (`main`, no `bin`, 300 nodes):
+    // entry_points_by_type was exactly {lifecycle: 2} — module-init hooks — and
+    // those tipped hasRuntimeEntryPoint, so it typed as 'application' and the
+    // tier-3 library branch became unreachable.
+    //
+    // The consequence was customer-visible and not local: the AI was asked to
+    // describe an "application" with no way to invoke it, reached for compound
+    // modifiers to cover the gap ("interacts-local"), and the grounding gate
+    // correctly rejected the fabrication — publishing a BLANK system description
+    // and domain: null. A lifecycle hook is something the runtime calls at load,
+    // not a way a user invokes the system.
+    const entryPoints = [
+      entry({ type: 'lifecycle', name: 'onModuleInit' }),
+      entry({ type: 'lifecycle', name: 'onModuleDestroy' }),
+    ];
+    const deployableEvidence = [deployable({ tier: 3, kind: 'package', name: 'wired-up' })];
+    expect(determineSystemType(entryPoints, deployableEvidence)).toBe('library');
+  });
+
+  it('a lifecycle hook does not suppress a REAL entry surface that sits beside it', () => {
+    // The exclusion must not swing the other way: a service that happens to
+    // declare lifecycle hooks is still a service.
+    const entryPoints = [
+      entry({ type: 'lifecycle', name: 'onModuleInit' }),
+      entry({ type: 'http', name: 'GET /health' }),
+    ];
+    expect(determineSystemType(entryPoints, [])).toBe('service');
+  });
+
+  it('lifecycle hooks with ship evidence but no package identity stay an application', () => {
+    // Without tier-3 package identity there is nothing to justify 'library', and
+    // tier-1/2 ship evidence means it demonstrably runs — so 'application' remains
+    // the honest answer rather than defaulting everything to library.
+    const entryPoints = [entry({ type: 'lifecycle', name: 'onBoot' })];
+    const deployableEvidence = [deployable({ tier: 1, kind: 'container', name: 'worker' })];
+    expect(determineSystemType(entryPoints, deployableEvidence)).toBe('application');
+  });
 });

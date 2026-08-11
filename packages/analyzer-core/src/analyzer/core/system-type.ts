@@ -72,7 +72,24 @@ export function determineSystemType(
   ]);
   // 'test' entry points are excluded — a test harness invoking code is not
   // evidence that the product itself has a runtime entry surface.
-  const realEntryPoints = entryPoints.filter(e => e.type !== 'test');
+  //
+  // 'lifecycle' is excluded for the same reason, measured live 2026-08-11: a real
+  // npm library (`main`, no `bin`, 300 nodes) had entry_points_by_type exactly
+  // `{lifecycle: 2}` — module-init hooks — and those tipped hasRuntimeEntryPoint,
+  // so it was typed 'application' and the tier-3 'library' branch below became
+  // unreachable. The damage was downstream and customer-visible: the AI was asked
+  // to describe an "application" with no way to invoke it, reached for compound
+  // modifiers to cover the gap ("interacts-local"), and the grounding gate
+  // correctly rejected the fabrication — shipping a BLANK system description and
+  // `domain: null` on the most important field in the payload.
+  //
+  // A lifecycle hook is something the RUNTIME calls during load; it is not a way a
+  // user invokes the system, which is what every other type in this ladder means
+  // by an entry surface. Excluding it lets a library be recognised as a library
+  // from the author's own package declaration, and the narrative then has a
+  // grounded type to describe.
+  const NON_INVOCATION_ENTRY_TYPES = new Set<CASEntryPoint['type']>(['test', 'lifecycle']);
+  const realEntryPoints = entryPoints.filter(e => !NON_INVOCATION_ENTRY_TYPES.has(e.type));
   // A network-facing entry point is itself a live entry point, so this
   // subsumes hasRuntimeEntryPoint below — checked first and returned
   // immediately for clarity of intent (network surface => service shape).
