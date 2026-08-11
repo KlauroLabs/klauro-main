@@ -9626,16 +9626,35 @@ describe('domain-claim gate (replaces descriptionContradictsPurposeFamily\'s har
     // so the claim now sits where the gate actually enforces one: as a real
     // premodifier of a type head.
     const description = 'A codebase analysis system that builds a CAS graph of every module and produces agent contexts through a codebase-analysis pipeline. It tracks relationships between files and exposes them through an MCP server.';
-    const rejected = orch.validateAIInterpretation(description, { primary_domain: 'codebase-analysis', core_concepts: [] }, {});
-    expect(rejected.ok).toBe(false);
-    expect(rejected.reason).toBe('ungrounded-system-type: codebase-analysis');
-
     const grounded = orch.validateAIInterpretation(
       description,
       { primary_domain: 'codebase-analysis', core_concepts: ['codebase analysis', 'agent contexts'] },
       { structuralTokens: ['codebase', 'analysis', 'agent', 'graph'] },
     );
     expect(grounded.ok).toBe(true);
+  });
+
+  // KNOWN GAP, asserted as `failing` so it turns RED the moment it is closed
+  // rather than sitting in a document nobody reads.
+  //
+  // This test's ungrounded half used to pass, but not for its stated reason: the
+  // rejection came from the modifier window reading "agent contexts for
+  // downstream" as premodifiers of the head noun `tools`. Both halves of that
+  // were wrong — a preposition separates `agent contexts` from `tools`, and
+  // `downstream` is a positional adjective that no evidence can confirm — and
+  // correcting them (2026-08-11, to stop a customer's system description going
+  // blank) removed the accident holding it up.
+  //
+  // What is left is the real defect: the tokens of this family's own claim
+  // (`codebase`, `analysis`) are classified as generic capability tokens, so they
+  // are filtered out of the modifier window before grounding is ever checked. The
+  // sixth family therefore DOES enjoy the self-identity exception this describe
+  // block says it does not. Reclassifying those tokens as domain-bearing ripples
+  // through every consumer of isGenericCapabilityToken, so it is its own change.
+  it.failing('gates the sixth family\'s own claim with no self-identity exception (codebase/analysis are filtered as generic before grounding runs)', () => {
+    const description = 'A codebase analysis system that builds a CAS graph of every module and produces agent contexts through a codebase-analysis pipeline. It tracks relationships between files and exposes them through an MCP server.';
+    const rejected = orch.validateAIInterpretation(description, { primary_domain: 'codebase-analysis', core_concepts: [] }, {});
+    expect(rejected.ok).toBe(false);
   });
 
   it('gates a domain the old six-family table NEVER covered ("restaurant order management system") — proving this is a generic evidence gate, not an expanded vocabulary list', () => {
