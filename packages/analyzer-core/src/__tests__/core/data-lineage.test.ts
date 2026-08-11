@@ -438,9 +438,46 @@ describe('buildDataLineage external recipient service resolution', () => {
     expect(ids).not.toContain('exit_long_unresolved');
   });
 
-  it('still resolves service_id/sdk and clean chained-call labels normally (no over-suppression)', () => {
+  // DISPOSITION 2026-08-11 (task #136). This assertion encoded the rule that
+  // resolveRecipientService was later, deliberately, changed away from: it used
+  // to accept an exit point's bare NAME when the name merely LOOKED like a clean
+  // identifier. That shape test cannot distinguish an external service from an
+  // in-process call — several analyzers label stdlib and same-process chained
+  // calls `External call: <target>` too — so shape-resolved names were standing
+  // in as recipients of sensitive data in a SECURITY-FACING field. Only
+  // structured destination evidence (target.service_id / target.sdk) resolves a
+  // recipient now, and `cleanChainedExit` deliberately carries none.
+  //
+  // The test's INTENT — prove the raw-source suppression did not become a
+  // blanket drop — is preserved by asserting the real boundary: evidence-backed
+  // recipients survive, shape-only labels do not.
+  it('resolves only evidence-backed recipients, and does not over-suppress those (service_id/sdk)', () => {
     const services = payment.external_recipients.map(recipient => recipient.service).sort();
-    expect(services).toEqual(['PaymentGateway.charge', 'stripe']);
+    expect(services).toEqual(['stripe']);
+  });
+
+  it('drops a clean-looking chained label that carries no destination evidence', () => {
+    const ids = payment.external_recipients.map(recipient => recipient.exit_point_id);
+    expect(ids).not.toContain('exit_clean_chain');
+  });
+
+  it('keeps a chained-call recipient once an analyzer resolves its destination', () => {
+    const resolvedChainExit = {
+      id: 'exit_resolved_chain',
+      source_node: 'n_payments_service_create',
+      type: 'sdk',
+      name: 'External call: PaymentGateway.charge',
+      target: { service_id: 'payment-gateway' },
+    } as CASExitPoint;
+    const resolved = buildDataLineage({
+      nodes,
+      edges,
+      dataEntities: [paymentEntity],
+      exitPoints: [resolvedChainExit],
+      entryPoints,
+      userJourneys: journeys,
+    }).find(item => item.entity_id === 'entity_payment')!;
+    expect(resolved.external_recipients.map(recipient => recipient.service)).toEqual(['payment-gateway']);
   });
 });
 
