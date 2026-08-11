@@ -27735,11 +27735,49 @@ export class AnalyzerOrchestrator {
   // must see the same honest state). Never fabricates text: a capability
   // with no description simply ships with no provenance either ("not
   // described" is honest; "deterministic" over nothing is not).
+  /**
+   * A shipped capability always carries a description.
+   *
+   * This used to enforce only the WEAK direction — strip a `description_source`
+   * left dangling with no text — which kept the two fields consistent but let a
+   * capability ship with NO description at all. Measured live 2026-08-11 on a real
+   * CLI repo: `View and manage findings` shipped with `description_source:
+   * undefined` and no text, because its AI description was rejected by the
+   * grounding gate (`read-only-capability-claims-mutation`) and nothing replaced
+   * it. The gate was right to reject a false mutation claim; the result was a
+   * customer-facing capability with a name and a blank.
+   *
+   * `lastResortCapabilityDescription` was written for precisely this and its own
+   * comment states the rule — "A capability must never end up with
+   * description_source: 'deterministic' and no description text" — but nothing
+   * called it from here. Documented intent, unimplemented.
+   *
+   * Filling it in is strictly better than clearing the provenance: "zero is
+   * essentially never correct" applies to a capability's description as much as to
+   * the capability itself. Degrade in CONFIDENCE (deterministic, not authored),
+   * never to a blank. Which text depends on what evidence actually exists — the
+   * fact-grounded sentence when there are operations or entities to cite, the
+   * last-resort sentence only when there is genuinely nothing, so it never claims
+   * "no operations resolved" about a capability that has some.
+   */
   private enforceCapabilityDescriptionProvenanceInvariant(capabilities: SystemCapability[] | undefined): void {
     for (const capability of capabilities || []) {
-      if (!capability.description && capability.description_source) {
+      if (capability.description) continue;
+      const name = String(capability.name || '').trim();
+      if (!name) {
+        // Nameless AND textless: nothing honest to say, and clearing the dangling
+        // provenance is all the old behaviour could do here either.
         capability.description_source = undefined;
+        continue;
       }
+      const operations = (capability.operations || []).filter(operation => operation && typeof operation.action === 'string');
+      const entities = (capability.related_entities || [])
+        .filter(entity => typeof entity === 'string' && entity.trim())
+        .map(entity => ({ name: entity }));
+      capability.description = (operations.length > 0 || entities.length > 0)
+        ? this.generateCapabilityDescription(name, operations, entities)
+        : this.lastResortCapabilityDescription(name);
+      capability.description_source = 'deterministic';
     }
   }
 

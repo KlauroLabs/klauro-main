@@ -11608,15 +11608,27 @@ describe('TASK #119: candidate-generation inversion (terminal / proximal-termina
 // enforcement point (enforceCapabilityDescriptionProvenanceInvariant) that
 // runs over the actual `system_capabilities` array at every output-assembly
 // exit, not just the derived product-map view.
+// STRENGTHENED 2026-08-11 (live CLI-shape measurement): the invariant used to
+// enforce only the weak direction — strip a `description_source` left dangling
+// with no text. That kept the two fields CONSISTENT while letting a capability
+// ship with a name and a blank, which is the customer-visible defect. Measured
+// live: `View and manage findings` shipped `description_source: undefined` and no
+// text because its AI description was rejected by the grounding gate
+// (read-only-capability-claims-mutation) and nothing replaced it. The rejection
+// was correct; shipping nothing was not. The invariant now FILLS — degrade in
+// confidence (deterministic, not authored), never to a blank.
 describe('capability description-provenance invariant (choke point)', () => {
-  it('strips a bare description_source that has no description text to back it', () => {
+  it('fills a description rather than stripping the provenance off a blank one', () => {
     const capabilities: any[] = [
       { id: 'cap_1', name: 'Process Forms', description: undefined, description_source: 'deterministic' },
       { id: 'cap_2', name: 'Integrate with External Services', description: '', description_source: 'deterministic' },
     ];
     orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
     for (const capability of capabilities) {
-      expect(capability.description_source).toBeUndefined();
+      expect(typeof capability.description).toBe('string');
+      expect(capability.description.length).toBeGreaterThan(0);
+      expect(capability.description_source).toBe('deterministic');
+      expect(capability.description).toContain(capability.name);
     }
   });
 
@@ -11630,9 +11642,44 @@ describe('capability description-provenance invariant (choke point)', () => {
     expect(capabilities).toEqual(snapshot);
   });
 
-  it('leaves a capability with no description and no source alone (honest "not described")', () => {
+  // The live defect shape exactly: AI description rejected, provenance already
+  // cleared by a prior pass, nothing left behind. This is the case the OLD
+  // invariant considered "honest" and let ship blank.
+  it('fills a capability that has neither description nor source (the live rejected-AI shape)', () => {
     const capabilities: any[] = [
-      { id: 'cap_1', name: 'Process Forms', description: undefined, description_source: undefined },
+      { id: 'cap_1', name: 'View and manage findings', description: undefined, description_source: undefined },
+    ];
+    orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
+    expect(capabilities[0].description).toBeTruthy();
+    expect(capabilities[0].description_source).toBe('deterministic');
+  });
+
+  // With real operations/entities the filler must cite THEM, not claim "no
+  // operations or related data entities have been resolved" — the last-resort
+  // sentence is only honest when there is genuinely nothing.
+  it('cites the capability\'s own operations and entities when it has them', () => {
+    const capabilities: any[] = [
+      {
+        id: 'cap_1',
+        name: 'Manage Findings',
+        description: undefined,
+        description_source: undefined,
+        operations: [
+          { entry_point_id: 'ep_1', entry_point_type: 'http', action: 'create', path_or_command: '/findings' },
+          { entry_point_id: 'ep_2', entry_point_type: 'http', action: 'list', path_or_command: '/findings' },
+        ],
+        related_entities: ['Finding'],
+      },
+    ];
+    orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
+    expect(capabilities[0].description).toContain('Finding');
+    expect(capabilities[0].description).not.toContain('no operations or related data entities');
+    expect(capabilities[0].description_source).toBe('deterministic');
+  });
+
+  it('clears dangling provenance only when there is no name to describe either', () => {
+    const capabilities: any[] = [
+      { id: 'cap_1', name: '   ', description: undefined, description_source: 'deterministic' },
     ];
     orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
     expect(capabilities[0].description_source).toBeUndefined();
