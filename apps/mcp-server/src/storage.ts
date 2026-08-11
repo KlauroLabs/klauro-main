@@ -986,11 +986,30 @@ export async function saveAnalysis(
   const fileName = `${projectSlug(projectPath)}${trackSuffix(track)}.json${compressedJsonExtension()}`;
   const filePath = path.join(storagePath, fileName);
 
+  // SAVE SUB-STEP TIMING. Pipeline attribution reached this function by
+  // elimination: on prod (5,284-file / 92k-node repo) worker=338.6s, of which
+  // rest=238.7s, of which the orchestrator's own breakdown accounts for 176.4s —
+  // leaving ~62s in persistence with nothing measuring it. This CAS is serialized
+  // TWICE here (whole + compressed, then again segmented), so the split matters
+  // before touching either: a "save is slow" guess is how three earlier attempts
+  // at latency today aimed at the wrong stage.
+  const wholeStartedAt = Date.now();
   await writeCompressedJsonAtomic(filePath, output, { spaces: 0 });
+  const wholeMs = Date.now() - wholeStartedAt;
+  const segmentedStartedAt = Date.now();
   try {
     await writeSegmentedAnalysis(filePath, output);
   } catch (error) {
     console.warn(`[Klauro] segmented analysis write failed for ${projectPath}; authoritative analysis remains available: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const segmentedMs = Date.now() - segmentedStartedAt;
+  // Only log when it is actually material — a small repo saving in 40ms does not
+  // need a line per save, but a whale spending a minute here must be visible.
+  if (wholeMs + segmentedMs >= 1000) {
+    console.error(
+      `[Klauro] saveAnalysis(${track}): whole=${wholeMs}ms segmented=${segmentedMs}ms ` +
+      `nodes=${(output.nodes || []).length} edges=${(output.edges || []).length}`,
+    );
   }
   // Only the 'main' track participates in the path-keyed loaded-analysis cache,
   // which is keyed by projectPath and read back by default (main) loads.
