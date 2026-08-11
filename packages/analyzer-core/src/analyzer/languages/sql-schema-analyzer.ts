@@ -269,7 +269,20 @@ export class SqlSchemaAnalyzer extends BaseAnalyzer {
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
     const nodes = await this.analyzeSchemaFile(context.projectPath, context.relativePath);
-    return this.fileResult(context, nodes, [], [], []);
+    const content = await this.safeRead(context.projectPath, context.relativePath) || '';
+    const stat = await fs.stat(path.join(context.projectPath, context.relativePath));
+    return this.createFileAnalysisResult(
+      path.join(context.projectPath, context.relativePath),
+      context.relativePath,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      [],
+      [],
+      [],
+      [],
+      [],
+    );
   }
 
   protected getCapabilities(): string[] {

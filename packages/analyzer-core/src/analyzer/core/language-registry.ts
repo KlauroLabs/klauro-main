@@ -43,7 +43,8 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
     // comprehension tiers above them collapsed as a result.
     id: 'sql',
     extensions: ['sql', 'ddl'],
-    displayName: 'SQL',
+    // No build manifest: SQL is declared IN source files, never via a manifest.
+    manifests: [],
   },
   {
     id: 'typescript',
