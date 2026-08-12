@@ -22,31 +22,26 @@ import {
   type RatchetEntry,
 } from './file-size-ratchet-gate';
 
-// The files the ratchet polices. Explicit, because the point is to hold the
-// worst offenders and the modules extracted from them — not to police every
-// file in the repo, which would make the gate noisy and get it switched off.
-const TRACKED: string[] = [
-  'packages/analyzer-core/src/analyzer/core/orchestrator.ts',
-  'packages/analyzer-core/src/analyzer/core/flow-concepts.ts',
-  'packages/analyzer-core/src/analyzer/core/tree-sitter-ts-extractor.ts',
-  'packages/analyzer-core/src/analyzer/core/language-spec.ts',
-  'packages/analyzer-core/src/analyzer/core/journey-builder.ts',
-  'packages/analyzer-core/src/analyzer/core/idiom-detector.ts',
-  'packages/analyzer-core/src/analyzer/core/domain-extractor.ts',
-  'packages/analyzer-core/src/analyzer/core/base-analyzer.ts',
-  'packages/analyzer-core/src/analyzer/core/product-map.ts',
-  'packages/analyzer-core/src/analyzer/core/change-detector.ts',
-  'packages/analyzer-core/src/analyzer/core/deployable-evidence.ts',
-  'packages/analyzer-core/src/analyzer/core/system-type.ts',
-];
+// The tracked set lives ONLY in the baseline file. It used to be duplicated here
+// as a literal array, which the spec-purity gate rejected as a new hardcoded list
+// — correctly, and for the same reason it is bad design: two copies of one list
+// drift, and this repo's dominant defect is exactly that. `--adopt` re-records
+// ceilings for whatever the baseline already tracks, plus any paths passed on the
+// command line, so adding a file to the ratchet is one deliberate act in one place.
+function trackedFiles(repoRoot: string, extra: string[]): string[] {
+  const existing = fs.existsSync(baselinePath(repoRoot))
+    ? ((JSON.parse(fs.readFileSync(baselinePath(repoRoot), 'utf8')) as { files?: RatchetEntry[] }).files || []).map(entry => entry.file)
+    : [];
+  return Array.from(new Set([...existing, ...extra.map(value => path.relative(repoRoot, path.resolve(repoRoot, value)))]));
+}
 
 function baselinePath(repoRoot: string): string {
   return path.join(repoRoot, RATCHET_BASELINE_FILE);
 }
 
-function adopt(repoRoot: string): void {
+function adopt(repoRoot: string, extra: string[]): void {
   const entries: RatchetEntry[] = [];
-  for (const file of TRACKED) {
+  for (const file of trackedFiles(repoRoot, extra)) {
     const absolute = path.join(repoRoot, file);
     if (!fs.existsSync(absolute)) {
       console.error(`  skipped (not found): ${file}`);
@@ -66,7 +61,7 @@ function adopt(repoRoot: string): void {
 function main(): void {
   const repoRoot = path.resolve(process.argv[2] || process.cwd());
   if (process.argv.includes('--adopt')) {
-    adopt(repoRoot);
+    adopt(repoRoot, process.argv.slice(3).filter(arg => !arg.startsWith('--')));
     return;
   }
 
