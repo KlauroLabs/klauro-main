@@ -15035,10 +15035,7 @@ export class AnalyzerOrchestrator {
   }
 
   private isGenericCapabilityDisplayName(name: string): boolean {
-    if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
-    if (/^(help management|report reporting|jobs? workflow)$/i.test(name)) return true;
-    if (/^dismiss[_\s]/i.test(name)) return true;
-    if (/^(action[_\s]?text|active[_\s]?storage|action[_\s]?cable|action[_\s]?mailbox)\b/i.test(name)) return true;
+    if (/\b(console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
     if (/[()[\]{}<>'"`:]|\.with\b/i.test(name)) return true;
     const subject = name
       .toLowerCase()
