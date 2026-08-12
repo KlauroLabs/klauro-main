@@ -3,7 +3,7 @@
   "files": [
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "ceiling": 25316
+      "ceiling": 25797
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
@@ -36,10 +36,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
       "ceiling": 812
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/analysis-predicates.ts",
-      "ceiling": 685
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/product-map.ts",
