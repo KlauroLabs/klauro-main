@@ -24,26 +24,6 @@ export interface UserJourneyInput {
   callChains: CASCallChain[];
   dataEntities?: CASDataEntity[];
   changeRisks?: CASChangeRisk[];
-  /**
-   * The already-computed flow set (flow-concepts.ts computeFlowConcepts) —
-   * PRESENT on the production orchestrator path. Journeys collapse into
-   * Flows as a derived view (docs/cas/SPECIFICATION.md §0; comprehension
-   * tier = Capability/Flow/Step/Entity, journeys are not a fifth member):
-   * when `flows` is supplied, a journey is only surfaced for an entry point
-   * that has a corresponding flow (a projection that CAN be derived), and it
-   * inherits that flow's `capability_relationships` directly — the fix for
-   * capability<->journey linkage being structurally empty. An entry point
-   * with no matching flow (no real terminal call chain — the shape of a raw
-   * IaC/ops artifact like an Ansible play, or plumbing a flow's own
-   * terminality-based generation never anchors on) emits NOTHING rather than
-   * a mechanical placeholder.
-   *
-   * Omitted on the legacy pre-flow-projection call surface (existing unit
-   * tests exercising the classification/naming/effects walk in isolation) —
-   * that path keeps its prior full-surface behavior so those tests keep
-   * validating the walk mechanics without needing a FlowConcept fixture for
-   * every case. Every production caller (orchestrator.ts) supplies `flows`.
-   */
   flows?: FlowConcept[];
 }
 
@@ -74,25 +54,6 @@ const WALK_EXCLUDED_NODE_TYPES = new Set([
   'use', 'import', 'namespace', 'file', 'variable', 'property', 'constant',
   'class_constant', 'interface_constant', 'enum_case', 'template', 'module', 'package'
 ]);
-// linkRouteHandlers (orchestrator.ts) stamps every entry-registration ->
-// resolved-handler edge it mints with one of these `relationship` values —
-// regardless of whether the registration node is unique per entry (a
-// per-route node) or SHARED by many entries (a file that registers every
-// route, a controller class with many actions, a CLI file with many
-// commands). Measured live (task/#next, miniflux VPS analysis): when the
-// registration node is shared, its outgoing edges are "every sibling entry's
-// handler", so an unqualified walk from a shared source_node fans out to
-// every other route registered in the same file — "Update entry" (PUT
-// /v1/entries) inherited createUserHandler, createAPIKeyHandler,
-// createFeedHandler, ... and reported writes to User/APIKey/Feed alongside
-// Entry. The independent Rails measurement showed the same shape (4/7
-// capabilities sharing byte-identical 22-entity/51-journey lists) — same
-// mechanism, a controller class fanning out to every sibling action.
-// The handler this walk actually cares about is already seeded directly
-// (`addNode(entryPoint.handler?.node_id, 0)` below) — these edges only
-// exist to CONNECT a registration node to its handler in the first place,
-// never to carry the walk onward through the registration node's other
-// wiring. Skipped below unless the edge target IS this entry's own handler.
 const REGISTRATION_HANDLER_EDGE_RELATIONSHIPS = new Set([
   'route_handler', 'command_handler', 'graphql_resolver', 'task_handler', 'inline_handler_call'
 ]);
@@ -105,81 +66,16 @@ const JUNK_CALL_TARGET_NAMES = new Set([
 const METHOD_NAME_POPULARITY_LIMIT = 3;
 const METHOD_LIKE_TYPES = /(^|[_\s])(method|function|action)([_\s]|$)/;
 
-// Exported (task #119 candidate-generation inversion): the capability
-// generator needs the SAME "is this entry point genuinely caller-initiated"
-// fact journeys already use to classify 'user-facing' vs 'system'/'scheduled'
-// — one structural definition of "user-reachable", not a second one invented
-// at the capability layer.
-//
-// Cross-repo audit (2026-08-09, docs/audits/…): this set was HTTP-biased —
-// correct for services, blind on shapes whose outward face is not a route at
-// all. 'ipc' (Electron ipcMain.handle/.on, invoked from the renderer) and
-// 'command' (Tauri #[tauri::command], invoked via invoke() from the
-// frontend) are ALREADY-CLOSED entry-point kinds (ENTRY_POINT_TYPES,
-// cas.types.ts) that are exactly as "genuinely caller-initiated" as an HTTP
-// route on a desktop app — a user clicks a button, the renderer invokes the
-// command, a real caller-initiated action happens. Adding them widens the
-// EXISTING closed vocabulary by two structural facts already computed
-// elsewhere; it is not a new hardcoded keyword/vendor list (the kind of
-// table this spec forbids elsewhere, §0.7.1's audience test).
-//
-// This does NOT close the mobile (Kotlin/Swift) gap the same audit found:
-// an Android `<activity>`/structural-Activity-subclass entry already maps to
-// 'page' (kotlin-analyzer.ts MANIFEST_COMPONENT_ENTRY_TYPES) and so was
-// already in this set — that shape's audit failures (a substrate candidate
-// surviving, a vendor name leaking into a description) are NOT admission
-// failures and are not fixed here; see GATE 3
-// (filterIsolatedUncorroboratedCandidates) and the audience-test work in
-// orchestrator.ts. A pure Jetpack-Compose UI with no AndroidManifest and no
-// Activity subclass emits NO entry points at all today (ComposeAnalyzer only
-// emits the `renders` component tree, never a CASEntryPoint) — that is a
-// real, un-closed analyzer gap (a missing UI-screen-entry detector), stated
-// here rather than papered over with a broader match on this set.
-// Shape-coverage audit (2026-08-10): a data/ML script or notebook repo's
-// outward face is not a route or a CLI framework command — it is "a file you
-// run". 'train' (ml-training-analyzer.ts: a train()/fit() function or
-// top-level training-loop call site a data scientist invokes directly) and
-// 'notebook-cell' (jupyter-notebook-analyzer.ts: an ordered Jupyter code
-// cell a human runs interactively, cell by cell) are exactly as
-// caller-initiated as 'cli' — a person runs `python train.py` or clicks
-// "Run" on a cell — not a framework lifecycle hook or a scheduler trigger.
-// Same widening pattern as the ipc/command addition above: an
-// already-closed ENTRY_POINT_TYPES kind, not a new keyword/vendor list.
 export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route', 'ipc', 'command', 'train', 'notebook-cell']);
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
-// Entry types eligible for the k8s CronJob -> command scheduling-evidence
-// link (see buildCronScheduleIndex / findCronSchedule below). Only `cli` —
-// an HTTP/websocket/page entry is never "run by a CronJob".
 const CRON_LINKABLE_ENTRY_TYPES = new Set(['cli']);
 
-// A shell/batch/build-script file rooted at a CLI entry is OPERATIONAL plumbing
-// (deploy / install / release / smoke / build), NOT a user-facing product
-// surface — regardless of the script's name. `cli` is in USER_FACING_ENTRY_TYPES
-// because real product CLIs (a node/python/compiled `bin`) are user-facing, but a
-// `.sh`/`.ps1` deploy or install script is an operator surface and must be
-// journey_kind 'system'. This mirrors the FLOW-role signal
-// (semantic-roles.ts isScriptEntryFile / classifyFlowRole), applied to the KIND
-// axis. Evidence = entry TYPE + a script-file root; no name blocklist. Live leak:
-// release.sh (Klauro), a docker-based install/switch script (a repo whose CLI
-// wraps an assistant runtime), and an install-local-sync / hosted-mcp-allowlist
-// smoke-script pair (a CLI-first repo with a hosted MCP surface) surfaced as
-// user-facing/high journeys.
 const OPERATIONAL_SCRIPT_ENTRY_FILE = /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i;
 function isOperationalScriptEntry(file: string | undefined): boolean {
   return OPERATIONAL_SCRIPT_ENTRY_FILE.test(String(file || ''));
 }
 
-/**
- * kubernetes_cronjob nodes' `command` + `schedule` evidence, indexed by the
- * raw container command line — the ground truth for reclassifying a linked
- * CLI entry point's journey_kind as 'scheduled'. Two producers, two metadata
- * shapes: container-topology-analyzer.ts (raw K8s manifests) sets flat
- * `node.metadata.schedule`/`.command`; iac-analyzer.ts (Helm charts) nests
- * facts under `node.metadata.attributes.*` — both are checked so either
- * evidence source is honored. Both facts must be present (a CronJob with no
- * resolvable schedule or command contributes nothing — no fabrication).
- */
 export function buildCronScheduleIndex(nodes: CASNode[]): Map<string, string> {
   const index = new Map<string, string>();
   for (const node of nodes) {
@@ -193,10 +89,6 @@ export function buildCronScheduleIndex(nodes: CASNode[]): Map<string, string> {
   return index;
 }
 
-/** True evidence link: the CronJob's container command LINE contains the
- *  console command's declared name (e.g. container command
- *  "bin/console app:cron:process" contains commandName "app:cron:process").
- *  Returns the CronJob's schedule expression on a match, else undefined. */
 export function findCronSchedule(commandName: string, index: Map<string, string>): string | undefined {
   for (const [commandLine, schedule] of index) {
     if (commandLine.includes(commandName)) return schedule;
@@ -213,49 +105,23 @@ const INFRA_LAYER_TYPES = /(^|[_\s])(config|middleware|guard|interceptor|filter|
 const ENTITY_NODE_TYPES = /(^|[_\s])(entity|model)([_\s]|$)/;
 const FRAMEWORK_TERMINAL_TYPES = /(^|[_\s])(route|middleware|guard|config|module|template|migration)([_\s]|$)/;
 
-/**
- * Framework plumbing that must never become journey terminal data. These are
- * live-measured pollution classes from real repos:
- * - Next.js/Express route handlers exported as functions literally named
- *   GET/POST/PATCH (HTTP verbs stored as node names).
- * - React hook nodes and hook-usage nodes ("useEffect usage", "useAutomationConfig").
- * - Framework lifecycle methods across languages (Flutter initState/dispose/build,
- *   React componentDidMount, Angular ngOnInit, Vue mounted, generic main/init).
- * - Flutter widget-builder helpers (_buildHeader) and accessor/utility methods
- *   (GetIntOrDefault, getServerPath) plus helper/extension classes
- *   (PathHelper, ClaimsPrincipalExtensions).
- * None of these reveal what the system produces or manages; journeys must
- * resolve past them to the data entities actually read/written.
- */
 const HTTP_VERB_NAME = /^(get|post|put|patch|delete|head|options)$/i;
 const FRAMEWORK_LIFECYCLE_NAMES = new Set([
-  // Flutter / Dart
   'build', 'initstate', 'dispose', 'didchangedependencies', 'didupdatewidget',
   'reassemble', 'deactivate', 'activate', 'setstate', 'createstate',
-  // React class components
   'render', 'componentdidmount', 'componentdidupdate', 'componentwillunmount',
   'shouldcomponentupdate', 'getderivedstatefromprops', 'componentdidcatch',
-  // Angular
   'ngoninit', 'ngondestroy', 'ngonchanges', 'ngafterviewinit', 'ngaftercontentinit', 'ngdocheck',
-  // Vue
   'beforecreate', 'beforemount', 'mounted', 'beforeupdate', 'updated',
   'beforeunmount', 'unmounted', 'beforedestroy', 'destroyed',
-  // Generic / language-level
   'main', 'constructor', '__construct', '__destruct', 'init', 'initialize', 'setup', 'teardown',
-  // .NET / ASP.NET
   'onmodelcreating', 'onconfiguring', 'configureservices', 'configure', 'onactionexecuting',
 ]);
 const WIDGET_BUILDER_NAME = /^_?build[A-Z_]/;
 const HOOK_LIKE_NAME = /^use[A-Z0-9]/;
 const HOOK_USAGE_NODE_TYPES = /(^|[_\s])hook(_usage)?([_\s]|$)/;
 const UTILITY_CLASS_NAME = /(helper|helpers|extension|extensions|util|utils|utility|utilities)$/i;
-// First-letter case both ways: camelCase (getServerPath) and C#/PascalCase
-// (GetIntOrDefault). The following character must be uppercase/underscore so
-// ordinary words (Settings, Together, Formatting) never match.
 const ACCESSOR_METHOD_NAME = /^_?(?:[Gg]et|[Ss]et|[Ii]s|[Hh]as|[Tt]o|[Ff]rom|[Oo]n|[Hh]andle|[Ff]ormat|[Pp]arse|[Ff]ind|[Tt]ry|[Ii]nit)[A-Z_]/;
-// Bare std/trait/iterator method names (Rust, Go, etc.) that surface as terminal
-// nodes but are never a business outcome — "Create device -> into" is noise.
-// Exact-match only, so a real method like `insertOrder`/`findUser` is unaffected.
 const STD_TRAIT_METHOD_NAMES = new Set([
   'into', 'from', 'find', 'insert', 'remove', 'push', 'pop', 'write', 'read', 'clone',
   'collect', 'iter', 'iter_mut', 'into_iter', 'map', 'filter', 'fold', 'next', 'take',
@@ -264,15 +130,8 @@ const STD_TRAIT_METHOD_NAMES = new Set([
   'extend', 'drain', 'clear', 'replace', 'swap', 'fmt', 'hash', 'eq', 'cmp', 'clamp',
   'as_kebab', 'as_kebab_case', 'as_snake_case', 'to_snake_case', 'serialize', 'deserialize',
 ]);
-// A bare generic exception/error TYPE name (Rust `enum Error`, a language's
-// built-in Exception base, ...) carries no domain meaning: "reads Error" /
-// "reads Err" tells a reader nothing about what the journey actually
-// produces. Exact-match only — a SPECIFIC error type ("CacheError",
-// "ValidationError") still names its own domain and is left alone; only the
-// generic marker word itself is excluded.
 const GENERIC_ERROR_TYPE_NAME = /^(?:error|errors|exception|exceptions|err|errs)$/i;
 
-/** Lifecycle methods, hooks, widget builders, HTTP-verb handler names. */
 function isFrameworkPlumbingName(rawName: string): boolean {
   const name = (rawName || '').trim();
   if (!name) return true;
@@ -283,7 +142,6 @@ function isFrameworkPlumbingName(rawName: string): boolean {
   return false;
 }
 
-/** Helper/extension/util classes and accessor-style methods. */
 function isUtilityNodeName(rawName: string): boolean {
   const name = (rawName || '').trim();
   if (!name) return false;
@@ -351,11 +209,6 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
 
   const cronScheduleIndex = buildCronScheduleIndex(input.nodes);
 
-  // Flow index: a flow's `entry_point` is the resolved entry_point_id when one
-  // exists, else the chain's raw entry node_id (see flow-concepts.ts
-  // buildTerminalFlows: `chain.entry_point.entry_point_id || chain.entry_point.node_id`)
-  // — so a CASEntryPoint is matched against its own id AND its handler/source
-  // node ids, the same three keys the call-chain index above uses.
   const flowsByEntryKey = new Map<string, FlowConcept[]>();
   for (const flow of input.flows || []) {
     const list = flowsByEntryKey.get(flow.entry_point) || [];
@@ -385,19 +238,10 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     if (INFRA_LAYER_TYPES.test(text)) return 'infrastructure';
     if (ENTRY_LAYER_TYPES.test(text)) return 'entry';
     if (entryPointIsHandlerOrSource(entryPoint, node.id)) return 'entry';
-    // Route handlers exported as HTTP-verb functions (Next.js App Router,
-    // Express handler maps) are entry plumbing, not business stages.
     if (HTTP_VERB_NAME.test(node.name)) return 'entry';
     if (HOOK_USAGE_NODE_TYPES.test(node.type)) return 'infrastructure';
-    // Lifecycle methods, hooks, widget builders, and accessor/helper
-    // utilities are framework or utility plumbing in any language; the
-    // terminal-segment domain signal only consumes business/data layers.
     if (isFrameworkPlumbingName(node.name)) return 'infrastructure';
     if (isUtilityNodeName(node.name)) return 'infrastructure';
-    // Dart methods are lowerCamelCase by convention: a method-like node with
-    // a PascalCase name in a .dart file is a widget/class instantiation
-    // captured as a call target (Container, GestureDetector, Scaffold) --
-    // widget-tree presentation plumbing, not a business stage.
     if (METHOD_LIKE_TYPES.test(node.type) && /^[A-Z]/.test(node.name) && /\.dart$/i.test(node.source?.file || '')) {
       return 'entry';
     }
@@ -447,18 +291,9 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     const testsCovering = collectTestsCovering(pathNodeIds, graph.testEdgesByTarget, graph.nodesById);
     const risk = maxRiskOnPath(pathNodeIds, riskByNode);
 
-    // The entry's own source file — handler file first, then the handler/source
-    // node's file — is the evidence for the operational-script downgrade.
     const entryFile = entryPoint.handler?.file
       || graph.nodesById.get(entryPoint.handler?.node_id || '')?.source?.file
       || graph.nodesById.get(entryPoint.source_node || '')?.source?.file;
-    // CLI-command -> CronJob evidence: an entry whose console command name
-    // (php-analyzer.ts extractPhpConsoleCommandName / CASEntryPoint.metadata.commandName)
-    // is referenced by a kubernetes_cronjob workload's container command/args
-    // is REALLY scheduled — the schedule lives in the k8s manifest, not the
-    // code. `cron` in the class/file name is corroboration only; this is the
-    // deterministic ground truth. A bare CLI command with no such reference
-    // stays CLI/system (no fabrication from naming alone).
     const entryCommandName = String((entryPoint.metadata as any)?.commandName || '').trim();
     const cronSchedule = CRON_LINKABLE_ENTRY_TYPES.has(entryPoint.type) && entryCommandName
       ? findCronSchedule(entryCommandName, cronScheduleIndex)
@@ -478,24 +313,10 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
         ? 'user-facing'
         : 'system';
 
-    // FLOW-PROJECTION GATE (docs/cas/SPECIFICATION.md §0 — journeys collapse
-    // into Flows as a derived view, not a fifth comprehension-tier member).
-    // When the caller supplied the computed flow set: (1) a journey can only
-    // be surfaced when a projection actually EXISTS — an entry point with no
-    // corresponding flow (no real terminal call chain a flow could anchor
-    // on — the shape of a raw IaC/ops artifact like an Ansible play) emits
-    // nothing rather than a mechanical placeholder; (2) only the
-    // 'user-facing' kind is a JOURNEY in the product sense — a 'system'
-    // journey_kind means the entry is mechanism (an operational script, a
-    // generic bootstrap, or any entry type outside USER_FACING_ENTRY_TYPES),
-    // the same reasoning the capability model applies (mechanism belongs in
-    // tier 1 as an ICELOT Effect/Constraint, never a product-facing surface).
-    // 'scheduled' stays gated the same way: a real product-relevant
-    // scheduled job still needs a derivable flow to be shown at all.
     const matchingFlows = input.flows ? flowsForEntryPoint(entryPoint) : undefined;
     if (input.flows) {
-      if (matchingFlows!.length === 0) continue; // no projection derivable — emit nothing
-      if (journeyKind !== 'user-facing') continue; // mechanism — not a journey
+      if (matchingFlows!.length === 0) continue;
+      if (journeyKind !== 'user-facing') continue;
     }
 
     const capabilityRelationships = matchingFlows?.length
@@ -508,12 +329,6 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       entryPoint,
       journey: {
         id: `journey_${entryPoint.id}`,
-        // A journey's name is the underlying flow's own name when a flow was
-        // matched (docs/cas/SPECIFICATION.md §0.5.1 — journeys are a derived
-        // view, the name is the flow's own fact, never independently
-        // computed). buildJourneyName stays the fallback for the
-        // pre-flow-projection call surface (input.flows omitted) that unit
-        // tests still exercise directly.
         name: matchingFlows?.length ? matchingFlows[0].name : buildJourneyName(entryPoint, effects),
         journey_kind: journeyKind,
         entry_point_id: entryPoint.id,
@@ -521,10 +336,6 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
           type: entryPoint.type,
           name: entryPoint.name,
           method: entryPoint.trigger?.method,
-          // cronSchedule (k8s CronJob evidence) wins over the entry's own
-          // trigger.pattern (the bare command name, e.g. "app:cron") — once a
-          // journey is classified 'scheduled' the cron expression is the more
-          // specific, more useful trigger to surface.
           path_or_trigger: cronSchedule || entryPoint.trigger?.path || entryPoint.trigger?.pattern
             || entryPoint.trigger?.event || entryPoint.trigger?.schedule,
           handler_node_id: entryPoint.handler?.node_id,
@@ -559,13 +370,6 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     a.id.localeCompare(b.id)
   );
 
-  // by_kind must describe the DISCOVERED population, not the top-N slice
-  // handed back to the caller. Computing it over `included` (the old
-  // behavior) lied whenever selection skewed toward one kind — e.g. 501
-  // discovered journeys reported as "50 user_facing, 0 system, 0 scheduled"
-  // purely because a single global criticality ranking buried every
-  // system/scheduled journey outside the top 50, even though system
-  // journeys existed in the discovered set.
   const byKind: CASUserJourneySummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
   for (const journey of journeys) {
     byKind[journey.journey_kind] += 1;
@@ -583,16 +387,6 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
   };
 }
 
-/**
- * Top-N selection over a single global ranking buries every journey of a
- * minority kind once a majority kind fills the budget (measured live: 501
- * discovered journeys, top 50 by criticality were ALL user-facing, dropping
- * the repo's one genuine system journey entirely). Reserve each kind that
- * actually exists in the discovered set a fair floor of the budget — still
- * ranked internally by the same criticality/effect ordering — then fill any
- * remaining budget from the global ranking so the highest-signal journeys
- * overall still dominate once every present kind has representation.
- */
 function selectIncludedJourneys(sortedJourneys: CASUserJourney[], maxJourneys: number): CASUserJourney[] {
   if (sortedJourneys.length <= maxJourneys) return sortedJourneys;
 
@@ -785,9 +579,6 @@ function nodeAliases(nodeId: string, graph: JourneyGraph): string[] {
   return aliases;
 }
 
-/** Union a journey's matching flows' capability_relationships, deduped by
- *  capability_id (first occurrence wins — flows are iterated in the stable
- *  order flowsForEntryPoint produced them). */
 function dedupeCapabilityRelationships(
   relationships: NonNullable<FlowConcept['capability_relationships']>
 ): NonNullable<CASUserJourney['capability_relationships']> {
@@ -845,21 +636,7 @@ function collectPathNodeIds(
     }
   }
 
-  // Containment sibling-method expansion is a FALLBACK discovery mechanism
-  // for entries whose source_node is a container class with no known
-  // call-chain evidence (e.g. a message-handler class whose single contained
   // method __invoke is never traced by a call-chain walker). It must never
-  // run when authoritative call chains already exist for this entry point:
-  // "contains"/"has_method" edges connect a class to EVERY method it
-  // declares, so seeding from a REST controller class (a common source_node
-  // shape) pulls in every sibling action -- create, update, delete, index --
-  // as if they were steps on THIS entry's own path. The subsequent BFS walk
-  // then follows each sibling's own unrelated calls, unioning terminal
-  // effects across the whole controller instead of scoping them to the
-  // journey actually traced (live leak: "Create inspection" reporting
-  // deletes of Inspection/InspectionQuestion and creates of Driver/Vehicle
-  // pulled in from sibling controller actions). When chains are present they
-  // are the ground truth for which methods this entry actually reaches.
   if (chains.length === 0) {
     const seeds = [...pathNodeIds.keys()];
     for (const seedId of seeds) {
@@ -885,10 +662,6 @@ function collectPathNodeIds(
     const outgoing = graph.traversalBySource.get(nodeId) || [];
     for (const edge of outgoing) {
       if (visited.has(edge.target)) continue;
-      // A registration-node -> handler edge that isn't THIS entry's own
-      // handler is a sibling's wiring, riding along because the two entries
-      // share a registration node (route file, controller class, CLI file).
-      // See REGISTRATION_HANDLER_EDGE_RELATIONSHIPS above.
       const relationship = (edge.metadata as any)?.attributes?.relationship;
       if (REGISTRATION_HANDLER_EDGE_RELATIONSHIPS.has(relationship) && edge.target !== entryPoint.handler?.node_id) {
         continue;
@@ -911,15 +684,6 @@ function collectPathNodeIds(
   return pathNodeIds;
 }
 
-/**
- * A state machine's states hang off the declaring class via containment, so a
- * journey that reaches the owning model would never step into the machine:
- * the only traversal edges into a state chain start at the initial state.
- * When a walked node shares a source file and name with a state-machine
- * owner (a framework model node and the language-level class are separate
- * nodes for the same declaration), the machine's initial states join the
- * walk so transitions_to edges can carry the journey through the flow.
- */
 function stateMachineEntryStates(nodeId: string, graph: JourneyGraph): string[] {
   const node = graph.nodesById.get(nodeId);
   if (!node || !node.name) return [];
@@ -1015,22 +779,8 @@ function collectTerminalEffects(
       (exitPoint.target?.service_id || exitPoint.target?.sdk) &&
       !isLanguageBuiltinExitPoint(exitPoint)
     ) {
-      // Same evidence-only standard as data-lineage.ts's resolveRecipientService:
-      // a resolved external destination (service_id/sdk, set only by analyzers
-      // that confirmed a genuine outbound call), never the raw exit-point name.
-      // The raw name is a source expression ("External call: hmac.New(...)",
-      // "External call: r.Form.Get", "External call: h.store.SetLastLogin") —
-      // same-process helper/stdlib/local-store calls read as clean identifiers
-      // too, and none of those set target, so falling back to name mislabels
-      // in-process calls (and can leak argument text like credential
-      // concatenation) as external services in this customer-facing field. No
-      // resolved destination means omit, not guess.
       externalServices.add(exitPoint.target!.service_id || exitPoint.target!.sdk!);
     }
-    // Frontend journeys terminate at the data behind the API call, not the
-    // component making it: resolve the endpoint's resource noun to a data
-    // entity when one matches, or at minimum keep the resource noun itself
-    // (e.g. /api/portfolio -> Portfolio) as the terminal candidate.
     if (exitPoint.type === 'api') {
       const resource = apiResourceName(exitPoint.target?.endpoint || exitPoint.target?.resource);
       if (resource) {
@@ -1103,7 +853,6 @@ function collectTerminalEffects(
   const entitiesWritten = new Set<string>();
   const entitiesRead = new Set<string>();
   for (const candidate of candidates) {
-    // Single choke point: HTTP verbs, lifecycle methods, hooks, widget
     // builders, and helper/accessor names must never become entity names.
     if (isExcludedTerminalName(candidate.name)) continue;
     if (seenEntities.has(candidate.name)) continue;
@@ -1180,10 +929,6 @@ function deepestMeaningfulNode(
     if (WALK_EXCLUDED_NODE_TYPES.has(node.type)) continue;
     if (FRAMEWORK_TERMINAL_TYPES.test(node.type)) continue;
     if (HOOK_USAGE_NODE_TYPES.test(node.type)) continue;
-    // Lifecycle methods, hooks, widget builders, HTTP-verb handler aliases,
-    // and helper/extension/accessor utilities carry no product identity; the
-    // fallback must land on a node that does (a component name is acceptable,
-    // a dispose/useEffect/PathHelper terminal is not).
     if (isExcludedTerminalName(node.name)) continue;
     if (node.id === entryPoint.source_node || node.id === entryPoint.handler?.node_id) continue;
     if (!best || depth > best.depth || (depth === best.depth && node.id.localeCompare(best.node.id) < 0)) {
@@ -1227,11 +972,6 @@ const GENERIC_API_TAIL_SEGMENTS = new Set([
   'update', 'delete', 'new', 'edit', 'summary',
 ]);
 
-/**
- * Derive the resource noun from an API endpoint path: /api/v1/portfolio/:id
- * -> Portfolio. Generic tails fold in their parent (/automation/config ->
- * AutomationConfig). Returns undefined when no meaningful noun exists.
- */
 function apiResourceName(endpoint: string | undefined): string | undefined {
   if (!endpoint) return undefined;
   let path = endpoint.trim();
@@ -1322,16 +1062,6 @@ function collectSecurityBoundaries(
   for (const guard of entryGuards) {
     boundaries.set(`guard:${guard}`, { name: guard, mechanism: 'entry-guard', kind: classifyGuardKind(guard) });
   }
-  // entryPoint.security.authenticated is an independent truth signal from the
-  // named guard list: a route can be gated by an authorization guard (e.g.
-  // "IsGranted") while ALSO requiring authentication, and the two facts must
-  // never be allowed to disagree in the rendered verdict. Gating this fallback
-  // on "no named guards at all" (the old check) silently dropped the
-  // authentication signal whenever any other guard existed, producing
-  // self-contradictory output like "guarded (authorization: IsGranted), no
-  // auth guard" even though the entry point IS authenticated. Only skip the
-  // fallback when a named guard already carries the 'authentication' kind
-  // itself, so we never render authentication twice.
   const hasNamedAuthenticationGuard = entryGuards.some(guard => classifyGuardKind(guard) === 'authentication');
   if (entryPoint.security?.authenticated && !hasNamedAuthenticationGuard) {
     boundaries.set('guard:authenticated', { name: 'authentication', mechanism: 'entry-guard', kind: 'authentication' });
@@ -1404,19 +1134,6 @@ function scoreCriticality(
     if (chain.criticality === 'critical') score += 3;
     else if (chain.criticality === 'high') score += 2;
   }
-  // A journey with NO observed terminal effect whatsoever — no writes, no
-  // reads, no external calls, no messages, and no terminal entity resolved
-  // (including after isExcludedTerminalName drops a generic error/exception
-  // type as a non-terminus) — has no business outcome to be critical ABOUT.
-  // The chain-criticality contributions above come from the Structural
-  // Importance layer (call-graph centrality of the code the journey merely
-  // PASSES THROUGH), not from anything this journey itself produces. Without
-  // this cap, an effect-less journey whose only terminal candidate was a
-  // generic `Error` type (now correctly excluded, leaving no terminus)
-  // inherited 'critical' purely from a shared path's centrality — i.e. was
-  // rated critical on the strength of an error path it never actually
-  // resolved. Capped at 'medium' so it can still surface as worth a look,
-  // never overstated as a critical business outcome that was never observed.
   const noObservedOutcome = !effects.hasAnyEffect && effects.terminalEntities.length === 0;
   if (score >= 10) return noObservedOutcome ? 'medium' : 'critical';
   if (score >= 6) return noObservedOutcome ? 'medium' : 'high';
@@ -1434,11 +1151,6 @@ function disambiguateJourneyNames(built: Array<{ journey: CASUserJourney; entryP
   for (const item of built) {
     let name = item.journey.name;
     if ((counts.get(name) || 0) > 1 || assigned.has(name)) {
-      // Widen the discriminator one path segment at a time and stop at the first
-      // width that is actually unique — see discriminatorLabel's `depth`: how
-      // much of a path is needed to identify something is a fact about the set,
-      // not about which words are "generic". MAX_DEPTH bounds the label length;
-      // beyond it the entry-point id below guarantees uniqueness regardless.
       const MAX_DEPTH = 3;
       let widened = '';
       for (let depth = 1; depth <= MAX_DEPTH; depth += 1) {
@@ -1477,32 +1189,9 @@ function journeyDiscriminator(entryPoint: CASEntryPoint, depth = 1): string {
   return discriminatorLabel(entryPoint.name, depth);
 }
 
-/**
- * A journey discriminator is rendered inside the journey's own title, so it is
- * read by a person: it must be a NAME, not a repo path. `entryPoint.name` is
- * the last-resort source above and for several analyzers it IS a source path —
- * measured live on a Python app, which shipped journeys titled
- * `Config (<dir>/<file>.py)` as the first thing a customer reads.
- *
- * Converts a path-shaped value to its file stem (reusing the same
- * stem-extraction shape as cliProgramFromFilePath). Anything not path-shaped is
- * returned untouched — this only rewrites values that are paths, never names.
- *
- * `depth` controls how many trailing path segments the label keeps. It exists
- * because "is this stem too generic to identify anything?" must NOT be answered
- * with a list of generic words (`main|index|lib|api|...`) — that is the
- * hardcoded-vocabulary class the spec-purity gate rejects, and it rejected
- * exactly that first attempt here. Genericness is not a property of a word, it
- * is a property of a SET: a stem is insufficient precisely when some sibling
- * shares it. So the caller widens depth until the labels are distinct, which
- * qualifies `src/main.py` as "src main" only when another `main` exists to
- * collide with — and never pays that cost when the stem already distinguishes.
- */
 export function discriminatorLabel(raw: string | undefined, depth = 1): string {
   const value = String(raw || '').trim();
   if (!value) return value;
-  // Path-shaped = has a directory separator or a file extension. A bare
-  // identifier (`createOrder`, `UserController`) has neither and is left alone.
   if (!/[\\/]/.test(value) && !/\.\w{1,6}$/.test(value)) return value;
   const segments = value.split(/[\\/]/).filter(Boolean);
   if (segments.length === 0) return value;
@@ -1516,13 +1205,6 @@ function buildJourneyName(entryPoint: CASEntryPoint, effects: TerminalEffects): 
   const action = describeEntryAction(entryPoint, effects);
   const outcome = describeTerminalOutcome(effects);
   const name = (!outcome || outcome === 'main') ? action : `${action} -> ${outcome}`;
-  // Same name-assembly hygiene flow/step names get in flow-concepts.ts
-  // (dedupeAdjacentWords): a template prefix combining with an
-  // independently-sourced token that already carries the same word produces
-  // a stutter (`Scheduled ${humanizeLabel(entryPoint.name)}` below, when
-  // entryPoint.name itself already starts with "scheduled", yields
-  // "Scheduled Scheduled Scan"). Journeys assemble names the same
-  // prefix+token way and were missing this final collapse step.
   return dedupeAdjacentWords(name);
 }
 
@@ -1540,21 +1222,6 @@ function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects
       return resource ? `${formKind} ${resource} form` : `${formKind} form`;
     }
     const resource = humanizeResource(path);
-    // A route's final path segment is not always a resource noun: RPC-style
-    // action routes (POST /maintenance_issues/:id/complete, POST
-    // /auth/forgotpassword, POST /oauth/grant) put the ACTION verb in the
-    // tail segment, and gluing the HTTP-method verb onto it produces
-    // nonsense ("Create complete", "Create forgotpassword", "Create grant").
-    // The handler's own function name is real evidence of what the action
-    // actually is (completeMaintenanceIssue, resetForgottenPassword,
-    // grantOAuthAccess) and normally spells out the same word the URL
-    // segment abbreviates, plus the object it applies to. When the path
-    // segment is a flattened prefix of the handler name, prefer the fuller,
-    // evidence-grounded handler phrase over the generic method-verb
-    // template. This never fires for ordinary CRUD routes (POST /orders
-    // handled by createOrder) because "createorder" does not start with
-    // "order" -- only the reverse (action-in-path, elaborated-in-handler)
-    // shape matches.
     const handlerPhrase = describeEntryActionFromHandlerName(entryPoint.handler?.method_name);
     if (handlerPhrase && resource && isHandlerNameEvidenceForResource(handlerPhrase, resource)) {
       return capitalizeLabel(handlerPhrase);
@@ -1736,14 +1403,6 @@ function flattenLabel(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/**
- * Humanizes a handler's function name into a verb-phrase, gated to real
- * multi-word evidence: a bare single-word handler name (e.g. "complete")
- * carries no more information than the route segment itself and must not
- * be treated as elaborating evidence. Framework-plumbing and helper/accessor
- * names are excluded via the same choke point terminal naming uses, so a
- * lifecycle method or utility accessor never becomes a journey action.
- */
 function describeEntryActionFromHandlerName(handlerName: string | undefined): string | undefined {
   const name = (handlerName || '').trim();
   if (!name) return undefined;
@@ -1753,13 +1412,6 @@ function describeEntryActionFromHandlerName(handlerName: string | undefined): st
   return humanized;
 }
 
-/**
- * True when the route's resource segment is a flattened prefix of the
- * handler's own humanized name -- i.e. the URL abbreviates the same action
- * word the function name spells out in full (completeMaintenanceIssue for
- * a /complete route). A short guard avoids spurious matches on trivial
- * segments.
- */
 function isHandlerNameEvidenceForResource(handlerPhrase: string, resource: string): boolean {
   const flatHandler = flattenLabel(handlerPhrase);
   const flatResource = flattenLabel(resource);
@@ -1815,22 +1467,6 @@ function humanizeLabel(text: string): string {
     .toLowerCase();
 }
 
-/**
- * Strips a trailing English plural suffix from `word` — but ONLY when the
- * stripped stem is long enough to plausibly be a real domain noun. The same
- * length thresholds already proven for exactly this class of bug (a bare
- * trailing 's' is grammatical evidence of a PLURAL only on words with enough
- * letters to carry meaning past the strip) are used verbatim from
- * `stemTerminologyToken`/`canonicalCapabilitySubject` in orchestrator.ts.
- *
- * DEFECT (live, deployed build): a REST path tail segment "login-as"
- * (`partner-portal/clients/:org_id/login-as`) humanizes to "login as", and an
- * unguarded strip read the trailing 's' on "as" as a plural, producing
- * "login a" -> "LoginA". A shell script's external-command exit point ("aws")
- * hit the identical unguarded strip, producing "Aw". Neither "as" nor "aws"
- * is an English plural noun; they are a preposition and a CLI tool name
- * respectively — words too short to ever safely lose a trailing letter.
- */
 function singularizeEnglishWord(word: string): string {
   if (word.length > 4 && /ies$/.test(word)) return `${word.slice(0, -3)}y`;
   if (word.length > 5 && /(ses|xes|zes|ches|shes)$/.test(word)) return word.slice(0, -2);

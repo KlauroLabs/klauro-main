@@ -175,9 +175,6 @@ import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeSe
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
-// Event-loop yields between analysis phases: the analyzer runs in-process with
-// the HTTP server, so long synchronous phases starve every request (incl.
-// /health) — see event-loop-yield.ts for the measured 524-starvation story.
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
@@ -185,14 +182,6 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as nativeFs from 'node:fs/promises';
 
-/**
- * Code-layout words that show up as path segments across effectively every
- * repo (framework/language conventions, not domain vocabulary). This is the
- * ONLY word list `repoRelativePathSegments` filters against — machine- and
- * developer-specific segments (home directory, username, personal folder
- * names, client folders, …) never reach this list at all, because they are
- * cut structurally before this filter runs (see `repoRelativePathSegments`).
- */
 const GENERIC_PATH_LAYOUT_WORDS = new Set([
   'src', 'app', 'apps', 'packages', 'lib', 'libs', 'server', 'client', 'clients',
   'components', 'controllers', 'services', 'repositories', 'models', 'entities',
@@ -200,18 +189,6 @@ const GENERIC_PATH_LAYOUT_WORDS = new Set([
   'vendor', 'generated', 'dist', 'build', 'out', 'bin', 'node_modules',
 ]);
 
-/**
- * Run an async worker over `items` with a bounded number in flight at once,
- * awaiting the whole set. Each worker is independent; results are not returned
- * (workers mutate shared state under their own id, so completion order does not
- * matter). Used to fan out the per-element AI description batches — each batch's
- * prompt depends only on its own items, so they can run concurrently instead of
- * strictly one-after-another, collapsing wall-clock without changing which
- * descriptions are produced or where they land. Concurrency defaults to 5 and is
- * overridable via KLAURO_AI_CONCURRENCY. A worker that throws does not abort the
- * others (each batch already handles its own errors); we still surface the first
- * rejection after all settle so nothing is silently swallowed.
- */
 async function runWithConcurrency<T>(
   items: T[],
   concurrency: number,
@@ -243,46 +220,8 @@ function aiConcurrencyLimit(): number {
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
 }
 
-// TASK #107 hard cutoff: the capability-catalog AI stage runs concurrently
-// with deterministic work (task #118 lane decoupling), so it is measured on
-// its OWN clock from when the AI phase starts (aiPhaseStart in
-// preprocessProject), never against deterministic parse time. This ceiling
-// leaves headroom under the ~3-minute hard analysis budget for the
-// deterministic phases this stage runs alongside, the REST of L5 (system
-// narrative + element descriptions, which run after the catalog resolves —
-// see the catalogOutcome await in applyAIInterpretation), and final assembly.
-//
-// TASK #143 RECONCILIATION: this was 150_000 (150s), leaving only ~30s of
-// the 180s hard analysis cap for everything else once the catalog itself hit
-// its ceiling — and before this task, hitting the ceiling did not actually
-// stop at 150s: the "guaranteed completion" final attempt inside
-// awaitAiBoundedThenUncapped ran with NO cap of its own even when a hard
-// deadline was supplied, so a real client repo (4,810 files/85,652 nodes)
-// measured 264.6s total wall clock against this 150s budget. That gap is
-// fixed at the source (awaitAiBoundedThenUncapped now bounds its final
-// attempt by the remaining time under hardDeadlineAt instead of running
-// uncapped), so this constant now means what it says. Lowered to 100_000
-// (100s) to leave real headroom for the rest of L5 and final assembly under
-// the 180s ceiling — the per-attempt bounds inside awaitAiBoundedThenUncapped
-// (40s x 3 = 120s worst case for the bounded phase alone) mean a repo whose
-// provider is genuinely slow will still hit this ceiling before exhausting
-// its 3 bounded attempts on a healthy connection; that is the intended
-// "abandon and report the honest gap" path (see
-// runCapabilityCatalogWithQualityGate's deadlineExceeded branch and
-// remote-analyzer-service.ts's comprehensionPartial reporting), not a
 // regression — a budget must never be met by silently shipping less, but it
 // also must never be missed by an unbounded amount.
-/**
- * How many candidates survive when NOTHING in a fallback catalog is grounded in an
- * outcome. Not a quality target — a damage limit.
- *
- * Measured 2026-08-11: a real repo published 24 module-named candidates
- * (`Manage Net`, `View Infer Web`) with `authored: 0 of 24` because the guard that
- * was supposed to catch this only recognised entity-shaped CRUD. Publishing two
- * dozen filenames as a product capability catalog is worse than publishing three,
- * and "zero is essentially never correct" forbids publishing none — so the honest
- * position is a small, evidence-ranked set with the shortfall reported.
- */
 const UNGROUNDED_FALLBACK_KEEP = 3;
 
 const CATALOG_HARD_DEADLINE_MS = (() => {
@@ -290,19 +229,12 @@ const CATALOG_HARD_DEADLINE_MS = (() => {
   return Number.isFinite(configured) && configured > 0 ? configured : 100_000;
 })();
 
-// Distinguishable, greppable marker (this file's existing convention for
-// naming failure classes — see isProviderUnavailableFailure — rather than a
-// custom Error subclass) so callers can tell "the hard deadline fired" apart
-// from an ordinary provider failure and stop retrying instead of treating it
-// like any other transient error.
 const AI_CATALOG_HARD_DEADLINE_MARKER = 'ai-catalog-hard-deadline-exceeded';
 
 function isAiCatalogHardDeadlineExceeded(error: unknown): boolean {
   return error instanceof Error && error.message.includes(AI_CATALOG_HARD_DEADLINE_MARKER);
 }
 
-// Code-layer / folder / structural names that are never meaningful capability
-// "owners". Used to drop ownership clauses like "owned by lib and entities".
 const CAPABILITY_STRUCTURAL_AREA_NAMES = new Set([
   'src', 'lib', 'libs', 'app', 'apps', 'core', 'common', 'shared', 'base',
   'util', 'utils', 'helper', 'helpers', 'main', 'index', 'internal', 'external',
@@ -357,52 +289,15 @@ export interface AnalysisProgressEvent {
 export interface IncrementalAnalysisOptions {
   loadCache?: (contentHash: string) => Promise<FileAnalysisResult | null>;
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
-  /**
-   * Real display name for this project, distinct from `projectPath`'s
-   * basename when the workspace directory is a hash (e.g. the remote
-   * analyzer service writes snapshots to a sha256-derived workspace dir).
-   * Threaded into deployable evidence collection and system/domain naming so
-   * a hash workspace basename never leaks into deployable/system names.
-   */
   displayName?: string;
   onProgress?: (event: AnalysisProgressEvent) => void;
 }
 
-/**
- * Node types buildChangeRisks() actually scores. Anything else (property, interface,
- * variable, class, file, import, ...) never gets a CASChangeRisk entry — assess_change_risk
- * must check this before returning `risk: null` plus the whole-repo change_risk_summary, or
- * it silently looks like "this node was assessed and is low-risk" when it was never
- * evaluated at all (bug #3, 2026-07-04 impact benchmark: assess_change_risk on an interface
- * property's node_id returned risk: null + ~90 unrelated repo-wide nodes with no signal that
- * the node type itself is unsupported).
- */
 export const RISKABLE_NODE_TYPES: readonly string[] = [
   'function', 'method', 'service', 'controller', 'serializer',
   'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
 ];
 
-/**
- * Whether a node has REAL, structural security evidence: authentication or
- * authorization metadata the analyzer actually extracted from the code
- * (decorators, guards, middleware, route metadata), never a name/keyword
- * match against the node or file name.
- *
- * A prior version of both change-risk implementations (buildChangeRisks
- * here, and a since-corrected copy in apps/mcp-server/src/query.ts's
- * scoreChangeRiskOnDemand) matched node/file names against a hardcoded
- * word list mixing generic security terms with business-domain nouns from
- * one specific corpus's vocabulary (fleet/logistics: "fuel", "vehicle",
- * "driver", "trip", "dispatch"; SaaS billing: "invoice", "billing",
- * "customer", "partner"). That is exactly the hardcoded brand/keyword
- * categorizer the product's cardinal rule forbids: right on repos whose
- * author happened to use that vocabulary, silently wrong (both false
- * positive — e.g. a device driver, a road-trip planner, a business
- * partner-integration — and false negative on repos using different
- * words for the same concepts) everywhere else. This is the single
- * shared source of truth for "is this security-sensitive" now; both
- * call sites use it so a third divergent copy cannot appear.
- */
 export function hasStructuralSecurityEvidence(node: Pick<CASNode, 'security'>): boolean {
   return !!(node.security?.authentication_required || node.security?.authorization_roles);
 }
@@ -427,17 +322,7 @@ interface ProjectTextSignal {
   concepts: string[];
   summary?: string;
   evidence: string[];
-  // Raw, verbatim manifest self-description (e.g. package.json "description").
-  // A real human-authored evidence STRING, NOT a keyword-classified summary —
-  // surfaced to the comprehension prompt as authoritative product framing.
   manifestDescription?: string;
-  // Verbatim TOP-DOWN product evidence read from the repo's own product doc
-  // (README, or a PRD/PRODUCT/OVERVIEW when no README states the product): the
-  // first heading (the product's name/tagline) and the first real paragraph
-  // (what it says it is/does). Extracted deterministically (Camp-B facts, like
-  // manifestDescription) and fed to the capability catalog + description prompts
-  // as product-facing grounding — evidence-gated, undefined when no such doc.
-  // Agent-tooling docs (CLAUDE.md/AGENTS.md) are NOT product docs and excluded.
   productDocTitle?: string;
   productDocSummary?: string;
 }
@@ -465,77 +350,31 @@ interface DescriptionTarget {
     updates: number;
     deletes: number;
   };
-  /**
-   * Evidence-richness score used ONLY to order entity targets before batching
-   * (see applyAIElementDescriptions) — never sent to the AI provider and
-   * never affects which description is accepted. Higher means more evidence
-   * (lineage + relations + capability membership + journey participation)
-   * grounds the description, so when the wall-clock budget cuts a pass short
-   * the entities dropped are the least-connected ones, not an arbitrary
-   * catalog-order suffix. Unset for capability targets (capabilities keep
-   * their existing catalog order).
-   */
   priorityScore?: number;
 }
 
 interface EntityPropertyIndex {
   byParent: Map<string, Array<{ node: CASNode; position: number }>>;
   byFileBasename: Map<string, Array<{ node: CASNode; position: number; normalizedFile: string }>>;
-  // Per-run memo of resolved property lists, keyed by entity node id. The
-  // basename fallback in entityPropertyNodesFromIndex is O(bucket) with a
-  // per-node substring check, and the dedup/derive code resolves the same
-  // entity node up to 3x — memoizing collapses that repeat work. Keyed by id,
-  // safe because the index's underlying nodes are immutable for its lifetime.
   resolved: Map<string, CASNode[]>;
 }
 
-/**
- * Persistence evidence that lives elsewhere in the graph than on the entity's
- * own anchor node — a table mapping, a migration, a repository/DAO — indexed by
- * entity name. See Orchestrator.buildPersistenceEvidenceContext.
- */
 interface PersistenceEvidenceContext {
-  /**
-   * On-node evidence (decorator/attribute/ORM subcategory/analyzer entity type)
-   * found on ANY node with the entity's name, keyed by lowercased name. An
-   * entity routinely has several nodes — a language analyzer's `class` node with
-   * the property children, and a framework analyzer's `entity` node carrying the
-   * `@Entity`/EF-Core annotation — and the entity's chosen ANCHOR is the
-   * field-richest of them, i.e. usually the one WITHOUT the annotation. Reading
-   * evidence only off that anchor lost the ORM proof for a whole hand-rolled DAL.
-   */
   evidencedNames: Map<string, string>;
   mappedNames: Map<string, string>;
   migrationNames: Map<string, string>;
   repositoryNames: Map<string, string>;
 }
 
-/**
- * Declarations that PROVE durable persistence across ecosystems: ORM
- * entity/table/document/collection annotations, and the column/key mapping
- * annotations that only exist on a mapped class. Anchored so a decorator merely
- * CONTAINING the word (`@EntityListeners`, `@TableColumnHeader`) does not match.
- */
 const PERSISTENCE_DECLARATION =
   /@?\b(Entity|Table|Document|Collection|Model|Embeddable|MappedSuperclass|PrimaryKey|PrimaryGeneratedColumn|Column|ObjectType|Schema|Index|sqlx|Migration)\b(?![A-Za-z])/;
 
-/**
- * Migration-name vocabulary — the verbs and structural nouns a migration class
- * is named with. Stripped to leave the SUBJECT, so `CreateOrdersTable` proves
- * `Order` and nothing else.
- */
 const MIGRATION_VOCABULARY =
   /^(create|add|drop|alter|rename|remove|delete|update|change|modify|init|initial|migration|migrate|table|tables|column|columns|index|indexes|indices|constraint|key|keys|to|from|for|and|the|schema|seed|up|down|v\d*)$/i;
 
-/** ORM base classes a persisted record extends in inheritance-based ORMs. */
 const PERSISTENCE_BASE_CLASS =
   /\b(BaseEntity|ActiveRecord|ApplicationRecord|Model|Document|DbContext|SQLModel|DeclarativeBase|EntityBase|AggregateRoot)\b/;
 
-/**
- * ORM-FAMILY analyzer subcategories. The bare `entity` subcategory is
- * deliberately ABSENT: language analyzers push it from a path heuristic
- * (a type living under `entities/`), which is location, not persistence.
- */
 const ORM_FAMILY_SUBCATEGORIES = new Set<string>([
   'orm', 'orm-entity', 'typeorm', 'sea-orm', 'gorm', 'mikroorm', 'prisma', 'drizzle',
   'sequelize', 'mongoose', 'sqlalchemy', 'django-model', 'activerecord', 'eloquent',
@@ -548,82 +387,23 @@ interface DiscoveredEntryPointCandidate {
   name: string;
   description: string;
   trigger?: CASEntryPoint['trigger'];
-  /**
-   * Set when this candidate is a package.json main/module/exports field on a
-   * LIBRARY-shaped package (publishable surface, no bin, no app framework,
-   * no server/app entry points). Carries the package name so the per-export
-   * expansion in addDiscoveredEntryPoints can label emitted `api` entry
-   * points, and the manifest field so duplicate fields (main+module often
-   * point at different bundles of the same source) don't double-emit.
-   */
   libraryPublicApi?: { packageName: string; field: string };
 }
 
-/**
- * Options for a full analysis run.
- */
 export interface OrchestrateAnalysisOptions {
-  /**
-   * Monotonic execution progress for hosted worker supervision. Emitted only
-   * after a real analyzer/post-processing phase completes; consumers must not
-   * treat elapsed wall time as progress.
-   */
   onProgress?: (event: AnalysisProgressEvent) => void;
-  /**
-   * When true, the slow AI interpretation phase is SKIPPED inline: the
-   * deterministic CAS is returned immediately with `ai_enrichment='pending'`
-   * (or 'disabled' if no AI provider is available). A closure is registered so
-   * the caller can run the AI phase afterwards via `enrichAnalysisAI(output)`.
-   * DEFAULT OFF — when false/unset the AI phase runs inline exactly as today
-   * and the output is annotated `ai_enrichment='synchronous'`.
-   */
   deferAiEnrichment?: boolean;
-  /**
-   * Real display name for this project, distinct from `projectPath`'s
-   * basename when the workspace directory is a hash (e.g. the remote
-   * analyzer service writes snapshots to a sha256-derived workspace dir).
-   * Threaded into deployable evidence collection and system/domain naming so
-   * a hash workspace basename never leaks into deployable/system names. When
-   * absent, `path.basename(projectPath)` is used (correct for direct local
-   * analyze where projectPath already is the real directory name).
-   */
   displayName?: string;
-  /**
-   * Declared custom-architecture conventions from .klaurorc's `conventions:`
-   * section (resolved in apps/mcp-server via klauro-config.ts, since
-   * analyzer-core does not depend on mcp-server). Additive to
-   * auto-detection; see conventions-applier.ts.
-   */
   conventions?: KlauroConventionsInput;
-  /**
-   * Local declarative analyzer-pack globs from .klaurorc's `packs:` section
-   * (resolved in apps/mcp-server via klauro-config.ts, since analyzer-core does
-   * not depend on mcp-server). Loaded IN ADDITION to the built-in packs bundled
-   * with analyzer-core. Additive/evidence-gated; see the pack engine in
-   * analyzer/packs and docs/SPEC-ANALYZER-PACKS.md. Absent → built-in packs only.
-   */
   packGlobs?: string[];
 }
 
 export class AnalyzerOrchestrator {
-  // A manifest-declared name/scope segment that describes the REPO'S SHAPE
-  // ("monorepo", "server", "api", ...) rather than the product itself.
-  // Shared by every manifest-name humanizer that needs to prefer an
-  // enclosing scope/org over a generic leaf word (see humanizeManifestName
-  // and humanizeGoModulePath) — structural, not a product-name vocabulary.
   private readonly GENERIC_STRUCTURAL_NAME_PATTERN = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i;
 
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
-  // Subset of projectRoots that own their own package-boundary manifest
-  // (package.json, Cargo.toml, ...) as opposed to being discovered purely via
-  // a workspace-manifest glob (pnpm-workspace.yaml `apps/*`, etc.) with no
-  // manifest of their own. Only manifest-owning roots can ever get a
-  // dedicated nested analyzer pass (canAnalyze() reads that directory's own
   // manifest) — see getAnalyzerScopeFilters, which must not exclude a
-  // glob-only root from the root-scoped pass, since no nested pass will ever
-  // cover it otherwise (the exact failure mode the Dockerfile-boundary fix
-  // addressed, reintroduced via a different discovery path).
   private manifestOwningProjectRoots: Set<string> = new Set();
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
@@ -647,25 +427,11 @@ export class AnalyzerOrchestrator {
   private klauroSelfProjectCache: Map<string, boolean> = new Map();
   private bundledFrontendRootsCache: Map<string, string[]> = new Map();
   private primaryProductPathCache: Map<string, boolean> = new Map();
-  /**
-   * System-level grounding vocabulary (primary domain, core concepts,
-   * deterministic overview) for the element description validator. Set by the
-   * AI description passes so capability/entity descriptions get the same
-   * grounded-words-allowed treatment as the system description validator.
-   */
   private elementDescriptionGroundingVocabulary: string[] = [];
   private elementDescriptionArtifactType?: string;
   private static aiInterpretationTimeouts = 0;
   private static aiInterpretationDisabledUntil = 0;
 
-  /**
-   * Deferred AI-enrichment closures, keyed by the deterministic CASOutput that
-   * was returned early (opt-in progressive path only). Each closure re-runs the
-   * exact AI interpretation phase for that run and mutates the output in place.
-   * Populated by executeAnalysis when deferAiEnrichment is set; consumed (once)
-   * by enrichAnalysisAI. A WeakMap so early-returned outputs that are never
-   * enriched don't leak.
-   */
   private deferredAiEnrichments: WeakMap<CASOutput, () => Promise<void>> = new WeakMap();
 
   registerAnalyzer(registration: AnalyzerRegistration): void {
@@ -673,11 +439,6 @@ export class AnalyzerOrchestrator {
     this.detectedAnalyzerCache.clear();
   }
 
-  /**
-   * Metadata for every registered analyzer — what Klauro can analyze and how it
-   * detects each stack. Used by the coverage surface (and tooling) to show the
-   * full language/framework/library reach. RegExps are stringified for transport.
-   */
   listRegisteredAnalyzers(): Array<{
     id: string;
     name: string;
@@ -726,8 +487,6 @@ export class AnalyzerOrchestrator {
   }
 
   private async compactSourceRaw(output: CASOutput): Promise<void> {
-    // Budget-yield inside the per-node loop: on a whale (76k nodes) this
-    // string-slicing sweep was part of a measured >1s finalize stall.
     const maybeYield = createYieldBudget();
     const omitRaw = output.nodes.length > 10_000;
     const maxRawChars = 2_000;
@@ -754,22 +513,10 @@ export class AnalyzerOrchestrator {
     manifestRootAbsolutePaths.add(projectPath);
 
     try {
-      // Package-boundary manifests only (package.json, pom.xml, Cargo.toml, ...) —
-      // NOT deploy/build tooling like Dockerfile. A directory that only has a
-      // Dockerfile (common per-app in Nx/Turborepo monorepos where dependencies
-      // are hoisted to the workspace root) is not an independent package; treating
-      // it as one caused getAnalyzerScopeFilters to wall the whole directory off
-      // from the root-scoped framework analyzer with no dedicated pass ever
-      // covering it (e.g. NestJS controllers under apps/* silently unanalyzed).
       const matches = (await this.getManifestFiles(projectPath)).filter(isPackageBoundaryManifest);
       for (const match of matches) {
         const relativeDir = path.dirname(match).replace(/\\/g, '/');
-        // A manifest under an excluded reference path (e.g. `legacy/` when this
         // is the Klauro self-project) must not be promoted to a project root —
-        // isIgnoredInventoryDirectory already skips walking into that directory
-        // for the inventory/manifest scan itself, but without this guard a
-        // manifest that still surfaced there (e.g. via a workspace glob member
-        // matched below) would get its own dedicated analyzer pass anyway.
         if (this.isExcludedLegacyReferencePath(relativeDir, projectPath)) continue;
         const absolutePath = path.join(projectPath, relativeDir);
         rootSet.add(absolutePath);
@@ -779,37 +526,7 @@ export class AnalyzerOrchestrator {
     }
 
     try {
-      // A pnpm/turbo/nx workspace can declare members (`apps/*`, `packages/*`)
-      // via a workspace-manifest glob even when a member directory has NO
-      // package.json of its own (deps hoisted to the root). Those members are
-      // invisible to the manifest walk above, so consult the workspace globs
-      // directly. Evidence-gated: only a directory a glob pattern actually
-      // matches counts — never inferred from folder naming. Skip anything
-      // that already has its own boundary manifest (already added above) to
-      // avoid double-counting the same root through two mechanisms.
-      //
-      // These glob-only members are added to rootSet (so they're scoped into
-      // the root-scoped framework pass rather than silently missed) but
-      // deliberately NOT added to manifestRootAbsolutePaths — they can never
-      // get their OWN dedicated nested pass (no package.json for canAnalyze()
       // to read there), so getAnalyzerScopeFilters must not wall them off the
-      // way it does for genuine manifest-owning nested roots.
-      //
-      // IMPORTANT: this glob resolution (`resolveWorkspaceGlobMembers`) is
-      // completely independent of the directory-walk exclusion logic
-      // (isIgnoredInventoryDirectory / isExcludedLegacyReferencePath) used by
-      // collectSourceInventoryFiles — it globs the filesystem directly via
-      // `glob`, so a workspace member declared in package.json#workspaces
-      // (e.g. a repo with `"workspaces": ["apps/*", "packages/*", "legacy/*"]`)
-      // bypasses the legacy-reference exclusion entirely and gets promoted to
-      // a first-class project root even when this IS the Klauro self-project
-      // and `legacy/` should never be analyzed as real product surface. Found
-      // via a real self-analysis file-walk-coverage audit: `legacy/web` (whose
-      // own package.json happens to be named "klauro-frontend", itself an
-      // unrelated false-positive-prone name match) was silently promoted to a
-      // full project root and its ~100 files parsed as if they were live
-      // product code. Filter every candidate through the same exclusion check
-      // used by the directory walk before it can become a root.
       const globMembers = discoverWorkspaceGlobRootsWithoutManifest(
         projectPath,
         (absoluteDir) => manifestRootAbsolutePaths.has(absoluteDir),
@@ -941,10 +658,6 @@ export class AnalyzerOrchestrator {
     if (relativePath === 'bin') return false;
     return new Set([
       'node_modules',
-      // fixtures/__fixtures__/testdata/cas-tests/__tests__ — shared
-      // exclusion list (scaffold-paths.ts); __tests__ was missing here
-      // entirely, so a jest-convention __tests__/ dir containing fixture
-      // assets could still surface as real repo structure.
       ...SCAFFOLD_DIR_NAMES,
       'dist',
       'build',
@@ -1085,14 +798,7 @@ export class AnalyzerOrchestrator {
     if (/^(next|jest|cypress)\.config\.(js|ts|mjs|cjs)$/.test(basename)) return true;
     if (filePath.toLowerCase().endsWith('prisma/schema.prisma')) return true;
     if (this.isCiPipelineConfigFile(filePath)) return true;
-    // Jupyter notebooks (.ipynb) are JSON documents, not a registered-language
-    // source extension — JupyterNotebookAnalyzer parses the format directly
-    // (analyzer/frameworks/dataml/jupyter-notebook-analyzer.ts). Without this,
-    // notebooks are silently invisible to hasAnalyzerSignal()'s file-pattern
-    // matching, so the analyzer never gets a chance to run.
     if (basename.endsWith('.ipynb')) return true;
-    // Per-language source extensions live in LANGUAGE_REGISTRY (language-registry.ts);
-    // adding a language is one entry there, not an edit to this regex.
     return isRegisteredSourceExtension(filePath);
   }
 
@@ -1113,8 +819,6 @@ export class AnalyzerOrchestrator {
   }
 
   private isManifestFile(filePath: string): boolean {
-    // Per-language build/manifest files live in LANGUAGE_REGISTRY (language-registry.ts);
-    // adding a language is one entry there, not a new `if` clause here.
     return isRegisteredManifest(filePath);
   }
 
@@ -1145,8 +849,6 @@ export class AnalyzerOrchestrator {
   private getProjectDiscoveryIgnorePatterns(): string[] {
     const patterns = [
       '**/node_modules/**',
-      // fixtures/__fixtures__/testdata/cas-tests/__tests__ — shared
-      // exclusion list (scaffold-paths.ts); __tests__ was missing here.
       ...SCAFFOLD_GLOBS,
       '**/dist/**',
       '**/build/**',
@@ -1223,12 +925,6 @@ export class AnalyzerOrchestrator {
     return patterns;
   }
 
-  /**
-   * Push resolved local pack globs onto any registered analyzer that exposes a
-   * mutable `localPackGlobs` field (the declarative analyzer-pack engine). Kept
-   * structural (duck-typed) rather than importing a concrete class so the core
-   * orchestrator has no dependency on a specific pattern analyzer.
-   */
   private applyLocalPackGlobs(globs: string[]): void {
     for (const registration of this.analyzers.values()) {
       const analyzer = registration.analyzer as unknown as { localPackGlobs?: string[] };
@@ -1285,10 +981,6 @@ export class AnalyzerOrchestrator {
     setAICacheProjectScope(projectPath);
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const runLog = new AnalysisRunLog(projectPath, analysisId, CAS_VERSION);
-    // Activate run-scoped glob memoization for this analysis so the ~200 identical
-    // async glob() calls across analyzers collapse to one FS walk each. Cleared in
-    // finally so caching is never active outside a run (unit tests that drive
-    // analyzers directly keep hitting real/mocked glob with no caching).
     const globRun = beginGlobRun();
     try {
       return await withAnalyzerFileReadCache(
@@ -1302,28 +994,11 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Run the deferred AI enrichment for an output previously returned by
-   * `orchestrateAnalysis(..., { deferAiEnrichment: true })`. Runs the AI
-   * interpretation phase on the already-produced CAS, mutates it in place
-   * (system/capability/element descriptions upgrade to source 'ai'), refreshes
-   * `analysis_phases`/`product_map`, sets `ai_enrichment='ready'`, and returns
-   * the same (now enriched) output. Idempotent: if the output has no pending
-   * enrichment (already enriched, or produced synchronously), it is returned
-   * unchanged.
-   *
-   * Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): applyAIInterpretation
-   * THROWS when the model call or grounding gate fails — there is no deterministic
-   * substitute. On that throw we mark `ai_enrichment='error'` (so a failed L5 is
-   * VISIBLE and never sits 'pending' forever) and RE-THROW so the caller can
-   * surface/record the failure. It is NOT swallowed here.
-   */
   async enrichAnalysisAI(output: CASOutput): Promise<CASOutput> {
     const run = this.deferredAiEnrichments.get(output);
     if (!run) {
       return output;
     }
-    // Consume once — guards against a double enrich racing the same closure.
     this.deferredAiEnrichments.delete(output);
     try {
       await run();
@@ -1335,32 +1010,6 @@ export class AnalyzerOrchestrator {
     return output;
   }
 
-  /**
-   * ANALYSIS-TIME contract + capability enrichment for `entry_points`
-   * (docs/SPEC-CONCEPTUAL-LAYER.md ICELOT join). `attachFlowContract` /
-   * `attachCapability` (entry-point-enrichment.ts) are pure deterministic
-   * joins; the flows/capabilities they join against are derived HERE, ONCE
-   * per analysis, via `computeFlowConcepts` — the same terminal-chain-anchored
-   * derivation the query-layer `get_flow_concepts` tool uses, but run at
-   * analysis time (un-capped — no maxFlows browse window applied) so
-   * contract/capability PERSIST into the stored CAS instead of being
-   * recomputed on every query.
-   *
-   * As of this fix, `cas.system_capabilities[].related_flows` (and the same
-   * field on `behavior_surfaces`) IS persisted here too — inverted from each
-   * flow's own `capability_relationships` (capability -> {flow_id, role,
-   * rationale}), the real M:N model (a flow may relate to multiple
-   * capabilities). This was the deferred half of the ~v1.0.89 entry-point
-   * enrichment wave: the inverted map was computed (`capabilities` below) but
-   * previously used ONLY to enrich entry_points via attachCapability, then
-   * discarded — query-time readers (the /conceptual HTTP route) had to
-   * re-derive it from a maxFlows-capped flow set, so any capability whose
-   * flows fell outside that window silently showed 0 flows.
-   *
-   * EVIDENCE-GATED: any failure (or zero derivable flows) leaves `entryPoints`
-   * (and system_capabilities/behavior_surfaces) untouched — never fabricates
-   * input/output/capabilities/related_flows.
-   */
   private deriveEntryPointContractAndCapability(
     entryPoints: CASEntryPoint[],
     cas: Pick<
@@ -1373,12 +1022,6 @@ export class AnalyzerOrchestrator {
       const flows = computeFlowConcepts(cas as CASOutput, {});
       if (flows.length === 0) return entryPoints;
 
-      // MATERIALIZE the derived flow set into `flow_graph.flows` — the
-      // resolution target for every flow_id this same pass is about to write
-      // onto system_capabilities/behavior_surfaces. Without it those
-      // references (and every `flow::…::stepN` step id) dangled: the stored
-      // CAS carried hundreds of flow_id references and no `flows` collection
-      // to resolve them against. Same derivation, same ids, persisted once.
       if (flowGraph) this.materializeFlowGraphFlows(flowGraph, flows, cas.call_chains || []);
 
       const flowLikes: FlowLike[] = flows.map((flow) => ({
@@ -1406,27 +1049,12 @@ export class AnalyzerOrchestrator {
         if (relationships.length > 0) {
           for (const rel of relationships) addRelation(rel.capability_id, flow.flow_id, rel.role, rel.rationale);
         } else if (flow.capability_id) {
-          // Back-compat single link only (no capability_relationships derived).
           addRelation(flow.capability_id, flow.flow_id, undefined, undefined);
         }
       }
 
       const capabilities: CapabilityLike[] = Array.from(capsById.values());
 
-      // PERSIST the inverted M:N edges onto the real system_capabilities /
-      // behavior_surfaces objects (mutated in place — these are the SAME
-      // object references `executeAnalysis` later spreads into
-      // `output.system_capabilities`, so this is the one-time analysis-time
-      // write the deferred wave never made — previously `capabilities` above
-      // was computed and used ONLY to enrich entry_points via attachCapability
-      // below, then discarded; `cas.system_capabilities[].related_flows` was
-      // never set, so every query-time reader (the /conceptual HTTP route)
-      // had to re-derive flows from scratch, capped by its own maxFlows
-      // browse window — the "most capabilities show 0 flows" bug: a
-      // capability's real flows simply weren't in whatever capped window the
-      // caller happened to compute that request. Evidence-gated same as the
-      // rest of this function: a capability/surface with no derived flow
-      // relation is left with whatever it already had (never forced to []).
       for (const cap of cas.system_capabilities || []) {
         const derived = capsById.get(cap.id);
         if (derived && derived.related_flows.length > 0) {
@@ -1450,53 +1078,14 @@ export class AnalyzerOrchestrator {
 
       this.rollupSystemCapabilityDependencies(flows, cas.system_capabilities || [], cas.data_entities || []);
 
-      // Structural cast: CASEntryPoint's `input.fields` is optional (real CAS
-      // shape) while EntryPointLike's normalized EntryPointInputShape.fields
-      // is required — a type-level-only mismatch (runtime shape always
-      // supplies the array; attachFlowContract never omits it). Cast at this
-      // boundary rather than loosening the shared CASEntryPoint type, which
-      // would touch a contract other consumers/peers depend on.
       const withContract = attachFlowContract(entryPoints as unknown as EntryPointLike[], flowLikes);
       const withCapability = attachCapability(withContract, flowLikes, capabilities);
       return withCapability as unknown as CASEntryPoint[];
     } catch {
-      // Never let enrichment failure break the analysis — leave entry points
-      // exactly as they were (evidence-gated, no fabrication on error).
       return entryPoints;
     }
   }
 
-  /**
-   * CAPABILITY-DEPENDENCY ROLLUP (#119 audit): aggregates the per-flow
-   * `capability_relationships` role signal (already computed by
-   * `deriveCapabilityRelationships` in flow-concepts.ts, and already
-   * materialized onto `related_flows` just above this call) into real
-   * capability-PAIR dependency edges on `system_capabilities[].depends_on`/
-   * `depended_by`.
-   *
-   * This replaces the "related_flows[].role in-degree" proxy the
-   * capability/mechanism audit (2026-08-09) was forced to use to test
-   * terminality — the audit's own words: "the raw ingredient is already
-   * computed, just not rolled up." One flow whose PRIMARY owner is
-   * capability P, but which also appears with role `'supporting'` in
-   * capability C's own related_flows, is direct, non-lexical evidence that
-   * P's flow reaches into C's entities: P depends on C. Aggregated per
-   * (P, C) pair (evidence.call_count = number of overlapping flows), never
-   * emitted per-flow, matching CASCapabilityDependency's existing shape.
-   *
-   * Distinct from — and never to be confused with — `CASCapability.
-   * depends_on` on `flow_graph.capabilities`, a separate, OLDER,
-   * structurally different capability list (CapabilityDetector's grouping
-   * heuristics, not the AI catalog) that already has its own independently-
-   * populated dependency schema via CapabilityDependencyBuilder. This
-   * rollup is scoped specifically to the AI-curated `system_capabilities`
-   * catalog every consumer/audit actually reads — that list had NO
-   * dependency edges of its own before this method existed.
-   *
-   * A pure function of its inputs (mutates `capabilities` in place, exactly
-   * like the `related_flows` materialization it follows) so it is testable
-   * without the full `computeFlowConcepts` derivation pipeline.
-   */
   private rollupSystemCapabilityDependencies(
     flows: Array<Pick<FlowConcept, 'flow_id' | 'capability_id' | 'capability_relationships'>>,
     capabilities: SystemCapability[],
@@ -1520,24 +1109,6 @@ export class AnalyzerOrchestrator {
     const capById = new Map<string, SystemCapability>();
     for (const cap of capabilities) capById.set(cap.id, cap);
 
-    // TASK #128 — directional evidence, not just the flow-ownership proxy.
-    // The pairing above ("primary flow owner P also touches capability C's
-    // entities") only ever proves RELEVANCE, never PRODUCE/CONSUME direction
-    // — it is symmetric with respect to which side actually emits data and
-    // which side reads it. Real direction is already a Tier-1 fact once an
-    // entity's `lifecycle` correctly attributes writers vs. readers (see
-    // `attributeMessagingEmissionLifecycle`, which closes the gap where a
-    // message/event producer's own write was previously invisible). When a
-    // shared entity's lifecycle shows one capability's own operation nodes
-    // as a pure WRITER (created_by/updated_by/deleted_by) and the other's as
-    // a pure READER (read_by only, no write), the true dependency runs
-    // reader -> writer (a consumer depends on its producer) regardless of
-    // which capability happened to own the flow that surfaced the pairing —
-    // so the pair is emitted with `from`/`to` swapped from the flow-
-    // ownership proxy whenever that evidence contradicts it. Ambiguous
-    // cases (both sides write, both sides only read, or no capability-level
-    // node evidence to check) fall back to the original proxy direction
-    // unchanged — this corrects, it does not replace, the existing signal.
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
     const capNodeIds = new Map<string, Set<string>>();
     for (const cap of capabilities) {
@@ -1567,9 +1138,6 @@ export class AnalyzerOrchestrator {
     const dependsOnById = new Map<string, CASCapabilityDependency[]>();
     const dependedByById = new Map<string, Set<string>>();
     for (const { from, to, count } of depPairs.values()) {
-      // Only pairs where BOTH ends resolve to a real system_capabilities
-      // entry — never a dangling id from a pruned/behavior-surface flow
-      // relationship.
       const fromCap = capById.get(from);
       const toCap = capById.get(to);
       if (!fromCap || !toCap) continue;
@@ -1592,14 +1160,7 @@ export class AnalyzerOrchestrator {
           return capWritesEntity(to, entity) && capReadsOnlyEntity(from, entity);
         });
         if (fromReadsToWrites) {
-          // The flow-ownership proxy pointed the wrong way: `to` is the real
-          // producer and `from` only reads what `to` writes, so the real
-          // dependency is `from` depends on `to` — already the direction as
-          // stored, no swap needed, only the rationale differs (kept below).
         } else if (toReadsFromWrites) {
-          // `from` (the flow owner) is the real producer and `to` only
-          // reads it — the true dependency is the opposite of the proxy:
-          // `to` depends on `from`, not the reverse.
           directedFrom = to;
           directedTo = from;
           directedFromCap = toCap;
@@ -1638,11 +1199,6 @@ export class AnalyzerOrchestrator {
     const startTime = Date.now();
     const cpuUsageStart = process.cpuUsage();
     const timings: Record<string, number> = {};
-    // Per-phase started_at/duration_ms, keyed the same as `timings` — the raw
-    // material for `output.timings` and the started_at/duration_ms stamped
-    // onto `analysis_phases` below (see buildTimingsBlock/stampPhaseTimings).
-    // Purely additive bookkeeping alongside the existing `timings` map and
-    // runLog.recordPhase call; never influences what gets analyzed.
     const phaseTimingRecords: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }> = {};
     const phaseCpuStarts = new Map<number, NodeJS.CpuUsage[]>();
     const startPhase = (): number => {
@@ -1675,12 +1231,6 @@ export class AnalyzerOrchestrator {
       }
     };
 
-    // Thread .klaurorc `packs:` globs (resolved in apps/mcp-server) onto the
-    // declarative analyzer-pack engine BEFORE detection, since its canAnalyze()
-    // loads packs (built-ins + these local globs) to decide applicability. Set
-    // structurally (no hard dependency on the PackAnalyzer class) so the
-    // orchestrator stays decoupled from any single pattern analyzer. When no
-    // globs are provided this is a no-op and only built-in packs are consulted.
     this.applyLocalPackGlobs(options?.packGlobs ?? []);
     this.activeSemanticPackIdentity = Object.freeze(
       await semanticPackIdentityForProject(projectPath, options?.packGlobs ?? [])
@@ -1689,16 +1239,6 @@ export class AnalyzerOrchestrator {
     this.analyzerContributionFileSetDigestCache.clear();
     this.analyzerContributionCacheEvidence.clear();
 
-    // Perf: 120+ framework/library analyzers each independently glob() the
-    // project and fs.readFile() every matched source file, even though many
-    // of them scan the exact same file set (measured on a benchmarked 757-file TS/JS
-    // repo, ~20 analyzers each spending 10-18s re-reading files the
-    // TypeScript/JavaScript analyzer already read moments earlier). This
-    // transparently caches file content by absolute path for the duration of
-    // detectAnalyzers()+languageAnalyzers+frameworkAnalyzers (every phase
-    // that does filesystem-scanning analyzer work), with zero changes to any
-    // analyzer call site — see analyzer-file-read-cache.ts for the safety
-    // argument (read-only patch, scoped, always restored).
     let phaseStart = startPhase();
     const { detectedAnalyzers, context } = await withAnalyzerFileReadCache(async () => {
       const detected = await this.detectAnalyzers(projectPath);
@@ -1743,13 +1283,6 @@ export class AnalyzerOrchestrator {
     const parallelAnalyzers = detectedAnalyzers.filter(r => r.type === 'framework' || r.type === 'library');
     const patternAnalyzers = detectedAnalyzers.filter(r => r.type === 'pattern');
 
-    // Single cache scope spanning language + framework/library analyzers: the
-    // framework/library analyzers run AFTER languageAnalyzers and very often
-    // re-scan the same files the language analyzer(s) already read (e.g. the
-    // TypeScript/JavaScript analyzer reads every .ts/.tsx/.js/.jsx file, then
-    // ~20-100 framework/library analyzers each re-read a subset of that same
-    // set). Keeping them under one `withAnalyzerFileReadCache` means the
-    // framework/library phase gets free cache hits for anything already read.
     await withAnalyzerFileReadCache(async () => {
     phaseStart = startPhase();
     for (const registration of languageAnalyzers) {
@@ -1794,13 +1327,6 @@ export class AnalyzerOrchestrator {
 
       const parallelResults = await Promise.allSettled(
         parallelAnalyzers.map(async (registration) => {
-          // Event-loop yield before each analyzer starts: Promise.allSettled
-          // otherwise begins every analyzer's synchronous prefix back-to-back
-          // in one macrotask (measured ~1.3s block in this phase), starving
-          // the in-process HTTP server. Each yield re-queues via setImmediate,
-          // which lets the poll phase (pending sockets, /health) run between
-          // analyzers. Order/results are unchanged — results are keyed per
-          // registration and merged in sorted order below.
           await yieldToEventLoop();
           const analyzerStartTime = Date.now();
           const matchedRoot = this.analyzerRootMap.get(registration.id) || projectPath;
@@ -1934,28 +1460,10 @@ export class AnalyzerOrchestrator {
     phaseStart = startPhase();
     this.removeTestEntryPoints(allNodes, allEdges, allEntryPoints);
     this.dedupeUtilNodeDuplicates(allNodes, allEdges);
-    // Full node-twin merge (file+class+member identity) BEFORE
-    // linkRouteHandlers, so the route-handler twin-bridge below sees an
-    // already-unified graph (its own bridgeToTwin path becomes a no-op
-    // belt-and-suspenders fallback for whatever this pass didn't cover).
     this.resolveNodeTwins(allNodes, allEdges, allEntryPoints, allExitPoints);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
     this.linkHookUsageFetchers(allNodes, allEdges);
-    // IN-REPO CALL RESOLUTION (in-repo-call-resolution.ts): several analyzers
-    // classify a call by SYNTAX (`Type::method(...)`, a symbol imported from
-    // `@/app/x`) and emit an `sdk` exit point for it WITHOUT emitting the
-    // `calls` edge to the callee's own node — even when that node exists in
-    // this same graph. Both halves compound downstream: traversal has no edge
-    // to follow, and the spurious exit point is simultaneously a
-    // 'call_external' role fact and a terminus candidate, so the one-node
-    // chain gets labeled "calls external service X" and declared complete.
-    // This pass resolves those callees against real in-repo declarations,
-    // adds the missing `calls` edges and drops the exit points that were
-    // never exits. Runs HERE — after twins merge (so resolution sees a
-    // unified graph) and before call chains / flows / external services /
-    // the index consume it. Abstains on anything it cannot positively
-    // resolve, so a genuine third-party SDK call remains a terminus.
     const internalizedCalls = internalizeInRepoCalls({
       nodes: allNodes, edges: allEdges, exitPoints: allExitPoints, libraries: allLibraries,
     });
@@ -1970,21 +1478,9 @@ export class AnalyzerOrchestrator {
     logTiming('pp_linkRouteHandlers', phaseStart);
     await yieldToEventLoop();
 
-    // Declared custom-architecture conventions (.klaurorc conventions:) —
-    // additive, evidence-gated pass over the SAME extracted nodes/edges, so
-    // hand-rolled/proprietary patterns the auto-detectors can't infer still
-    // surface as real entry_points/route_table rows/data_entities/flows. See
-    // conventions-applier.ts. Never fails/blocks a real analysis run.
     let declaredDataEntities: CASDataEntity[] = [];
     let declaredConventionMatches: ReturnType<typeof applyConventions>['matches'] = [];
     try {
-      // buildAllDecorators only reads node.call_graph.decorators/
-      // node.metadata.attributes.decorators, both already populated by the
-      // per-language analyzers at this point — safe to compute early here
-      // too (buildAllDecorators is pure/idempotent; it is recomputed at its
-      // normal call site below for the CAS `decorators` field, cheap either
-      // way) so declared route-decorator conventions have real argument
-      // evidence to match against instead of bare names only.
       const decoratorsForConventions = this.buildAllDecorators(allNodes);
       const conventionsResult = applyConventions(options?.conventions, allNodes, allEdges, decoratorsForConventions);
       appendAll(allEntryPoints, conventionsResult.entry_points);
@@ -2006,32 +1502,17 @@ export class AnalyzerOrchestrator {
       console.error('[Klauro] conventions-applier pass failed:', error);
     }
 
-    // Lift class-validator DTO decorators onto the entry points that consume them,
-    // so `entry_point.input.validation` carries human-legible rules and the
-    // flow-concepts deriver can ground kind='validation' constraints. Runs after
-    // linkRouteHandlers (needs ep.handler.node_id resolved) and the conventions
-    // pass (so declared entry points are covered too). Evidence-gated on a real
-    // handler param TYPE matching a real validation_contract DTO name.
     phaseStart = startPhase();
     this.liftValidationToEntryPoints(allNodes, allEntryPoints);
     logTiming('pp_liftValidation', phaseStart);
     await yieldToEventLoop();
 
-    // Tier 2 GAP FIX (docs/SPEC-ABSTRACTION-TIERS.md, "framework-conferred
-    // node roles"): assigns the closed NODE_ROLES vocabulary (node-roles.ts)
-    // from tier-1 facts only — entry points are resolved (handler.node_id
-    // set by linkRouteHandlers above) but comprehension (capabilities/flows/
-    // entities) has not been built yet, so this stays a tier-2 read of
-    // tier-1, never the reverse.
     phaseStart = startPhase();
     assignNodeRoles({ nodes: allNodes, edges: allEdges, entry_points: allEntryPoints, exit_points: allExitPoints });
     logTiming('pp_nodeRoles', phaseStart);
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    // Bootstrap value; upgraded below (once projectTextSignal.productDocTitle
-    // is available) via resolveSystemDisplayName — see DEFECT (system name)
-    // note there. Never reassigned once options.displayName was supplied.
     let systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
     logTiming('pp_progressiveLevels', phaseStart);
@@ -2048,8 +1529,6 @@ export class AnalyzerOrchestrator {
     }
 
     phaseStart = startPhase();
-    // Yield between builders: this phase measured a >1s contiguous stall on a
-    // whale (76k nodes); the hops split it without changing any computation.
     const architectureSummary = this.buildArchitectureSummary(projectPath, allNodes, allEntryPoints, allExitPoints, contributions);
     await yieldToEventLoop();
     const routeTable = this.buildRouteTable(allEntryPoints);
@@ -2060,9 +1539,6 @@ export class AnalyzerOrchestrator {
     logTiming('pp_architecture', phaseStart);
     await yieldToEventLoop();
 
-    // Structural design-pattern detection. Per-language analyzers rarely emit
-    // design patterns (get_patterns was empty on every TS/JS codebase); detect the
-    // common ones from node/edge structure so the tool returns real signal.
     appendAll(allPatterns, this.detectDesignPatterns(allNodes, allEdges));
     logTiming('pp_detectPatterns', Date.now());
     await yieldToEventLoop();
@@ -2146,12 +1622,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    // testSuites hoisted above flow coverage: the suites' coverage.nodes_tested
-    // is the only populated test-to-code join on many repos (node.testing
-    // .tested_by and test-entry connected_nodes are frequently empty), so the
-    // coverage pass must be able to consume it. Same inputs, same result as the
-    // former later call site — buildTestSuites reads only nodes/entryPoints/
-    // edges/projectPath, all final by this point.
     const testSuites = await this.buildTestSuites(allNodes, allEntryPoints, projectPath, allEdges);
     await yieldToEventLoop();
     const flowCoverage = await this.buildFlowCoverage(allNodes, allEntryPoints, callChains, testSuites);
@@ -2162,8 +1632,6 @@ export class AnalyzerOrchestrator {
 
     phaseStart = startPhase();
     const domainExtractor = new DomainExtractor();
-    // Capability NAMES are a distinctiveness channel for domain vocabulary: the
-    // subject of "Analyze codebase structure" is what the product is about.
     const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges, projectPath, {
       capabilityNames: systemCapabilities.map(capability => capability.name).filter(Boolean),
     });
@@ -2198,14 +1666,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    // Journeys are a DERIVED VIEW over flows (docs/cas/SPECIFICATION.md §0 —
-    // comprehension tier is Capability/Flow/Step/Entity; journeys are not a
-    // fifth member). data_lineage hasn't been built yet at this point in the
-    // pipeline (buildDataLineage below needs userJourneys as an input), but
-    // computeFlowConcepts's entity resolution also reads data_entities
-    // directly (see entitiesForNodes in flow-concepts.ts) — already
-    // available here — so this early flow computation still yields real
-    // entity/capability evidence even with an empty data_lineage array.
     const flowsForJourneys = computeFlowConcepts({
       nodes: allNodes,
       edges: allEdges,
@@ -2251,9 +1711,6 @@ export class AnalyzerOrchestrator {
     logTiming('pp_userJourneys', phaseStart);
     await yieldToEventLoop();
 
-    // No per-language analyzer emits behaviors, so get_behaviors was empty even on
-    // request-driven apps. A user journey IS a named system behavior with an
-    // execution flow — synthesize behaviors from journeys when none were detected.
     if (allBehaviors.length === 0 && userJourneyResult.journeys.length > 0) {
       allBehaviors.push(...this.synthesizeBehaviorsFromJourneys(userJourneyResult.journeys));
     }
@@ -2263,35 +1720,11 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
-    // Name priority (CONTENT-FIRST, DECLARED-BEFORE-PROSE): the content-derived
-    // name — root manifest name (package.json/composer.json/pyproject.toml/
-    // Cargo.toml/pom.xml/csproj), then README/PRD H1 title only when no
-    // manifest exists, then a common package scope — is the strongest,
-    // most deliberate self-naming signal and always OUTRANKS a caller-supplied
-    // displayName. On the hosted path options.displayName is frequently just a
-    // checkout-folder basename ("proof-of-concept") threaded from the client
     // path or the project record, so it must never win over a real content
-    // name. Manifest name outranks the doc title because it is DECLARED
-    // identity (an author committed it on purpose to name the package) while
-    // a doc's first heading is prose structure that is not always a product
-    // title at all — see the DEFECT (system name) note on
-    // resolveSystemDisplayName for the case (measured on a benchmarked Angular
-    // SPA) where a README's first heading was the boilerplate "# Prerequisites".
-    // When the repo has NO root self-naming file (common for C#/non-npm stacks — e.g. a
-    // benchmarked C# client repo, whose reanalyze passes the project record's
-    // "Acme Scientific" as the displayName), the explicit displayName is the
-    // next fallback, above the bare workspace basename. (The old gate
-    // compared displayName to basename(WORKSPACE), which in the split-workspace
-    // architecture never matches a client-derived name, so it wrongly kept weak
-    // names like "proof-of-concept" and dropped real ones like "Acme
-    // Scientific".)
     systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, allEdges, projectPath);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
-    // Comprehension derivation (terminal signal, capability catalog, purpose,
-    // description evidence) sees only product journeys/entities — test/fixture
-    // sources stay in the structural graph but never seed meaning.
     const comprehensionJourneys = this.filterPrimaryProductJourneys(
       userJourneyResult.journeys, allEntryPoints, allNodes, projectPath
     );
@@ -2325,18 +1758,9 @@ export class AnalyzerOrchestrator {
 
     phaseStart = startPhase();
     const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
-    // Full declared-dependency manifest (Camp-B FACT): every dependency name
-    // across every package.json/requirements/Cargo/go.mod/pyproject under the
-    // root, not just the framework subset the library detectors recognize. Raw
-    // facts only — interpretation of what a dependency means is the AI pass's
-    // job, which now receives these names as grounding (see below).
     const dependencyManifest = buildDependencyManifest(projectPath);
     logTiming('pp_dependencyManifest', phaseStart);
     await yieldToEventLoop();
-    // Union of the analyzer-recognized library names with the FULL declared
-    // manifest, so the AI comprehension prompt sees the defining dependencies
-    // (e.g. ccxt/web3) even when no dedicated detector recognizes them. Names
-    // only; the model interprets meaning.
     const interpretedLibraryNames = this.libraryNamesForInterpretation(allLibraries);
     const interpretedLibrarySet = new Set(interpretedLibraryNames.map(name => name.toLowerCase()));
     const importUseCounts = new Map<string, number>();
@@ -2367,45 +1791,22 @@ export class AnalyzerOrchestrator {
     phaseStart = startPhase();
     const nestedRepositories = await this.describeNestedRepositories(projectPath);
 
-    // Deployable evidence is collected BEFORE the AI phase (it is a pure
-    // function of nodes/entry/exit points, all final by here) so the
-    // description gate can corroborate architecture-shape claims
-    // (microservices vs a single deployable) against deterministic topology.
     const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
       projectPath,
       nodes: allNodes,
       entryPoints: allEntryPoints,
       exitPoints: allExitPoints,
-      // Resolved system name (resolveSystemDisplayName already ran above),
-      // not the raw options?.displayName — see the DEFECT (system name) note
-      // near resolveSystemDisplayName for why the caller-supplied value must
-      // not win here.
       displayName: systemName,
     });
-    // Wire entry-point-deployable.ts's attachDeployable (a pure, tested
-    // function that has existed unwired since it was built — deployable_id/
-    // deployable_name were declared on CASEntryPoint but nothing ever called
-    // the attributor, so every shipped entry point had them unset). Spliced
-    // in place so every downstream consumer of `allEntryPoints` (validation,
-    // contract/capability derivation, the final CAS field) sees the
-    // attribution — never guesses: entry points with no resolvable file or
-    // no matching deployable root are returned unchanged (fields left unset).
     allEntryPoints.splice(0, allEntryPoints.length, ...attachDeployable(allEntryPoints, deployableEvidence, allNodes));
     const topLevelShipUnits = deployableEvidence.filter(item =>
       item.tier === 1 && item.kind !== 'build-image' && !item.bundled_into
     );
-    // Tier-2 server/bin surfaces are deployable candidates, not proof that a
-    // repository ships multiple units. Only Tier-1 ship artifacts may ground
-    // deployment-topology prose or architecture-shape claims.
     const independentlyDeployableCount = topLevelShipUnits.length > 0
       ? topLevelShipUnits.length
       : undefined;
     await yieldToEventLoop();
 
-    // The single blocking AI phase, wrapped so it can run inline (default) or be
-    // deferred and run later against the produced CAS. It mutates the same
-    // enhancedSystemPurpose / systemCapabilities references that `output` holds,
-    // so re-running it after `output` is built upgrades the stored analysis.
     const deferAiEnrichment = options?.deferAiEnrichment === true;
     const runAiInterpretation = async (): Promise<void> => {
       const aiPhaseStart = Date.now();
@@ -2431,11 +1832,6 @@ export class AnalyzerOrchestrator {
         allEntryPoints
       );
       const aiDuration = Date.now() - aiPhaseStart;
-      // Overwrite the near-zero stamp `logTiming('pp_aiInterpretation', ...)`
-      // records right below when AI is deferred (this function didn't run at
-      // that point) with the REAL duration, whether that happens inline here
-      // or later via enrichAnalysisAI's deferred closure re-invoking this same
-      // function. See phaseTimingRecords / buildTimingsBlock.
       phaseTimingRecords['pp_aiInterpretation'] = {
         started_at: new Date(aiPhaseStart).toISOString(),
         duration_ms: aiDuration,
@@ -2467,11 +1863,6 @@ export class AnalyzerOrchestrator {
     logTiming('pp_methodCalls', phaseStart);
     await yieldToEventLoop();
 
-    // Reachability index (Workstream C, docs/SPEC-MATHEMATICAL-INTELLIGENCE.md):
-    // Tarjan SCC condensation + pruned landmark labeling over the directed
-    // call graph ('calls' edges + resolved method_calls). Deterministic,
-    // byte-stable, O(V+E)-ish build; consumers get near-O(1) transitive
-    // reachability / affected-set queries instead of per-query walks.
     phaseStart = startPhase();
     const reachabilityIndex = buildReachabilityIndexFromCas({
       nodes: allNodes,
@@ -2492,7 +1883,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    // testSuites built earlier (hoisted above the flow-coverage pass).
     const mocks = this.buildMocks(allNodes);
     const fixtures = this.buildFixtures(allNodes);
     const testSummary = this.buildTestSummary(allNodes, allEntryPoints, testSuites);
@@ -2502,9 +1892,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    // Yield between builders: pp_traceability measured a 3.3s contiguous stall
-    // on a whale; hops between the (independent, order-preserved) builders
-    // split it without changing any output.
     const runtime = this.buildRuntime(projectPath, allEntryPoints, allExitPoints, externalServices, configuration, callChains);
     await yieldToEventLoop();
     const repositoryLinks = this.buildRepositoryLinks(projectPath, allNodes, allEntryPoints, allExitPoints, externalServices, allLibraries, databaseSchema, configuration);
@@ -2519,8 +1906,6 @@ export class AnalyzerOrchestrator {
       logTiming('pp_aiInterpretation', aiInterpretationStartedAt);
       await yieldToEventLoop();
     }
-    // deployableEvidence collected earlier (hoisted above the AI phase so the
-    // description gate can corroborate architecture-shape claims).
     const analysisFacts = await this.buildAnalysisFacts(
       allNodes,
       allEdges,
@@ -2565,13 +1950,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    // Final-assembly bare-noun sweep — BEFORE the entry-point/capability
-    // linking below so a dropped capability never leaves a dangling reference.
-    // Covers the deferred-AI path (the CAS is assembled BEFORE the deferred
-    // enrichment closure runs, so placeholder names would ship in the interim
-    // CAS); the inline path already swept at the end of applyAIInterpretation
-    // — the sweep is idempotent. A deferred AI run later mutates these same
-    // references and re-sweeps on completion.
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
@@ -2589,33 +1967,14 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     const totalTime = Date.now() - startTime;
-    // UNCONDITIONAL, and deliberately so: this is the only line that shows where
-    // an analysis actually spent its time, and it was gated behind
-    // KLAURO_DEBUG_ANALYSIS_TIMINGS=1 — never set in production. So while
-    // KLAURO_DEBUG_ANALYZER_PHASES=1 WAS set (per-phase `pp_*` lines visible), the
-    // aggregate was invisible, and the per-phase lines only account for the
-    // post-processing stages. Measured 2026-08-11 on a 5,284-file repo: 376s total
-    // with ~90s across all pp_* phases, leaving ~285s unattributable from logs.
-    //
-    // The project has hard latency budgets (~10s average, 60s for an average repo,
-    // never >3 min). A budget that cannot be observed in production cannot be
-    // enforced, and "assert an outcome without checking it" is the exact defect
-    // class this codebase keeps producing. One line per analysis is a trivial cost
-    // for making the budget measurable; the noisy per-phase stream stays gated.
     const overBudget = totalTime > 180_000;
     console.error(
       `[Klauro] Analysis completed in ${totalTime}ms${overBudget ? ' (OVER the 180s hard budget)' : ''}. Breakdown:`,
       JSON.stringify(timings),
     );
 
-    // Tier 2 GAP FIX §6.3 — see dependency-roles.ts. Computed once here so it
-    // is not derived twice inside the output literal below.
     const dependencyRoles = deriveDependencyRoles(dependencyManifest, allExitPoints);
 
-    // Tier 2 module health — "dangerous to touch, and why" (task #122).
-    // Composed entirely from facts already computed above (nodes, edges,
-    // final entry points, final system capabilities, temporal stability,
-    // and the layering violations architecturalConflicts just derived).
     const moduleHealth = computeModuleHealth({
       nodes: allNodes,
       edges: allEdges,
@@ -2635,12 +1994,6 @@ export class AnalyzerOrchestrator {
       system: {
         id: `system_${systemName}`,
         name: systemName,
-        // CANONICAL at build time. `system.description` shipped as an empty
-        // string / absent in every stored CAS and each read path re-synthesized
-        // one per query from enhanced_system_purpose — different readers could
-        // therefore show different descriptions for the same analysis. It is
-        // the SAME derived description, written once, here. Evidence-gated:
-        // omitted (not empty-stringed) when no description was derived.
         ...(enhancedSystemPurpose.inferred_description
           ? { description: enhancedSystemPurpose.inferred_description }
           : {}),
@@ -2703,12 +2056,6 @@ export class AnalyzerOrchestrator {
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
-      // SURFACES ARE NOT CAPABILITIES (docs/SEMANTIC-MODEL.md purpose test):
-      // registration/behavior surfaces (mcp_tool, rpc, command, event, message
-      // handler engines with no product-entity anchor) live here, structurally
-      // excluded from system_capabilities/top_capabilities ranking and from
-      // criticality — never core, never high/critical. Still fully navigable:
-      // each entry carries its own operations/entry-point evidence.
       behavior_surfaces: behaviorSurfaces.length > 0 ? behaviorSurfaces : undefined,
       system_purpose: {
         ...systemPurpose,
@@ -2759,69 +2106,31 @@ export class AnalyzerOrchestrator {
     this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
     output.product_map = buildProductMap(output);
 
-    // Infra -> code topology linker. Additive, deterministic, evidence-gated
-    // pass over the already-assembled CASOutput that joins infra-as-code
-    // resources (Terraform / Helm-emitted kubernetes_<kind> / Compose /
-    // Dockerfile / CloudFormation) to the deployables, routes, channels, and
-    // stores the code actually ships and uses — the runtime-topology layer
-    // (deploys/exposes/routes_to/provisions_*/runtime_depends_on edges). See
-    // infra-topology-linker.ts. Never blocks/fails a real analysis run.
     try {
       const infraLinks = linkInfraTopology(output);
       if (infraLinks.nodes.length > 0) appendAll(output.nodes, infraLinks.nodes);
-      // Additive runtime-topology edges (deploys/exposes/routes_to/
-      // provisions_*/runtime_depends_on) join infra resources to the code they
-      // ship and use; they live on output.edges alongside compose/terraform
-      // depends_on, traversable via query_graph / get_dependencies.
       if (infraLinks.edges.length > 0) appendAll(output.edges, infraLinks.edges);
     } catch (error) {
       console.error('[Klauro] infra-topology-linker pass failed:', error);
     }
 
-    // Communication-seams classifier. Additive, deterministic, non-AI pass over
-    // the already-assembled CASOutput (exit_points / entry_points /
-    // data_lineage / deployable_evidence) that tags every inter-component seam
-    // with a modality — sync (awaited request/response), async (fire-and-forget
-    // messaging/events/webhooks), or passive (shared-state: >1 component
-    // writes+reads the same entity) — and emits a node- and deployable-level
-    // seam inventory. Derived from existing facts, never re-detects; surfaced
-    // via get_communication_seams. See communication-seams.ts. Never blocks.
     try {
       output.communication_seams = classifyCommunicationSeams(output);
     } catch (error) {
       console.error('[Klauro] communication-seams pass failed:', error);
     }
 
-    // Consistency / CAP characterization + BROADENED passive seams. Additive,
-    // deterministic, non-AI pass over external services / exit points / config
-    // env vars / data lineage. Extends the passive dimension beyond shared-table
-    // to read-replicas (writer -> replica -> reader), streaming sinks / CDC /
-    // materialized stores / ETL loads, and tags data-store egress + passive
-    // seams with a consistency posture (strong | eventual | tunable,
-    // staleness_risk, CP/AP lean, evidence). Evidence-gated — never guesses a
-    // consistency it cannot infer. Zero behavior change when no such stores
-    // exist. See consistency-model.ts. Never blocks/fails a real analysis run.
     try {
       const consistency = deriveConsistencyModel(output);
       output.consistency_model = consistency;
-      // Fold the broadened passive seams into the communication-seams inventory
-      // so replica/streaming/CDC seams read alongside seam-modality's base
-      // shared-state seams. Additive: append the seam records and bump the
-      // passive/total counts; existing sync/async seams are untouched.
       if (consistency.passive_seams.length > 0 && output.communication_seams) {
         const extraSeams = toCommunicationSeams(consistency.passive_seams);
-        // Fold through the single seam-merge helper (dedups by id, rebuilds both
-        // inventories via buildInventory) instead of duplicating inventory-bump
-        // logic inline. Same resulting seams + counts.
         output.communication_seams = mergeSeams(output.communication_seams, extraSeams);
       }
     } catch (error) {
       console.error('[Klauro] consistency-model pass failed:', error);
     }
 
-    // Codebase-TYPE classification + self-discovered coverage gaps. Both are
-    // additive, deterministic, non-AI passes over already-produced facts (see
-    // codebase-type.ts / coverage-gaps.ts) — never block/fail analysis on them.
     try {
       const typeClassification = classifyCodebaseTypes({
         projectPath,
@@ -2851,63 +2160,16 @@ export class AnalyzerOrchestrator {
       output.coverage_gaps = gaps.length > 0 ? gaps : undefined;
       output.conventions_applied = declaredConventionMatches.length > 0 ? declaredConventionMatches : undefined;
     } catch (error) {
-      // Never let the (additive, optional) intelligence layer take down a real
-      // analysis run.
       console.error('[Klauro] codebase-type/coverage-gaps pass failed:', error);
     }
 
-    // Rebuild product_map now that the additive deterministic passes above have
-    // appended their facts to the output — the FIRST buildProductMap (right after
-    // output assembly) ran BEFORE the infra-topology-linker pushed its DEPLOYS/
-    // EXPOSES/ROUTES_TO/PROVISIONS_*/RUNTIME_DEPENDS_ON edges onto output.edges, so
-    // product_map.runtime_topology (derived purely from those edges) was always
-    // empty at that point. Only the AI-*pending* branch below rebuilt it afterward,
-    // so on the synchronous / AI-disabled paths (e.g. the blackbox analyzeForBench
-    // bench path, which never configures AI) runtime_topology and the system_fit
-    // capsule stayed empty on real compose/Dockerfile/k8s repos even though the
-    // topology EDGES were present. Rebuilding here — unconditionally, over the
-    // now-complete edge set — makes runtime_topology fire in every path. Pure and
-    // idempotent (reads only assembled facts); the pending branch may rebuild once
-    // more after AI mutates descriptions, which is fine.
     this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
     output.product_map = buildProductMap(output);
 
     if (deferAiEnrichment) {
-      // Deterministic result returned instantly. If AI can't run at all, mark
-      // 'disabled' so consumers know no upgrade is coming and don't wait.
       output.ai_enrichment = this.hasAIInterpretationProviderConfigured() ? 'pending' : 'disabled';
       if (output.ai_enrichment === 'pending') {
-        // Register the closure that upgrades THIS output. It re-runs the AI
-        // phase (mutating enhancedSystemPurpose / systemCapabilities, which are
-        // the same references held by `output`) and then refreshes the few
-        // output fields derived from those AI mutations.
         this.deferredAiEnrichments.set(output, async () => {
-          // CONSISTENCY GUARD (real defect: a desktop-app analysis served
-          // summary.top_capabilities with 6 AI-polished names while
-          // ai_enrichment:"error" AND product_map.capabilities with 28 raw
-          // duplicate-laden entries — two irreconcilable answers to "how many
-          // capabilities does this app have" in the SAME response). Root
-          // cause: applyAIInterpretation's capability-catalog step
-          // (systemCapabilities.splice(...)) commits its AI-polished names
-          // into the array `output.system_capabilities` already references
-          // BEFORE the LATER description-generation/grounding-gate step in
-          // the same call can still throw. When it does throw, enrichAnalysisAI
-          // (above) marks ai_enrichment='error' and rethrows, but everything
-          // below this line in this closure — including the product_map
-          // rebuild that would fold the spliced capabilities into a deduped
-          // product_map.capabilities — never runs. The result: system_capabilities
-          // silently carries the partial AI upgrade while product_map is stuck
-          // on the stale pre-AI raw snapshot. Neither half lies on its own;
-          // shipping them together in one response does.
-          //
-          // Fix: snapshot the raw, pre-AI capability objects before running
-          // the AI phase. On failure, roll system_capabilities back to that
-          // raw snapshot (undoing the partial splice) and rebuild product_map
-          // from the SAME rolled-back state, so a response with
-          // ai_enrichment==='error' never presents AI-polished capability
-          // names anywhere — every field derived from system_capabilities
-          // agrees with every other one, all grounded in the same
-          // deterministic (unenriched) data.
           const rawCapabilitySnapshot = systemCapabilities.map(capability => ({ ...capability }));
           try {
             await runAiInterpretation();
@@ -2918,14 +2180,6 @@ export class AnalyzerOrchestrator {
             output.product_map = buildProductMap(output);
             throw error;
           }
-          // CONSTRAINT (capability→flow linkage on the deferred path): the AI
-          // catalog pass REPLACES the system_capabilities array contents
-          // (systemCapabilities.splice in applyAIInterpretation) with fresh
-          // objects that carry no related_flows, and the analysis-time
-          // deriveEntryPointContractAndCapability already ran BEFORE this
-          // closure — so without this re-derive, every AI-authored capability
-          // ships with zero flow links (behavior_surfaces, never spliced,
-          // keep theirs). Must re-run AFTER the catalog is final.
           output.entry_points = this.deriveEntryPointContractAndCapability(allEntryPoints, {
             nodes: allNodes,
             edges: allEdges,
@@ -2937,8 +2191,6 @@ export class AnalyzerOrchestrator {
             behavior_surfaces: behaviorSurfaces,
             data_entities: dataEntities,
           }, flowGraph);
-          // The AI pass can populate a previously-empty catalog; output holds
-          // `undefined` in that case (assembly gated on length), so re-point it.
           output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
           output.analysis_phases = this.buildAnalysisPhases({
             hasAIProvider: this.hasAIInterpretationProviderConfigured(),
@@ -2947,10 +2199,6 @@ export class AnalyzerOrchestrator {
             embeddingEnabled: Boolean(this.embeddingPhaseConfig),
             runtimeSignals: runtimeStaticLinks.length,
           });
-          // runAiInterpretation() just overwrote phaseTimingRecords['pp_aiInterpretation']
-          // with the REAL AI duration (it ran near-zero at the initial synchronous
-          // landing above, since AI was deferred) — re-stamp/rebuild timings now
-          // so the enriched CAS reports the actual AI cost, not the stub.
           this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
           output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions, cpuUsageStart);
           output.system_purpose = {
@@ -2959,9 +2207,6 @@ export class AnalyzerOrchestrator {
             confidence: Math.max(systemPurpose.confidence || 0, enhancedSystemPurpose.confidence || 0),
             evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
           };
-          // The AI pass just rewrote inferred_description; the canonical
-          // `system.description` written at assembly must follow it, or the
-          // deferred path would ship the deterministic description forever.
           if (enhancedSystemPurpose.inferred_description) {
             output.system.description = enhancedSystemPurpose.inferred_description;
           }
@@ -2969,25 +2214,12 @@ export class AnalyzerOrchestrator {
           output.product_map = buildProductMap(output);
         });
       } else {
-        // DISABLED (no AI provider configured at all): no enrichment closure
-        // is ever registered above, so — unlike every other "comprehension
-        // didn't happen" outcome (recordComprehensionSkipped for the
-        // disabled-by-env/feature-disabled/budget-disabled/no-provider cases
-        // inside applyAIInterpretation, applyDeterministicCapabilityFallback
-        // for the AI-ran-but-empty case) — this raw deterministic candidate
-        // pool was shipping completely UNGATED: no hygiene check, no bare-
-        // noun repair, nothing. Measured live: a Rails operations SaaS
-        // analyzed under this exact condition produced 78 capabilities
-        // including a raw migration filename, a broken route-glob fragment,
-        // and a subject-duplicated name. Apply the same admission bar every
-        // other skip path already enforces before this ships.
         this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
         output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
         this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
         output.product_map = buildProductMap(output);
       }
     } else {
-      // Pure annotation: AI ran inline exactly as before, nothing else changes.
       output.ai_enrichment = 'synchronous';
     }
 
@@ -2996,11 +2228,6 @@ export class AnalyzerOrchestrator {
     logTiming('pp_embeddingAndFinalize', phaseStart);
     await yieldToEventLoop();
 
-    // Instrumentation only (no output-shape/content change to what gets
-    // analyzed): stamp started_at/duration_ms onto the already-built
-    // analysis_phases catalog, and attach the compact timings block, now that
-    // every phase in this run (including the embedding pass just above) has
-    // been recorded. See phaseTimingRecords / buildTimingsBlock / stampPhaseTimings.
     if (output.analysis_phases) {
       this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
     }
@@ -3055,13 +2282,6 @@ export class AnalyzerOrchestrator {
     const schemaRebuildReason = this.fullRebuildReasonForPreviousOutput(previousOutput);
 
     if (schemaRebuildReason) {
-      // Distinguish an analyzer-build/version bump (engine or deriver code
-      // changed) from a persisted-output/schema drift so agents can see WHY the
-      // fast path was bypassed. File-change rebuilds are logged separately below.
-      // 'Parser-layer fingerprint changed' / 'Derived-layer fingerprint changed'
-      // / legacy 'Analyzer build changed' (unstamped previous outputs, pre
-      // stage-fingerprint) all share the 'analyzer-version' trigger label —
-      // the schemaRebuildReason string itself says WHICH layer moved.
       const trigger = /^(Parser-layer fingerprint changed|Derived-layer fingerprint changed|Analyzer build changed)/.test(schemaRebuildReason)
         ? 'analyzer-version'
         : 'persisted-output-schema';
@@ -3176,31 +2396,6 @@ export class AnalyzerOrchestrator {
   }
 
   private fullRebuildReasonForPreviousOutput(previousOutput: CASOutput): string | null {
-    // Analyzer-code / version identity. When the engine itself changes (a fix or
-    // a new deriver) but the target files are unchanged, the incremental fast
-    // path would otherwise reuse the persisted DERIVED artifacts (ERD, flow
-    // concepts, error contracts, entrenchment, ...) and serve stale output.
-    //
-    // This used to compare `analyzer_build` (base package version + git sha of
-    // the WHOLE monorepo) directly: ANY commit — including MCP-tool-only or
-    // workspace-level-CAS-only releases that never touch the parse/graph pipeline — moved that
-    // stamp and forced a full rebuild of every analyzed project. Stage
-    // fingerprints (see stage-fingerprint.ts) narrow the check to the two file
-    // sets that can actually change parsed/derived output:
-    //
-    //   - parser_fingerprint: parser + language-analyzer layer. A mismatch
-    //     forces a full rebuild — parsed node/edge shape may differ for any
-    //     file, and we have no mechanism to selectively re-parse.
-    //   - derived_fingerprint: graph/decorator/derived-facts layer. A mismatch
-    //     also forces a full rebuild today (we do not yet cache raw per-file
-    //     analyzer contributions separately from the derived facts built on
-    //     top of them, so there is no cheaper "keep parse, redo derive" path
-    //     to take) — but this is a much narrower trigger than the whole-repo
-    //     build identity, since routine MCP-tool/workspace-level-CAS releases don't touch it.
-    //
-    // Legacy previous outputs stamped before this scheme (no parser_fingerprint
-    // / derived_fingerprint persisted) cannot be proven equivalent at the layer
-    // level, so they still fall back to the old whole-build comparison —
     // NEVER reuse on ambiguity.
     const currentAnalyzerBuild = getBuildIdentity().version;
     const previousAnalyzerBuild = previousOutput.analyzer_build;
@@ -3219,10 +2414,6 @@ export class AnalyzerOrchestrator {
       if (previousDerivedFingerprint !== currentFingerprints.derived_fingerprint) {
         return `Derived-layer fingerprint changed (${previousDerivedFingerprint} -> ${currentFingerprints.derived_fingerprint})`;
       }
-      // Both stage fingerprints match: the analyzer_build stamp is allowed to
-      // differ (a release outside the parse/graph pipeline) without forcing a
-      // full rebuild here. The ordinary file-diff-driven incremental path
-      // below still governs whether any work is needed at all.
       if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1' && previousAnalyzerBuild !== currentAnalyzerBuild) {
         console.error(`[Klauro] analyzer_build changed (${previousAnalyzerBuild} -> ${currentAnalyzerBuild}) but both stage fingerprints matched — skipping forced full rebuild`);
       }
@@ -3289,24 +2480,8 @@ export class AnalyzerOrchestrator {
       /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/.test(description)) {
       return true;
     }
-    // Structural staleness test (residual cleanup after c611d08c): the
-    // literal `zero[- ]trust security system` this replaced was a single
-    // remembered benchmark output, not a generalizable rule. What it was
-    // actually trying to catch is a stored description that DECLARES a
-    // system-type ("<modifier words> system/tool/platform/...", the same
-    // shape systemTypeIsGrounded enforces at generation time) whose modifier
-    // words are absent from the CURRENT classification (primary_domain /
-    // primary_type). If the current classification no longer corroborates
-    // the type the stored prose claims, the description is stale and must be
-    // re-validated -- this holds for any domain/type pair, not one phrase.
     const primaryType = previousOutput.enhanced_system_purpose?.primary_type || '';
     const classificationContext = `${domain} ${primaryType}`.toLowerCase();
-    // No populated classification to check against is NOT evidence of
-    // staleness -- older/foundational CAS revisions can predate primary_type
-    // or leave primary_domain unset, and a missing classification is a
-    // different, already-handled case ('missing-previous-description' /
-    // the domain-source checks elsewhere). Only a classification that is
-    // actually PRESENT and fails to corroborate the stored claim counts.
     if (!domain.trim() && !primaryType.trim()) return false;
     const typeClaimStopWords = new Set([
       'a', 'an', 'the', 'this', 'that', 'and', 'or', 'for', 'with', 'its',
@@ -3696,41 +2871,18 @@ export class AnalyzerOrchestrator {
     previousOutput: CASOutput,
     options?: IncrementalAnalysisOptions
   ): Promise<CASOutput> {
-    // Instrumentation only: this incremental-rebuild path has no per-phase
-    // breakdown wired (unlike executeAnalysis's phaseTimingRecords), but a
-    // total wall-clock figure is cheap and still answers "how long did the
-    // rebuild take" for a stuck/slow incremental run. See CASAnalysisTimings.
     const derivedDataStartTime = Date.now();
     const gitAnalyzer = new GitAnalyzer(projectPath);
     const filePathsForGit = nodes
       .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
       .map(n => n.source.file);
     gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
-    // Incremental assembly must execute the same analyzer-agnostic graph
-    // normalization contract as a cold analysis. Framework analyzers often
-    // register a route node while language analyzers own the concrete handler
-    // and cross-file call chain; linking only on the cold path silently turns
-    // an edited route into a dead end.
     this.removeTestEntryPoints(nodes, edges, entryPoints);
     this.dedupeUtilNodeDuplicates(nodes, edges);
     this.resolveNodeTwins(nodes, edges, entryPoints, exitPoints);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     this.linkRouteHandlers(nodes, edges, entryPoints);
     this.linkHookUsageFetchers(nodes, edges);
-    // IN-REPO CALL RESOLUTION (in-repo-call-resolution.ts): several analyzers
-    // classify a call by SYNTAX (`Type::method(...)`, a symbol imported from
-    // `@/app/x`) and emit an `sdk` exit point for it WITHOUT emitting the
-    // `calls` edge to the callee's own node — even when that node exists in
-    // this same graph. Both halves compound downstream: traversal has no edge
-    // to follow, and the spurious exit point is simultaneously a
-    // 'call_external' role fact and a terminus candidate, so the one-node
-    // chain gets labeled "calls external service X" and declared complete.
-    // This pass resolves those callees against real in-repo declarations,
-    // adds the missing `calls` edges and drops the exit points that were
-    // never exits. Runs HERE — after twins merge (so resolution sees a
-    // unified graph) and before call chains / flows / external services /
-    // the index consume it. Abstains on anything it cannot positively
-    // resolve, so a genuine third-party SDK call remains a terminus.
     internalizeInRepoCalls({
       nodes, edges, exitPoints, libraries: previousOutput.libraries || [],
     });
@@ -3741,9 +2893,6 @@ export class AnalyzerOrchestrator {
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
 
     const categories = previousOutput.categories || {};
-    // Bootstrap value; upgraded below via resolveSystemDisplayName once
-    // incrProjectTextSignal.productDocTitle is available — see the DEFECT
-    // (system name) note on resolveSystemDisplayName.
     let systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(nodes, categories);
     const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
@@ -3812,10 +2961,6 @@ export class AnalyzerOrchestrator {
     );
 
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
-    // See the sibling call site's comment (executeAnalysis) — journeys are a
-    // derived view over flows; data_lineage isn't built yet here either, so
-    // this early flow computation relies on data_entities for entity
-    // evidence (computeFlowConcepts reads both).
     const flowsForJourneys = computeFlowConcepts({
       nodes,
       edges,
@@ -3866,15 +3011,6 @@ export class AnalyzerOrchestrator {
     const repositoryLinks = this.buildRepositoryLinks(projectPath, nodes, entryPoints, exitPoints, externalServices, libraries, databaseSchema, configuration);
     const runtimeStaticLinks = this.buildRuntimeStaticLinks(nodes, entryPoints, exitPoints, callChains, externalServices);
     const distributionUnits = this.buildDistributionUnits(projectPath, nodes);
-    // CONTENT-FIRST, DECLARED-BEFORE-PROSE name priority — same rule as the
-    // full analysis path: the content-derived name (root manifest name,
-    // README/PRD title only when no manifest exists, common package scope)
-    // outranks a caller-supplied displayName (often a checkout-folder
-    // basename), which in turn is the fallback above the bare workspace
-    // basename. Resolved BEFORE deployableEvidence collection (hoisted from
-    // further below) so collectDeployableEvidence receives the resolved system
-    // name rather than the raw bootstrap displayName — see the DEFECT
-    // (system name) note above.
     const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
     systemName = this.resolveSystemDisplayName(projectPath, incrProjectTextSignal.productDocTitle) || systemName;
     const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
@@ -3884,10 +3020,6 @@ export class AnalyzerOrchestrator {
       exitPoints,
       displayName: systemName,
     });
-    // See the matching comment on the full-analysis path (attachDeployable
-    // wiring) — same attribution, applied on the incremental-rebuild path so
-    // deployable_id/deployable_name are populated after an incremental run
-    // too, not only a full one.
     entryPoints = attachDeployable(entryPoints, deployableEvidence, nodes);
     const incrementalTopLevelShipUnits = deployableEvidence.filter(item =>
       item.tier === 1 && item.kind !== 'build-image' && !item.bundled_into
@@ -3936,19 +3068,10 @@ export class AnalyzerOrchestrator {
 
     const analysisId = `analysis_incr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Rebuild the enhanced system purpose so it stays consistent with the
-    // freshly recomputed domain concepts, workflows, and flow graph. Without
-    // this it would be carried forward verbatim from previousOutput and drift
-    // out of sync with the rest of the analysis on every incremental run.
     const incrFrameworkNames = this.frameworkNamesForPurpose(previousOutput.analyzer_contributions || [], nodes, edges, projectPath);
     const incrDbEntityNames = databaseSchema.entities.map(e => e.name);
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
-    // incrProjectTextSignal and systemName resolution were hoisted above the
-    // deployableEvidence collection (see the DEFECT note there); kept as a
-    // reference here so `systemName` below reads the already-resolved value.
-    // Same comprehension-input gate as the full path: test/fixture journeys and
-    // entities stay structural facts but never seed comprehension.
     const incrComprehensionJourneys = this.filterPrimaryProductJourneys(
       userJourneyResult.journeys, entryPoints, nodes, projectPath
     );
@@ -4044,11 +3167,6 @@ export class AnalyzerOrchestrator {
       systemCapabilities.splice(0, systemCapabilities.length, ...reusedCapabilities);
     }
 
-    // Final-assembly bare-noun sweep for the incremental path: the reuse
-    // branch above carries names forward without an AI naming pass, and the
-    // AI branch may not have covered every candidate — either way, no further
-    // pass is coming before this rebuilt CAS ships. Idempotent (the AI branch
-    // already swept inside applyAIInterpretation).
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
 
@@ -4064,22 +3182,12 @@ export class AnalyzerOrchestrator {
       data_entities: dataEntities,
     }, flowGraph);
 
-    // Reachability index rebuilt over the FRESH node/edge graph (method_calls
-    // are carried forward from previousOutput on this path — pairs whose
-    // endpoints no longer exist are dropped by the builder). Cheap relative to
-    // the rest of this rebuild and keeps the index consistent with the graph
-    // it ships next to; a stale carried-forward index would silently answer
-    // reachability over the previous revision's call graph.
     const rebuiltReachabilityIndex = buildReachabilityIndexFromCas({
       nodes,
       edges,
       method_calls: previousOutput.method_calls,
     });
 
-    // Tier 2 module health — same composition as the full-analysis path,
-    // rebuilt over the fresh incremental node/edge graph rather than carried
-    // forward from previousOutput (a stale surface would silently answer
-    // "dangerous to touch" over the previous revision's file sizes/churn).
     const rebuiltModuleHealth = computeModuleHealth({
       nodes,
       edges,
@@ -4093,17 +3201,10 @@ export class AnalyzerOrchestrator {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
-      // Same canonical-description write as the full path: the incremental
-      // rebuild re-derives enhanced_system_purpose, so system.description must
-      // track it rather than carrying the previous revision's forward.
       system: enhancedSystemPurpose.inferred_description
         ? { ...previousOutput.system, description: enhancedSystemPurpose.inferred_description }
         : previousOutput.system,
       enhanced_system_purpose: enhancedSystemPurpose,
-      // No per-phase breakdown on this path (see derivedDataStartTime comment
-      // above) — total only. Deliberately does not carry forward
-      // previousOutput.timings, which described a different (often much
-      // larger, full-analysis) run.
       timings: { total_ms: Date.now() - derivedDataStartTime },
       analysis_phases: this.buildAnalysisPhases({
         hasAIProvider: this.hasAIInterpretationProviderConfigured(),
@@ -5026,8 +4127,6 @@ export class AnalyzerOrchestrator {
         '**/*-extracted/**',
         'examples/**',
         '**/examples/**',
-        // fixtures/__fixtures__/testdata/cas-tests/__tests__ — shared
-        // exclusion list (scaffold-paths.ts); __tests__ was missing here.
         ...SCAFFOLD_GLOBS,
         'samples/**',
         '**/samples/**',
@@ -5073,12 +4172,6 @@ export class AnalyzerOrchestrator {
     changedEntryPoints: CASEntryPoint[],
     changedExitPoints: CASExitPoint[]
   ) {
-    // Journeys collapsed workflows into a derived view over flows
-    // (docs/cas/SPECIFICATION.md §0.5.1) — the same "changed nodes/entry
-    // points participate in this path" question is answered by walking
-    // journey.entry_point_id / call_chain_ids / steps / terminal_entities,
-    // the flow-sourced facets a journey carries in place of the old
-    // entry_points/call_chains/services_used/entities_touched arrays.
     const affected_journeys = (output.user_journeys || [])
       .filter(journey =>
         affectedEntryPointIds.has(journey.entry_point_id) ||
@@ -5863,26 +4956,6 @@ export class AnalyzerOrchestrator {
         return false;
       }
 
-      // Prefer the top-level project root over a narrower nested root
-      // whenever the analyzer's OWN signal/detection also succeeds there.
-      // Every detectPatterns/canAnalyze() check in this codebase globs
-      // RECURSIVELY from the root it is given, so any signal found in a
-      // nested project root is, by construction, also found scanning from
-      // the encompassing top-level projectPath. Binding a multi-root-capable
-      // framework/library analyzer to just the first matching nested root
-      // (the old ordering, kept below as the narrowing fallback) silently
-      // discards evidence from every sibling directory the analyzer would
-      // otherwise have scanned — measured on a multi-project .NET solution
-      // whose WPF UI surface is legitimately split across several nested
-      // *.csproj directories: the framework analyzer's contribution
-      // collapsed from 272 entry points / 244 UI event-handler nodes down to
-      // a single accidental survivor once bound to only the first nested
-      // root with WPF signal, even though the analyzer itself (given the
-      // full top-level path) would have scanned every window across every
-      // nested project. Checking the wider root first can only ever find
-      // >= the evidence the narrower nested-root scan would have found, so
-      // this is a strict improvement for analyzers whose detection is
-      // recursive (the common case) and a no-op otherwise.
       if (
         await this.hasAnalyzerSignal(projectPath, registration) &&
         await registration.analyzer.canAnalyze(projectPath)
@@ -5966,13 +5039,6 @@ export class AnalyzerOrchestrator {
       return true;
     }
 
-    // 'pattern' analyzers (e.g. the declarative analyzer-pack engine) decide
-    // their own applicability inside canAnalyze() rather than via a static
-    // detectPatterns signal — a pack's applies_when gate is dynamic/data-driven
-    // and unknown until the packs are actually loaded. Treat them like language
-    // analyzers here: defer the real gate to canAnalyze() in shouldUseAnalyzer().
-    // (When no packs are present canAnalyze() returns false, so this stays a
-    // no-op — zero behavior change for a project with no applicable packs.)
     if (registration.type === 'pattern') {
       return true;
     }
@@ -5994,27 +5060,6 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  /**
-   * Whole-name match against the project's DIRECT RUNTIME dependencies only.
-   *
-   * Distinct from manifestContainsAny on two axes that matter when a
-   * dependency is used as evidence about what a product *is* (rather than
-   * which framework it uses):
-   *
-   *  - runtime only. A scanner/engine listed under devDependencies is CI
-   *    hygiene — nearly every serious repo has one — and says nothing about
-   *    the product. Only a runtime dependency means the shipped product
-   *    actually links against the thing.
-   *  - whole-name, not substring, and no manifest free-text fallback. The
-   *    live "menu-bar utility labeled security-scanning-tool off its
-   *    dependency list" defect is the standing warning that loose matching on
-   *    dependency vocabulary fabricates product identity; a README or lockfile
-   *    merely mentioning a scanner is not a declaration that we link to it.
-   *
-   * npm-only by construction (package.json is the one manifest format whose
-   * runtime/dev split we parse). Callers must treat a false as "no evidence",
-   * never as "evidence of absence".
-   */
   private async manifestDeclaresRuntimeDependency(projectPath: string, packageNames: string[]): Promise<boolean> {
     if (!projectPath) return false;
     const wanted = new Set(packageNames.map(name => name.toLowerCase()));
@@ -6040,31 +5085,11 @@ export class AnalyzerOrchestrator {
 
     const runtimeNames = await runtimePromise;
     for (const declared of runtimeNames) {
-      // Scoped packages count under their bare name too (@scope/pkg -> pkg),
-      // which is how the same engine ships across registries.
-      if (wanted.has(declared) || wanted.has(declared.replace(/^@[^/]+\//, ''))) return true;
+      if (wanted.has(declared) || wanted.has(declared.replace(/^@[^/]+\
     }
     return false;
   }
 
-  /**
-   * Cross-ecosystem sibling of manifestDeclaresRuntimeDependency: is one of
-   * these packages declared as a dependency in ANY of the project's build
-   * manifests?
-   *
-   * npm goes through the strict runtime-dependency path above. Every other
-   * ecosystem (csproj/pom/go.mod/requirements/Gemfile/Cargo) is matched as a
-   * WHOLE TOKEN in the manifest text — those formats do not give us a
-   * runtime/dev split we can read uniformly, and a package coordinate is
-   * still a declaration, unlike prose. Whole-token (not substring) matching is
-   * the load-bearing part: substring matching over manifest text is how
-   * dependency vocabulary turns into fabricated product identity.
-   *
-   * Only ever use this with package sets that are DOMAIN-DEFINING — packages
-   * nothing outside the domain has a reason to link against. A package that a
-   * repo of any domain might reasonably depend on proves nothing, and putting
-   * it in such a list re-creates the keyword classifier one level down.
-   */
   private async manifestDeclaresPackage(projectPath: string, packageNames: string[]): Promise<boolean> {
     if (!projectPath) return false;
     if (await this.manifestDeclaresRuntimeDependency(projectPath, packageNames)) return true;
@@ -6192,47 +5217,8 @@ export class AnalyzerOrchestrator {
       );
     }
 
-    const basenameOnly = normalizedPattern.match(/^(?:\*\*\/)?([^/*?{}]+)$/);
-    if (basenameOnly) {
-      return inventory.basenames.get(basenameOnly[1].toLowerCase()) || [];
-    }
-
-    const extensionOnly = normalizedPattern.match(/^\*\*\/\*\.([a-z0-9]+)$/i);
-    if (extensionOnly) {
-      return inventory.extensions.get(`.${extensionOnly[1].toLowerCase()}`) || [];
-    }
-
-    const braceExtensions = normalizedPattern.match(/^\*\*\/\*\.{([^}]+)}$/);
-    if (braceExtensions) {
-      return braceExtensions[1]
-        .split(',')
-        .flatMap(extension => inventory.extensions.get(`.${extension.trim().toLowerCase()}`) || []);
-    }
-
-    const basenameBrace = normalizedPattern.match(/^(?:\*\*\/)?([^/{}]+)\.{([^}]+)}$/);
-    if (basenameBrace) {
-      const [_, prefix, extensions] = basenameBrace;
-      return extensions
-        .split(',')
-        .flatMap(extension => inventory.basenames.get(`${prefix}.${extension.trim()}`.toLowerCase()) || []);
-    }
-
-    const suffix = normalizedPattern.replace(/^\*\*\//, '').toLowerCase();
-    if (!suffix.includes('*') && !suffix.includes('?') && !suffix.includes('{')) {
-      return inventory.files.filter(file => file.toLowerCase().endsWith(suffix));
-    }
-
-    return glob(pattern, {
-      cwd: projectPath,
-      ignore: this.getProjectDiscoveryIgnorePatterns(),
-      nodir: true
-    });
-  }
-
-  private contentPatternToGlob(pattern: RegExp): string[] {
-    const source = pattern.source;
-    const globs: string[] = [];
-    if (source.includes('\\.tsx') || source.includes('tsx')) globs.push('**/*.tsx');
+    const basenameOnly = normalizedPattern.match(/^(?:\*\*\/)?([^
+*.tsx');
     if (source.includes('\\.jsx') || source.includes('jsx')) globs.push('**/*.jsx');
     if (source.includes('\\.vue') || source.includes('vue')) globs.push('**/*.vue');
     if (source.includes('\\.component\\.ts') || source.includes('component')) globs.push('**/*.component.ts');
@@ -6251,38 +5237,11 @@ export class AnalyzerOrchestrator {
       return [];
     }
 
-    // When the analyzer is bound to the top-level project root itself (no
-    // narrower nested root won out in shouldUseAnalyzer, or shouldUseAnalyzer
-    // deliberately preferred the encompassing root), there is no separate
-    // dedicated pass that will ever cover a nested manifest-owning
-    // subdirectory instead -- analyzerRootMap holds exactly ONE root per
-    // registration id, never a fan-out of one pass per nested root. Excluding
-    // those nested roots here would not defer their content to another pass;
-    // it would drop it from this analyzer's analysis entirely. Measured on a
-    // multi-project .NET solution where every subproject -- including the
-    // ones that actually contain the WPF UI -- owns its own .csproj manifest:
-    // scoping the WPF framework analyzer to the top-level root while this
-    // filter walled off every one of those subprojects reduced its
-    // contribution from hundreds of nodes/entry points to zero. Only exclude
-    // sibling manifest roots when the analyzer is scoped to a NARROWER,
-    // non-root directory, where the isolation this filter provides (keeping
-    // an app-boundary analyzer from bleeding into a sibling app under the
-    // same parent) is still meaningful and something else could plausibly
-    // cover the excluded root.
     if (matchedRoot === projectPath) {
       return [];
     }
 
-    // Only exclude OTHER project roots that own their own package-boundary
-    // manifest (package.json, Cargo.toml, ...): those are the only roots that
-    // can ever get a dedicated nested analyzer pass, since canAnalyze() reads
-    // that directory's own manifest. A root discovered purely via a
-    // workspace-manifest glob (pnpm-workspace.yaml `apps/*` etc.) with no
     // manifest of its own can NEVER pass canAnalyze() there, so excluding it
-    // here would wall it off from every pass with nothing left to cover it —
-    // the same silent-drop failure mode the Dockerfile-boundary fix addressed
-    // for deploy/build-tooling-only directories, reintroduced via a different
-    // discovery path if this weren't filtered.
     return this.projectRoots
       .filter(root => root !== matchedRoot && this.manifestOwningProjectRoots.has(root))
       .map(root => path.relative(matchedRoot, root).replace(/\\/g, '/'))
@@ -6696,31 +5655,6 @@ export class AnalyzerOrchestrator {
     return file ? `${analyzer} (${file})` : analyzer;
   }
 
-  /**
-   * Semantic identity for an entry point that is independent of the literal
-   * `id` string: (type, normalized name, handler/source node). Two analyzer
-   * passes describing the SAME real registration under different id schemes
-   * (e.g. mcp-tool-registration-analyzer.ts's
-   * `mcp_tool_<name>_<file>_<line>`-suffixed id vs ai-stack-analyzer.ts's own
-   * independent `entry_mcp_tool_<name>_<file>` id — no line suffix) never
-   * collide in the id-keyed map below, so the exact-id dedup this method
-   * already did was blind to them: real MCP tools doubled up 1:1 in
-   * get_entry_points (435 message-kind entries / 221 unique names). Returns
-   * undefined when there isn't enough evidence to key on (no type, no name,
-   * or no node reference), in which case only the exact-id path applies —
-   * this must never merge two entry points that merely share a name.
-   *
-   * WHY THE NODE-ID KEY WAS NOT ENOUGH (the duplication survived the first
-   * fix and shipped again): each analyzer mints its OWN node id for the same
-   * registration — ai-stack's `ai_mcp-tool_<name>_<file>_<line>` vs
-   * mcp-tool-registration's `mcp_tool_<name>_<file>_<line>`. Keying on the
-   * node id therefore produced two different canonical keys for one real
-   * tool, and the dedup never fired. The identity that actually holds across
-   * analyzers is the CODE LOCATION the entry point was extracted from
-   * (type + name + file + line), so that is the primary key, with the
-   * node-id key kept as the fallback for records that carry no resolvable
-   * file/line. Both are emitted; a match on EITHER means the same entry point.
-   */
   private entryPointCanonicalKeys(ep: any): string[] {
     if (!ep || typeof ep !== 'object') return [];
     const type = typeof ep.type === 'string' ? ep.type : undefined;
@@ -6737,82 +5671,23 @@ export class AnalyzerOrchestrator {
     return keys;
   }
 
-  /**
-   * CROSS-KIND identity keys — deliberately independent of `type` AND of the
-   * display `name`, and therefore only safe to match BETWEEN DIFFERENT
-   * ANALYZERS (the caller enforces that; see appendGraphItemsUnique).
-   *
-   * WHY THIS EXISTS. entryPointCanonicalKeys above puts `type` and `name` in
-   * the key, so it is structurally blind to the biggest remaining duplication
-   * class measured in production: ONE real trigger described by two or three
-   * analyzers under DIFFERENT kinds and DIFFERENT display names.
-   *   - a Django/Celery task `apply_credit` shipped THREE times in one CAS —
-   *     django as type `message` name "task apply_credit", workflow as type
-   *     `event` name "apply_credit", async-messaging as type `message` name
-   *     "apply_credit" — 46 tasks × up to 3 records.
-   *   - a .NET `Main` shipped twice — csharp as type `cli` name ".NET Main
-   *     entry point" (file+line) and wpf as type `lifecycle` name "Main.Main"
-   *     (file only, no line).
-   * Neither pair shares a canonical key: the kinds differ, the names differ,
-   * and the second record of each pair carries no line.
-   *
-   * WHY IT IS SAFE. Two records from the SAME analyzer at the same location
-   * are legitimately distinct (react emits three `event` entry points for the
-   * three DOM handlers of one component, all at the same file:line with the
-   * same handler method) — so a same-analyzer match must never merge. Two
-   * records from DIFFERENT analyzers pointing at the same handler method in
-   * the same file, or at the same (messaging system, channel) trigger, are the
-   * same real entry point by construction: no analyzer knows about another's
-   * emissions, and the overlap is the whole defect.
-   *
-   * Returns [] when the evidence is too thin to key on. Never keys on name
-   * alone, and never on file alone.
-   */
   private entryPointCrossAnalyzerKeys(ep: any): string[] {
     if (!ep || typeof ep !== 'object') return [];
     const keys: string[] = [];
 
-    // (1) Same handler method in the same file. Line is intentionally NOT in
-    //     the key: the whole point is that one analyzer resolves the line and
-    //     the other does not (wpf's app_startup record carries file only).
     const file = this.entryPointSourceFile(ep);
     const method = typeof ep.handler?.method_name === 'string' ? ep.handler.method_name.trim() : '';
     if (file && method) keys.push(`xhandler::${file.toLowerCase()}::${method.toLowerCase()}`);
 
-    // (2) Same async trigger: (messaging system, channel/operation). This is
-    //     how the Celery triple collapses — django's `celery.task.apply_credit`,
-    //     workflow's `celery:task:apply_credit` and async-messaging's
-    //     `celery:queue:apply_credit` all reduce to (celery, apply_credit).
-    //     Requires BOTH a system and an operation; the role token in the
-    //     middle (task/queue/topic/...) is exactly what disagrees between
-    //     analyzers and so is not part of the identity.
     const trigger = this.entryPointTriggerIdentity(ep);
     if (trigger) keys.push(`xtrigger::${trigger}`);
 
-    // (3) Same declared web route: (verb, path, rendered/handling component).
-    //     Measured duplication class: a router declaration extracted by BOTH a
-    //     framework analyzer and a routing-library analyzer — one file's 20
-    //     declared paths shipped as 40 `route` entry points. Neither key above
-    //     can see it: the display names legitimately differ ("Route /auth" vs
-    //     "GET /auth"), the library record carries no handler at all (so no
-    //     file and no method for key 1), and a route trigger has no
-    //     (system, channel) pair (so no key 2). The component is required as
-    //     well as the path so that two genuinely different surfaces which
-    //     happen to share a path+verb — a backend endpoint and a frontend page
-    //     at the same URL — are never collapsed into one. File is deliberately
-    //     NOT in the key: the two analyzers resolve the declaring file against
-    //     different roots ("apps/app/src/router.tsx" vs "src/router.tsx"), and
-    //     path+verb+component is already an exact identity for a declaration.
     const routeIdentity = this.entryPointRouteIdentity(ep);
     if (routeIdentity) keys.push(`xroute::${routeIdentity}`);
 
     return keys;
   }
 
-  /** `<method>::<path>::<component>` for a declared web route, from trigger and
-   *  metadata evidence only. Undefined unless ALL THREE are real evidence on
-   *  the record — a path with no component, or a component with no path, is not
-   *  a strong enough identity to merge two analyzers' records on. */
   private entryPointRouteIdentity(ep: any): string | undefined {
     const path = typeof ep?.trigger?.path === 'string' ? ep.trigger.path.trim() : '';
     const method = typeof ep?.trigger?.method === 'string' ? ep.trigger.method.trim() : '';
@@ -6821,21 +5696,15 @@ export class AnalyzerOrchestrator {
     const component = [metadata.component, metadata.handler, metadata.element]
       .find((value: unknown) => typeof value === 'string' && value.trim().length > 0);
     if (!component) return undefined;
-    // An "Unknown" component is the routing extractors' placeholder for a route
-    // whose element could not be resolved — a placeholder is not an identity.
     if (String(component).trim().toLowerCase() === 'unknown') return undefined;
     return `${method.toLowerCase()}::${path.toLowerCase()}::${String(component).trim().toLowerCase()}`;
   }
 
-  /** `<system>::<channel>` for an async/messaging trigger, from explicit
-   *  metadata first and the dotted/coloned trigger event as the fallback.
-   *  Undefined unless BOTH halves are real evidence on the record. */
   private entryPointTriggerIdentity(ep: any): string | undefined {
     const metadata = ep?.metadata && typeof ep.metadata === 'object' ? ep.metadata : {};
     const eventTokens = typeof ep?.trigger?.event === 'string'
       ? ep.trigger.event.split(/[:.]/).map((token: string) => token.trim()).filter(Boolean)
       : [];
-    // A single bare token ("process-start", "app-startup") is a kind label,
     // not a (system, channel) pair — it must never form an identity.
     if (eventTokens.length < 2 && !(metadata.system || metadata.task_type)) return undefined;
 
@@ -6848,19 +5717,12 @@ export class AnalyzerOrchestrator {
     return `${String(system).trim().toLowerCase()}::${String(channel).trim().toLowerCase()}`;
   }
 
-  /** Normalized (leading-`./`-free, forward-slashed) file the entry point was
-   *  extracted from. Location evidence only — never fabricated. */
   private entryPointSourceFile(ep: any): string | undefined {
     const raw = ep?.handler?.file || ep?.metadata?.file || ep?.source?.file;
     if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
-    return raw.replace(/\\/g, '/').replace(/^\.\//, '');
+    return raw.replace(/\\/g, '/').replace(/^\.\
   }
 
-  /** Source line the entry point was extracted from. Prefers explicit fields;
-   *  falls back to the trailing `_<line>` suffix analyzers append to the node
-   *  id they mint for the registration (the only line evidence ai-stack
-   *  carries on its entry-point record). Undefined when neither exists —
-   *  the location key is then simply not emitted. */
   private entryPointSourceLine(ep: any): number | undefined {
     for (const candidate of [ep?.handler?.line, ep?.metadata?.line, ep?.source?.line]) {
       if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
@@ -6873,12 +5735,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /** Higher score = more evidence/detail carried by this entry point record —
-   *  used to pick which of two canonically-identical entry points to keep
-   *  (the richer one), e.g. mcp-tool-registration-analyzer.ts's dedicated
-   *  extraction (registrationKind, receiver, handlerRef, line-accurate
-   *  source) over ai-stack-analyzer.ts's coarser regex duplicate of the same
-   *  call site. */
   private entryPointRichnessScore(ep: any): number {
     let score = 0;
     if (ep?.handler?.method_name && ep.handler.method_name !== ep.name) score += 2;
@@ -6918,9 +5774,6 @@ export class AnalyzerOrchestrator {
           target.flatMap(item => this.entryPointCanonicalKeys(item).map(key => [key, item] as const))
         )
       : undefined;
-    // Kind-agnostic index for the cross-analyzer duplicate class. Keyed the
-    // same way for every record, but a hit only counts when the two records
-    // come from DIFFERENT analyzers — hence the bucket per key.
     const byCrossAnalyzerKey = isEntryPoint
       ? new Map<string, T[]>()
       : undefined;
@@ -6947,10 +5800,6 @@ export class AnalyzerOrchestrator {
     for (const item of incoming) {
       const existing = byId.get(item.id);
       if (!existing) {
-        // No exact-id collision — but a second analyzer pass may still be
-        // describing the SAME real entry point under a different id. Check the
-        // semantic keys (code location first, then handler node) before
-        // accepting this as genuinely new.
         const canonicalKeys = byCanonicalKey ? this.entryPointCanonicalKeys(item) : [];
         let canonicalExisting: T | undefined;
         for (const key of canonicalKeys) {
@@ -6958,10 +5807,6 @@ export class AnalyzerOrchestrator {
           if (hit) { canonicalExisting = hit; break; }
         }
         if (!canonicalExisting && byCrossAnalyzerKey) {
-          // Same real trigger under a DIFFERENT kind and a different display
-          // name, emitted by a different analyzer (Celery task as
-          // event+message+message; .NET Main as cli+lifecycle). Only a
-          // cross-analyzer hit counts — see entryPointCrossAnalyzerKeys.
           const itemAnalyzer = analyzerOf(item);
           for (const key of this.entryPointCrossAnalyzerKeys(item)) {
             const matches = (byCrossAnalyzerKey.get(key) ?? []).filter(
@@ -6969,25 +5814,12 @@ export class AnalyzerOrchestrator {
                 && !this.mergedAnalyzersOf(candidate).includes(itemAnalyzer)
             );
             if (matches.length === 0) continue;
-            // Own tiebreak by id, never "first in bucket": the bucket's
-            // insertion order tracks `target`/`incoming` iteration order,
-            // which today is always deterministic because every caller
-            // happens to hand this function an already-sorted array. That is
-            // a caller-discipline precondition, not a guarantee this function
-            // enforces — the exact shape of latent nondeterminism this
-            // session went looking for elsewhere (see
-            // docs/cas/DETERMINISM-BOUNDARY.md). Sorting here means the pick
-            // stays correct even if a future caller feeds it results
-            // collected by completion order instead of array order.
             matches.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
             canonicalExisting = matches[0];
             break;
           }
         }
         if (canonicalExisting) {
-          // SAME real entry point under two id schemes. Keep ONE record, but
-          // never lose the losing record's evidence: merge the union (richer
-          // record wins field-by-field) rather than discarding it.
           const merged = this.mergeEntryPointRecords(canonicalExisting, item) as T;
           const idx = target.indexOf(canonicalExisting);
           if (idx >= 0) target[idx] = merged;
@@ -7005,12 +5837,6 @@ export class AnalyzerOrchestrator {
       }
       if (this.canonicalGraphJson(existing) === this.canonicalGraphJson(item)) continue;
       if (isEntryPoint) {
-        // DATA LOSS FIX: an exact-id collision between two DIFFERING entry
-        // point records used to keep the first and drop the second with a
-        // warning, silently discarding real extracted evidence (two of the
-        // live analyzer warnings were exactly this). Merge the union instead —
-        // the richer record supplies conflicting scalars, and both records'
-        // metadata/capabilities/list evidence survives.
         const merged = this.mergeEntryPointRecords(existing, item) as T;
         const idx = target.indexOf(existing);
         if (idx >= 0) target[idx] = merged;
@@ -7031,15 +5857,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Union-merge two entry-point records that denote the SAME real entry point
-   * (same id, or same canonical key under two analyzers' id schemes). No
-   * record is dropped: the richer one (entryPointRichnessScore) wins for
-   * conflicting scalars, every field only one side carries is preserved, and
-   * metadata / capabilities / array evidence is unioned. Purely additive —
-   * nothing is fabricated, and `source_analyzer` records both contributors so
-   * provenance survives the merge.
-   */
   private mergeEntryPointRecords(a: any, b: any): any {
     const [rich, lean] = this.entryPointRichnessScore(b) > this.entryPointRichnessScore(a) ? [b, a] : [a, b];
     const uniqueBy = <T>(items: T[], key: (item: T) => string): T[] => {
@@ -7053,8 +5870,6 @@ export class AnalyzerOrchestrator {
     };
 
     const merged: any = { ...lean, ...rich };
-    // Object-valued facets merge structurally rather than being overwritten
-    // wholesale, so the lean record's unique keys survive.
     for (const field of ['metadata', 'trigger', 'handler', 'input', 'output', 'contract'] as const) {
       const leanValue = lean?.[field];
       const richValue = rich?.[field];
@@ -7077,9 +5892,6 @@ export class AnalyzerOrchestrator {
         );
       }
     }
-    // Provenance must survive a THIRD merge: a Celery task is described by
-    // django + workflow + async-messaging, and reading only the two records'
-    // `source_analyzer` dropped whichever contributor was already folded in.
     const analyzers = [
       rich?.source_analyzer,
       lean?.source_analyzer,
@@ -7096,10 +5908,6 @@ export class AnalyzerOrchestrator {
     return merged;
   }
 
-  /** Every analyzer whose evidence is already folded into this record. Guards
-   *  the cross-analyzer dedup from re-merging a record into a union it is
-   *  already part of, and from chaining A→B→C when B and C are the same
-   *  analyzer describing two genuinely distinct entry points. */
   private mergedAnalyzersOf(ep: any): string[] {
     const listed = ep?.metadata?.merged_from_analyzers;
     return Array.isArray(listed) ? listed.filter((value: unknown) => typeof value === 'string') : [];
@@ -7122,9 +5930,6 @@ export class AnalyzerOrchestrator {
     source: CASContribution,
     options?: { analyzerId?: string; analysisErrors?: CASAnalysisError[]; mergeIndexes?: AnalysisMergeIndexes }
   ): Promise<void> {
-    // Budget-yield inside the merge loops: merging a whale contribution
-    // (76k nodes / 96k edges from the TS analyzer) was a measured multi-second
-    // event-loop stall. Iteration order and merge semantics are unchanged.
     const maybeYield = createYieldBudget();
     const contributingAnalyzer = options?.analyzerId || source.analyzer_metadata?.analyzer_id || 'unknown analyzer';
     const mergeIndexes = options?.mergeIndexes ?? this.createAnalysisMergeIndexes(target);
@@ -7159,22 +5964,20 @@ export class AnalyzerOrchestrator {
       await maybeYield();
       const existingNode = mergeIndexes.nodesById.get(node.id);
       if (existingNode) {
-        // Enhanced merge logic for node collaboration
         if (node.metadata) {
           existingNode.metadata = { ...existingNode.metadata, ...node.metadata };
         }
         if (node.subcategories && node.subcategories.length > 0) {
-          // Use the enhanced subcategories from the framework analyzer
           existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), ...node.subcategories])];
         }
         if (node.level !== undefined && node.level !== existingNode.level) {
-          existingNode.level = node.level; // Framework analyzers can promote level
+          existingNode.level = node.level;
         }
         if (node.level_name && node.level_name !== existingNode.level_name) {
           existingNode.level_name = node.level_name;
         }
         if (node.description && node.description !== existingNode.description) {
-          existingNode.description = node.description; // Framework-specific descriptions take precedence
+          existingNode.description = node.description;
         }
         if (node.tags && node.tags.length > 0) {
           existingNode.tags = [...new Set([...(existingNode.tags || []), ...node.tags])];
@@ -7234,14 +6037,6 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  /**
-   * Accepted entry-point kinds are DERIVED from the single source of truth
-   * (ENTRY_POINT_TYPES in cas.types.ts, which the CASEntryPoint['type'] union is
-   * also built from). Do NOT reintroduce a hand-maintained allowlist here — a
-   * separate list silently drops any newly added entry-point kind (this bit
-   * type-data ML and cat-api). Add new kinds to ENTRY_POINT_TYPES and both the
-   * type and this validator pick them up. A parity guard test asserts they agree.
-   */
   private static readonly VALID_ENTRY_POINT_TYPES: ReadonlySet<string> = new Set(ENTRY_POINT_TYPES);
 
   private removeTestEntryPoints(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[]): void {
@@ -7287,17 +6082,6 @@ export class AnalyzerOrchestrator {
     return AnalyzerOrchestrator.VALID_ENTRY_POINT_TYPES.has(ep.type);
   }
 
-  /**
-   * Accepted exit-point kinds are DERIVED from the single source of truth
-   * (EXIT_POINT_TYPES in cas.types.ts, which the CASExitPoint['type'] union is
-   * also built from) — mirror of VALID_ENTRY_POINT_TYPES above. Do NOT
-   * reintroduce a hand-maintained allowlist here: the old one had drifted, both
-   * rejecting a real emitted kind ('event') and carrying dead kinds
-   * ('http'/'grpc'/'graphql'/'queue'/'email'/'sms'/'external_api') that no
-   * analyzer emits (createExitPoint's type is compile-locked to the union). Add
-   * new kinds to EXIT_POINT_TYPES and both the type and this validator pick them
-   * up. A parity guard test asserts they agree.
-   */
   private static readonly VALID_EXIT_POINT_TYPES: ReadonlySet<string> = new Set(EXIT_POINT_TYPES);
 
   private isValidExitPoint(ep: CASExitPoint): boolean {
@@ -7306,34 +6090,15 @@ export class AnalyzerOrchestrator {
     return true;
   }
 
-  /**
-   * Exit points are meant to capture genuine external boundaries (real
-   * databases, third-party APIs, queues, SDKs). Two sources inflate them:
-   *
-   *  1. Standard-library calls (Node `path`/`fs`/`os`, Python `os`/`pathlib`/
-   *     `sys`) tagged as "file" exit points — path manipulation performs no
-   *     I/O at all.
-   *  2. Calls into the project's own modules (relative or absolute local
-   *     imports) tagged as "sdk" exit points — these are internal function
-   *     calls, not an external dependency boundary.
-   *
-   * Both are filtered here so the external-interactions view stays meaningful.
-   */
   private isNoiseExitPoint(ep: CASExitPoint): boolean {
-    // (2) "sdk" exit point that is not actually an external dependency.
     if (ep.type === 'sdk') {
       const moduleRefs = [ep.target?.sdk, (ep.metadata as any)?.library]
         .filter((v): v is string => typeof v === 'string' && v.length > 0);
 
-      // 2a. Targets a local module (relative/absolute import path).
       if (moduleRefs.length > 0 && moduleRefs.every(m => this.isLocalModuleSpecifier(m))) {
         return true;
       }
 
-      // 2b. Library resolution failed and fell back to the call target
-      // itself (sdk === endpoint). This happens for calls on local objects
-      // (`skillRepository.findByName`, `permissionQueue.on`) that were never
-      // imported from a package — they are internal calls, not SDK usage.
       const sdk = ep.target?.sdk;
       const endpoint = ep.target?.endpoint;
       if (sdk && endpoint && sdk === endpoint) {
@@ -7341,7 +6106,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // (1) Stdlib noise.
     const candidates = [
       ep.name,
       ep.target?.resource,
@@ -7354,9 +6118,6 @@ export class AnalyzerOrchestrator {
 
     if (candidates.length === 0) return false;
 
-    // Pure-computation / process-introspection stdlib modules. These are not
-    // external boundaries. Network-capable builtins (http, https, net, dns,
-    // tls, dgram) are intentionally NOT listed — those are real exit points.
     const noiseModules = [
       'path', 'fs', 'fs/promises', 'os', 'crypto', 'url', 'util',
       'events', 'stream', 'buffer', 'querystring', 'assert',
@@ -7371,30 +6132,15 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  /**
-   * True when a module specifier refers to code inside this repository
-   * rather than an external package. Relative imports (`./x`, `../x`),
-   * absolute filesystem paths, and bare local file names with a source
-   * extension are all local; bare package specifiers (`express`,
-   * `@scope/pkg`) are external.
-   */
   private isLocalModuleSpecifier(specifier: string): boolean {
     const s = specifier.trim();
     if (!s) return false;
     if (s.startsWith('./') || s.startsWith('../') || s === '.' || s === '..') return true;
     if (s.startsWith('/')) return true;
-    if (/^[a-zA-Z]:[\\/]/.test(s)) return true; // Windows absolute path
+    if (/^[a-zA-Z]:[\\/]/.test(s)) return true;
     return false;
   }
 
-  /**
-   * Extracted to system-type.ts (task #121, codebase decomposition) — this
-   * is a Tier-2 (framework/architecture) classification and now lives
-   * outside the tier-1/2/3-in-one-file orchestrator, behind a lint-enforced
-   * import boundary. Kept as a thin delegator here (rather than updating
-   * every call site) to keep this extraction a pure move. See system-type.ts
-   * for the full defect history and evidence rules.
-   */
   private determineSystemType(
     entryPoints: CASEntryPoint[],
     deployableEvidence: DeployableEvidence[]
@@ -7590,19 +6336,6 @@ export class AnalyzerOrchestrator {
     return index;
   }
 
-  /**
-   * SHAPE-GATED merge. `categories` is a level -> category -> descriptor-object
-   * tree. A contribution that supplies anything else at either level (an array,
-   * a string, a primitive) is SKIPPED, not spread: spreading a string here is
-   * exactly what produced the character-indexed
-   * `{"0":{"0":{"0":"v","types":[],...}}}` corruption that shipped in every
-   * stored CAS (an analyzer's flat `categories: ['validation', ...]` tag list
-   * reached this merge, `Object.entries` walked the array, then the string
-   * "validation" was spread character by character into the descriptor slot).
-   * base-analyzer's createContribution now keeps tag lists out of
-   * `contribution.categories` in the first place; this stays as the last
-   * structural gate so no future analyzer can re-corrupt the tree.
-   */
   private mergeCategories(target: CASCategories, source: Partial<CASCategories>): void {
     type CategoryDescriptor = CASCategories[string][string];
     const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -7614,9 +6347,7 @@ export class AnalyzerOrchestrator {
     for (const [level, levelCategories] of Object.entries(source)) {
       if (!isRecord(levelCategories)) continue;
       for (const [category, rawCategoryData] of Object.entries(levelCategories)) {
-        // Level created LAZILY, on the first descriptor that actually passes
         // the shape gate — a level whose every entry is malformed must not
-        // leave an empty `{}` level behind in the tree.
         if (!isRecord(rawCategoryData)) continue;
         if (!isRecord(target[level])) {
           target[level] = {};
@@ -7638,14 +6369,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Nested git repositories are excluded from this analysis so their code is
-   * never silently merged into the host system's graph. Without an explicit
-   * record, that exclusion looks like a blind spot ("why is the rust/
-   * directory missing?"). Each excluded repository is therefore reported on
-   * the system surface with its primary language so readers and agents know
-   * the boundary is intentional and where to analyze next.
-   */
   private async describeNestedRepositories(projectPath: string): Promise<CASNestedRepository[]> {
     const patterns = await this.getNestedRepoIgnorePatterns(projectPath);
     const directories = Array.from(new Set(patterns
@@ -7709,21 +6432,6 @@ export class AnalyzerOrchestrator {
   };
 
   private scanUnanalyzedLanguages(projectPath: string): Array<{ name: string; files: number; share_of_source: number }> {
-    // DEFECT (2026-08 Kotlin coverage-caveat audit): this used to hand-maintain
-    // its own `supported` extension set, separate from LANGUAGE_REGISTRY (the
-    // single source of truth language-registry.ts's own module doc calls out:
-    // "adding a language is now one entry here"). That set was never updated
-    // when Kotlin (and most of the later breadth languages — Scala, Lua, R,
-    // Julia, Erlang, Clojure, Haskell, OCaml, Perl, Groovy, ...) gained real
-    // analyzer coverage, so a repo with a deep, working Kotlin analyzer (1000+
-    // Kotlin-derived nodes, capabilities built from Kotlin evidence) still
-    // reported "Kotlin not analyzed: N files (100% of source)" — a caveat that
-    // directly contradicted the rest of the same payload. Ground truth for
-    // "is this extension analyzed" is isRegisteredSourceExtension
-    // (LANGUAGE_REGISTRY), not a second hardcoded list that silently drifts.
-    // `unanalyzedNames` now exists ONLY to give a friendly display name to the
-    // handful of extensions genuinely outside the registry (e.g. Visual
-    // Basic's raw .vb source, which has no analyzer of its own).
     const unanalyzedNames: Record<string, string> = {
       vb: 'Visual Basic',
     };
@@ -7743,16 +6451,6 @@ export class AnalyzerOrchestrator {
         if (entry.name.startsWith('.')) continue;
         if (entry.isDirectory()) {
           if (['node_modules', 'dist', 'build', 'coverage', 'vendor', 'vendors', 'tmp', 'log', 'public', 'target', '.git'].includes(entry.name)) continue;
-          // Same scaffold exclusion every other product-facing collector
-          // consults (scaffold-paths.ts): a directory literally named
-          // fixtures/__fixtures__/testdata/cas-tests/__tests__ ships sample
-          // code used to exercise the analyzed repo's OWN test harness, never
-          // real product source. Without this, a language that exists ONLY
-          // inside the analyzer's own benchmark fixtures (e.g. Klauro's own
-          // apps/mcp-server/fixtures/**/*.kt Kotlin analyzer test fixtures)
-          // gets counted as real unanalyzed source and the system description
-          // hallucinates a coverage gap ("analysis does not extend to its
-          // Kotlin portion") for a language the repo doesn't actually contain.
           if (isScaffoldDirName(entry.name)) continue;
           stack.push({ directory: path.join(current.directory, entry.name), depth: current.depth + 1 });
           continue;
@@ -7771,39 +6469,6 @@ export class AnalyzerOrchestrator {
       .sort((a, b) => b.files - a.files);
   }
 
-  /**
-   * Counts distinct source files among a set of CAS nodes, keyed by
-   * node.source.file. Nodes without a source file (e.g. synthetic/derived
-   * nodes) are not counted. Used to report a real per-language file count
-   * instead of an AST-node count.
-   *
-   * Some analyzers (notably nested-root/monorepo-member runs) emit a mix of
-   * absolute and project-relative paths for the *same* file across different
-   * nodes; naively counting raw `source.file` strings double-counts those
-   * files. When `projectPath` is supplied, absolute paths are relativized
-   * against it before dedup so "/abs/root/apps/x.ts" and "apps/x.ts" collapse
-   * to one entry, matching how the rest of the pipeline (buildIncrementalState,
-   * etc.) already keys per-file records.
-   */
-  /**
-   * Guards the "silent zero" defect class at the point where every language
-   * analyzer's contribution is recorded: a source-file glob matching N>0
-   * files but an extraction pipeline that crashed on every one of them (a
-   * native tree-sitter addon with no prebuilt binary for the running Node
-   * ABI is the concrete incident this exists for) still returns a
-   * structurally valid, empty CASContribution — nodes: [], edges: [] — with
-   * no thrown error anywhere the merge/summary code can see. That is
-   * indistinguishable from a legitimately tiny/empty project unless checked
-   * explicitly here.
-   *
-   * A registered LANGUAGE analyzer (framework/library/pattern analyzers
-   * legitimately detect nothing in most repos — that is not evidence of a
-   * crash) that matched at least one file but produced neither nodes nor
-   * edges is not "nothing to report": it is a parser/extraction failure, and
-   * must land in analysis_errors[] as severity 'error' — the field the
-   * top-level `errors` summary count is built from — not silently folded
-   * into a per-file 'warning' that count ignores.
-   */
   private async detectZeroYieldForClaimedFiles(
     registration: AnalyzerRegistration,
     result: CASContribution,
@@ -7816,8 +6481,6 @@ export class AnalyzerOrchestrator {
     try {
       claimedFiles = (await registration.analyzer.getRelevantFiles?.(matchedRoot)) || [];
     } catch {
-      // Can't determine what this analyzer claimed to match; don't manufacture
-      // a false-positive error on top of that unrelated failure.
       return null;
     }
     if (claimedFiles.length === 0) return null;
@@ -7854,10 +6517,6 @@ export class AnalyzerOrchestrator {
         const langName = contrib.analyzer_name.replace(' Analyzer', '');
         languages.set(langName, {
           count: contrib.nodes_created,
-          // files_created is the distinct-file count derived from node.source.file;
-          // fall back to nodes_created only for legacy contributions that predate the
-          // field (defensively avoids an undefined `files` rather than reintroducing
-          // the AST-node-count bug).
           files: typeof contrib.files_created === 'number' ? contrib.files_created : contrib.nodes_created,
           percentage: 0
         });
@@ -7871,27 +6530,12 @@ export class AnalyzerOrchestrator {
           confidence: contrib.confidence || 1.0
         });
 
-        // A framework-type analyzer can be a detector for MULTIPLE distinct
-        // frameworks/libraries in one pass (e.g. a Swift platform analyzer
-        // reporting SwiftUI + AppKit + declared SwiftPM platform targets, the
-        // same way a language analyzer's framework_specific already expands
-        // into several names below). Reuse the same boolean-leaf expansion so
-        // those facts surface in system.frameworks instead of being folded
-        // into one generic analyzer-name entry.
         if (contrib.framework_specific) {
           this.extractFrameworksFromSpec(contrib.framework_specific, frameworks);
         }
       }
     });
 
-    // Language MIX and PRIMARY-language ranking are a source-byte fact, not an
-    // AST-node-count artifact. Node counts vary wildly per language/analyzer — a
-    // template or markup analyzer can emit thousands of tiny nodes and outrank
-    // the real primary language (the historic `[shell,html,css,glimmer]`-over-
-    // TypeScript failure). We therefore rank + weight languages by real bytes on
-    // disk when we can map an analyzer's language to source extensions, falling
-    // back to node counts only for languages with no byte signal (so nothing
-    // that the analyzers reported ever vanishes).
     const byteByLanguage = projectPath ? this.scanSourceBytesByLanguage(projectPath) : new Map<string, number>();
     const weightFor = (name: string, nodeCount: number): number => {
       const bytes = byteByLanguage.get(this.normalizeLanguageNameForBytes(name));
@@ -7905,12 +6549,6 @@ export class AnalyzerOrchestrator {
 
     return {
       languages: Array.from(languages.entries())
-        // ZERO-EVIDENCE LANGUAGES ARE NOT REPORTED. A registered language-type
-        // analyzer that matched nothing (no files, no nodes, no source bytes)
-        // used to ship as a real language at "0 files / 0%" — the live CAS
-        // listed Caddy Reverse Proxy, Kubernetes Manifest and SOAP/WSDL for a
-        // repo containing none of them. An analyzer being registered is not
-        // evidence that the language is present; only its findings are.
         .filter(([name, data]) => data.files > 0 || data.count > 0 || weightFor(name, data.count) > 0)
         .map(([name, data]) => ({
           name,
@@ -7918,7 +6556,6 @@ export class AnalyzerOrchestrator {
           files: data.files,
           weight: weightFor(name, data.count),
         }))
-        // Primary language first: highest source-byte share, stable tie-break by name.
         .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name))
         .map(({ name, percentage, files }) => ({ name, percentage, files })),
       frameworks: Array.from(frameworks.entries()).map(([name, data]) => ({
@@ -7928,15 +6565,6 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * Maps CAS analyzer language names to the source-byte key used by
-   * scanSourceBytesByLanguage. Language analyzers report combined or descriptive
-   * names ("TypeScript/JavaScript") while the byte scan keys by concrete family
-   * ("TypeScript"). Returning the same family key for both makes the byte lookup
-   * hit. Names with no known byte mapping return the name unchanged (byte lookup
-   * misses -> node-count fallback in extractTechnologies), which is correct for
-   * non-source analyzers (Docker Compose, Kubernetes Manifest, etc.).
-   */
   private normalizeLanguageNameForBytes(name: string): string {
     const lower = name.toLowerCase();
     if (lower.includes('typescript') || lower.includes('javascript')) return 'TypeScript/JavaScript';
@@ -7951,14 +6579,6 @@ export class AnalyzerOrchestrator {
     return name;
   }
 
-  /**
-   * Real source-byte distribution by language family, from a bounded filesystem
-   * walk of the project. This is the authoritative signal for language MIX and
-   * PRIMARY-language ranking — a deterministic Camp-B fact (same tree -> same
-   * bytes). Repo-agnostic: keyed purely off file extension -> language family,
-   * no repo/brand knowledge. Extensions not mapped here contribute no bytes and
-   * simply fall back to their analyzer node count in the caller.
-   */
   private scanSourceBytesByLanguage(projectPath: string): Map<string, number> {
     const extToFamily: Record<string, string> = {
       ts: 'TypeScript/JavaScript', tsx: 'TypeScript/JavaScript',
@@ -8023,21 +6643,11 @@ export class AnalyzerOrchestrator {
     processObject(spec);
   }
 
-  /**
-   * Consolidates size/complexity metrics into the canonical CAS fields.
-   * Language analyzers stash these in inconsistent places (or omit them):
-   * complexity may live in `metadata.attributes.complexity` or as a bare
-   * number, and lines-of-code is often absent entirely. This single pass
-   * backfills `metadata.complexity.cyclomatic` and `metadata.metrics.
-   * lines_of_code` so every downstream consumer — quality metrics, the
-   * maintainability index, stability/hotspot tooling — sees real numbers.
-   */
   private normalizeNodeMetrics(nodes: CASNode[]): void {
     for (const node of nodes) {
       if (!node.metadata) continue;
       const md = node.metadata as any;
 
-      // Lines of code: derive from the source span when not already set.
       if (!md.metrics?.lines_of_code) {
         const start = node.source?.line;
         const end = node.source?.end_line;
@@ -8047,7 +6657,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // Cyclomatic complexity: consolidate from wherever the analyzer left it.
       const complexityIsObject = md.complexity && typeof md.complexity === 'object';
       const hasCyclomatic = complexityIsObject && typeof md.complexity.cyclomatic === 'number';
       if (!hasCyclomatic) {
@@ -8079,18 +6688,8 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * Maintainability index derived from a simplified SEI formula, averaged
-   * over the nodes that actually carry size/complexity metrics. Returns
-   * undefined when no node has the required data rather than fabricating a
-   * value. Halstead volume is used when available; otherwise the volume term
-   * is approximated from lines of code.
-   */
   private computeMaintainabilityIndex(nodes: CASNode[]): number | undefined {
     const scores: number[] = [];
-    // The maintainability index is a per-unit metric; average it over code
-    // units (functions/methods/classes), not files or modules whose line
-    // spans would dominate and skew the result.
     const unitTypes = new Set(['function', 'method', 'class']);
 
     for (const node of nodes) {
@@ -8102,9 +6701,8 @@ export class AnalyzerOrchestrator {
       const halsteadVolume = node.metadata?.complexity?.halstead?.volume;
       const volume = halsteadVolume && halsteadVolume > 0
         ? halsteadVolume
-        : loc * 4; // rough proxy when Halstead is unavailable
+        : loc * 4;
 
-      // SEI maintainability index, normalized to 0-100.
       const raw = 171 - 5.2 * Math.log(volume) - 0.23 * cc - 16.2 * Math.log(loc);
       const normalized = Math.max(0, Math.min(100, (raw * 100) / 171));
       scores.push(normalized);
@@ -8282,21 +6880,11 @@ export class AnalyzerOrchestrator {
     const httpEntryPoints = productEntryPoints.filter(entryPoint => entryPoint.type === 'http');
     const pageEntryPoints = productEntryPoints.filter(entryPoint => entryPoint.type === 'page');
     const cliEntryPoints = productEntryPoints.filter(entryPoint => entryPoint.type === 'cli');
-    // MCP tool registrations surface as 'message' entry points (see mcp-tool-registration-analyzer),
-    // and each carries a precise 'mcp_tool' CAS node. These are the primary-entry evidence for a
-    // real MCP tool server.
     const mcpEntryPoints = productEntryPoints.filter(entryPoint => entryPoint.type === 'message');
     const mcpToolNodeCount = productNodes.filter(node => String(node.type) === 'mcp_tool').length;
     const frameworkNames = contributions
       .filter(contribution => contribution.analyzer_type === 'framework')
       .map(contribution => String(contribution.analyzer_name || '').toLowerCase());
-    // Boolean facts reported inside a framework-type contribution's
-    // framework_specific bundle (e.g. the Swift Platform Analyzer's
-    // swiftui/appkit/uikit/apple-platform-* flags). frameworkNames above only
-    // ever carries the fixed analyzer display name ("Swift Platform
-    // Analyzer"), never the concrete UI-framework/platform facts it detected —
-    // those live one level down, so architecture classification needs its own
-    // read of them.
     const frameworkSpecificFlags = new Set<string>();
     for (const contribution of contributions) {
       if (contribution.analyzer_type !== 'framework') continue;
@@ -8306,87 +6894,45 @@ export class AnalyzerOrchestrator {
         if (value === true) frameworkSpecificFlags.add(key.toLowerCase());
       }
     }
-    const hasAppsAndPackages = productFiles.some(file => /(^|\/)apps\//.test(file)) &&
-      productFiles.some(file => /(^|\/)(packages|libs)\//.test(file));
-    const hasInfrastructureSurface = productFiles.some(file => /\.(tf|tfvars|hcl)$/i.test(file) || /(^|\/)(terraform|opentofu|pulumi|helm|k8s|charts)\//.test(file)) ||
+    const hasAppsAndPackages = productFiles.some(file => /(^|\/)apps\
+      productFiles.some(file => /(^|\/)(packages|libs)\
+    const hasInfrastructureSurface = productFiles.some(file => /\.(tf|tfvars|hcl)$/i.test(file) || /(^|\/)(terraform|opentofu|pulumi|helm|k8s|charts)\
       frameworkNames.some(name => /\b(terraform|opentofu|pulumi|helm|kubernetes|cloudformation)\b/.test(name));
-    // Apple-platform evidence: `import AppKit`/`import SwiftUI` (with no
-    // `import UIKit`) plus a Package.swift `platforms:` array declaring
-    // `.macOS` names a genuine macOS desktop UI surface — the same evidentiary
-    // role WPF/xaml and Electron main/preload play below, just sourced from
-    // the Swift Platform Analyzer instead of file-path shape.
     const hasAppleDesktopFrameworkEvidence =
       frameworkSpecificFlags.has('appkit') || frameworkSpecificFlags.has('swiftui');
-    // `import UIKit` (iOS/iPadOS/tvOS-only) is the corresponding mobile-only
-    // signal; a target that imports both AppKit/SwiftUI and UIKit is an
-    // honest multiplatform/Catalyst app and reports both facts rather than
-    // being forced into one bucket.
     const hasAppleMobileFrameworkEvidence = frameworkSpecificFlags.has('uikit');
     const hasDesktopSurface = frameworkNames.some(name => /\b(wpf|winforms|electron|tauri|desktop)\b/.test(name)) ||
       hasAppleDesktopFrameworkEvidence ||
       productFiles.some(file =>
         /\.(xaml|csproj)$/i.test(file) ||
-        /(^|\/)(views|windows|viewmodels)\//.test(file) ||
+        /(^|\/)(views|windows|viewmodels)\
         /(^|\/)(electron\.vite\.config\.[jt]s|src\/(main|preload|renderer)\/|main\/index\.[jt]s|preload\/index\.[jt]s|renderer\/index\.html)/.test(file)
       );
     const hasMobileSurface = frameworkNames.some(name => /\b(flutter|react native|ios|android)\b/.test(name)) ||
       hasAppleMobileFrameworkEvidence ||
-      productFiles.some(file => /\.(dart|kt)$/i.test(file) || /(^|\/)(android|ios|lib\/screens)\//.test(file)) ||
-      // A bare `.swift` extension is NOT platform evidence by itself — Swift
-      // ships iOS apps, macOS desktop apps (AppKit/SwiftUI), and server code
-      // (Vapor) alike. It only counts as mobile-shaped when there is no
-      // Apple-desktop evidence to the contrary (a macOS/AppKit or SwiftUI
+      productFiles.some(file => /\.(dart|kt)$/i.test(file) || /(^|\/)(android|ios|lib\/screens)\
       // project with no UIKit import must not be misclassified as mobile
-      // merely because it happens to be written in Swift).
       (productFiles.some(file => /\.swift$/i.test(file)) && !hasAppleDesktopFrameworkEvidence);
     const hasBackendFramework = frameworkNames.some(name =>
       /\b(symfony|laravel|django|fastapi|spring|asp\.?net|nestjs)\b/.test(name)
     );
     const hasMcpSurface = /\bmcp-server\b|modelcontextprotocol|(^|\/)mcp(\/|-)/.test(pathText);
-    // The analyzer signal must be evidence that being a code-analyzer is a PRODUCT surface,
-    // not that some product happens to contain a class with "Analyzer" in its name (e.g. a
-    // crypto API with a RiskAnalyzer/SignalAnalyzer service). Only dedicated analyzer packages/
-    // directories count; a stray node name is far too loose and leaks Klauro's own identity.
-    const hasAnalyzerSurface = /\banalyzer-core\b|(^|\/)analyzers?\//.test(pathText);
+    const hasAnalyzerSurface = /\banalyzer-core\b|(^|\/)analyzers?\
     const hasFrontendFileSurface = productFiles.some(file =>
       /\.(tsx|jsx|vue|svelte)$/.test(file) ||
-      /(^|\/)(pages?|components?|views?)\//.test(file) ||
+      /(^|\/)(pages?|components?|views?)\
       /(^|\/)(src\/main|src\/app|src\/index)\.(tsx|jsx)$/.test(file)
     );
     const hasFrontendSurface = counts.components.length + counts.pages.length + pageEntryPoints.length > 0 || hasFrontendFileSurface;
     const hasApiSurface = counts.controllers.length + httpEntryPoints.length > 0;
     const hasDataSurface = counts.repositories.length + counts.entities.length > 0;
-    // A real HTTP entry surface (a handful of routes or more) plus backend
-    // evidence (a data layer or a recognized controller surface) means this is
-    // a server — even one that ALSO ships an installer/.deb/.rpm/systemd unit,
-    // or happens to have an incidental "views/" template directory (a plain Go
-    // net/http app rendering HTML, e.g. a benchmarked Go RSS-reader server, is not a desktop app just
-    // because its template folder is named "views"). Distribution packaging
-    // and view-folder naming are not desktop-surface evidence once the entry
-    // surface itself proves this is a server; only the ABSENCE of a real
-    // server surface lets desktop-shaped file/framework evidence (WPF/xaml,
-    // Electron main/preload, viewmodels with no HTTP entries — e.g. a benchmarked C#/WPF desktop repo)
-    // stand.
     const hasRealServerSurface = httpEntryPoints.length >= 5 && (hasDataSurface || counts.controllers.length > 0);
     const hasScriptEntrySurface = productFiles.some(file =>
       /(^|\/)(main|index|cli|script|bot|runner)\.(cjs|mjs|js|jsx|ts|tsx|py|rb|php|rs|go)$/.test(file) ||
-      /(^|\/)(bin|cli|cmd|commands|scripts?|jobs|workers)\//.test(file)
+      /(^|\/)(bin|cli|cmd|commands|scripts?|jobs|workers)\
     );
 
-    // The "MCP analyzer" labels may only fire when being an MCP-analyzer tool is the PRIMARY
-    // product surface — not when a dominant API/frontend product merely depends on the MCP SDK
-    // or ships an incidental analyzer service. The discriminating evidence is the ENTRY surface:
-    // a real MCP tool server (Klauro) exposes its capability through MCP tool registrations
-    // ('message' entry points + 'mcp_tool' nodes) as the dominant entry type, with at most a
-    // health-check HTTP route on top. A crypto API that imports @modelcontextprotocol/sdk and has
-    // a couple of agent-preflight endpoints has HUNDREDS of HTTP routes dominating a handful of
-    // MCP endpoints — its entry surface is the API, so it must be classified as the API service
-    // it is, never as an MCP analyzer.
     const mcpEntrySignal = mcpEntryPoints.length + mcpToolNodeCount;
-    // MCP tool registration is the PRIMARY entry type when there is a real body of MCP tools AND
-    // they out-weigh the HTTP entry surface. `mcpEntrySignal > httpEntryPoints.length * 2` keeps
-    // an incidental HTTP health/preflight route from disqualifying a true MCP tool server while
-    // preventing a route-heavy product (a benchmarked repo: 10 message vs 280 http) from ever qualifying.
     const mcpIsPrimaryEntrySurface =
       mcpEntrySignal >= 5 &&
       mcpEntrySignal > httpEntryPoints.length * 2;
@@ -8454,7 +7000,7 @@ export class AnalyzerOrchestrator {
       .map(file => file.replace(/\\/g, '/').toLowerCase());
     const infrastructureFiles = sourceFiles.filter(file =>
       /\.(tf|tfvars|hcl)$/i.test(file) ||
-      /(^|\/)(terraform|opentofu|pulumi|helm|k8s|kubernetes|charts)\//.test(file)
+      /(^|\/)(terraform|opentofu|pulumi|helm|k8s|kubernetes|charts)\
     );
     const frameworkNames = contributions
       .map(contribution => String(contribution.analyzer_name || contribution.analyzer_id || '').toLowerCase());
@@ -8543,7 +7089,7 @@ export class AnalyzerOrchestrator {
       scripts: [],
       packages: byType((node, type, _text, file) =>
         type === 'infrastructure_module' ||
-        /(^|\/)modules?\//.test(file)
+        /(^|\/)modules?\
       ),
     };
   }
@@ -8581,13 +7127,13 @@ export class AnalyzerOrchestrator {
     );
     const modules = nodes.filter(node =>
       node.type === 'infrastructure_module' ||
-      /(^|\/)modules?\//i.test(node.source?.file || '')
+      /(^|\/)modules?\
     );
     const resources = nodes.filter(node => node.type === 'infrastructure_resource');
     const unresolvedReferences = nodes.filter(node => node.type === 'infrastructure_reference');
     const environmentFiles = sourceFiles.filter(file =>
       /(^|\/)(production|staging|dev|development|prod|qa|sandbox)(\/|$)/i.test(file) ||
-      /(^|\/)(contexts|environments?|stacks?)\//i.test(file)
+      /(^|\/)(contexts|environments?|stacks?)\
     );
     const resourceText = (node: CASNode) => [
       node.name,
@@ -8733,7 +7279,7 @@ export class AnalyzerOrchestrator {
       }),
       mediators: byPredicate((node, text, file) =>
         /\b(mediator|command handler|query handler|event handler|handler|bus|dispatcher)\b/.test(text) ||
-        /mediator|command[-_]?handler|query[-_]?handler|event[-_]?handler|dispatcher|message[-_]?handlers?|\/handlers?\//.test(file)
+        /mediator|command[-_]?handler|query[-_]?handler|event[-_]?handler|dispatcher|message[-_]?handlers?|\/handlers?\
       ),
       unit_of_work: byPredicate((node, text, file) =>
         /\b(unitofwork|unit_of_work|transactionmanager|transactional)\b/.test(text) || /unit[-_]?of[-_]?work|transaction[-_]?manager/.test(file)
@@ -8802,18 +7348,6 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  /**
-   * COMPREHENSION-INPUT gate for user journeys: journeys whose entry point (or
-   * handler node) lives in a test/fixture path must never seed comprehension —
-   * capability catalogs, terminal signal, framework narrative, description
-   * evidence. Live-proven leak: Klauro's own analysis surfaced journeys from
-   * `*.integration.test.ts` and a NestJS fixture scheduled job as product
-   * capabilities, and a whole hallucinated capability sourced from a fixture
-   * journey. The STRUCTURAL graph keeps every journey (tests are real facts —
-   * get_test_summary depends on them); this filter applies to comprehension
-   * derivation only. Reuses the same isPrimaryProductPath classifier the rest
-   * of the purpose pipeline (entry points, frameworks, capabilities) trusts.
-   */
   private filterPrimaryProductJourneys(
     journeys: CASUserJourney[],
     entryPoints: CASEntryPoint[],
@@ -8832,20 +7366,10 @@ export class AnalyzerOrchestrator {
       }
       const handlerNode = journey.entry?.handler_node_id ? nodeById.get(journey.entry.handler_node_id) : undefined;
       if (handlerNode) return this.isPrimaryProductNodeForProject(handlerNode, projectPath);
-      // No resolvable source evidence: keep — exclusion requires evidence.
       return true;
     });
   }
 
-  /**
-   * COMPREHENSION-INPUT gate for data entities (entity seeds): an entity whose
-   * schema source is a test/fixture path, or whose lifecycle accessors all live
-   * outside product paths, must not seed the capability catalog, the
-   * distinctive-entity grounding, or the description evidence. Same policy
-   * buildSystemCapabilities already applies to its own entity set; extracted so
-   * the AI-comprehension boundary applies it too. Structural output keeps every
-   * entity.
-   */
   private filterPrimaryProductDataEntities(
     dataEntities: CASDataEntity[],
     nodes: CASNode[],
@@ -8867,18 +7391,6 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  /**
-   * The COMPREHENSION framework list — the frameworks the AI description/narrative
-   * may assert the system is "built with", and the seed for summary.frameworks the
-   * description cites. Delegates to the shared evidence-based gate
-   * (framework-comprehension.ts): only framework-type analyzers, only product-path
-   * evidence, and only frameworks with a real application surface (not adapter
-   * shims). This is why Klauro (a TypeScript monorepo) no longer lists django /
-   * fastapi (they came from Python fixtures and the klauro-sdk-py telemetry SDK's
-   * adapter middleware) and no longer lists library category labels
-   * ("authentication and authorization"). The structural inventory
-   * (system.technologies.frameworks) is unaffected — it MAY keep the raw mix.
-   */
   private frameworkNamesForPurpose(contributions: any[], nodes: CASNode[], edges: CASEdge[], projectPath: string): string[] {
     return selectProductFrameworkNames(
       nodes,
@@ -8918,19 +7430,11 @@ export class AnalyzerOrchestrator {
     if (/[./](fixtures?|__fixtures__|testdata|cas-tests|tests?|__tests__|spec|e2e|cypress|playwright)[./]/.test(normalized)) return false;
     if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__mocks__)(\/|$)/.test(normalized)) return false;
     if (/\.(min|bundle)\.(js|css)$/.test(normalized)) return false;
-    if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(normalized)) return false;
+    if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\
     if (/(^|\/)(__tests__|tests?|spec|e2e|cypress|playwright)(\/|$)/.test(normalized)) return false;
     if (/\.(test|spec|stories|story)\.[a-z0-9]+$/.test(normalized)) return false;
     if (/(^|\/)test-[^/]+\.[a-z0-9]+$/.test(normalized)) return false;
-    if (/^legacy\//.test(normalized)) return false;
-    // A database migration is a one-time schema-change artifact run by the
-    // framework's own migration runner (Rails' `db:migrate`, and analogous
-    // directory conventions in other stacks) — a framework ROLE identified by
-    // this universal directory convention, never by a word in its filename.
-    // It is not product behavior: two migrations touching the same table can
-    // even contradict each other over a schema's history. Excluding the
-    // convention directory (not a "migration" keyword) keeps this true for
-    // any migration file name, timestamped or not.
+    if (/^legacy\
     if (/(^|\/)db\/migrate(\/|$)/.test(normalized)) return false;
     return true;
   }
@@ -8979,8 +7483,8 @@ export class AnalyzerOrchestrator {
         .toLowerCase()
         .replace(/[_-]/g, ' ');
       return /\b(rails|django|laravel|symfony|spring|asp\.?net|mvc)\b/.test(text) ||
-        /(^|\/)app\/(controllers|models)\//.test(file) ||
-        /(^|\/)(controllers|models)\//.test(file);
+        /(^|\/)app\/(controllers|models)\
+        /(^|\/)(controllers|models)\
     });
     if (!hasExplicitMvcInventory && hasServerMvcInventory) {
       mvcEvidence.push('controller/model server-side MVC convention');
@@ -9170,8 +7674,6 @@ export class AnalyzerOrchestrator {
     const segments = normalized.split('/').filter(Boolean);
     return segments.some((segment, index) => {
       if (!/^(clients?|sdk|connectors?|adapters?|integrations?)$/.test(segment)) return false;
-      // Absolute developer workspaces commonly include /dev/clients/... as an
-      // ownership folder; that is not evidence of an API-client architecture.
       if (segment === 'clients' && (segments[index - 1] === 'dev' || segments[index - 2] === 'dev')) return false;
       return true;
     });
@@ -9278,18 +7780,10 @@ export class AnalyzerOrchestrator {
   }
 
   private buildRouteTable(entryPoints: CASEntryPoint[]): CASRouteTableEntry[] {
-    // `type: 'http'` also covers non-route HTTP entry points some frameworks emit,
-    // e.g. NestJS's `app.listen()` bootstrap entry ("HTTP Server: port 3000") which
-    // has no method/path — it represents the server starting, not an endpoint. Only
-    // entries with an actual trigger.path are real routes; without this guard those
-    // bootstrap entries leak into the route table as fabricated-looking `GET /` rows.
     const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http' && ep.trigger?.path != null);
 
     return httpEntryPoints.map(ep => {
       const metadata = ep.metadata || {};
-      // Fall back to the handler file's module (e.g. devices.rs -> "devices") when a
-      // framework has no controller class (axum/express handlers), so route -> source
-      // navigation works instead of showing "Unknown".
       const handlerFile = ep.handler?.file || metadata.file as string | undefined;
       const moduleFromFile = handlerFile ? handlerFile.split(/[\\/]/).pop()?.replace(/\.[a-z]+$/i, '') : undefined;
       const controllerName = (metadata.controller as string) || moduleFromFile || 'Unknown';
@@ -9297,15 +7791,6 @@ export class AnalyzerOrchestrator {
 
       return {
         method: ep.trigger?.method?.toUpperCase() || 'GET',
-        // Canonicalize path params to the `:name` convention so the route table is
-        // uniform across frameworks: FastAPI/Spring `{id}` and Flask/Django
-        // `<int:id>`/`<id>` both -> `:id` (the converter prefix is dropped).
-        //
-        // Exception: a framework whose *wire* route syntax IS the angle/brace form
-        // (shelf_router matches on the literal `<id>` at runtime, not a source-only
-        // convention that maps to `:id`) can opt out by declaring `native_path` in
-        // its entry-point metadata. When present we emit it verbatim so the route
-        // table reflects how that framework actually names the parameter.
         path: (metadata.native_path as string | undefined) ??
           (ep.trigger?.path || '/')
             .replace(/\{([^}:]+)\}/g, ':$1')
@@ -9347,14 +7832,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // THE ERD'S ENTITY SET. Every member must carry cited persistence evidence:
-    // this is the diagram of what the system STORES, so a shape admitted on
-    // location alone (any class under an `entities/` directory) would draw a box
-    // for a table that does not exist. The two branches below that are pure
-    // LOCATION heuristics are therefore gated on
-    // persistenceEvidenceForAnchors, while an explicit analyzer classification
-    // (node type `entity`/`model`, an `@Entity` annotation) is itself the
-    // evidence and passes directly.
     const schemaPersistence = this.buildPersistenceEvidenceContext(nodes);
     const entityNodes = nodes.filter(n =>
       (!projectPath || this.isPrimaryProductNodeForProject(n, projectPath)) &&
@@ -9363,7 +7840,6 @@ export class AnalyzerOrchestrator {
         n.type === 'entity' ||
         n.type === 'model' ||
         n.metadata?.annotations?.some(a => a.includes('Entity')) ||
-        // Some analyzers (Java) store class-level annotations under attributes.
         (n.metadata as any)?.attributes?.annotations?.some((a: string) => a.includes('Entity')) ||
         ((n.subcategories?.includes('entity') ||
           (n.type === 'class' && n.source?.file?.includes('/entities/'))) &&
@@ -9402,10 +7878,6 @@ export class AnalyzerOrchestrator {
           const targetMatch = ann.match(/\(\)\s*=>\s*(\w+)/);
           if (targetMatch) relTarget = targetMatch[1];
 
-          // The INVERSE side, when the declaration names it (`mappedBy` /
-          // `inversedBy` / `back_populates` / a `post => post.author` second
-          // arrow). Parsed by the shared relation-declaration parser so the
-          // ERD and the entity surface read the same vocabulary.
           const parsed = parseRelationDeclaration(ann);
           if (parsed) {
             relInverseField = relInverseField || parsed.inverseField;
@@ -9414,9 +7886,6 @@ export class AnalyzerOrchestrator {
           }
         }
 
-        // Attribute-shape ORMs (Doctrine/Symfony) store the relation kind +
-        // target on the property's metadata.attributes ({relation_type,
-        // target_entity}) rather than a textual annotation. Read that too.
         if (!relationType) {
           const relAttr = String((prop.metadata as any)?.attributes?.relation_type || '');
           if (/OneToMany|ManyToOne|OneToOne|ManyToMany/.test(relAttr)) {
@@ -9431,10 +7900,6 @@ export class AnalyzerOrchestrator {
           }
         }
 
-        // JPA/Hibernate (and other annotation ORMs) name no `() => Target`
-        // lambda — the related entity is the field's declared TYPE. For
-        // collection sides (`List<Post>`, `Set<Post>`) take the generic arg;
-        // for single sides (`User`) take the type itself.
         if (relationType && !relTarget) {
           const declaredType = String((prop.metadata as any)?.type || '');
           const generic = declaredType.match(/<\s*([A-Za-z_]\w*)\s*>/);
@@ -9476,17 +7941,7 @@ export class AnalyzerOrchestrator {
       });
     });
 
-    // Edge-based relations: ORMs that model relations as EDGES rather than
-    // property decorators (Prisma, Drizzle, …) carry the cardinality in the
-    // edge's `relationType`. Read those too so the relation graph is complete
-    // for every ORM, not just decorator-based TypeORM.
     const entityById = new Map(entityNodes.map(n => [n.id, n]));
-    // Structured relations are recorded on the OWNING entity too, not just in
-    // the prose summary. `relationships_summary` is a string list — nothing
-    // downstream can render an ERD or compute a blast radius from it — so an
-    // edge-emitting ORM used to leave `entities[].relationships` almost empty
-    // while the summary listed hundreds of associations, and the ERD showed the
-    // handful that happened to also carry a property decorator.
     const schemaEntityByName = new Map(entities.map(entity => [entity.name.toLowerCase(), entity]));
     for (const edge of edges) {
       const relType = (edge.metadata as any)?.attributes?.relationType as string | undefined;
@@ -9521,9 +7976,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // Method-based relations: Laravel Eloquent declares relations as model methods
-    // (`hasMany`/`belongsTo`/…) captured on `eloquent_relation` nodes, not decorators
-    // or typed edges. Read those so the relation graph is complete for Eloquent too.
     const eloquentCardinality: Record<string, string> = {
       hasMany: '1:N', hasOne: '1:1', belongsTo: 'N:1', belongsToMany: 'N:M',
       morphMany: '1:N', morphOne: '1:1', morphTo: 'N:1', morphToMany: 'N:M',
@@ -9535,14 +7987,11 @@ export class AnalyzerOrchestrator {
       const relatedRaw = attrs.related_model as string | undefined;
       const relType = attrs.relation_type as string | undefined;
       if (!owner || !relatedRaw || !relType) continue;
-      // `Post::class` / `'App\\Models\\Post'` -> `Post`.
       const related = relatedRaw.replace(/::class$/, '').replace(/['"]/g, '').split('\\').pop()!.trim();
       const cardinality = eloquentCardinality[relType] || '1:1';
       relationships.push(`${owner} ${cardinality} ${related} (via ${node.name})`);
     }
 
-    // Dedupe by the structural relation (src|cardinality|tgt), ignoring the
-    // via-field, so decorator + edge descriptions of the SAME relation collapse.
     const relSeen = new Set<string>();
     const dedupedRelationships: string[] = [];
     for (const rel of relationships) {
@@ -9623,18 +8072,6 @@ export class AnalyzerOrchestrator {
     return result;
   }
 
-  /**
-   * Resolve an entity field's declared type for the database schema / ERD.
-   *
-   * `signature.return_type` is only populated for method/function-shaped nodes;
-   * for ORM property nodes (MikroORM/TypeORM/Prisma `@Property`/`@Column`, JPA
-   * fields, etc.) it is empty, which used to render every field type as
-   * `unknown`. The language analyzers instead stash the property's declared TS
-   * type on `metadata.type` (see typescript-javascript-analyzer property nodes),
-   * so fall back to that. Evidence-gated: only return a real type when one is
-   * actually present — never fabricate — leaving `unknown` when nothing is
-   * recoverable.
-   */
   private entityFieldType(prop: CASNode): string {
     const candidates = [
       prop.signature?.return_type,
@@ -9643,8 +8080,6 @@ export class AnalyzerOrchestrator {
     ];
     for (const candidate of candidates) {
       if (typeof candidate !== 'string') continue;
-      // Collapse multi-line union/generic types onto one line so the value is a
-      // clean, renderable token rather than raw source with embedded newlines.
       const normalized = candidate.replace(/\s+/g, ' ').trim();
       if (normalized) return normalized;
     }
@@ -9652,7 +8087,7 @@ export class AnalyzerOrchestrator {
   }
 
   private normalizeSourcePath(file: string): string {
-    return file.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    return file.replace(/\\/g, '/').replace(/^\.\
   }
 
   private normalizedSourcePathsCompatible(left: string, right: string): boolean {
@@ -9728,7 +8163,6 @@ export class AnalyzerOrchestrator {
   ): CASExternalService[] {
     const services: CASExternalService[] = [];
     const serviceMap = new Map<string, CASExternalService>();
-
 
     exitPoints.forEach(ep => {
       if (ep.type === 'database') {
@@ -9828,31 +8262,21 @@ export class AnalyzerOrchestrator {
     const value = (name || '').replace(/^call to\s*/i, '').trim();
     if (!value) return false;
     const lower = value.toLowerCase();
-    // Shell-command-shaped fragments (e.g. CI script lines like
     // `dotnet pack "Foo/Foo.csproj" -p:Version=$VER`) must never become
-    // external-service labels. They can survive as raw evidence only.
     if (isCommandShapedLabel(value)) return false;
-    // Real hostnames / domains (auth0.com, api.stripe.com, sentry.io) are
-    // meaningful service names — accept them before the dotted-identifier
-    // heuristics below, which would otherwise reject any a.b.c chain. The
-    // hostname gate is strict (rejects .csproj paths, command lines, hashes).
     if (isHostnameLikeServiceName(value)) return true;
     if (/\boperations?\s+via\b/i.test(value)) return false;
     if (/^(database|request external|shutil|subprocess|re|pathlib|os|sys|typing|datetime|uuid)$/.test(lower)) return false;
     if (value.includes('${')) return false;
     if (/[()[\]{}]|=>/.test(value) || /^_?\w+\./.test(value) && /^_?(ctx|context|db|repository|repo|service|client)\./i.test(value)) return false;
-    if (/^(get|post|put|patch|delete|fetch|head|options|link|unlink|connect|trace|request)\s+/i.test(value) && !/^https?:\/\//i.test(value)) return false;
+    if (/^(get|post|put|patch|delete|fetch|head|options|link|unlink|connect|trace|request)\s+/i.test(value) && !/^https?:\/\
     if (/^(file|directory|path|string|math|console|task|timer|thread|datetime|timespan|guid|uri|regex|stream|streamwriter|streamreader|enumerable|linq)(\.|$)/i.test(value)) return false;
     if (/\.ctor$/i.test(value)) return false;
     if (/^system(\.|$)/i.test(value)) return false;
     if (/^(?:db|[A-Z][A-Za-z0-9_]*(?:Service|Controller|Repository|Repo|Model|Store|Client|DbContext|Context)?)\.[A-Za-z_]\w*$/.test(value)) return false;
     if (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(value) && !value.includes('/') && !value.startsWith('@')) return false;
     if (/^\w+\.\w+\(/.test(value)) return false;
-    if (/^\.?\//.test(value) || lower.startsWith('route') || lower.includes('window.location')) return false;
-    // The last alternative generalizes "the repo's own internal plugin-SDK
-    // package" (own-scope/plugin-sdk) rather than naming one specific repo's
-    // package — that convention recurs across any repo that ships a
-    // plugin/extension SDK as a local workspace package.
+    if (/^\.?\
     if (/^(node:|rxjs(?:\/|$)|protractor(?:\/|$)|@angular(?:\/|$)|@app(?:\/|$)|@shared(?:\/|$)|[\w-]+\/plugin-sdk(?:\/|$))/.test(lower)) return false;
     if (/^(object|array|string|number|boolean|date|math|json|promise|map|set|error|regexp|function|process|global)(\.|$)/.test(lower)) return false;
     return true;
@@ -10317,17 +8741,8 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  /**
-   * Detect common design/architectural patterns from node + edge structure. This
-   * is deliberately conservative (name conventions + structural shape), so it
-   * complements rather than replaces deeper per-language detection.
-   */
   private detectDesignPatterns(nodes: CASNode[], edges: CASEdge[]): CASPattern[] {
     const patterns: CASPattern[] = [];
-    // Class-like = any type-level declaration. The analyzer ROLE-TYPES classes
-    // (a UserRepository becomes type 'repository', a UserController 'controller'),
-    // so a plain class/interface/service filter silently drops them and the
-    // name-convention patterns below never see them. Include the role types.
     const CLASS_LIKE_TYPES = new Set([
       'class', 'interface', 'service', 'repository', 'controller', 'middleware',
       'component', 'model', 'entity', 'guard', 'provider', 'module', 'resolver',
@@ -10341,7 +8756,6 @@ export class AnalyzerOrchestrator {
       patterns.push({ id: `pattern_${id}`, type, name, description, confidence, instances: instances.slice(0, 40).map(n => n.id), metadata: { language_specific: false, benefits } });
     };
 
-    // Name-convention patterns.
     add('repository', 'Repository', 'design-pattern', 'Classes that encapsulate data access behind a collection-like interface (names ending in Repository).', nameMatches(/Repository$/), 0.85, ['Decouples domain from persistence']);
     add('builder', 'Builder', 'design-pattern', 'Step-by-step construction of complex objects (names ending in Builder).', nameMatches(/Builder$/), 0.8, ['Readable construction of complex objects']);
     add('factory', 'Factory', 'design-pattern', 'Object creation delegated to factory types/methods (names ending in Factory).', nameMatches(/Factory$/), 0.8);
@@ -10357,10 +8771,8 @@ export class AnalyzerOrchestrator {
     add('visitor', 'Visitor', 'design-pattern', 'Operations externalized into visitor types that traverse an object structure (names ending in Visitor).', nameMatches(/Visitor$/), 0.7, ['Add operations over a structure without changing its types']);
     add('mediator', 'Mediator', 'design-pattern', 'Centralizes how a set of objects interact, decoupling them from each other (names ending in Mediator).', nameMatches(/Mediator$/), 0.7, ['Reduces direct coupling between collaborating objects']);
 
-    // Singleton: a static accessor returning the single instance.
     add('singleton', 'Singleton', 'design-pattern', 'A single shared instance exposed via a static accessor (getInstance/instance).', nodes.filter(n => (n.type === 'method' || n.type === 'property') && /^(getInstance|instance|shared|default)$/.test(n.name) && /static/i.test((n.subcategories || []).join(' ') + JSON.stringify(n.metadata || {}))), 0.6);
 
-    // Strategy / Template Method: an abstract/base type with >= 3 subtypes.
     const inheritEdges = edges.filter(e => e.type === 'inherits' || e.type === 'implements' || e.type === 'extends');
     const childrenByBase = new Map<string, CASNode[]>();
     for (const e of inheritEdges) {
@@ -10374,9 +8786,6 @@ export class AnalyzerOrchestrator {
       add(`strategy_${baseId}`, `Strategy/Polymorphism (${base?.name})`, 'design-pattern', `${children.length} interchangeable implementations of ${base?.name} selected at runtime.`, [base!, ...children], 0.7, ['Open/closed: add behavior without modifying callers']);
     }
 
-    // Some analyzers (TS/JS) record inheritance as a class metadata field
-    // (attributes.implements/extends interface NAMES) rather than as graph edges.
-    // Group by base NAME too so Strategy/Polymorphism is detected there as well.
     const childrenByBaseName = new Map<string, CASNode[]>();
     for (const n of nodes) {
       const attrs: any = (n.metadata as any)?.attributes || {};
@@ -10397,7 +8806,6 @@ export class AnalyzerOrchestrator {
     return patterns;
   }
 
-  /** A user journey is a named system behavior with an execution flow. */
   private synthesizeBehaviorsFromJourneys(journeys: CASUserJourney[]): CASBehavior[] {
     return journeys.slice(0, 100).map(journey => {
       const steps = (journey.steps || []).slice(0, 24);
@@ -10458,15 +8866,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // Leading doc-comment rationale: a JSDoc/docstring block directly above a
-      // function/method is parsed into node.documentation (not node.comments —
-      // language analyzers route doc comments through extractJSDoc/parseJSDoc
-      // separately from inline comment extraction). Without this check, a
-      // documented internal function with an explicit "why" (e.g. "Best-effort:
-      // if X doesn't exist yet, do Y instead") produced zero evidence and
-      // get_intent returned null even though the rationale was right there.
-      // Only counts as evidence when the text carries an actual rationale
-      // signal — plain param/type documentation with no "why" is not intent.
       const docText = [node.documentation?.description, node.documentation?.summary]
         .filter(Boolean)
         .join(' ');
@@ -10493,18 +8892,10 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      // Structural-role intent: an architectural unit (class/service/controller/
-      // interface/repository/gateway/module) has an inferable purpose from its role
-      // and description even with no comments — and these are exactly the nodes an
-      // agent most often asks intent about. Without this, get_intent is empty for
-      // central classes. Bounded to architectural types to avoid per-method noise.
       const ARCHITECTURAL_INTENT_TYPES = new Set(['class', 'service', 'controller', 'interface', 'repository', 'gateway', 'module']);
       const rolePurpose = node.description || node.documentation?.summary;
       let synthesizedPurpose: string | undefined;
       if (evidence.length === 0 && ARCHITECTURAL_INTENT_TYPES.has(node.type)) {
-        // Architectural nodes rarely carry a generated description, but their
-        // purpose is still inferable from role + name + location. Synthesize one
-        // so get_intent is useful for the nodes agents ask about most.
         const dir = (node.source?.file || '').replace(/\\/g, '/').split('/').slice(-2, -1)[0];
         synthesizedPurpose = rolePurpose ||
           `${this.humanizeDomainKey(node.name)} — ${node.type}${dir ? ` in the ${dir} layer` : ''}`;
@@ -10628,17 +9019,6 @@ export class AnalyzerOrchestrator {
   ): CASCallChain[] {
     const nodeById = new Map(nodes.map(node => [node.id, node]));
 
-    // CAPABILITY-OPERATION SEEDED ROOTS (call-graph reachability starvation):
-    // on codebases whose real handlers never surface in entry_points (e.g. a
-    // CAS where 972/976 entries are test suites — test nodes carry no outgoing
-    // call edges, so every chain dead-ends), system_capabilities[].operations[]
-    // already anchors the real handler/method node via a `node:<id>` reference.
-    // Seed those nodes as additional chain roots — the same evidence rule
-    // flow-concepts' deriveCapabilityOperationRoots trusts (node id and the
-    // capability naming it both come straight off the CAS; never fabricated).
-    // Seeded roots contribute ONLY when they actually reach an exit
-    // (entry-to-exit) — synthetic dead-ends are dropped below so they never
-    // add noise chains; real entry points keep their honest dead-ends.
     const realRootNodeIds = new Set(entryPoints.map(ep => ep.handler?.node_id || ep.source_node));
     const seededNodeIds = new Set<string>();
     const seededEntries: CASEntryPoint[] = [];
@@ -10652,9 +9032,6 @@ export class AnalyzerOrchestrator {
         if (!TRACEABLE_NODE_TYPES.has(node.type) && node.type !== 'method') continue;
         seededNodeIds.add(nodeId);
         seededEntries.push({
-          // Same id shape flow-concepts synthesizes for capability roots, so a
-          // terminal chain rooted here and the entry-point flow for the same
-          // root dedupe to one flow in computeFlowConcepts' union.
           id: `synthflow:${nodeId}`,
           source_node: nodeId,
           type: 'message',
@@ -10687,26 +9064,6 @@ export class AnalyzerOrchestrator {
       'routes_to',
       'implements',
       'implemented_by',
-      // SPA event-entry starvation fix (flow-quality lane): react/vue/angular/
-      // svelte-analyzer.ts (and journey-builder.ts) all emit a `triggers` edge
-      // from a JSX/template event-entry point to the NAMED handler function it
-      // resolved (see react-analyzer.ts's eventHandlers loop) — but this BFS
-      // never traversed it, so a real entry-to-exit chain through that
-      // resolved handler was structurally unreachable: the walk stayed pinned
-      // at the enclosing component's own node (the entry's `source_node`,
-      // since event entries don't set `handler`), where `exitBySource` returns
-      // whatever exit point the WHOLE component happens to carry (e.g. an
-      // unrelated `useMemo`/`useNavigate` call elsewhere in the same render
-      // body) and the rank-0 early-exit stops the walk at depth 0 — a
-      // one-node "chain" whose terminus isn't even necessarily the effect of
-      // this specific event. Evidence this is real, not incidental: two
-      // different event entries on the same component (a 'click' and a
-      // 'mouseEnter' handler on the same node) resolved to the IDENTICAL
-      // terminus, which only happens when resolution is component-wide rather
-      // than handler-specific. Traversing `triggers` lets the walk continue
-      // into the actually-resolved handler function so segmentIntoStepsByRole
-      // gets the real multi-function path to segment, instead of a single
-      // component-wide node.
       'triggers',
     ]);
     const adjacency = new Map<string, CASEdge[]>();
@@ -10717,9 +9074,6 @@ export class AnalyzerOrchestrator {
       adjacency.get(edge.source)!.push(edge);
     }
 
-    // Deterministic exploration order: pre-sort every adjacency list once by
-    // edge rank, then target id, then edge id, so BFS below is byte-stable
-    // run-to-run regardless of input edge order.
     for (const list of adjacency.values()) {
       list.sort((a, b) =>
         (this.rankChainEdge(a) - this.rankChainEdge(b)) ||
@@ -10730,10 +9084,6 @@ export class AnalyzerOrchestrator {
 
     const chains: CASCallChain[] = [];
     const maxDepth = 8;
-    // Per-entry node-visit budget: bounds work on huge/wide graphs while still
-    // letting realistic handler fan-outs reach their terminals. Measured on the
-    // self-analysis graph (46k nodes, 3.7k entries): 600 reaches the graph's
-    // full exit-reachability ceiling and the whole phase stays ~15ms.
     const nodeVisitBudget = 600;
 
     for (const entryPoint of entryPoints) {
@@ -10741,10 +9091,6 @@ export class AnalyzerOrchestrator {
       const startNode = nodeById.get(startNodeId);
       if (!startNode) continue;
 
-      // Bounded multi-path BFS from the entry point following ALL outgoing
-      // call edges (not one greedy edge). Select the best reachable exit:
-      // highest-value exit kind first (db/api/external write over log-like),
-      // then shortest path, then stable node-id tie-break.
       const parentByNode = new Map<string, { parent: string; edge: CASEdge }>();
       const depthByNode = new Map<string, number>([[startNode.id, 0]]);
       const queue: string[] = [startNode.id];
@@ -10771,27 +9117,11 @@ export class AnalyzerOrchestrator {
           if (
             !best ||
             rank < best.rank ||
-            // DEEPER WINS AT EQUAL RANK (was: shallower). An exit point is a
-            // side effect the chain PASSES THROUGH, not necessarily where it
-            // ends; preferring the shallowest same-rank exit pinned the
-            // terminus to the first side effect on the way out — most often
-            // the entry function's own first outbound call. The terminus a
-            // reader wants is the LAST thing the chain does, so among exits of
-            // equal value take the furthest-reached one.
             (rank === best.rank && depth > best.depth) ||
             (rank === best.rank && depth === best.depth && currentNodeId.localeCompare(best.nodeId) < 0)
           ) {
             best = { nodeId: currentNodeId, depth, exit: bestHere, rank };
           }
-          // AN EXIT POINT IS NOT A WALL. Stopping the walk at the first
-          // exit-bearing node (and abandoning the whole BFS on a rank-0 one)
-          // is what made the modal chain ONE NODE LONG: an entry function that
-          // both makes one outbound call AND drives the rest of the feature
-          // was recorded as "entry -> that call, done", and every in-repo hop
-          // behind it went unseen. Only a node with nowhere left to go in this
-          // repo is a real terminus; when in-repo call edges continue out of
-          // this node, keep walking and let the ranking above decide which
-          // exit ends up being the terminus.
           if (onwardEdges.length === 0) continue;
         }
 
@@ -10804,8 +9134,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // Reconstruct the selected path: to the best exit if one was reached,
-      // otherwise to the deepest node explored (an honest dead-end path).
       const matchedExitPoint = best?.exit;
       const selectedPath: Array<{ nodeId: string; edge?: CASEdge }> = [];
       let cursor: string | undefined = best ? best.nodeId : deepestNodeId;
@@ -10870,8 +9198,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // Seeded (capability-operation) roots only contribute resolved
-    // entry-to-exit chains; their dead-ends are dropped (see seeding note).
     if (seededEntryIds.size === 0) return chains;
     return chains.filter(chain =>
       chain.chain_type === 'entry-to-exit' ||
@@ -10899,11 +9225,6 @@ export class AnalyzerOrchestrator {
     return ranks[edge.type] ?? 99;
   }
 
-  /**
-   * Value ranking for exit-point kinds when selecting the best terminal for a
-   * call chain: durable side effects (database/api/external writes) beat
-   * observability-style exits (analytics). Lower rank = more valuable.
-   */
   private rankChainExit(exitPoint: CASExitPoint): number {
     const ranks: Record<string, number> = {
       database: 0,
@@ -10921,17 +9242,6 @@ export class AnalyzerOrchestrator {
     return ranks[exitPoint.type] ?? 99;
   }
 
-  /**
-   * Chain criticality from the Structural Importance layer, RANK-based.
-   * CONSTRAINTS: deterministic (mass desc, ties by chain id); test-entry
-   * chains never rise above 'low'; thresholds are quantiles of the ranked
-   * order, NOT absolute scores — importance mass concentrates in few nodes on
-   * real graphs, so an absolute cutoff degenerates to all-low (the shipped
-   * defect this replaces: criticality was a hardcoded entry-type check, so
-   * flow_summary read {medium: <http count>, low: everything-else}). The
-   * legacy http floor ('medium') is preserved so no http chain is demoted
-   * below its prior value. No-op on a CAS without the importance layer.
-   */
   private stampChainCriticalityFromStructuralImportance(
     callChains: CASCallChain[],
     nodes: CASNode[],
@@ -11043,35 +9353,6 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  /**
-   * Evidence-richness ranking for the bounded candidate window handed to the AI
-   * capability catalog (candidate_route_areas). The window is small (24), so
-   * WHICH candidates reach the prompt decides which capabilities can survive
-   * the cut at all. Ranking is pure deterministic evidence — never a name/domain
-   * keyword judgement:
-   *   1. GROUNDED FIRST: candidates carrying related domain entities, or whose
-   *      subject terminology is corroborated by a user journey (top-down
-   *      route-area/journey vocabulary), outrank entity-less runtime anchors.
-   *   2. Then by entity count (domain-record grounding depth),
-   *   3. then by journey-corroboration count,
-   *   4. then by the candidate's own deterministic category (core over
-   *      supporting/admin over internal) — a real tie-break, not a name
-   *      heuristic: many candidates tie on entity/journey/op evidence (e.g. a
-   *      whole family of 12-op route groups), and without this an
-   *      alphabetically-earlier 'supporting' candidate ("Cleanup") can bump a
-   *      'core' one ("Drive Alert") out of the window on pure letter order,
-   *      which is exactly the kind of accidental cut this ranking exists to
-   *      prevent.
-   *   5. then by externally-invocable operation count (http/page/cli/... over
-   *      'internal'), raw operation count last — volume alone (a plumbing
-   *      family with hundreds of handlers) must never outrank grounding.
-   * Deterministic tie-break by name keeps the window stable run-to-run.
-   */
-  /**
-   * Light plural stem for terminology-token matching only ("inspections" must
-   * corroborate "inspection", "trips" ↔ "trip"). Pure grammar normalization —
-   * never touches labels or output, and carries no domain vocabulary.
-   */
   private stemTerminologyToken(token: string): string {
     if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
     if (token.length > 5 && /(sh|ch|x|z|ss)es$/.test(token)) return token.slice(0, -2);
@@ -11079,15 +9360,6 @@ export class AnalyzerOrchestrator {
     return token;
   }
 
-  /**
-   * Journey SUBJECT tokens: the leading value-verb ("Manage"/"Track"/...) is
-   * capability-naming grammar, not terminology — without stripping it, every
-   * "Manage <X>" candidate would corroborate every "Manage <Y>" journey.
-   * Extracted so TASK #119's isolated-candidate corroboration gate (see
-   * `filterIsolatedUncorroboratedCandidates`) shares the exact same
-   * non-lexical, repo-adaptive token vocabulary as the existing catalog-
-   * window ranking, rather than inventing a second one.
-   */
   private buildJourneyTerminologyTokens(
     userJourneys: CASUserJourney[],
     projectTextSignal?: ProjectTextSignal,
@@ -11099,20 +9371,10 @@ export class AnalyzerOrchestrator {
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .split(/[^a-z0-9]+/)) {
-        // length > 2 (not > 3): 3-letter DOMAIN ACRONYMS (eld/gps/vin/pto) are
-        // real product terminology — the stricter filter made an ELD candidate
-        // permanently uncorroboratable against 9 real eld:* journeys (live on
-        // a benchmarked fleet-management repo). Generic 3-letter tokens (api/app/get) are already caught
-        // by isGenericCapabilityToken.
         if (token.length > 2 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
       }
     };
     for (const journey of userJourneys) addFromText(journey.name || '');
-    // TASK #119: the product's OWN top-down words (README/manifest framing)
-    // corroborate a candidate's terminology too — this is exactly the
-    // top_down_signals arbiter the AI catalog prompt already leans on (Rule
-    // 2), made available to the deterministic isolated-candidate gate as
-    // well. Real evidence strings only, never fabricated.
     if (projectTextSignal) {
       for (const concept of projectTextSignal.concepts || []) addFromText(concept);
       addFromText(projectTextSignal.summary || '');
@@ -11121,9 +9383,6 @@ export class AnalyzerOrchestrator {
     return journeyTokens;
   }
 
-  /** Subject tokens for one candidate, in the same normalized vocabulary as
-   *  `buildJourneyTerminologyTokens` — extracted for reuse by TASK #119's
-   *  isolated-candidate corroboration gate. */
   private candidateSubjectTerminologyTokens(candidate: SystemCapability): string[] {
     return `${candidate.structural_label || candidate.name} ${(candidate.related_domains || []).join(' ')}`
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -11159,47 +9418,15 @@ export class AnalyzerOrchestrator {
       .map(entry => entry.candidate);
   }
 
-  /** Deterministic priority of a candidate's own inferred category for the
-   * catalog-prompt-window tie-break — never a name/domain judgement, purely
-   * the category `inferCapabilityCategory` already assigned upstream. */
   private catalogCandidateCategoryRank(category: SystemCapability['category']): number {
     if (category === 'core') return 0;
     if (category === 'supporting') return 1;
     if (category === 'admin') return 2;
-    return 3; // 'internal' or unset
+    return 3;
   }
 
-  /**
-   * AI capability extraction: the capability catalog is an INTERPRETATION of the
-   * deterministic facts (user journeys, entities, route areas, services), not a
-   * route grouping. The deterministic capability detector only produces candidate
-   * areas; this asks the model to catalog the actual business value the codebase
-   * provides — what its users/operators can do — and to exclude purely supporting
-   * or infrastructural concerns unless they ARE the value. Each returned capability
-   * is linked back to the entities and operations (with file paths) that evidence
-   * it, so the catalog stays navigable into the deterministic graph.
-   */
-  // A behavior-surface family (mcp_tool/rpc/command/event/message registration
-  // engine, e.g. Klauro's own 207-tool MCP surface) at or above this ENTRY-POINT
-  // count IS the platform's value proposition, not incidental plumbing — see
-  // the MCP-TOOL-FAMILY MERGE note on aiExtractCapabilityCatalog below.
-  // Evidence-gated on the surface's own deterministic entry-point count, never
-  // a name/domain judgement; small surfaces (a handful of CLI commands) stay
-  // excluded so this does not resurrect the flagship-reinjection regression.
   private static readonly LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD = 15;
 
-  /**
-   * TRUE entry-point count of a behavior surface. CRITICAL: a surface's
-   * `operations` array is DELIBERATELY capped at 12 in buildBehaviorCapabilities
-   * (`entries.slice(0, 12)`) for CAS size, so `operations.length` maxes out at
-   * 12 and can never distinguish Klauro's 207-tool MCP surface from a 3-command
-   * CLI. The full count survives in the surface's own evidence: its
-   * criticality_factors[0] ("`${total} ${kind} entry points form one cohesive
-   * ...`") and description ("`Behavior surface: ${total} ...`"), both authored
-   * with the real `total`. Read it from there (falling back to the capped
-   * operations length only if neither string is present) so the LARGE-surface
-   * gate keys on the genuine count. Pure evidence read — no fabrication.
-   */
   private behaviorSurfaceEntryCount(surface: SystemCapability): number {
     const factor = (surface.criticality_factors || [])[0] || '';
     const factorMatch = /^\s*(\d+)\b/.exec(factor);
@@ -11209,34 +9436,6 @@ export class AnalyzerOrchestrator {
     return (surface.operations || []).length;
   }
 
-  /**
-   * MODULE SPLIT (defect #33 — catalog VARIANCE, single-large-surface case):
-   * the near-empty-fallback branch in applyAIInterpretation promotes a
-   * qualifying LARGE behavior surface (a homogeneous registration family with
-   * no dominant name-prefix sub-family — e.g. Klauro's own 215-tool MCP
-   * surface, whose tool names are too diverse for buildBehaviorCapabilities'
-   * own family split to fire) straight into `system_capabilities` as ONE
-   * merged blob. That is honest (never fabricated) but is exactly the "1 thin
-   * item" shape the user wants eliminated: a 45k-node CAS should not reduce to
-   * a single capability just because its dominant family lacks a shared name
-   * prefix.
-   *
-   * A second, GENERIC grouping signal survives even when name-prefix grouping
-   * fails: the MODULE (handler file) each entry point is registered in. A
-   * real large surface is near-never authored in one file — Klauro's own MCP
-   * tools live across apps/mcp-server/src/tools/*.ts, one file per tool
-   * family. This groups the surface's full entry-point set (recovered from
-   * the raw `entryPoints`/`nodes` facts — the surface's own capped
-   * `operations` sample only carries 12 of e.g. 215 and has no file evidence)
-   * by handler file, and — ONLY when that yields >= 2 groups that each clear
-   * the same BEHAVIOR_FAMILY_MIN_ENTRIES bar the deterministic family split
-   * already uses — emits one capability per module group instead of one
-   * merged blob. Falls back to the original single surface, unmodified, when
-   * entry points can't be resolved or module grouping doesn't clear the bar
-   * (never invents groups to force a split). Evidence-gated on file paths and
-   * entry-point counts only — no name/domain keyword judgement, so this is
-   * generic to any repo whose dominant large surface is module-shaped.
-   */
   private splitLargeBehaviorSurfaceByModule(
     surface: SystemCapability,
     entryPoints: CASEntryPoint[],
@@ -11250,10 +9449,6 @@ export class AnalyzerOrchestrator {
       const file = ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file;
       if (!file) return undefined;
       const dir = path.dirname(file);
-      // Last directory segment is the module label ("tools" from
-      // apps/mcp-server/src/tools/foo.ts); files sitting directly at the
-      // project root (dir === '.') fall back to the file's own basename so
-      // they don't all collapse into one meaningless "." group.
       return dir === '.' || dir === '' ? path.basename(file) : path.basename(dir);
     };
 
@@ -11270,10 +9465,6 @@ export class AnalyzerOrchestrator {
     const qualifying = [...groups.entries()]
       .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
       .sort((left, right) => right[1].length - left[1].length);
-    // Need real plurality (>= 2 groups) to justify a split at all, and the
-    // qualifying groups must actually cover a meaningful share of the surface
-    // — a handful of stray files next to one dominant module is not a split,
-    // it is noise.
     const coveredCount = qualifying.reduce((sum, [, entries]) => sum + entries.length, 0);
     const totalCount = this.behaviorSurfaceEntryCount(surface);
     if (qualifying.length < 2 || (totalCount > 0 && coveredCount / totalCount < 0.5)) return [surface];
@@ -11323,48 +9514,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * DEFECT (measured 2026-07-30, task #107): a single AI call on the
-   * capability-catalog critical path had NO hard cutoff — `awaitAiWithoutCutoff`
-   * above only logs a warning past its "soft" budget and otherwise waits
-   * indefinitely. Live sampling of the capability-catalog call found 10.9s-30.4s
-   * under normal conditions but 83.6s and 215.8s during a genuine provider
-   * partial outage, with no ceiling on the worst case at all — a single call
-   * could exceed the ENTIRE product latency budget (hard max 3 minutes) on its
-   * own.
-   *
-   * The fix is execution architecture, not a cutoff that abandons work: bound
-   * each INDIVIDUAL provider attempt with a per-attempt timeout and, on timeout,
-   * retry against a genuinely FRESH call (`attemptFactory` must start a NEW
-   * request every invocation, never replay an in-flight promise) — a connection
-   * stalling toward the provider chain's own ~90s worst case is abandoned in
-   * favor of starting over on a clean connection, which is frequently much
-   * faster than riding out the original stall (see class comment/report for the
-   * measured comparison).
-   *
-   * COMPLETENESS INVARIANT (never ship an incomplete/truncated/degraded result
-   * merely because a clock ran out): this spends AT MOST
-   * `maxBoundedAttempts * perAttemptTimeoutMs` on bounded, abandonable attempts.
-   * If every bounded attempt is cut off or fails, the analysis does NOT give up
-   * and does NOT fall back to a synthetic/degraded substitute — it commits to
-   * one FINAL attempt via `awaitAiWithoutCutoff`, which has no cutoff at all, so
-   * the stage always finishes with a real, provider-produced answer no matter
-   * how long a fully degraded provider takes. The bound only changes WHICH
-   * attempt is currently being awaited, never whether the stage completes.
-   *
-   * TASK #107 HARD CUTOFF (added on top of the above, does not weaken it):
-   * everything above is still true for a HEALTHY provider — the completeness
-   * invariant holds unconditionally right up until `opts.hardDeadlineAt`. Only
-   * once that absolute deadline has already passed does this refuse to START
-   * another attempt (bounded or the "guaranteed" uncapped one) and instead
-   * throws a distinguishable error (see isAiCatalogHardDeadlineExceeded) so
-   * the caller can fall back to the complete deterministic layer and record
-   * HONESTLY that AI enrichment was abandoned, rather than silently letting
-   * one call consume the entire analysis budget. An attempt already in flight
-   * when the deadline lands is not killed (there is no cheap cooperative
-   * cancellation into the provider call) — the gate is "don't start a new
-   * one", checked before every attempt.
-   */
   private async awaitAiBoundedThenUncapped<T>(
     attemptFactory: (attemptIndex: number) => Promise<T>,
     operation: string,
@@ -11406,20 +9555,6 @@ export class AnalyzerOrchestrator {
       console.error(`[Klauro] ${operation}: all bounded attempts were cut off or failed AND the hard deadline has been reached; abandoning instead of starting the uncapped final attempt`);
       throwDeadlineExceeded();
     }
-    // TASK #143: when a hard deadline is set, the "final attempt" must stay
-    // bounded BY that deadline — a genuinely uncapped attempt here is exactly
-    // what let a 150s catalog deadline observably overshoot to 264.6s wall
-    // clock on a real client repo (bounded attempts exhausted just under the
-    // deadline, then the "guaranteed" final attempt ran uncapped for another
-    // 100+s past it). The completeness invariant this was built to protect
-    // (never silently truncate a HEALTHY provider) is preserved for every
-    // caller that does NOT pass hardDeadlineAt; for one that does, the caller
-    // has explicitly opted into "abandon and fall back to the deterministic
-    // layer, honestly reported" over "finish no matter how long it takes" —
-    // see runCapabilityCatalogWithQualityGate, whose caller now reports a
-    // deadline-truncated partial result as 'ready' with the specific gap
-    // named, not a scary terminal 'degraded', so this bound is no longer the
-    // "incomplete analysis pretending to be done" the doctrine forbids.
     if (opts.hardDeadlineAt !== undefined) {
       const remaining = opts.hardDeadlineAt - Date.now();
       if (remaining <= 0) {
@@ -11447,9 +9582,6 @@ export class AnalyzerOrchestrator {
         if (finalTimer) clearTimeout(finalTimer);
       }
     }
-    // No hard deadline supplied by this caller: completeness is preserved
-    // exactly as before — one final attempt runs with NO timeout, guaranteeing
-    // a real answer eventually rather than a degraded/synthetic one.
     console.error(`[Klauro] ${operation}: all ${opts.maxBoundedAttempts} bounded attempts (${opts.perAttemptTimeoutMs}ms each) were cut off or failed; committing to one final uncapped attempt — completion is guaranteed, latency is not`);
     return this.awaitAiWithoutCutoff(attemptFactory(opts.maxBoundedAttempts + 1), operation, opts.slowWarnMs);
   }
@@ -11469,38 +9601,15 @@ export class AnalyzerOrchestrator {
     userJourneys: CASUserJourney[];
     dataEntities: CASDataEntity[];
     candidateCapabilities: SystemCapability[];
-    // Registration/behavior surfaces (mcp_tool/rpc/command/event/message
-    // engines), passed separately from candidateCapabilities (domain-entity-
-    // anchored candidates only) per the SURFACES ARE NOT CAPABILITIES split.
-    // Used ONLY to let a large homogeneous surface family reach the ranked
-    // candidate window as ONE coarse platform-capability candidate (see
-    // LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD) — never re-injected wholesale.
     behaviorSurfaces?: SystemCapability[];
     externalServices: string[];
     flowGraph: CASFlowGraph;
     projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
-    /** Set by the post-reconcile quality retry (applyAIInterpretation): the
-     *  concrete quality failure the previous cycle's RECONCILED output showed.
-     *  Bounds this invocation to ONE model call (the caller owns the retry
-     *  budget) and disables the internal thin-catalog nudge. */
     qualityNudge?: string;
-    /** TASK #107: absolute epoch-ms deadline (set once, in applyAIInterpretation,
-     *  from the AI phase's own start time — never the deterministic clock) past
-     *  which awaitAiBoundedThenUncapped refuses to start another attempt. When
-     *  supplied the caller MUST be prepared for this to throw (see
-     *  isAiCatalogHardDeadlineExceeded) and fall back to the deterministic
-     *  catalog; when omitted, behavior is unchanged (no hard cutoff). */
     hardDeadlineAt?: number;
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
-    // Bundle sizes are tuned to keep the per-repo extraction call small enough to
-    // fit a multi-repo workspace within a modest daily token budget (e.g. Groq
-    // free tier 100k TPD) while preserving enough signal for a good catalog.
-    // Bundles are kept tight: the dominant cost of this call is OUTPUT generation
-    // on shared 70B inference, so a smaller prompt + a hard cap on description
-    // length keeps the call reliably under the timeout budget (a long catalog
-    // would otherwise take 90-175s and time out).
     const journeys = (input.userJourneys || [])
       .filter(journey => journey.journey_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
       .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
@@ -11510,50 +9619,12 @@ export class AnalyzerOrchestrator {
         writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
         terminal: (journey.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
       }));
-    // TASK #33: field-count comparator alone is not a TOTAL order — two
-    // entities with the same field count left ties in whatever order
-    // `input.dataEntities` arrived, which is a real (if currently stable)
-    // dependency on upstream array order rather than a proven invariant of
-    // this function. Name is a stable, always-present, deterministic
-    // tiebreak (matches the pattern already used by rankCatalogPromptCandidates
-    // and the journey/candidate sorts in journey-builder.ts), so identical
-    // deterministic facts always produce this exact prompt fact ordering.
     const entities = [...(input.dataEntities || [])]
       .sort((left, right) =>
         (right.fields?.length || 0) - (left.fields?.length || 0) ||
         left.name.localeCompare(right.name))
       .slice(0, 18)
       .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
-    // THE CUT (candidate window): the prompt receives a BOUNDED candidate list,
-    // never the full deterministic pool (which can run 150-400+ on a large
-    // platform repo). A FIXED window size starves scale: a platform whose
-    // deterministic pass produced 170 candidates has, by construction, far more
-    // real route-area fragments competing for the same slots than a 40-candidate
-    // repo, so a fixed cut disproportionately drops genuine built-for areas on
-    // the biggest, richest repos — exactly backwards. Scale the window with the
-    // candidate pool (bounded so prompt cost stays sane): ~1 slot per 6
-    // candidates considered, floor 24 (unchanged behavior on small/medium
-    // repos), cap 40. Ranked by domain-evidence richness (see
-    // rankCatalogPromptCandidates) — related domain entities, journey-
-    // terminology corroboration, own category, externally-invocable operations
-    // — so the candidates the purpose test cares about are the ones that fill
-    // the (now scale-aware) window. Pure evidence ordering, never name keywords.
-    // MCP-TOOL-FAMILY MERGE (before ranking): a large homogeneous registration-
-    // surface family (Klauro's own 207 mcp_tool entry points, or any product
-    // whose value IS a large tool/handler surface) was previously INVISIBLE to
-    // this prompt entirely — behavior surfaces are domain-entity-free by
-    // construction (SURFACES ARE NOT CAPABILITIES), so `candidateCapabilities`
-    // (domain candidates only) never contained a fragment for it, meaning the
-    // platform's actual built-for value never reached the AI as a candidate at
-    // any window size. Folding each qualifying LARGE surface in as ONE coarse
-    // candidate (already a single merged family, never per-tool singletons —
-    // buildBehaviorCapabilities already clusters by registration kind) lets
-    // the ranker and the AI see "provide the codebase-intelligence tool
-    // surface" as a real, evidence-backed candidate. Gated on the surface's
-    // own operation count (LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD), not a
-    // name — small surfaces stay excluded, so a handful of CLI commands or a
-    // single webhook handler does not re-litigate the flagship-reinjection
-    // regression this split originally fixed.
     const largeSurfaceCandidates = (input.behaviorSurfaces || []).filter(
       surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
     );
@@ -11563,42 +9634,6 @@ export class AnalyzerOrchestrator {
     const candidateAreas = rankedCandidateAreas
       .map(capability => capability.name)
       .slice(0, candidateWindowSize);
-    /**
-     * TASK #99 (make magnitude visible): `candidateAreas` above is a bare
-     * array of name strings — a 205-entry surface and a 1-operation area are
-     * textually identical in that shape, so the catalog step has no way to
-     * see which candidate is actually load-bearing. Attaches the candidate's
-     * real evidence weight as FACTS ONLY: no adjective, no ranking language,
-     * nothing naming a candidate "primary"/"core"/"the main thing" — the
-     * numbers do the work, and the model draws its own conclusion.
-     *   - entry_points reads behaviorSurfaceEntryCount, the TRUE count — NOT
-     *     `operations.length`, which buildCandidate caps at 12 for CAS size.
-     *     Using the capped count here would UNDERSTATE exactly the magnitude
-     *     this exists to reveal (a 205-entry surface would read as 12).
-     *   - No threshold drops anything: every candidate already in the window
-     *     is included with its real (possibly small) count, so a repo whose
-     *     honest answer is several small capabilities still gets them,
-     *     visibly labeled small rather than hidden.
-     *
-     * TASK #99 (stop naming candidates with a structural placeholder): every
-     * `evidence_kind: 'behavior-surface'` candidate's `name` is the
-     * deterministic `"<Kind> Surface"` placeholder (buildBehaviorCapabilities)
-     * — a mechanism noun by construction, and the catalog prompt's own
-     * purpose-test rule (1) below explicitly tells the model to reject
-     * mechanism nouns. So a real, evidenced surface arrived pre-shaped to be
-     * discarded regardless of size — live-probed: a 205-entry surface ranked
-     * FIRST and still was never picked. When the candidate carries real
-     * per-entry identifiers (evidence_examples — the repo's own registered
-     * tool/command/event names, set by buildBehaviorCapabilities), present
-     * those instead — evidence the model can recognize as a product ability
-     * described by what it's actually called, not a placeholder shaped like
-     * plumbing. This is presentation-only: it never touches the candidate's
-     * real `name`/`structural_label`, which stay the honest placeholder
-     * everywhere else (behavior_surfaces display, dedup, merge). No protocol
-     * or product vocabulary of this codebase's own choosing — every word
-     * comes from the repo's own registrations. Falls back to the structural
-     * name when no examples exist.
-     */
     const candidateAreaFacts = rankedCandidateAreas
       .slice(0, candidateWindowSize)
       .map(capability => ({
@@ -11609,33 +9644,13 @@ export class AnalyzerOrchestrator {
         entities: (capability.related_entities || []).length,
       }));
     const services = (input.externalServices || []).slice(0, 12);
-    // THE OUTPUT CAP: how many capabilities the model is told to return, and the
-    // final out.slice() cap below, must likewise scale with how much was handed
-    // to it — a fixed "6 to 12" on a repo whose window just grew to 40 candidates
-    // silently re-imposes the same starvation the window widening was meant to
-    // fix (a rich platform gets curated down to the same count as a small one).
-    // Derived purely from candidateAreas.length (deterministic evidence volume),
-    // never a name/domain judgement. A genuinely narrow package can therefore
-    // complete in one call, while broad platforms request proportionally more.
     const catalogCountMax = Math.max(1, Math.min(20, Math.ceil(candidateAreas.length / 2)));
     const catalogCountMin = Math.min(catalogCountMax, Math.max(1, Math.round(candidateAreas.length / 4)));
     const artifactType = String(purpose.artifact_type || 'app');
-    // Infrastructure repositories often have no domain entities or user
-    // journeys: their deterministic evidence is deliberately implementation-
-    // shaped (Terraform resources, Compose services, shell entry points,
-    // Kubernetes workloads). The AI must translate that evidence into an
-    // operational responsibility, so the responsibility vocabulary cannot be
-    // required to repeat a low-level candidate label. These are artifact
-    // semantics, not product/domain guesses, and apply uniformly across every
-    // supported infrastructure language and framework.
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
       'runtime', 'service', 'topology', 'workload',
     ].map(token => this.stemTerminologyToken(token)));
-    // Conversely, a detected language/framework belongs in implementation
-    // evidence, never in the user-facing responsibility name. Derive this set
-    // from the analyzers that actually fired instead of maintaining a vendor
-    // blocklist, so new supported IaC/container systems inherit the rule.
     const infrastructureMechanismTokens = new Set<string>();
     if (artifactType === 'infrastructure') {
       for (const framework of input.frameworks || []) {
@@ -11657,16 +9672,6 @@ export class AnalyzerOrchestrator {
         ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. entities/journeys must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
         : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
 
-    // ---- TOP-DOWN EVIDENCE BUNDLE ----
-    // The catalog is otherwise BOTTOM-UP (entities + route areas + journeys),
-    // which yields plumbing names ("Wallet interaction") over the built-for
-    // capability ("Trade cryptocurrency") and lets a supporting concern
-    // (access-control) read as core. Top-down evidence = the product's OWN
-    // words: its README title/overview, its manifest self-description, and its
-    // product terminology (route-area + journey names). All excerpts are real
-    // and evidence-gated — omitted when absent, never fabricated. The catalog
-    // must let this evidence RAISE the capability the product was built for and
-    // (via the purpose test) DEMOTE plumbing the product never sells.
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
       ...journeys.map(journey => journey.name),
@@ -11680,36 +9685,14 @@ export class AnalyzerOrchestrator {
     if (productTerminology.length) topDownSignals.product_terminology = productTerminology;
     const hasTopDown = Object.keys(topDownSignals).length > 0;
 
-    // A cold hosted-70B catalog call (large fact bundle in, 6-14 JSON capabilities
-    // out) is HIGHLY variable on shared inference (15s to 60s+). The catalog
-    // succeeding is what curates 40 noisy candidates down to ~12 real product
-    // capabilities, so a timeout here visibly degrades the result. Floor at 75s so
-    // even a slow attempt completes; genuinely hung calls still fall back. Caching
-    // means this latency is paid once per repo.
     const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
-    // TASK #107 (measured 2026-07-30): live sampling of this exact call put
-    // normal conditions at 10.9s-30.4s and a genuine provider partial outage at
-    // 83.6s/215.8s, with nothing bounding the worst case. 40s sits comfortably
-    // above the observed healthy ceiling (so a normal attempt is essentially
-    // never abandoned mid-flight) while cutting a degraded/hung attempt off well
-    // before it can consume an outsized share of the product's 3-minute hard
-    // budget on its own — see awaitAiBoundedThenUncapped for the retry-fresh
-    // mechanism and the completeness guarantee (the final attempt is uncapped).
     const CATALOG_ATTEMPT_BOUND_MS = 40000;
     const CATALOG_MAX_BOUNDED_ATTEMPTS = 3;
     const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
       return this.awaitAiBoundedThenUncapped(
         () => aiService.generateComponentDescription({
             additionalContext: {
-              // Structured extraction tolerates a smaller/faster model well and
-              // benefits from its reliability; opt in via DEEPINFRA_STRUCTURED_MODEL
-              // or OPENAI_STRUCTURED_MODEL.
               model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
-              // Distinct on the retry so an under-count retry is a real
-              // resample (a byte-identical request would just replay the
-              // cached short answer) and the model is told the shortfall.
-              // `hintOverride` (the THIN-CATALOG NUDGE below) takes priority
-              // over the generic under-count hint when supplied.
               ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
               task: catalogTask,
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
@@ -11725,9 +9708,7 @@ export class AnalyzerOrchestrator {
                 data_entities: entities,
                 candidate_route_areas: candidateAreaFacts,
                 external_services: services,
-                // Evidence-gated: present ONLY when the repo supplied real
                 // product-facing text. Its absence must not weaken the catalog;
-                // its presence must anchor the built-for capability.
                 ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
               },
             },
@@ -11742,11 +9723,6 @@ export class AnalyzerOrchestrator {
       );
     };
 
-    // Shared-inference latency is variable enough that a single attempt can exceed
-    // even a generous budget. Parse failures and evidence-proven under-counts get
-    // one retry before deterministic fallback. A result that satisfies the
-    // evidence-scaled range returns immediately; narrow packages do not pay for a
-    // redundant second call merely to reach an arbitrary global minimum.
     let catalog: Array<Record<string, unknown>> = [];
     let raw = '';
     const maxInitialAttempts = input.qualityNudge ? 1 : 2;
@@ -11757,11 +9733,6 @@ export class AnalyzerOrchestrator {
         if (parsed.length > catalog.length) catalog = parsed;
       } catch (error) {
         if (process.env.KLAURO_DEBUG_CATALOG) console.error(`[catalog-debug] attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
-        // TASK #107: the hard deadline firing is not a transient failure worth
-        // retrying — retrying would just re-check the same already-passed
-        // deadline. Stop immediately and let the caller (runCapabilityCatalog
-        // WithQualityGate) record the honest degraded reason and hand off to
-        // the deterministic fallback with whatever partial catalog exists.
         if (isAiCatalogHardDeadlineExceeded(error)) break;
       }
       if (catalog.length >= catalogCountMin) break;
@@ -11770,36 +9741,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // THIN-CATALOG NUDGE (defect #33 — catalog VARIANCE, measured live: v1.0.83
-    // returned exactly ONE usable item on the 45k-node Klauro-self CAS, v1.0.84
-    // returned 6, same CAS/prompt/facts, pure inference luck). A catalog.length
-    // of exactly 1 is qualitatively different from 0 (which already routes into
-    // the near-empty fallback chain in applyAIInterpretation, below): the model
-    // DID engage and DID pass the validity guard, it just collapsed several
-    // genuinely distinct route-area families into one item. Rather than accept
-    // a lone item on a CAS whose deterministic pass already computed multiple
-    // DISTINCT families (rankedCandidateAreas — the same evidence already
-    // ranked and windowed above, no new hardcoding), spend ONE more attempt
-    // that ENUMERATES those families by name and requires one grounded
-    // capability per family. Bounded to a single extra call (never loops) and
-    // only fires when there is real distinct-family evidence to enumerate —
-    // an under-2-family repo has nothing to nudge toward and is left alone.
-    // TRIGGER (widened for rung-5, measured live on a benchmarked repo): the original nudge
-    // fired only at exactly 1, so a Rails app with 34 entities + 309 routes
-    // that came back with THREE thin caps ("Create record"...) sailed through
-    // untouched. A catalog of 2-3 now also nudges when the deterministic
-    // family evidence outnumbers it 3x (severe undercount — 3 caps against 9+
-    // distinct families is a collapse, not a judgment call). The ===1 case
-    // keeps its original >=2-family threshold; still ONE bounded extra call.
-    // EFFECTIVE count, not raw count (rung-5, measured live on the E1
-    // dataset): the model returned 9 CRUD-per-route items ("Create location
-    // event", "Update location event", "Delete recurring event"...) spanning
-    // only 3 distinct entity sets — reconcileCatalogedCapabilities' entity-set
-    // dedupe correctly collapses same-set duplicates AFTER this check, so the
-    // persisted catalog was 3 thin caps while the raw count (9) satisfied the
-    // minimum and the nudge never fired. Estimate the post-dedupe size here as
-    // the number of DISTINCT normalized entity sets among parsed items (items
-    // with no entities each count as their own set — nothing merges them).
     const effectiveSize = (items: Array<Record<string, unknown>>): number => {
       const sets = new Set(items.map((item, index) => {
         const entities = Array.isArray(item.entities)
@@ -11810,14 +9751,6 @@ export class AnalyzerOrchestrator {
       return Math.min(items.length, sets.size);
     };
     const effectiveCatalogSize = effectiveSize(catalog);
-    // Trigger ceiling SCALES with the repo's own family evidence (#33 margin,
-    // measured on the Klauro whale: a 4-cap result on a 45k-node repo with 20+
-    // distinct route-area families sailed past the fixed <=3 cutoff — 4 caps
-    // against 20 families is the same collapse as 3 against 9). Ceiling =
-    // max(3, families/3): small repos keep the original behavior exactly; a
-    // family-rich repo also nudges a 4-6 cap undercount. Family count for the
-    // TRIGGER is uncapped; the slice(0,10) below only bounds what the hint
-    // enumerates. Still ONE bounded extra call, never a loop.
     const allDistinctFamilies = Array.from(new Set(
       rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
     ));
@@ -11830,10 +9763,6 @@ export class AnalyzerOrchestrator {
           const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence names ${allDistinctFamilies.length} DISTINCT candidate route-area families${allDistinctFamilies.length > distinctFamilies.length ? ` (top ${distinctFamilies.length} listed)` : ''}: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — a purpose (e.g. "Manage shift scheduling"), never a per-route CRUD verb ("Create X", "Update X") — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
           const nudgeRaw = await requestCatalog(3, nudgeHint);
           const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
-          // Compare EFFECTIVE sizes, not raw lengths: a CRUD-collapsed 9-item
-          // catalog and a 9-family nudge result have equal raw length, but the
-          // nudge result survives entity-set dedupe 3x better — that is the
-          // whole point of the retry.
           if (effectiveSize(nudgeParsed) > effectiveCatalogSize) {
             catalog = nudgeParsed;
             raw = nudgeRaw;
@@ -11846,12 +9775,6 @@ export class AnalyzerOrchestrator {
     if (process.env.KLAURO_DEBUG_CATALOG) {
       console.error('[catalog-debug] raw.length=', (raw || '').length, 'parsed=', catalog.length, 'rawHead=', JSON.stringify(String(raw || '').slice(0, 300)));
     }
-    // E1 (observational): compact evidence digest for the capability catalog
-    // decision. `candidatesConsidered` vs `candidateAreas` (the window actually
-    // handed to the prompt) makes THE CUT measurable — the gap between them is
-    // exactly how many deterministic candidates never reached the AI at all,
-    // separate from `kept` (added below) which is how many the AI itself kept.
-    // Under-surfacing at either stage is now a countable fact, not a guess.
     const catalogEvidenceDigest = {
       systemName: input.systemName,
       journeys: journeys.length,
@@ -11881,10 +9804,6 @@ export class AnalyzerOrchestrator {
     const entityIdByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity.id]));
     const entityNameById = new Map(input.dataEntities.map(entity => [entity.id, entity.name]));
     const out: SystemCapability[] = [];
-    // Connective words of the "<Noun> Management/Analysis/..." capability-naming
-    // grammar — NOT domain vocabulary. Excluded from capability<->candidate
-    // matching so two unrelated caps don't link purely because both end in
-    // "Management" (which pasted boilerplate routes across every capability).
     const GENERIC_CAPABILITY_NAME_TOKENS = new Set([
       'management', 'analysis', 'reporting', 'processing', 'handling', 'control',
       'service', 'services', 'system', 'data', 'manager', 'provides', 'manages',
@@ -11926,8 +9845,6 @@ export class AnalyzerOrchestrator {
       for (const token of infrastructureResponsibilityTokens) capabilityEvidenceVocabulary.add(token);
     }
     const seen = new Set<string>();
-    // ---- PASS 1: parse/repair each catalog item (no operation linking yet —
-    // operation assignment needs the FULL item set first, see pass 2). ----
     type StagedCatalogItem = {
       name: string;
       key: string;
@@ -11940,75 +9857,22 @@ export class AnalyzerOrchestrator {
       nameRepairedFromBareNoun?: boolean;
     };
     const staged: StagedCatalogItem[] = [];
-    // E1-attributable counters for the bare-noun guard below — surfaced in the
-    // capability_catalog decision record so a rejection is never a silent drop.
     let bareNounRepaired = 0;
     let bareNounRejected = 0;
     for (const item of catalog) {
-      // `let`: the arrow-chain sanitization below may rewrite the name to its
-      // purpose-phrase head ("Create attack -> Currency created" -> "Create attack").
       let name = String(item.name || '').replace(/\s+/g, ' ').trim();
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
-      // Strip route/path/JSON mechanism leakage the model sometimes emits despite
-      // the prompt; rebuild from the entities the capability touches if too thin.
       let description = String(item.description || '');
       if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description)) description = '';
       description = description
         .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.]*?\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.]*/gi, '')
         .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
         .replace(/\s+/g, ' ').trim();
-      // The mechanism-clause strip above can cut mid-sentence and leave a
-      // grammatical stump ("providing telemetry data and graph evidence for.");
-      // repair or drop the broken sentence — a gutted result falls through to
-      // the entity-grounded rebuild below.
       description = this.repairStrippedSentenceGrammar(description);
       if (description.length < 25 && itemEntityNamesRaw.length) {
         description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
       }
       if (!name || description.length < 20) continue;
-      // VALIDITY GUARD (defect: a raw deterministic candidate label leaking
-      // through as a "capability"): a NAME that is itself a raw deterministic
-      // label rather than AI-authored product language (a verbatim echo of
-      // one of the candidateAreas facts, a truncated evidence-list artifact
-      // like "... 2 more", or a mechanism/file-shaped token such as ".sh"/
-      // "shell script") is never emitted as a final capability — no matter
-      // how the length checks above happened to be satisfied.
-      //
-      // DEFECT (measured live on the real hosted CAS, v1.0.81-dev, 45k-node
-      // Klauro-self analysis, 2026-07-15): this guard used to only fire when
-      // the model supplied NO description (`!rawItemDescription && ...`).
-      // That let a raw label sail through untouched the moment the model
-      // paired it with ANY description text, however low-value — exactly
-      // what happened: name "Run Shell script: release.sh -> Docker read
-      // (+2 more)" (a verbatim candidateAreas echo AND ".sh"-shaped) shipped
-      // as the SOLE system_capabilities entry because the model attached the
-      // description "Triggers a Docker read for release.sh and other
-      // scripts." (itself just paraphrasing the label, not real product
-      // language). A raw-label-shaped name is never a real capability
-      // regardless of whether a description was supplied, so the check must
-      // run unconditionally — this is also what makes `extracted.length`
-      // correctly fall to 0 in that scenario, which is what routes the
-      // caller into the already-built near-empty fallback (deterministic
-      // candidates, then the merged large-behavior-surface re-derivation —
-      // see the `else` branch in applyAIInterpretation) instead of shipping
-      // the bad single item.
-      // ARROW-CHAIN SANITIZATION (measured live on the real rpg/server Python
-      // CAS, v1.0.96, 2026-07-16): the model echoed JOURNEY names verbatim as
-      // capability names — "Create attack -> Currency created", "Update quest
-      // objective -> Quest updated" — six of six. An arrow-joined
-      // "action -> outcome" is a journey TRACE, not a purpose — but rejecting
-      // the item outright would be worse (the deterministic fallback
-      // candidates are the same journey names, so the catalog would collapse
-      // to zero): the HEAD segment is a genuine verb-phrase purpose ("Create
-      // attack"), only the arrow tail is trace noise. So: keep the head, drop
-      // the tail — and only when the head reads like a purpose phrase
-      // (multi-word, alphabetic, no code-ish tokens); otherwise reject.
-      // This runs BEFORE the raw-label guard on purpose: a journey-shaped name
-      // often IS a verbatim echo of a candidate area, and the echo check would
-      // reject the whole item before the salvageable head is ever considered.
-      // Mechanical traces stay rejected here (same tells the guard uses):
-      // a "Run <symbol>" head or any snake_case code token means trace, not
-      // purpose — never salvage those.
       if (/(->|→|»)/.test(name)) {
         if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;
         const head = name.split(/->|→|»/)[0].trim().replace(/[:\-–—\s]+$/, '');
@@ -12019,24 +9883,8 @@ export class AnalyzerOrchestrator {
         name = head;
       }
       if (this.isRawCandidateLabelName(name, candidateAreas)) continue;
-      // BARE-NOUN GUARD (defect: a raw module/type token — "Gateway",
-      // "Wizard", "Exec Approval" — shipping as a "capability" because it
-      // happened to attach a description, same class of bug the raw-label
-      // echo guard above targets but for a NAME shape the echo check cannot
-      // see: a single/two-word noun phrase with no leading purpose verb.
-      // Same repair-before-reject shape as the arrow-chain salvage above:
-      // when the item is actually grounded (it names real entities), repair
-      // to a purpose-headed "Manage <noun>" rather than losing a genuine
-      // family; otherwise demote (the surviving `continue` routes this
-      // candidate out, same as every other guard here — if that empties the
-      // catalog entirely, applyDeterministicCapabilityFallback's own guard
-      // takes over below).
       let itemBareNounRepaired = false;
       if (this.isBareNounCapabilityLabel(name)) {
-        // Defer the verb until PASS 2 has linked operations. Prefixing
-        // "Manage" here falsely turns read-only resources into mutation
-        // capabilities; after linkage we can choose View vs Manage from the
-        // observed methods/actions and humanize the grounded entity name.
         if (itemEntityNamesRaw.length === 0) { bareNounRejected++; continue; }
         itemBareNounRepaired = true;
         bareNounRepaired++;
@@ -12093,24 +9941,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // ---- PASS 2: link each catalog item to the deterministic operations of
-    // the candidate areas it actually covers, so the catalog stays navigable.
-    //
-    // Two rules keep an operation with the capability that OWNS it (task #17 —
-    // a stored real CAS had 12 capabilities each carrying the IDENTICAL 12-op
-    // set, which made deriveCapabilityRelationships mark every capability
-    // 'primary' for every anchored flow):
-    //
-    // 1. REPO-ADAPTIVE non-discriminative tokens: beyond the fixed generic
-    //    connectives ("management", ...), a token appearing in MOST of THIS
-    //    repo's capability names (e.g. "codebase" on a code-analysis product)
-    //    distinguishes nothing here — matching on it cross-wires the whole
-    //    catalog. Derived from the catalog itself (document frequency), never
-    //    a hardcoded vocabulary.
-    // 2. BEST-MATCH assignment, not broadcast: each CANDIDATE's operations go
-    //    only to the catalog item(s) with the strongest evidence overlap
-    //    (shared entities weighted over shared name tokens). Ties share the
-    //    operations (genuine M:N); everything below the max gets nothing.
     const tokenDf = new Map<string, number>();
     for (const item of staged) {
       for (const token of new Set(item.nameTokensAll)) tokenDf.set(token, (tokenDf.get(token) || 0) + 1);
@@ -12123,18 +9953,7 @@ export class AnalyzerOrchestrator {
     const discriminativeTokens = (tokens: string[]) => new Set(tokens.filter(token => !nonDiscriminative.has(token)));
     const itemTokens = staged.map(item => discriminativeTokens(item.nameTokensAll));
     const opsByItemIndex = new Map<number, SystemCapability['operations']>();
-    // Matched candidates contribute their ENTITY anchors too, not just ops:
-    // the AI names ~3 entities per capability, but the deterministic
-    // candidates it covers carry the full evidence — and downstream flow
-    // relationship matching (entity overlap in deriveCapabilityRelationships)
-    // runs against the STORED capability anchors. Sampling the anchors
-    // structurally caps flow rollup (measured live: 13 caps x 3 entities left
-    // 330+ HTTP flows unmapped on an 85k-node repo).
     const entityIdsByItemIndex = new Map<number, Set<string>>();
-    // Includes largeSurfaceCandidates too: if the AI picked up the merged
-    // platform-surface candidate (e.g. "Provide MCP codebase-intelligence
-    // tools"), its operations/entities must link back the same way a domain
-    // candidate's would, so the resulting capability stays navigable.
     for (const candidate of candidatePoolForRanking) {
       const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
       const candidateTokens = discriminativeTokens(
@@ -12156,31 +9975,6 @@ export class AnalyzerOrchestrator {
       for (let index = 0; index < staged.length; index++) {
         if (scores[index] === best) tiedIndices.push(index);
       }
-      // TASK #108 — a tie in the score above means the scorer cannot
-      // distinguish which catalog item(s) this candidate's operations really
-      // belong to. #17 made that tie broadcast to every tied item ("genuine
-      // M:N"), but measured live (11 samples, Klauro-self CAS): most ties here
-      // come from candidates with ZERO related entities (behavior-surface-
-      // derived MCP-tool-family candidates are domain-entity-free by
-      // construction — see largeSurfaceCandidates above) matching several
-      // catalog items on nothing but incidental TOKEN overlap. That is not
-      // shared ownership, it's the absence of distinguishing evidence, and
-      // broadcasting the full operation list to every tied name produced
-      // byte-identical operation sets on differently-named, differently-
-      // entity-anchored capabilities (up to 100% containment) in every one of
-      // 11 live samples.
-      //
-      // A tie is only treated as genuine M:N when it is grounded in actual
-      // shared ENTITY evidence (a real, demonstrated anchor — the candidate
-      // names entities more than one catalog item independently also names),
-      // never in token overlap alone. When no tied item has any entity
-      // overlap, the tie is a scoring collision: this never drops the
-      // candidate's operations (that would trade degenerate-but-populated for
-      // honest-but-empty, no better for a reader) and never keeps guessing —
-      // it resolves to the single most-central tied item, using the AI's own
-      // stated "most central first" catalog ordering as the deterministic
-      // tie-break (staged is in that order), which is a real signal, not a
-      // fabricated one.
       let winners: number[];
       if (tiedIndices.length === 1) {
         winners = tiedIndices;
@@ -12198,25 +9992,13 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // STRUCTURAL ANCHOR GATE counters (see the gate itself below, in the
-    // assembly loop): an unanchored (0 entities, 0 operations) item is now
-    // rejected unconditionally, so this replaces the former journey-name/
-    // top-down-vocabulary escape hatch entirely — journey NAME overlap and
-    // README/manifest token overlap are still just prose corroboration, not
     // a resolvable operation/entity/entry-point, and must never re-admit a
-    // fabricated capability. Counted (not silently dropped) so the rejection
-    // is E1-attributable, same as bareNounRejected above.
     let unanchoredRejected = 0;
     const unanchoredRejectedNames: string[] = [];
 
     for (let index = 0; index < staged.length; index++) {
       const { name, key, description, category, relatedEntities, journeys, nameRepairedFromBareNoun } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
-      // Anchor lists are MATCHING evidence, not display samples — flow
-      // relationship derivation op-matches against them, so a 12-op sample on
-      // a capability owning 50 routes strands the other 38 flows. 64 covers
-      // the largest real route-areas measured; the query layer can compact
-      // for display if size ever matters.
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
       const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
       const allRelatedEntities = Array.from(new Set([...relatedEntities, ...candidateEntityIds]));
@@ -12235,40 +10017,10 @@ export class AnalyzerOrchestrator {
         : name;
       if (!resolvedName) continue;
       const resolvedKey = resolvedName.toLowerCase();
-      // Judge the capability NAME separately from its prose. A model can name
-      // the right read-only responsibility while appending a mutation claim to
-      // the description. Keep the grounded name/operation mapping, clear the
-      // bad prose, and let the required element-description pass regenerate it.
-      // A contradictory NAME still drops the whole item.
       if (this.capabilityContradictsObservedOperations({ name: resolvedName, description: '', operations: dedupedOps })) continue;
       const descriptionContradictsOperations = this.capabilityContradictsObservedOperations({
         name: '', description, operations: dedupedOps,
       });
-      // STRUCTURAL ANCHOR GATE (defect: AI fabricates whole capabilities with
-      // ZERO structural evidence, and they shipped). A capability that
-      // resolved to NO entity and NO operation has nothing to describe,
-      // regardless of how confident the prose reads — "Manages fleet
-      // operations", "Manages vehicle maintenance", "Provides driver
-      // communication" all shipped this way (0 operations, 0 entities, 0
-      // entry points) on a real chat-gateway/assistant-runtime CAS, and the
-      // deterministic primary_type classifier then read those invented
-      // capabilities back as fleet-operations EVIDENCE (see
-      // inferSystemPurpose's productCapabilities filter, which now also
-      // excludes unanchored items). `operations` is itself entry-point-
-      // anchored (each carries the real `entry_point_id` it was linked from
-      // in PASS 2 above), so `dedupedOps.length > 0` already covers "at
-      // least one resolvable operation or entry point" — this check and the
-      // `relatedEntities` check together are the whole anchoring rule.
-      //
-      // Evidence gates the AI — never the reverse: this used to let a
-      // 0-entity/0-operation CORE item survive when it merely NAMED a real
-      // supplied journey, or when its subject string happened to overlap the
-      // product's own README/manifest vocabulary. Neither is structural
-      // anchoring — a journey NAME match and a vocabulary-token match are
-      // both still just the AI's (or the top-down text's) prose, not a
-      // resolvable operation/entity/entry-point. Removed: an unanchored
-      // capability is now rejected unconditionally, regardless of category,
-      // journey-name overlap, or top-down corroboration.
       if (relatedEntities.length === 0 && dedupedOps.length === 0) {
         unanchoredRejected++;
         unanchoredRejectedNames.push(name);
@@ -12277,8 +10029,6 @@ export class AnalyzerOrchestrator {
       out.push({
         id: `capability_${resolvedKey.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
         name: resolvedName,
-        // The catalog NAME is AI-authored comprehension, grounded in journeys +
-        // entities — the correct source for a capability's user-facing name.
         name_source: 'ai',
         name_generation: { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         description: descriptionContradictsOperations ? '' : description,
@@ -12322,35 +10072,9 @@ export class AnalyzerOrchestrator {
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
     // The hard cap must never clip below what the prompt itself was told to
-    // return (catalogCountMax) — a fixed 16 silently re-truncated a scaled-up
-    // catalog right back down on large repos.
     return out.slice(0, Math.max(16, catalogCountMax));
   }
 
-  /**
-   * Post-AI-catalog reconciliation — restores the deterministic guarantees the
-   * catalog replacement (systemCapabilities.splice with the AI output) throws
-   * away. The AI catalog reasons only from journeys + data entities, so on real
-   * hosted repos it: (1) ships INFRASTRUCTURE as capabilities ("Manages Restart
-   * sentinels", "Manages Runtime info"), and (2) emits verb-variant NEAR-
-   * DUPLICATES on one entity ("Provides analysis results" / "Surfaces analysis
-   * insights"). Prior fixes to the dedup passes only ran on the DETERMINISTIC
-   * list and were verified with AI off, so they never touched the hosted
-   * (AI-on) output. This re-applies both to the cataloged list.
-   *
-   * FLAGSHIP RE-INJECTION REMOVED (was here as step (1) prior to the
-   * behavior-surfaces navigation tier): behavior-surface candidates
-   * (evidence_kind:'behavior-surface' — mcp_tool/rpc/command/event/message
-   * registration engines) now live exclusively in the separate
-   * `behavior_surfaces` CAS field (see buildSystemCapabilities), never in the
-   * `candidates` snapshot handed to the AI catalog and never re-injected into
-   * `system_capabilities`. Re-injecting them here would defeat the whole point
-   * of the navigation tier — they would again outrank real domain capabilities
-   * in top_capabilities via inflated criticality/operation counts. The `never
-   * re-inject a behavior-surface candidate` guard below is defense-in-depth
-   * for any caller that (incorrectly) hands this a surface as a `candidates`
-   * entry — it is filtered out, not promoted.
-   */
   private reconcileCatalogedCapabilities(
     cataloged: SystemCapability[],
     candidates: SystemCapability[],
@@ -12358,16 +10082,10 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[] = [],
     nodes: CASNode[] = [],
     purpose?: EnhancedSystemPurpose,
-    // Real dependency/package names (CASLibrary.name — already collected by
-    // detectLibrariesFromManifests) — the "identifier vocabulary" evidence
-    // for the #119 audience-test compliance check below. Optional/defaulted
-    // so every existing caller/test is unaffected; the check simply no-ops
-    // when omitted.
     libraryNames: string[] = [],
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
     // Defense-in-depth: a behavior-surface item must never enter the ranked
-    // catalog through this path, however it got into `cataloged`/`candidates`.
     const result = [...cataloged]
       .map(capability => this.normalizePolyglotCapabilityName(capability, entityById))
       .filter(capability =>
@@ -12380,11 +10098,6 @@ export class AnalyzerOrchestrator {
         (capability.operations || []).every(operation => operation.entry_point_type === 'page')
       ));
 
-    // entry_point_id -> its source node's `type`, used by the infrastructure
-    // purpose gate to see PAST a generic entry_point_type (e.g. 'cli'/'pipeline'
-    // is shared by real product commands and by distribution/CI plumbing alike)
-    // straight to the underlying node evidence (distribution_shell_script,
-    // ci_pipeline, ...).
     const nodesById = new Map(nodes.map(node => [node.id, node]));
     const nodeTypeByEntryPointId = new Map<string, string>();
     for (const ep of entryPoints) {
@@ -12392,54 +10105,13 @@ export class AnalyzerOrchestrator {
       if (sourceNode?.type) nodeTypeByEntryPointId.set(ep.id, sourceNode.type);
     }
 
-    // (1) PURPOSE GATE. Drop capabilities whose ONLY anchors are runtime/
-    // lifecycle-shaped entities with no product (persisted/api-response)
-    // evidence — they fail the purpose test ("would this appear in a product
-    // description?"). Evidence-gated on the entity's KIND + shape, never a
-    // capability-name keyword blocklist.
     const purposeGated = result.filter(capability => {
       if (!this.isInfrastructureOnlyCapability(capability, entityById, nodeTypeByEntryPointId)) return true;
       return false;
     });
-    // Never let the gate empty the catalog; if everything read as infra (a pure
-    // runtime/daemon repo), keep the original so agents still have targets.
     const gated = purposeGated.length > 0 ? purposeGated : result;
 
-    // (1b) AUDIENCE-TEST COMPLIANCE CHECK (#119 audit): the AI catalog prompt
-    // already tells the model to never name a capability after a mechanism
-    // (its own words: "a product/user/operational ability that would appear
     // in a product description... NEVER as a mechanism or a supporting
-    // noun"), and the audit found the model only PARTIALLY complies —
-    // demoting a mechanism-named capability to `category: "supporting"`
-    // instead of dropping it, exactly the gap this closes. Deterministic,
-    // evidence-based backstop: a capability's SUBJECT reads as
-    // identifier-only vocabulary (imported dependency/package name) with NO
-    // domain-entity backing (see capability-audience-test.ts for the full
-    // method and its measured precision/recall against the audit's own 23
-    // graded capabilities — precision 1.0 / recall 0.67 on the specific
-    // protocol-name defect shape it targets, zero false positives on real
-    // product capabilities). Narrowly scoped on purpose: it catches
-    // "Authenticate with WebAuthn"/"Manage Session Security" shapes, not the
-    // other four mechanism shapes the audit found (those are the purpose
-    // gate's and the trigger-role/terminality work's job, not this one's).
-    // TASK #119 (owner correction): with candidate GENERATION now inverted
-    // (isUserReachableTerminalCandidate + filterIsolatedUncorroboratedCandidates
-    // in buildSystemCapabilities/applyAIInterpretation), the shapes this test
-    // was built to catch (WebAuthn/Session-Security) should never reach the
-    // AI catalog as a candidate at all — so this firing on a real analysis is
-    // now a REGRESSION SIGNAL (the generator drifted), not routine cleanup.
-    // Still applied as a filter (defense-in-depth costs nothing when it
-    // rarely fires), but logged distinctly from ordinary reconciliation so a
-    // firing is visible rather than silently absorbed.
-    // Cross-repo audit (2026-08-09): the name-only check above missed vendor
-    // names, a protocol term, an `Rpc` mention, and a source-file path that
-    // reached DESCRIPTIONS instead of names, plus descriptions that were
-    // missing entirely or merely restated the capability's own name — the
-    // audience bar applies to the whole capability a customer reads (§0.7.1),
-    // not just the title. `testCapabilityDescriptionAgainstAudience` runs
-    // regardless of `libraryNames` for the missing/restates-name/source-path
-    // checks (no library evidence needed for those); the identifier-
-    // vocabulary check within it is a no-op when there are no libraries.
     const vocabularyGated = gated.filter(capability => {
       if (libraryNames.length > 0) {
         const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(
@@ -12464,34 +10136,13 @@ export class AnalyzerOrchestrator {
       }
       return true;
     });
-    // Same never-empty-catalog safeguard as the purpose gate above.
     const audienceGated = vocabularyGated.length > 0 ? vocabularyGated : gated;
 
-    // (2) DEDUP. Re-run the name + entity-set dedup (with the strengthened
-    // verb-variant pass) on the AI output — it never ran on the catalog.
     const deduped = this.dedupeSystemCapabilitiesByName(audienceGated);
 
-    // (3) DESCRIPTION-VS-CAPABILITY CROSS-CHECK. See
-    // `description_capability_gaps` on EnhancedSystemPurpose for the full
-    // rationale. Restores, from already-anchored candidates, any capability
-    // the AI catalog step silently dropped for an entity the AI's OWN
-    // description names as a core subject.
     return this.reinjectDescriptionAnchoredCapabilities(deduped, candidates, dataEntities, purpose);
   }
 
-  /**
-   * DESCRIPTION-VS-CAPABILITY CROSS-CHECK (see `description_capability_gaps`
-   * on EnhancedSystemPurpose). `purpose.core_concepts` is structural,
-   * evidence-derived vocabulary (domain concepts + database entities +
-   * project text signal — see `buildEnhancedSystemPurpose` /
-   * `rankCoreConcepts`), never a curated business-noun table, and it is the
-   * SAME evidence the AI description prose was grounded from. This method
-   * never invents a capability: it only restores a candidate that already
-   * passed `CapabilityDetector`'s structural-anchoring gate (present in
-   * `candidates`) for an entity the description itself names but which the
-   * post-catalog list (`cataloged`) no longer covers. When no such candidate
-   * exists, nothing is built — the gap is recorded, not fabricated.
-   */
   private reinjectDescriptionAnchoredCapabilities(
     cataloged: SystemCapability[],
     candidates: SystemCapability[],
@@ -12538,8 +10189,6 @@ export class AnalyzerOrchestrator {
     const gaps: NonNullable<EnhancedSystemPurpose['description_capability_gaps']> = [];
 
     for (const entity of describedUncoveredEntities) {
-      // Prefer the richest already-anchored candidate (most operations) so a
-      // thin partial match never wins over a fuller one for the same entity.
       const matchingCandidates = candidates
         .filter(candidate =>
           candidate.evidence_kind !== 'behavior-surface' &&
@@ -12629,49 +10278,6 @@ export class AnalyzerOrchestrator {
       /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
   }
 
-  /**
-   * A capability fails the purpose test when its only anchors are infrastructure/
-   * runtime/lifecycle-shaped entities that carry no product evidence. "Product
-   * evidence" = an entity classified persisted-entity or api-response (a real
-   * domain record or a produced response). Absent that, an entity whose name
-   * shape is runtime/daemon/sentinel/spawn/restart/… is plumbing, and a
-   * capability anchored ONLY on such shapes is infrastructure, not a product
-   * capability. Gated on entity KIND + name shape (evidence), not on the
-   * capability's own name.
-   *
-   * SECOND ANCHOR PATH — operations/distribution-CI evidence. The entity path
-   * above only sees `related_entities`; a capability the AI catalog anchored
-   * purely on OPERATIONS (e.g. "Manage shell scripts", "Deploy and manage
-   * binaries") carries no entity anchor at all and used to sail straight
-   * through (`anchors.length === 0 → return false`). Measured live on
-   * a benchmarked Rust ZTNA product's CAS (v1.0.104): the repo ships 47
-   * distribution_shell_script + 11 release-script + 10 installer nodes, and
-   * the AI catalog anchored two caps on them — pure build/ship plumbing, not a
-   * product purpose. `entry_point_type` alone can't distinguish this (a
-   * distribution release script and a real product CLI command both surface
-   * as `type: 'cli'`), so this resolves each operation's `entry_point_id` back
-   * to its SOURCE NODE type via `nodeTypeByEntryPointId` (built in
-   * `reconcileCatalogedCapabilities` from the entry-point/node graph) and
-   * checks that node-type evidence instead: `distribution_*`/`ci_*` node types
-   * (distribution-artifact-analyzer.ts / ci-pipeline-analyzer.ts output —
-   * shell/installer/release scripts, CI pipelines/stages/jobs) are build/ship
-   * machinery, never a product interaction surface.
-   *
-   * A capability is demoted on this path only when EVERY resolvable operation
-   * anchor is distribution/CI-shaped — the same "ALL anchors infra" rule as
-   * the entity path. The moment even one operation resolves to a real product
-   * entry point (an http route, or a cli/command backed by ordinary code —
-   * anything NOT `distribution_*`/`ci_*`-shaped), the capability is kept outright: a
-   * deployment-tooling product (e.g. an installer builder) legitimately has
-   * deploy/release capabilities anchored on real entry points, and that
-   * evidence must never be overridden by a coincidental name match.
-   *
-   * NAME FALLBACK — used ONLY when there is no entity anchor AND no resolvable
-   * operation anchor at all (nothing to check evidence against). In that
-   * narrow case a name that reads as build/distribution machinery as its
-   * SUBJECT ("Manage shell scripts", "Run CI pipeline") is a corroborating
-   * signal, never the primary test.
-   */
   private isInfrastructureOnlyCapability(
     capability: SystemCapability,
     entityById: Map<string, CASDataEntity>,
@@ -12691,35 +10297,17 @@ export class AnalyzerOrchestrator {
     const operationsAllDistributionOrCi = operationNodeTypes.length > 0
       && operationNodeTypes.every(isDistributionOrCiNodeType);
 
-    // ZERO ENTITY EVIDENCE. A real (non-CI/non-distribution) operation
-    // anchor — an HTTP route, an event listener, a CLI command — proves only
-    // that the code is REACHABLE, never that it touches a product record.
-    // Live defect this closes: "Provide system fallback" (`entities: []`,
-    // one real `POST /fallback` route) used to short-circuit to `return
-    // false` (kept) on `hasRealOperationAnchor` alone, before the entity
-    // anchor evaluation below ever ran — a route/event trigger is not
     // product evidence by itself. Zero entity evidence must not ship
-    // regardless of what operations exist on it.
     if (anchors.length === 0) {
       if (operationNodeTypes.length === 0) {
-        // Nothing to check evidence against at all; fall back to the name
-        // as a corroborating signal only (unchanged narrow fallback).
         return this.isInfrastructureMachineryName(capability.name);
       }
-      // Has a resolvable operation (possibly a real, non-CI/distribution
-      // one) but NO entity evidence backing it anywhere — infra-shaped by
-      // absence of product evidence, not by name or route shape.
       return true;
     }
 
-    // Real product entry point anchor present AND there is entity evidence
-    // to potentially have been infra-shaped → never demote on entity-name
-    // shape alone; the operation evidence overrides it. (This bypass only
-    // ever applies once the zero-entity case above has been ruled out.)
     if (hasRealOperationAnchor) return false;
 
     const entityAnchorsAllInfra = anchors.every(entity => {
-      // Real product record / produced response → product evidence, keep.
       if (entity.kind === 'persisted-entity' || entity.kind === 'api-response') return false;
       return this.isInfrastructureShapedEntityName(entity.name);
     });
@@ -12727,14 +10315,6 @@ export class AnalyzerOrchestrator {
     return entityAnchorsAllInfra || operationsAllDistributionOrCi;
   }
 
-  /**
-   * True when `name` reads as build/distribution machinery AS ITS SUBJECT —
-   * "Manage shell scripts", "Deploy and manage binaries", "Run CI pipeline" —
-   * rather than merely containing an infra-adjacent word in passing. Used only
-   * as the last-resort signal in `isInfrastructureOnlyCapability` when no
-   * entity or operation anchor evidence is available at all; never a
-   * standalone keyword blocklist elsewhere.
-   */
   private isInfrastructureMachineryName(name: string): boolean {
     const trimmed = String(name || '').trim();
     if (!trimmed) return false;
@@ -12746,101 +10326,31 @@ export class AnalyzerOrchestrator {
   }
 
   private isInfrastructureShapedEntityName(name: string): boolean {
-    // Runtime / lifecycle / process-control shapes. Matched as camelCase
-    // segments so a product noun that merely contains the letters does not trip
-    // (e.g. "Presentation" never yields a "Presence" segment).
     const INFRA_SEGMENT = /^(Sentinel|Sentinels|Runtime|Runtimes|Daemon|Daemons|Spawn|Spawns|Restart|Restarts|Heartbeat|Heartbeats|Watchdog|Supervisor|Bootstrap|Lifecycle|Presence|Invoke|Invokes|Invocation|Runner|Runners|Worker|Workers|Scheduler|Reaper|Janitor|Usage|Uptime|Liveness|Readiness|Hook|Hooks)$/;
     const segments = String(name || '').trim().replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/);
     return segments.some(segment => INFRA_SEGMENT.test(segment));
   }
 
-  // Purpose-verb vocabulary now lives in capability-naming.ts (shared with
-  // the CapabilityDetector producer) — see CAPABILITY_PURPOSE_VERBS there.
-
-  /**
-   * True when `name` is a BARE NOUN label — a single module/type token
-   * ("Gateway", "Wizard", "Exec") or a two-word noun phrase with no leading
-   * purpose verb ("Exec Approval") — rather than a purpose-headed capability
-   * name ("Manage Gateway Connections", "Detect patterns"). The capability
-   * doctrine requires every name to read as a PURPOSE a PM would write, never
-   * a type/module identifier surfaced verbatim.
-   *
-   * DEFECT (measured live on a real analyzed Swift macOS repo, v1.0.116): 24
-   * of the system_capabilities entries were exactly this shape — single
-   * module/type nouns ("Gateway", "Wizard", "Connect", "Channels", "Device",
-   * "Exec", "Agent", "Poll", "Claw", "Canvas", "Cron", "Frame", "Mac", "Pair",
-   * "Hint", "Session", ...) with no leading verb at all. They trace back to
-   * `terminalGroundedCapabilityName`, which strips a trailing invented
-   * behavior suffix ("Management"/"Handling"/...) from the structural label
-   * and returns the bare subject whenever no produced/persisted entity is
-   * available to append — leaving exactly a type/module name with nothing
-   * else.
-   *
-   * Deliberately narrow (only 1 token, or 2 tokens both non-verb-headed) so a
-   * legitimate short label like "Detect patterns" (verb + object) — or any
-   * 3+ word phrase — is never rejected. A single word IS always flagged
-   * regardless of whether it happens to be verb-shaped ("Connect", "Poll"):
-   * a lone word with no object is not a purpose statement.
-   */
   private isBareNounCapabilityLabel(name: string): boolean {
     return sharedIsBareNounCapabilityLabel(name);
   }
 
-  /**
-   * Repairs a bare-noun candidate into a purpose-headed name ("Gateway" ->
-   * "Manage Gateway") the same way the arrow-chain guard above salvages a
-   * head phrase instead of dropping the whole item outright — but ONLY when
-   * `hasAnchorEvidence` says the underlying operations/entities actually
-   * ground this subject as a real capability. Returns undefined (demote —
-   * let the caller drop the candidate) when there is nothing to ground the
-   * derived purpose in.
-   */
   private deriveManagePurposeLabel(subject: string, hasAnchorEvidence: boolean): string | undefined {
     const trimmed = subject.trim();
     if (!trimmed || !hasAnchorEvidence) return undefined;
     return `Manage ${trimmed}`;
   }
 
-  /**
-   * True when `description` is the structural grouping template
-   * ("<Label>: <pattern> operation via <type>" / "<Label>: N operations
-   * (crud, query)") rather than authored prose. Template-shaped only — a real
-   * sentence that happens to contain "operation" never matches.
-   */
   private isStructuralPlaceholderCapabilityDescription(description: string): boolean {
     return sharedIsStructuralPlaceholderCapabilityDescription(description);
   }
 
-  /**
-   * Deterministic evidence rebuild for a placeholder description: names the
-   * capability's REAL operations (entry-point names, humanized) and entry
-   * kinds. Facts only — no interpretive claim. Returns undefined when there
-   * are no operations to ground a sentence in.
-   */
   private rebuildCapabilityDescriptionFromOperations(
     operations: Array<{ name?: string; action?: string; entry_point_type?: string; trigger?: { type?: string; method?: string; path?: string } }>
   ): string | undefined {
     return sharedBuildCapabilityDescriptionFromOperations(operations);
   }
 
-  /**
-   * FINAL-ASSEMBLY sweep for `flow_graph.capabilities` — the structural
-   * grouping catalog CapabilityDetector emits. The bare-noun/placeholder
-   * guards only covered system_capabilities, so a grouping keyed on a raw
-   * token shipped names like "Active"/"Hot" with descriptions like
-   * "Active: query operation via message" (measured live on the v1.0.126
-   * Klauro self-CAS: 163/177 flow-graph capabilities were this shape).
-   * CapabilityDetector now produces evidence-grounded names/descriptions up
-   * front via the SAME shared implementation (capability-naming.ts), so this
-   * sweep is a BACKSTOP for capabilities from other producers/older payloads
-   * and should normally find nothing to repair.
-   * Repairs in place, evidence-grounded only:
-   *  - a bare-noun name whose single dominant operation label is verb-headed
-   *    adopts that operation's humanized label ("Get Hot Spots"); otherwise
-   *    "Manage <subject>" when operations/entry points ground the subject;
-   *  - a template description is rebuilt from the group's real operations.
-   * Never drops entries (flow_graph dependencies reference them by id).
-   */
   private finalizeFlowGraphCapabilities(flowGraph: CASFlowGraph | undefined): void {
     for (const capability of flowGraph?.capabilities || []) {
       const name = String(capability.name || '');
@@ -12856,24 +10366,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Writes the derived flow set into `flow_graph.flows` — the single canonical
-   * home for the flows that `related_flows`, step ids and any other flow_id
-   * reference resolve against.
-   *
-   * THE DEFECT THIS CLOSES: flows were derived at analysis time (to enrich
-   * entry points and invert the capability->flow map) and then DISCARDED, so
-   * the shipped CAS carried hundreds of `flow::…` references and no
-   * collection to resolve them in — `flow_graph` had no `flows` key at all
-   * while `call_chains`/`flow_summary` proved the flows existed and were
-   * ranked. This persists them once, with the SAME ids the references use, so
-   * there is exactly one id scheme per flow and zero dangling references.
-   *
-   * Compact by design (see CASFlowRef): steps/contracts stay derived on demand
-   * by get_flow_concepts. Criticality is carried over from the anchoring call
-   * chain — the same rank-based value flow_summary counts — and simply omitted
-   * for entry-point-rooted flows that have no chain, never guessed.
-   */
   private materializeFlowGraphFlows(
     flowGraph: CASFlowGraph,
     flows: Array<{
@@ -12899,8 +10391,6 @@ export class AnalyzerOrchestrator {
       if (!flow.flow_id || seen.has(flow.flow_id)) continue;
       seen.add(flow.flow_id);
 
-      // `flow_id` is always `flow::<anchor-id>`; the anchor is a call chain id
-      // for terminal-anchored flows and an entry point id otherwise.
       const anchorId = flow.flow_id.startsWith('flow::') ? flow.flow_id.slice('flow::'.length) : undefined;
       const criticality = anchorId ? criticalityByChainId.get(anchorId) : undefined;
       const capabilityIds = [...new Set([
@@ -12924,46 +10414,10 @@ export class AnalyzerOrchestrator {
     flowGraph.flows = refs;
   }
 
-  /**
-   * True when `name` reads as a raw deterministic candidate label (the
-   * bottom-up fact handed to the prompt) rather than AI-authored product
-   * language ("Trade cryptocurrency", not "run_shell_script_release_sh_
-   * docker_read_2_more"). Three generic, evidence-based signals — never a
-   * project-specific keyword list:
-   *   1. Verbatim echo of one of the candidateAreas strings supplied as
-   *      facts — the model returned the input unchanged instead of
-   *      interpreting it.
-   *   2. A truncated evidence-list artifact ("... 2 more") — a label-
-   *      formatting leftover, never a capability name.
-   *   3. File/mechanism-shaped tokens (script extensions, "shell script")
-   *      leaking into the NAME — a deterministic/structural label, not
-   *      product language a PM would use.
-   */
   private isRawCandidateLabelName(name: string, candidateAreas: string[]): boolean {
     const trimmed = name.trim();
     if (!trimmed) return true;
     if (this.looksMechanicallyRawCapabilityLabel(trimmed)) return true;
-    // An exact match against a deterministic candidate area is suspicious
-    // only when that candidate area is ITSELF a raw/mechanical label (a
-    // route/module/call-chain name the AI merely parroted back without any
-    // real comprehension). The deterministic naming pipeline now also
-    // produces well-formed purpose phrases for its candidates (bare-noun
-    // repair, terminal-grounded naming, ...), so an exact match against an
-    // already-clean candidate label is the AI CORROBORATING real structural
-    // evidence, not echoing raw text — rejecting it unconditionally
-    // collapsed the whole catalog to zero on the express-mongoose fixture
-    // (2026-08-09 coverage-gate regression): the single-entity CRUD
-    // candidate area and the AI's own answer both legitimately read "Manage
-    // User", and every one of 3 retry cycles produced the identical,
-    // correctly-anchored name, so the nudge/retry loop could never recover.
-    // "Itself raw" is judged by two independent tells, either one enough:
-    // (a) one of the specific mechanical shapes above, or (b) NOT shaped like
-    // human-authored prose at all (letters/spaces/apostrophes only, 2+ words)
-    // — the fallback the raw-label guard was originally written to catch:
-    // snake_case/slug identifiers and other code-shaped strings that carry
-    // no file extension or arrow but are still plainly not a purpose phrase
-    // (e.g. "run_shell_script_release_sh_docker_read_2_more" — no space, no
-    // literal ".sh", no "N more" with a space, yet unmistakably raw).
     if (candidateAreas.some(area => {
       const areaTrimmed = area.trim();
       return areaTrimmed.toLowerCase() === trimmed.toLowerCase()
@@ -12972,49 +10426,16 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  /**
-   * Shape test for "reads like human-authored prose": letters, spaces, and
-   * apostrophes only, at least two words. Excludes snake_case/kebab-case
-   * identifiers, single tokens, and anything carrying digits or code
-   * punctuation (dots, underscores, hyphens, slashes) — the shapes a
-   * deterministic candidate label takes when it is still a raw route/module/
-   * call-chain slug rather than AI- or repair-authored purpose language.
-   * Used only to judge whether an EXACT match against a candidate area is
-   * suspicious (see isRawCandidateLabelName) — never applied to the AI name
-   * directly, which is judged by looksMechanicallyRawCapabilityLabel instead.
-   */
   private looksLikePurposePhraseShape(trimmed: string): boolean {
     return /^[A-Za-z][A-Za-z' ]*$/.test(trimmed) && trimmed.split(/\s+/).length >= 2;
   }
 
-  /**
-   * The actual raw/mechanical shape tells — file-extension fragments, "+N
-   * more" truncations, "shell script" mentions, call-graph arrow chains, and
-   * runtime-entry-point mechanics. Split out from isRawCandidateLabelName so
-   * the SAME tells can judge a candidate area's own label before treating an
-   * exact match against it as evidence of echoing (see the doc comment on
-   * the exact-match branch above).
-   */
   private looksMechanicallyRawCapabilityLabel(trimmed: string): boolean {
     if (/\b\d+\s+more$/i.test(trimmed)) return true;
     if (/\.(sh|bash|zsh|py|rb|ts|tsx|jsx?|json|ya?ml|env|dockerfile)\b/i.test(trimmed)) return true;
     if (/\bshell\s+script\b/i.test(trimmed)) return true;
-    // Raw call-graph / terminal-chain labels the model echoed as a capability
-    // name instead of a domain purpose: "Run main -> detect_frameworks",
-    // "handleRequest -> parseBody". A domain capability is a Title-Cased noun
-    // phrase; a function-name chain joined by an arrow — or a "Run <symbol>"
-    // mechanical entry label — is a structural traversal path, never a purpose.
-    // Two reliable tells: (a) a "Run <code-identifier>" head followed by an
-    // arrow; (b) any arrow joined to a snake_case token (domain phrases never
-    // contain snake_case — that is unambiguously a code symbol).
     if (/(->|→|»)/.test(trimmed) && /^run\s+[a-z_$][\w$.]*/i.test(trimmed)) return true;
     if (/(->|→|»)/.test(trimmed) && /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(trimmed)) return true;
-    // Mechanical program-entry labels the model echoed as a capability: "Run
-    // .NET Main entry point", "Run the Main entry point", "Execute application
-    // entry point". Naming the runtime entry point IS the structural fact, not a
-    // user purpose — a real capability describes WHAT the program does once it
-    // starts, never "run the entry point". Measured live on a benchmarked C# CAS
-    // (v1.0.85) where "Run .NET Main entry point" shipped as 1 of 5 caps.
     if (/^(run|execute|invoke|start)\b/i.test(trimmed) && /\b(entry\s*point|main\s+method)\b/i.test(trimmed)) return true;
     return false;
   }
@@ -13036,87 +10457,15 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * COMPREHENSION PASS (Camp C) — AI ONLY, or THROW.
-   *
-   * Per docs/cas/DETERMINISM-BOUNDARY.md, the primary domain, the overall
-   * description, and every capability/entity description are MEANING and are
-   * produced ONLY by this AI pass, grounded in the real Camp-B evidence bundle
-   * (dependency manifest incl. ccxt/web3, real languages, entities, external
-   * integrations, deployables, routes). There is NO deterministic comprehension
-   * and NO deterministic fallback: if the model call fails, is unavailable, or
-   * returns an ungrounded result that fails the grounding gate, this THROWS.
-   * `description_source`/`domain_source` are only ever 'ai' / 'manual' / 'reused'.
-   *
-   * The only non-throwing exit is when comprehension is explicitly turned OFF
-   * (KLAURO_AI_INTERPRETATION=false or the feature is disabled): the run is
-   * then STRUCTURE-ONLY — comprehension fields are left UNSET (never seeded with a
-   * deterministic substitute) so Camp-B structure still returns.
-   */
-  /**
-   * The deterministic-candidates-only fallback for the capability catalog,
-   * used when the AI catalog call ran but returned nothing usable. Extracted
-   * so all fallback call sites share one implementation
-   * — see the "AI catalog returned nothing usable" comment at its original
-   * call site for why a raw terminal-chain/shell-script label must never ship
-   * as-is, and the "MODULE SPLIT" comment for why a lone qualifying large
-   * behavior surface is split by handler module rather than shipped as one
-   * merged blob.
-   */
-  /**
-   * True when a capability is really just CRUD over ONE data entity — the shape
-   * a candidate list takes before comprehension raises it to an outcome.
-   *
-   * Evidence-based, not a word list: the test is that the name is a bare
-   * purpose-prefix repair (`bare-noun-purpose-repaired`, stamped by the repair
-   * above) over a subject that IS one of this analysis's own entity names, with
-   * no second entity to relate it to. "Manage Order" beside entity `Order` and
-   * nothing else is a table; "Place an order and take payment" is an outcome.
-   *
-   * Deliberately narrow: it requires the repair marker AND an entity-name match
-   * AND <=1 related entity, so a genuine single-entity capability that comprehension
-   * actually authored (name_source ai/manual/reused, no repair marker) is never
-   * caught by it.
-   */
-  /**
-   * True when a fallback candidate is not grounded in a user-visible outcome and
-   * so must not be published as a capability.
-   *
-   * WHY THE ORIGINAL SHAPE OF THIS TEST WAS WRONG — measured live 2026-08-11:
-   * it required the name's subject to MATCH a known entity, because the case I had
-   * in hand was 165 `Manage <Entity>` rows on one repo. A later run of a different
-   * repo published 24 candidates named after Python modules — `Manage Net`,
-   * `View Infer Web`, `Manage Attentions Onnx`, `Manage Common` — with ZERO
-   * related entities and `authored: 0 of 24`. Matching no entity, they failed the
-   * entity test, `crudShare` computed as 0, and the guard declared the catalog
-   * outcome-shaped. It caught the better case and waved through the worse one.
-   *
-   * The principle is not "reject CRUD-per-entity". It is that a capability is an
-   * outcome a user gets. A name lifted from a filename, with no entity behind it
-   * and no authored comprehension, is further from an outcome than `Manage Song`
-   * ever was. So the test now asks the general question — is there ANY grounding
-   * — in two forms:
-   *   - ungrounded: repaired name, no entities AND no operations. Nothing at all
-   *     ties it to something a user does; the subject is a source-file token.
-   *   - single-entity: repaired name whose whole identity is one table (the
-   *     original case, retained).
-   */
   private isSingleEntityCrudCapability(capability: SystemCapability): boolean {
     const repaired = (capability.criticality_factors || []).includes('bare-noun-purpose-repaired');
     if (!repaired) return false;
     const source = capability.name_source;
     if (source === 'ai' || source === 'manual' || source === 'reused') return false;
-    // UNGROUNDED: no entity and no operation is not a thin capability, it is a
-    // module name wearing a verb. Checked before the single-entity test because
-    // it is the strictly weaker evidence position.
     if ((capability.related_entities?.length || 0) === 0 && (capability.operations?.length || 0) === 0) {
       return true;
     }
     if ((capability.related_entities?.length || 0) > 1) return false;
-    // The repair prefixes a purpose verb onto the raw subject; strip it back off
-    // and ask whether what remains is simply an entity this analysis already
-    // catalogues. Normalised so "Open Claw Chat Session Entry" matches
-    // `OpenClawChatSessionEntry`.
     const subject = String(capability.name || '').replace(/^(manage|view)\s+/i, '');
     if (!subject) return false;
     const normalise = (value: string): string => value.replace(/[^a-z0-9]/gi, '').toLowerCase();
@@ -13125,8 +10474,6 @@ export class AnalyzerOrchestrator {
     return (this.fallbackEntityNameIndex || new Set<string>()).has(normalisedSubject);
   }
 
-  /** Normalised entity names for the analysis in flight, used by the altitude
-   *  guard to recognise a capability whose whole identity is one table. */
   private fallbackEntityNameIndex?: Set<string>;
 
   private applyDeterministicCapabilityFallback(
@@ -13137,16 +10484,6 @@ export class AnalyzerOrchestrator {
     systemCapabilities: SystemCapability[],
     dataEntities: CASDataEntity[] = [],
   ): void {
-    // BARE-NOUN GUARD applies here too, defense-in-depth: these deterministic
-    // candidates ship untouched when the AI catalog never ran (or returned
-    // nothing), so a bare module/type noun like "Gateway" that survived the
-    // structural-label naming pass (terminalGroundedCapabilityName) must be
-    // repaired or dropped here — same as the AI-catalog-item guard above,
-    // just with `related_entities`/`operations` as the anchor evidence
-    // instead of a catalog item's raw `entities` field.
-    // Index this analysis's own entity names so the altitude guard below can
-    // recognise "the capability IS a table" without any hardcoded vocabulary —
-    // the comparison is against evidence from THIS repo, nothing global.
     this.fallbackEntityNameIndex = new Set(
       (dataEntities || [])
         .map(entity => String(entity.name || '').replace(/[^a-z0-9]/gi, '').toLowerCase())
@@ -13171,28 +10508,6 @@ export class AnalyzerOrchestrator {
         };
       })
       .filter((capability): capability is SystemCapability => Boolean(capability));
-    // ALTITUDE GUARD — the candidate list is INPUT, not a catalog.
-    //
-    // Measured live 2026-08-10 across three runs of one repo at one commit:
-    // 8 capabilities, then 3, then 165. The counts tracked how much of the AI
-    // naming pass completed. When the 100s catalog deadline truncates it, this
-    // fallback published every surviving candidate — 165 entries, 158 of them
-    // "supporting", named `Manage <Entity>` / `View <Entity>` one per data
-    // entity ("Manage Message Send", "View Chat Event", "Device Auth Payload").
-    //
-    // That is CRUD-per-table: data, not outcomes. A capability is an outcome a
-    // user gets, readable by a non-technical person — so an entity-shaped list
-    // is not a lower-confidence version of the right answer, it is a DIFFERENT
-    // and much worse shape. Publishing it turned a timeout into a 20x swing in
-    // customer-visible output, which is exactly "meeting a budget by delivering
-    // a worse analysis".
-    //
-    // So: when a fallback catalog is dominated by single-entity CRUD labels,
-    // publish only the entries that carry genuine outcome evidence and let the
-    // comprehension payload report the shortfall (comprehension.partial +
-    // unenriched_capabilities already name it per dimension). Degrade in
-    // CONFIDENCE and COUNT, never in shape — and never to zero, which is why
-    // the strongest entries are kept rather than the whole list dropped.
     const outcomeShaped = validDeterministic.filter(capability => !this.isSingleEntityCrudCapability(capability));
     const crudShare = validDeterministic.length > 0
       ? (validDeterministic.length - outcomeShaped.length) / validDeterministic.length
@@ -13205,20 +10520,6 @@ export class AnalyzerOrchestrator {
       );
       validDeterministic.splice(0, validDeterministic.length, ...outcomeShaped);
     } else if (outcomeShaped.length === 0 && validDeterministic.length > UNGROUNDED_FALLBACK_KEEP) {
-      // NOTHING is grounded — the case the `outcomeShaped.length > 0` condition
-      // above silently let through, publishing all 24 module-named candidates on a
-      // real repo (measured 2026-08-11, `authored: 0 of 24`).
-      //
-      // Two rules are in tension here and both must hold. "Zero capabilities is
-      // essentially never correct" forbids emptying the list; "a capability is an
-      // outcome a user gets" forbids publishing two dozen filenames. The
-      // resolution is to degrade in COUNT and CONFIDENCE, never in shape: keep the
-      // few best-evidenced candidates and drop the tail.
-      //
-      // Ranked by evidence actually present (operations, then entities), not by
-      // name — a name is what we distrust in this branch. The comprehension
-      // payload already reports `partial` with `authored: 0`, so the shortfall
-      // stays visible rather than being smoothed over by a fuller-looking list.
       const ranked = [...validDeterministic].sort((a, b) =>
         (b.operations?.length || 0) - (a.operations?.length || 0)
         || (b.related_entities?.length || 0) - (a.related_entities?.length || 0)
@@ -13326,19 +10627,6 @@ export class AnalyzerOrchestrator {
     return tokens.join('');
   }
 
-  /**
-   * The resource subject behind an operation's `path_or_command`. That field
-   * carries EITHER a route ("/api/v1/invoices/:id") OR — for internal
-   * operations, which anchor on `node.source.file` — a SOURCE FILE PATH.
-   *
-   * DEFECT (live, deployed build): the file case fell through the route logic
-   * unchanged, so `src/nat.rs` yielded the last segment `nat.rs`, the trailing
-   * `s` was stripped as a plural, and `humanizeDisplayName` split the dot into
-   * a word: "Manage Nat R". Same for `.sh` -> " Sh" and `.nix` -> " Nix";
-   * 39 shipped capability names carried a file extension as an English word.
-   * The extension is now removed BEFORE the plural strip, and filesystem
-   * geography can never be the subject.
-   */
   private fallbackRouteResourceSubject(value: string): string | undefined {
     const segments = String(value || '')
       .replace(/\\/g, '/')
@@ -13350,8 +10638,6 @@ export class AnalyzerOrchestrator {
       .filter(segment => !isStoragePathToken(segment))
       .filter(segment => !isLanguageBuiltinDomainToken(segment.toLowerCase()));
     const resource = [...segments].reverse().find(segment => !/(?:_id|Id)$/i.test(segment));
-    // A plural is only stripped when something remains: "s" alone, or a
-    // one-letter stem, is a fragment, not a resource.
     if (!resource) return undefined;
     const singular = resource.replace(/s$/i, '');
     return singular.length >= 2 ? singular : undefined;
@@ -13372,28 +10658,6 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  /**
-   * Post-reconcile quality verdict for the AI capability catalog (defect #33,
-   * catalog VARIANCE). Runs on the RECONCILED output — the exact list that
-   * would ship — because the pre-reconcile checks inside
-   * aiExtractCapabilityCatalog cannot see what reconciliation/guards later
-   * drop (measured live on the v1.0.126 Klauro self-CAS: 3 generic page-view
-   * capabilities shipped as the whole catalog). Returns the concrete failure,
-   * or undefined when the catalog is acceptable. Deterministic-evidence
-   * checks only — never product/name vocabulary:
-   *  - collapse: <=3 capabilities against a candidate pool with 2x+ more
-   *    distinct deterministic families;
-   *  - bare-noun names or structural template descriptions surviving;
-   *  - UNANCHORED capabilities surviving (0 related_entities AND 0
-   *    operations — no resolvable entity, operation, or entry point). This
-   *    is defense-in-depth for the same class the aiExtractCapabilityCatalog
-   *    assembly-loop gate rejects at parse time (see the STRUCTURAL ANCHOR
-   *    GATE there): reconciliation runs AFTER that gate and could in
-   *    principle re-admit an unanchored item (a `manual`/`reused` capability
-   *    carried forward whose referenced entity/operation no longer resolves
-   *    on this run), so this is the same check applied to what would
-   *    actually ship, catching anything the earlier gate didn't see.
-   */
   private catalogQualityFailure(reconciled: SystemCapability[], distinctFamilyCount: number): string | undefined {
     if (reconciled.length === 0) {
       return distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
@@ -13440,9 +10704,6 @@ export class AnalyzerOrchestrator {
       .split(/[^a-z0-9]+/)
       .map(token => this.stemTerminologyToken(token))
       .filter(token => token.length >= 4 && !actionTokens.has(token) && !this.isGenericCapabilityToken(token));
-    // A distinctive subject repeated across most candidates ("order" across
-    // several language implementations) is evidence that they are one family,
-    // not noise to remove. Generic vocabulary is already excluded by tokenize.
     const tokens = candidates.map(candidate => new Set(tokenize(String(candidate.name || ''))));
     const entities = candidates.map(candidate => new Set((candidate.related_entities || []).map(value => String(value).toLowerCase())));
     const parent = candidates.map((_, index) => index);
@@ -13480,16 +10741,6 @@ export class AnalyzerOrchestrator {
     return roots.size;
   }
 
-  /**
-   * POST-RECONCILE QUALITY RETRY (defect #33, catalog VARIANCE): runs the AI
-   * capability catalog, reconciles it, and gates the RECONCILED output with
-   * catalogQualityFailure — a failing cycle is retried (up to 3 cycles total)
-   * with a nudge naming the concrete failure, BEFORE the caller degrades to
-   * the deterministic fallback. Keeps the largest reconciled result across
-   * cycles and logs which path won (E1 'capability_catalog_quality' record +
-   * one console line). Returns [] when every cycle produced nothing — the
-   * caller then applies applyDeterministicCapabilityFallback.
-   */
   private async runCapabilityCatalogWithQualityGate(args: {
     systemName: string;
     enhancedSystemPurpose: EnhancedSystemPurpose;
@@ -13505,9 +10756,6 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[];
     budgetMs: number;
     libraryNames?: string[];
-    /** TASK #107: absolute epoch-ms hard deadline for the WHOLE capability-catalog
-     *  stage (all quality-gate cycles combined), not just a single AI call — see
-     *  aiExtractCapabilityCatalog.hardDeadlineAt and CATALOG_HARD_DEADLINE_MS. */
     hardDeadlineAt?: number;
   }): Promise<SystemCapability[]> {
     const distinctFamilyCount = this.catalogDistinctFamilyCount(args.candidateSnapshot);
@@ -13516,10 +10764,6 @@ export class AnalyzerOrchestrator {
     let cyclesRun = 0;
     let deadlineExceeded = false;
     for (let cycle = 1; cycle <= 3; cycle++) {
-      // TASK #107: check BEFORE starting a new cycle too, not only inside a
-      // single aiExtractCapabilityCatalog call — three quality-gate cycles
-      // each running their own bounded-then-uncapped sequence is exactly the
-      // "no hard cutoff on the whole stage" shape the defect described.
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
         console.error(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
@@ -13590,29 +10834,6 @@ export class AnalyzerOrchestrator {
     return reconciled;
   }
 
-  /**
-   * FINAL-ASSEMBLY bare-noun guard: the last line of defense before
-   * system_capabilities ships into the CAS. The three upstream guard sites
-   * (AI-catalog item loop, recordComprehensionSkipped, and
-   * applyDeterministicCapabilityFallback) each cover a specific path, but the
-   * live re-verify (v1.0.117, real Swift macOS CAS — 25 caps like "Gateway",
-   * "Wizard", "Exec Approval", all name_source UNSET with terminal/entity
-   * criticality factors) proved a path they all miss: the AI naming pass RAN
-   * but did not cover/rename every candidate, so the deliberate structural
-   * placeholder from terminalGroundedCapabilityName survived to the final CAS
-   * as the shipped name. terminalGroundedCapabilityName itself stays
-   * untouched (its bare-subject placeholder contract is correct); THIS sweep
-   * runs at final assembly, after the AI pass has had its chance:
-   *  - name_source 'ai'/'manual'/'reused' -> authored name, never touched;
-   *  - unset + bare-noun label + anchor evidence (related entities or
-   *    operations) -> repaired in place to "Manage <subject>" and tagged
-   *    'bare-noun-purpose-repaired';
-   *  - unset + bare-noun label + NO anchor evidence -> dropped (nothing to
-   *    ground a purpose in), attributed via the E1 record below.
-   * Idempotent: a repaired name is verb-headed, so re-running is a no-op.
-   * Every repair/drop is E1-attributable via one 'capability_finalization'
-   * semantic-decision record (observational only, env-gated off by default).
-   */
   private finalizeSystemCapabilityNames(
     systemCapabilities: SystemCapability[],
     dataEntities: CASDataEntity[] = [],
@@ -13622,11 +10843,6 @@ export class AnalyzerOrchestrator {
     const dropped: string[] = [];
     const kept: SystemCapability[] = [];
     const nameDegradations: NonNullable<EnhancedSystemPurpose['capability_name_degradations']> = [];
-    // Placeholder-DESCRIPTION sweep runs on every entry regardless of
-    // name_source: an AI-authored NAME never legitimizes a structural
-    // template description ("X: query operation via message") — rebuild it
-    // from the capability's own operations, or leave it for the element
-    // description pass when there is nothing to ground a rebuild in.
     for (const capability of systemCapabilities) {
       if (capability.description_source === 'ai' || capability.description_source === 'manual' || capability.description_source === 'reused') continue;
       if (!this.isStructuralPlaceholderCapabilityDescription(capability.description)) continue;
@@ -13642,16 +10858,6 @@ export class AnalyzerOrchestrator {
         continue;
       }
       const name = String(capability.name || '');
-      // PATH-DERIVED GUARD (defect, live deployed build): a capability whose
-      // name could not be AI-generated fell back to a filename/path-derived
-      // structural label and shipped it AS the product capability — file
-      // extensions rendered as words ("Manage Nat R" from `nat.rs`) and, twice,
-      // the hosted service's own storage geography ("Workspaces Prj … Web Tsx").
-      // Such a name is worse than none: it is not a capability, and it leaks
-      // internal infrastructure. Rebuild it from EVIDENCE (related entity /
-      // operation subject) or drop the capability outright — never ship it.
-      // The reason is recorded on `capability_name_degradations` so the
-      // omission is visible to a client rather than silent.
       if (isPathDerivedCapabilityName(name)) {
         if (capability.structural_label && isPathDerivedCapabilityName(capability.structural_label)) {
           delete (capability as Partial<SystemCapability>).structural_label;
@@ -13721,10 +10927,6 @@ export class AnalyzerOrchestrator {
     const deduped = this.dedupeSystemCapabilitiesByName(kept);
     systemCapabilities.splice(0, systemCapabilities.length, ...deduped);
     if (purpose) {
-      // Honesty roll-up (mirrors capability_description_degradations): every
-      // name that could not be AI-generated is counted, and the un-enriched
-      // share is stated. A client can act on this — it is the difference
-      // between "13 coherent capabilities" and "228 structural placeholders".
       if (nameDegradations.length > 0) {
         purpose.capability_name_degradations = [
           ...(purpose.capability_name_degradations || []),
@@ -13761,42 +10963,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * TASK #119 GATE 3 — closes the class GATE 1/2 in
-   * `isUserReachableTerminalCandidate` cannot: a real user-initiated route
-   * that writes a real persisted entity, where the entity is a security/
-   * identity artifact (WebAuthnCredential, Session) rather than a domain
-   * record (Feed). Both are structurally identical facts (real route, real
-   * write) — see docs/audits/CAPABILITY-MECHANISM-AUDIT-2026-08-09.md's
-   * falsification: entity-write/route-type checks cannot separate them.
-   *
-   * The audit's own recommendation (last section, "Recommended structural
-   * discriminator"): make the top-down/journey domain-identity signal a hard
-   * deterministic gate instead of a soft AI-prompt instruction. A candidate
-   * is excluded here only when BOTH:
-   *   - ISOLATED: none of its related_entities are shared with any other
-   *     candidate in the same pool (no cross-candidate entity reference —
-   *     the same entity-overlap proxy the audit used to measure in-degree,
-   *     computed here at generation time instead of post-hoc from flow
-   *     roles, which don't exist yet at this point in the pipeline), AND
-   *   - UNCORROBORATED: none of its subject terms appear in the system's own
-   *     journey/top-down vocabulary (buildJourneyTerminologyTokens — the
-   *     product's own words, never a hardcoded auth/session word list).
-   * A real capability with no other capability depending on it (Discover and
-   * Subscribe to New Feeds, 0 incoming) survives because its terminology
-   * ("feed", "subscribe") IS the product's own vocabulary. WebAuthn/Session
-   * terminology is not, on a feed reader, so it does not.
-   * DELIBERATELY NOT applied to a candidate with nonzero cross-reference
-   * (isolation is necessary, not sufficient, for exclusion) — a widely-
-   * referenced entity can be either genuine substrate (owner's scope-
-   * relativity example) or a genuinely central domain entity (repo C's
-   * "Schedule and manage staff", the audit's own counter-example) and a
-   * blind in-degree threshold would misfire in the direction of deleting
-   * real product truth, which the owner named as the more expensive error.
-   * That class (b) discrimination needs the capability-dependency graph
-   * (`CASCapability.depends_on`/`depended_by` — dead schema per the audit)
-   * and is explicitly out of scope for this pass.
-   */
   private filterIsolatedUncorroboratedCandidates(
     candidates: SystemCapability[],
     userJourneys: CASUserJourney[],
@@ -13823,7 +10989,7 @@ export class AnalyzerOrchestrator {
     };
     const domainTokens = this.buildJourneyTerminologyTokens(userJourneys, projectTextSignal);
     return candidates.filter(candidate => {
-      if (!inScope(candidate)) return true; // infra/behavior-surface candidates: untouched
+      if (!inScope(candidate)) return true;
       if (hasCrossCandidateReference(candidate)) return true;
       const subjectTokens = this.candidateSubjectTerminologyTokens(candidate);
       return subjectTokens.some(token => domainTokens.has(token));
@@ -13845,31 +11011,10 @@ export class AnalyzerOrchestrator {
     dataEntities: CASDataEntity[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     userJourneys: CASUserJourney[] = [],
-    // Deterministic deployable-unit count (collectDeployableEvidence). Grounds
-    // architecture-shape claims (microservices/monolith/...) in the description
-    // gate; undefined = topology unknown = shape claims are uncorroborated.
     deployableCount?: number,
-    // Full node/edge graph — needed ONLY for the entity-description LAST-stage
-    // pass below (ORM relation evidence). Optional so any other caller of this
-    // method is unaffected; the entity pass simply gets no relation evidence
-    // when omitted.
     nodes: CASNode[] = [],
     edges: CASEdge[] = [],
-    // Registration/behavior surfaces (buildSystemCapabilities' separate
-    // `behaviorSurfaces` return value) — passed through so the capability
-    // catalog can (a) let a genuinely LARGE surface family reach the ranked
-    // candidate window as one coarse platform candidate (see
-    // LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD), and (b) seed the near-empty
-    // fallback when the AI catalog returns nothing AND there are no
-    // deterministic domain candidates either. Optional/defaulted so any other
-    // caller is unaffected.
     behaviorSurfaces: SystemCapability[] = [],
-    // Raw entry points — needed ONLY by the near-empty-fallback MODULE SPLIT
-    // below (splitLargeBehaviorSurfaceByModule), to recover the handler
-    // file/module each large-surface entry point lives in (a SystemCapability's
-    // own `operations` sample is capped at 12 of e.g. 215 and carries no file
-    // evidence). Optional/defaulted so any other caller is unaffected; the
-    // split simply no-ops (keeps the single merged surface) when omitted.
     entryPoints: CASEntryPoint[] = []
   ): Promise<void> {
     this.elementDescriptionArtifactType = enhancedSystemPurpose.artifact_type;
@@ -13879,9 +11024,6 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose.inferred_description
     );
 
-    // ---- Structure-only mode: comprehension explicitly OFF. Not a failure;
-    // leave comprehension unset (no deterministic substitute) and return so
-    // Camp-B structure still ships. ----
     if (process.env.KLAURO_AI_INTERPRETATION === 'false' || process.env.KLAURO_AI_INTERPRETATION === '0') {
       this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'disabled-by-env');
       return;
@@ -13899,25 +11041,11 @@ export class AnalyzerOrchestrator {
       return;
     }
 
-    // No AI provider configured at all = the structure-only operating mode (the
-    // deployment/run is not wired for comprehension; in the hosted product a
-    // provider is ALWAYS configured). This is NOT a comprehension failure: we skip
-    // and leave comprehension UNSET — never a deterministic substitute. The throw
-    // case is a provider that IS configured but whose model call fails/ungrounds
-    // (handled below). This keeps "no deterministic comprehension" without failing
-    // structure-only analyses.
     if (!this.hasAIInterpretationProviderConfigured()) {
       this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
       return;
     }
 
-    // TASK #119 GATE 3 (see filterIsolatedUncorroboratedCandidates): applied
-    // to the ONE candidateSnapshot both the AI catalog path
-    // (aiExtractCapabilityCatalog/reconcileCatalogedCapabilities below) and
-    // the deterministic AI-off fallback (applyDeterministicCapabilityFallback)
-    // read from — so an isolated, domain-uncorroborated candidate (WebAuthn/
-    // Session on a feed reader) never reaches EITHER path, regardless of
-    // whether an AI provider is configured for this analysis.
     const candidateSnapshot = this.filterIsolatedUncorroboratedCandidates(
       systemCapabilities.map(capability => ({ ...capability })),
       userJourneys,
@@ -13934,28 +11062,8 @@ export class AnalyzerOrchestrator {
         candidateSnapshot,
       )
     );
-    // TASK #107: the hard deadline is measured from HERE — the AI phase's own
-    // clock (this method runs after all deterministic parsing/graph-building
-    // is done; see aiPhaseStart in preprocessProject, which starts this call
-    // concurrently with the remaining deterministic phases per the task #118
-    // lane split) — never from analysis start, so a slow deterministic pass
-    // elsewhere can't eat into the AI stage's own budget or vice versa.
-    //
     // DO NOT move this Date.now() call earlier (e.g. up to analysis/request
-    // start) or reuse an earlier timestamp for it. This method already runs
-    // AFTER deterministic parsing/graph-building completes only because task
-    // #118 decoupled the AI-enrichment lane pool from the deterministic pool
-    // — that decoupling is WHY "measured from here" equals "AI-only wall
-    // time" today. If that invariant ever changes (this method starts being
-    // invoked earlier, or the lane split is undone), this deadline computation
-    // must move with it, or the cutoff will silently start charging
-    // deterministic parsing time against the AI budget — burning the hard
-    // deadline before AI work even begins and abandoning AI enrichment on
-    // repos where the deterministic phases alone are merely slow, not
-    // degraded. That is exactly the class of bug the latency doctrine
     // forbids: budgets must NEVER be met by delivering an incomplete
-    // analysis, and a mis-measured clock that fires on the wrong thing is a
-    // silent way to violate that, not an enforcement of it.
     const catalogHardDeadlineAt = Date.now() + CATALOG_HARD_DEADLINE_MS;
     const capabilityCatalogPromise = systemCapabilities.length > 0 || userJourneys.length > 0
       ? this.runCapabilityCatalogWithQualityGate({
@@ -14032,12 +11140,6 @@ export class AnalyzerOrchestrator {
       delete descriptionPromptContract.suppliedPrimaryDomain;
       delete descriptionPromptContract.suppliedPurposeType;
     }
-    // #113: this used to overwrite structuralFacts.domainConcepts /
-    // projectTextConcepts / the prompt's core concepts with a hand-written
-    // "klauroSelfConcepts" list for this repo only, biasing the AI's own
-    // narrative toward prepared vocabulary instead of the evidence every
-    // other repo is described from. Removed — this repo now goes through
-    // the same evidence-derived core_concepts path as every other repo.
     const narrativeCoreConcepts = artifactType === 'infrastructure' ? [] : enhancedSystemPurpose.core_concepts;
 
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
@@ -14050,8 +11152,6 @@ export class AnalyzerOrchestrator {
     ]));
     let capabilityTargets: DescriptionTarget[] = [];
 
-    // E1 (observational): compact evidence digest for the semantic dataset. Sizes/
-    // counts/key names only — NO source, NO secrets. See docs/SEMANTIC-MODEL.md.
     const semanticEvidenceDigest = {
       systemName,
       frameworks: frameworks.length,
@@ -14075,25 +11175,7 @@ export class AnalyzerOrchestrator {
     const readOnlyNarrativeRule = observedReadOnly
       ? ' The observed product is a retrieval and review surface. Use affirmative sentences whose product-action verbs are retrieves, presents, returns, views, reviews, compares, or analyzes. Describe what is available to users, not ownership or state transitions. Do not discuss missing abilities or limitations. The domain label must describe the information or review purpose and must not use an ownership-oriented suffix.'
       : '';
-    // Bar reached (2026-08 hosted defect): a non-technical reader — a PM,
-    // designer, marketer — must be able to follow every sentence. Two
-    // prompt-facing labels leaked past that bar even though the AI text was
-    // otherwise grounded: (1) productBehaviorPaths.intent is a GENERATED
-    // journey/capability NAME (e.g. "List conversation import previews"),
-    // and the model, told to "name the product intent", quoted it verbatim
-    // ("The intent 'List conversation import previews' yields...") — internal
-    // vocabulary ("intent") plus a quoted internal label, not a sentence a
-    // customer would recognize; (2) told to describe "how it is built", the
-    // model reached for distinctiveEntities/databaseEntities NAMES and wrote
-    // "operates as a deployable unit that integrates various components like
-    // MemoryCapsule, ProjectBrainPacket, ...", narrating our own internal
-    // entity vocabulary as if it were product framing. Both are downstream of
-    // the SAME instruction bug: "name the X" reads as "use X's literal label
-    // in prose", not "describe what X means in plain language". This clause
-    // is deliberately about PROSE STYLE, not which facts are grounded —
     // narrowing it must never make a legitimately grounded description fail
-    // the separate grounding-gate check (see the 21-raw-mechanism-name
-    // regression this module's history warns against for that gate).
     const noInternalVocabularyRule = ' Never use the words intent, journey, entity, deployable, component, components, artifact, or record type as a label in the prose, and never put an internal name (a journey name, an entity name, a capability name) inside quotation marks — describe what the system does and what a user gets in your own plain words instead of naming or quoting the internal label for it. Never introduce a list of entity/record names with phrasing like "integrates various components like" or "operates as a deployable unit that integrates" — if multiple record types are relevant, name at most one as an ordinary noun inside a real sentence about what happens to it, never as an enumerated list.';
     const semanticRepairTask = artifactType === 'infrastructure'
       ? 'Regenerate the rejected infrastructure description from scratch. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write exactly 4 factual sentences. Use infrastructureDeclarations to name the exact declared resource types, runtime units, providers, replicas, and ports. Explain their declared topology without inferring application behavior from names. Do not hedge, market, discuss source artifacts, or describe scripts and commands. The domain must be a lowercase kebab-case infrastructure/deployment/platform label.'
@@ -14138,10 +11220,6 @@ export class AnalyzerOrchestrator {
         gate_reason: message,
         final_outcome: 'error',
       });
-      // Name the failure CLASS. "the provider never answered" and "the model
-      // answered and the answer was ungrounded" look identical to an operator
-      // otherwise, and they have opposite fixes (retry / credentials / quota vs.
-      // evidence / prompt). See isProviderUnavailableFailure.
       throw new Error(isProviderUnavailableFailure(message)
         ? `Klauro comprehension failed: no AI provider produced a response (${message}). This is a provider-availability failure, not a grounding failure — retry, and check provider credentials, quota and reachability. Comprehension is AI-only; there is no deterministic fallback.`
         : `Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
@@ -14169,11 +11247,6 @@ export class AnalyzerOrchestrator {
     semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
     semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
 
-    // The gate grounds the description against the SAME distinctive evidence the
-    // prompt saw (distinctive entities + declared dependencies + manifest text),
-    // not just the narrow ORM entity list — otherwise a description grounded in
-    // ccxt/DexTrade would be rejected as ungrounded because those facts never
-    // reached the gate.
     const distinctiveEntityNames = this.selectDistinctiveEntityNames(dataEntities);
     const gateEntityGrounding = distinctiveEntityNames.length > 0
       ? Array.from(new Set([...distinctiveEntityNames, ...databaseEntities]))
@@ -14189,22 +11262,6 @@ export class AnalyzerOrchestrator {
       projectTextConcepts: projectTextSignal.concepts,
       deployableCount,
       artifactType,
-      // "Read-only" must be judged from the COMPLETE entry surface, not from
-      // whichever capabilities survived cataloging.
-      //
-      // Measured live 2026-08-11: a repo whose routers declare POST and DELETE
-      // endpoints was judged read-only because its catalog had collapsed to two
-      // capabilities and neither carried a mutating operation. The gate then
-      // rejected the AI's (correct) mention of managing and configuring agents as
-      // a `read-only-product-mutation-claim`, and the customer's payload shipped
-      // identity.description = "" — a blank on the most important field, caused
-      // by a lossy Tier-3 projection standing in for a Tier-1 fact.
-      //
-      // Entry points are the complete, deterministic record of how this system can
-      // be invoked; capabilities are a summary of them that may drop many. A repo
-      // with a DELETE route is not read-only no matter how the catalog turned out,
-      // so the mutation test now reads entry points and exit points directly and
-      // treats the capability operations as one more corroborating source.
       readOnlyProduct: observedReadOnly || (() => {
         const MUTATING_METHOD = /^(?:POST|PUT|PATCH|DELETE)$/i;
         const READ_METHOD = /^(?:GET|HEAD|OPTIONS)$/i;
@@ -14225,10 +11282,6 @@ export class AnalyzerOrchestrator {
     const domainCandidates: string[] = [];
     if (combined.domain) domainCandidates.push(combined.domain);
 
-    // Comprehension is AI-first: seed the AI's own normalized domain candidate
-    // onto the purpose BEFORE validating the description, so the description
-    // grounding gate can ground against the AI domain + concepts (there is no
-    // longer a deterministic domain seed to ground against).
     const firstDomainCandidate = domainCandidates
       .map(c => this.normalizeAIDomainLabel(c))
       .filter((label): label is string => Boolean(label))
@@ -14237,10 +11290,6 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose.primary_domain = firstDomainCandidate;
     }
 
-    // Validate → sanitize → MECHANICAL repair (repair-not-reject): 'too-long'
-    // and single-word 'unsupported-marketing-language' rejections are
-    // deterministic edits of the AI's own text, healed here without burning a
-    // repair re-prompt. Semantic rejections fall through to the AI repair loop.
     let { text: cleaned, validation } = this.acceptAIInterpretationCandidate(
       combined.systemDescription || '',
       enhancedSystemPurpose,
@@ -14248,13 +11297,6 @@ export class AnalyzerOrchestrator {
     );
     if (!validation.ok && !enhancedSystemPurpose.domain_source &&
       firstDomainCandidate === enhancedSystemPurpose.primary_domain) {
-      // The first domain is seeded only so its matching first-pass prose can
-      // be grounded. Once that prose is rejected, carrying the seed into the
-      // repair prompt turns a bad claim into an instruction (for example,
-      // "order-management" repeatedly reintroducing mutation language into a
-      // read-only application). Repairs must start from evidence, not rejected
-      // model output; the candidate remains in domainCandidates and can still
-      // be accepted later if the final description independently grounds it.
       enhancedSystemPurpose.primary_domain = '';
     }
 
@@ -14272,11 +11314,6 @@ export class AnalyzerOrchestrator {
       else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
     }
 
-    // Bounded AI repair re-prompts (up to 2) to fix ungrounded parts — still
-    // AI, still grounded. Each attempt carries the LATEST rejected text and
-    // its specific rejection reason so the model fixes the actual failure
-    // instead of re-rolling blind; mechanically-fixable rejections never reach
-    // here (healed above / below via acceptAIInterpretationCandidate).
     for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
       if (validation.ok && rejectedElements.size === 0) break;
       let repairTimeoutHandle: NodeJS.Timeout | undefined;
@@ -14308,10 +11345,6 @@ export class AnalyzerOrchestrator {
         const repaired = this.parseCombinedInterpretation(repairRaw);
         if (repaired.domain) domainCandidates.push(repaired.domain);
         if (!validation.ok && (repaired.systemDescription || '').trim()) {
-          // Same validate → sanitize → mechanical-repair path as the first
-          // pass. On acceptance we're done; on rejection, adopt the repaired
-          // candidate's text + reason so the NEXT re-prompt (if any) carries
-          // the newest rejection instead of re-litigating the first pass.
           const outcome = this.acceptAIInterpretationCandidate(
             repaired.systemDescription || '',
             enhancedSystemPurpose,
@@ -14338,12 +11371,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // Combined system + element generation is efficient on the normal path,
-    // but a rejected system paragraph should not keep seeing the capability
-    // item payload that caused it to echo implementation mechanics. Make one
-    // final, system-only repair from the compact product evidence. This is a
-    // semantic retry only after a rejected answer; successful analyses pay no
-    // additional latency or tokens.
     for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 2; focusedAttempt++) {
       try {
         const focusedRepairRaw = await aiService.generateComponentDescription({
@@ -14379,39 +11406,7 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // The system_description MUST be AI-grounded — there is no deterministic
-    // SUBSTITUTE (never fabricate replacement prose). But a rejected paragraph
     // must not be FATAL to the rest of comprehension.
-    //
-    // DEFECT (2026-08 blast-radius audit, confirmed live on a client-shaped
-    // codebase whose product legitimately talks to an external service it
-    // does not itself name): this used to throw here, and the throw
-    // propagated out of applyAIInterpretation entirely — past the
-    // capability-catalog splice that had ALREADY landed a full set of
-    // AI-authored capability names a few dozen lines above (see
-    // `catalogOutcome`/`reconciled`), past finalizeSystemCapabilityNames,
-    // past domain application. The deferred-enrichment caller
-    // (enrichAnalysisAI's registered closure) catches ANY throw from this
-    // method and rolls system_capabilities back to the pre-AI raw snapshot
-    // (a DELIBERATE fix for a worse defect: a response half AI-polished,
-    // half stale — see that catch site's own comment), so one rejected
-    // system-level paragraph took the entire catalog down with it — every
-    // capability shipping a raw mechanism name (including at least one
-    // visibly garbled placeholder) with zero AI comprehension anywhere, even
-    // though the capability-naming AI pass had already succeeded and passed
-    // its OWN grounding gate.
-    //
-    // The gate firing was legitimate in spirit (unnamed/unsupported-external-
-    // service-claim: the model named an integration without literally
-    // repeating a name from the externalServices fact list — the natural
-    // shape for a client that talks to a backend it does not itself define)
-    // — this is exactly the class of rejection the per-capability degradation
-    // path below already handles for capability text (see the
-    // `unresolvedAfterRepair` block: "Rejection is right; the blast radius
-    // was not"). The system description gets the same treatment: record the
-    // rejection honestly, ship NO description (never a fabricated one — the
-    // no-substitute doctrine holds), and let comprehension continue so
-    // capability naming/descriptions/domain are unaffected.
     if (!validation.ok) {
       const systemDescriptionReason = validation.reason || 'generated-description-failed-quality-gate';
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_rejected', true, systemDescriptionReason, budgetMs);
@@ -14426,9 +11421,6 @@ export class AnalyzerOrchestrator {
         gate_reason: systemDescriptionReason,
         final_outcome: 'degraded',
       });
-      // Honesty record: never omitted to flatter the run (same convention as
-      // capability_description_degradations below). A consumer asking "why is
-      // system.description missing" gets the real reason, not silence.
       enhancedSystemPurpose.system_description_degradation = {
         reason: systemDescriptionReason,
         failure_class: isProviderUnavailableFailure(systemDescriptionReason) ? 'provider-unavailable' : 'failed-grounding',
@@ -14437,9 +11429,6 @@ export class AnalyzerOrchestrator {
         `[Klauro] system description degraded (no AI comprehension text shipped — reason: ${systemDescriptionReason}). ` +
         `Capability naming, capability descriptions and the primary domain are unaffected and continue.`
       );
-      // Deliberately no `enhancedSystemPurpose.inferred_description` assignment
-      // and no `return`/`throw` — fall through into domain application and
-      // capability-level enrichment below.
     } else {
       enhancedSystemPurpose.inferred_description = cleaned;
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
@@ -14457,11 +11446,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // Apply the AI domain label directly, grounded in the evidence bundle. The
-    // model infers the domain from real dependencies/integrations; we normalize
-    // the shape (kebab-case, 2-4 tokens) but do NOT keyword-stamp it. The first
-    // normalized candidate may already be seeded onto primary_domain (above, so
-    // description grounding could use it) with domain_source still unset.
     let domainApplied = enhancedSystemPurpose.domain_source === 'ai' || enhancedSystemPurpose.domain_source === 'ai-refined';
     for (const candidate of domainCandidates) {
       const label = this.normalizeAIDomainLabel(candidate);
@@ -14473,21 +11457,9 @@ export class AnalyzerOrchestrator {
         ];
         continue;
       }
-      // The pre-seeded first candidate: stamp its AI provenance if a grounded
-      // domain hasn't been applied yet.
       if (label === enhancedSystemPurpose.primary_domain && !domainApplied) {
         const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, projectTextSignal);
         if (!verdict.accepted) {
-          // The pre-seed (applied before description generation, purely so
-          // the description grounding gate could ground against SOME domain
-          // — see firstDomainCandidate above) failed its own domain-grounding
-          // gate. Being first is not a grounding argument: unseed it rather
-          // than shipping an ungrounded label with 'ai' provenance just
-          // because no deterministic domain existed to compare it against.
-          // (Previously this branch stamped domain_source unconditionally —
-          // the verdict was computed but never checked — so a lone AI domain
-          // candidate always shipped regardless of the gate; this closes
-          // that gap.)
           enhancedSystemPurpose.primary_domain = '';
           enhancedSystemPurpose.domain_rejected_candidates = [
             ...(enhancedSystemPurpose.domain_rejected_candidates || []),
@@ -14524,22 +11496,11 @@ export class AnalyzerOrchestrator {
         { label, reason: verdict.reason },
       ];
     }
-    // A domain that is set but whose AI provenance was never stamped (e.g. the
-    // seeded candidate failed the grounding gate) still gets an 'ai' provenance —
-    // it is AI-authored, never a deterministic keyword classification.
     if (enhancedSystemPurpose.primary_domain && !enhancedSystemPurpose.domain_source) {
       enhancedSystemPurpose.domain_source = 'ai';
     }
 
-    // Element (capability) descriptions: AI-applied when accepted; otherwise
-    // routed through the stricter targeted repair pass below.
     const unresolvedCapabilityIds: string[] = [];
-    // The NON-AI text each unresolved capability had BEFORE this pass cleared
-    // it. Retained so a capability whose AI prose never passes the grounding
-    // gate can degrade to its deterministic structural description instead of
-    // ending up blank — see the granular-failure block below. AI-authored text
-    // is deliberately NOT captured: re-labelling rejected model output as
-    // 'deterministic' would launder exactly the prose the gate refused.
     const deterministicCapabilityText = new Map<string, string>();
     for (const target of capabilityTargets) {
       const accepted = acceptedElements.get(target.id);
@@ -14576,26 +11537,6 @@ export class AnalyzerOrchestrator {
         return !capability.description || capability.description_source !== 'ai' || !this.validateElementDescription(capability.description, target).ok;
       });
       if (unresolvedAfterRepair.length > 0) {
-        // DEFECT (2026-07-27 comprehension audit): this used to THROW, which
-        // rejected runAiInterpretation and aborted the ENTIRE L5 pass — the
-        // system description, primary_domain, product_map identity and every
-        // other capability's already-accepted prose all went with it. On a
-        // 27,520-node repo, 2 rejected capabilities out of 59 left the stored
-        // analysis with description null / primary_domain null / domain
-        // "unknown": no answer at all to "what is this system", because two
-        // sentences somewhere in the catalog used a banned word.
-        //
-        // Rejection is right; the blast radius was not. A per-capability
-        // grounding failure is now contained to that capability: it degrades
-        // to its deterministic structural description (description_source
-        // 'deterministic', description_generation.status 'ai_rejected' with
-        // the real reason, so the degradation is visible and never passes as
-        // AI comprehension), and the pass continues.
-        //
-        // The no-deterministic-substitute doctrine is preserved where it
-        // actually matters — the SYSTEM narrative, which still throws above
-        // (search: "ungrounded system description") and has no fallback. Only
-        // the system description failing may fail the system.
         const degraded: Array<{ id: string; name: string; reason: string; failure_class: 'provider-unavailable' | 'failed-grounding' }> = [];
         for (const capability of unresolvedAfterRepair) {
           const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById);
@@ -14604,45 +11545,14 @@ export class AnalyzerOrchestrator {
             : { ok: false as const, reason: 'missing-description' };
           const reason = capability.description_generation?.reason || validation.reason || 'unknown-quality-failure';
           const fallback = deterministicCapabilityText.get(capability.id);
-          // DEFECT (2026-08 grounding audit): the gate above refuses an
-          // ungrounded AI description, but this substitute used to ship
-          // `fallback` UNVALIDATED — it never ran through
-          // validateElementDescription at all. That let a capability on a
-          // benchmarked PHP SOAP-client library ship a name like
-          // "View WSCard" alongside a description like "Infos Management
-          // reads infos records..." (the deterministic text was built from a
-          // different internal label than the one shipped as the name — see the
-          // generateTerminalCapabilityDescription/generateCapabilityDescription
-          // fix that now keeps them in sync at the source). The grounding gate
-          // belongs at THIS layer, not one above it: run the exact same
-          // name/description-agreement check (target-not-grounded — do the
-          // subject's own name tokens appear anywhere in the text?) that AI
-          // text must pass, on the deterministic substitute too. A
-          // capability whose name and description disagree, or whose text
           // fails the same structural/marketing/scaffold checks, must not
-          // ship a description at all — never delete the capability itself,
-          // just its unverifiable prose (see the 'no fallback' branch below).
           const fallbackValidation = fallback ? this.validateElementDescription(fallback, target) : undefined;
           let regeneratedValidation: { ok: boolean; reason?: string } | undefined;
           if (fallback && fallbackValidation?.ok) {
             capability.description = fallback;
             capability.description_source = 'deterministic';
           } else {
-            // DEFECT (2026-08-09 live comprehension audit): there was no
-            // captured deterministic text to fall back to (fresh/never-seeded
-            // capability), or the captured text itself failed the grounding
-            // gate — either way this branch used to delete the description
-            // outright, shipping description_source: 'deterministic' with no
-            // description at all (confirmed on a live 418-file Go repo and a
-            // Django repo: capabilities with a name and nothing else). A
             // capability whose name and description DISAGREE must not ship
-            // unverifiable prose, but "no usable stored text" is not the same
-            // failure — regenerate straight from this capability's own
-            // structural facts (name, operations, related entities) via the
-            // canonical deterministic generator. That text is built from and
-            // grounds on the subject's own name by construction, so
-            // degradation always yields real, honest deterministic text
-            // instead of an empty field.
             const regenerated = this.generateCapabilityDescription(
               capability.name,
               capability.operations,
@@ -14654,23 +11564,13 @@ export class AnalyzerOrchestrator {
               capability.description = regenerated;
               capability.description_source = 'deterministic';
             } else {
-              // The evidence-grounded regeneration itself failed the gate — this
-              // is the no-operations/no-entities capability, where
-              // generateCapabilityDescription's own no-evidence sentence trips
-              // the same generic-phrase filter AI text must pass. Fall back to
-              // the minimal, always-grounded last-resort sentence: it names the
-              // capability and nothing else, so it structurally cannot fail
               // marketing/scaffold/filler checks. A capability must never ship
-              // description_source: 'deterministic' with no description.
               const lastResort = this.lastResortCapabilityDescription(capability.name);
               const lastResortValidation = this.validateElementDescription(lastResort, target);
               if (lastResortValidation.ok) {
                 capability.description = lastResort;
                 capability.description_source = 'deterministic';
               } else {
-                // Should be unreachable given lastResortCapabilityDescription's
-                // fixed shape, but never ship ungrounded prose under ANY
-                // provenance if it somehow still fails.
                 delete (capability as Partial<SystemCapability>).description;
                 capability.description_source = undefined;
               }
@@ -14691,15 +11591,9 @@ export class AnalyzerOrchestrator {
             id: capability.id,
             name: capability.name,
             reason,
-            // Which remediation this needs: retry/credentials/quota, or evidence
-            // and prompt work. Conflating the two sent the 2026-07-27 audit
-            // chasing prompt grounding for what were provider timeouts.
             failure_class: isProviderUnavailableFailure(reason) ? 'provider-unavailable' : 'failed-grounding',
           });
         }
-        // Roll-up so the honesty record is queryable without walking 59
-        // capabilities, and so a regression that degrades the whole catalog is
-        // visible rather than quietly "fine".
         enhancedSystemPurpose.capability_description_degradations = degraded;
         const unavailable = degraded.filter(item => item.failure_class === 'provider-unavailable').length;
         console.error(
@@ -14725,13 +11619,6 @@ export class AnalyzerOrchestrator {
       );
     }
 
-    // Entity descriptions are a lazy enrichment layer, not part of the
-    // required first-pass comprehension contract. Their structural facts,
-    // relations, flows, and capability links are already complete; generating
-    // prose for every entity here added an unbounded catalog-sized AI tail to
-    // every cold analysis. The existing generate_element_description surface
-    // performs this same evidence-grounded work on demand and persists its
-    // evidence fingerprint for invalidation.
     for (const entity of dataEntities) {
       if (entity.description_source === 'ai' || entity.description_source === 'manual') continue;
       entity.description_generation = {
@@ -14750,25 +11637,13 @@ export class AnalyzerOrchestrator {
       stopped_reason: dataEntities.length > 0 ? 'manual-trigger-only' : undefined,
     };
 
-    // The required first-pass comprehension contract is complete. Lazy entity
-    // and node prose does not make the CAS structurally or semantically partial.
     enhancedSystemPurpose.ai_phase_status = 'complete';
     enhancedSystemPurpose.ai_input_fingerprint = aiInputFingerprint;
 
-    // The AI naming pass above has now had its chance; anything still carrying
-    // a bare-noun structural placeholder (name_source unset — the AI catalog
-    // did not cover/rename it) would otherwise ship that placeholder as the
-    // final name. See finalizeSystemCapabilityNames for the live defect this
-    // closes.
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
   }
 
-  /**
-   * Structure-only exit: comprehension is explicitly disabled. Records the skip
-   * WITHOUT writing any comprehension text or a 'deterministic' provenance —
-   * comprehension fields are simply left unset (the run is Camp-B structure).
-   */
   private recordComprehensionSkipped(
     enhancedSystemPurpose: EnhancedSystemPurpose,
     systemCapabilities: SystemCapability[],
@@ -14785,37 +11660,13 @@ export class AnalyzerOrchestrator {
       if (capability.description_source === 'ai' || capability.description_source === 'manual') continue;
       capability.description_generation = { status: 'ai_skipped', attempted: false, reason };
     }
-    // HYGIENE GUARD, structure-only path: no AI pass is coming to notice a
-    // malformed or mechanically-raw label, so this path must apply the SAME
-    // admission bar applyDeterministicCapabilityFallback already applies
-    // when the AI catalog ran but returned nothing — otherwise "comprehension
-    // skipped" (no AI provider configured, or provider briefly unreachable)
-    // is a WORSE outcome than "comprehension unavailable": a raw structural
-    // dump reaches the customer as the product's answer for what it does.
-    // Evidence-required, never a cap on legitimate breadth: a name is only
-    // ever REMOVED for being unparseable (isMalformedCapabilityLabel) or
-    // mechanically raw (isRawCandidateLabelName), never for being one of
-    // many.
     for (let index = systemCapabilities.length - 1; index >= 0; index--) {
-      // Collapse a naming-composition artifact ("job" kind token + "Job"
-      // subject token -> "Job Job") BEFORE the malformed/raw checks, so a
-      // capability that is otherwise fine only fails on the duplication.
       const collapsedName = collapseDuplicateAdjacentWords(String(systemCapabilities[index].name || ''));
       systemCapabilities[index].name = collapsedName;
       if (isMalformedCapabilityLabel(collapsedName) || this.isRawCandidateLabelName(collapsedName, [])) {
         systemCapabilities.splice(index, 1);
       }
     }
-    // BARE-NOUN GUARD, structure-only path: comprehension is being skipped
-    // entirely (no AI pass is coming to overwrite the placeholder name), so a
-    // capability still carrying its raw structural placeholder (name_source
-    // unset — see terminalGroundedCapabilityName) must be repaired NOW or it
-    // ships as a bare module/type noun ("Gateway", "Wizard") with nothing to
-    // fix it later. Repair to "Manage <noun>" when the candidate has real
-    // anchor evidence (related entities/operations); otherwise leave as-is —
-    // there is no richer AI-authored alternative to fall back to here, and an
-    // unadorned but still evidence-backed noun is more honest than inventing
-    // a purpose with nothing behind it.
     for (const capability of systemCapabilities) {
       if (capability.name_source === 'ai' || capability.name_source === 'manual') continue;
       const name = String(capability.name || '');
@@ -14840,20 +11691,10 @@ export class AnalyzerOrchestrator {
     return filterPlausibleExternalServices(externalServices, selfNames);
   }
 
-  /**
-   * A generic/plumbing data-entity name shared by nearly every app (user,
-   * account, session, settings, preferences, generic Portfolio/Strategy CRUD).
-   * These flood the highest-frequency entity list and drown the DISTINCTIVE
-   * domain evidence, so the comprehension grounding down-weights them. This is
-   * an evidence-SELECTION heuristic (which real facts to surface first), NOT a
-   * domain classifier — it never maps a name to a domain label.
-   */
   private isGenericDomainEntityName(entityName: string): boolean {
     const normalized = this.humanizePascalName(entityName).toLowerCase().trim();
     if (!normalized) return true;
     const words = normalized.split(/\s+/).filter(Boolean);
-    // Single generic nouns (or generic-noun + generic-suffix) that carry no
-    // distinctive domain signal on their own.
     const genericHead = new Set([
       'user', 'account', 'session', 'setting', 'settings', 'preference',
       'preferences', 'profile', 'role', 'permission', 'token', 'auth',
@@ -14866,17 +11707,9 @@ export class AnalyzerOrchestrator {
       'portfolio', 'strategy', 'plan', 'subscription', 'billing', 'invoice',
       'payment', 'customer', 'contact', 'address',
     ]);
-    // If every word in the name is a generic head noun, the entity is generic.
     return words.every(word => genericHead.has(word) || genericHead.has(word.replace(/s$/, '')));
   }
 
-  /**
-   * Surface the DISTINCTIVE data entities for the comprehension grounding:
-   * domain-specific names (DexTrade, WhaleTransaction, OhlcvCandle,
-   * PreflightDecision) ranked ahead of the generic Portfolio/Strategy/User CRUD
-   * that every app shares. Evidence SELECTION only — the AI still infers what
-   * the domain IS from these real entity names; nothing here labels a domain.
-   */
   private selectDistinctiveEntityNames(dataEntities: CASDataEntity[], limit = 20): string[] {
     const seen = new Set<string>();
     const distinctive: string[] = [];
@@ -14891,8 +11724,6 @@ export class AnalyzerOrchestrator {
       if (this.isGenericDomainEntityName(name)) generic.push(name);
       else distinctive.push(name);
     }
-    // Distinctive first; backfill with generic only if we have room, so the
-    // list is never empty for a purely-generic schema.
     return [...distinctive, ...generic].slice(0, limit);
   }
 
@@ -14905,16 +11736,10 @@ export class AnalyzerOrchestrator {
       ...((structuralFacts.capabilities as string[]) || []),
       ...((structuralFacts.domainConcepts as string[]) || []),
       ...((structuralFacts.distinctiveEntities as string[]) || []),
-      // Terminal signal (the strongest domain evidence): ranked terminal
-      // entities/capabilities/stages + the weighted seed text. A description
-      // that names the domain the terminal segment implies must ground on them.
       ...((structuralFacts.terminalOutputs as string[]) || []),
       ...((structuralFacts.terminalCapabilities as string[]) || []),
       ...((structuralFacts.nearTerminalStages as string[]) || []),
       ...(structuralFacts.terminalDomainSeed ? [String(structuralFacts.terminalDomainSeed)] : []),
-      // Declared dependencies and the manifest self-description are real
-      // grounding facts: a description that names the domain the deps imply
-      // (ccxt/web3 => "crypto") must be able to ground on them.
       ...((structuralFacts.libraries as string[]) || []),
       ...(structuralFacts.manifestDescription ? [String(structuralFacts.manifestDescription)] : []),
       ...databaseEntities,
@@ -14992,21 +11817,9 @@ export class AnalyzerOrchestrator {
     const tokens = cleaned.split(/[\s-]+/).filter(Boolean);
     if (tokens.length < 2 || tokens.length > 4) return undefined;
     if (tokens.some(token => token.length < 3 || token.length > 24)) return undefined;
-    // Shape normalization ONLY (kebab-case, 2-4 tokens). No keyword stamps: the
-    // AI's evidence-grounded label is used as-is. The hardcoded solana/audio/
-    // venue/card-game/market-simulation remaps were the garbage generators and
-    // were deleted.
     return tokens.join('-');
   }
 
-  /**
-   * Domain authority: the AI may NARROW an anchored deterministic domain or
-   * label a weak one, but it may never replace product identity with the
-   * plumbing vocabulary every codebase shares, and when terminal outputs are
-   * known the label must be anchored in them. (Ground-truth audit 2026-06-12:
-   * unconstrained AI labels produced a user-identity-management epidemic
-   * across 15 repos including two regressions of correct domains.)
-   */
   private static readonly PLUMBING_DOMAIN_TOKENS = new Set([
     'user', 'users', 'identity', 'auth', 'authentication', 'login', 'account', 'accounts',
     'session', 'sessions', 'menu', 'serialize', 'serialization', 'deserialize', 'string',
@@ -15030,24 +11843,13 @@ export class AnalyzerOrchestrator {
     const stem = (token: string) => token.slice(0, Math.min(6, token.length));
     const labelTokens = label.split('-').filter(token => token.length > 2 && token !== 'management');
     const currentDomainTokens = (enhancedSystemPurpose.primary_domain || '').split('-').filter(Boolean);
-    // NOTE: the hardcoded repo-name/brand domain overrides, the reserved-label
-    // rules (card-game-platform, venue-booking, codebase-analysis), and the
-    // keyword mixed-family gate were the "Solana arbitrage" garbage generators
-    // and were deleted. The AI infers the domain from the real evidence bundle;
-    // the only checks that remain are STRUCTURAL grounding: the label must be
-    // grounded in the AI description/concepts and (when journeys write terminal
-    // entities) anchored in those real product outputs.
     if (labelTokens.some(token =>
       currentDomainTokens.some(current => current !== token && current.startsWith(token) && current.length - token.length >= 2)
     )) {
       return { accepted: false, refined: false, reason: 'truncated-domain-token' };
     }
     const currentTokens = new Set(currentDomainTokens.map(stem));
-    // Anchoring vocabulary comes from WRITE terminals (real product outputs).
-    // When journeys never write extractable entities there is no terminal
     // truth to anchor against — the gate must not reject grounded AI labels
-    // using read/stage residue as a fake anchor (alpha_engine class: the AI
-    // correctly proposed allocation/leverage labels and was vetoed).
     const writeEntities = (this.activeTerminalSignal?.ranked_entities || [])
       .filter(entity => entity.write_journeys > 0);
     const terminalVocabulary = new Set<string>();
@@ -15064,21 +11866,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // Dependency-name-salience guard (EVIDENCE-SHAPE check, not a keyword
-    // categorizer — it never inspects WHICH dependency or WHICH domain was
-    // named, only which FACT CATEGORY grounds the label's tokens). A domain
-    // label whose every meaningful token is explainable ONLY by a raw
-    // dependency/package name — and finds no independent support in the
-    // terminal-write vocabulary above, the repo's own README title/overview,
-    // or its manifest description — is rejected. Live defect this backstops:
-    // a macOS menu-bar utility (deps: an auto-updater framework + a logging
-    // library, no security-specific dependency at all) shipped primary_domain
-    // "security-scanning-tool" with nothing but the dependency list behind
-    // it — the deterministic-domain self-comparison below (currentTokens vs
-    // labelTokens) is a no-op on a first-ever AI domain seed (primary_domain
-    // IS the candidate at that point), so this check does not rely on
-    // currentTokens at all; it only asks whether independent, non-dependency
-    // evidence exists.
     if (labelTokens.length > 0) {
       const tokenize = (text: string): string[] =>
         String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length > 2);
@@ -15106,23 +11893,16 @@ export class AnalyzerOrchestrator {
     const inTerminal = (token: string) => terminalVocabulary.has(stem(token));
     const inCurrent = (token: string) => currentTokens.has(stem(token));
 
-    // Plumbing labels: every meaningful token is shared plumbing vocabulary.
-    // Allowed only when the terminal outputs themselves are that plumbing
-    // (an identity service whose journeys terminate in User/Claim writes).
     const allPlumbing = labelTokens.length > 0 &&
       labelTokens.every(token => AnalyzerOrchestrator.PLUMBING_DOMAIN_TOKENS.has(token));
     if (allPlumbing && !labelTokens.some(inTerminal)) {
       return { accepted: false, refined: false, reason: 'generic-plumbing-label' };
     }
 
-    // Terminal anchoring: when journeys told us what the system produces,
-    // the label must touch that vocabulary or the current domain.
     if (terminalVocabulary.size > 0 && !labelTokens.some(token => inTerminal(token) || inCurrent(token))) {
       return { accepted: false, refined: false, reason: 'not-anchored-in-terminal-outputs' };
     }
 
-    // Anchored deterministic domains may only be narrowed, never replaced
-    // sideways: the label must overlap the current domain or its terminals.
     if (enhancedSystemPurpose.domain_anchored && !labelTokens.some(token => inCurrent(token) || inTerminal(token))) {
       return { accepted: false, refined: false, reason: 'not-a-refinement-of-anchored-domain' };
     }
@@ -15173,11 +11953,6 @@ export class AnalyzerOrchestrator {
       projectTextSignal?: ProjectTextSignal;
       frameworks?: string[];
       includeEntities?: boolean;
-      // Full evidence bundle for entity descriptions (LAST-stage pass): ORM
-      // relation graph, the FULL capability set (not just the ones this call
-      // is describing — an entity-only call still needs to know which
-      // already-cataloged capabilities serve it), and journeys. All optional
-      // so existing capability-only callers are unaffected.
       nodes?: CASNode[];
       edges?: CASEdge[];
       allCapabilitiesForEvidence?: SystemCapability[];
@@ -15200,15 +11975,6 @@ export class AnalyzerOrchestrator {
       capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
       journeysByEntityName: this.buildJourneysByEntityName(context.userJourneys || []),
     } : undefined;
-    // PRIORITY ORDERING (evidence-richness first): entity targets are sorted
-    // by priorityScore — descending, so the most domain-central entities
-    // (capability membership + journey participation + ORM relations +
-    // lineage) are batched FIRST. When the wall-clock budget below cuts the
-    // pass short, it drops the tail of this ordering — the least-connected
-    // entities — instead of an arbitrary catalog-order suffix (previously a
-    // budget cutoff could describe a peripheral entity like AdminFunction
-    // while a domain-central one like DriveAlert never got reached). Sorting
-    // only the entity slice, never the capability targets ahead of it.
     const entityTargets = context.includeEntities
       ? entities.map(entity => this.entityDescriptionTarget(entity, entityTargetContext))
           .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
@@ -15222,22 +11988,6 @@ export class AnalyzerOrchestrator {
       ? allTargets.slice(0, configuredLimit)
       : allTargets;
 
-    // BUDGET/BATCH scaling: a flat 15s @ batch-of-4 only gets through ~6
-    // batches (~24 targets) regardless of how many entities the repo has —
-    // on a 112-entity repo that is 23/112 coverage, flat, no matter the repo
-    // size. Both levers below scale with the actual target count so a larger
-    // catalog gets meaningfully more coverage in roughly the same number of
-    // AI round trips, rather than the same fixed handful of round trips
-    // regardless of size:
-    //  - batchSize grows toward the provider's per-call cap (12) so each
-    //    round trip covers more targets (batching across the AI phase,
-    //    not just increasing wall-clock);
-    //  - budgetMs grows with the number of concurrency-bounded rounds the
-    //    scaled batch size still needs, capped well under the ~35s the
-    //    comprehension pass (KLAURO_AI_INTERPRETATION_BUDGET_MS, 20s) plus
-    //    this entity pass already spend sequentially per analysis today, so
-    //    the overall AI-phase latency budget for one analysis run doesn't
-    //    balloon on large repos.
     const concurrency = aiConcurrencyLimit();
     const configuredBatchSize = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '');
     const defaultBatchSize = Math.max(4, Math.min(12, Math.ceil(targets.length / Math.max(1, concurrency * 3))));
@@ -15245,24 +11995,7 @@ export class AnalyzerOrchestrator {
       ? configuredBatchSize
       : defaultBatchSize));
     const estimatedRounds = Math.max(1, Math.ceil(targets.length / Math.max(1, batchSize * concurrency)));
-    // REPAIR-AWARE per-round latency. Measured happy-path batch latency (70B via
-    // DeepInfra, cold cache) is ~4-8s per round, but a round whose batch trips the
-    // quality gate is NOT one round-trip: it fans out to a batch-repair call PLUS
-    // one SERIAL individual-repair call per still-failing target (see the repair
-    // block below). A single gate-heavy round therefore costs several round-trips.
-    // The prior 7000ms estimate assumed zero repair overhead, so a 112-entity repo
-    // budgeted only ~21s and left ~half the entities never attempted once repairs
-    // ate the clock. 10000ms folds in modest repair headroom without ballooning the
-    // AI-phase latency for the common (low-rejection) case, where the pass still
-    // finishes well under budget and returns early.
     const ROUND_LATENCY_MS = 10000;
-    // Ceiling for the AUTO-scaled budget (an explicit env override still wins). The
-    // entity pass is the LAST comprehension pass; on large entity sets the prior 45s
-    // cap could still truncate coverage even with repairs behaving. 75s bounds the
-    // worst case while giving big catalogs enough rounds to cover the tail; it is
-    // only ever reached on repos with many concurrency-bounded rounds, and the pass
-    // returns as soon as every target is described (it does not spend the full
-    // budget when work finishes early).
     const MAX_SCALED_BUDGET_MS = 75000;
     const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
     const unclampedBudgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
@@ -15319,10 +12052,6 @@ export class AnalyzerOrchestrator {
 
     const byId = new Map<string, DescriptionTarget>(targets.map(target => [target.id, target]));
 
-    // Each batch's prompt depends only on its own items, so the batches are
-    // independent and run concurrently (bounded) rather than one-after-another.
-    // Every provider attempt has its own timeout. There is deliberately no
-    // shared shrinking clock that can cause later required batches to vanish.
     const batches: DescriptionTarget[][] = [];
     for (let i = 0; i < targets.length; i += batchSize) batches.push(targets.slice(i, i + batchSize));
 
@@ -15449,7 +12178,6 @@ export class AnalyzerOrchestrator {
               individualRepairs.set(target.id, individualDescription);
             }
           } catch {
-            // Fall through to deterministic retention with the existing rejection reason.
           }
         }
 
@@ -15463,13 +12191,7 @@ export class AnalyzerOrchestrator {
             ? this.validateElementDescription(repairedDescription, byId.get(target.id) || target)
             : { ok: false, reason: originalValidation.reason || 'generated-description-failed-quality-gate' };
           const individualDescription = originalValidation.ok || repairedValidation.ok ? undefined : individualRepairs.get(target.id);
-          // Element descriptions are AI-only: no curated/retained deterministic
-          // fallback. If no AI-authored, grounded description survives, the
-          // element description is left unset (never a 'deterministic' provenance).
           const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription;
-          // E1 (observational): one comprehension-decision record per element,
-          // with a decision_type/prompt_version specific to entities vs.
-          // capabilities so the semantic dataset can distinguish the two gates
           // — see docs/SEMANTIC-MODEL.md. NEVER changes the outcome above.
           recordSemanticDecision({
             ts: Date.now(),
@@ -15483,11 +12205,6 @@ export class AnalyzerOrchestrator {
               evidenceSummaryCount: target.evidenceSummary?.length || 0,
               lifecycle: target.lifecycle,
             },
-            // Log the model's RAW output — the accepted final when one survived,
-            // otherwise the rejected candidate that failed the gate (original,
-            // then repair, then individual-repair). Without this, a rejection
-            // logged `undefined` and the rejected text was unrecoverable, which
-            // defeats the dataset's purpose of explaining WHY the gate rejected.
             raw_output_excerpt: description || originalDescription || repairedDescription || individualDescription,
             parse_ok: Boolean(originalDescription),
             gate_verdict: description ? 'accepted' : 'rejected',
@@ -15534,13 +12251,6 @@ export class AnalyzerOrchestrator {
       }
     });
 
-    // HONESTY: roll up what this pass actually achieved. `described` reads
-    // back from the entities themselves (description_source === 'ai') rather
-    // than re-deriving from batch bookkeeping, so it reflects the real
-    // end-state even if a later step in this same pass overwrote a value.
-    // `attempted` distinguishes "we sent it to the AI and it was
-    // rejected/failed" from "the budget ran out before we ever tried" — both
-    // count against `described` but only the former is an AI-quality gap.
     const describedCount = entities.filter(entity => entity.description_source === 'ai').length;
     const attemptedCount = entities.filter(entity => entity.description_generation?.attempted).length;
     recordEntityCoverage(
@@ -15584,8 +12294,6 @@ export class AnalyzerOrchestrator {
         sourceAreas.length > 0 ? `owned by: ${sourceAreas.join(', ')}` : '',
         capability.criticality ? `criticality: ${capability.criticality}` : '',
       ].filter(Boolean),
-      // Resolve entity ids to human names so the prompt (and grounding) see
-      // real domain vocabulary instead of opaque ids.
       relatedEntities: capability.related_entities.map(id => entityNamesById?.get(id) || id),
       relatedDomains: capability.related_domains,
       readOnly,
@@ -15594,11 +12302,6 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * Captures the system-level vocabulary used to legitimize marketing-flagged
-   * words in element descriptions — same grounding sources (domain, core
-   * concepts, deterministic overview) the system description validator uses.
-   */
   private setElementDescriptionGrounding(
     domain?: string,
     concepts?: string[],
@@ -15612,24 +12315,12 @@ export class AnalyzerOrchestrator {
   }
 
   private sanitizeElementDescriptionCandidate(description: string, target: DescriptionTarget): string | undefined {
-    // Same hygiene stack as the system-description path (cleanGenerated... +
-    // repairStrippedSentenceGrammar). The split — grammar repair applied to
-    // system descriptions but NOT to capability descriptions — is what let
-    // ungrammatical capability text reach production.
     const cleaned = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(description));
     if (!cleaned) return undefined;
     const validation = this.validateElementDescription(cleaned, target);
     if (validation.ok) return cleaned;
-    // VALIDATION, NOT MUTATION. Marketing language used to be surgically
-    // deleted mid-sentence here, which shipped ungrammatical prose to
-    // customers ("Surfaces idiomatic patterns and for codebase components"
-    // after "best practices" was excised). A rejected description is returned
-    // as undefined so the caller's repair/regeneration path produces a NEW
-    // grounded sentence — a description is either accepted whole or rewritten
-    // by the model, never edited word-by-word.
     return undefined;
   }
-
 
   private isCodeIdentifierSubjectToken(token: string): boolean {
     if (token.length <= 3) return true;
@@ -15642,17 +12333,6 @@ export class AnalyzerOrchestrator {
     ]).has(token);
   }
 
-  /**
-   * FULL evidence bundle for an entity description — authored LAST in the
-   * pipeline (docs/cas/DETERMINISM-BOUNDARY.md / user doctrine: entity
-   * descriptions are meaning, produced only here, grounded in everything else
-   * comprehension has already established): the entity's own fields, its ORM
-   * relations to other entities, the lineage nodes that read/write it, the
-   * capabilities it serves, and the journeys it appears in. `context` is
-   * optional so existing manual single-entity callers (description-
-   * enrichment.ts's own entity path) keep working without it; the LAST-stage
-   * batch pass below always supplies it.
-   */
   private entityDescriptionTarget(
     entity: CASDataEntity,
     context?: {
@@ -15681,19 +12361,8 @@ export class AnalyzerOrchestrator {
         ...servingCapabilities.slice(0, 6).map(name => `serves capability: ${name}`),
         ...journeys.slice(0, 6).map(name => `appears in journey: ${name}`),
       ],
-      // Related-entity/domain vocabulary for the prompt AND the grounding gate
-      // (relatedDomains legitimizes marketing-flagged words the same way it
-      // does for capabilities — see validateElementDescription).
       relatedEntities: relations.map(rel => rel.targetName),
       relatedDomains: servingCapabilities,
-      // Evidence-richness score for pre-batch priority ordering (see
-      // applyAIElementDescriptions / DescriptionTarget.priorityScore doc).
-      // Capability membership and journey participation are weighted highest
-      // — they mean this entity is a first-class participant in the system's
-      // already-established comprehension (a domain-central entity like
-      // DriveAlert), not just a table with traffic. ORM relations come next
-      // (structurally connected), and raw lifecycle writer/reader counts are
-      // the weakest signal (a busy CRUD table isn't necessarily meaningful).
       priorityScore:
         servingCapabilities.length * 4 +
         journeys.length * 3 +
@@ -15703,24 +12372,12 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * ORM relation graph keyed by SOURCE entity name (lowercased) — the same
-   * `references`-edge convention every ORM analyzer emits (Doctrine, TypeORM,
-   * Prisma, MikroORM, Eloquent, …; see buildDatabaseSchema's "Edge-based
-   * relations" pass and DoctrineAnalyzer.emitEntityGraph). Named entity, not
-   * node id, because a CASDataEntity's id scheme differs from its originating
-   * graph node's id.
-   */
   private buildEntityRelationsByName(
     nodes: CASNode[],
     edges: CASEdge[],
     entities: CASDataEntity[] = [],
   ): Map<string, Array<{ targetName: string; relationType: string; field?: string }>> {
     const byName = new Map<string, Array<{ targetName: string; relationType: string; field?: string }>>();
-    // DATA relations only. An entity description grounded on
-    // "relates to <a UI component> (implements)" is worse than no relation
-    // evidence at all, and structural composition is not what a reader means
-    // by an entity's relations.
     const graph = extractEntityRelations({ nodes, edges, dataEntities: entities });
     for (const [key, relations] of graph.dataByEntityNameLower) {
       byName.set(key, relations.map(relation => ({
@@ -15729,8 +12386,6 @@ export class AnalyzerOrchestrator {
         field: relation.field,
       })));
     }
-    // Relations already persisted on the entity (analysis-time source-decorator
-    // evidence the stored graph does not carry) are merged in, not replaced.
     for (const entity of entities) {
       const key = entity.name.toLowerCase();
       const persisted = (entity.relations || []).filter(relation => relation.kind === 'data');
@@ -15748,8 +12403,6 @@ export class AnalyzerOrchestrator {
     return byName;
   }
 
-  /** Which capabilities (by name) reference each entity id, via
-   *  `capability.related_entities`. */
   private buildCapabilitiesByEntityId(capabilities: SystemCapability[]): Map<string, string[]> {
     const byEntityId = new Map<string, string[]>();
     for (const capability of capabilities) {
@@ -15762,9 +12415,6 @@ export class AnalyzerOrchestrator {
     return byEntityId;
   }
 
-  /** Which journeys (by name) touch each entity, keyed by entity NAME
-   *  (lowercased) — journeys reference entities by name in
-   *  terminal_effects.entities_written/read and terminal_entities[].name. */
   private buildJourneysByEntityName(journeys: CASUserJourney[]): Map<string, string[]> {
     const byEntityName = new Map<string, string[]>();
     const add = (entityName: string | undefined, journeyName: string) => {
@@ -15871,19 +12521,6 @@ export class AnalyzerOrchestrator {
     return shared;
   }
 
-  /**
-   * OUTPUT HYGIENE ONLY — shape-based, vocabulary-free, and applied to EVERY
-   * AI-generated description (system, capability, entity, entry point alike).
-   *
-   * CARDINAL: this function must never map one phrase's MEANING onto another.
-   * It removes transport artifacts the model wraps its prose in (markdown
-   * fences, bold/heading/bullet markers, backticks, stray quotes), normalizes
-   * whitespace/punctuation spacing, restores sentence-initial capitalization,
-   * collapses an accidental doubled word, and drops instruction-shaped
-   * sentences echoed back from the prompt. Nothing here inspects or rewrites
-   * domain vocabulary: a description that says the wrong thing is REJECTED by
-   * the validators and regenerated, never silently reworded.
-   */
   private cleanGeneratedDescriptionText(description: string): string {
     return this.stripInstructionShapedTails((description || '')
       .replace(/^```(?:text|markdown|json)?/i, '')
@@ -15893,9 +12530,6 @@ export class AnalyzerOrchestrator {
       .replace(/^\s*[-*]\s+/gm, '')
       .replace(/`([^`]+)`/g, '$1')
       .replace(/`/g, '')
-      // Accidental doubled word ("... workflows workflows ..."), shape-based:
-      // the SAME token repeated back-to-back is a generation stutter, never
-      // meaning. No word list — any repeated token collapses.
       .replace(/\b([A-Za-z][A-Za-z-]*)(\s+)\1\b/g, '$1')
       .replace(/\s*\n+\s*/g, ' ')
       .replace(/\s+/g, ' ')
@@ -15906,21 +12540,6 @@ export class AnalyzerOrchestrator {
       .trim());
   }
 
-  /**
-   * Deterministic output-hygiene post-filter, applied to EVERY AI-generated
-   * description (system_description and element descriptions alike, via
-   * cleanGeneratedDescriptionText) — never vocabulary/domain-specific. A live
-   * defect (2026-07-20, quality-iter-1): a prompt instruction phrased as a
-   * directive about the text itself ("system_description must state that ...
-   * and must name X as the dominant unanalyzed language") got echoed verbatim
-   * — twice — into the stored, customer-facing description instead of being
-   * followed. The prompt-shape fix (languageCoverageFact/Instruction above)
-   * addresses the root cause; this is the belt-and-suspenders net for ANY
-   * instruction-shaped sentence that leaks through from ANY prompt, present or
-   * future — it targets the SHAPE of self-referential directive language
-   * ("must state", "must name X as Y", "you should ..."), not any specific
-   * vocabulary or fact.
-   */
   private stripInstructionShapedTails(text: string): string {
     if (!text) return text;
     const instructionShaped = /\bmust\s+(?:state|name|mention|specify|note|acknowledge|include)\b|\bshould\s+(?:state|name|mention|specify|note|acknowledge)\b|\byou should\b/i;
@@ -15931,10 +12550,6 @@ export class AnalyzerOrchestrator {
     if (sentences.length <= 1) return text;
     const kept = sentences.filter(sentence => !instructionShaped.test(sentence));
     if (kept.length === sentences.length) return text;
-    // If every sentence was instruction-shaped, fall back unchanged rather
-    // than returning an empty description — downstream grounding/length gates
-    // will reject empty text and trigger the AI repair loop, which is the
-    // correct outcome for a wholesale-garbage candidate.
     if (kept.length === 0) return text;
     return kept.join(' ');
   }
@@ -15991,8 +12606,6 @@ export class AnalyzerOrchestrator {
     if (description) {
       target.description = description;
     }
-    // Only ever an AI/manual/reused provenance is written; a skip/failure leaves
-    // description_source unset (comprehension is AI-only — no 'deterministic').
     if (source !== undefined) {
       target.description_source = source;
     }
@@ -16013,13 +12626,7 @@ export class AnalyzerOrchestrator {
     reason?: string,
     budgetMs?: number
   ): void {
-    // Provenance is only stamped when a description was actually AUTHORED. A
-    // failed/rejected AI pass (status ai_failed / ai_rejected) authored NO text,
     // so it must not claim `description_source:'ai'` over an empty description —
-    // that surfaces as "source: ai, description: ''" downstream (a lie). The
-    // attempt is still recorded via description_generation.status. Comprehension
-    // is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): no source is also correct
-    // here, since there is no deterministic substitute to attribute.
     const authored = status !== 'ai_failed' && status !== 'ai_rejected';
     if (authored) {
       enhancedSystemPurpose.description_source = source;
@@ -16033,23 +12640,8 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * Coarse stage bucket a raw per-call timing-phase name (as passed to the
-   * `logTiming` closure in executeAnalysis) belongs to, using the SAME
-   * function-call boundaries the orchestrator's main path already has —
-   * no restructuring, just naming what already runs where. Shared by
-   * `buildTimingsBlock` (the compact 6-bucket `output.timings.stages`) and
-   * `stampPhaseTimings` (which further folds these into the 5-entry
-   * `analysis_phases` catalog). Instrumentation only.
-   */
   private static readonly TIMING_STAGE_OF = (phase: string): string | undefined => {
     if (phase === 'detectAnalyzers') return 'scan';
-    // NOTE: 'languageAnalyzers' is a WRAPPER around the per-language
-    // `language_<id>` calls right above it in executeAnalysis — its window
-    // fully contains theirs. Deliberately excluded here (returns undefined)
-    // so its duration is not double-counted on top of the language_* entries
-    // it wraps; frameworkAnalyzers has no such nested per-analyzer timing, so
-    // it stands on its own.
     if (phase === 'frameworkAnalyzers' || phase.startsWith('language_')) return 'parse';
     if (phase === 'pp_aiInterpretation' || phase === 'pp_enhancedPurpose') return 'ai_enrichment';
     if (phase === 'pp_enrichNodes' || phase === 'pp_testData') return 'decorators';
@@ -16058,20 +12650,7 @@ export class AnalyzerOrchestrator {
     return undefined;
   };
 
-  /**
-   * Which `analysis_phases` catalog entry (buildAnalysisPhases) a raw timing
-   * phase's work counts toward, matched against each catalog entry's own
-   * documented `outputs` (e.g. core-graph produces nodes/edges/entry_points/
-   * architecture_summary/progressive_levels; agent-context produces
-   * system_capabilities/domain_concepts/flow_graph/call_chains/test_suites/
-   * change_risks/codebase_idioms/behavioral_invariants). Phases with no match
-   * (e.g. `deferred-element-descriptions`, which never runs on this path) are
-   * simply left unstamped.
-   */
   private static readonly ANALYSIS_PHASE_OF = (phase: string): string | undefined => {
-    // 'languageAnalyzers' deliberately excluded — see the identical note on
-    // TIMING_STAGE_OF above; its window fully contains the language_* entries
-    // matched here, so counting both would double-count that duration.
     if (
       phase === 'detectAnalyzers' || phase === 'frameworkAnalyzers' ||
       phase.startsWith('language_') ||
@@ -16089,14 +12668,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   };
 
-  /**
-   * Builds the compact `output.timings` block: total wall-clock ms, the
-   * coarse 6-bucket stage breakdown, and a per-analyzer ms map lifted
-   * straight from `analyzer_contributions` (already measured, not
-   * re-measured here). Called once when `output` initially lands, and again
-   * from the deferred-AI-enrichment closure once the real AI duration is
-   * known. Read-only over its inputs; never mutates analysis output facts.
-   */
   private buildTimingsBlock(
     phaseTimings: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }>,
     totalMs: number,
@@ -16138,9 +12709,6 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /** Aggregates a group of raw timing-phase records into a single
-   *  started_at (earliest) / duration_ms (sum) pair, or `{}` when none of the
-   *  named phases ran in this analysis. */
   private phaseGroupTiming(
     phaseTimings: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }>,
     matches: (phase: string) => boolean
@@ -16159,14 +12727,6 @@ export class AnalyzerOrchestrator {
     return { started_at: earliestMs !== undefined ? new Date(earliestMs).toISOString() : undefined, duration_ms: total };
   }
 
-  /**
-   * Stamps started_at/duration_ms onto the already-built `analysis_phases`
-   * catalog entries, in place, using the real per-phase timing data captured
-   * during this run. MOTIVATION: analysis_phases previously carried only
-   * status/generated_at — a stuck or slow analysis could not be attributed to
-   * any specific stage. Purely additive (two new optional fields); never
-   * changes an entry's status, description, or any other existing field.
-   */
   private stampPhaseTimings(
     phases: CASAnalysisPhase[],
     phaseTimings: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }>
@@ -16277,17 +12837,12 @@ export class AnalyzerOrchestrator {
       structuralTokens?: string[];
       projectTextSummary?: string;
       projectTextConcepts?: string[];
-      /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
       deployableCount?: number;
-      /** True only when observed operations/entities contain reads and no mutation evidence. */
       readOnlyProduct?: boolean;
       artifactType?: string;
     } = {},
   ): { ok: boolean; reason?: string } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
-    // Grammar integrity has precedence over semantic categorization. A broken
-    // sentence can also contain framework or request vocabulary, but reporting
-    // that secondary issue causes repair prompts to preserve malformed prose.
     if (/\b(?:it|this system|the system)\s+(?:frameworks|libraries|technologies|tools)\b/i.test(cleaned)) {
       return { ok: false, reason: 'malformed-missing-verb' };
     }
@@ -16315,12 +12870,6 @@ export class AnalyzerOrchestrator {
     if (/\b(?:combination of technologies|multiple programming languages|multi-language (?:backend )?development|flexibility in how)\b/i.test(cleaned)) {
       return { ok: false, reason: 'implementation-stack-filler' };
     }
-    // The description is a four-question paragraph (what-is / does / how-works /
-    // how-built), so require enough substance to have answered them — but keep
-    // the floor low enough that a dense, fact-packed paragraph is not rejected.
-    // Length and multiple sentences establish paragraph shape; semantic gates
-    // below enforce the four required kinds of content without rejecting a
-    // dense paragraph merely because two answers share one sentence.
     if (cleaned.length < 200) return { ok: false, reason: 'too-short-for-ai-paragraph' };
     if (this.descriptionSentenceCount(cleaned) < 2) return { ok: false, reason: 'single-sentence-ai-summary' };
     if (/\bworkflows\s+workflows\b/i.test(cleaned)) return { ok: false, reason: 'duplicate-workflow-wording' };
@@ -16374,34 +12923,8 @@ export class AnalyzerOrchestrator {
     return (description.match(/[.!?](?:\s|$)/g) || []).length;
   }
 
-  /**
-   * MECHANICAL self-heal for gate rejections that are deterministic EDITS of
-   * the AI's own text, not deterministic authorship (the AI-only comprehension
-   * boundary stands: trimming AI prose to a length budget or removing a leaked
-   * file path edits AI output without adding a single non-AI claim).
-   * Handles exactly these reason classes:
-   *  - 'too-long': trim to the last full sentence inside the 2000-char limit
-   *    (prod: hercules — a valid paragraph perma-rejected for running long).
-   *  - 'unsupported-marketing-language': NOT mechanically fixable. Deleting the
-   *    flagged words mid-sentence shipped ungrammatical prose to customers
-   *    ("is an crypto market-intelligence API" after "efficient" was excised;
-   *    "write more and maintainable code" in prod v1.0.127). Marketing language
-   *    is a SEMANTIC rejection handled by the AI repair re-prompt, which
-   *    regenerates a grounded sentence instead of mutilating one.
-   *  - 'ungrounded-system-type: <token>' with a SINGLE flagged modifier: strip
-   *    just that modifier, keeping the grounded type head ("a commerce
-   *    platform" -> "a platform"; prod: hercules — the model kept re-emitting
-   *    the natural near-synonym and the repair loop never converged). A
-   *    multi-token flagged phrase ("solana-arbitrage") is a wholesale
-   *    fabrication, not a word-level cleanup, and stays a semantic rejection.
-   * Returns undefined when the reason is not mechanically fixable (all
-   * semantic reason classes go to the AI re-prompt instead).
-   */
   private mechanicallyRepairAIInterpretation(description: string, reason?: string): string | undefined {
     if (!reason) return undefined;
-    // Mutation verbs are semantic predicates, not decorative words. Deleting
-    // them in place can turn a false read/write claim into malformed prose.
-    // Force an AI regeneration from the read-only facts instead.
     if (reason === 'read-only-product-mutation-claim') return undefined;
     if (reason === 'source-path-pollution' || reason === 'source-file-restatement') {
       const stripped = description
@@ -16435,21 +12958,9 @@ export class AnalyzerOrchestrator {
       return trimmed && trimmed !== cleaned ? trimmed : undefined;
     }
     // Marketing/vague language is NEVER word-deleted: surgical removal leaves
-    // ungrammatical text ("is an crypto market-intelligence API"). It stays a
-    // semantic rejection so the AI repair re-prompt regenerates the sentence.
     if (/^unsupported-marketing-language:/.test(reason)) return undefined;
     const ungroundedType = /^ungrounded-system-type:\s*(.+)$/.exec(reason);
     if (ungroundedType) {
-      // Reason payload joins modifier tokens with '-'; only a SINGLE flagged
-      // token is a deterministic word-level edit (delete the modifier, keep
-      // the grounded head noun). Two-plus tokens = fabricated phrase =
-      // semantic re-prompt. AMBIGUITY (real prod failure, Qwen3 on rpg-server):
-      // a HYPHENATED single modifier ('third-party', 'e-commerce') is
-      // indistinguishable from two joined tokens by splitting alone — it
-      // misparsed as 2 tokens, skipped this repair, and hard-failed the whole
-      // enrichment once the AI-repair budget was gone. Evidence disambiguates:
-      // when the payload appears VERBATIM as a hyphenated word in the
-      // description, it IS one modifier — strip it like any single token.
       const rawPayload = ungroundedType[1].trim();
       const payloadEscaped = rawPayload.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const isVerbatimHyphenatedModifier =
@@ -16461,13 +12972,8 @@ export class AnalyzerOrchestrator {
       if (flaggedTokens.length !== 1 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(flaggedTokens[0])) return undefined;
       const escaped = flaggedTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const stripped = description.replace(new RegExp(`\\b${escaped}[- ]`, 'gi'), '');
-      // Stripping one conjunct of a coordination leaves stumps like "a robust
-      // and solution" — repairStrippedSentenceGrammar heals or drops them.
       const repaired = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
         stripped
-          // Stripping a vowel-initial modifier can orphan its article:
-          // "an ecommerce platform" -> "an platform". Repair only when the
-          // article now sits directly against a consonant-initial type head.
           .replace(/\ban(\s+(?:tool|system|service|platform|pipeline|dashboard|suite|toolkit|server|gateway|framework|library)s?\b)/gi, 'a$1')
           .replace(/\s{2,}/g, ' ')
       ));
@@ -16476,23 +12982,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /**
-   * Full acceptance path for ONE AI system-description candidate:
-   * validate → (on rejection) sanitize+revalidate → mechanical repair loop
-   * (each round fixes one reason class; a too-long trim can expose a flagged
-   * marketing word next) → sanitize the mechanically-repaired text as a last
-   * resort. Every accepted text has passed validateGeneratedAIInterpretation
-   * verbatim; on failure the returned text/reason are the LATEST candidate
-   * state, ready to feed the AI repair re-prompt.
-   */
-  /**
-   * MECHANICAL repair for sentences that end on a dangling function word — a
-   * truncated clause the model emitted (prod: the accepted Klauro description
-   * ended "…telemetry data and graph evidence for."). Strips the trailing
-   * function word(s) so the sentence ends on a content word; if that would gut
-   * the sentence (< 4 words left) the whole sentence is dropped instead when
-   * other sentences remain. A cheap edit of the AI's own text, not authorship.
-   */
   private repairDanglingSentenceEndings(text: string): string {
     const danglingTail = /(?:\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their|using|leveraging|utilizing|integrating|including|providing|supporting))+\s*([.!?])$/i;
     const sentences = (text || '').split(/(?<=[.!?])\s+/);
@@ -16512,33 +13001,13 @@ export class AnalyzerOrchestrator {
     return repaired || text;
   }
 
-  /**
-   * Grammar guard for SANITIZED text (composes with, never duplicates,
-   * repairDanglingSentenceEndings): word-level sanitizer strips leave two
-   * mechanical stump classes the trailing-function-word repair alone cannot fix
-   * (live: "providing telemetry data and graph evidence for." and "a robust
-   * and solution").
-   *  1. Broken coordination — a deleted conjunct leaves "<article> <modifier>
-   *     and <head-noun>"; drop the orphaned conjunction.
-   *  2. Clause-shape validation — after the dangling-tail repair, any sentence
-   *     that still ends on a dangling function word or carries an orphaned
-   *     conjunction/article has lost its subject-verb-object shape and is
-   *     dropped whole (when other sentences remain) rather than shipped as a
-   *     grammatical stump.
-   */
   private repairStrippedSentenceGrammar(text: string): string {
     const coordinationRepaired = (text || '')
-      // "a robust and solution" -> "a robust solution": article + single
-      // modifier + orphaned conjunction directly against the head noun.
       .replace(/\b(a|an|the)\s+([a-z][a-z-]*)\s+(?:and|or)\s+(solution|system|service|platform|tool|api|library|framework|pipeline|architecture|approach|interface|design|toolkit|suite)\b/gi, '$1 $2 $3')
-      // Doubled conjunctions left by adjacent strips: "and and", "or or".
       .replace(/\b(and|or)\s+\1\b/gi, '$1')
-      // Conjunction directly against sentence punctuation is already handled by
-      // repairDanglingSentenceEndings; collapse whitespace introduced above.
       .replace(/\s{2,}/g, ' ')
       .trim();
     const repaired = this.repairDanglingSentenceEndings(coordinationRepaired);
-    // Drop sentences the repairs could not restore to clause shape.
     const danglingTail = /\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their|using|leveraging|utilizing|integrating|including|providing|supporting)\s*[.!?]$/i;
     const orphanedJoint = /\b(?:a|an|the)\s+(?:and|or)\b|\b(?:and|or)\s*[,.]/i;
     const sentences = repaired.split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
@@ -16548,15 +13017,6 @@ export class AnalyzerOrchestrator {
     return kept.join(' ').trim();
   }
 
-  /**
-   * Repetition-padding collapse: the model (and the repair re-prompts) restate
-   * the same domain-justification sentence 2-3x (live: "The system's domain is
-   * inferred..." x3; "...with a focus on managing customer data and orders"
-   * x2). Sentences are compared on normalized token sets; a later sentence
-   * whose tokens overlap an earlier kept sentence at >= 0.8 Jaccard (or that is
-   * an exact normalized duplicate) is padding, not new information, and is
-   * dropped. Deterministic edit of the AI's own text — no authorship.
-   */
   private collapseNearDuplicateSentences(text: string): string {
     const sentences = (text || '').split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
     if (sentences.length <= 1) return text;
@@ -16573,9 +13033,6 @@ export class AnalyzerOrchestrator {
         for (const token of tokens) if (previous.has(token)) shared++;
         const jaccard = shared / (tokens.size + previous.size - shared);
         if (jaccard >= 0.8) return true;
-        // Containment: a later sentence almost fully inside an earlier one is
-        // the same information restated ("...with a focus on managing customer
-        // data and orders" appended to two sentences — live hercules padding).
         const containment = shared / Math.min(tokens.size, previous.size);
         return Math.min(tokens.size, previous.size) >= 4 && containment >= 0.85;
       });
@@ -16592,9 +13049,6 @@ export class AnalyzerOrchestrator {
     enhancedSystemPurpose: EnhancedSystemPurpose,
     facts: Parameters<AnalyzerOrchestrator['validateGeneratedAIInterpretation']>[2],
   ): { text: string; validation: { ok: boolean; reason?: string } } {
-    // Dangling-clause self-heal BEFORE validation: a truncated trailing clause
-    // ("…graph evidence for.") is a mechanical defect the gates do not model,
-    // so repair it up front and let the normal validate path judge the result.
     let text = this.collapseNearDuplicateSentences(
       this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(candidate))
     );
@@ -16626,8 +13080,6 @@ export class AnalyzerOrchestrator {
     }
     if (validation.ok) return { text, validation };
 
-    // The mechanical edit may have unlocked the sentence-level sanitizer path
-    // (e.g. marketing word stripped, remaining phrasing rejection fixable).
     if (!preserveForSemanticRepair.has(validation.reason || '')) {
       const sanitizedRepair = this.sanitizeAIInterpretation(text, enhancedSystemPurpose, facts);
       if (sanitizedRepair !== text) {
@@ -16641,13 +13093,6 @@ export class AnalyzerOrchestrator {
   }
 
   private projectNameAppearsAsConcept(description: string, systemName?: string, evidenceTerms: string[] = []): boolean {
-    // A systemName token that is ALSO real grounding evidence (a framework,
-    // library, entity, or external service name) is legitimate vocabulary for
-    // the description to use — its appearance is grounding, not lazy name-
-    // restatement. Only DISTINCTIVE project-identity tokens (not shared with
-    // the tech-stack evidence) can trip this gate. Without this, a project
-    // named after its stack ("express-mongoose", "my-express-app") would have
-    // every correctly-grounded description rejected for mentioning that stack.
     const evidenceTokens = new Set(
       evidenceTerms.flatMap(term => String(term || '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -16669,17 +13114,6 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  /**
-   * Evidence-grounding enforcement for the SYSTEM-TYPE noun the description uses
-   * to declare what the product IS. Extracts the head noun-phrase (the modifier
-   * words immediately before "system/tool/service/api/platform/application/...")
-   * from the first sentence and checks that at least one DISTINCTIVE modifier
-   * token traces to a real supplied fact (domain/concepts, structural tokens,
-   * library/dependency names, entity names, external services, manifest text).
-   * When none do, the system-type was invented from thin air and is rejected so
-   * the AI repair pass can re-ground it. This is evidence-grounding, NOT a
-   * keyword blocklist — no term is banned, every named type must just be earned.
-   */
   private systemTypeIsGrounded(
     cleaned: string,
     groundedTerms: string[],
@@ -16693,12 +13127,6 @@ export class AnalyzerOrchestrator {
       projectTextConcepts?: string[];
     },
   ): { ok: true } | { ok: false; reason: string } {
-    // Descriptor words (allowing glued hyphen compounds like
-    // "security-scanning-tool") immediately preceding a system-type head noun:
-    // "security-scanning tool", "crypto market-intelligence api", "portfolio
-    // management system". EVERY such phrase whose modifiers are not just the
-    // system name / filler is enforced — a "<repo-name> system" phrase (only the
-    // name as modifier) is skipped, but a later "security-scanning tool" is not.
     const typeHead = '(?:tool|system|service|platform|application|app|api|engine|framework|library|server|gateway|pipeline|dashboard|suite|toolkit|sdk)';
     const phrasePattern = new RegExp(`\\b((?:[a-z][a-z0-9]*(?:[- ][a-z][a-z0-9]*){0,3})[- ])${typeHead}s?\\b`, 'gi');
     const stopWords = new Set([
@@ -16708,14 +13136,6 @@ export class AnalyzerOrchestrator {
       'main', 'primary', 'central', 'general', 'purpose', 'multi', 'single',
       'automated', 'comprehensive', 'resulting', 'declared',
     ]);
-    // Verbal participle connectors: -ing forms that link a noun to its
-    // complement clause ("monorepo INCORPORATING tree-sitter parsers") rather
-    // than describing the head noun attributively ("security-SCANNING tool").
-    // These are verb forms, not system-type claims, so they are never counted
-    // as distinctive modifiers that need grounding. This is a secondary guard
-    // behind the positional cut below (a non-final -ing token ends the
-    // attributive run), catching connectors that land directly before a head
-    // noun ("suite incorporating services").
     const participleConnectors = new Set([
       'incorporating', 'using', 'leveraging', 'utilizing', 'employing',
       'providing', 'enabling', 'combining', 'supporting', 'including',
@@ -16723,11 +13143,6 @@ export class AnalyzerOrchestrator {
       'exposing', 'powering', 'serving', 'delivering', 'wrapping',
       'spanning', 'orchestrating', 'coordinating', 'bundling',
     ]);
-    // Finite action verbs can fall inside the regex's backward modifier window
-    // ("infrastructure provisions and manages a deployment platform"). They
-    // are predicates, not a claimed system type. Treating them as modifiers
-    // produced false fabrication rejections such as
-    // `ungrounded-system-type: provisions-manages` on pure IaC repositories.
     const finiteVerbConnectors = new Set([
       'apply', 'applies', 'build', 'builds', 'create', 'creates', 'define', 'defines',
       'deploy', 'deploys', 'expose', 'exposes', 'generate', 'generates', 'handle',
@@ -16737,38 +13152,18 @@ export class AnalyzerOrchestrator {
       'serve', 'serves', 'support', 'supports', 'use', 'uses', 'involve', 'involves',
       'consist', 'consists', 'contain', 'contains', 'comprise', 'comprises',
     ]);
-    // Function words that END an attributive modifier run: an auxiliary/copula,
-    // preposition, relative, or conjunction between a candidate token and the
-    // type head means the tokens BEFORE it belong to a different clause, not to
-    // the noun phrase ("access is ALLOWED THROUGH the API" — nothing before
-    // "through" premodifies "API"). This is grammatical-position awareness, not
-    // a vocabulary judgement: the prod 'ungrounded-system-type: allowed' false
-    // rejection was a bare past participle from a verb phrase being enforced as
-    // a system-type claim because the modifier window crossed the verb.
     const clauseBreakers = new Set([
       'is', 'are', 'was', 'were', 'be', 'been', 'being',
       'has', 'have', 'had', 'does', 'do', 'did',
       'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would', 'not',
       'that', 'which', 'who', 'whose', 'when', 'where', 'while', 'than', 'then',
       'if', 'because', 'although', 'though', 'once', 'also', 'both',
-      // 'with'/'for'/'from'/'to' were missing from this preposition run while
-      // every one of their neighbours was present — a plain gap, and the reason
-      // "interacts WITH a local gateway" put two clauses' worth of tokens in one
-      // modifier window. Same closed function-word class as the rest of the line.
       'as', 'at', 'by', 'of', 'in', 'on', 'onto', 'into', 'over', 'via', 'through',
       'with', 'for', 'from', 'to',
       'between', 'across', 'within', 'without', 'against', 'during', 'after',
       'before', 'under', 'about', 'around', 'per', 'like',
       'it', 'its', 'they', 'their', 'this', 'these', 'those',
     ]);
-    // Domain-word grounding slack: a flagged modifier that IS a legitimate
-    // umbrella domain term counts as grounded when the evidence corpus contains
-    // >=2 distinct terms from its cluster (orders+invoices+deliveries make a
-    // "commerce" claim evidence-consistent even though the literal token never
-    // appears — the prod 'ungrounded-system-type: commerce' repair-loop
-    // non-convergence on hercules). This WIDENS acceptance only — it is a
-    // grounding vocabulary, never a blocklist; a term with zero cluster hits
-    // still needs literal evidence like any other modifier.
     const domainSynonymClusters: Record<string, string[]> = (() => {
       const commerce = [
         'order', 'invoice', 'cart', 'checkout', 'payment', 'product', 'inventory',
@@ -16789,7 +13184,6 @@ export class AnalyzerOrchestrator {
         .split(/[^a-z0-9]+/)
         .filter(Boolean),
     );
-    // Build the corpus of grounded evidence text once.
     const evidenceCorpus = [
       ...groundedTerms,
       ...(facts.structuralTokens || []),
@@ -16807,59 +13201,17 @@ export class AnalyzerOrchestrator {
         .toLowerCase()
         .split(/[^a-z0-9]+/)
         .filter(Boolean);
-      // The modifier window can cross a clause boundary: in "an internal
-      // platform incorporating the core services", the -ing token is a verbal
-      // participle opening the complement of the PRECEDING noun, not an
-      // attributive modifier of the head noun ("services"). Only tokens AFTER
-      // the last such participle genuinely premodify the head; an -ing token
-      // is attributive only when it sits directly against the head
-      // ("security-scanning tool", "parsing pipeline"). Cut the run at the
-      // last non-final -ing token so verb forms/gerunds are never enforced as
-      // system-type claims (the prod 'ungrounded-system-type: incorporating'
-      // false rejection).
       let attributiveTokens = rawTokens;
       for (let i = rawTokens.length - 1; i >= 0; i--) {
         const nonFinalParticiple = i < rawTokens.length - 1 && /[a-z]{3,}ing$/.test(rawTokens[i]);
         if (nonFinalParticiple || clauseBreakers.has(rawTokens[i]) || finiteVerbConnectors.has(rawTokens[i])) {
-          // GRAMMAR, NOT VOCABULARY (fixed 2026-08-11). A RELATIVE PRONOUN is
-          // immediately followed by its clause's finite verb, whatever that verb
-          // happens to be — "a tool that INTERACTS with a local gateway", "an
-          // agent that RECONCILES state". That verb is a predicate, never an
           // attributive modifier of the type head, so it must not be enforced as
-          // a type claim.
-          //
-          // Measured live: a CLI repo's accepted, well-grounded system
-          // description was rejected as `ungrounded-system-type:
-          // interacts-local` and the customer got a BLANK system description —
-          // the most important field in the payload — because `interacts` was
-          // not in the finiteVerbConnectors hand-list below. That list is the
-          // wrong mechanism for this: every new repo brings a verb it does not
-          // contain, so it fails open on exactly the repos nobody has tried yet.
-          // A relative pronoun's position tells us the next token is a verb
-          // without needing to know which verb it is.
           const relativePronouns = new Set(['that', 'which', 'who', 'whose']);
           const skipRelativeClauseVerb = relativePronouns.has(rawTokens[i]) && i + 1 < rawTokens.length;
           attributiveTokens = rawTokens.slice(skipRelativeClauseVerb ? i + 2 : i + 1);
           break;
         }
       }
-      // Distinctive modifier tokens (drop articles, generic build words, the
-      // system's own name, and verbal participle connectors — none of those
-      // are a claim that needs evidence). Verb forms are excluded entirely:
-      // a bare -ed past participle ("allowed", "managed", "deployed") is a
-      // predicate, not a TYPE claim — only genuine content modifiers of a
-      // recognized type head are enforced.
-      // A POSITIONAL/RELATIONAL adjective says WHERE something sits relative to
-      // the system — not WHAT KIND of system it is. "a local gateway", "downstream
-      // tools", "an internal service" make no factual claim that evidence could
-      // confirm or refute, so enforcing them as type claims produces rejections
-      // no repo can ever satisfy: the customer's payload loses its system
-      // description because the model correctly described a topology.
-      //
-      // Same category of exclusion as the participles and predicates above (a
-      // grammatical class, closed and repo-agnostic), NOT a domain vocabulary —
-      // nothing here can decide what a repo is or does; it only stops a
-      // non-claim from being treated as one.
       const positionalModifiers = new Set([
         'local', 'remote', 'internal', 'external', 'upstream', 'downstream',
         'inbound', 'outbound', 'central', 'shared', 'nearby', 'onsite',
@@ -16875,14 +13227,9 @@ export class AnalyzerOrchestrator {
           !positionalModifiers.has(token) &&
           !/[a-z]{3,}ed$/.test(token));
       if (modifierTokens.length === 0) continue;
-      // Grounded if ANY distinctive modifier token (or its 5-char stem) appears
-      // in the evidence corpus. Stemming lets "scanning"/"scanner", "crypto"/
-      // "cryptocurrency", "trading"/"trade" match their evidence form.
       const grounded = modifierTokens.some(token => {
         const stem = token.slice(0, 5);
         if (evidenceCorpus.includes(token) || evidenceCorpus.includes(stem)) return true;
-        // Synonym-cluster slack: an umbrella domain word is grounded when the
-        // evidence corpus contains >=2 distinct terms from its cluster.
         const cluster = domainSynonymClusters[token];
         if (cluster) {
           const hits = new Set(cluster.filter(term => evidenceCorpus.includes(term)));
@@ -16897,37 +13244,12 @@ export class AnalyzerOrchestrator {
     return { ok: true };
   }
 
-  /**
-   * The canonical, single-source-of-truth definition of "source-bucket
-   * restatement" (prose that restates the entry-point/route TAXONOMY the
-   * analyzer itself uses -- "http endpoints", "cli commands", "script-based",
-   * "page routes" -- instead of describing product behavior). Extracted so
-   * sanitizeAIInterpretation's sentence-level `keep` filter can drop just the
-   * OFFENDING sentence using this exact same definition, rather than
-   * maintaining a second, hand-copied, inevitably-drifting phrase list next
-   * to it (that drift -- near-duplicate literal phrases worded slightly
-   * differently in two places -- was itself part of the hardcoded-vocabulary
-   * problem this cleanup is fixing).
-   */
   private matchSourceBucketRestatement(text: string): RegExpMatchArray | null {
     return text.match(/\b(?:main interaction surfaces?|configured interaction surfaces?|interaction surfaces?|http endpoints?|route surfaces?|application routes?|page routes?|application pages?|cli commands?|command-line workflows?|schedule surfaces?|scheduled workflows?|internal script|script-based|script-driven|internal files?|source files?|entry points?|file[- ]based entry points?|file entry points?|state stores?)\b/i) ||
       text.match(/\b(?:http|api|route|websocket|page|ui|application)(?:,?\s+(?:and\s+)?(?:http|api|route|websocket|page|ui|application))*[-\s]*(?:based\s+)?(?:workflows?|interactions?|operations?)\b/i) ||
       text.match(/\bpage[-\s]+based operations?\b/i);
   }
 
-  /**
-   * How many distinct source-bucket-restatement hits a sentence carries.
-   * Mirrors the file's existing mechanical-vs-semantic boundary (see
-   * mechanicallyRepairAIInterpretation / preserveForSemanticRepair: a SINGLE
-   * flagged token is a mechanical slip, MULTIPLE is a wholesale semantic
-   * restatement that needs an AI rewrite, not a silent edit). One incidental
-   * mechanism word ("script-based") in an otherwise product sentence is a
-   * mechanical drop; a sentence built ENTIRELY out of bucket vocabulary
-   * ("CLI commands and source files form the main interaction surfaces...")
-   * is restating the analyzer's own taxonomy as the product's behavior and
-   * must go back through the AI repair loop instead of being deleted, since
-   * deleting it could be discarding the paragraph's only real claim.
-   */
   private countSourceBucketRestatements(text: string): number {
     const patterns = [
       /\b(?:main interaction surfaces?|configured interaction surfaces?|interaction surfaces?|http endpoints?|route surfaces?|application routes?|page routes?|application pages?|cli commands?|command-line workflows?|schedule surfaces?|scheduled workflows?|internal script|script-based|script-driven|internal files?|source files?|entry points?|file[- ]based entry points?|file entry points?|state stores?)\b/gi,
@@ -16949,7 +13271,6 @@ export class AnalyzerOrchestrator {
       structuralTokens?: string[];
       projectTextSummary?: string;
       projectTextConcepts?: string[];
-      /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
       deployableCount?: number;
     } = {},
   ): { ok: boolean; reason?: string } {
@@ -16965,9 +13286,6 @@ export class AnalyzerOrchestrator {
     const domain = enhancedSystemPurpose.primary_domain?.toLowerCase();
     const primaryType = enhancedSystemPurpose.primary_type?.toLowerCase();
     const concepts = (enhancedSystemPurpose.core_concepts || []).map(concept => concept.toLowerCase());
-    // Ground against both the kebab-case domain and its de-hyphenated form, plus
-    // its individual tokens, so a description that spells the domain out in prose
-    // ("ecommerce storefront theme") grounds a "ecommerce-storefront-theme" label.
     const domainForms = domain && domain !== 'unknown'
       ? [domain, domain.replace(/-/g, ' '), ...domain.split('-')].filter(form => form.length > 2)
       : [];
@@ -17020,45 +13338,6 @@ export class AnalyzerOrchestrator {
       /\bdesigned to be used through entry points?\b/i.test(description)) {
       return { ok: false, reason: 'generic-architecture-cliche' };
     }
-    // #113: two self-only gates removed here. (1) a hand-written vocabulary
-    // requirement ("must mention cas/mcp/agent contexts/...") that rejected
-    // this repo's own AI description unless it echoed a prepared phrase list
-    // — the AI-quality gate equivalent of grading only one student against
-    // an answer key nobody else received. (2) a domain check that rejected
-    // EVERY OTHER repo's description outright for resolving to the
-    // 'codebase-analysis' domain while exempting this repo from the same
-    // rejection — i.e. baking in "only Klauro can plausibly be a
-    // codebase-analysis product" as a fact. Both removed outright, matching
-    // the 2026-07-29 precedent below: no evidence-based, repo-agnostic
-    // replacement was requested or obviously correct, so the check is
-    // dropped rather than reworded to a subtler self-favoring rule.
-    // A product description must describe the PRODUCT, not the framework it
-    // was built with. Rendering strategy, scaffolding provenance, and a bare
-    // recital of routing/access plumbing as the system's "main concepts" are
-    // never what a codebase is for.
-    //
-    // REMOVED (2026-07-29, hardcoded-knowledge class): this rejection used to
-    // be gated on `domain === 'car-wash-operations'`, so the very same
-    // framework-plumbing description passed validation for every other
-    // repository in existence. The defect it guards against is a property of
-    // the description, not of one repository's industry — the gate is dropped
-    // and the check now applies wherever it applies.
-    // REMOVED (2026-08-11, same hardcoded-knowledge class as the two removals
-    // above): `boilerplate` was a trigger word here, and it produced a live false
-    // rejection on a real dependency-injection library. "Reduces boilerplate" is
-    // the standard, accurate way to describe what a wiring/DI package DOES —
-    // developer plumbing is that product's subject matter, not an evasion of it.
-    // The rejection cost the customer the entire system description: the analysis
-    // shipped `description: null` and `domain: null` on a 300-node repo, because a
-    // single ordinary English value-word was treated as proof the description
-    // described the wrong thing.
-    //
-    // The two surviving patterns are structural RECITALS — "prefetch strategies",
-    // and "main grounded concepts are network/routing/access/checkout" — which are
-    // evidence of describing the scaffolding instead of the product regardless of
-    // what the product is. A lone value-word is not, and the distinction inverts
-    // for any repo whose product IS infrastructure (the same inversion already
-    // documented for IaC repos at `ungrounded-system-type: provisions-manages`).
     if (/\b(prefetch strategies?|main grounded concepts are\s+(?:network|routing|access|checkout))\b/i.test(cleaned)) {
       return { ok: false, reason: 'description-leans-on-framework-plumbing' };
     }
@@ -17111,13 +13390,6 @@ export class AnalyzerOrchestrator {
     if (/\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b|\bframeworks?\s+(?:like|such as)\b|\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description)) {
       return { ok: false, reason: 'framework-inventory-instead-of-architecture' };
     }
-    // #113: this used to exempt this repo's own description from the
-    // "graph evidence" filler check. Every system-narrative prompt (see the
-    // systemNarrativeTask strings above) already instructs the AI, for every
-    // artifact type including this repo's, not to mention "graph evidence" —
-    // it is prompt-structure leak text, not real product vocabulary, so the
-    // rejection now applies unconditionally like the sibling leak checks
-    // around it (descriptionContract, distinctiveEntities, terminalOutputs).
     if (/\bgraph evidence\b/i.test(description)) {
       return { ok: false, reason: 'analysis-product-filler' };
     }
@@ -17144,17 +13416,10 @@ export class AnalyzerOrchestrator {
     if (/(?:^|\s)(?:@\/|~\/|\.{1,2}\/|\/)[\w./-]+/.test(description)) {
       return { ok: false, reason: 'source-path-pollution' };
     }
-    // Relative source paths and file tokens ("src/api/auth.ts") slip past the
-    // leading-slash pattern above; a weak model asked for dataflow reaches for
-    // file names as "mechanism". js-family extensions are excluded from the
-    // bare-token form because package names legitimately carry them (web3.js,
-    // next.js) — a js file only trips the lint when written as a path.
     if (/(?:^|[\s("'])[\w.-]+\/[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|php|rb|go|rs|java|cs|dart|swift|kt|sql|tf|tfvars|hcl|yaml|yml)\b/i.test(description) ||
       /\b[\w-]+\.(?:ts|tsx|jsx|py|php|rb|cs|dart|swift|kt|sql|tf|tfvars|hcl)\b/i.test(description)) {
       return { ok: false, reason: 'source-file-restatement' };
     }
-    // Two-plus lowerCamelCase identifiers ("conceptNode, extractReviewItems,
-    // saveEdge") are function/variable names, not product language.
     if ((description.match(/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || []).length >= 2) {
       return { ok: false, reason: 'implementation-identifier-restatement' };
     }
@@ -17201,10 +13466,6 @@ export class AnalyzerOrchestrator {
     if (/\b(Key capabilities|Data model|Entry points|Integrations):/i.test(description)) {
       return { ok: false, reason: 'raw-fact-list-format' };
     }
-    // Prompt-internal fact-list vocabulary echoed as prose ("produces terminal
-    // outputs such as ..." — live: a CLI-first repo whose own product surface
-    // is a terminal/task-report tool). Narrow to the template forms so a
-    // genuine terminal/CLI product's "terminal output" prose is untouched.
     if (/\b(?:produces?|producing|produce)\s+terminal\s+(?:records?|outputs?)\b/i.test(description) ||
       /\bterminal\s+outputs?\s+such\s+as\b/i.test(description)) {
       return { ok: false, reason: 'fact-list-vocabulary-echo' };
@@ -17249,16 +13510,6 @@ export class AnalyzerOrchestrator {
     if (!databaseDomainContext && (facts.databaseEntities || []).length === 0 && /\b(relational database|database|data store|stores entities)\b/i.test(cleaned)) {
       return { ok: false, reason: 'unsupported-database-claim' };
     }
-    // EVIDENCE-GROUNDED SYSTEM-TYPE ENFORCEMENT (last, so more specific rejection
-    // reasons win first): the noun the description uses to name WHAT THE SYSTEM IS
-    // ("a security-scanning tool", "a portfolio manager") must be traceable to a
-    // real supplied fact. The domain/concepts grounding check above is circular
-    // when the AI both fabricates the domain AND writes it into the description;
-    // this reads the SYSTEM-TYPE head noun out of the prose and rejects it when NO
-    // distinctive modifier appears in any grounded fact (deps, entities,
-    // integrations, concepts, manifest text). Not a keyword blocklist — a
-    // fabricated "security-scanning tool" with zero security/scanning evidence is
-    // rejected; a "crypto market-intelligence API" backed by ccxt/DexTrade passes.
     const systemTypeVerdict = this.systemTypeIsGrounded(cleaned, groundedTerms, facts);
     if (!systemTypeVerdict.ok) {
       return { ok: false, reason: systemTypeVerdict.reason };
@@ -17274,30 +13525,6 @@ export class AnalyzerOrchestrator {
       .some(term => normalized.endsWith(term));
   }
 
-  /**
-   * DOMAIN-CLAIM GATE (replaces descriptionContradictsPurposeFamily, commit
-   * 9768aedfe — a hand-maintained table of six domain families [portfolio,
-   * trading, zero-trust, fleet, clinical, codebase-analysis], each with its own
-   * claim-phrase regexes and an "allowed" authority regex, including Soon-
-   * derived vocabulary ("solana-arbitrage") baked directly into the analyzer.
-   * The table also silently did NOTHING for every domain outside those six.
-   * CARDINAL RULE: never hardcode brand/keyword classifiers.
-   *
-   * This is a GENERIC claim frame, same shape as the architecture-shape gate
-   * (ungroundedArchitectureShapeClaims): a description that names a business
-   * domain via a claim frame ("<X> management system", "<X> testing platform",
-   * "<X> operations", "<X> tracking", ...) is making a claim about what the
-   * codebase is FOR. The FRAME is fixed (a bounded, generic set of claim
-   * words + type-head nouns); the subject X is whatever the model wrote — no
-   * vocabulary list. The claim is corroborated against the SAME deterministic
-   * evidence corpus systemTypeIsGrounded assembles (domain/concepts, structural
-   * tokens, library/dependency names, entity names, external services, manifest
-   * text) via token-overlap with light stemming. No domain is banned and none
-   * is privileged: "fleet management platform" passes on a benchmarked fleet-management repo because
-   * fleet/vehicle/driver/dispatch evidence saturates the corpus; the identical
-   * phrase is rejected when that evidence is absent — and so is any domain the
-   * old table never covered ("restaurant ordering system").
-   */
   private ungroundedDomainClaims(
     text: string,
     groundedTerms: string[],
@@ -17311,13 +13538,7 @@ export class AnalyzerOrchestrator {
       projectTextConcepts?: string[];
     } = {},
   ): string[] {
-    // Frame A: "<X> <claim-word> <type-head>" ("portfolio management system",
-    // "security scanning tool", "network access management system").
     const framedClaimPattern = /\b([a-z][a-z]{2,}(?:[- ][a-z][a-z]{2,}){0,2})\s+(?:management|automation|testing|tracking|analysis|analytics|monitoring|operations|scanning|execution|measurements?)\s+(?:systems?|platforms?|contexts?|tools?|services?|engines?|graphs?)\b/gi;
-    // Frame B: "<X> <claim-word>" with no type-head noun ("vehicle operations",
-    // "fuel tracking", "patient testing", "clinical measurements", "token
-    // purchase execution") — excluded when frame A already matched the same
-    // span so a claim is never double-counted.
     const bareClaimPattern = /\b([a-z][a-z]{2,}(?:[- ][a-z][a-z]{2,}){0,2})\s+(?:operations|tracking|testing|measurements?|execution)\b(?!\s+(?:systems?|platforms?|contexts?|tools?|services?|engines?|graphs?))/gi;
     const nameTokens = new Set(
       String(facts.systemName || '')
@@ -17348,10 +13569,6 @@ export class AnalyzerOrchestrator {
     for (const pattern of [framedClaimPattern, bareClaimPattern]) {
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(lower)) !== null) {
-        // A greedy 1-3 word subject window can pull in a leading verb ("manages
-        // fuel tracking") rather than a genuine domain modifier; stem before
-        // the stopword/generic-token check so "manages"/"tracks"/"handles"
-        // filter out the same as their base forms do.
         const subjectTokens = match[1]
           .split(/[^a-z0-9]+/)
           .filter(token => {
@@ -17361,19 +13578,12 @@ export class AnalyzerOrchestrator {
               !nameTokens.has(token) && !nameTokens.has(stem) &&
               !this.isGenericCapabilityToken(token) && !this.isGenericCapabilityToken(stem);
           });
-        // No distinctive subject modifier ("the management system") is not a
-        // domain claim at all — nothing to ground.
         if (subjectTokens.length === 0) continue;
         const grounded = subjectTokens.some(token => {
           const stem = this.stemTerminologyToken(token);
           return evidenceCorpus.includes(token) || evidenceCorpus.includes(stem);
         });
         if (!grounded) {
-          // Report/strip the CONTENT span only: a greedy subject window can
-          // pull in a leading filler word ("that manages fuel tracking") that
-          // is not part of the claim itself — drop leading stopword/generic
-          // tokens from the reported phrase so the reason and the clause-strip
-          // stay scoped to the actual claim ("fuel tracking").
           const rawSubjectWords = match[1].split(/\s+/);
           let dropCount = 0;
           while (dropCount < rawSubjectWords.length) {
@@ -17394,17 +13604,10 @@ export class AnalyzerOrchestrator {
     return Array.from(ungrounded);
   }
 
-  /**
-   * Clause-level strip for an ungrounded domain-claim phrase, mirroring
-   * stripUngroundedArchitectureShapeClauses (repair of the AI's own text, never
-   * a rewrite): delete the exact matched phrase, then let
-   * repairStrippedSentenceGrammar heal the resulting grammar stump.
-   */
   private stripUngroundedDomainClaimClauses(text: string, phrases: string[]): string {
     let stripped = text;
     for (const phrase of phrases) {
       const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
-      // Attached clause: "..., a <phrase> that ..." / "built as a <phrase> for ...".
       stripped = stripped.replace(
         new RegExp(`,?\\s*(?:and\\s+)?(?:is|as|built|structured|designed|serves? as)?\\s*(?:a|an|the)?\\s*${escaped}\\b`, 'gi'),
         ''
@@ -17444,21 +13647,6 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  /**
-   * ARCHITECTURE-SHAPE CLAIM GATE (live audit on a benchmarked repo: the description shipped
-   * "built with a MICROSERVICES architecture" for a repo whose evidence is ONE
-   * Symfony compose service + an Angular SPA). An architecture-shape word in the
-   * prose is a CLAIM about deployment topology and must be corroborated by the
-   * deterministic facts, exactly like framework names and external services:
-   *  - microservices / service-oriented / distributed: >= 3 deployable units.
-   *  - monolith: a KNOWN deployable topology of 1-2 units (unknown topology is
-   *    not corroboration — the claim is stripped, never guessed).
-   *  - event-driven: messaging/broker evidence among libraries/externalServices.
-   *  - serverless: FaaS evidence among libraries/externalServices.
-   * This is an evidence gate on a topology claim (grounding), not a keyword
-   * meaning-classifier: no shape is banned, each must be earned by facts.
-   * Returns the shape labels that are claimed but NOT corroborated.
-   */
   private ungroundedArchitectureShapeClaims(
     text: string,
     facts: { libraries?: string[]; externalServices?: string[]; deployableCount?: number } = {},
@@ -17480,14 +13668,6 @@ export class AnalyzerOrchestrator {
       .map(claim => claim.shape);
   }
 
-  /**
-   * Clause-level strip for an ungrounded architecture-shape claim (repair, not
-   * rewrite: only the AI's own offending clause is deleted; grammar stumps are
-   * healed by repairStrippedSentenceGrammar downstream, per the mechanism-clause
-   * strip pattern). Handles the two live shapes: an attached participial clause
-   * ("..., built with a microservices architecture, ...") and the bare
-   * adjective/noun mention ("a microservices architecture" / "is monolithic").
-   */
   private stripUngroundedArchitectureShapeClauses(text: string, shapes: string[]): string {
     let stripped = text;
     const shapeWordPattern: Record<string, string> = {
@@ -17501,8 +13681,6 @@ export class AnalyzerOrchestrator {
     for (const shape of shapes) {
       const word = shapeWordPattern[shape];
       if (!word) continue;
-      // Attached clause: ", built with a microservices architecture" /
-      // "following an event-driven design" — drop the whole clause.
       stripped = stripped.replace(
         new RegExp(`,?\\s*(?:and\\s+)?(?:built|structured|designed|implemented|organized|deployed|architected)\\s+(?:with|as|on|around|using|following)\\s+(?:a|an|the)?\\s*${word}(?:-based|-oriented|-style)?\\s+(?:architecture|design|approach|pattern|structure|model)\\b`, 'gi'),
         ''
@@ -17511,8 +13689,6 @@ export class AnalyzerOrchestrator {
         new RegExp(`,?\\s*(?:and\\s+)?(?:following|adopting|using)\\s+(?:a|an|the)?\\s*${word}(?:-based|-oriented|-style)?\\s+(?:architecture|design|approach|pattern|structure|model)\\b`, 'gi'),
         ''
       );
-      // Noun-phrase mention: "a microservices architecture" -> "" ; bare
-      // adjective before a head noun: "a microservices backend" -> "a backend".
       stripped = stripped.replace(
         new RegExp(`\\b(?:a|an|the)\\s+${word}(?:-based|-oriented|-style)?\\s+(?:architecture|design|approach|pattern|structure|model)\\b`, 'gi'),
         ''
@@ -17522,8 +13698,6 @@ export class AnalyzerOrchestrator {
     if (stripped === text) return text;
     const repaired = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
       stripped
-        // Excise a copula clause the strip gutted ("and its architecture is
-        // [microservices], with ..." -> join the survivors directly).
         .replace(/,?\s*(?:and\s+)?(?:its|the|a|an)?\s*architecture\s+(?:is|was|being)\s*(?=,|\.|with\b)/gi, '')
         .replace(/\ban(\s+(?:tool|system|service|platform|pipeline|dashboard|suite|toolkit|server|gateway|framework|library|backend|frontend)s?\b)/gi, 'a$1')
         .replace(/\s+,/g, ',')
@@ -17532,11 +13706,6 @@ export class AnalyzerOrchestrator {
         .replace(/\s+\./g, '.')
         .replace(/\s{2,}/g, ' ')
     ));
-    // Stripping the shape word can gut a copula predicate ("its architecture
-    // is, with 11 deployable units" — live: a CLI-first repo with 11
-    // deployable units). A sentence whose
-    // is/are lost its complement has nothing left to say; drop it whole when
-    // other sentences remain rather than shipping the stump.
     const sentences = repaired.split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
     if (sentences.length > 1) {
       const kept = sentences.filter(sentence => !/\b(?:is|are|was|were)\s*(?:,|\.|!|\?|$)/i.test(sentence));
@@ -17550,28 +13719,11 @@ export class AnalyzerOrchestrator {
     enhancedSystemPurpose: EnhancedSystemPurpose,
     facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[]; deployableCount?: number } = {},
   ): string {
-    // OUTPUT HYGIENE ONLY. This function previously carried a ~70-rule regex
-    // phrase-rewrite table that mapped one domain phrase onto another
-    // ("database queries" -> "data lookup behavior" -> "portfolio and wallet
-    // lookups") and deleted marketing words mid-sentence without grammar
-    // repair. That was keyword-driven fabrication and ungrammatical output;
-    // it is deleted. What remains is EVIDENCE-GATED clause removal of the
-    // AI's own ungrounded claims, plus grammar/duplication repair. Vocabulary
-    // the evidence does not support is REJECTED by the validators and
-    // regenerated -- never silently reworded.
     const wordSanitized = this.cleanGeneratedDescriptionText(description);
-    // Architecture-shape claims not corroborated by the deterministic topology
-    // facts (deployable count, messaging/FaaS evidence) are stripped at clause
-    // level — repair of the AI's own text, never a deterministic rewrite.
     const ungroundedShapes = this.ungroundedArchitectureShapeClaims(wordSanitized, facts);
     const shapeSanitized = ungroundedShapes.length > 0
       ? this.stripUngroundedArchitectureShapeClauses(wordSanitized, ungroundedShapes)
       : wordSanitized;
-    // Domain-claim phrases ("<X> management system", "<X> operations") not
-    // corroborated by the deterministic evidence corpus are stripped the same
-    // way — clause-level repair of the AI's own text (ungroundedDomainClaims /
-    // stripUngroundedDomainClaimClauses, replacing the old hardcoded six-family
-    // descriptionContradictsPurposeFamily table).
     const domainClaimGroundedTerms = [
       enhancedSystemPurpose.primary_domain,
       ...(enhancedSystemPurpose.core_concepts || []),
@@ -17580,10 +13732,6 @@ export class AnalyzerOrchestrator {
     const domainClaimSanitized = ungroundedDomainClaimPhrases.length > 0
       ? this.stripUngroundedDomainClaimClauses(shapeSanitized, ungroundedDomainClaimPhrases)
       : shapeSanitized;
-    // Word-level substitutions/deletions above can leave grammatical stumps
-    // ("…graph evidence for.", "a robust and solution") and the model pads
-    // paragraphs by restating the same domain sentence 2-3x — repair grammar
-    // and collapse near-duplicate sentences before sentence-level filtering.
     const cleaned = this.collapseNearDuplicateSentences(this.repairStrippedSentenceGrammar(domainClaimSanitized));
     const sentences = cleaned
       .split(/(?<=[.!?])\s+/)
@@ -17622,35 +13770,11 @@ export class AnalyzerOrchestrator {
 
     let keep = sentences.filter(sentence => {
       if (unsupportedFrameworkPatterns.some(pattern => pattern.test(sentence))) return false;
-      // Source-file tokens / lowerCamel identifier lists are implementation
-      // mechanics, never product prose (mirrors the validate-side lint;
-      // js-family bare tokens exempt so web3.js/next.js package names survive).
       if (/(?:^|[\s("'])[\w.-]+\/[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|php|rb|go|rs|java|cs|dart|swift|kt|sql|tf|tfvars|hcl|yaml|yml)\b/i.test(sentence) ||
         /\b[\w-]+\.(?:ts|tsx|jsx|py|php|rb|cs|dart|swift|kt|sql|tf|tfvars|hcl)\b/i.test(sentence)) return false;
       if ((sentence.match(/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || []).length >= 2) return false;
       if (/\b(external services?|integrations?|integrates with|connects to|connected to|calls out to)\b/i.test(sentence) &&
         !this.mentionsKnownExternalService(sentence, facts.externalServices || [])) return false;
-      // NOTE (residual cleanup after c611d08c): this filter previously carried
-      // ~15 more `if` clauses here, each a literal English phrase reactively
-      // copied from one bad output on one benchmarked repo ("database
-      // queries", "business logic", "c# analysis", "json processing",
-      // "request <ip>", "data lookup behavior", "main grounded concepts are",
-      // and siblings). That is the SAME anti-pattern as the ~85-rule rewrite
-      // table ripped out above -- ad hoc hardcoded product/tech vocabulary in
-      // product source, just at drop-granularity instead of rewrite-
-      // granularity. None of them encoded an invariant that survives
-      // generalization (they were not shapes, just remembered strings), so
-      // per the evidence-first mandate they are deleted rather than kept.
-      // What is left below is either (a) gated on the deterministic evidence
-      // bundle (frameworks/libraries/databaseEntities/externalServices,
-      // exactly like ungroundedDomainClaims/ungroundedArchitectureShapeClaims
-      // above), or (b) a structural/shape test (file extensions, camelCase
-      // identifier density, PascalCase Service/Repository/Controller/Store
-      // suffixes, code-attribute access like `.slice`/`.store`) that holds
-      // for ANY repo without naming a single domain word. A hardcoded
-      // "mechanism-noun-only sentence" blocklist to replace the deleted
-      // clauses was considered and rejected: it would just be the same
-      // literal-phrase problem restated as a set instead of a regex.
       if (/\b[A-Za-z_]\w*(?:Service|Repository|Controller|Store)\b/.test(sentence)) return false;
       if (/\b[A-Za-z_]\w*\.slice\b/i.test(sentence)) return false;
       if (/\b[a-z][\w-]*\.store\b/i.test(sentence)) return false;
@@ -17662,55 +13786,15 @@ export class AnalyzerOrchestrator {
       return true;
     });
 
-    // Same canonical "source-bucket restatement" definition the acceptance
-    // gate (validateAIInterpretation) rejects a WHOLE paragraph for --
-    // applied per-sentence here, as a SEPARATE pass over what the other
-    // criteria already kept, so ONE incidental offending sentence ("its
-    // script-based data lookup behavior...") can be dropped without losing
-    // an otherwise-grounded paragraph. A sentence carrying MORE THAN ONE such
-    // hit is restating the analyzer's own taxonomy as the paragraph's actual
-    // content, not slipping in one stray word -- left in place so validation
-    // still rejects it and the AI repair loop rewrites it instead of
-    // silently deleting a paragraph's only substantive claim. This pass is
-    // additionally a no-op unless it can drop the sentence WITHOUT pushing
-    // the surviving paragraph below the two-sentence shape floor -- dropping
-    // it anyway would swap a specific, actionable rejection reason for a
-    // generic 'too-short'/'single-sentence' one, which is strictly worse for
-    // whatever repairs the text next.
     const keepAfterBucketDrop = keep.filter(sentence => this.countSourceBucketRestatements(sentence) !== 1);
     if (keepAfterBucketDrop.length >= 2 || keepAfterBucketDrop.length === keep.length) {
       keep = keepAfterBucketDrop;
     }
 
     if (keep.length === sentences.length) return cleaned;
-    // The OPENING sentence carries the paragraph's subject ("<name> is a ...").
-    // Dropping it leaves pronoun-headed prose with no referent ("It produces
-    // ..." — prod: a live customer analysis shipped an accepted description
-    // clipped this way).
-    // Sentence-level sanitization is only a valid repair when the first
-    // sentence survives; otherwise the text goes back unchanged so the
-    // semantic rejection stands and the AI re-prompt re-authors it whole.
     if (keep.length === 0 || keep[0] !== sentences[0]) return cleaned;
     const sanitized = keep.join(' ').trim();
     if (!sanitized) return cleaned;
-    // NOTE (residual cleanup after c611d08c): this used to fall through to a
-    // deterministic-authorship appender here -- a hand-written closing
-    // sentence ("The main grounded concepts are X, which anchor the
-    // workflows and change-risk surface for this repository.") stitched onto
-    // the AI's own paragraph whenever sanitization left it thin, and typed
-    // as if it were still AI prose. It was also self-contradicting: the
-    // `keep` filter above used to reject any sentence containing that exact
-    // phrase, so the system could both emit the sentence and treat it as
-    // invalid. There is no deterministic substitute for the AI system
-    // description in this codebase (see the throw a few hundred lines up
-    // this function's call site, in the caller that owns
-    // acceptAIInterpretationCandidate: "Comprehension is AI-only; there is
-    // no deterministic fallback."). So a too-thin sanitized result is
-    // returned AS-IS: validateGeneratedAIInterpretation already rejects
-    // anything under ~200 chars ('too-short-for-ai-paragraph') or under two
-    // sentences ('single-sentence-ai-summary'), which sends control back to
-    // the caller's bounded AI repair/regeneration loop instead of shipping
-    // fabricated prose.
     return sanitized;
   }
 
@@ -17870,28 +13954,6 @@ export class AnalyzerOrchestrator {
     manifestDescription = '',
     userJourneys: CASUserJourney[] = []
   ): Record<string, unknown> {
-    // Terminal-segment principle: hand the model what journeys ultimately
-    // produce (terminal entities) and the near-terminal stages leading there,
-    // so domain/description anchor on product truth instead of the plumbing
-    // vocabulary (users/sessions/serialization) every codebase shares.
-    // The terminal signal is the PRIMARY distinctive-evidence source: the last
-    // segment of each journey (what it ultimately writes/produces) reveals what
-    // the app is FOR, while the generic mid-chain CRUD (Portfolio/Strategy/
-    // UsageStats) it shares with every app is down-ranked by proximity decay.
-    // For a benchmarked repo the terminal entities are DexTrade/WhaleTransaction/
-    // OhlcvCandle/PreflightDecision (crypto). We feed the ranked terminal
-    // entities, near-terminal stages, terminal capabilities, AND the weighted
-    // domain_seed_text — all raw facts; the AI infers the domain, no label here.
-    // terminalOutputs fed to the prompt must be OUTPUT-shaped entities — the
-    // api-response / persisted-entity kinds (deterministic framework-evidence
-    // kinds on CASDataEntity) — never raw node names. Live defect: UI pages and
-    // adapter classes (GraphExplorer, InMemoryMemoryGraphAdapter) were cited as
-    // "terminal outputs" because ranked terminal names include node-kind
-    // terminals. When an entity catalog exists, keep only ranked names that
-    // resolve to a data entity whose kind is output-shaped (unknown kind on a
-    // real entity gets the benefit of the doubt; request-dto/value-object and
-    // unresolved node names do not). With no catalog there is nothing to
-    // resolve against, so the ranked list passes through unchanged.
     const entityKindByName = new Map(dataEntities.map(entity => [entity.name.toLowerCase(), entity.kind]));
     const isOutputShapedTerminal = (name: string): boolean => {
       if (entityKindByName.size === 0) return true;
@@ -17914,8 +13976,6 @@ export class AnalyzerOrchestrator {
         terminalSignalInstruction: 'terminalOutputs, terminalCapabilities and terminalDomainSeed are the strongest domain evidence: they are what the product\'s journeys ultimately produce/manage (the terminal segment), which reveals what the product IS. Anchor the domain and description on these, not on generic mid-chain CRUD like Portfolio/Strategy/User/UsageStats.',
       }
       : {};
-    // Artifact truth for the model: a library/client/CLI/boilerplate must be
-    // described as what it is, not narrated as a product "system".
     const artifactNarrativeByType: Record<string, string> = {
       'library': 'a reusable library — describe it as a library, not as an application or system',
       'client-sdk': 'an auto-generated/client SDK for an external API — describe it as a client library, not as an application or system',
@@ -17929,18 +13989,8 @@ export class AnalyzerOrchestrator {
         artifactTypeInstruction: `This codebase is ${artifactNarrativeByType[this.activeArtifactType]}.`,
       }
       : {};
-    // Distinctive entities (DexTrade/WhaleTransaction/OhlcvCandle...) are the
-    // strongest domain evidence in the schema; the narrow ORM/@Entity list
-    // (databaseEntities) is dominated by generic Portfolio/Strategy/User CRUD
-    // and drowns the domain truth. Prefer the distinctive selection as the
-    // entity grounding, falling back to the ORM list only when the full
-    // data-entity catalog is unavailable. Evidence SELECTION only — no labels.
     const distinctiveEntities = this.selectDistinctiveEntityNames(dataEntities);
     const entityGrounding = distinctiveEntities.length > 0 ? distinctiveEntities : databaseEntities;
-    // The raw human-authored manifest description ("Soon Lens crypto
-    // intelligence and agent preflight API") is a real evidence STRING (not a
-    // keyword classification) — surface it verbatim as the strongest product
-    // framing when present.
     const manifestFacts = manifestDescription.trim()
       ? {
         manifestDescription: manifestDescription.trim().slice(0, 400),
@@ -17994,12 +14044,6 @@ export class AnalyzerOrchestrator {
       ...manifestFacts,
       ...readOnlyFacts,
       ...this.buildProjectTextInterpretationFacts(projectTextSignal),
-      // #113: buildSelfProjectInterpretationFacts() used to inject a
-      // hand-written `productIdentity` paragraph and instruction into the
-      // prompt facts for this repo only — the same class of bias as the
-      // removed klauroSelfConcepts injection, prepared narrative text
-      // steering the AI's own description instead of letting it derive one
-      // from evidence like every other repo. Removed.
       ...this.buildAIInterpretationBaseFacts(
         systemName, frameworks, entryPointSummary, entityGrounding,
         externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
@@ -18062,21 +14106,8 @@ export class AnalyzerOrchestrator {
         'projectTextDomain, projectTextSummary, and projectTextConcepts from human-authored repo text',
         'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product journeys; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces',
         'productBehaviorPaths — language-neutral traces tying a user intent to business transformations and terminal records/messages; use these to explain HOW the product works without copying code identifiers or route syntax',
-        // `libraries`/`dependencies` is intentionally ranked LAST among
-        // fact-based signals (below README/manifest/distinctiveEntities/
-        // terminal evidence, above only the deterministic fallback): it is
-        // SUPPORTING evidence, never the primary domain signal. A live
-        // misfire labeled a macOS menu-bar utility (deps: an auto-updater
-        // framework + a logging library) "security-scanning-tool" — the
-        // dependency list out-weighed the product's own framing. Only a
-        // domain-SPECIFIC integration dependency (e.g. ccxt/web3/
-        // @triton-one/yellowstone-grpc => crypto/DEX/blockchain) may name a
-        // domain from libraries alone, and only when no stronger fact above
-        // contradicts it. Generic infrastructure/tooling dependencies —
-        // loggers, auto-update/distribution frameworks, IPC/RPC transports,
         // test/build tooling, serialization libs — are NEVER domain evidence
         // by themselves and must never be read as implying a security,
-        // monitoring, or scanning product absent independent support.
         'libraries/dependencies — supporting evidence only; see dependencySignalInstruction',
         'capabilities and domainConcepts',
         'databaseEntities, externalServices, and frameworks',
@@ -18119,10 +14150,6 @@ export class AnalyzerOrchestrator {
         used_facts: 'List 3-8 exact supplied facts used.',
         unsupported_claims: 'Must be [] if every written claim is supported; otherwise omit unsupported claims from the description and list them here.',
       },
-      // NOTE: projectTextDomain (a keyword-classified label) is intentionally NOT
-      // fed to the model — the AI infers the domain from real dependencies/
-      // integrations, never from a pre-classified keyword label. Raw human text
-      // (concepts/summary) is still supplied as grounding.
       projectTextConcepts: projectTextSignal.concepts.slice(0, 10),
     };
   }
@@ -18165,13 +14192,9 @@ export class AnalyzerOrchestrator {
     const hasReadmeFraming = Boolean(projectTextSignal.productDocTitle || projectTextSignal.productDocSummary);
     if (!projectTextSignal.summary && projectTextSignal.concepts.length === 0 && !hasReadmeFraming) return {};
     return {
-      // projectTextDomain (keyword-classified) omitted — the AI infers the domain
-      // from real evidence, not from a pre-classified label. Raw text kept.
       projectTextConcepts: projectTextSignal.concepts.slice(0, 10),
       projectTextSummary: projectTextSignal.summary,
       projectTextEvidence: projectTextSignal.evidence.slice(0, 5),
-      // TOP-DOWN product framing (verbatim product-doc title/overview) — the
-      // product's own statement of what it is; authoritative for WHAT to describe.
       ...(projectTextSignal.productDocTitle ? { readmeProductTitle: projectTextSignal.productDocTitle } : {}),
       ...(projectTextSignal.productDocSummary ? { readmeProductOverview: projectTextSignal.productDocSummary } : {}),
       projectTextInstruction: 'Human-authored project text is product framing. Use it to choose emphasis, but keep every claim grounded in the structural facts.',
@@ -18199,11 +14222,6 @@ export class AnalyzerOrchestrator {
         .map(c => c.name.replace(/_/g, ' ')))
       .filter(name => !this.isGenericCapabilityToken(name.toLowerCase()));
 
-    // Rank concepts core-first, then by frequency. Supporting concepts still
-    // fill the list, so the model always receives real domain signal even
-    // when few or no concepts reached `core` — without this a thin repo
-    // hands the model an empty list and it hallucinates a system identity
-    // from the project name alone.
     const conceptPool = domainConcepts
       .filter(c => c.classification !== 'infrastructure')
       .sort((a, b) => {
@@ -18220,9 +14238,6 @@ export class AnalyzerOrchestrator {
     return {
       systemName,
       frameworks: narrativeFrameworks,
-      // dependencyNamesForAI is already ranked by analyzer recognition and
-      // real source-import frequency, so this compact list keeps defining
-      // dependencies without shipping a duplicate package-manifest dump.
       libraries: libraryNames.slice(0, 48),
       allowedFrameworks: narrativeFrameworks.length > 0 ? narrativeFrameworks : ['none detected'],
       forbiddenFrameworkInstruction: narrativeFrameworks.length > 0
@@ -18240,13 +14255,7 @@ export class AnalyzerOrchestrator {
   private frameworksForNarrativeFacts(_systemName: string, frameworks: string[]): string[] {
     const unique = Array.from(new Set(frameworks.map(framework => String(framework || '').trim()).filter(Boolean)));
     if (unique.length <= 3) return unique;
-    // When a project carries many frameworks, surface the ones that most define the
-    // product surface (backend/web/data), then fill from the rest — evidence only,
     // NO repo-name matching. Critically, NEVER collapse to a shape-word like
-    // 'mixed monorepo': the AI grounding gate rejects monorepo-shape-as-product-
-    // description, so feeding that phrasing as the allowed framing deadlocks the
-    // comprehension pass (the model is pushed into a description the gate always
-    // rejects → L5 fails). Real framework names never trip that gate.
     const definingFramework = /\b(nest|next|express|fastify|koa|hapi|remix|nuxt|astro|django|flask|fastapi|spring|rails|laravel|symfony|asp\.?net|gin|echo|fiber|actix|axum|rocket|phoenix|react|vue|svelte|angular|solid|flutter|mikroorm|prisma|typeorm|sequelize|mongoose|sqlalchemy|hibernate|entity framework)\b/;
     const preferred = unique.filter(framework => definingFramework.test(framework.toLowerCase()));
     const rest = unique.filter(framework => !preferred.includes(framework));
@@ -18297,11 +14306,6 @@ export class AnalyzerOrchestrator {
   ): EnhancedSystemPurpose {
     this.activeTerminalSignal = terminalSignal;
     const coreConcepts = this.productCoreConcepts(domainExtractor.getCoreConcepts(domainConcepts), frameworks);
-    // Artifact-type classification precedes domain: WHAT KIND of codebase
-    // this is (library/client-sdk/cli-tool/boilerplate/app) is structural
-    // truth that manifests and entry/exit shape reveal directly. Libraries
-    // and generated clients without an anchored product domain get an
-    // artifact-led domain label instead of a forced business domain.
     const artifactManifest = collectArtifactManifestSignal(projectPath);
     const artifactResult = classifyArtifactType({
       nodes,
@@ -18311,18 +14315,6 @@ export class AnalyzerOrchestrator {
       manifest: artifactManifest,
     });
     this.activeArtifactType = artifactResult.artifactType;
-    // COMPREHENSION BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): the primary
-    // domain, the overall description, and every capability/entity description
-    // are COMPREHENSION and are produced ONLY by the AI interpretation pass,
-    // grounded in the real Camp-B evidence bundle (dependency manifest,
-    // languages, entities, integrations, deployables, routes). This builder no
-    // longer seeds a deterministic domain or description — the entire hardcoded
-    // keyword/terminal/repo-name domain classifier and the deterministic
-    // description frame were the "Solana arbitrage" garbage generators and were
-    // deleted. What remains here is STRUCTURE (Camp B): artifact_type and the
-    // grounded core-concept vocabulary the AI prompt reads. `primary_domain` and
-    // `inferred_description` are left UNSET; applyAIInterpretation is the sole
-    // writer and THROWS if AI comprehension cannot be produced.
     const coreConceptNames = this.rankCoreConcepts(
       projectTextSignal.concepts,
       coreConcepts,
@@ -18331,14 +14323,6 @@ export class AnalyzerOrchestrator {
       projectPath,
     );
 
-    // `primary_workflow_id` / `supporting_workflow_ids` predate the
-    // journeys/workflows collapse (docs/cas/SPECIFICATION.md §0.5.1) and
-    // named a stored CASWorkflow's id. There is no stored workflow anymore —
-    // both fields now name FLOWS (flow_graph.flows, CASFlowRef), ranked by
-    // criticality then step count: the primary flow is the single
-    // highest-ranked one, supporting flows are the next-ranked ones below
-    // it. This is a read-time projection over `flows`, not a persisted
-    // parallel graph.
     const criticalityRank: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
     const rankedFlows = [...(flowGraph.flows || [])].sort((a, b) => {
       const byCriticality = (criticalityRank[b.criticality || 'low'] ?? 0) - (criticalityRank[a.criticality || 'low'] ?? 0);
@@ -18354,10 +14338,6 @@ export class AnalyzerOrchestrator {
       evidence: this.orderPurposeEvidence([...basePurpose.evidence, ...projectTextSignal.evidence]).slice(0, 20),
       artifact_type: artifactResult.artifactType,
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
-      // primary_domain / inferred_description are COMPREHENSION and are left
-      // empty here (the structural equivalent of "unset"): applyAIInterpretation
-      // is the sole writer and fills them from the AI evidence bundle, or throws.
-      // No domain_source / description_source is set — a 'deterministic'
       // provenance must never be written.
       primary_domain: '',
       inferred_description: '',
@@ -18366,33 +14346,6 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * The repository's core vocabulary, ranked by HOW MUCH OF THE REPOSITORY'S
-   * OWN EVIDENCE stands behind each term rather than by which list it came
-   * from.
-   *
-   * This used to be plain list concatenation with the project-text vocabulary
-   * first. Because that list was capped at eight and `core_concepts` at ten,
-   * whatever the text scorer produced consumed eight of the ten slots before a
-   * single structural concept was considered — and the tail was filled from the
-   * raw top-25-by-frequency domain concepts, i.e. the noisiest part of that
-   * surface. Measured across 25 production analyses, the result was that the
-   * repository's actual vocabulary was almost entirely absent: a card-game app
-   * reported six unrelated terms ahead of `game`/`card`/`rules`, and a
-   * car-wash app reported none of its own vocabulary at all.
-   *
-   * Evidence weights, strongest first:
-   *  - a named DATA ENTITY is the repository's own domain model, stated by the
-   *    authors in schema form;
-   *  - an ENTRY-POINT anchor means the term names something the system exposes;
-   *  - `core` classification means the structural classifier singled it out;
-   *  - corroboration by the human-authored TEXT means the authors use the word
-   *    when describing the product;
-   *  - prominence within the concept distribution breaks remaining ties.
-   *
-   * No source can monopolize the list, and no term is privileged for belonging
-   * to a category the analyzer was taught about.
-   */
   private rankCoreConcepts(
     projectTextConcepts: string[],
     coreConcepts: CASDomainConcept[],
@@ -18417,7 +14370,6 @@ export class AnalyzerOrchestrator {
       if (concept?.appears_in?.entry_points?.length) score += 3;
       if (concept && coreNames.has(concept.name)) score += 2;
       if (tokens.some(token => textTokens.has(token))) score += 2;
-      // A multi-word phrase names a concept more precisely than a lone word.
       if (tokens.length > 1) score += 1;
       score += (concept?.frequency || 0) / maxFrequency;
       return score;
@@ -18443,36 +14395,12 @@ export class AnalyzerOrchestrator {
       .map(([name]) => name);
   }
 
-  /**
-   * Orders purpose evidence by how much it can actually be trusted to say what
-   * the repository is FOR.
-   *
-   * The evidence list used to be plain concatenation, which put whichever
-   * vocabulary signature happened to fire at the very top and the repository's
-   * own product documentation at the bottom. That reads as the analyzer's
-   * primary reason for its verdict — measured on this repository's own
-   * production analysis, the leading evidence line was a bag of security
-   * keywords ("policy, policies, resource, resources, agent, agents, device,
-   * devices, grant, grants, scan, credential, vulnerability, cve") ahead of
-   * its package description, README and product doc. A keyword bag is the
-   * WEAKEST form of evidence here: it reports incidental word overlap, which is
-   * exactly the failure mode the signature anchor gates exist to contain.
-   *
-   * Strongest first: what the authors wrote about the product, then counted
-   * structural facts (entry points, entities, interfaces), then vocabulary
-   * overlap. Ordering only — nothing is added or dropped, and ties keep their
-   * original relative order.
-   */
   private orderPurposeEvidence(evidence: string[]): string[] {
     const rank = (line: string): number => {
       const text = String(line || '');
-      // Human-authored product framing: a manifest description, a README, a
-      // product doc. The authors' own statement of what this is.
       if (/^(package\.json description|README|readme|docs\/README|PRD|PRODUCT|OVERVIEW|CLAUDE|AGENTS|KLAURO)[.\w/]*(\.md|\.mdx)?$/.test(text)) return 0;
       if (/^source text$/.test(text)) return 1;
-      // Counted structural facts.
       if (/^\d|\b\d+\s+(HTTP|page|route|data|entry|CLI)\b|^Primary interface is\b/.test(text)) return 2;
-      // Vocabulary-overlap signature matches ("<Something> signals: a, b, c").
       if (/\bsignals:/i.test(text) || /\bvocabulary:/i.test(text)) return 4;
       return 3;
     };
@@ -18482,46 +14410,6 @@ export class AnalyzerOrchestrator {
       .map(entry => entry.line);
   }
 
-  // REMOVED (hardcoded-knowledge class, defect #90): hasNetworkAccessManagementSignal,
-  // hasNetworkAccessConceptSignal, and hasTradingAutomationSignal — three
-  // dead, never-called keyword-bag classifiers (confirmed zero call sites
-  // anywhere in packages/). Each matched a fixed vocabulary list ('zero
-  // trust'/'policy'/'agent'/'device' for network-access; a set of specific
-  // exchange/aggregator/protocol product names plus 'dex'/'cex'/'arbitrage'/
-  // 'swap' for trading) against project text and
-  // concluded a business-domain verdict from incidental word overlap — the
-  // exact class this defect targets, just unwired. Removed outright rather
-  // than left as unused dead weight that could get re-wired later without
-  // review.
-
-  /**
-   * True when a domain label already names a KIND OF CODEBASE rather than a
-   * subject matter — "…-platform", "…-service", "…-library", "…-tool",
-   * "…-sdk", "…-base" and friends. Morphology only: the head noun of the
-   * compound is what decides, so the test works for labels the analyzer has
-   * never seen. A label like "fleet-management" or "portfolio-management"
-   * names what the software is ABOUT; one like "commerce-platform" names what
-   * it IS, and the codebase's structural shape must not override it.
-   */
-  /**
-   * Confidence for a signature-based codebase-type verdict, DERIVED from how
-   * much of the signature the repository actually matched.
-   *
-   * REPLACES (2026-07-29, hardcoded-knowledge class) a set of per-signature
-   * hardcoded confidence floors — `Math.max(0.86, …)` for one signature,
-   * `Math.max(0.84, …)` for four others, `0.82` and `0.8` for the rest. Those
-   * numbers were properties of the signature's AUTHOR, not of the evidence: a
-   * repository matching 4 of a signature's 11 terms reported the same 0.84 as
-   * one matching all 11, and because the floor was a `max` it could only ever
-   * inflate a low computed confidence, never reflect it. That is how a
-   * vocabulary-only overlap came to be published as a high-confidence verdict.
-   *
-   * Coverage of the signature now sets the number, on one scale shared by every
-   * signature, so a thin match reads as a thin match. The floor of the range is
-   * deliberately well below the old constants: reaching a signature's anchor
-   * gate is meaningful, but matching a third of its vocabulary is not
-   * near-certainty.
-   */
   private signatureMatchConfidence(
     matchedCount: number,
     signatureSize: number,
@@ -18559,55 +14447,12 @@ export class AnalyzerOrchestrator {
     if (/-boilerplate$/.test(primaryDomain)) {
       return 'boilerplate';
     }
-    // Repo-agnostic shape rule, not a self-identity exception: a
-    // codebase-analysis domain names a KIND OF TOOL (something that analyzes
-    // other codebases), the same way "-library"/"-boilerplate" above do —
-    // this applies to ANY repo whose already-accepted domain matches the
-    // literal, not just this one. #113: the self-only grounding gate this
-    // comment used to point to (validateAIInterpretation rejecting the
-    // 'codebase-analysis' domain for every repo except this one) has been
-    // removed; this step only decides what TYPE OF CODEBASE an
-    // already-accepted domain implies, same as every other shape rule here.
     if (/(^|-)codebase-analysis(?:-(?:engine|platform|system|tool))?$/.test(primaryDomain)) {
       return 'devtools-platform';
     }
-    // REMOVED (hardcoded-knowledge class, defect #90): a run of ~12 bare
-    // domain-literal equality checks — 'tray-icon-library' -> itself,
-    // '^solana-(?:trading|arbitrage)$' -> 'trading-automation',
-    // 'cloud-infrastructure' -> 'infrastructure-codebase',
-    // 'testing-utilities' -> 'library-package',
-    // 'card-game-platform' -> 'gaming-platform', and eight more
-    // ('scheduling-platform', 'developer-platform', 'commerce-platform',
-    // 'knowledge-base', 'internal-tools-platform', 'publishing-platform',
-    // 'photo-management-platform', 'federated-social-platform',
-    // 'no-code-database-platform', 'product-analytics-platform') that each
-    // just echoed the domain back at itself. These were vocabulary deciding a
-    // conclusion, not evidence: 'solana-trading' -> 'trading-automation' is
-    // the exact failure class that once described an unrelated repo in
-    // trading terms, and 'card-game-platform' -> 'gaming-platform' interprets
-    // business subject matter ("card game") into a codebase-type verdict
-    // rather than reading the codebase's own shape.
-    //
-    // The ten identity echoes carried a real (if implicit) intent though: a
-    // domain that is ALREADY spelled like a codebase-type label (ends in
-    // "-platform", "-base", "-service", ...) should be trusted as that type
-    // rather than fought over by structural heuristics below. That intent is
-    // general, not particular to ten named strings, and
-    // isCodebaseTypeShapedDomainLabel already tests it by suffix shape — so
-    // state it once, generically, instead of enumerating every domain that
-    // happens to satisfy it. 'tray-icon-library' and 'card-game-platform'
-    // fall out of the same generic rule now (as 'library-package' via the
-    // suffix rule above, and as its own literal 'card-game-platform' via the
-    // shape rule below, respectively) rather than the specific display names
-    // this file used to hardcode for them — an honest precision loss for
-    // those two labels, not a fabricated one.
     if (this.isCodebaseTypeShapedDomainLabel(primaryDomain)) {
       return primaryDomain;
     }
-    // A SUBJECT-MATTER label (one that does not itself name a codebase type)
-    // plus server-framework or backend entry points is a backend service;
-    // plus page entry points and no backend entry points it is a frontend
-    // application.
     const hasPageEntry = entryPointSummary.some(entry => entry.count > 0 && /^(page|route)$/.test(entry.type));
     if (hasPageEntry && !hasBackendEntry) {
       return 'frontend-application';
@@ -18639,59 +14484,6 @@ export class AnalyzerOrchestrator {
       .join('\n');
   }
 
-  /**
-   * DEFECT (system name = prose heading over declared identity): this
-   * resolver used to check the product doc's own H1 (README/PRD title)
-   * BEFORE any manifest, on the theory that a doc title is the "strongest
-   * top-down self-naming evidence". That is wrong whenever the doc's first
-   * heading is not a product title at all — a scaffolded frontend repo's
-   * README very often has a boilerplate first heading like "# Prerequisites"
-   * ahead of any real title (measured live on a benchmarked Angular SPA): the
-   * system's displayed name came out as "Prerequisites" while the project's
-   * own package.json declared a real product name one file away. A markdown
-   * heading is prose STRUCTURE, not declared identity, and must never
-   * outrank it. This is a precedence fix, not a vocabulary fix — nothing
-   * here special-cases the string "Prerequisites" or any other heading text;
-   * the same rule must hold for every repo whether its stray first heading
-   * says "Prerequisites", "Getting Started", or anything else.
-   *
-   * Evidence-gated priority, never fabricated: (1) an explicit caller-supplied
-   * displayName always wins; (2) the ROOT manifest's own declared name —
-   * package.json/composer.json/pyproject.toml/Cargo.toml/pom.xml/go.mod/
-   * *.gemspec/mix.exs/Package.swift/settings.gradle(.kts)/pubspec.yaml, or a
-   * single root *.csproj or *.sln — scope/vendor-stripped and humanized
-   * ("@klauro/monorepo" -> "Klauro", "acme/checkout-lib" -> "Checkout Lib").
-   * This is DECLARED identity: an author committed it on purpose to name the
-   * package, so it outranks prose; (3) the product doc's own title
-   * (README/PRD H1), used only when NO root manifest exists at all — the
-   * common case for a doc-first repo like mtg's PRD, which has no root
-   * package.json and whose H1 names the Commander game it hosts; already
-   * parsed once by extractProjectTextSignal as productDocTitle and reused
-   * here verbatim, never re-derived; (4) COMMON-PACKAGE-SCOPE fallback: when
-   * the repo has no root manifest/README (an uploaded snapshot can
-   * genuinely lack root-level files while still containing nested package
-   * manifests — see prj_wbW33m-wfETn1N41, whose uploaded workspace has no
-   * root package.json or README but does have apps/app/package.json,
-   * apps/api/package.json, packages/analyzer-core/package.json, ... all
-   * scoped "@klauro/..."), scan nested manifests for a single DOMINANT npm
-   * scope and use it as the product/org name ("@klauro/app" +
-   * "@klauro/analyzer-core" + ... -> "Klauro"). Requires >=1 scoped
-   * manifest and abstains (returns undefined) when manifests span multiple
-   * unrelated scopes, so we never fabricate a name from an unscoped or
-   * genuinely multi-vendor tree; (5) the path basename as the last-resort
-   * structural fact. Returns undefined when no step above yields a name, so
-   * the caller keeps its existing basename-derived value.
-   */
-  /**
-   * True when `displayName` is either absent or textually indistinguishable
-   * from `path.basename(projectPath)` (case-insensitive) — i.e. it carries no
-   * information beyond "we didn't have a real name so we used the folder
-   * name". Compares against both the raw projectPath basename and a
-   * trailing-slash-stripped variant so `/x/proof-of-concept/` still matches
-   * `proof-of-concept`. A caller-supplied displayName that differs from the
-   * basename (an explicit product name from project settings, say) is never
-   * touched by this — it still wins outright, matching the original rule.
-   */
   private systemDisplayNameIsBareBasename(displayName: string | undefined, projectPath: string): boolean {
     if (!displayName) return true;
     const basename = path.basename(projectPath.replace(/[/\\]+$/, ''));
@@ -18704,15 +14496,6 @@ export class AnalyzerOrchestrator {
     const hasRealDocTitle = cleanedTitle.length > 0 && cleanedTitle.length <= 80;
 
     if (manifest) {
-      // A manifest name reached only via the GENERIC-STRUCTURAL FALLBACK
-      // (e.g. "@klauro/monorepo" -> the scope "Klauro", because "monorepo"
-      // itself is repo-shape filler, not a product word) is weaker evidence
-      // than the general "declared identity outranks prose" rule assumes —
-      // the author didn't actually write a specific name, the resolver
-      // manufactured one from the scope. A real product doc title (README/
-      // PRD H1) is more informative in that narrow case and wins instead.
-      // A genuinely specific manifest name (the common case) still wins
-      // outright over any doc title, unchanged.
       if (manifest.genericFallback && hasRealDocTitle) return cleanedTitle;
       return manifest.name;
     }
@@ -18722,38 +14505,6 @@ export class AnalyzerOrchestrator {
     return this.resolveCommonPackageScopeName(projectPath);
   }
 
-  /**
-   * Root manifest declared name, across every ecosystem this analyzer
-   * supports — DECLARED identity evidence (an author committed this value on
-   * purpose to name the package), so callers check it before any prose
-   * heading. package.json / composer.json `name`; Cargo.toml `[package]
-   * name`; pyproject.toml `[project] name` or `[tool.poetry] name`; pom.xml
-   * root `<artifactId>` (the `<parent>` block, if any, is stripped first so
-   * a parent POM's own artifactId never wins, and the search stops at
-   * `<dependencies>` so a dependency's artifactId can't be mistaken for the
-   * project's own); go.mod `module` path (see humanizeGoModulePath — the
-   * ecosystem with no name FIELD, only a path, so it gets its own resolver);
-   * a root `*.gemspec`'s explicit `name =` assignment, falling back to the
-   * gemspec's own filename (ambiguous when more than one exists at the
-   * root, so that case abstains — same rule as csproj below); mix.exs's
-   * `app: :atom_name`; Package.swift's `Package(name: "...")`; Gradle's
-   * `rootProject.name` in settings.gradle/settings.gradle.kts (build.gradle
-   * alone has no reliable name field and is deliberately not read — see
-   * doc); pubspec.yaml's top-level `name:` key; and, for ecosystems with no
-   * name FIELD at all, a single root `*.csproj` file, whose filename IS the
-   * declared project identity in .NET, falling back to a single root
-   * `*.sln` when no csproj exists (ambiguous when more than one of either
-   * exists at the root, so that case abstains). Each name is
-   * scope/vendor-stripped and humanized via humanizeManifestName (or, for
-   * go.mod, the dedicated humanizeGoModulePath). Returns undefined when
-   * nothing is found — never guesses. The returned `genericFallback` flag
-   * marks a name that was only reachable by falling back from a generic
-   * structural remainder to the scope/org segment (e.g. "@klauro/monorepo"
-   * -> "Klauro"): the author never actually wrote a specific product name
-   * there, so resolveSystemDisplayName treats that case as weaker evidence
-   * than a genuinely specific manifest name and lets a real product doc
-   * title outrank it.
-   */
   private resolveRootManifestName(projectPath: string): { name: string; genericFallback: boolean } | undefined {
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
     const packageJsonName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
@@ -18777,10 +14528,6 @@ export class AnalyzerOrchestrator {
         const humanized = this.humanizeManifestName(nameMatch[1].trim());
         if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
-      // No [package] block (or no name in it) means this Cargo.toml is a
-      // VIRTUAL WORKSPACE MANIFEST — a workspace root deliberately has no
-      // name of its own; falling through (rather than guessing from
-      // [workspace] keys) is correct, not a gap.
     }
 
     const pyprojectToml = this.safeReadText(path.join(projectPath, 'pyproject.toml'), 8000);
@@ -18847,11 +14594,6 @@ export class AnalyzerOrchestrator {
         if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
     }
-    // build.gradle / build.gradle.kts alone (no settings.gradle) is
-    // deliberately not consulted here — Gradle has no reliable project-name
-    // field outside rootProject.name; group/archivesBaseName are build
-    // metadata, not declared product identity, and guessing from them would
-    // be exactly the fabrication this resolver exists to avoid.
 
     const pubspecYaml = this.safeReadText(path.join(projectPath, 'pubspec.yaml'), 4000);
     if (pubspecYaml) {
@@ -18873,9 +14615,6 @@ export class AnalyzerOrchestrator {
         const humanized = this.humanizeManifestName(path.basename(rootCsprojFiles[0], path.extname(rootCsprojFiles[0])));
         if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       } else if (rootCsprojFiles.length === 0) {
-        // No root .csproj at all (a multi-project .NET repo's projects
-        // typically live in subdirectories) — a single root *.sln is still
-        // declared identity: its filename IS the solution/product name.
         const rootSlnFiles = fs.readdirSync(projectPath, { withFileTypes: true })
           .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.sln'))
           .map(entry => entry.name);
@@ -18885,22 +14624,11 @@ export class AnalyzerOrchestrator {
         }
       }
     } catch {
-      // unreadable root directory — no csproj/sln evidence, fall through
     }
 
     return undefined;
   }
 
-  /**
-   * A root `*.gemspec`'s declared identity. Ruby convention is stronger
-   * than most ecosystems: the FILENAME is the gem name by convention (e.g.
-   * `mygem.gemspec` for a gem named `mygem`), but a spec can also assign
-   * `name` explicitly inside its `Gem::Specification.new do |s| ... end`
-   * block under any block-variable name (`s.name`, `spec.name`, ...) — that
-   * explicit assignment is checked first since it's the more direct
-   * declaration, falling back to the filename. Ambiguous (more than one
-   * root gemspec) abstains, same rule as root *.csproj.
-   */
   private resolveRootGemspecName(projectPath: string): string | undefined {
     let gemspecFiles: string[];
     try {
@@ -18922,32 +14650,6 @@ export class AnalyzerOrchestrator {
     return this.humanizeManifestName(path.basename(gemspecFiles[0], path.extname(gemspecFiles[0])))?.value;
   }
 
-  /**
-   * Go's `module` directive is a PATH, not a name field, so it needs its own
-   * resolver rather than reuse of humanizeManifestName's scope/pkg split.
-   * Two structural rules, both driven only by path shape:
-   *
-   * 1. TRAILING MAJOR-VERSION SEGMENT: Go's own module-versioning
-   *    convention (see golang.org/ref/mod#major-version-suffixes) requires
-   *    every v2+ module to suffix its path with `/vN` purely for import
-   *    disambiguation — it carries no product-identity information. A
-   *    trailing segment matching `vN` (N >= 2) is stripped before naming,
-   *    but ONLY when something remains after stripping — a module whose
-   *    entire path IS "v2" keeps it rather than naming from nothing.
-   *
-   * 2. DOMAIN-PREFIX vs LAST-SEGMENT: after stripping, a lone remaining
-   *    segment that itself looks like a domain (contains a dot, e.g.
-   *    "example.app") is the whole identity — its first label ("example")
-   *    is the product name, the rest is TLD-shaped noise. A multi-segment
-   *    path (host/org/repo, e.g. "github.com/acme/widget-tool") follows
-   *    Go's own convention that the LAST segment is the specific package/
-   *    repo name,
-   *    so that wins — UNLESS the last segment is a generic structural word
-   *    (the same GENERIC_STRUCTURAL_NAME_PATTERN humanizeManifestName uses
-   *    for npm scopes, e.g. "server", "api"), in which case the previous
-   *    segment (the org) is the more identifying evidence, matching the
-   *    same "@org/monorepo -> Org" precedent already established for npm.
-   */
   private humanizeGoModulePath(modulePath: string): { value: string; genericFallback: boolean } | undefined {
     const segments = modulePath.split('/').filter(Boolean);
     if (segments.length === 0) return undefined;
@@ -18977,18 +14679,6 @@ export class AnalyzerOrchestrator {
     return humanized ? { value: humanized, genericFallback: false } : undefined;
   }
 
-  /**
-   * "@scope/pkg-name" -> "Pkg Name" (scope/vendor-stripped, kebab/underscore
-   * split, title-cased). Also handles composer-style "vendor/package" (no
-   * leading "@"). A scope/vendor whose stripped remainder is a GENERIC
-   * STRUCTURAL word ("@klauro/monorepo", "acme/root", "@org/workspace") is
-   * not self-naming the product — the structural word describes the repo
-   * SHAPE, while the scope/vendor ("@klauro", "acme") is the product/org
-   * identity — so the scope wins instead ("@klauro/monorepo" -> "Klauro",
-   * not "Monorepo"). A genuinely product-named manifest
-   * ("@acme/checkout-service" -> "Checkout Service", "acme/payment-client"
-   * -> "Payment Client") is untouched.
-   */
   private humanizeManifestName(manifestName: string): { value: string; genericFallback: boolean } | undefined {
     const scopedMatch = manifestName.match(/^@?([^/@\s]+)\/(.+)$/);
     if (scopedMatch) {
@@ -19008,14 +14698,6 @@ export class AnalyzerOrchestrator {
     return humanized ? { value: humanized, genericFallback: false } : undefined;
   }
 
-  /**
-   * kebab/underscore/dot/space split, title-cased. Shared by every
-   * manifest-name humanizer above. The dot delimiter covers .NET's
-   * Company.Product-style csproj/sln filenames ("Yisda.CentralServer" ->
-   * "Yisda CentralServer") the same way "-"/"_" already cover kebab/snake
-   * case elsewhere; it is a structural filename delimiter, not a
-   * product-specific rule.
-   */
   private humanizeWords(value: string): string | undefined {
     const humanized = value
       .replace(/[-_.]+/g, ' ')
@@ -19027,9 +14709,8 @@ export class AnalyzerOrchestrator {
     return humanized || undefined;
   }
 
-  /** "@scope/pkg-name" -> "Pkg Name" (scope-stripped, kebab/underscore split, title-cased). */
   private humanizeScopeStrippedManifestName(manifestName: string): string | undefined {
-    const scopeStripped = manifestName.replace(/^@[^/]+\//, '');
+    const scopeStripped = manifestName.replace(/^@[^/]+\
     const humanized = scopeStripped
       .replace(/[-_]+/g, ' ')
       .split(' ')
@@ -19040,17 +14721,6 @@ export class AnalyzerOrchestrator {
     return humanized || undefined;
   }
 
-  /**
-   * Evidence-based fallback for repos whose root has no manifest/README to
-   * self-name from (see resolveSystemDisplayName doc). Scans nested
-   * package.json manifests (bounded depth, same discovery-ignore rules as
-   * the rest of project-text extraction, so node_modules/dist/fixtures/etc.
-   * never contribute) for their declared npm `name` field, extracts the
-   * scope of each ("@klauro/app" -> "klauro"), and returns the humanized
-   * scope ONLY when every scoped manifest agrees on a single scope — the
-   * scope IS the product/org name in that case. Multiple distinct scopes,
-   * or zero scoped manifests, abstain (undefined) rather than guess.
-   */
   private resolveCommonPackageScopeName(projectPath: string): string | undefined {
     const manifestFiles = this.collectNestedPackageJsonFiles(projectPath);
     if (manifestFiles.length === 0) return undefined;
@@ -19059,26 +14729,16 @@ export class AnalyzerOrchestrator {
     for (const absFile of manifestFiles) {
       const json = this.safeReadJson(absFile);
       const name = typeof json?.name === 'string' ? json.name.trim() : '';
-      const scopeMatch = name.match(/^@([^/]+)\//);
+      const scopeMatch = name.match(/^@([^/]+)\
       if (!scopeMatch) continue;
       const scope = scopeMatch[1].toLowerCase();
       scopeCounts.set(scope, (scopeCounts.get(scope) || 0) + 1);
     }
-    if (scopeCounts.size !== 1) return undefined; // no scoped manifests, or multiple unrelated scopes
+    if (scopeCounts.size !== 1) return undefined;
     const [dominantScope] = [...scopeCounts.keys()];
     return this.humanizeScopeStrippedManifestName(dominantScope);
   }
 
-  /**
-   * Bounded-depth `fs.readdirSync` walk for nested package.json files —
-   * deliberately NOT glob-based. `glob` is jest-mocked to a no-op in this
-   * package's test setup (src/__tests__/setup.ts), which every OTHER
-   * glob-consuming helper in this file already routes around via its own
-   * manual-scan fallback (see scanProjectTextSourceFiles); this walk is that
-   * same fallback pattern, so it works identically in tests and in
-   * production rather than silently returning [] under test. Skips the same
-   * noise directories dependency-manifest.ts's collectManifestFiles ignores.
-   */
   private collectNestedPackageJsonFiles(projectPath: string, maxDepth = 8, maxFiles = 500): string[] {
     const ignoredDir = /^(node_modules|dist|build|out|coverage|vendor|vendors|target|\.git|\.next|\.turbo|\.cache|\.terraform|\.worktrees|fixtures|__fixtures__|testdata)$/;
     const found: string[] = [];
@@ -19133,14 +14793,6 @@ export class AnalyzerOrchestrator {
       break;
     }
 
-    // TOP-DOWN product framing: capture the product doc's own title + opening
-    // paragraph VERBATIM. This is what the authors say the product IS — the
-    // strongest top-down capability signal — and must reach the catalog prompt
-    // intact (mtg's PRD names the Commander game it hosts; a codebase-analysis
-    // tool's README never sells "access management"). Prefer README; fall back
-    // to an explicit product doc (PRD/PRODUCT/OVERVIEW) when no README frames the
-    // product. Agent-tooling docs (CLAUDE.md/AGENTS.md) are deliberately NOT in
-    // this list — they describe how to work ON the repo, not what the product is.
     let productDocTitle: string | undefined;
     let productDocSummary: string | undefined;
     const PRODUCT_DOC_CANDIDATES = [
@@ -19167,16 +14819,6 @@ export class AnalyzerOrchestrator {
       const content = this.safeReadText(guidePath, 30000);
       if (!content) continue;
       const stripped = this.stripBoilerplateProjectText(content);
-      // #113: this repo used to skip stripAgentToolingInstructionText and
-      // feed CLAUDE.md/AGENTS.md straight into the product-text signal
-      // verbatim (only the generic boilerplate strip applied) — every other
-      // repo's agent-tooling docs get the agent-tooling-instruction strip
-      // applied, per the comment above this loop, because those docs
-      // describe how to work ON the repo, not what the product is. Letting
-      // this repo's own CLAUDE.md through unstripped meant its (extensive)
-      // doctrine/instruction text could leak directly into the AI's grounding
-      // evidence — a second, file-based route to the same self-narrative
-      // bias as the removed hardcoded facts. Same strip for every repo now.
       const useful = this.stripAgentToolingInstructionText(stripped);
       if (useful.length > 80) {
         textParts.push(useful);
@@ -19185,9 +14827,6 @@ export class AnalyzerOrchestrator {
     }
 
     let sourceTextFound = false;
-    // Single glob pass (this ran the IDENTICAL sync glob twice — once for the
-    // .length probe, once for the value — doubling a whale-repo scan that
-    // blocks the event loop; same pattern+ignore ⇒ same result, so reuse it).
     const globbedSourceFiles = this.safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
       cwd: projectPath,
       nodir: true,
@@ -19208,26 +14847,11 @@ export class AnalyzerOrchestrator {
     if (sourceTextFound) evidence.push('source text');
 
     const text = textParts.join('\n').toLowerCase();
-    // COMPREHENSION BOUNDARY: the project-text DOMAIN and the composed SUMMARY were
-    // keyword-classified comprehension (the "A <keyword-domain> codebase..." frame
-    // and the deterministic domain scorer). Both are deleted from the signal —
-    // domain and description are AI-only. Only the raw human-authored CONCEPT
-    // vocabulary is kept as AI grounding.
     const concepts = this.inferConceptsFromProjectText(text);
 
     return { primaryDomain: undefined, concepts, summary: undefined, evidence, manifestDescription, productDocTitle, productDocSummary };
   }
 
-  /**
-   * TOP-DOWN product framing from a product doc (README/PRD/PRODUCT/OVERVIEW),
-   * extracted DETERMINISTICALLY (a Camp-B fact, like manifestDescription —
-   * verbatim human text, no interpretation). Returns the first markdown heading
-   * (the product's name/tagline) and the first substantive prose paragraph (its
-   * own statement of what it is/does). Skips badge/HTML/blockquote/code/table/
-   * bold-metadata/horizontal-rule noise so the summary is real product prose.
-   * Both fields are evidence-gated: undefined when the doc has no heading / no
-   * qualifying paragraph — never fabricated.
-   */
   private extractProductDocFraming(content: string): { title?: string; summary?: string } {
     const lines = String(content || '').replace(/\r\n/g, '\n').split('\n');
     let title: string | undefined;
@@ -19236,8 +14860,6 @@ export class AnalyzerOrchestrator {
     const isNoise = (line: string): boolean => {
       const t = line.trim();
       if (!t) return true;
-      // Badges/images/links-only, HTML tags, blockquotes, code fences, tables,
-      // list markers, and horizontal rules are not product-statement prose.
       if (/^(!\[|<|>|```|\||---|===|\* \* \*|\*\*\*|___)/.test(t)) return true;
       if (/^!?\[[^\]]*\]\([^)]*\)\s*$/.test(t)) return true; // pure badge/image line
       if (/^(#{1,6}\s|[-*+]\s|\d+\.\s)/.test(t)) return true; // heading or list item
@@ -19258,9 +14880,8 @@ export class AnalyzerOrchestrator {
           continue;
         }
       }
-      // Accumulate the first real prose paragraph AFTER we've seen (or skipped) a title.
       if (paragraph.length === 0 && isNoise(t)) continue;
-      if (paragraph.length > 0 && !t) break; // blank line ends the paragraph
+      if (paragraph.length > 0 && !t) break;
       if (isNoise(t) && paragraph.length === 0) continue;
       if (!isNoise(t) || paragraph.length > 0) {
         if (isNoise(t)) break;
@@ -19271,7 +14892,7 @@ export class AnalyzerOrchestrator {
     if (paragraph.length > 0) {
       summary = paragraph
         .join(' ')
-        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // markdown links -> text
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
         .replace(/[`*_]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
@@ -19473,32 +15094,6 @@ export class AnalyzerOrchestrator {
     return snippets.join(' ');
   }
 
-
-  /**
-   * The repository's own DOMAIN VOCABULARY, derived from the human-authored
-   * text the repository ships (manifest description, README/PRD framing, doc
-   * prose, UI strings).
-   *
-   * REMOVED (2026-07-29, hardcoded-knowledge class): this used to score the
-   * text against a ~90-entry list of domain/product phrases and return the
-   * ones that matched. The list was fitted to the repositories that happened
-   * to be on hand, so it reported its OWN vocabulary back as the repository's
-   * concepts, and it reported that vocabulary on repositories that contain
-   * none of it — measured across 25 production analyses, the list filled the
-   * first eight of the ten `core_concepts` slots on nearly every repository
-   * and crowded the real vocabulary out entirely. It fired on incidental
-   * English ("in order to" -> an order-management concept), on stack
-   * plumbing (a database driver -> a driver concept, an SDK mention -> a
-   * cloud-provider concept), and on generic physics/UI words. Terms outside
-   * the list were invisible no matter how central they were to the product.
-   *
-   * The replacement reads only what the text says: term frequency over the
-   * prose, filtered by the same generic/noise/builtin/vendor predicates the
-   * rest of the capability and domain surfaces use, gated on repetition and
-   * on distinctiveness relative to this text's own frequency distribution.
-   * A term the authors never repeated is not a core concept, and no term is
-   * privileged for belonging to a category the analyzer was taught about.
-   */
   private inferConceptsFromProjectText(text: string): string[] {
     return extractDistinctiveTextVocabulary(text, {
       limit: 8,
@@ -19506,13 +15101,6 @@ export class AnalyzerOrchestrator {
     }).map(term => term.replace(/\s+/g, '-'));
   }
 
-  /**
-   * Rejects a word that cannot be domain vocabulary in ANY repository:
-   * too-short/numeric tokens, English function words, the generic
-   * architecture/capability vocabulary, language builtins, vendor library
-   * names, and hash/id-shaped blobs. Every predicate here is language- or
-   * stack-level; none names a product, industry, or business domain.
-   */
   private isProjectTextNoiseToken(token: string): boolean {
     const normalized = String(token || '').toLowerCase();
     if (normalized.length < 4) return true;
@@ -19527,25 +15115,11 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-
-  /**
-   * Hash/id-shaped tokens (content hashes, uuids, random ids, base36 blobs)
-   * are never legitimate domain vocabulary — they're plumbing artifacts that
-   * leak in from near-empty/unclassifiable repos (e.g. a generated entity or
-   * file-content hash surviving as a "write terminal" name). Composing
-   * "<hash>-management" from one of these is dishonest: it looks like a real
-   * domain label but is actually noise. Reject anything that looks
-   * hash/id-shaped before it ever reaches domain composition.
-   */
   private isHashOrIdShapedToken(token: string): boolean {
     const normalized = (token || '').toLowerCase();
     if (normalized.length < 8) return false;
-    // Canonical UUID (with or without dashes).
     if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/.test(normalized)) return true;
-    // Long pure-hex string (>=12 hex chars) — content hash / commit sha / hex id.
     if (normalized.length >= 12 && /^[0-9a-f]+$/.test(normalized)) return true;
-    // Long alphanumeric blob with no vowels and a digit somewhere: random
-    // base36/base62-ish id (e.g. "8f3k29xz1q"), not an English word.
     if (normalized.length >= 10 && /^[0-9a-z]+$/.test(normalized) && /[0-9]/.test(normalized) && !/[aeiou]/.test(normalized)) {
       return true;
     }
@@ -19561,16 +15135,6 @@ export class AnalyzerOrchestrator {
       'old', 'new', 'main', 'index', 'metadata', 'data', 'core', 'lib', 'library',
       'src', 'dist', 'build', 'out', 'pkg', 'bin', 'httpexception', 'exception', 'exceptions', 'error', 'errors',
       'libs', 'package', 'portal', 'dashboard', 'admin', 'business', 'apps',
-      // 'users'/'clients' deliberately NOT here (regression, coverage-gate
-      // red on express-mongoose fixture): both are real, common domain
-      // resources (a "users" REST resource, a CRM "clients" entity) — the
-      // ambient generic-app-scaffolding words this set exists for
-      // ('app'/'server'/'client'[singular, tooling role]/'dashboard') are a
-      // different class than a pluralized DOMAIN RESOURCE noun. Blocking
-      // "users" silently zeroed capability generation for the smallest real
-      // fixture (2 Express routes over a Mongoose User model) — the resource
-      // key normalized to exactly this blocked token before any capability
-      // was ever built, well upstream of the terminality gates.
       'dev',
       'page', 'pages', 'route', 'routes', 'component', 'components', 'layout',
       'layouts', 'section', 'sections', 'navbar', 'nav', 'footer', 'button',
@@ -19708,41 +15272,10 @@ export class AnalyzerOrchestrator {
       .filter(token => token.length >= 3 && !/^(app|apps|web|ui|ux|api|client|server|frontend|backend|service|services)$/.test(token));
   }
 
-  // purposeCapabilitySummary and capabilityPurposeBias were both removed here
-  // (residual cleanup after c611d08c / 8fe31d29). Both encoded a primaryDomain
-  // string-literal switch -- literals naming specific benchmark-corpus products
-  // rather than generic categories -- mapped to a hardcoded phrase
-  // (purposeCapabilitySummary) or a hardcoded ranking bias
-  // (capabilityPurposeBias). That is the class the cardinal rule forbids:
-  // deterministic structural facts + AI interpretation, never a hardcoded
-  // domain/brand/keyword table. capabilityPurposeBias was additionally DEAD:
-  // its only two call sites were the capability sort comparator and
-  // filterCapabilitiesForKnownDomain, and the sole caller of both passed a
-  // primaryDomain that is unconditionally undefined at that structural stage,
-  // so every branch was unreachable and it always returned 0.
-  // filterCapabilitiesForKnownDomain, its domain-literal sibling, went with it
-  // for the same reason.
-
   private isCrossCuttingCapabilityName(name: string): boolean {
     return /\b(auth|authenticate|authentication|authorization|login|logout|session|token|jwt|oauth|permission|role|superuser|admin|user|users)\b/i.test(name);
   }
 
-  /**
-   * SHAPE TEST ONLY (cardinal rule: deterministic structural facts + AI
-   * interpretation, never a hardcoded domain/brand/keyword table). A ~40-name
-   * allowlist of specific product capability labels used to sit at the top of
-   * this method, exempting names like "Booking Lifecycle" / "Cart And
-   * Checkout" / "Session Replay" from the genericness test. Those literals
-   * named benchmark-corpus products, no producer in this codebase ever emits
-   * them, and 39 of the 40 were already non-generic under the shape test
-   * below, so the list bought nothing but a cardinal violation. Genericness is
-   * now decided purely by shape: a structural-noise phrase, a syntax-shaped
-   * label (brackets/quotes/colons -- a leaked code fragment), or a subject
-   * whose every token is a generic capability token with no distinguishing
-   * anchor. The residual literals below are structural English scaffolding
-   * ("console commands", "event handlers") and framework component names, not
-   * product/domain vocabulary.
-   */
   private isGenericCapabilityDisplayName(name: string): boolean {
     if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
     if (/^(help management|report reporting|jobs? workflow)$/i.test(name)) return true;
@@ -19761,7 +15294,6 @@ export class AnalyzerOrchestrator {
       .every(token => token.length <= 2 || this.isGenericCapabilityToken(token) || /^(toggle|success|failure|misc|root|read|write|use|used|using|item|items|flat|tiered|available|bogus)$/.test(token));
   }
 
-
   private summarizeEntryPoints(entryPoints: CASEntryPoint[]): { type: string; count: number }[] {
     const counts = new Map<string, number>();
     for (const ep of entryPoints) {
@@ -19772,14 +15304,6 @@ export class AnalyzerOrchestrator {
       .sort((a, b) => b.count - a.count);
   }
 
-  /**
-   * Structural Importance stage (deterministic, additive): computes seeded
-   * random-walk centrality over the call graph and stamps each node's
-   * normalized [0,1] score onto `node.structural_importance`. MUST NOT add,
-   * remove, or retype nodes/edges/entry points — parity is an invariant.
-   * Runs on both the full and the incremental post-process paths so every CAS
-   * revision carries scores.
-   */
   private computeAndStampStructuralImportance(
     nodes: CASNode[],
     edges: CASEdge[],
@@ -19850,29 +15374,6 @@ export class AnalyzerOrchestrator {
     return graphBuilder.buildFlowGraph(capabilities, dependencies, systemPurpose);
   }
 
-  /**
-   * Nodes directly called by a test — the same test-ownership + call-graph
-   * signal task #100-class fixes (applyTestFileBoundary et al.) wired up for
-   * tests_present/tests_covering, applied here to change-risk's own
-   * 'no-tests' factor. Before this, buildChangeRisks' only test signal was
-   * `node.testing?.tested_by`, a field NO analyzer (any language) ever
-   * populates — every riskable node scored 'no-tests' unconditionally,
-   * regardless of real test coverage, and buildChangeRiskSummary's
-   * untested_critical_paths inherited that false-positive on every repo
-   * (separate bug from the Go _test.go tagging gap: that one broke the
-   * capability/journey tests_present walk; this one is change-risk's own
-   * dead field, and affects every language, not just Go).
-   *
-   * Walks forward over 'calls' edges from every test-owned node
-   * (metadata.is_test / category 'test' / type test|mock|test_double|
-   * test_fixture — go-analyzer.ts's applyTestFileBoundary and the TS/JS/Dart
-   * equivalents already stamp this), continuing through further test-owned
-   * nodes (mocks/fixtures/helpers) but stopping and recording the target as
-   * soon as a NON-test node is reached — mirroring test-framework-analyzer's
-   * reachableProductionTargets so "directly tested" means the same thing in
-   * both places. Self-contained (only needs nodes/edges already in scope
-   * here), so it needs no pipeline reordering relative to buildTestSuites.
-   */
   private computeDirectlyTestedNodeIds(nodes: CASNode[], edges: CASEdge[]): Set<string> {
     const isTestOwned = (node: CASNode | undefined): boolean =>
       !!node && (
@@ -20201,29 +15702,8 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  // A declared type that rules a field out as a credential/secret on structural
-  // grounds: real secrets (passwords, API keys, tokens-as-credentials, PII
-  // strings) are represented as strings in code. A field typed as a number,
-  // boolean, or date can carry a name that reads like "token" or "key" (a
-  // token-BUDGET, a cache-key TTL) without being one — the type is direct
-  // structural evidence the value is not a credential, independent of any
-  // name list.
   private static readonly NON_SENSITIVE_FIELD_TYPE = /^(?:number|int(?:eger)?|float|double|long|decimal|short|byte|bigint|boolean|bool|date|datetime|timestamp|duration)(?:\s*\|\s*(?:null|undefined))*$/i;
 
-  /**
-   * Evidence-based sensitive-field discriminator. Precedence:
-   *   1. An explicit analyzer-emitted `sensitive` attribute always wins (real
-   *      structural evidence from the language analyzer, e.g. an annotation).
-   *   2. A numeric/boolean/date declared type rules the field OUT regardless
-   *      of name — a credential is not represented as a number in code.
-   *   3. Otherwise, a name-pattern match on credential/PII vocabulary is the
-   *      remaining (weaker) signal for string/unknown-typed fields.
-   * This intentionally does NOT special-case any additional literal names
-   * (e.g. "budget", "efficiency") to suppress false positives — that is the
-   * same hardcoded-vocabulary anti-pattern inverted. The type check is what
-   * keeps `tokenBudget: number` / `estimatedTokens: number` / `tokenEfficiency:
-   * number` out of sensitive_fields without a name-exclusion list.
-   */
   private isFieldSensitiveByEvidence(name: string, type: string, analyzerFlag: boolean): boolean {
     if (analyzerFlag) return true;
     const normalizedType = (type || '').trim();
@@ -20247,12 +15727,6 @@ export class AnalyzerOrchestrator {
     projectPath?: string,
     databaseSchema?: CASDatabaseSchema,
   ): CASDataEntity[] {
-    // ORM entities keyed by canonical identity (the name-derived entity id).
-    // Multiple anchor nodes can describe the same entity (a framework analyzer's
-    // model node + a language analyzer's class node, or two same-named models):
-    // without dedup the SAME id appears twice in database_entities. On collision
-    // keep the richest-evidence copy (most fields; tie → the one with a schema
-    // source) and union the lifecycle so no accessor evidence is dropped.
     const ormEntitiesById = new Map<string, CASDataEntity>();
     const mergeOrmEntity = (candidate: CASDataEntity) => {
       const existing = ormEntitiesById.get(candidate.id);
@@ -20291,8 +15765,6 @@ export class AnalyzerOrchestrator {
     );
 
     const propertyIndex = this.buildEntityPropertyIndex(nodes);
-    // Off-node persistence evidence (table mapping / migration / repository),
-    // built once for every kind decision in this pass.
     const persistence = this.buildPersistenceEvidenceContext(nodes, databaseSchema);
     const nodesById = new Map<string, CASNode>();
     for (const node of nodes) {
@@ -20313,13 +15785,6 @@ export class AnalyzerOrchestrator {
     }
 
     for (const entityNode of entityNodes) {
-      // FIELDS ARE DEDUPED BY NAME. A field name is unique within a record, but
-      // property nodes for one shape can arrive twice (a class node plus a
-      // language analyzer's re-declaration, an inherited property re-emitted on
-      // the subclass, the schema-file fallback overlapping property nodes), and
-      // the raw push listed the same column twice — a layout shape shipped with
-      // `width` in its field list twice. First occurrence wins: it carries the
-      // richest resolved type (the fallback paths append later).
       const fields: Array<{
         name: string;
         type: string;
@@ -20332,11 +15797,6 @@ export class AnalyzerOrchestrator {
       for (const prop of propertyNodes) {
         const analyzerFlag = (prop.metadata?.attributes as Record<string, unknown> | undefined)?.sensitive;
 
-        // Field type: prefer an explicit return-type signature; otherwise fall back
-        // to the property's declared type annotation, which language analyzers (e.g.
-        // the TS/JS AST analyzer) record on metadata.type. Without this fallback the
-        // typed-field shape collapses to "unknown" and downstream consumers (cross-repo
-        // contract-drift) cannot see field-level type changes.
         const metadataType = (prop.metadata as Record<string, unknown> | undefined)?.type;
         const declaredType = typeof metadataType === 'string' ? metadataType : undefined;
         const resolvedType = prop.signature?.return_type || declaredType || 'unknown';
@@ -20348,13 +15808,7 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      // Schema-file ORM analyzers (Prisma & co.) carry the parsed field list on
-      // the entity node's metadata.attributes.fields instead of emitting one
-      // property node per field. When no property nodes matched, surface those
-      // analyzer-parsed fields — same evidence, different carrier.
       if (fields.length === 0) {
-        // createNode() spreads analyzer metadata onto node.metadata directly,
-        // while some analyzers nest under metadata.attributes — accept both.
         const metadataRecord = (entityNode.metadata || {}) as Record<string, unknown>;
         const attrFields = ((metadataRecord.attributes as Record<string, unknown> | undefined)?.fields) ?? metadataRecord.fields;
         if (Array.isArray(attrFields)) {
@@ -20394,10 +15848,6 @@ export class AnalyzerOrchestrator {
           .filter(Boolean);
         const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
         if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts')) return createdBy;
-        // 'paginate'/'retrieve'/'browse' are read-shaped repository/listing verbs
-        // (paginateAllDriveAlerts, retrieveOrders) — omitting them silently drops
-        // the exact methods that serve list/detail endpoints from an entity's
-        // read lineage, which starves capability candidates of entity evidence.
         if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'paginate', 'paginates', 'paginated', 'retrieve', 'retrieves', 'browse', 'browses')) return readBy;
         if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves')) return updatedBy;
         if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys')) return deletedBy;
@@ -20422,8 +15872,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // Dedupe by field name, first occurrence wins (see the `fields`
-      // declaration above).
       const fieldsByName = new Map<string, typeof fields[number]>();
       for (const field of fields) {
         if (!fieldsByName.has(field.name)) fieldsByName.set(field.name, field);
@@ -20442,37 +15890,15 @@ export class AnalyzerOrchestrator {
           deleted_by: [...new Set(deletedBy)]
         }
       };
-      // KIND is a Camp-B fact derived from framework evidence on the anchor node
-      // (never from the name). This selection path MIXES two populations: shapes
-      // proved persistent (ORM decorator / table mapping / ORM subcategory) and
-      // shapes admitted on LOCATION alone (a type under an `entities/` folder, a
-      // POCO/plain struct in a model directory). The `persisted-entity` request
-      // below is therefore only a request: without cited persistence evidence the
-      // classifier degrades it to `domain-shape`, so a UI or wire-format type
-      // never ships as durable state.
       this.tagDataEntityKind(ormEntity, [entityNode], 'persisted-entity', persistence);
-      // A shape with NO fields and NO persistence evidence carries no data model
-      // at all (live: a zero-field marker struct surfaced as an entity). Nothing
-      // downstream can render, relate, or reason about it — drop it rather than
-      // relabel it.
       if (!ormEntity.fields?.length && ormEntity.kind !== 'persisted-entity') continue;
       mergeOrmEntity(ormEntity);
     }
     entities.push(...ormEntitiesById.values());
 
-    // Many codebases express their data model as DTOs / typed request-response
-    // shapes rather than ORM entity classes (NestJS, FastAPI, gRPC, etc.). A DTO
-    // named CreatePaymentDto / PaymentResponseDto is structural evidence of a
-    // `Payment` domain object. Derive those, deduped by core noun, so the entity
-    // model reflects the real domain instead of just the few ORM-decorated classes.
     const existingEntityNames = new Set(entities.map(entity => entity.name.toLowerCase()));
     entities.push(...this.deriveEntitiesFromDataShapeNodes(nodes, edgesByNode, nodesById, propertyIndex, existingEntityNames, projectPath));
 
-    // Many real readers/writers are service/controller methods that reference an
-    // entity only by TYPE in their signature (createPayment(dto: CreatePaymentDto))
-    // or by core noun in their name (getStrategies) — neither produces a
-    // traversable edge to the entity node, so edge-only lifecycle stays empty for
-    // both ORM and DTO entities. Attribute those accessors here, uniformly.
     const accessorIndex = this.buildEntityAccessorIndexByNoun(nodes);
     for (const entity of entities) {
       const noun = this.singularizeNoun(entity.name.toLowerCase());
@@ -20487,55 +15913,15 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    // PLURAL/SINGULAR PHANTOM DEDUPE. The ORM path and the DTO-derived path
-    // above mint entities from different anchor kinds (an `@Entity class
-    // Device` vs. a `DevicesResponseDto`/`DevicesController` accessor
-    // surface): the same domain noun can surface twice under different
-    // surface forms of its name ("Device" AND "Devices"). A stem match alone
-    // is not sufficient evidence to merge — "Order" and "Ordering" are
-    // legitimately different concepts — so this only folds two entities
-    // together when they ALSO share backing evidence (same schema/class
-    // source file, or an overlapping lifecycle accessor node — i.e. the same
-    // reader/writer touches both surfaced shapes).
     const dedupedEntities = this.dedupePluralSingularEntities(entities);
     replaceArrayContents(entities, dedupedEntities);
 
-    // Deflate the surfaced entity set to the product's real DOMAIN objects using
-    // the deterministic KIND fact (framework evidence, never name/casing). The
-    // domain surface is what the system PERSISTS (persisted-entity) and what it
-    // PRODUCES for consumers (api-response). Inbound request-dto contracts and
-    // internal value-object plumbing shapes are real code but not domain entities;
-    // in DTO-heavy frameworks (NestJS + class-validator, FastAPI, gRPC) they vastly
-    // outnumber the domain objects and inflate the count (a benchmarked repo: 202). Every
-    // entity is kind-tagged above (tagDataEntityKind on both the ORM and DTO paths),
-    // so this filter — not the earlier kind ranking, which only ORDERS — is what
-    // makes the tagging actually reduce the count. Undefined kind (no discriminating
-    // evidence) is treated as domain to avoid dropping genuine shapes on thin
-    // evidence. If a codebase has zero persisted/api-response shapes, keep the full
-    // ranked set rather than blank the entity model.
-    // `domain-shape` is kept here: it is a field-carrying domain type that
-    // merely failed the PERSISTENCE gate, not plumbing. It stays visible and
-    // honestly labeled — and the ERD excludes it, since it has no table.
     const domainEntities = entities.filter(
       entity => entity.kind === 'persisted-entity' || entity.kind === 'api-response' ||
         entity.kind === 'domain-shape' || entity.kind == null
     );
     const surfaced = domainEntities.length > 0 ? domainEntities : entities;
 
-    // INFRASTRUCTURE-SHAPE GATE (mirrors the capability purpose gate —
-    // isInfrastructureOnlyCapability / isInfrastructureShapedEntityName). A
-    // runtime/lifecycle/process-control-shaped concept (daemon/sentinel/spawn/
-    // restart/presence/invoke/usage/hook shapes) that carries NO persisted-domain
-    // or api-response evidence is plumbing, not a domain data entity — so it must
-    // not surface in database_entities even when the domain filter above fell back
-    // to the full set (a DTO-only repo with zero persisted/api-response shapes,
-    // e.g. an assistant-runtime repo whose entities are all process/DTO
-    // shapes, where SpawnBase/DaemonAction/RuntimeInfo/ZaiUsage/… would
-    // otherwise leak through the fallback). Gated on entity KIND + name shape
-    // (evidence), never a capability/keyword blocklist: persisted-entity /
-    // api-response shapes are kept regardless of name. Never blank the entity
-    // model — if EVERY surfaced shape reads as infrastructure (a pure daemon/
-    // runtime repo), keep the surfaced set so consumers still have targets.
     const withoutInfra = surfaced.filter(entity =>
       entity.kind === 'persisted-entity' ||
       entity.kind === 'api-response' ||
@@ -20543,27 +15929,10 @@ export class AnalyzerOrchestrator {
     );
     const finalEntities = withoutInfra.length > 0 ? withoutInfra : surfaced;
 
-    // Relations LAST, over the FINAL entity set: a relation may only target a
-    // surfaced entity, so the target gate has to see the set after every
-    // dedupe/kind/infrastructure filter above has run.
     this.attachEntityRelations(finalEntities, nodes, edges, databaseSchema);
     return finalEntities;
   }
 
-  /**
-   * Populate `CASDataEntity.relations` (and flag the relation-declaring
-   * fields) from every relation carrier, via the shared evidence-gated
-   * extractor — see analyzer/core/entity-relations.ts for the carriers and the
-   * data-vs-structural split.
-   *
-   * `database_schema` is folded in as an EXTRA carrier because
-   * buildDatabaseSchema reads relation decorators off the SOURCE FILE
-   * (sourceDecoratorsForNode), evidence that exists only during analysis and
-   * is not otherwise persisted anywhere on the graph. Without this fold a
-   * decorator ORM's associations would be visible in the database-schema
-   * summary and nowhere else — exactly the split that left persisted entities
-   * with an empty relation list while their foreign keys sat in plain sight.
-   */
   private attachEntityRelations(
     entities: CASDataEntity[],
     nodes: CASNode[],
@@ -20580,10 +15949,7 @@ export class AnalyzerOrchestrator {
       sourceKey: string,
       relation: NonNullable<CASDataEntity['relations']>[number],
     ) => {
-      // ONE data relation per (entity, field): a field declares at most one
-      // association, so a weaker carrier reading the same field differently (a
       // typed-composition `1:1` over the decorator's `N:1`) must not double it.
-      // Carriers are folded strongest-first, so the first reading wins.
       if (relation.kind === 'data' && relation.field
         && relationFieldsByEntity.get(sourceKey)?.has(relation.field)) return;
       const key = [
@@ -20608,10 +15974,6 @@ export class AnalyzerOrchestrator {
       }
     };
 
-    // Carrier A — the source-read relation decorators captured in
-    // database_schema. Strongest cardinality evidence, so it goes FIRST and
-    // the dedupe keeps it over a weaker typed-composition reading of the same
-    // field.
     for (const schemaEntity of databaseSchema?.entities || []) {
       const sourceKey = schemaEntity.name.toLowerCase();
       if (!canonicalByLower.has(sourceKey)) continue;
@@ -20632,9 +15994,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // Carrier B — everything the graph itself proves (ORM relation edges,
-    // property-level relation declarations, typed composition, structural
-    // interface/trait edges).
     for (const [sourceKey, relations] of graph.dataByEntityNameLower) {
       if (!canonicalByLower.has(sourceKey)) continue;
       for (const relation of relations) {
@@ -20670,9 +16029,6 @@ export class AnalyzerOrchestrator {
       const sourceKey = entity.name.toLowerCase();
       const relations = relationsByEntity.get(sourceKey);
       if (relations?.length) {
-        // Data relations first so a reader (human or agent) sees the data model
-        // before the structural composition, and a truncating consumer keeps
-        // the data model rather than the interface list.
         entity.relations = [
           ...relations.filter(relation => relation.kind === 'data'),
           ...relations.filter(relation => relation.kind === 'structural'),
@@ -20686,17 +16042,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Deterministic entity KIND from framework-analyzer evidence carried on the
-   * anchor node(s) — subcategories, node.type, and metadata.attributes only.
-   * NEVER reads the entity name or casing (that would be the keyword classifier
-   * the determinism boundary forbids). Precedence when a shape carries mixed
-   * evidence: api-response (what it produces) > persisted-entity (durable state)
-   * > request-dto (inbound contract) > value-object (internal shape). `fallback`
-   * is used when no discriminating evidence is present (the caller's selection
-   * path already narrowed the candidate set — e.g. an ORM selection path passes
-   * 'persisted-entity', the DTO-shape path passes 'value-object').
-   */
   private classifyDataEntityKind(
     anchors: CASNode[],
     fallback: CASDataEntityKind,
@@ -20712,13 +16057,8 @@ export class AnalyzerOrchestrator {
     }
     const has = (...names: string[]) => names.some(name => subcats.has(name));
 
-    // PERSISTENCE EVIDENCE — cited or absent, never assumed. See
-    // persistenceEvidenceForAnchors for the admissible carriers.
     const persisted = this.persistenceEvidenceForAnchors(anchors, persistence, entityName);
 
-    // api-response — what the system produces for its consumers. This is the
-    // terminal set. Serializer output and OpenAPI/GraphQL/api-contract response
-    // shapes are the product's outward-facing contract.
     if (has('api-response', 'serializer')) {
       return { kind: 'api-response', evidence: `analyzer subcategory \`${has('api-response') ? 'api-response' : 'serializer'}\`` };
     }
@@ -20726,54 +16066,17 @@ export class AnalyzerOrchestrator {
       return { kind: 'api-response', evidence: 'api-contract analyzer subcategory' };
     }
 
-    // persisted-entity — durable state, and ONLY with a citation. The old gate
-    // also accepted the bare `entity` subcategory and returned the caller's
-    // `persisted-entity` fallback when nothing discriminated, so a type whose
-    // only qualification was living under an `entities/` directory shipped as
-    // durable state (live: a UI viewer's own geometry types — a layout
-    // interface with width/height — reported as persisted entities and drawn
-    // into the ERD).
     if (persisted) return { kind: 'persisted-entity', evidence: persisted };
 
-    // request-dto — inbound contract (@Body / validation DTO / request schema).
     if (sawDtoType ||
         has('input-validation', 'request', 'validation', 'validation_contract', 'contract', 'schema')) {
       return { kind: 'request-dto', evidence: sawDtoType ? 'analyzer node type `dto`' : 'inbound-contract analyzer subcategory' };
     }
 
-    // No discriminating framework fact. A `persisted-entity` fallback cannot
-    // stand — it is exactly the uncitable claim this gate exists to stop — so it
-    // degrades to `domain-shape`: still a real, surfaced domain type, just not
-    // one with a table behind it.
     if (fallback === 'persisted-entity') return { kind: 'domain-shape' };
     return { kind: fallback };
   }
 
-  /**
-   * Cited persistence evidence for an entity's anchor nodes, or undefined.
-   *
-   * ADMISSIBLE CARRIERS (each one cites itself):
-   *   1. an ORM mapping ATTRIBUTE on the node (`table`/`tableName`/`collection`/
-   *      `orm`/`persisted`);
-   *   2. a persistence DECORATOR/ANNOTATION (`@Entity`, `@Table`, `@Document`,
-   *      `@Model`, `@PrimaryKey`, `@Column`, …) or an ORM BASE CLASS the node
-   *      extends (`BaseEntity`, `ActiveRecord`, `Model`, …);
-   *   3. an ORM-family analyzer SUBCATEGORY (`orm-entity`, `typeorm`, `gorm`, …);
-   *   4. an analyzer that TYPED the node as an ORM entity/model (`entity`,
-   *      `model`) — a framework analyzer's explicit classification;
-   * Carriers 1–4 are read off the entity's anchor nodes AND (via
-   * `persistence.evidencedNames`) off any same-named node in the graph, because
-   * the annotation and the property list frequently live on different nodes for
-   * the same declaration.
-   *   5. a TABLE MAPPING / SCHEMA DEFINITION for the name in `database_schema`
-   *      (a declared table, or a primary-key field);
-   *   6. a MIGRATION that references the name;
-   *   7. a REPOSITORY/DAO that references the name.
-   *
-   * The bare `entity` subcategory and an `entities/`-directory location are NOT
-   * carriers: both are produced by path heuristics, and both are how UI/wire
-   * types entered the persisted set.
-   */
   private persistenceEvidenceOnNode(node: CASNode): string | undefined {
     const attrs = (node.metadata?.attributes || {}) as Record<string, unknown>;
     for (const key of ['table', 'tableName', 'collection', 'orm', 'persisted', 'is_persisted']) {
@@ -20819,12 +16122,6 @@ export class AnalyzerOrchestrator {
     return persistence.repositoryNames.get(key);
   }
 
-  /**
-   * Table-mapping / migration / repository evidence indexed by entity name, so
-   * a shape with no on-node ORM fact can still PROVE persistence from the rest
-   * of the graph (a hand-rolled DAL: a plain struct plus a repository that
-   * loads it, or a migration that creates its table).
-   */
   private buildPersistenceEvidenceContext(
     nodes: CASNode[],
     databaseSchema?: CASDatabaseSchema,
@@ -20852,11 +16149,6 @@ export class AnalyzerOrchestrator {
       const key = subject.toLowerCase();
       if (key.length >= 3 && !into.has(key)) into.set(key, citation);
     };
-    // DECLARATION node types only. A first pass accepted any node whose name or
-    // file merely looked repository-ish, and imports/constants/variables/file
-    // nodes (`import ../connection`, `PARTITION_COUNT`, `databaseRepository`,
-    // `telemetry-repository.ts`) minted 13 phantom persisted entities on one
-    // real repo. Evidence has to be a DECLARED repository/migration.
     const DECLARATION_TYPES = new Set(['class', 'struct', 'interface', 'type', 'repository', 'migration', 'model']);
     for (const node of nodes) {
       const type = String(node.type || '').toLowerCase();
@@ -20864,8 +16156,6 @@ export class AnalyzerOrchestrator {
       const name = String(node.name || '');
       const subcats = (node.subcategories || []).map(sub => String(sub).toLowerCase());
       if (type === 'migration') {
-        // The migration's SUBJECT: what is left after the migration vocabulary
-        // (`Create…Table`, `AddColumnTo…`, the timestamp prefix) is removed.
         const subject = name
           .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
           .split(/[^A-Za-z0-9]+/)
@@ -20878,10 +16168,6 @@ export class AnalyzerOrchestrator {
         }
         continue;
       }
-      // A repository/DAO's SUBJECT is its name with the role suffix removed —
-      // `InvoiceRepository` proves `Invoice`, and nothing else. Decomposing the
-      // name into every noun it contains is what admitted `Query` from
-      // `QueryBuilder` and `Doctrine` from `isDoctrineRepository`.
       const suffix = /(Repository|Repositories|Repo|Dao|DAO|Store|Mapper|Persistence)$/.exec(name);
       const isRepository = Boolean(suffix) || type === 'repository' || subcats.includes('data-access');
       if (!isRepository) continue;
@@ -20894,11 +16180,6 @@ export class AnalyzerOrchestrator {
     return { evidencedNames, mappedNames, migrationNames, repositoryNames };
   }
 
-  /**
-   * Attach the deterministic kind to an entity, with the evidence that proves
-   * it. `framework-evidence` is claimed ONLY alongside a citation; otherwise the
-   * source is recorded honestly as `shape-inference`.
-   */
   private tagDataEntityKind(
     entity: CASDataEntity,
     anchors: CASNode[],
@@ -20912,25 +16193,10 @@ export class AnalyzerOrchestrator {
     else delete entity.kind_evidence;
   }
 
-  /** Lightweight English singularizer for matching method-name nouns to entities. */
   private singularizeNoun(token: string): string {
     return token.replace(/ies$/, 'y').replace(/(ses|xes|zes|ches|shes)$/, match => match.slice(0, -2)).replace(/s$/, '');
   }
 
-  /**
-   * Dedupe PLURAL/SINGULAR phantom entities that share backing evidence.
-   * Groups entities by singularized name stem, then — within a group that
-   * actually contains more than one distinct surface form ("Device" AND
-   * "Devices", not just two copies of "Device") — merges a pair only when
-   * `entitiesShareBackingEvidence` confirms they are the SAME underlying
-   * record (same schema/class source, or an overlapping lifecycle accessor).
-   * A bare stem match with no shared evidence is left as two separate
-   * entities, since the stem alone cannot distinguish "Order" from
-   * "Ordering" or "Trailer" from "Trailering". The richer entity (more
-   * fields, tie -> has a schema_source) is kept, mirroring mergeOrmEntity's
-   * exact-id merge above; lifecycle sets are unioned so no accessor evidence
-   * already attributed to either surfaced shape is lost.
-   */
   private dedupePluralSingularEntities(entities: CASDataEntity[]): CASDataEntity[] {
     const groups = new Map<string, CASDataEntity[]>();
     for (const entity of entities) {
@@ -20945,7 +16211,7 @@ export class AnalyzerOrchestrator {
     for (const group of groups.values()) {
       if (group.length < 2) continue;
       const distinctSurfaceForms = new Set(group.map(entity => entity.name.toLowerCase()));
-      if (distinctSurfaceForms.size < 2) continue; // exact-name collisions already merged upstream
+      if (distinctSurfaceForms.size < 2) continue;
 
       for (let i = 0; i < group.length; i++) {
         for (let j = i + 1; j < group.length; j++) {
@@ -20970,20 +16236,9 @@ export class AnalyzerOrchestrator {
         }
       }
     }
-    // Always return a NEW array (never the same reference as `entities`) —
-    // callers reuse the `entities` binding in place (`entities.length = 0;
-    // entities.push(...deduped)`), which would truncate the result out from
-    // under itself if this returned the identical array object.
     return dropped.size > 0 ? entities.filter(entity => !dropped.has(entity)) : [...entities];
   }
 
-  /**
-   * Backing-evidence test for a candidate plural/singular merge: the SAME
-   * schema/class source file (the same table/class surfaced under two
-   * names), or an overlapping lifecycle accessor (the same reader/writer
-   * node touches both — the same lineage cluster). A bare stem match with
-   * neither signal stays separate.
-   */
   private entitiesSharePluralSingularEvidence(a: CASDataEntity, b: CASDataEntity): boolean {
     if (a.schema_source && b.schema_source && a.schema_source === b.schema_source) return true;
     const nodesOf = (entity: CASDataEntity) => new Set([
@@ -20999,14 +16254,6 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  /**
-   * Index accessor nodes (controllers/services/methods/functions) by the entity
-   * core noun they read or write, attributing CRUD from the method's verb. Two
-   * signals: (a) precise — the method types one of an entity's DTOs in its
-   * params/return; (b) broad — a CRUD-verb method whose name carries the entity
-   * core noun as a whole word. Each accessor node carries a source file, so the
-   * resulting lifecycle is navigable.
-   */
   private buildEntityAccessorIndexByNoun(nodes: CASNode[]): Map<string, { create: Set<string>; read: Set<string>; update: Set<string>; delete: Set<string> }> {
     const index = new Map<string, { create: Set<string>; read: Set<string>; update: Set<string>; delete: Set<string> }>();
     const bucket = (noun: string) => {
@@ -21014,7 +16261,6 @@ export class AnalyzerOrchestrator {
       if (!entry) { entry = { create: new Set(), read: new Set(), update: new Set(), delete: new Set() }; index.set(noun, entry); }
       return entry;
     };
-    // dto/type name -> entity core noun (CreatePaymentDto -> payment).
     const dtoNounByTypeName = new Map<string, string>();
     for (const node of nodes) {
       if (node.type !== 'dto' && node.type !== 'entity' && node.type !== 'model') continue;
@@ -21036,11 +16282,6 @@ export class AnalyzerOrchestrator {
         if (sigOp === 'create' || sigOp === 'read' || sigOp === 'update' || sigOp === 'delete') bucket(noun)[sigOp].add(node.id);
       }
       if (!op) continue;
-      // Attribute by core noun in the method name, but only the DIRECT object — skip
-      // the leading verb and any noun that is a prepositional object ("...ForUser",
-      // "...ByOwner"): revokeAllForUser revokes tokens FOR a user, it does not delete
-      // the User entity. Without this, generic per-user/per-tenant helpers get
-      // mis-attributed and produce nonsense lineage ("logout -> User deleted").
       const PREPOSITIONS = new Set(['for', 'by', 'with', 'from', 'to', 'of', 'per', 'on', 'in', 'into', 'at', 'as', 'via']);
       const orderedTokens = (node.name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
       const attributedNouns = new Set<string>();
@@ -21052,17 +16293,6 @@ export class AnalyzerOrchestrator {
         attributedNouns.add(noun);
         bucket(noun)[op].add(node.id);
       }
-      // COMPOUND entity nouns ("DriveAlert", "FuelStation") never match the
-      // single-token attribution above: camelCase splitting breaks the method
-      // name into separate words ("drive"/"alert"), but the entity lookup key
-      // (line ~14075) is the WHOLE compact name singularized as one token
-      // ("drivealert"). Without this, paginateAllDriveAlerts — the method that
-      // actually serves a DriveAlert list endpoint — never attributes to the
-      // DriveAlert entity, starving it (and any multi-word entity) of read/write
-      // lineage. Additionally bucket contiguous 2-3 token windows joined with no
-      // separator so those compact compounds resolve too. Extra keys that never
-      // match a real entity noun are harmless — the consumer only reads keys that
-      // correspond to an actual entity name.
       for (let i = 1; i < orderedTokens.length; i++) {
         if (PREPOSITIONS.has(orderedTokens[i - 1])) continue;
         for (let windowLen = 2; windowLen <= 3 && i + windowLen <= orderedTokens.length; windowLen++) {
@@ -21096,31 +16326,6 @@ export class AnalyzerOrchestrator {
     return { core, op };
   }
 
-  /**
-   * TASK #128 — messaging emission/consumption lifecycle. A handler that
-   * constructs and publishes a message/event payload PRODUCES that payload
-   * type exactly as a repository `.save()` call produces a persisted row —
-   * but `addConstructedEntityPersistEdges` (typescript-javascript-analyzer.ts)
-   * only ever emits a `creates` edge when the constructed class is passed to
-   * a call classified `isRepositoryCall` (a DB-shaped receiver), so a
-   * message/event DTO's `lifecycle` stayed permanently empty on the producer
-   * side, and equally invisible on the consumer side. The messaging analyzer
-   * (libraries/messaging/messaging-analyzer.ts) already extracts the real
-   * payload type name onto every producer/consumer/worker/listener node's
-   * own `metadata.payloadType` — this was never joined to the matching
-   * data-shape entity by anything downstream (verified: `payloadType` has no
-   * other reader in this codebase). Joining it here, once, against the
-   * already-built entity list makes produced-vs-consumed a TIER-1 fact
-   * (`CASDataEntity.lifecycle.created_by`/`read_by`) available to every
-   * downstream consumer — capability entity anchoring
-   * (`buildSystemCapabilities`), flow entity matching (`entitiesForNodes` in
-   * flow-concepts.ts), and the capability-dependency rollup above — without
-   * any of them re-deriving direction themselves. Evidence-only: an entity
-   * is touched only on an EXACT payload-type-name match against a real
-   * producer/consumer node's own metadata; no fuzzy/substring matching, no
-   * vocabulary, and a name with no matching entity is left alone (never
-   * fabricates an entity).
-   */
   private attributeMessagingEmissionLifecycle(entities: CASDataEntity[], nodes: CASNode[]): void {
     if (entities.length === 0 || nodes.length === 0) return;
     const entityByName = new Map<string, CASDataEntity>();
@@ -21146,10 +16351,6 @@ export class AnalyzerOrchestrator {
   }
 
   private crudBucketFromEdgeType(edgeType: string): 'create' | 'read' | 'update' | 'delete' | undefined {
-    // 'produces'/'consumes' (messaging-analyzer.ts) are the emission-side
-    // analogue of 'creates'/'reads' for a message/event payload — a
-    // publisher PRODUCES the entity it emits exactly as a repository call
-    // CREATES the row it persists (task #128).
     if (edgeType === 'creates' || edgeType === 'produces') return 'create';
     if (edgeType === 'updates' || edgeType === 'writes' || edgeType === 'persists' || edgeType === 'saves' || edgeType === 'mutates') return 'update';
     if (edgeType === 'deletes') return 'delete';
@@ -21157,7 +16358,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /** CRUD bucket inferred from an accessor node's name verb (createX, getX, ...). */
   private crudBucketFromAccessorName(name: string): 'create' | 'read' | 'update' | 'delete' | undefined {
     const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
     const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
@@ -21168,12 +16368,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /**
-   * Attribute who creates/reads/updates/deletes an entity by scanning the edges
-   * touching its anchor node(s) — the services/controllers/methods that consume
-   * it. Used for DTO-derived entities (whose lifecycle would otherwise be empty)
-   * so data-lineage reflects real accessors, not just which DTO shapes exist.
-   */
   private attributeLifecycleFromEdges(
     anchorIds: Set<string>,
     edgesByNode: Map<string, CASEdge[]>,
@@ -21213,36 +16407,17 @@ export class AnalyzerOrchestrator {
     existingNames: Set<string>,
     projectPath?: string,
   ): CASDataEntity[] {
-    // Structural-generic vocabulary plus serialization-FORMAT tokens (json/xml/
-    // yaml/...): a core noun left over from a shape like `JsonSchema` names a
-    // wire format, not a domain object. Format tokens are structural vocabulary
-    // (same class as `payload`/`record` above), not a domain-name blocklist.
     const GENERIC = /^(pagination|paginated|response|error|base|common|list|meta|page|sort|filter|query|param|option|config|result|success|status|health|ping|api|data|item|value|generic|wrapper|envelope|dto|input|output|payload|request|body|args|count|info|detail|map|record|enum|type|abstract|sortby|orderby|where|select|json|xml|yaml|toml|csv|html|markdown|proto)s?$/i;
-    // Callable names in the graph (functions/methods). A data shape whose core
-    // noun IS a callable's name (HandleCommandsParams ↔ handleCommands,
-    // RunEmbeddedPiAgentParams ↔ runEmbeddedPiAgent) is that operation's
-    // argument/result CONTRACT, not a domain entity — the evidence is the
-    // callable node itself, not the shape's verb-looking name.
     const callableNames = new Set<string>();
     for (const node of nodes) {
       if (node.type !== 'function' && node.type !== 'method') continue;
       const name = String(node.name || '').toLowerCase();
       if (name) callableNames.add(name);
     }
-    // NESTED SUB-OBJECT INDEX — type names that appear as the declared FIELD
-    // TYPE of another data shape. THE RULE: a shape that is only ever reached as
-    // another shape's field, declares no identity of its own, and carries no
-    // persistence / api-response evidence is a SUB-OBJECT of its parent, not a
-    // first-class entity. This is what over-decomposed a response body into
-    // separate top-level entities per nested block (a metrics response whose
-    // every sub-object — ratio, value-at-risk, tax-lot list — became its own
-    // "entity"). Uppercase-anchored so scalar/annotation noise never lands here.
     const nestedFieldTypeNames = new Set<string>();
     for (const node of nodes) {
       if (!this.isDtoLikeDataShapeNode(node, propertyIndex)) continue;
       for (const prop of this.entityPropertyNodesFromIndex(propertyIndex, node)) {
-        // createNode() spreads analyzer metadata onto node.metadata directly
-        // while some analyzers nest under metadata.attributes — accept both.
         const metadata = (prop.metadata || {}) as Record<string, unknown>;
         const attributeType = (metadata.attributes as Record<string, unknown> | undefined)?.type;
         const declared = prop.signature?.return_type ||
@@ -21253,8 +16428,6 @@ export class AnalyzerOrchestrator {
         }
       }
     }
-    // An identity declaration of its OWN — the field that makes a shape
-    // addressable as a record rather than an inline block of its parent.
     const IDENTITY_FIELD = /^(id|_id|uuid|guid|pk|primary_key|primarykey|key|slug|code)$/i;
 
     const groups = new Map<string, { rep: CASNode; nodes: CASNode[]; ops: Set<string> }>();
@@ -21290,11 +16463,6 @@ export class AnalyzerOrchestrator {
         }
       }
       const fields = [...fieldMap.values()].slice(0, 40);
-      // The DTO variant nodes themselves are weak evidence (a CreatePaymentDto
-      // implies a create path). The strong evidence is the services/controllers
-      // that CONSUME these DTOs — attribute their reads/writes by scanning edges
-      // touching the DTO nodes, then merge with the affix signal so lifecycle is
-      // populated even when consumer edges are sparse.
       const affix = (op: string) => group.nodes.filter(node => this.dataShapeAffix(node.name || '').op === op).map(node => node.id);
       const anchorIds = new Set(group.nodes.map(node => node.id));
       const edgeLifecycle = this.attributeLifecycleFromEdges(anchorIds, edgesByNode, nodesById);
@@ -21311,21 +16479,8 @@ export class AnalyzerOrchestrator {
           deleted_by: [...new Set([...edgeLifecycle.deleted_by, ...affix('delete')])],
         },
       };
-      // These are typed request/response/value data shapes, not ORM records.
-      // Default to value-object; framework evidence on the group's nodes (api /
-      // serializer / validation subcategories, dto node type) reclassifies to
-      // api-response or request-dto. The name/affix is intentionally NOT used.
-      // ON-NODE evidence only. The off-node carriers (table mapping / migration /
-      // repository) CORROBORATE a shape already selected as a data record; they
       // must not PROMOTE an arbitrary typed request/response shape into durable
-      // state. Passing them here promoted four shapes on one real repo purely
-      // because a same-named repository class existed elsewhere — including a
-      // framework-detection helper class that shares a noun with nothing stored.
       this.tagDataEntityKind(derivedEntity, group.nodes, 'value-object');
-      // NESTED SUB-OBJECT exclusion — see nestedFieldTypeNames above for the
-      // rule. All three conditions required: every anchor of the group is
-      // consumed as another shape's field type, the shape declares no identity
-      // field of its own, and it is neither persisted nor produced.
       const everyAnchorNested = group.nodes.every(node =>
         nestedFieldTypeNames.has(String(node.name || '').toLowerCase()));
       const declaresIdentity = fields.some(field => IDENTITY_FIELD.test(field.name));
@@ -21334,15 +16489,6 @@ export class AnalyzerOrchestrator {
           derivedEntity.kind !== 'api-response') {
         continue;
       }
-      // Evidence-first code-artifact exclusion: a shape whose head noun is a
-      // code-infrastructure ROLE (…Handler/Adapter/Registry/Factory/Provider/
-      // Middleware/Preflight/Pending) is wiring — a callable's contract, not a
-      // domain entity (live: RegisterTelegramHandler, ChannelHandler,
-      // PluginRegistry, *PairingPending seeding fake capabilities). BOTH
-      // conditions required: the role-suffix name AND no persistence /
-      // api-response framework evidence — an OrderHandler that classifyDataEntityKind
-      // proved persisted (ORM/@Entity/table) or produced (serializer/api-response)
-      // is a legit domain record and survives.
       if (this.isCodeArtifactRoleName(coreName) &&
           derivedEntity.kind !== 'persisted-entity' &&
           derivedEntity.kind !== 'api-response') {
@@ -21350,10 +16496,6 @@ export class AnalyzerOrchestrator {
       }
       derived.push(derivedEntity);
     }
-    // Rank by KIND then field evidence, then cap: an api-response / persisted
-    // shape is the product's real domain object, while nested request-dto and
-    // value-object shapes are the plumbing that inflates the count. Kind ranking
-    // (not just field count) keeps the domain-defining shapes when the cap bites.
     const kindRank: Record<CASDataEntityKind, number> = {
       'api-response': 0,
       'persisted-entity': 1,
@@ -21368,24 +16510,6 @@ export class AnalyzerOrchestrator {
 	      .slice(0, 60);
 	  }
 
-  /**
-   * A plain-old class that is a DATA ENTITY, not a behavior class — the hand-rolled
-   * DAL / domain-model pattern (no ORM annotation, no DbSet). Two case-INSENSITIVE
-   * evidence gates, both required:
-   *   (1) LOCATION: the class lives in an entity-ish namespace or folder
-   *       (*.Entities / *.Models / *.Domain). The old gate matched a
-   *       case-SENSITIVE '/entities/' path literal, so C#'s conventional
-   *       capitalized `Entities` folder (and the namespace, which it never even
-   *       read) were both missed — the real defect that left a benchmarked C# repo's 18 POCO
-   *       entities (namespace `<Client>.DAL.Entities`) out of the ERD entirely.
-   *   (2) DATA-SHAPED: properties dominate methods. A POCO carries data via
-   *       public auto-properties with few/no methods; this guards against a
-   *       Service / ViewModel / Window that happens to sit near an entity
-   *       namespace (those are behavior classes — many methods / commands).
-   * Generic across .NET and any OO language whose analyzer emits class nodes with
-   * namespace + property/method counts on metadata.attributes. Evidence-gated:
-   * never promotes a class lacking BOTH signals, so it only widens real coverage.
-   */
   private isPocoEntityClassNode(node: CASNode): boolean {
     if (node.type !== 'class') return false;
     if (node.subcategories?.includes('abstract')) return false;
@@ -21397,25 +16521,9 @@ export class AnalyzerOrchestrator {
     if (!entityNamespace && !entityFolder) return false;
     const propertyCount = Number(attrs.propertyCount || 0);
     const methodCount = Number(attrs.methodCount || 0);
-    // At least one data property, and properties at least match methods (a POCO;
-    // a Service/ViewModel is method-dominant and fails this).
     return propertyCount >= 1 && propertyCount >= methodCount;
   }
 
-  /**
-   * Go (and other plain-struct languages) has no class/decorator-based ORM
-   * convention — a domain record is just `type Feed struct { ID int64 ... }`
-   * with the SQL living elsewhere (e.g. a benchmarked Go RSS-reader server: internal/model/*.go structs,
-   * internal/storage/*.go SQL — 339 struct nodes, database_entities was always
-   * [] because every entity gate above only recognizes 'entity'/'model' types,
-   * classes under /entities/, or POCO CLASSES). Sibling to isPocoEntityClassNode:
-   * same "lives in an entity-ish dir" + "data-shaped, not behavior-shaped" test,
-   * generalized to the 'struct' node type and widened to the model/schema
-   * directory family plain-struct languages actually use. A struct in a
-   * handler/server/config package (no entity-ish path segment) never qualifies,
-   * regardless of its field/method shape — this is evidence-gated on location,
-   * not name alone.
-   */
   private isPlainStructEntityNode(node: CASNode): boolean {
     if (node.type !== 'struct') return false;
     if (node.subcategories?.includes('abstract')) return false;
@@ -21425,10 +16533,6 @@ export class AnalyzerOrchestrator {
     const attrs = (node.metadata?.attributes || {}) as Record<string, unknown>;
     const fieldCount = Number(attrs.fieldCount || 0);
     const methodCount = Number(attrs.methodCount || 0);
-    // At least one field, and fields at least match methods (a data record;
-    // a struct with a receiver-heavy method set attached — e.g. a service or
-    // client wrapper struct that merely holds a couple of config fields — is
-    // behavior-dominant and fails this).
     return fieldCount >= 1 && fieldCount >= methodCount;
   }
 
@@ -21440,13 +16544,7 @@ export class AnalyzerOrchestrator {
     if (/(Dto|Vo|Model|Schema|Entity|Payload|Input|Output|Response|Request|Params?|Body|Query|Args|Result|Record)$/i.test(name)) {
       return true;
     }
-    if (/\/(?:dto|dtos|types|schemas|contracts|entities|models)\//.test(file)) return true;
-    // Bare interface/type alias with no DTO-ish suffix or folder: still a real
-    // cross-repo contract shape if it declares actual typed fields (a plain
-    // structural marker interface with no properties contributes no shape and
-    // stays excluded — this only widens coverage for genuine data shapes, it
-    // never fabricates one). Field evidence + the caller's GENERIC-name filter
-    // keep this honest.
+    if (/\/(?:dto|dtos|types|schemas|contracts|entities|models)\
     if (propertyIndex) {
       return this.dataShapeNodeHasFieldEvidence(node, propertyIndex);
     }
@@ -21457,45 +16555,15 @@ export class AnalyzerOrchestrator {
     return this.entityPropertyNodesFromIndex(propertyIndex, node).length > 0;
   }
 
-  /**
-   * Head noun names a code-infrastructure ROLE: Handler / Adapter / Registry /
-   * Factory / Provider / Middleware / Preflight / Pending. Such a shape is code
-   * wiring, not a domain entity — but this is only HALF the exclusion test:
-   * callers must ALSO confirm the shape lacks persistence / api-response
-   * framework evidence (kind !== 'persisted-entity' && kind !== 'api-response')
-   * before dropping it, so a legit domain record that merely ends in a role
-   * suffix (OrderHandler with @Entity) is never nuked on its name alone.
-   */
   private isCodeArtifactRoleName(name: string): boolean {
     const trimmed = String(name || '').trim();
-    // (a) SUFFIX roles — the head noun IS a code-infrastructure role. Widened
-    // from the original {Handler/Adapter/Registry/Factory/Provider/Middleware/
-    // Preflight/Pending} to also cover the callable/wiring shapes that leaked
-    // through on real repos: Core (HandleDirectiveOnlyCore), Gate
-    // (AckReactionGate), Dispatcher/Dispatch (FeishuReplyDispatcher,
-    // BrowserDispatch), Container (ExecApprovalContainer), View
-    // (ProjectCommandCenterView). Uppercase-anchored so domain words that merely
-    // END in these letters lowercase (Interview/Preview→"view", Hardcore→"core")
-    // never match.
     if (/(Handler|Handlers|Adapter|Adapters|Registry|Registries|Factory|Factories|Provider|Providers|Middleware|Middlewares|Preflight|Pending|Core|Gate|Gates|Dispatcher|Dispatchers|Dispatch|Container|Containers|View|Views)$/.test(trimmed)) {
       return true;
     }
-    // (b) VERB-NAMED CALLABLES — a shape whose name is an imperative callable
-    // (SendFeishuMessage, HandleDirective, RegisterAgent) is that operation's
-    // argument/result contract, not a domain record. Require the verb to be a
-    // full leading camelCase segment followed by more capitalized words so nouns
-    // that merely start with the letters (Sender, Handler, Registry) do not
-    // match — those are covered by (a) where appropriate.
     if (/^(Send|Handle|Register)[A-Z]/.test(trimmed)) {
       return true;
     }
-    // (c) STRONG ROLE WORD as an INTERNAL segment — a role token appearing at a
-    // non-leading camelCase position (MentionGateWithBypass → "Gate" at index 1)
-    // is wiring buried inside the name. Restricted to index >= 1 so a LEADING
-    // qualifier ("HandlerMetrics" → Handler is the qualifier, Metrics the tail
     // domain noun) is NOT flagged — the role token must not be the head word.
-    // "Gateway" (a product noun) splits to its own segment and never matches
-    // "Gate".
     const segments = trimmed.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/);
     return segments.some((segment, index) =>
       index >= 1 &&
@@ -21508,11 +16576,6 @@ export class AnalyzerOrchestrator {
     _nodes: CASNode[],
     _projectPath?: string
   ): CASDataEntity[] {
-    // DELETED: this fabricated data entities from a hardcoded per-brand frame
-    // (supabase/medusa/...|solana|sniper|trading) and stamped them with
-    // description_source:'deterministic'. Entities are Camp-B structural facts
-    // extracted from the code; any product framing of them is AI comprehension.
-    // No brand injection, no deterministic entity descriptions — pass through.
     return entities;
   }
 
@@ -21729,7 +16792,7 @@ export class AnalyzerOrchestrator {
       return !node.metadata?.is_test &&
         !node.metadata?.is_generated &&
         (/(\b|\/)(main|index|cli|script|bot|runner)\.(cjs|mjs|js|jsx|ts|tsx|py|rb|php|rs|go)$/.test(file) ||
-          /(^|\/)(bin|cli|cmd|commands|scripts?|jobs|workers)\//.test(file));
+          /(^|\/)(bin|cli|cmd|commands|scripts?|jobs|workers)\
     });
     if (cliEntryPoints.length > 0 || scriptEntryNodes.length > 0) {
       const cliNodeIds = [...new Set(cliEntryPoints.map(entry => entry.source_node).filter(Boolean))];
@@ -22139,16 +17202,6 @@ export class AnalyzerOrchestrator {
         (!ep.handler?.file || this.isPrimaryProductPath(ep.handler.file))
       );
 
-    // ROUTE-SURFACE BRIDGE: auth-analyzer.ts (and any other per-site framework
-    // analyzer following the same contract) emits `guards`/`authorizes` edges
-    // of category 'security' directly from an auth mechanism node to the
-    // route/handler node it protects (edge.target === that entry point's
-    // `handler.node_id`), with `metadata.mechanism` naming the mechanism. This
-    // is real call-site evidence — "this specific route is wrapped by this
-    // specific guard" — unlike name-vocabulary matching, which can only ever
-    // find the mechanism's OWN declaration node, never the handler it protects.
-    // Scoped to nodes that still exist in `effectiveNodes` so project-scoped
-    // security boundaries don't leak edges from outside the product.
     const effectiveNodeIds = new Set(effectiveNodes.map(n => n.id));
     const securityEdges = edges.filter(e =>
       e.category === 'security' &&
@@ -22169,11 +17222,6 @@ export class AnalyzerOrchestrator {
       for (const token of this.signalTokens(node.name)) enforcementNameIndex.add(token);
     }
 
-    // Prefer framework/library-analyzer evidence: nodes the auth analyzer tagged
-    // as auth mechanisms (auth_strategy/guard, subcategories:['auth',kind],
-    // security_source on protected routes). Only when the auth analyzer produced
-    // NO evidence at all do we fall back to the legacy name vocabulary, so a repo
-    // whose framework the analyzer understands never depends on name spelling.
     const authVocabulary = [
       'auth', 'authentication', 'authenticate', 'authenticated', 'authenticator',
       'jwt', 'login', 'logout', 'session', 'token', 'oauth', 'sso', 'devise', 'warden',
@@ -22191,14 +17239,6 @@ export class AnalyzerOrchestrator {
     const authenticatedEntryPoints = effectiveEntryPoints.filter(ep => ep.security?.authenticated);
 
     if (authNodes.length > 0 || authenticatedEntryPoints.length > 0 || guardEdges.length > 0) {
-      // Confidence is honest about its own basis: a node the auth analyzer
-      // TAGGED (auth_strategy/auth_policy/guard, or a route it marked
-      // auth-protected) is 'enforced' — real per-site evidence. A node found
-      // only by the name-vocabulary fallback (no framework analyzer
-      // recognized this repo's auth library at all) is 'assumed' — a plausible
-      // guess from spelling, not verified enforcement. Previously both were
-      // asserted 'enforced' uniformly, which is exactly the overconfidence
-      // `assumed_vs_enforced` is supposed to catch.
       const enforcementPoints: Array<{
         node_id: string;
         mechanism: string;
@@ -22210,11 +17250,6 @@ export class AnalyzerOrchestrator {
       }));
       const seenNodeIds = new Set(enforcementPoints.map(p => p.node_id));
 
-      // Route-surface bridge: `guards` edges point straight at the protected
-      // route/handler node (edge.target), which is exactly what an entry
-      // point's `handler.node_id` is built from in auth-analyzer.ts — so this
-      // is the join entry-point-security.ts needs, emitted at the source
-      // instead of guessed downstream.
       for (const edge of guardEdges) {
         if (!edge.target || seenNodeIds.has(edge.target)) continue;
         seenNodeIds.add(edge.target);
@@ -22225,14 +17260,6 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      // Every authenticated entry point gets ITS OWN handler/source node
-      // represented as an enforcement point — not just one representative
-      // node per unique guard NAME (the previous dedup key), which silently
-      // dropped every entry point after the first to share a guard string.
-      // Confidence is 'enforced' when the declared guard name resolves to a
-      // separately-evidenced security node (or the node is already a guard-edge
-      // target above); otherwise 'assumed' — the route-level auth flag is
-      // still analyzer-sourced, but the specific mechanism is unverified.
       const perEntryPointCap = 500;
       let addedFromEntryPoints = 0;
       for (const ep of authenticatedEntryPoints) {
@@ -22289,9 +17316,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // Authorization boundary: prefer analyzer evidence (auth_policy kind /
-    // policy_engine, e.g. Spring Security / Pundit / OPA). Fall back to the name
-    // vocabulary only when no policy-engine evidence exists.
     const permissionVocabulary = ['role', 'roles', 'permission', 'permissions', 'crud', 'access', 'pundit', 'cancan', 'cancancan'];
     const evidencePermissionNodes = securityNodes.filter(n => this.hasAuthorizationAnalyzerEvidence(n));
     const permissionNodesAreEvidenceBased = evidencePermissionNodes.length > 0;
@@ -22304,17 +17328,12 @@ export class AnalyzerOrchestrator {
       });
 
     if (permissionNodes.length > 0 || authorizeEdges.length > 0) {
-      // Same honesty rule as boundary_auth above: policy-engine/auth_policy
-      // evidence is 'enforced'; a bare name-vocabulary match (Ability,
-      // OrderPolicy, ...) is a plausible guess, not verified enforcement.
       const authzEnforcementPoints: CASSecurityBoundary['enforcement_points'] = permissionNodes.map(g => ({
         node_id: g.id,
         mechanism: this.inferAuthzMechanism(g),
         confidence: permissionNodesAreEvidenceBased ? 'enforced' as const : 'assumed' as const
       }));
       const seenAuthzNodeIds = new Set(authzEnforcementPoints.map(p => p.node_id));
-      // Same route-surface bridge as boundary_auth: `authorizes` edges point
-      // at the protected route/handler node, not just the policy declaration.
       for (const edge of authorizeEdges) {
         if (!edge.target || seenAuthzNodeIds.has(edge.target)) continue;
         seenAuthzNodeIds.add(edge.target);
@@ -22423,11 +17442,6 @@ export class AnalyzerOrchestrator {
     return boundaries;
   }
 
-  /**
-   * Sensitive operations are mutating HTTP entry points. They are unprotected
-   * when the analysis found no authentication marker and no guard on them.
-   * This is evidence-driven: repos where every route is guarded report zero.
-   */
   private unprotectedSensitiveEntryPoints(entryPoints: CASEntryPoint[]): CASEntryPoint[] {
     const mutating = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
     return entryPoints.filter(ep =>
@@ -22472,12 +17486,6 @@ export class AnalyzerOrchestrator {
     return publicBootstrap.some(pattern => pattern.test(text));
   }
 
-  /**
-   * Tenant isolation evidence: scoping helpers, multitenancy library hooks,
-   * or guard/middleware/scope code whose name binds an organization-like
-   * owner to a scope. Domain models named Organization/Account alone are not
-   * evidence; the name must express scoping or tenancy.
-   */
   private hasTenantIsolationSemantics(node: CASNode): boolean {
     if (node.type === 'entity' || node.type === 'model') return false;
     const tokens = this.signalTokens(`${node.name} ${node.qualified_name || ''}`);
@@ -22500,18 +17508,6 @@ export class AnalyzerOrchestrator {
     return nameLower.includes('rack::attack') || nameLower.includes('rack_attack');
   }
 
-  /**
-   * DETERMINISM BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): a node counts as
-   * authentication/authorization evidence when a framework/library analyzer
-   * TAGGED it as such — NOT when its name contains an auth-looking substring.
-   * The auth analyzer (analyzer/libraries/auth/auth-analyzer.ts:241-256) emits
-   * `type` ∈ {auth_strategy, auth_policy, guard} and stamps
-   * `metadata.auth_kind` / `metadata.library` / `metadata.subcategories:['auth',kind]`
-   * on every mechanism node; auth-protected routes carry
-   * `metadata.subcategories:['route','http','auth-protected']` +
-   * `metadata.security_source`. Keying on those fields is the same evidence-first
-   * rule as entity kind-tagging: understanding the framework beats regexing names.
-   */
   private authMechanismKindOf(node: CASNode): 'auth_strategy' | 'auth_policy' | 'guard' | undefined {
     if (node.type === 'auth_strategy' || node.type === 'auth_policy' || node.type === 'guard') {
       return node.type;
@@ -22523,24 +17519,10 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /**
-   * The generic architecture-library-usage analyzer (architectural-library-analyzer.ts)
-   * emits `library_${category}_usage` nodes for EVERY line in ANY file that merely
-   * imports a category's package and matches a coarse regex (e.g. any file that
-   * depends on `passport` and mentions the word "role" or "permission" ANYWHERE,
-   * including comments/tests/unrelated code). These are file-level "this repo
-   * depends on an auth library" facts with `subcategories: ['architecture-defining-library','auth']`
-   * — real for describing library usage, but NOT evidence that the specific line
-   * enforces access control. Conflating them with auth-analyzer.ts's real
-   * per-route mechanism nodes (auth_strategy/auth_policy/guard, or routes tagged
-   * auth-protected with `security_source`) is what let unrelated files (and their
-   * test entry points) get treated as security enforcement points. Excluded here.
-   */
   private isGenericLibraryUsageNode(node: CASNode): boolean {
     return typeof node.type === 'string' && /^library_.*_usage$/.test(node.type);
   }
 
-  /** True when a framework/library analyzer tagged this node as an auth mechanism. */
   private hasAuthAnalyzerEvidence(node: CASNode): boolean {
     if (this.isGenericLibraryUsageNode(node)) return false;
     if (this.authMechanismKindOf(node)) return true;
@@ -22551,33 +17533,21 @@ export class AnalyzerOrchestrator {
     return nodeSubs.includes('auth') || nodeSubs.includes('auth-protected');
   }
 
-  /** True when a framework/library analyzer tagged this node as an authorization (policy) mechanism. */
   private hasAuthorizationAnalyzerEvidence(node: CASNode): boolean {
     if (this.isGenericLibraryUsageNode(node)) return false;
     if (this.authMechanismKindOf(node) === 'auth_policy') return true;
-    // Spring Security / Pundit / OPA policy engines flag policy_engine on the node.
     if ((node.metadata as any)?.policy_engine === true) return true;
     return false;
   }
 
-  /** Does any member node of a capability group carry auth-analyzer evidence? */
   private capabilityHasAuthEvidence(nodes: CASNode[]): boolean {
     return nodes.some(node => this.hasAuthAnalyzerEvidence(node));
   }
 
-  /**
-   * The auth METHOD (jwt/session/oauth/...) for a security context, derived from
-   * the auth analyzer's identified library — NOT from a substring of the node
-   * name. `metadata.library` (displayName) and `metadata.auth_library` (rule
-   * name) are the analyzer's own closed-vocabulary facts; we map that known
-   * identity to its method family. Returns undefined when no library evidence
-   * exists (caller then records the honest 'custom').
-   */
   private authMethodFromEvidence(node: CASNode): string | undefined {
     const meta = (node.metadata as any) || {};
     const identity = String(meta.auth_library || meta.library || meta.security_source || '').toLowerCase();
     if (!identity) return undefined;
-    // Rule names (auth-analyzer.ts AUTH_RULES) and their displayName equivalents.
     if (identity.includes('jsonwebtoken') || identity.includes('express-jwt') || identity.includes('pyjwt') ||
       identity.includes('jwt')) return 'jwt';
     if (identity.includes('next-auth') || identity.includes('nextauth') || identity.includes('lucia') ||
@@ -22592,27 +17562,8 @@ export class AnalyzerOrchestrator {
     return 'custom';
   }
 
-  /**
-   * Security boundaries are anchored on code that ENFORCES access decisions
-   * (guards, middleware, policies, before_action filters, devise/warden,
-   * permission configuration), never on domain models whose names merely
-   * contain auth-looking substrings. `ReturnAuthorization` (RMA) and
-   * `PaymentAuthorization` are commerce domain models, not enforcement points.
-   */
   private hasSecurityEnforcementSemantics(node: CASNode): boolean {
-    // Framework/library-analyzer evidence first: an auth-analyzer-tagged
-    // mechanism node (auth_strategy/auth_policy/guard + metadata.auth_kind /
-    // subcategories:['auth',kind]) IS an enforcement point regardless of its
-    // name. This is the evidence path — the name-keyword vocabulary below is a
-    // legacy last-resort for nodes no analyzer tagged.
     if (this.hasAuthAnalyzerEvidence(node)) return true;
-    // A test node whose description happens to mention "guard"/"permission"
-    // (e.g. "reports permission-denied subdirectories without throwing", or a
-    // test verifying a Solidity `onlyOwner`/guard detector) is a test ABOUT
-    // security code, not enforcement code itself — the name-keyword fallback
-    // below has no way to tell those apart, so test nodes are excluded from it
-    // up front rather than let every security-adjacent test masquerade as a
-    // boundary enforcement point.
     if (node.type === 'test' || node.category === 'test' || this.isTestFileNode(node)) return false;
     const subcategories = (node.subcategories || []).map(s => s.toLowerCase());
     if (node.type === 'guard' || node.type === 'middleware') return true;
@@ -22637,15 +17588,6 @@ export class AnalyzerOrchestrator {
     return this.nameTokensIndicateAuthorizationActor(tokens);
   }
 
-  /**
-   * "authorization"/"authorize" only count when the name IS the auth concept
-   * (Authorization, Authorizer, authorize_admin), never when the token trails
-   * a domain noun in a compound (ReturnAuthorization, PaymentAuthorization,
-   * load_return_authorization). "policy"/"ability" follow the pundit/cancan
-   * class convention: singular, leading or trailing (OrderPolicy, Ability) —
-   * plural resource CRUD like PoliciesController (store legal pages) and
-   * route paths like /policies are domain content, not enforcement.
-   */
   private nameTokensIndicateAuthorizationActor(tokens: string[]): boolean {
     if (/^authoriz(e|er|es|ed|ation|ations)$/.test(tokens[0] || '')) return true;
     const head = tokens[0];
@@ -22653,15 +17595,6 @@ export class AnalyzerOrchestrator {
     return ['policy', 'ability'].some(term => head === term || tail === term);
   }
 
-  /**
-   * The mechanism label is the auth analyzer's OWN identification of the library
-   * (`metadata.library` = "JWT token guard", "Passport strategy", "Spring
-   * Security policy", ...) or the route's `security_source`. That is a
-   * deterministic framework/library FACT, not a keyword guess on the node name.
-   * When no analyzer stamped a library (e.g. a declared-guard marker with no
-   * resolved code), we return a neutral structural label — never a name-regexed
-   * mechanism sub-type.
-   */
   private authMechanismLibrary(node: CASNode): string | undefined {
     const meta = (node.metadata as any) || {};
     const library = meta.library || meta.security_source || meta.auth_library;
@@ -22712,13 +17645,7 @@ export class AnalyzerOrchestrator {
     callChains: CASCallChain[],
     testSuites?: CASTestSuite[]
   ): Promise<CASFlowCoverage[]> {
-    // Budget-yield in the whale-scaling sweeps (76k-node/chain loops were a
-    // measured ~1.8s event-loop stall); order and results unchanged.
     const maybeYield = createYieldBudget();
-    // First-occurrence node index replacing the per-segment `nodes.find` scan
-    // (O(chains × path × nodes) — the measured stall). Array.find returns the
-    // FIRST id match, so the index keeps the first occurrence: same node
-    // object, same results, linear time.
     const nodesByIdFirst = new Map<string, CASNode>();
     for (const node of nodes) {
       if (!nodesByIdFirst.has(node.id)) nodesByIdFirst.set(node.id, node);
@@ -22746,16 +17673,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // TEST-TO-FLOW JOIN FIX: on many repos the two sources above are empty
-    // (no analyzer stamps node.testing.tested_by, test entry points carry no
-    // connected_nodes), yet test_suites[].coverage.nodes_tested IS populated —
-    // it just names FILE-level node ids (file_<path>), while call chains walk
-    // function/method node ids, so the join was silently empty (391 suites,
-    // 0 covered chains). Fold nodes_tested in, expanding a file node to the
-    // nodes defined in that file (evidence-gated: the suite names the file;
-    // file membership is a structural fact). File-level granularity — a suite
-    // covering a file marks that file's nodes tested, which is the honest
-    // resolution the suite evidence supports.
     if (testSuites && testSuites.length > 0) {
       const nodeIdsByFile = new Map<string, string[]>();
       const filePathByFileNodeId = new Map<string, string>();
@@ -23039,80 +17956,10 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * TASK #119 candidate-generation gate (see the call site inside
-   * buildSystemCapabilities for the full rationale). A resource-group
-   * candidate survives generation only if it is reachable from the system's
-   * OUTWARD FACE and lands on a domain-entity WRITE — terminal (the write is
-   * this candidate's own direct evidence) or PROXIMAL-TERMINAL (the write is
-   * one call-hop away, via the same direct/hop entity-matching evidence
-   * already used to populate `related_entities` above — e.g. a controller
-   * that delegates persistence to a manager one call away). Two structural
-   * facts, both already computed elsewhere in the CAS, no new vocabulary:
-   *
-   * GATE 1 — genuinely caller-initiated: at least one operation's
-   * entry_point_type is in USER_FACING_ENTRY_TYPES (http/websocket/cli/page/
-   * route — the exact set journey-builder already uses to mark a journey
-   * 'user-facing' rather than 'system'/'scheduled'). This alone excludes a
-   * framework lifecycle hook (Spring ApplicationStartedEvent), a cron/
-   * schedule trigger, and a test harness entry — nobody "does" these, the
-   * system does them to itself.
-   *
-   * GATE 2 — when there IS entity evidence, it must include a domain-entity
-   * WRITE: at least one of the candidate's `related_entities` has a non-
-   * empty created_by/updated_by/deleted_by lifecycle. This rejects an
-   * entity-anchored candidate whose entities are all read-only pass-through
-   * (a "View Settings" screen that displays state nothing on this path ever
-   * writes). It is DELIBERATELY a no-op (does not reject) when
-   * `related_entities` is empty — a frontend page/UI action, or any real
-   * user-facing operation this analyzer's entity-lifecycle evidence simply
-   * doesn't reach, is not penalized for evidence that isn't there; GATE 1 is
-   * its whole admission bar, same as before this change (measured against
-   * the orchestrator-internals test suite: an entities-required GATE 2
-   * dropped legitimate zero-entity page/UI capabilities as false negatives —
-   * recall regression, corrected). Known consequence, stated plainly: a
-   * genuinely mechanism zero-entity endpoint (POST /fallback ->
-   * ResponseEntity<String>, entities: []) is NOT closed by this gate — it
-   * still depends on the existing downstream gates
-   * (isInfrastructureOnlyCapability, the audience test) exactly as before.
-   *
-   * What this gate deliberately does NOT attempt: separating a genuine
-   * product write (Feed) from an identity/security-artifact write
-   * (WebAuthnCredential, Session) — both are real persisted-entity writes
-   * reached by a real user-initiated route, structurally identical by every
-   * fact available here. That ambiguity is not shape-discriminable (see
-   * docs/audits/CAPABILITY-MECHANISM-AUDIT-2026-08-09.md) and is closed by a
-   * separate, later gate that has access to top-down/journey evidence this
-   * method does not (isolated-and-uncorroborated exclusion in
-   * applyAIInterpretation, at candidateSnapshot construction).
-   */
   private isUserReachableTerminalCandidate(
     capability: SystemCapability,
     dataEntities: CASDataEntity[],
-    // Cross-repo audit (2026-08-09) root cause #2: GATE 2's entity-write
-    // requirement under-generates real capabilities that write no domain
-    // ENTITY at all — an AI chat/recommendation service, a notification
-    // subsystem, an approval workflow with its own mutation, all produce an
-    // Effect (a message sent, an email dispatched, an event emitted) rather
-    // than a persisted row. §0.7.1: "under-generation is a first-class
-    // failure, equal in severity to over-generation." True per-candidate
-    // evidence, not a name/keyword guess — set by buildSystemCapabilities
-    // from the SAME direct/one-hop handler-node matching entity evidence
-    // already uses, just against exit points of an effect-shaped kind
-    // (message/event/webhook) instead of entity lifecycle. Defaults false so
-    // every other caller (tests, other candidate pools) is unaffected.
     hasEffectEvidence = false,
-    // Root cause #1 (cross-repo audit 2026-08-10): a seam-only candidate
-    // (synthesized in buildSystemCapabilities from an effect exit point with
-    // no owning entry point) never has a USER_FACING_ENTRY_TYPES operation —
-    // its own trigger genuinely is async/scheduled, not user-initiated. This
-    // param carries a DIFFERENT structural fact: a real call-graph path
-    // (bounded BFS over the same calls/uses/delegates_to/invokes/queries
-    // edges GATE 2's entity hop-matching already trusts) from a genuine
-    // user-facing entry point down to this candidate's handler node. That is
-    // proximal — not terminal — user reachability (§0.7.1: co-equal), and
-    // substitutes for hasUserTriggeredEntry only when proven, never assumed.
-    // Defaults false so every other caller is unaffected.
     isProximallyUserReachable = false
   ): boolean {
     const hasUserTriggeredEntry = (capability.operations || []).some(
@@ -23120,15 +17967,6 @@ export class AnalyzerOrchestrator {
     ) || isProximallyUserReachable;
     if (!hasUserTriggeredEntry) return false;
 
-    // Entity-write check only fires when there IS entity evidence to judge —
-    // a candidate with zero related_entities (a frontend page/UI surface with
-    // no backend entity visible to this analyzer, or any genuinely entity-
-    // less user-facing action) is not penalized for evidence this analyzer
-    // simply doesn't have; GATE 1 alone is its admission bar, same as before
-    // this change. What this check DOES reject: entity evidence exists but
-    // is read-only pass-through on every related entity (nothing this
-    // candidate touches is ever created/updated/deleted anywhere in the
-    // system) — the "View Settings" / read-only-screen shape.
     const relatedEntityIds = capability.related_entities || [];
     if (relatedEntityIds.length === 0) return true;
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
@@ -23139,15 +17977,6 @@ export class AnalyzerOrchestrator {
         || (entity.lifecycle?.updated_by?.length || 0) > 0
         || (entity.lifecycle?.deleted_by?.length || 0) > 0;
     });
-    // An entity write and an Effect are co-equal terminal evidence (§0.7.1):
-    // a candidate whose related entities are read-only pass-through still
-    // survives if it genuinely dispatches an Effect ("sends alerts to staff
-    // when an incident is logged" reads no persisted alert but sends one).
-    // A zero-entity, zero-effect candidate ("Provide system fallback" —
-    // POST /fallback -> ResponseEntity<String>) is unaffected by this OR:
-    // it already returned true above at the empty-related_entities check,
-    // same as before this change — this branch only ever widens the
-    // non-empty-entities, all-read-only case.
     return hasEntityWrite || hasEffectEvidence;
   }
 
@@ -23159,12 +17988,6 @@ export class AnalyzerOrchestrator {
     projectPath?: string,
     exitPoints: CASExitPoint[] = []
   ): Promise<{ capabilities: SystemCapability[]; behaviorSurfaces: SystemCapability[] }> {
-    // Event-loop hygiene: this pass was the single worst measured stall on a
-    // whale re-analysis (6.7s sync on a 76k-node repo — product-path minimatch
-    // per node plus per-group criticality/terminal scans). The budget yields
-    // below split it into <50ms slices without reordering any computation, so
-    // the in-process HTTP server (/health, reads) stays responsive. Results
-    // are byte-identical: yields never change iteration order or inputs.
     const maybeYield = createYieldBudget();
     const capabilities: SystemCapability[] = [];
     const isProductNode = (node: CASNode) => projectPath
@@ -23183,42 +18006,13 @@ export class AnalyzerOrchestrator {
       (!ep.source_node || productNodeIds.has(ep.source_node)) &&
       (!ep.handler?.file || isProductPath(ep.handler.file))
     );
-    // Same product-boundary filter as entry points, applied to exit points —
-    // TASK #119's integration-capability pass must only see OUTBOUND calls the
-    // product itself makes, never vendored/build-tooling exit points.
     const productExitPoints = (exitPoints || []).filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node))
     );
-    // TASK #1 (2026-08-10, capability altitude / over-merging): attachDeployable
-    // (entry-point-deployable.ts) populates CASEntryPoint.deployable_id for
-    // every entry point that resolves to a real ship/build unit. That is
-    // STRUCTURAL evidence a domain-token or incidental-entity-reachability
-    // match can never provide: two entry points in different deployables are
-    // in different runnable units by construction, not by inference. Fed into
-    // mergeBehaviorCapabilityIntoExisting below to block exactly the failure
-    // mode the owner traced live on spring-petclinic-microservices — a
-    // VectorStoreController/PetclinicChatClient chat candidate (its own
-    // `genai-service` deployable) absorbed into the unrelated `Pet` capability
-    // on bare entity/domain overlap, even though the two live in different
-    // deployables and are provably different user outcomes.
     const entryPointDeployableById = new Map<string, string>();
     for (const ep of entryPoints) {
       if (ep.deployable_id) entryPointDeployableById.set(ep.id, ep.deployable_id);
     }
-    // Cross-repo audit (2026-08-09) root cause #3: a pure-substrate node (a
-    // wire-protocol library with no HTTP surface AND no deployable entry
-    // point of its own — its purpose lives entirely in its consumer crates)
-    // manufactured mechanism-shaped capabilities anyway, because
-    // buildTerminalCapabilities below derives candidates from entity/node
-    // CLUSTERS with no outward-reachability requirement at all — it can fire
-    // even when GATE 1/2 (isUserReachableTerminalCandidate) rejected every
-    // entry-point-anchored candidate above. §0.9/§0.7.1: zero capabilities is
-    // the CORRECT, honest answer for such a node, not a floor to fill.
-    // hasOutwardFace is the same structural fact GATE 1 already uses
-    // (USER_FACING_ENTRY_TYPES, now widened past HTTP — see journey-builder's
-    // comment) computed once for the WHOLE product rather than per
-    // candidate: when the product has genuinely NO caller-initiated entry
-    // point anywhere, its entity/behavior clusters are substrate by
     // construction and must not be promoted to Tier 3 capabilities.
     const hasOutwardFace = productEntryPoints.some(
       ep => USER_FACING_ENTRY_TYPES.has(ep.type as any)
@@ -23240,16 +18034,6 @@ export class AnalyzerOrchestrator {
     const resourceGroups = new Map<string, {
       entryPoints: CASEntryPoint[];
       name: string;
-      // Cross-repo audit (2026-08-10) root cause #1: this loop is the ONLY
-      // producer of candidate resourceGroups, and it iterates
-      // productEntryPoints exclusively — a resource with no entry point of
-      // its own (an async/queue/cron seam target: a Django app synced only
-      // from a scheduled task, a Spring AI service invoked only from another
-      // controller) never gets a group here, so the hasEffectEvidence
-      // recall widening below (root cause #2) never gets a resourceKey to
-      // attach to. `seamOnly` marks a group synthesized from effect-exit-
-      // point evidence instead of an entry point — see the synthesis pass
-      // after `exitPointsByHandlerNode` below.
       seamOnly?: boolean;
     }>();
     const groupedHandlerNodeIds = new Set<string>();
@@ -23275,15 +18059,7 @@ export class AnalyzerOrchestrator {
 
     let capIndex = 0;
     const usedCapabilityIds = new Set<string>();
-    // Populated by the resource-group loop below, consulted by the GATE 1/2
-    // filter that follows it (root cause #2 — see isUserReachableTerminalCandidate).
     const effectEvidenceByCapabilityId = new Set<string>();
-    // Root cause #1 companion: capability ids built from a seamOnly group
-    // (synthesized below, never from a real user-facing entry point). GATE 1
-    // treats membership here as proximal — not terminal — user reachability:
-    // it substitutes for `hasUserTriggeredEntry` only when the BFS below
-    // proves the seam handler is actually reached FROM a genuine user-facing
-    // entry point's call graph, never a blanket bypass.
     const seamReachableCapabilityIds = new Set<string>();
     const nextCapabilityId = (capability: Pick<SystemCapability, 'name' | 'related_domains'>): string => {
       const seed = capability.name || capability.related_domains?.[0] || `capability-${capIndex++}`;
@@ -23296,15 +18072,6 @@ export class AnalyzerOrchestrator {
       usedCapabilityIds.add(candidate);
       return candidate;
     };
-    // ONE-HOP callee adjacency for entity association. Route-area entity
-    // matching requires the entity's lifecycle to name the handler node ITSELF,
-    // but controller handlers routinely delegate persistence one call away
-    // (live on a benchmarked fleet-management repo: ElectronicLoggingDeviceController -> DataTransferManager
-    // -> persist(FMCSADataTransfer)), leaving the whole route family 0-entity
-    // and unrankable against grounded candidates. Expanding the match set by
-    // the handler's DIRECT callees keeps the association evidence-driven (a
-    // real call edge) while staying too shallow to smear entities across
-    // unrelated groups.
     const CALLEE_EDGE_TYPES = new Set(['calls', 'invokes', 'delegates_to', 'uses', 'queries']);
     const directCalleesBySource = new Map<string, Set<string>>();
     const callerCountsByTarget = new Map<string, number>();
@@ -23317,15 +18084,6 @@ export class AnalyzerOrchestrator {
       if (!callees) { callees = new Set(); directCalleesBySource.set(edge.source, callees); }
       callees.add(edge.target);
     }
-    // PRE-PASS: per-group entity matches, split by evidence strength. `direct`
-    // = the entity's lifecycle names a handler node itself (the original,
-    // always-kept association). `hop` = matched only through a handler's direct
-    // callee. Hop matches need a document-frequency guard: a tenant-shaped
-    // entity every service touches (live on a benchmarked fleet-management repo: Company) hop-matches most
-    // groups at once, which grounds unrelated plumbing groups and crowds the
-    // catalog prompt window. Same DF principle as nonDiscriminative name
-    // tokens — repo-adaptive, derived from THIS repo's own match distribution,
-    // never an entity-name vocabulary.
     const entityLifecycleIds = new Map<string, string[]>(productDataEntities.map(de => [de.id, [
       ...de.lifecycle.created_by,
       ...de.lifecycle.read_by,
@@ -23342,13 +18100,6 @@ export class AnalyzerOrchestrator {
     }
     const groupEntityMatches = new Map<string, { direct: Set<string>; hop: Set<string> }>();
     const hopMatchDf = new Map<string, number>();
-    // Root cause #2 (see isUserReachableTerminalCandidate's hasEffectEvidence
-    // param): the SAME direct/one-hop handler-node evidence used to match a
-    // candidate to an entity WRITE below is used here to match it to an
-    // EFFECT exit point instead — message/event/webhook are ICELOT Effect
-    // kinds (cas.types.ts EXIT_POINT_TYPES), never a persisted row but
-    // exactly as real a terminal outcome ("sends alerts to staff", "emits a
-    // chat completion", "dispatches an approval notification").
     const EFFECT_EXIT_TYPES = new Set<CASExitPointType>(['message', 'event', 'webhook']);
     const exitPointsByHandlerNode = new Map<string, CASExitPoint[]>();
     for (const ep of productExitPoints) {
@@ -23358,26 +18109,6 @@ export class AnalyzerOrchestrator {
       else exitPointsByHandlerNode.set(ep.source_node, [ep]);
     }
 
-    // ROOT CAUSE #1 FIX — seam-only candidate GENERATION (cross-repo audit,
-    // 2026-08-10). A subsystem reached only through an async/queue/cron seam
-    // (a Django app synced solely from a scheduled task, a Spring AI service
-    // invoked only from another controller's async dispatch) owns no entry
-    // point of its own, so the loop above never creates a resourceGroup for
-    // it — GATE 2's hasEffectEvidence widening (root cause #2, already
-    // shipped) is real but structurally unreachable for exactly this class,
-    // because it is only ever consulted for a resourceKey that already
-    // exists. Recall requires generating that resourceKey, not just judging
-    // it once generated.
-    //
-    // This does NOT admit every internal effect producer as a capability —
-    // that would reopen the mechanism-flood precision regression this file's
-    // history is full of fixing. It admits one exactly when the SAME
-    // structural fact GATE 1 already trusts (a real call-graph path from a
-    // genuinely user-facing entry point) proves the seam handler is
-    // PROXIMALLY reachable from a real user action, even though the
-    // triggering hop itself is async (§0.7.1: terminal and proximal-terminal
-    // are co-equal; a purely orphaned internal function with no path from
-    // any user-facing entry stays excluded, same as before).
     const seamCandidateHandlerIds = [...exitPointsByHandlerNode.keys()]
       .filter(nodeId => !groupedHandlerNodeIds.has(nodeId));
     if (seamCandidateHandlerIds.length > 0) {
@@ -23388,11 +18119,6 @@ export class AnalyzerOrchestrator {
         const epAny = ep as any;
         if (epAny.handler?.node_id) userFacingSeedIds.add(epAny.handler.node_id);
       }
-      // Bounded forward BFS over the same CALLEE_EDGE_TYPES adjacency used
-      // for entity hop-matching above — a real call/delegation chain, not a
-      // name/keyword guess. Depth-capped (not just visited-set-capped) so a
-      // hub node with thousands of callees can't turn this into an
-      // effectively unbounded reachability oracle on a large graph.
       const REACHABILITY_MAX_DEPTH = 8;
       const reachableFromUserEntry = new Set<string>(userFacingSeedIds);
       let frontier = [...userFacingSeedIds];
@@ -23422,10 +18148,6 @@ export class AnalyzerOrchestrator {
           id: `entry_seam_${this.slugForId(nodeId)}`,
           source_node: nodeId,
           source_analyzer: 'orchestrator-seam-candidate',
-          // 'task' is not in USER_FACING_ENTRY_TYPES: this candidate's own
-          // trigger genuinely is not user-initiated. Its admission depends
-          // entirely on the BFS proximal-reachability evidence above, tracked
-          // separately via seamReachableCapabilityIds — never on this type.
           type: 'task',
           name: handlerName,
           description: exitPoint.description || `Async/effect-triggered handler: ${handlerName}`,
@@ -23477,12 +18199,7 @@ export class AnalyzerOrchestrator {
         [...handlerIds, ...hopIds].some(id => exitPointsByHandlerNode.has(id))
       );
     }
-    // Ubiquity threshold: a hop-matched entity in more than a quarter of the
-    // groups (min 4) is repo-wide plumbing for hop purposes, not a domain
-    // anchor for any one group.
     const hopDfLimit = Math.max(4, Math.ceil(resourceGroups.size / 4));
-    // for..of over entries() preserves Map.forEach's insertion-order iteration
-    // exactly; the yield between groups is the only difference.
     for (const [resourceKey, group] of resourceGroups.entries()) {
       await maybeYield();
       const operations = group.entryPoints.map(ep => ({
@@ -23500,10 +18217,7 @@ export class AnalyzerOrchestrator {
         if (epAny.handler?.node_id) relatedNodeIds.add(epAny.handler.node_id);
       });
 
-      // Direct handler matches always count; one-hop callee matches count only
-      // below the ubiquity threshold (see pre-pass above). relatedNodeIds
       // itself stays handler-only — criticality/labeling below must not
-      // inflate on delegated helpers.
       const matches = groupEntityMatches.get(resourceKey) || { direct: new Set<string>(), hop: new Set<string>() };
       const relatedEntities = productDataEntities.filter(de =>
         matches.direct.has(de.id) ||
@@ -23523,12 +18237,7 @@ export class AnalyzerOrchestrator {
         .map(nodeId => productNodeById.get(nodeId))
         .filter((node): node is CASNode => Boolean(node))
         .sort((left, right) => (productNodeOrder.get(left.id) || 0) - (productNodeOrder.get(right.id) || 0));
-      // Deterministic STRUCTURAL label (fact) — seeds the id and grounds the
-      // description. The invented "<Domain> Management/…" behavior suffix stays
-      // here for stability but is stripped from the shipped display name.
       const structuralLabel = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath, relatedNodes);
-      // DISPLAY NAME = terminal-evidence-grounded placeholder (fact), overwritten
-      // by the AI naming pass with an AI-authored name (name_source:'ai').
       const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, relatedEntities);
       const groupCapId = nextCapabilityId({ name: structuralLabel, related_domains: [resourceKey] });
       if (groupEffectEvidence.get(resourceKey)) effectEvidenceByCapabilityId.add(groupCapId);
@@ -23545,11 +18254,6 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
-        // DEFECT (2026-08 grounding audit): build the description from the SAME
-        // label the capability ships as its name (capabilityName), not the
-        // internal structural grammar label — see the matching note in
-        // buildTerminalDomainCapabilities' generateTerminalCapabilityDescription
-        // call for why these two labels can otherwise disagree.
         description: this.generateCapabilityDescription(capabilityName, operations, relatedEntities, group.entryPoints),
         description_source: undefined,
         description_generation: {
@@ -23567,25 +18271,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // TASK #119 ROOT-CAUSE FIX — candidate GENERATION, not post-hoc filtering.
-    // Owner's diagnosis: "How is [Authenticate with WebAuthn] even coming up as
-    // a candidate AT ALL?" is the real defect. A capability is not "a coherent
-    // cluster of code" (what the resource-group loop above emits) — it is an
-    // OUTCOME a user gets. Inverting: generate only from the system's outward
-    // face (a genuinely caller-initiated entry point — isUserReachableTerminalCandidate
-    // GATE 1, same USER_FACING_ENTRY_TYPES fact journeys already use, never a
-    // second definition of "user-facing") followed to a TERMINAL-OR-PROXIMAL-
-    // TERMINAL domain-entity write (GATE 2) — so mechanism candidates (an
-    // event-lifecycle hook, a cron scheduler, a resilience endpoint with no
-    // entity output, a settings SCREEN with nothing written) are never admitted
-    // to the candidate pool in the first place. Downstream gates
-    // (isInfrastructureOnlyCapability, the audience test) then have nothing to
-    // reject for these shapes — verify, not generate-then-filter.
-    // This does NOT close the auth/session-vs-product ambiguity class (a real
-    // HTTP route that genuinely creates a WebAuthnCredential/Session record is
-    // structurally IDENTICAL to a legitimate domain write) — see the isolated/
-    // uncorroborated-candidate gate applied later in applyAIInterpretation,
-    // which is where the top-down domain-identity signal actually lives.
     {
       const survivingCandidates = capabilities.filter(capability =>
         this.isUserReachableTerminalCandidate(
@@ -23606,38 +18291,7 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // REMOVED: buildPurposeCapabilitiesFromSignals injected hardcoded, brand-keyed
-    // canned capabilities (14 OSS product brands matched by path + keyword voting).
-    // Capabilities must be derived from deterministic structural facts (entry points,
-    // operations, terminal entities, data-entity CRUD) and interpreted by AI — never
-    // fabricated from a product-name lookup table.
-
     await maybeYield();
-    // NOTE (root cause #3, cross-repo audit 2026-08-09): the intended fix here
-    // was to gate this pass on `hasOutwardFace` (computed above) — a
-    // pure-substrate node (no caller-initiated entry point anywhere) should
-    // not have its entity/node clusters promoted to Tier 3 capabilities at
-    // all (§0.7.1/§0.9), which is what let a Rust wire-protocol library with
-    // zero HTTP surface manufacture two mechanism-shaped capabilities from
-    // internal struct/function clusters alone. That gate was implemented and
-    // then REVERTED: it regressed 8 existing orchestrator-internals tests
-    // (e.g. "filters DTO and source-support terminal buckets out of primary
-    // capabilities") that deliberately call `buildSystemCapabilities([],
-    // entities, nodes, edges)` — zero entry points — and still expect a real
-    // entity-anchored capability ("Vehicle Management") to survive. That is
-    // established, tested product behavior: an entity with genuine write
-    // lifecycle evidence (created_by/updated_by) can be a real capability
-    // with no entry-point evidence in view, which is structurally
-    // indistinguishable, at THIS gate, from the Rust crate's case using only
-    // the evidence available here. The real discriminator is a library/no-
-    // deployable-of-its-own SHAPE signal (Cargo [lib] with no [[bin]], no
-    // ship-boundary evidence) — available elsewhere in the orchestrator
-    // (deployable-evidence collection) but not plumbed into
-    // buildSystemCapabilities today, and not safe to wire through in this
-    // pass without a wider, separately-verified change. Root cause #3 is
-    // THEREFORE STILL OPEN — reported honestly rather than landing a
-    // regression to close it. `hasOutwardFace` above is computed but
-    // currently unused by this pass; it remains available for that follow-up.
     void hasOutwardFace;
     const terminalCapabilities = await this.buildTerminalCapabilities(
       productDataEntities,
@@ -23653,15 +18307,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // BEHAVIOR-anchored capability derivation (the flagship-capability fix):
-    // everything above anchors on data entities / terminal graph nodes, so a
-    // behavior engine with no persisted entity — a rules-accurate game engine
-    // behind a socket-event namespace, a 200+ tool MCP agent-context surface,
-    // a CLI command suite — is INVISIBLE and the list reads as CRUD-over-tables.
-    // This pass derives capabilities from entry-point CLUSTERS (registration
-    // surfaces + shared-prefix families). A cluster whose reachable entities
-    // substantially overlap an existing entity-anchored capability MERGES into
-    // it (never duplicates); only entity-free behavior clusters stand alone.
     await maybeYield();
     const behaviorCapabilities = await this.buildBehaviorCapabilities(
       productEntryPoints,
@@ -23670,26 +18315,6 @@ export class AnalyzerOrchestrator {
       productDataEntities,
       projectPath
     );
-    // SURFACES ARE NOT CAPABILITIES (docs/SEMANTIC-MODEL.md purpose test): a
-    // behavior surface (mcp_tool / rpc / command / event / message registration
-    // engine) that genuinely overlaps an existing entity-anchored capability's
-    // records still MERGES into it, deepening that real domain capability's
-    // evidence. A surface that does NOT overlap anything stands on its own as
-    // pure navigation — it goes to `behaviorSurfaces`, never into the ranked
-    // `capabilities` list. This is what keeps "Command Surface" / "Event
-    // Subscriber Surface" / "Message Handler Surface" out of top_capabilities
-    // while remaining fully browsable via the separate behavior_surfaces field.
-    // EXCEPTION (shape-coverage audit, 2026-08-10): buildCandidate only ever
-    // gives a candidate a non-'internal' category when its surface kind is
-    // OUTWARD_FACING_BEHAVIOR_KINDS (cli/ipc/command) — the product's own
-    // invocation surface, not registration/RPC/event plumbing. For THAT
-    // narrow class, "does not overlap anything" does not mean "pure
-    // navigation" — for a CLI-first product it can mean this candidate IS the
-    // whole outward-facing story, with no entity-anchored capability to merge
-    // into at all. An unmerged category:'internal' candidate (mcp_tool, rpc,
-    // event, message, schedule, queue, websocket registration surfaces) keeps
-    // going to `behaviorSurfaces` exactly as before — this changes routing for
-    // no other kind.
     const behaviorSurfaces: SystemCapability[] = [];
     for (const candidate of behaviorCapabilities) {
       await maybeYield();
@@ -23702,20 +18327,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // TASK #119 (integrations never reach candidate generation): everything
-    // above anchors on INBOUND evidence (entry points, persisted/api-response
-    // entities) — an OUTBOUND dependency the system calls out to (a payment
-    // processor, a chat platform, a bookmarking service) is something the
-    // product DOES, but a repo whose whole value is "sync N third-party
-    // services" previously had zero candidate evidence for that: exit points
-    // never fed buildSystemCapabilities at all (measured live: a 27-integration
-    // feed-reader's Integration entity carried every provider's credential
-    // field, and not one of those providers ever became a capability
-    // candidate — the evidence was extracted and never used). This mirrors
-    // buildBehaviorCapabilities exactly (same entity-poor/high-evidence shape,
-    // same merge-or-stand-alone-surface treatment, same eventual exposure to
-    // the catalog prompt via the LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
-    // fold) — never a name/keyword table, purely reachable exit-point facts.
     await maybeYield();
     const integrationCapabilities = await this.buildIntegrationCapabilities(
       productExitPoints,
@@ -23750,31 +18361,6 @@ export class AnalyzerOrchestrator {
         : capabilities;
     const dedupedCapabilities = this.dedupeSystemCapabilitiesByName(capabilitiesForAgents);
     const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities);
-    // Domain is comprehension (AI-only) and is not known at this structural
-    // stage; the hardcoded repo-name domain override was deleted. Capability
-    // ordering therefore no longer biases on a keyword-classified domain, and
-    // the domain-literal filter/bias pair (filterCapabilitiesForKnownDomain /
-    // capabilityPurposeBias) that consumed it is gone with it.
-    //
-    // #112 (found while investigating #33 catalog variance): a self-project
-    // reprioritization pass used to run here (prioritizeKlauroSelfCapabilities
-    // / klauroSelfCapabilityPriority), gated on isKlauroSelfProject. It did not
-    // reorder — it DROPPED any capability whose name/related_domains text
-    // failed to match a hand-written phrase whitelist (a generic-noun bucket
-    // of "workspaces?|projects?|users?|...", always excluded). Because this
-    // only fired when analyzing Klauro's own repo, it contaminated every
-    // capability-catalog measurement ever taken on the self CAS: a
-    // well-evidenced capability (including the MCP tool-serving surface
-    // itself, unless its name happened to contain the literal token "mcp")
-    // could be silently deleted after the catalog correctly produced it,
-    // whenever the AI's own wording missed the whitelist. That is the
-    // hardcoded-vocabulary defect in its most severe form — deleting by
-    // words, not merely ranking by them — compounded by being both
-    // self-referential (special-cased for one repo) and shipped to every
-    // customer. Removed outright rather than replaced with a subtler
-    // word-based rule; no evidence-based replacement was requested or is
-    // obviously correct — if ordering needs help, it must come from
-    // operation counts, entity anchoring, or coverage, not phrase matching.
     const sortedCapabilities = trimmedCapabilities;
     const fallbackCapabilities = sortedCapabilities.length === 0
       ? this.buildRepositoryFallbackCapabilities(productNodes, productEntryPoints, projectPath)
@@ -23796,16 +18382,6 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     projectPath?: string
   ): SystemCapability[] {
-    // DETERMINISM BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): this fallback fires
-    // only when the terminal/AI capability path produced ZERO capabilities. It is
-    // a purely STRUCTURAL grouping so agents still have an oriented work target —
-    // one capability anchored on the real entry points (or, absent those, the
-    // first source nodes). It carries NO comprehension: the previous
-    // keyword→label/description classifier (corpus regexes mapping crypto→"Data
-    // Decryption", auth→"Authentication", api→"API Service Operations", etc.) has
-    // been removed. `name` is a structural placeholder derived only from the repo
-    // basename (never a keyword-guessed domain); `description` is omitted so the
-    // AI comprehension pass writes it — never a hardcoded sentence.
     const operations = (entryPoints.length > 0 ? entryPoints : nodes.slice(0, 6)).slice(0, 12).map((item: CASEntryPoint | CASNode) => {
       const isEntry = 'handler' in item || 'trigger' in item;
       return {
@@ -23817,16 +18393,8 @@ export class AnalyzerOrchestrator {
       };
     });
 
-    // No structural evidence at all → no fabricated capability. Honest empty.
     if (operations.length === 0) return [];
 
-    // HASH-TOKEN-LEAK GUARD: production analyze calls snapshot sources into a
-    // dir named after the project/analysis id (e.g. "prj_jGNMsl_nmy8Lauen"),
-    // and humanizing that basename produced the capability label "Prj J GNMsl
-    // Nmy8 Lauen Operations" during the populating window (2026-07 cold-
-    // customer audit). Identifier-shaped basenames (prj_/wsp_/acct_ prefixes,
-    // uuid/hash shapes) never enter labels — omit and fall back to the honest
-    // structural placeholder "Repository Operations".
     const rawBasename = path.basename(projectPath || '');
     const repoName = isIdentifierShapedRepoBasename(rawBasename)
       ? ''
@@ -23836,8 +18404,6 @@ export class AnalyzerOrchestrator {
     return [{
       id: 'cap_repository_fallback',
       name,
-      // Empty (not a hardcoded sentence): comprehension is AI-only. The
-      // description_generation below flags this for the AI pass to fill.
       description: '',
       description_source: undefined,
       description_generation: {
@@ -23856,12 +18422,6 @@ export class AnalyzerOrchestrator {
   }
 
   private trimLowValueFallbackCapabilities(capabilities: SystemCapability[]): SystemCapability[] {
-    // #113: this repo used to be exempt from the low-value-fallback trim
-    // entirely (the opposite direction from every other self-only gate here
-    // — protecting capabilities from removal instead of manufacturing them
-    // — but still a special case gated on isKlauroSelfProject). Removed: this
-    // repo's fallback capabilities are trimmed by the same hard/soft rules
-    // as every other repo's.
     const hardTrimmed = capabilities.filter(capability => !this.isHardLowValueCapability(capability));
     if (hardTrimmed.length < capabilities.length && hardTrimmed.length >= 1) {
       capabilities = hardTrimmed;
@@ -23881,27 +18441,9 @@ export class AnalyzerOrchestrator {
     if (/^(Synchronize|Sync|Replicate|Mirror)\s+(Synchronization|Workflow|Capability)$/i.test(name)) return true;
     if (/^(Bad|Not|Bind|Branding|Poll|Usd|Pnl|Control|Destroy|Routing|Container|Scaffold|Sized|Result|Layer|Layers|Call|Forward|Weight Norm|Jit|Nets|Gui|Prepare Scriptable|Drag|Edit|Javascript|Day|Migrate|Type|Timezone|Require Access|Duplicate Task|Printt|Hooks Hooks|Boundary|Sentry|Mutate|Settled|Capture Exception|Token|Prefetch|Fallback|Material|Gesture Detector|Len|Matmul Relative|Atom|Bulk|Busy|Duplicate|Allowed|Boolean|Code|Define|Doc|Docs|Gen|Mdx|Meta|Tabs|Tick|And|Disable And|Can|Definitions|Emoji|Field|Fields|Array|Attributes|Description|Functions?|Regular|Duration|Factory|Fixtures? Fixture|Background|Design|Loader|Mobile|Multiplayer|Socket|Category|Confirm|Hashed|Non|Upload|Synced|Static|Canvas|Klauro|Number|Avatar|Game|Lobby|Mfaenroll|Mfaverify|Rectangle|Rendered|Splash|Circle|Alert|Alerts?|Sign|Signs?)\s+(Management|Workflow|Capability|Settlement)$/i.test(name)) return true;
     if (/\b([a-z]+)s?\s+(analysis|management|workflow|reporting|generation)\s+\1\s+\2\b/i.test(name)) return true;
-    // REMOVED (2026-07-29, hardcoded-knowledge class): the corpus-product
-    // literals 'Associated Token Address', 'Dlmm History', 'Liquidation Paper
-    // Version' and 'Device Arp' used to head this list. They named individual
-    // types out of specific repositories that happened to be analyzed, so they
-    // could only ever fire on those repositories — measured across 25
-    // production analyses (215 capabilities) this predicate matched NOTHING
-    // AT ALL, literals included. What remains is language- and platform-level
-    // vocabulary: primitive width types, transport/session plumbing, and UI
-    // chrome nouns, which are noise as a capability SUBJECT in any codebase.
     return /\b(Access Token|Big Int|Screens?|Skeleton|Tab|End|Top|Exchange Code Token|Truncate Device|Running|Compose|Vpn|Binary|Uint8|Uint16|Uint32|Uint64|Int8|Int16|Int32|Int64)\s+(Management|Capability|Workflow)\b/i.test(name);
   }
 
-  /**
-   * True when a capability has NOTHING the codebase can show for it: no
-   * related entity, no operation, and a name or description that is itself a
-   * placeholder. Such an entry cannot be a strong product capability no matter
-   * what it is called — an authored name is a claim, not evidence.
-   *
-   * Reuses the shared distinctiveness predicates (`isBareNounCapabilityLabel`,
-   * `isStructuralPlaceholderCapabilityDescription`) rather than restating them.
-   */
   private isStructurallyUngroundedCapability(capability: SystemCapability): boolean {
     const hasStructuralEvidence =
       (capability.related_entities || []).length > 0 ||
@@ -23909,7 +18451,6 @@ export class AnalyzerOrchestrator {
     if (hasStructuralEvidence) return false;
     if (this.isBareNounCapabilityLabel(capability.name || '')) return true;
     if (this.isStructuralPlaceholderCapabilityDescription(capability.description || '')) return true;
-    // No entities, no operations, and no description to stand in for them.
     return !String(capability.description || '').trim();
   }
 
@@ -23917,32 +18458,6 @@ export class AnalyzerOrchestrator {
     const name = capability.name || '';
     if (/^(Users?|Register|Registration|Signup|Login|Session|Token|Provider|Permission|Role)\s+(Management|Workflow|Capability|Authentication)$/i.test(name)) return false;
     if (this.isGenericCapabilityDisplayName(name)) return false;
-    // REMOVED (2026-07-29, hardcoded-knowledge class): a ~72-name allowlist of
-    // product capability names ('Clinical Measurements', 'Fleet Operations',
-    // 'Trade Execution', 'Token Launch Monitoring', 'Product Catalog', ...)
-    // short-circuited straight to `true` here, and a companion four-literal
-    // demotion ('Associated Token Address', 'Dlmm History', 'Liquidation Paper
-    // Version') short-circuited to `false`. Both were fitted to the
-    // repositories that had been analyzed: a capability got to be "strong"
-    // because someone had once written its name down, not because the codebase
-    // showed anything.
-    //
-    // Characterized against 215 capabilities from 25 production analyses
-    // before removal. The allowlist matched 9 of them, all by
-    // case-insensitive SUBSTRING against AI-authored prose names, with no
-    // evidence requirement at all — including three fleet-operations
-    // capabilities on a chat-gateway product that carry zero operations and
-    // zero related entities. Removing it flips exactly one verdict (a
-    // `supporting` capability with no operations that was "strong" only
-    // because its name happened to contain an allowlisted phrase); the other
-    // eight are admitted by the evidence rules below on their own merits. The
-    // trimmed capability set is byte-identical across all 25 repositories, so
-    // the literals were inert where they were not wrong.
-    //
-    // Strength is now decided only by what the capability can show: a
-    // distinctive, non-placeholder subject plus real structural evidence. The
-    // shape and evidence tests below already express that, so the fall-through
-    // IS the replacement.
     if (this.isStructurallyUngroundedCapability(capability)) return false;
     const subject = name
       .replace(/\b(Management|Capability|Workflow|Authentication|Reporting|Generation|Analysis|Synchronization)$/i, '')
@@ -24055,12 +18570,6 @@ export class AnalyzerOrchestrator {
       return strongTokens.some(token =>
         capabilityDomains.has(token) ||
         (token === 'report' && capabilityDomains.has('cover')) ||
-        // ANCHOR-GATED (same misfire class as inferSystemPurpose's clinical
-        // override): 'force' and 'gauge' are generic English words (physics
-        // "force", dashboard "gauge") that show up in unrelated repos with
-        // zero clinical evidence. Only 'muscle'/'myo' are genuinely
-        // clinical-specific — require one of those, never the generic pair
-        // alone, before merging a weak capability into a "clinical" strong one.
         (token === 'clinical' && (capabilityDomains.has('muscle') || capabilityDomains.has('myo'))) ||
         (token === 'device' && capabilityDomains.has('connection'))
       );
@@ -24107,21 +18616,6 @@ export class AnalyzerOrchestrator {
     return this.dedupeSystemCapabilitiesByEntitySet(Array.from(byName.values()));
   }
 
-  /**
-   * Second dedup pass keyed on canonical ENTITY-SET identity. Name-keyed dedup
-   * (above) cannot catch verb-variant capabilities — "Tracks task reports" vs
-   * "Provides task reports" — that are the SAME capability because both anchor
-   * on the identical related_entities set (live: a CLI task-report tool's
-   * TaskReport ×2, a rules-accurate game engine's EconomyTransaction ×2).
-   * Same entity set ⇒ same capability regardless of
-   * name: merge evidence and keep the richest / core-most copy. Near-dup: a
-   * capability whose entity set is a strict SUBSET of another's and that
-   * carries no operation the superset lacks adds no distinct behavior — merge
-   * it into the superset too. Capabilities with NO related entities are never
-   * set-merged (an empty set is not shared identity, and it is trivially a
-   * subset of everything), so evidence-light capabilities keep name-keyed
-   * dedup only.
-   */
   private dedupeSystemCapabilitiesByEntitySet(capabilities: SystemCapability[]): SystemCapability[] {
     const criticalityRank: Record<SystemCapability['criticality'], number> = {
       critical: 4,
@@ -24135,9 +18629,6 @@ export class AnalyzerOrchestrator {
       admin: 2,
       internal: 1,
     };
-    // Entity references may be ids ("entity_taskreport") on the terminal path
-    // and names ("TaskReport") on the AI-catalog path — canonicalize both to
-    // the same token so the set identity is representation-independent.
     const normalizeEntityRef = (reference: string) =>
       String(reference || '').toLowerCase().replace(/^entity_/, '').replace(/[^a-z0-9]/g, '');
     const entitySetOf = (capability: SystemCapability) =>
@@ -24172,39 +18663,19 @@ export class AnalyzerOrchestrator {
       removed.add(loser);
     };
 
-    // A behavior-surface capability is identified by its REGISTRATION surface,
-    // not by the entities its handlers incidentally reach (2-hop call-graph
     // reachability). Its entity set is therefore not a merge key: it must never
-    // be merged away as an entity near-dup, nor act as a superset that absorbs a
-    // genuine entity-anchored capability whose records it happens to touch.
     const isSurfaceCap = (capability: SystemCapability) => capability.evidence_kind === 'behavior-surface';
 
-    // Subject-phrase normalizer (shared by pass 1 and pass 3): the capability
-    // name minus its leading value-verb (incl. CRUD verbs and a "lets users /
-    // allows users to" preamble) and trailing near-synonym result noun — what
-    // remains is the PURPOSE SUBJECT. Two caps with the same entity set but
-    // different subjects are different product abilities.
     const subjectPhraseOf = (capability: SystemCapability): string =>
       String(capability.name || '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
-        // optional "lets users / allows users to / enables users to" preamble
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
-        // leading value-verb (incl. CRUD verbs so per-route variants share a subject)
         .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?)\s+/i, '')
-        // trailing near-synonym result nouns so results/insights/data/info collapse
         .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
         .replace(/[^a-z0-9]+/g, ' ')
         .trim();
 
-    // Pass 1 — entity-set identity AND same purpose subject. Exact-set alone
-    // over-merged (rung-5, measured live via E1: Qwen returned 6
-    // purpose-phrased caps, three PAIRS shared entity sets — "manage tasks and
-    // task lists" vs "manage duplicate routine tasks" both {Task,TaskList} —
-    // and pass 1 collapsed 6 -> 3). Two capabilities over the SAME records are
-    // the same ability only when their subjects agree ("create location event"
-    // / "update location event" -> both "location event": merge); different
-    // subjects are different product abilities and both survive.
     const bySetKey = new Map<string, SystemCapability>();
     for (const capability of capabilities) {
       if (isSurfaceCap(capability)) continue;
@@ -24224,29 +18695,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // Pass 2 — strict-subset AND identical-set near-dups with no distinct
-    // operations. Pass 1 requires the SAME purpose subject as well as the
-    // same entity set (by design — different subjects over the same records
-    // are usually different abilities, e.g. "create X" vs "delete X"), and
-    // pass 3 below requires the same PRIMARY (first) entity, which is
-    // order-dependent on an array that has no canonical ordering. Two
-    // capabilities can therefore carry a literally IDENTICAL entity set
-    // (same evidence, same members, order aside) and still survive both
-    // passes when subject wording differs enough (verb not in the pass-1/
-    // pass-3 leading-verb list, e.g. "Host and manage...") — live case:
-    // "Manage multiple projects in a single workspace" and "Host and manage
-    // multiple codebases and projects" both anchored on the identical
-    // {Project, Workspace, Component, CallChain, Codebase} set with fully
-    // overlapping operations, surfaced to users as two capability rows with
-    // suspiciously-identical entity counts. Rather than trust subject-phrase
-    // wording for the equal-size case, use the SAME distinguishing signal
-    // pass 2 already trusts for the strict-subset case: operations. Equal
-    // sets merge only when neither side has an operation the other lacks —
-    // i.e., no distinct behavior — which is the same "adds no distinct
-    // behavior" bar as the subset case, just with size equality now included
-    // instead of excluded. A deterministic tie-break (richness, then id)
-    // keeps the winner side stable and avoids two equal-richness capabilities
-    // trying to merge into each other in both directions.
     const anchored = [...bySetKey.values()];
     for (const capability of anchored) {
       if (removed.has(capability)) continue;
@@ -24266,13 +18714,6 @@ export class AnalyzerOrchestrator {
         }
         const supersetOperations = new Set(other.operations.map(operationKey));
         if (!capability.operations.every(operation => supersetOperations.has(operationKey(operation)))) return false;
-        // For the equal-size case specifically, also require the reverse
-        // containment (neither adds an operation the other lacks) — the
-        // strict-subset case doesn't need this (the subset already can't
-        // outnumber the superset's operations by definition of "no distinct
-        // operations"), but two equal-size sets could otherwise merge on a
-        // one-directional operations check alone even when `other` itself
-        // carries a distinguishing operation `capability` lacks.
         if (otherSet.size === set.size) {
           const ownOperations = new Set(capability.operations.map(operationKey));
           if (!other.operations.every(operation => ownOperations.has(operationKey(operation)))) return false;
@@ -24282,28 +18723,7 @@ export class AnalyzerOrchestrator {
       if (superset) mergeInto(superset, capability);
     }
 
-    // Pass 2b — operation-set containment near-dups, independent of entity-set
-    // relationship (TASK #108, downstream backstop for the aiExtractCapability-
-    // Catalog tie rule above: a scoring TIE that genuinely reflects shared
-    // entity evidence is now kept as real M:N there, but two catalog items can
-    // each independently tie against the SAME small candidate while also
-    // carrying their OWN other entities — e.g. "Manage organizations and
-    // workspaces" {Organization,Workspace,...} and "Validate CAS contracts"
-    // {Codebase,AnalysisResult,...}, different names, different entity sets,
-    // measured live sharing the IDENTICAL 13-operation set verbatim). Passes 1
-    // -2 above are all keyed on entity-SET identity/subset, so a pair with
-    // different entity sets is invisible to them regardless of how identical
-    // their operations are. This is the same "adds no distinct behavior" bar
-    // as pass 2, checked on the one axis those passes never look at: the
-    // capability's own claimed operations, independent of what its entities or
-    // name say. A non-empty operation set that is a (near-)STRICT subset of
-    // another survivor's contributes zero distinguishing operational evidence
-    // of its own and merges into the richer copy. Requires a non-empty set (an
     // empty set is trivially "contained" in everything and must never merge on
-    // that alone — same guard passes 1-2 use for entity sets) and full
-    // containment: a capability that shares SOME operations but also owns at
-    // least one the other lacks still adds distinct behavior and survives —
-    // that is legitimate sharing (an operation serving two capabilities), not
     // a near-duplicate, and must never be merged away.
     const opSurvivors = capabilities.filter(capability =>
       !removed.has(capability) && !isSurfaceCap(capability) && capability.operations.length > 0);
@@ -24328,19 +18748,8 @@ export class AnalyzerOrchestrator {
       if (opSuperset) mergeInto(opSuperset, capability);
     }
 
-    // Pass 3 — verb-variant near-dups that share the SAME PRIMARY entity and an
-    // overlapping domain but differ only by the leading value-verb / a synonym
-    // tail noun. Exact-set dedup (pass 1) already merges identical sets
-    // ("Provides analysis results"/"Surfaces analysis insights" both {AnalysisResult}),
-    // but the AI catalog also emits variants whose FULL sets differ by an
-    // incidental co-anchor ("Surfaces analysis results" {Codebase,AnalysisResult}
-    // vs "Provides analysis results" {AnalysisResult}) — same product concept,
-    // phrased twice. Merge when the PRIMARY (first, highest-evidence) entity
-    // agrees, the domain-subject phrase (name minus leading verb and trailing
-    // synonym noun) matches, and the loser adds no distinct operation.
     const primaryEntityOf = (capability: SystemCapability): string =>
       normalizeEntityRef((capability.related_entities || [])[0] || '');
-    // (subjectPhraseOf is hoisted above pass 1 — shared normalizer.)
     const survivors = capabilities.filter(capability => !removed.has(capability) && !isSurfaceCap(capability));
     for (const capability of survivors) {
       if (removed.has(capability)) continue;
@@ -24357,25 +18766,11 @@ export class AnalyzerOrchestrator {
         const domainOverlap = domains.size === 0 || otherDomains.size === 0 ||
           [...domains].some(d => otherDomains.has(d));
         if (!domainOverlap) continue;
-        // Merge the poorer copy into the richer one; the richer keeps its
-        // operations and unions the evidence.
         if (richness(capability) >= richness(other)) mergeInto(capability, other);
         else mergeInto(other, capability);
       }
     }
 
-    // Pass 4 — entity-EMPTY near-duplicates. Passes 1-3 above are all keyed on
-    // entitySetOf(), so a capability with no related_entities (a docs/nav
-    // capability like "View architecture diagram" vs "View architecture
-    // section" — measured live on Klauro's own self-analysis, two near-
-    // identical capabilities over the same doc-viewing flow) is invisible to
-    // all of them. Name similarity ALONE is refused as a merge key here — it
-    // would collapse genuinely distinct low-evidence capabilities that just
-    // happen to share common English words. Merge requires BOTH a
-    // near-identical purpose subject (high token overlap) AND concrete
-    // shared-flow evidence: an overlapping related_domain or a common
-    // operation source file — the same "real evidence, not vocabulary" bar
-    // every other pass in this method holds to.
     const nameTokenSetOf = (capability: SystemCapability): Set<string> =>
       new Set(subjectPhraseOf(capability).split(/\s+/).filter(Boolean));
     const operationPathsOf = (capability: SystemCapability): Set<string> =>
@@ -24601,36 +18996,8 @@ export class AnalyzerOrchestrator {
     }
     if (/\b(booking|venue|venues|hosted venue|geo code|geocode)\b/.test(text)) return 0;
     if (/\b(audio|song|track|transcript|vocal|voice|demucs|rmvpe|fcpe)\b/.test(text)) return 0;
-    // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10): a
-    // wallet/transfer/passkey/on-chain-protocol keyword bag used to force
-    // priority 0 (top rank) here. Several of those tokens were literal
-    // product names belonging to one benchmark subject's downstream
-    // integrations (a crypto trading bot's chain/aggregator dependencies),
     // not generic English — the exact class this function must never key
-    // on: it artificially promoted any capability whose name happened to
-    // mention those products to the very top of EVERY analyzed repo's ranked
-    // list, which is the same failure class that once produced a fabricated
-    // crypto-arbitrage description on an unrelated repo. No structural
-    // signal (terminality/entity anchoring/operation count) can honestly
-    // stand in for "this capability belongs to that one benchmark's
-    // product" — that is business-domain identity, not a structural fact —
-    // so this is removed outright rather than replaced with a subtler
-    // word-based rule. Ranking now falls through to the structural criteria
-    // below (the
-    // portfolio/investment/generic-trading evidence gate, category, and the
-    // caller's operations-count/name tie-breakers), same as every other repo.
-    // EVIDENCE-RE-ANCHORED (same misfire class as inferSystemPurpose's
-    // clinical override): "portfolio"/"asset(s)"/"investment(s)"/"advisory"/
-    // "dca" are distinctive enough alone to earn the near-top trading slot.
-    // But "market"/"token"/"trade"/"exchange"/"purchase"/"price"/"currency"/
-    // "risk"/"decision"/"transfer"/"tax"/"automation" are generic English
-    // words that occur in unrelated domains (a security scanner's "risk
-    // assessment", a workflow engine's "decision" step, a file-transfer
-    // utility's "transfer", an auth system's "token", a generic "automation"
     // workflow). A single hit from THAT generic set must not alone earn
-    // priority 1 — require either a second independent term (real trading
-    // vocabulary co-occurs; a single unrelated word does not) or structural
-    // evidence (operations/entities) backing the lone match.
     if (/\b(portfolio|asset|assets|investment|investments|advisory|dca)\b/.test(text)) return 1;
     const genericTradingMatches = new Set(
       (text.match(/\b(automation|market|token|trade|exchange|purchase|price|currency|risk|decision|transfer|tax)\b/g) || [])
@@ -24680,8 +19047,8 @@ export class AnalyzerOrchestrator {
   }
   private isAnalyzerImplementationPurposeSignalNode(node: CASNode): boolean {
     const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
-    if (/(^|\/)packages\/analyzer-core\/src\/analyzer\/(core|frameworks|languages|library|libraries)\//.test(file)) return true;
-    if (/(^|\/)packages\/analyzer-core\/src\/ai\//.test(file)) return true;
+    if (/(^|\/)packages\/analyzer-core\/src\/analyzer\/(core|frameworks|languages|library|libraries)\
+    if (/(^|\/)packages\/analyzer-core\/src\/ai\
     if (/(^|\/)apps\/mcp-server\/src\/agent-.*benchmark\.ts$/.test(file)) return true;
     return false;
   }
@@ -24693,13 +19060,8 @@ export class AnalyzerOrchestrator {
     existingDomains: Set<string>,
     projectPath?: string
   ): Promise<SystemCapability[]> {
-    // Budget-yield in the whale-scaling loops (76k-node candidate scan was a
-    // measured multi-second stall); iteration order/results unchanged.
     const maybeYield = createYieldBudget();
     const nodesById = new Map(nodes.map(node => [node.id, node]));
-    // Repo-wide identity/observability evidence share: the evidence-based
-    // exception that lets an actual auth/observability PRODUCT keep those
-    // capabilities as core (see inferTerminalCapabilityCategory).
     const repoPlumbingProfile = this.repoPlumbingEvidenceProfile(nodes);
     const incoming = new Map<string, number>();
     const outgoing = new Map<string, number>();
@@ -24726,13 +19088,6 @@ export class AnalyzerOrchestrator {
     };
 
     for (const entity of dataEntities) {
-      // Code-artifact-shaped entities (…Handler/Adapter/Registry/… head noun)
-      // that carry no persistence / api-response framework evidence never seed
-      // a capability: they are wiring that leaked into the entity set (live:
-      // an assistant-runtime repo's "Registers Telegram Handlers" from
-      // RegisterTelegramHandler).
-      // Same both-conditions rule as the derivation-path filter — a role-suffixed
-      // entity WITH real persisted/produced evidence still anchors capabilities.
       if (this.isCodeArtifactRoleName(entity.name) &&
           entity.kind !== 'persisted-entity' &&
           entity.kind !== 'api-response') {
@@ -24740,17 +19095,6 @@ export class AnalyzerOrchestrator {
       }
       const tokens = this.domainTokensFromText(entity.name);
       const firstTokenKey = tokens[0];
-      // COMPOUND entity names ("DriveAlert", "FuelStation") get grouped by
-      // domainKeyFromNode elsewhere in this pass as the FULL joined-token key
-      // ("drive-alert") — the capability-candidate NODES below use that same
-      // full key. Registering the entity under firstTokenKey ("drive") ONLY
-      // means a compound entity lands in a DIFFERENT bucket than the capability
-      // built from its own accessor nodes, so that capability's `entities` list
-      // stays permanently empty even though the entity and its accessors are
-      // the same domain. Register under BOTH the legacy first-token key (kept
-      // for whatever grouping already relies on it) and the full compound key
-      // when it differs, so a compound entity reaches whichever bucket its
-      // capability actually lands in.
       const fullKey = this.domainKeyFromText(entity.name);
       const lifecycleNodes = [
         ...entity.lifecycle.created_by,
@@ -24790,10 +19134,6 @@ export class AnalyzerOrchestrator {
       if (!key || this.domainCoveredByExistingDomain(key, existingDomains)) continue;
       const group = ensureGroup(key, nodeTokens);
       group.nodes.push(node);
-      // Operation anchors must be CALLABLE handlers (task #17: a stored real
-      // CAS carried a `node:import_...` operation anchor — an import is
-      // evidence an entity is referenced, never an operation an agent can
-      // navigate to or a flow can root at).
       if (TRACEABLE_NODE_TYPES.has(node.type) || node.type === 'method' || node.type === 'class') {
         group.operations.push({
           entry_point_id: `node:${node.id}`,
@@ -24805,11 +19145,6 @@ export class AnalyzerOrchestrator {
     }
 
     const capabilities: SystemCapability[] = [];
-    // Terminal anchoring: how strongly each capability describes what the system
-    // PRODUCES for its consumers, measured by its api-response (terminal-kind)
-    // entities. A capability anchored on api-response outputs ranks above one
-    // anchored only on mid-chain persisted records or inbound request DTOs, so
-    // capabilities read as "what this produces" rather than CRUD over records.
     const terminalAnchorScore = new Map<SystemCapability, number>();
     for (const [key, group] of groups) {
       await maybeYield();
@@ -24817,14 +19152,6 @@ export class AnalyzerOrchestrator {
       const uniqueEntities = Array.from(new Map(group.entities.map(entity => [entity.id, entity])).values());
       if (uniqueNodes.length + uniqueEntities.length === 0) continue;
 
-      // A group whose only entity evidence is PROVEN inbound plumbing
-      // (framework evidence classified every entity as request-dto / value-object)
-      // and that carries no operations is not a produced capability — it is a data
-      // shape a real capability consumes. Drop it so the capability set stays
-      // anchored on outputs, not intermediate contracts. An entity with an
-      // unclassified kind (kind_source absent) is NOT proven plumbing: it carries
-      // real domain evidence and must survive, so the drop only fires when every
-      // entity was explicitly evidence-classified as an inbound shape.
       const terminalEntities = uniqueEntities.filter(entity => entity.kind === 'api-response');
       const producedEntities = uniqueEntities.filter(entity =>
         entity.kind === 'api-response' || entity.kind === 'persisted-entity');
@@ -24846,8 +19173,6 @@ export class AnalyzerOrchestrator {
       const operations = group.operations.length > 0
         ? group.operations
         : uniqueNodes
-          // Same callable-anchor gate as the direct path (task #17): lifecycle
-          // membership can put import/type nodes in the group, and an import
           // must never become a capability operation.
           .filter(node => TRACEABLE_NODE_TYPES.has(node.type) || node.type === 'method' || node.type === 'class')
           .slice(0, 6).map(node => ({
@@ -24857,10 +19182,6 @@ export class AnalyzerOrchestrator {
             path_or_command: node.source?.file,
           }));
       const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities, repoPlumbingProfile);
-      // Deterministic STRUCTURAL label (fact). Drives the quality gates below,
-      // dedup, and the fact-grounded description. It carries the "<Domain>
-      // Management/Analysis/…" grammar the gates key off — but that grammar is
-      // an invented behavior claim, so it never becomes the shipped display name.
       const structuralLabel = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath, uniqueNodes);
       if (this.isGenericCapabilityResourceKey(key, structuralLabel) ||
         this.isProjectNameCapabilityName(structuralLabel, projectPath)) {
@@ -24875,19 +19196,11 @@ export class AnalyzerOrchestrator {
       if (uniqueEntities.length === 0 && this.isStructurallyMalformedCapabilityName(structuralLabel)) {
         continue;
       }
-      // A bare vendor/infrastructure library token ("Jito Capability") that
-      // reached the evidence-free Capability fallback is SDK plumbing, not a
-      // product capability. Vendor tokens WITH product evidence (entities or
-      // multiple operations) keep their Management/domain-pattern names.
       if (/ Capability$/.test(structuralLabel) &&
         labelTokens.every(token => isVendorLibDomainToken(this.normalizeDomainToken(token))) &&
         isVendorLibDomainToken(this.normalizeDomainToken(key))) {
         continue;
       }
-      // DISPLAY NAME = terminal-evidence-grounded placeholder (fact), NOT the
-      // invented "<Domain> Management" behavior claim. The AI naming pass
-      // (aiExtractCapabilityCatalog) overwrites it with an AI-authored name and
-      // stamps name_source:'ai'; until then name_source stays unset.
       const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, uniqueEntities);
       const capability: SystemCapability = {
         id: 'cap_pending',
@@ -24900,19 +19213,6 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
-        // DEFECT (2026-08 grounding audit): this used to build the description
-        // from `structuralLabel` — the internal "<Domain> Management/…" grammar
-        // label that drives the gates above — while the capability actually
-        // SHIPS `capabilityName` (terminalGroundedCapabilityName's
-        // evidence-grounded placeholder) as its name. Those two labels are
-        // deliberately allowed to differ (see the DISPLAY NAME comment above),
-        // so a description built from one and a name built from the other can
-        // name/describe two different things ("View WSCard" named, "Infos
-        // Management reads infos records" described — measured live on a
-        // benchmarked PHP SOAP-client library). Build the description from
-        // the SAME label the capability ships as its name, so name and
-        // description are always about the same subject even before any AI
-        // pass runs.
         description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
         description_source: undefined,
         description_generation: {
@@ -24928,8 +19228,6 @@ export class AnalyzerOrchestrator {
         criticality: this.inferTerminalCriticality(uniqueNodes, uniqueEntities),
         criticality_factors: this.terminalCriticalityFactors(uniqueNodes, uniqueEntities),
       };
-      // Weight terminal (api-response) entities highest, produced persisted
-      // records next; request-dto/value-object contribute nothing to the anchor.
       terminalAnchorScore.set(capability, terminalEntities.length * 2 + (producedEntities.length - terminalEntities.length));
       capabilities.push(capability);
     }
@@ -24944,72 +19242,21 @@ export class AnalyzerOrchestrator {
       .slice(0, 24);
   }
 
-  /** Minimum entries for a shared-prefix entry-point family to evidence a capability. */
   private static readonly BEHAVIOR_FAMILY_MIN_ENTRIES = 4;
-  /** Minimum entries for a whole registration surface (e.g. an MCP tool server) to be one capability. */
   private static readonly BEHAVIOR_SURFACE_MIN_ENTRIES = 12;
-  /**
-   * Shape-coverage audit (2026-08-10, docs/audits/2026-08-10-shape-coverage-beta-gate.md):
-   * a CLI tool's commands (or a script/notebook repo's runnable entry
-   * scripts, extracted as 'cli' via cli-analyzer.ts's generic-main-entry
-   * detection) ARE the outward face — the same status http/websocket/page/
-   * route already have via the resource-group pass above. journey-builder's
-   * USER_FACING_ENTRY_TYPES already agrees ('cli'/'ipc'/'command' are
-   * caller-initiated, not mechanism) — this is that SAME set, minus the
-   * types the resource-group pass already owns (http/websocket/page/route),
-   * since only the residual command-invocation types ever reach this
-   * behavior-surface fallback at all. Used both to keep such a surface out
-   * of the always-'internal' category (registration/RPC/event/mcp_tool
-   * surfaces correctly stay 'internal' — they are genuinely mechanism, not
-   * an outcome) and to admit a whole-surface candidate even when no
-   * shared-prefix family exists (see the small-surface branch below): a real
-   * CLI's commands routinely have NO common name prefix (`ingest-text`,
-   * `health`, `kernel-summary`, `eval-runs`) yet the tool as a whole still
-   * has a purpose a non-technical reader needs to see (§0.7.1, zero is
-   * essentially never correct).
-   */
   private static readonly OUTWARD_FACING_BEHAVIOR_KINDS = new Set(['cli', 'ipc', 'command']);
-  /**
-   * Hard cap: behavior derivation adds a bounded handful of flagship
-   * capabilities, never bloat. Raised from 5 -> 10 alongside the module-
-   * cohesion clustering fix (buildBehaviorCapabilities): a single large,
-   * diverse registration surface (a 400+ tool MCP server) now legitimately
-   * yields several module-anchored candidates instead of collapsing into
-   * one bucket, so the overall cap needs headroom for that — still bounded,
-   * never unbounded per-surface (each surface itself caps at 12 clusters
-   * before this global sort/slice).
-   */
   private static readonly BEHAVIOR_CAPABILITY_MAX = 10;
 
-  /**
-   * FUNCTIONAL-cohesion fallback for large registration surfaces whose entry
-   * names share no dominant token family (see buildBehaviorCapabilities): the
-   * directory a handler is DEFINED in is real evidence of how the product
-   * itself organized that registration, never a name-token guess or a
-   * hardcoded vocabulary. Walks from the handler file's deepest directory
-   * upward and returns the first segment that is not generic/structural
-   * scaffolding (src/lib/core/handlers/tools/...), mirroring the same
-   * structural-area filter capabilitySourceAreas uses for descriptions.
-   * Returns undefined when the whole path is structural (nothing to anchor
-   * on) or no handler file evidence exists at all.
-   */
   private behaviorEntryModuleArea(ep: CASEntryPoint, nodesById: Map<string, CASNode>): string | undefined {
     const file = ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file || '';
     return this.moduleAreaFromFile(file);
   }
 
-  /**
-   * Shared directory-walk core behind behaviorEntryModuleArea: given ANY file
-   * path, returns the first non-structural/non-generic directory segment
-   * (deepest first). Extracted so the CALLEE-module fallback below
-   * (behaviorEntryCalleeModuleArea) can apply the identical structural filter
-   * to a reached node's file, not just the handler's own declaring file.
-   */
   private moduleAreaFromFile(file: string): string | undefined {
     const normalized = (file || '').replace(/\\/g, '/');
     if (!normalized) return undefined;
     const parts = normalized.split('/').filter(Boolean);
-    parts.pop(); // drop the filename — only directory segments name a module
+    parts.pop();
     for (let i = parts.length - 1; i >= 0; i--) {
       const words = parts[i]
         .replace(/[._-]+/g, ' ')
@@ -25026,34 +19273,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /**
-   * SECOND-TIER functional-cohesion fallback, for when even file-directory
-   * clustering (behaviorEntryModuleArea) can't split a large diverse
-   * registration surface — the common real-world case where every handler is
-   * REGISTERED in one file (one big server.ts/routes.ts wiring hundreds of
-   * tools/routes), so every entry resolves to the SAME single directory and
-   * file-based clustering structurally cannot produce the required >= 2
-   * groups no matter how the entries differ. Measured live on Klauro's own
-   * self-analysis: all ~200 MCP tool registrations share one file
-   * (apps/mcp-server/src/server.ts), so behaviorEntryModuleArea collapses the
-   * entire surface to one area and the whole registration engine falls
-   * through to a single opaque "Mcp Tool Surface" candidate — one slot in a
-   * ~14-candidate catalog window standing in for the platform's actual
-   * flagship surface.
-   *
-   * A handler's DEFINING location is one fact; where its logic actually
-   * DELEGATES (the call graph) is a second, independent structural fact that
-   * does vary per-handler even when every handler is declared in the same
-   * file — each tool's implementation typically calls a different downstream
-   * service/module. Walks outward (bounded hops) from the handler's own node
-   * along the same edge set buildCandidate already uses for entity-overlap
-   * reachability, and returns the first REACHED node whose file resolves to a
-   * non-structural area different from the handler's own declaring module
-   * (so this never just re-derives the same single area the file-based pass
-   * already tried and rejected as unsplittable). Pure call-graph structure —
-   * no name/domain vocabulary of its own; reuses the identical structural/
-   * generic-token filter moduleAreaFromFile already applies.
-   */
   private behaviorEntryCalleeModuleArea(
     ep: CASEntryPoint,
     nodesById: Map<string, CASNode>,
@@ -25083,10 +19302,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /**
-   * Structural browser-interaction grammar (NOT domain vocabulary): a DOM/UI
-   * event name identifies page plumbing, never a product behavior family.
-   */
   private static readonly DOM_INTERACTION_EVENT_TOKENS = new Set([
     'click', 'dblclick', 'change', 'submit', 'input', 'select', 'toggle', 'hover',
     'focus', 'blur', 'scroll', 'drag', 'dragstart', 'dragend', 'dragover', 'drop',
@@ -25095,12 +19310,6 @@ export class AnalyzerOrchestrator {
     'wheel', 'resize', 'contextmenu', 'pointerdown', 'pointerup', 'pointermove',
   ]);
 
-  /**
-   * Grammatical action-verb prefixes (get_/create_/run_…): an operation naming
-   * convention shared across unrelated tools, so a common action verb does NOT
-   * evidence one cohesive behavior family the way a shared SUBJECT prefix
-   * (game:*, tournament:*, fab_*) does.
-   */
   private static readonly BEHAVIOR_ACTION_VERB_PREFIXES = new Set([
     'get', 'set', 'fetch', 'list', 'find', 'load', 'show', 'view', 'read',
     'create', 'add', 'new', 'update', 'edit', 'delete', 'remove', 'save',
@@ -25109,39 +19318,6 @@ export class AnalyzerOrchestrator {
     'start', 'stop', 'open', 'close', 'enable', 'disable', 'apply', 'compute',
   ]);
 
-  /**
-   * BEHAVIOR-anchored capability derivation — the counterpart to the
-   * entity-anchored buildTerminalCapabilities above. That path derives a
-   * capability from dataEntities + terminal graph nodes, so capability ==
-   * persisted/produced DATA; behavior engines with little or no entity surface
-   * are structurally invisible to it (audited on 5 live repos: a
-   * rules-accurate game engine + multiplayer, an assistant-runtime repo,
-   * Klauro's own ~280-tool MCP surface — every flagship missing while the list
-   * bloated with CRUD-over-tables).
-   *
-   * Source material (all deterministic, already computed):
-   *  - entry-point REGISTRATION SURFACES: entries whose source node carries a
-   *    specific registration node type (e.g. 'mcp_tool') — framework evidence
-   *    that a body of same-kind registrations IS a product surface;
-   *  - entry-point PREFIX FAMILIES: entries of one behavior entry type
-   *    (event/message/websocket/cli/schedule/rpc/ipc/…) sharing a leading
-   *    SUBJECT token (game:*, tournament:*, fab_*) — module-cohesion evidence
-   *    of one behavior capability spanning many operations;
-   *  - bounded call-graph reachability from the cluster's handlers into data
-   *    entities — the call-chain/flow evidence used to MERGE a behavior
-   *    cluster into an entity-anchored capability it substantially overlaps
-   *    (merge, never duplicate — see mergeBehaviorCapabilityIntoExisting).
-   *
-   * Grouping is purely structural (entry type, source-node type, shared name
-   * prefix, reachable entities) — NEVER a hardcoded domain/brand vocabulary.
-   * Naming follows the awaiting-ai pattern the entity path uses: the
-   * structural_label / placeholder name state only facts ("<Prefix> <Surface>
-   * Surface"); the AI catalog pass authors the final display name.
-   *
-   * Count restraint: thresholds on family/surface size plus a hard cap keep
-   * this to FEW high-evidence flagship capabilities — this pass adds flagships,
-   * it must never add plumbing.
-   */
   private async buildBehaviorCapabilities(
     entryPoints: CASEntryPoint[],
     nodes: CASNode[],
@@ -25149,28 +19325,9 @@ export class AnalyzerOrchestrator {
     dataEntities: CASDataEntity[],
     projectPath?: string
   ): Promise<SystemCapability[]> {
-    // Budget-yield in the whale-scaling loops (entry-point subject scan +
-    // per-surface reachability); iteration order/results unchanged.
     const maybeYield = createYieldBudget();
     const nodesById = new Map(nodes.map(node => [node.id, node]));
 
-    // Node types that are plain code structure: they carry no registration
-    // evidence. Any OTHER node type on an entry's source node (e.g. 'mcp_tool')
-    // is analyzer-stamped evidence of a named registration surface.
-    //
-    // 'enum_variant' belongs here, not as a registration kind. Measured live on
-    // a benchmarked Rust ZTNA product's CAS (v1.0.104): the Rust analyzer emits
-    // each clap `#[derive(Subcommand)]` enum variant as its own 'enum_variant'
-    // node PLUS a real 'cli' entry point rooted on that node
-    // (rust-analyzer.ts's subcommand-variant extraction). Before this fix, the
-    // family key below (`registrationKind || type`) picked the NODE type
-    // ('enum_variant') over the entry TYPE ('cli') whenever the node type
-    // wasn't in this set — so 12 genuine CLI subcommands formed a bogus "Enum
-    // Variant Surface" instead of joining "Cli Command Surface". An enum
-    // variant is a TYPE-SYSTEM fact (which case of the enum this is), never
-    // itself an interaction/registration surface — the surface is whatever the
-    // entry TYPE says it is (cli, event, ...). Including it here makes the kind
-    // fall back to the entry type for every enum_variant-sourced entry.
     const genericNodeTypes = new Set([
       'function', 'method', 'class', 'module', 'file', 'component',
       'functional_component', 'variable', 'interface', 'constant',
@@ -25178,9 +19335,6 @@ export class AnalyzerOrchestrator {
       'import', 'property', 'test', 'dto', 'entity', 'page', 'route', 'hook',
       'enum_variant',
     ]);
-    // Entry types that describe BEHAVIOR being invoked (commands, events,
-    // messages, jobs) rather than resource-shaped HTTP/page surfaces the
-    // resource-group path above already covers.
     const behaviorEntryTypes = new Set([
       'message', 'websocket', 'ws_handler', 'event', 'cli', 'schedule',
       'scheduled', 'cron', 'rpc', 'ipc', 'command', 'task', 'pipeline', 'train',
@@ -25190,12 +19344,6 @@ export class AnalyzerOrchestrator {
     interface BehaviorEntry {
       ep: CASEntryPoint;
       prefix?: string;
-      // The RESOLVED subject string (chooseSubjectField's per-surface
-      // winning field, computed below) — kept alongside `ep` so any later
-      // evidence-derived naming (candidate.evidence_examples) reads the SAME
-      // real per-tool identifier the family/prefix extraction used, rather
-      // than re-deriving from raw trigger fields with the original
-      // event-first precedence the task #99 name-extraction fix replaced.
       subject?: string;
     }
     interface BehaviorSurface {
@@ -25204,10 +19352,6 @@ export class AnalyzerOrchestrator {
       entries: BehaviorEntry[];
     }
 
-    // PASS 1: filter + group by kind only — no subject/prefix decided yet.
-    // Kind grouping depends only on entry type / registration node type, never
-    // on trigger fields, so it is safe to do this before the subject-field
-    // choice below.
     const rawSurfaces = new Map<string, { kindEvidence: 'registration' | 'entry-type'; eps: CASEntryPoint[] }>();
     for (const ep of entryPoints) {
       await maybeYield();
@@ -25217,20 +19361,10 @@ export class AnalyzerOrchestrator {
 
       const sourceNode = ep.source_node ? nodesById.get(ep.source_node) : undefined;
       const nodeType = String(sourceNode?.type || '').toLowerCase();
-      // An 'event' entry rooted in a UI COMPONENT node is a JSX prop handler
-      // (onProjectSelect/onClick wiring the page together) — interaction
-      // plumbing, never a product behavior surface. Server-side registrations
-      // root in files/registration nodes, so this is a structural
-      // discriminator, not a name heuristic.
       if (/^(component|functional_component|page|view|screen|widget)$/.test(nodeType)) continue;
       const registrationKind = nodeType && !genericNodeTypes.has(nodeType) ? nodeType : undefined;
       if (!registrationKind && !behaviorEntryTypes.has(type)) continue;
 
-      // DOM/UI interaction handlers (Page click/change/submit…) are page
-      // plumbing wired by the component analyzers, not a behavior family.
-      // Tested against the registered EVENT name only (every token DOM-shaped),
-      // so a mid-name token like the 'change' in an `assess_change_risk` tool
-      // never disqualifies a real behavior entry.
       const eventTokens = String(ep.trigger?.event || '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
@@ -25241,41 +19375,12 @@ export class AnalyzerOrchestrator {
         continue;
       }
 
-      // Normalize separator spelling so analyzers that stamp 'mcp_tool' and
-      // 'mcp-tool' contribute to ONE surface.
       const kind = (registrationKind || type).replace(/-/g, '_');
       const bucket = rawSurfaces.get(kind);
       if (bucket) bucket.eps.push(ep);
       else rawSurfaces.set(kind, { kindEvidence: registrationKind ? 'registration' : 'entry-type', eps: [ep] });
     }
 
-    /**
-     * TASK #99 (lost tool names): which trigger field actually carries the
-     * SUBJECT of an entry is analyzer-specific, and at least two analyzers
-     * (an MCP-tool duplicate-detection path, a Rails background-job path)
-     * stamp a CONSTANT `trigger.event` (a protocol/lifecycle marker shared by
-     * every entry they emit — 'mcp.tool.call', 'perform') while the entry's
-     * own distinguishing identity sits unused in `trigger.pattern` or
-     * `ep.name`. Because `trigger.event` was tried first unconditionally,
-     * that constant marker always won and every entry from such a path
-     * presented the SAME subject — collapsing hundreds of functionally
-     * distinct tools/jobs into one spurious "family" before either the
-     * name-prefix or module-cohesion clustering below ever got a chance to
-     * differentiate them.
-     *
-     * This is a structural choice, not a protocol special-case: for each
-     * kind-surface, prefer whichever of {event, pattern, name} has the
-     * HIGHEST number of DISTINCT non-empty values across that surface's own
-     * entries (ties keep the original event > pattern > name precedence) —
-     * i.e. prefer the field that actually distinguishes entries, over one
-     * that happens to run first. A surface where `trigger.event` genuinely
-     * IS the varying, meaningful subject (socket.io's `game:action` /
-     * `lobby:create`) keeps using it, because there it has the highest
-     * cardinality already. Computed once per surface, not per entry — this
-     * is corpus-shape evidence (document frequency), the same principle
-     * `rankCatalogPromptCandidates`'s nonDiscriminative-token filter and
-     * `hopDfLimit` already apply elsewhere in this file.
-     */
     const chooseSubjectField = (eps: CASEntryPoint[]): 'event' | 'pattern' | 'name' => {
       const distinctCount = (values: Array<string | undefined>): number =>
         new Set(values.filter((value): value is string => Boolean(value))).size;
@@ -25295,11 +19400,6 @@ export class AnalyzerOrchestrator {
           (subjectField === 'event' ? ep.trigger?.event : undefined) ||
           (subjectField === 'pattern' ? ep.trigger?.pattern : undefined) ||
           (subjectField === 'name' ? ep.name : undefined) ||
-          // Falls through to the full original precedence when the chosen
-          // field is empty for THIS particular entry (a surface can mix
-          // entries from analyzers that populate different fields) — never
-          // leaves an entry subject-less just because the surface-wide
-          // winner happened not to apply to it.
           ep.trigger?.event || ep.trigger?.pattern || ep.name || ''
         );
         const subjectTokens = rawSubject
@@ -25308,9 +19408,6 @@ export class AnalyzerOrchestrator {
           .split(/[^a-z0-9]+/)
           .filter(Boolean);
 
-        // Family prefix = first meaningful SUBJECT token. Transport lead-ins
-        // ("SOCKET game:action") and grammatical action verbs (get_/run_) are
-        // skipped/rejected — they name the wire or the operation, not a family.
         const firstToken = subjectTokens.find(token =>
           !/^(socket|sockets|event|events|message|messages|cmd|command|commands|on|emit|ws|handler|handlers)$/.test(token));
         let prefix: string | undefined;
@@ -25331,8 +19428,6 @@ export class AnalyzerOrchestrator {
       surfaces.set(kind, { kind, kindEvidence, entries });
     }
 
-    // Bounded call-graph reachability (2 hops) from a cluster's handlers —
-    // the evidence for entity overlap (merge) and for the description facts.
     const outgoingBySource = new Map<string, string[]>();
     for (const edge of edges) {
       const targets = outgoingBySource.get(edge.source);
@@ -25385,47 +19480,24 @@ export class AnalyzerOrchestrator {
         trigger: this.extractTrigger(ep),
       }));
 
-      // Framework identity ONLY when the emitting analyzer stamped one and it
-      // is uniform across the cluster (evidence, not inference).
       const frameworks = new Set(entries
         .map(({ ep }) => String((ep as any).metadata?.framework || ''))
         .filter(Boolean));
       const framework = frameworks.size === 1 ? [...frameworks][0] : undefined;
 
-      // Deterministic STRUCTURAL label: pure facts (family prefix, surface
-      // kind, framework evidence) — no invented "<Domain> Management" behavior
-      // grammar. Display name = the same fact placeholder; the AI catalog pass
-      // overwrites it and stamps name_source:'ai' (identical contract to the
-      // entity-anchored path above).
       const kindLabel = this.humanizeDomainKey(surface.kind.replace(/[_-]+/g, ' '));
       const prefixLabel = prefix ? this.humanizeDomainKey(prefix) : undefined;
-      // Skip the prefix when the kind label already starts with it ("Mcp" +
       // "Mcp Tool" must not read "Mcp Mcp Tool").
       const structuralLabel = prefixLabel && !kindLabel.toLowerCase().startsWith(prefixLabel.toLowerCase())
         ? `${prefixLabel} ${kindLabel} Surface`
         : `${kindLabel} Surface`;
 
       const total = entries.length;
-      // Surfaces live in behavior_surfaces, not system_capabilities, and must
-      // never masquerade as a domain capability's urgency: criticality is
-      // capped at 'medium' (never high/critical) regardless of registration
-      // volume. A 200-tool MCP surface is navigationally important but is not
-      // a product purpose, so it may not outrank/out-criticality real domain
-      // capabilities anywhere a caller sorts on criticality.
       const criticality: SystemCapability['criticality'] =
         total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES ? 'medium' : 'low';
       const exampleNames = entries.slice(0, 3)
         .map(({ ep }) => String(ep.trigger?.event || ep.name || '').trim())
         .filter(Boolean);
-      // TASK #99 (evidence-derived candidate naming): a WIDER, deduped sample
-      // than the description's 3-example prose gets — enough for the catalog
-      // step to see real handler-name vocabulary instead of the structural
-      // "<Kind> Surface" placeholder alone. Reads each entry's already-
-      // RESOLVED `subject` (chooseSubjectField's per-surface winning field,
-      // computed above) — never re-derives from raw trigger fields, which
-      // would reintroduce the event-first precedence the name-extraction fix
-      // replaced (a constant transport marker would win again here even
-      // though it no longer wins family-prefix extraction).
       const evidenceExamples = Array.from(new Set(
         entries.map(({ subject }) => String(subject || '').trim()).filter(Boolean)
       )).slice(0, 5);
@@ -25444,8 +19516,6 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
-        // Fact-grounded description (structure only); the AI comprehension
-        // pass authors the interpreted narrative.
         description: `Behavior surface: ${total} ${kindLabel.toLowerCase()} entry points` +
           (prefix ? ` sharing the '${prefix}' name prefix` : '') +
           (framework ? ` registered via ${framework}` : '') +
@@ -25460,19 +19530,6 @@ export class AnalyzerOrchestrator {
           attempted: false,
           generated_at: new Date().toISOString(),
         },
-        // Surfaces are navigation, not purpose: 'internal' is structurally
-        // excluded from the ranked/core catalog everywhere a caller filters on
-        // category (see query.ts top_capabilities, which already drops
-        // category:'internal'). Never 'core' — see reconcileCatalogedCapabilities
-        // and buildSystemCapabilities, which route standalone surface candidates
-        // into the separate behavior_surfaces list rather than system_capabilities.
-        // EXCEPTION (shape-coverage audit, 2026-08-10): a genuinely outward-
-        // facing command surface (cli/ipc/command — OUTWARD_FACING_BEHAVIOR_KINDS)
-        // is not mechanism the way an mcp_tool/rpc/event registration engine
-        // is — it is the product's own invocation surface, same status as an
-        // HTTP route. It gets a real category (same inference the resource-
-        // group pass uses) so it can reach system_capabilities instead of
-        // being permanently excluded by the category:'internal' filter.
         category: AnalyzerOrchestrator.OUTWARD_FACING_BEHAVIOR_KINDS.has(surface.kind)
           ? this.inferCapabilityCategory(entries.map(({ ep }) => ep), prefix || surface.kind)
           : 'internal',
@@ -25480,12 +19537,6 @@ export class AnalyzerOrchestrator {
         related_entities: relatedEntities.map(entity => entity.id),
         related_domains: [prefix || surface.kind.replace(/_/g, '-')],
         criticality,
-        // A NAMED registration surface (mcp_tool / rpc / command registry) with
-        // its own registration node type is a product behavior engine the
-        // journey/entity-driven AI catalog systematically misses. Tag it so
-        // buildSystemCapabilities routes it into the separate `behavior_surfaces`
-        // CAS field (never system_capabilities/top_capabilities) instead of
-        // merging it into an existing entity-anchored capability.
         evidence_kind: surface.kindEvidence === 'registration' ? 'behavior-surface' : undefined,
         ...(evidenceExamples.length > 0 ? { evidence_examples: evidenceExamples } : {}),
         criticality_factors: [
@@ -25509,13 +19560,6 @@ export class AnalyzerOrchestrator {
         if (family) family.push(entry);
         else familyMap.set(entry.prefix, [entry]);
       }
-      // TASK #33: entry-count alone is not a TOTAL order — two families tied
-      // on count fell back to familyMap's insertion order (first-encountered
-      // prefix while walking surface.entries), a real order dependency on
-      // upstream data rather than a proven invariant here. `.slice(0, 3)`
-      // below means a tie can decide which families actually reach the
-      // catalog prompt, not just their display order. Prefix name is a
-      // stable, always-present tiebreak.
       const strongFamilies = [...familyMap.entries()]
         .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
         .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
@@ -25526,19 +19570,6 @@ export class AnalyzerOrchestrator {
         (strongFamilies.length === 0 || familyCoverage < 0.5);
 
       if (isLargeDiverseSurface) {
-        // A large registration surface with no dominant NAME-token family (a
-        // 400+ tool MCP server whose tool names are diverse) still IS one or
-        // more real product capabilities — but the entries only share one
-        // MECHANISM (mcp_tool / rpc / ...), not one FUNCTION. Clustering on
-        // the mechanism alone collapses the whole surface into a single
-        // bucket (measured live on Klauro's own self-analysis: a 435-entry
-        // MCP surface -> one "Mcp Tool Surface"/"Handle mcp tool call"
-        // capability, leaving 93% of the entry points functionally
-        // unaccounted for). Fall back to FUNCTIONAL cohesion evidence
-        // instead: the source module/directory a handler is defined in —
-        // real product structure, not a name-token guess or a hardcoded
-        // vocabulary. Name-token family remains the PRIMARY key above; module
-        // clustering only covers what family clustering left uncovered.
         const coveredByFamily = new Set(strongFamilies.flatMap(([, entries]) => entries));
         const remainder = surface.entries.filter(entry => !coveredByFamily.has(entry));
         const moduleMap = new Map<string, BehaviorEntry[]>();
@@ -25549,9 +19580,6 @@ export class AnalyzerOrchestrator {
           if (bucket) bucket.push(entry);
           else moduleMap.set(area, [entry]);
         }
-        // TASK #33: same non-total-order gap as strongFamilies above — add
-        // an area-name tiebreak so a count tie can't leave selection (the
-        // `.slice(0, 12)` below) dependent on moduleMap insertion order.
         const moduleClusters = [...moduleMap.entries()]
           .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
           .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
@@ -25562,25 +19590,12 @@ export class AnalyzerOrchestrator {
           for (const [area, entries] of moduleClusters.slice(0, 12)) {
             candidates.push({ capability: buildCandidate(surface, area, entries), evidence: entries.length });
           }
-          // Whatever module clustering still can't place stays a single
-          // residual surface ONLY when it remains large enough to carry its
-          // own evidence — never the full original surface.
           const clustered = new Set(moduleClusters.flatMap(([, entries]) => entries));
           const leftover = remainder.filter(entry => !clustered.has(entry));
           if (leftover.length >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES) {
             candidates.push({ capability: buildCandidate(surface, undefined, leftover), evidence: leftover.length });
           }
         } else {
-          // FILE-DIRECTORY clustering failed to reach 2 groups — the common
-          // case where every handler in the surface is registered in ONE file
-          // (a single server.ts/routes.ts), so behaviorEntryModuleArea
-          // resolves every entry to the same area and can never produce >= 2
-          // clusters no matter how functionally distinct the handlers are.
-          // Fall back to CALLEE-module clustering (behaviorEntryCalleeModuleArea):
-          // same structural-area filter, applied to where each handler's own
-          // call graph leads instead of where it is declared. Own directory
-          // evidence still wins whenever it worked above; this only runs on
-          // the remainder because that already means it didn't.
           const ownArea = this.behaviorEntryModuleArea(remainder[0]?.ep, nodesById);
           const calleeModuleMap = new Map<string, BehaviorEntry[]>();
           for (const entry of remainder) {
@@ -25590,7 +19605,6 @@ export class AnalyzerOrchestrator {
             if (bucket) bucket.push(entry);
             else calleeModuleMap.set(area, [entry]);
           }
-          // TASK #33: same non-total-order gap, third occurrence.
           const calleeModuleClusters = [...calleeModuleMap.entries()]
             .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
             .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
@@ -25607,47 +19621,19 @@ export class AnalyzerOrchestrator {
               candidates.push({ capability: buildCandidate(surface, undefined, leftover), evidence: leftover.length });
             }
           } else if (remainder.length > 0) {
-            // No functional-cohesion evidence (name-family, declaring module,
-            // or callee module) survives for the remainder: last resort is the
-            // single collapsed-surface capability, same as the pre-fix
-            // behavior — but scoped to the remainder only, since strongFamilies
-            // (if any) already got their own candidates below.
             candidates.push({ capability: buildCandidate(surface, undefined, remainder), evidence: remainder.length });
           }
         }
-        // Strong name-token families found alongside a large diverse surface
-        // are real cohesion evidence too — keep them as their own candidates
-        // rather than folding them into the module/leftover buckets above.
         for (const [prefix, entries] of strongFamilies.slice(0, 3)) {
           candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
         }
         continue;
       }
 
-      // Otherwise: only cohesive shared-prefix families are capabilities.
-      // A generic entry-type surface (all 'event' handlers in an app) is NOT
-      // one capability — without a shared subject there is no evidence these
-      // entries serve one behavior.
       for (const [prefix, entries] of strongFamilies.slice(0, 3)) {
         candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
       }
 
-      // Shape-coverage audit (2026-08-10) — CLI/script shapes under-generate
-      // here by construction: this whole surface never reaches the large-
-      // diverse-surface branch above because kindEvidence is 'entry-type' for
-      // a cli/ipc/command surface (its source node is a plain 'file' node,
-      // never a named registration node type), and a real CLI's command names
-      // routinely share NO prefix at all (`ingest-text`, `health`,
-      // `kernel-summary`, `eval-runs` — four different verbs, zero family).
-      // Measured live: an 8-command hybrid CLI+HTTP tool produced ZERO
-      // strongFamilies and is below BEHAVIOR_SURFACE_MIN_ENTRIES, so this
-      // whole pass previously emitted NOTHING for its entire CLI surface —
-      // the tool's outward face vanished downstream of L1 even though 8 real
-      // 'cli' entry points were extracted. One consolidated candidate for
-      // whatever strongFamilies didn't already cover keeps the CLI/script
-      // surface as a whole from being invisible, without reopening the
-      // 40-subcommand-becomes-40-capabilities anti-pattern: this is exactly
-      // one candidate per surface remainder, never one per command.
       if (AnalyzerOrchestrator.OUTWARD_FACING_BEHAVIOR_KINDS.has(surface.kind)) {
         const coveredByStrongFamily = new Set(strongFamilies.slice(0, 3).flatMap(([, entries]) => entries));
         const uncovered = surface.entries.filter(entry => !coveredByStrongFamily.has(entry));
@@ -25657,58 +19643,12 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // TASK #33: this is the FINAL cut for the behavior-surface candidates
-    // that feed the AI catalog prompt (via largeSurfaceCandidates in
-    // aiExtractCapabilityCatalog) — an evidence tie here decides which
-    // candidates survive BEHAVIOR_CAPABILITY_MAX, not just their order.
-    // Name is a stable, always-present tiebreak.
     return candidates
       .sort((a, b) => b.evidence - a.evidence || a.capability.name.localeCompare(b.capability.name))
       .slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX)
       .map(candidate => candidate.capability);
   }
 
-  /**
-   * TASK #119 — INTEGRATIONS AS CAPABILITY CANDIDATES.
-   *
-   * Every candidate above this point is INBOUND-anchored: it starts from an
-   * entry point (a route, a CLI command, an event) or a persisted/api-response
-   * entity. An OUTBOUND dependency — a third-party API/SDK the product calls
-   * OUT to — never seeded a candidate anywhere in this file, even though exit
-   * points are already extracted with real per-call evidence
-   * (buildExternalServices consumes the exact same `exitPoints` list this
-   * reads). Measured live: a feed-reader repo's `Integration` entity carries
-   * one credential field per third-party provider (Telegram, Notion,
-   * Pinboard, Wallabag, ...) — ~20 real outbound integrations — and not one
-   * became a capability candidate, because candidate generation only ever
-   * grouped INBOUND entry points into resource groups. The evidence was
-   * extracted (exit_points, buildExternalServices) and never consumed here.
-   *
-   * Structural qualification (evidence only, no name/keyword table):
-   *   1. type is 'api' or 'sdk' — database/cache exit points stay
-   *      infrastructure, not third-party product integrations.
-   *   2. `isMeaningfulExternalServiceName` already rejects call-shaped/
-   *      language-builtin fragments (the same filter buildExternalServices
-   *      uses), so this and that list agree on what counts as a real service.
-   *   3. REACHABILITY — the exit point's source node must be either an
-   *      entry-point handler itself or have at least one incoming call edge.
-   *      An exit point nothing in the graph ever reaches is unexercised code,
-   *      not a product ability (the same bar buildTerminalCapabilities'
-   *      `isTerminal` check already applies to inbound nodes).
-   *
-   * Presentation mirrors the proven flagship-surface pattern
-   * (buildBehaviorCapabilities / LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD):
-   * each qualifying service either merges into an existing entity-anchored
-   * capability it demonstrably shares data with, or stands alone tagged
-   * `evidence_kind: 'behavior-surface'` with the real per-service names in
-   * `evidence_examples` — so a rich integration surface reaches the catalog
-   * prompt as real evidence ("Telegram, Notion, Pinboard, ...") rather than a
-   * mechanism-shaped placeholder, exactly like Klauro's own large MCP-tool
-   * surface already does. This never bypasses the structural anchor gate:
-   * each candidate carries real `entry_point_id`s (`exit:<id>`) seeded from
-   * actual exit points, so it is anchored by the same rule as everything
-   * else, never a special case.
-   */
   private async buildIntegrationCapabilities(
     exitPoints: CASExitPoint[],
     nodes: CASNode[],
@@ -25729,10 +19669,6 @@ export class AnalyzerOrchestrator {
       if (epAny.handler?.node_id) entryHandlerIds.add(epAny.handler.node_id);
     }
 
-    // Group qualifying outbound calls by the external service they target —
-    // the SAME name/key derivation buildExternalServices uses for its 'api'/
-    // 'sdk' branch, so a capability here and the external_services list agree
-    // on identity.
     const groups = new Map<string, { name: string; exitPoints: CASExitPoint[] }>();
     for (const ep of exitPoints) {
       await maybeYield();
@@ -25751,9 +19687,6 @@ export class AnalyzerOrchestrator {
     }
     if (groups.size === 0) return [];
 
-    // Entity association: the exit point's OWN source node is the handler —
-    // same direct-lifecycle-match pattern the resource-group pass uses,
-    // never a vocabulary guess.
     const entityIdsByLifecycleNode = new Map<string, string[]>();
     for (const entity of dataEntities) {
       const lifecycleIds = [
@@ -25785,16 +19718,6 @@ export class AnalyzerOrchestrator {
       return Array.from(ids);
     };
 
-    // MANY-INTEGRATIONS FOLD: a handful of qualifying services stand alone —
-    // each already carries enough of its own evidence to be a distinct
-    // candidate. A LARGE number of small integrations (the feed-reader case —
-    // ~20 providers, 1-3 exit points each) would otherwise flood the
-    // candidate window with near-identical, individually-weak fragments; that
-    // shape is folded into ONE surface candidate whose `evidence_examples`
-    // names every real provider, mirroring the existing
-    // largeSurfaceCandidates fold for oversized behavior-registration
-    // families. The threshold is the count of DISTINCT qualifying services
-    // (structural), never their names.
     const INTEGRATION_FOLD_THRESHOLD = 3;
     const results: SystemCapability[] = [];
     if (groups.size > INTEGRATION_FOLD_THRESHOLD) {
@@ -25864,31 +19787,6 @@ export class AnalyzerOrchestrator {
     return results;
   }
 
-  /**
-   * Merge-not-duplicate: a behavior cluster whose reachable data entities (or
-   * family domain) substantially overlap an existing entity-anchored
-   * capability ENRICHES that capability — its operations, criticality, and
-   * evidence — instead of standing next to it as a near-duplicate. Returns
-   * true when merged. Only entity-free / non-overlapping behavior clusters
-   * (the invisible flagship engines this pass exists for) stay standalone.
-   *
-   * TASK #1 (2026-08-10, capability altitude / over-merging): entity overlap
-   * is not identity — two capabilities touching the same entity (an order
-   * system and a refund system both touch `Order`) is the NORMAL case, not
-   * evidence they are one outcome. `entryPointDeployableById`, when supplied,
-   * carries the one piece of STRUCTURAL evidence stronger than any textual
-   * domain/entity signal: which real deployable/ship-unit each side's entry
-   * points actually run in (attachDeployable, entry-point-deployable.ts). Two
-   * candidates whose operations resolve to disjoint, non-empty deployable
-   * sets are proven to live in different runnable units and are blocked from
-   * merging regardless of domain/entity/subject agreement — this is what
-   * keeps a `genai-service` AI-chat surface from being absorbed into a `Pet`
-   * capability living in the main petclinic deployable (the live-traced
-   * regression this task fixes). Absence of deployable evidence on either
-   * side (a monolith, or entry points attachDeployable could not resolve)
-   * leaves the existing entity/domain/subject gates as the sole authority,
-   * unchanged.
-   */
   private mergeBehaviorCapabilityIntoExisting(
     candidate: SystemCapability,
     capabilities: SystemCapability[],
@@ -25897,13 +19795,6 @@ export class AnalyzerOrchestrator {
     const candidateEntities = new Set(candidate.related_entities);
     const candidateDomain = this.normalizeDomainToken(
       String(candidate.related_domains[0] || '').toLowerCase());
-    // TASK #99 (entity-free merge gate): a candidate's TRUE size — the real
-    // entry-point count the behavior surface represents, not the capped
-    // `operations` sample — governs how much scepticism a bare domain-token
-    // match deserves below. Reuses behaviorSurfaceEntryCount, the same
-    // criticality_factors[0]-derived count LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
-    // already uses for this exact "candidate carries more evidence than its
-    // capped operations array can show" reason.
     const candidateTrueSize = this.behaviorSurfaceEntryCount(candidate);
 
     const deployablesOf = (systemCapability: SystemCapability): Set<string> => {
@@ -25920,10 +19811,6 @@ export class AnalyzerOrchestrator {
     let best: SystemCapability | undefined;
     let bestScore = 0;
     for (const capability of capabilities) {
-      // TASK #1: disjoint, non-empty deployable evidence is decisive — it
-      // overrides domain/entity/subject agreement rather than merely
-      // competing with it, because it is structural fact (which ship unit an
-      // entry point runs in) rather than a textual or reachability inference.
       if (candidateDeployables.size > 0) {
         const targetDeployables = deployablesOf(capability);
         if (targetDeployables.size > 0) {
@@ -25943,14 +19830,6 @@ export class AnalyzerOrchestrator {
           this.domainVariantInSet(candidateDomain, new Set([
             this.normalizeDomainToken(String(domain || '').toLowerCase()),
           ])));
-      // Subject agreement: the candidate's family subject appears among the
-      // target's identity tokens (name/domains). Entity overlap ALONE cannot
-      // authorize a merge — sibling families registered in one shared module
-      // (a socket.ts hosting game:*/tournament:*/lobby:*) reach the SAME
-      // entities, so raw co-reachability would collapse distinct behavior
-      // families into whichever entity capability comes first. Merge requires
-      // the subjects to agree; overlap then confirms the flows really touch
-      // that capability's data.
       const targetTokens = new Set(
         `${capability.name || ''} ${(capability.related_domains || []).join(' ')}`
           .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -25960,34 +19839,11 @@ export class AnalyzerOrchestrator {
           .filter(Boolean));
       const subjectAgreement = Boolean(candidateDomain) && targetTokens.has(candidateDomain);
       if (!domainMatch && !(entityOverlap && subjectAgreement)) continue;
-      // TASK #99 (entity-free merge gate): a bare `domainMatch` — two things
-      // sharing one textual token — is a HINT, not proof, and was previously
-      // sufficient on its own regardless of any entity evidence. Live-probed
-      // on this repo: a 210-tool MCP registration engine absorbed into a
-      // 1-operation "MCP Server" placeholder at sharedEntities=0, purely
-      // because both sides' domain token normalized to the same word. Two
-      // independent conditions now each require the merge to be BACKED BY
-      // ENTITY EVIDENCE, not just corroborated by it:
-      //   1. The candidate carries entity evidence of its own (entities.size
-      //      > 0) — if it names entities and none of them match the target's,
-      //      the domain-token coincidence is directly contradicted, not
-      //      merely unconfirmed.
-      //   2. The candidate is LARGE relative to what it would be absorbed
-      //      into (>= the same BEHAVIOR_SURFACE_MIN_ENTRIES bar that defines
-      //      "a real surface", and markedly bigger than the target's own
-      //      current operation count) — a large surface swallowing into a
-      //      small existing capability is exactly backwards evidence-wise
-      //      regardless of which side happens to be entity-free, so it needs
-      //      the same entity proof a small, low-risk merge does not.
-      // A domain-token match on a small, entity-free candidate (a 5-entry
-      // sibling family, say) still merges as before — the goal is fewer
-      // ungrounded merges, not fewer merges.
       if (domainMatch && !entityOverlap) {
         const sizeAsymmetric = candidateTrueSize >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES &&
           candidateTrueSize > capability.operations.length * 3;
         if (candidateEntities.size > 0 || sizeAsymmetric) continue;
       }
-      // Exact domain identity dominates; entity-confirmed subject agreement next.
       const score = (domainMatch ? 1000 : 0) + (subjectAgreement ? 100 : 0) + sharedEntities * 2;
       if (!best || score > bestScore) {
         best = capability;
@@ -26009,12 +19865,6 @@ export class AnalyzerOrchestrator {
       ...candidate.related_domains,
     ]));
     // CRITICALITY/CATEGORY ARE NEVER BOOSTED BY A MERGED SURFACE. `candidate`
-    // here is always a behavior-surface-family output of buildBehaviorCapabilities
-    // (never core/high-or-critical since that change); a real domain
-    // capability's criticality and category must continue to derive purely
-    // from its OWN evidence, not from a registration surface that happens to
-    // reach the same records. Only operations/entities/domains — genuine
-    // additional evidence — are unioned in.
     best.criticality_factors = Array.from(new Set([
       ...best.criticality_factors,
       ...candidate.criticality_factors,
@@ -26063,25 +19913,11 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  /**
-   * Reject capability names that are STRUCTURALLY not capability nouns — without
-   * any domain vocabulary. A capability is a noun phrase naming business value;
-   * these shapes betray a function/identifier that leaked into a "<Noun> X" title:
-   *  - an imperative-verb FIRST WORD ("Register New Token Management" from a split
-   *    `registerNewToken`) — a verb-form subject is an operation, not a capability;
-   *  - a single fragment token <=3 chars ("Sat") — too short to name a domain.
-   * Only applied to evidence-light (no-entity) candidates, so real short nouns
-   * backed by a data entity are never touched. The verb test matches the WHOLE
-   * first word (not a prefix), so real nouns that merely start with verb letters
-   * ("Gateway", "Settings", "Listing", "Building", "Authentication") are kept.
-   */
   private isStructurallyMalformedCapabilityName(capabilityName: string): boolean {
     const core = capabilityName.replace(/\s+(Management|Capability|Workflow|Service|Processing|Handling)$/i, '').trim();
     if (!core) return true;
     const tokens = core.split(/\s+/);
     if (tokens.length === 1 && tokens[0].length <= 3) return true;
-    // Imperative-verb subject (exact first word, grammatical not domain-specific):
-    // an action verb names an operation, not a business capability.
     const IMPERATIVE_VERBS = new Set([
       'register', 'get', 'set', 'fetch', 'create', 'update', 'delete', 'remove', 'handle',
       'process', 'list', 'find', 'init', 'initialize', 'make', 'build', 'run', 'send', 'load',
@@ -26118,28 +19954,13 @@ export class AnalyzerOrchestrator {
     const file = node.source?.file?.toLowerCase() || '';
     if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?)(\/|$)/.test(file)) return false;
     if (/\.(min|bundle)\.(js|css)$/.test(file)) return false;
-    if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(file)) return false;
+    if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\
     if (/\.(test|spec|stories|story)\.[a-z0-9]+$/i.test(file)) return false;
-    // Same migration-directory-convention exclusion as isPrimaryProductPath —
-    // a schema-change script is framework role, not product behavior.
     if (/(^|\/)db\/migrate(\/|$)/.test(file)) return false;
     if (this.isBundledFrontendNode(node, projectPath)) return false;
     return this.isBusinessOrDomainNode(node);
   }
 
-  /**
-   * Detects whether a node lives inside a vendored/bundled frontend package —
-   * a subdirectory that has ITS OWN package.json declaring a frontend UI
-   * framework (react/vue/svelte/solid/angular) plus frontend build tooling
-   * (vite/webpack/parcel/react-scripts/CRA/next/nuxt), distinct from the
-   * project's root manifest. This is evidence-based (a real manifest + real
-   * dependencies), not a folder-name guess: a repo can name this directory
-   * `ui/`, `web/`, `frontend/`, `client/`, `dashboard/`, anything — what
-   * matters is that it is its own installable package built with UI tooling.
-   * Product/domain capabilities should be grounded in backend
-   * entities/routes/services, not in the presentational component/store/hook
-   * names of a bundled UI app.
-   */
   private isBundledFrontendNode(node: CASNode, projectPath?: string): boolean {
     const file = (node.source?.file || '').replace(/\\/g, '/');
     if (!file || !projectPath) return false;
@@ -26180,16 +20001,8 @@ export class AnalyzerOrchestrator {
         }
       }
     } catch {
-      // best-effort filesystem probe; absence of evidence just means no exclusion
     }
 
-    // A frontend package is only "bundled" when there is a product OUTSIDE it
-    // for it to be bundled INTO. If excluding these roots would leave no
-    // product evidence at all (no root manifest, no non-frontend sibling
-    // package, no root-level source), the frontend subdirectory IS the
-    // product — e.g. a repo whose entire Next.js app (with its own Prisma
-    // schema) lives under app/ with only docs at the root. Excluding it
-    // blanked data entities and the domain surface for such repos.
     if (roots.length > 0 && !this.hasProductEvidenceOutsideRoots(resolvedProject, roots)) {
       roots.length = 0;
     }
@@ -26198,12 +20011,6 @@ export class AnalyzerOrchestrator {
     return roots;
   }
 
-  /**
-   * Evidence that the project has product code OUTSIDE the candidate
-   * bundled-frontend roots: a root-level manifest of any ecosystem, a sibling
-   * top-level directory carrying its own manifest, or root-level source files.
-   * Filesystem facts only — no name heuristics.
-   */
   private hasProductEvidenceOutsideRoots(resolvedProject: string, excludedRoots: string[]): boolean {
     const MANIFESTS = [
       'package.json', 'go.mod', 'pyproject.toml', 'requirements.txt', 'setup.py',
@@ -26228,7 +20035,6 @@ export class AnalyzerOrchestrator {
         }
       }
     } catch {
-      // On probe failure err on the side of NOT excluding anything.
     }
     return false;
   }
@@ -26298,36 +20104,14 @@ export class AnalyzerOrchestrator {
       (node.type === 'class' && /\b(controller|service|handler|repository|store|model|entity)\b/.test(text));
   }
 
-  /**
-   * Split a source-file path into segments that are safe to mine for
-   * domain/capability vocabulary, and nothing else.
-   *
-   * Structural, not enumerated: any segment at or above the analysis root
-   * (the developer's home directory, their username, whatever folder they
-   * happen to keep client work in, an org name, …) is machine- and
-   * developer-specific, never repo vocabulary, and must never contribute a
-   * token — regardless of what that segment is spelled. We guarantee that by
-   * resolving the path relative to the analysis root FIRST and only ever
-   * looking at segments inside it; we do not and must not enumerate specific
-   * usernames or folder names to filter out, because that only protects
-   * against the ones we thought to list.
-   *
-   * What's left after that structural cut is then filtered against a small
-   * set of genuinely generic code-layout words (src, controllers, models,
-   * routes, api, test, …) that carry no domain meaning on ANY repo.
-   */
   private repoRelativePathSegments(rawFile: string, projectPath?: string): string[] {
     if (!rawFile) return [];
     let normalized = rawFile.replace(/\\/g, '/');
     if (path.isAbsolute(normalized) && projectPath) {
       const rel = path.relative(projectPath, normalized).replace(/\\/g, '/');
-      // Outside (or exactly at) the analysis root: contributes nothing.
       if (!rel || rel === '.' || rel.startsWith('..')) return [];
       normalized = rel;
     } else if (path.isAbsolute(normalized) && !projectPath) {
-      // No root to resolve against — we cannot prove any segment is
-      // in-repo, so refuse to mine this path rather than risk leaking
-      // whatever machine-specific segments precede the repo.
       return [];
     }
     return normalized
@@ -26348,30 +20132,8 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10):
-  // tradingBotDomainKeyFromNode used to run before domainKeyFromText/path
-  // fallback above and mine a node's name/file/subcategories text for a
-  // closed set of on-chain protocol/exchange/aggregator product names
-  // belonging to one benchmark subject's crypto trading bot — plus a secondary generic
-  // "tokens + pair/market/wallet/balance/buy/sell/trade" bag, then keyed the
-  // result into fixed labels ('fee', 'token-balance', 'trade',
-  // 'market-data'). That is a hardcoded brand/domain categorizer deciding a
-  // business-domain key from prose, not from any structural fact (no
-  // import/package/manifest/RPC-port evidence backed it). There is no
-  // generic structural signal that distinguishes "this node is a Solana
-  // fee-transfer op" from any other node — that is business-domain
-  // interpretation, which belongs to AI comprehension, not deterministic
-  // keying — so it is removed outright rather than replaced with a subtler
-  // word-based rule. domainKeyFromNode now falls straight through to the
-  // same generic name/path-token keying every other repo already used.
-
   private domainKeyFromText(text: string): string | undefined {
-    // Keep the FULL meaningful phrase (hyphen-joined), not just its first
     // token: a subject like "Monte Carlo" or "Profit And Loss" must not
-    // collapse to a single truncated word ("monte"), which downstream naming
-    // turns into malformed capability names ("Monte Management" instead of
-    // "Monte Carlo Analysis"). Callers that need just a lookup/grouping key
-    // still get a single string; it just isn't mid-word truncated anymore.
     const tokens = this.domainTokensFromText(text);
     if (tokens.length === 0) return undefined;
     return tokens.join('-');
@@ -26383,22 +20145,9 @@ export class AnalyzerOrchestrator {
     const cached = this.domainTokenCache.get(text);
     if (cached) return [...cached];
 
-    // PATH REDUCTION (defect: the hosted storage root shipped as a capability
-    // name). Naming subjects sometimes arrive as a FILE PATH — a node whose
-    // name is its file, an entity keyed by module. Split into directories, an
-    // ABSOLUTE analyzed-source path contributes its whole server-side
-    // geography ("/<data-root>/workspaces/<project-id>/…") as domain tokens;
-    // that is how "Workspaces Prj … Web Tsx" became a customer-visible
-    // capability. Reduce any path-shaped text to its basename minus file
-    // extension BEFORE tokenizing, so no directory — and therefore no analysis
-    // root, absolute or relative — can reach a name. Applied here, at the one
-    // tokenizer every naming path funnels through, rather than at each caller.
     const source = /[\\/]/.test(text) ? namingSubjectFromPath(text) : stripSourceFileExtension(text);
 
     const tokens = source
-      // Split acronym boundaries first ("AIInsights" -> "AI Insights",
-      // "MLMetadata" -> "ML Metadata") so consecutive capitals don't squash into a
-      // single garbage token ("Aiinsights"); then the normal camelCase boundary.
       .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .replace(/[_\-./]/g, ' ')
@@ -26472,13 +20221,6 @@ export class AnalyzerOrchestrator {
         operations: candidates.flatMap(capability => capability.operations || []),
       });
     }
-    // This path runs only when the semantic fingerprint is unchanged. An
-    // unmatched deterministic candidate therefore is not a newly evidenced
-    // product capability; it is a lower-level candidate the previous AI
-    // catalog intentionally curated away. Appending it here bypasses AI
-    // quality and reintroduces page/framework artifacts after an unrelated
-    // edit. A genuinely new capability changes the fingerprint and takes the
-    // normal AI refresh path instead.
     return reused;
   }
 
@@ -26625,14 +20367,6 @@ export class AnalyzerOrchestrator {
       'demo', 'demos', 'sample', 'samples', 'example', 'examples',
       'anon', 'anonymous',
       'change', 'changes',
-      // Rails' own canonical RESTful controller-action vocabulary (every
-      // `resources :x` route generates exactly these seven action method
-      // names) — a framework-defined method ROLE, universal across every
-      // Rails app, the same reason 'create'/'update'/'change'/'down' are
-      // already filtered above. A bare action-method NAME is never a domain
-      // subject on its own; without these five the remaining two (destroy,
-      // index/show/new/edit missing) let unrelated controllers' `destroy`
-      // methods collapse into one cross-resource "destroy" domain group.
       'index', 'show', 'new', 'edit', 'destroy', 'up',
       'rails', 'rack', 'rake', 'turbo', 'stimulus', 'sprockets', 'hotwire',
       'actiontext', 'activestorage', 'actioncable', 'actionmailer', 'actionpack',
@@ -26647,9 +20381,6 @@ export class AnalyzerOrchestrator {
     const humanized = key
       .replace(/[-_]/g, ' ')
       .replace(/\b\w/g, char => char.toUpperCase());
-    // A composed key (role-kind token + subject token) can stem to the same
-    // word twice ("job" kind + "ApplicationJob" subject -> "Job Job") — a
-    // pure naming-composition artifact, never an intentional repeated noun.
     return collapseDuplicateAdjacentWords(humanized);
   }
 
@@ -26687,15 +20418,6 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  /**
-   * Appends a capability-name suffix ("Management", "Analysis", ...) to a
-   * subject label WITHOUT duplicating the head noun when the label already
-   * ends in that suffix (or a synonymous one). Without this guard, a subject
-   * whose own name is already a capability-shaped word — e.g. a label of
-   * "Analysis" (from a node/file literally named `analysis.store.ts`) — gets
-   * "Analysis" appended again, producing malformed names like
-   * "Analysis Analysis" or "Goal Alignment Analysis Analysis".
-   */
   private appendCapabilitySuffix(label: string, suffix: string): string {
     const trimmedLabel = label.trim();
     const synonymGroups: string[][] = [
@@ -26718,50 +20440,18 @@ export class AnalyzerOrchestrator {
     return `${trimmedLabel} ${suffix}`;
   }
 
-  // Invented capability-VERB suffixes ("Management", "Analysis", …) that the
-  // deterministic structural-label ladder appends. These are a COMPREHENSION
-  // claim about what the capability DOES — reserved for the AI naming pass, per
-  // docs/cas/DETERMINISM-BOUNDARY.md. The structural label keeps them (the
-  // quality gates key off them); the user-facing display name strips them.
   private static readonly INVENTED_CAPABILITY_SUFFIXES = new Set([
     'management', 'capability', 'workflow', 'analysis', 'analytics', 'reporting',
     'generation', 'settlement', 'rebalancing', 'synchronization', 'sync',
     'validation', 'messaging', 'processing', 'handling', 'service',
   ]);
 
-  /**
-   * Derive the DISPLAY-NAME PLACEHOLDER from a deterministic structural label.
-   *
-   * A capability NAME states what the capability does/produces for consumers —
-   * that is COMPREHENSION and belongs to the AI naming pass. Until AI runs we
-   * must not ship a fabricated "<Domain> Management/Analysis/…" behavior claim.
-   * This returns a terminal-evidence-grounded FACT instead: the domain subject
-   * anchored on the terminal (api-response / persisted) entities the capability
-   * actually produces — e.g. structural label "Oracle Price Management" over
-   * OraclePrice/OracleFeedMapping becomes the placeholder "Oracle Price"
-   * (grounded), not a guess about what it manages.
-   *
-   * Factual-resource (ECR/ECS/Route53 infrastructure) names carry real
-   * meaning already and are returned unchanged.
-   */
   private terminalGroundedCapabilityName(
     structuralLabel: string,
     entities: CASDataEntity[]
   ): string {
-    // Factual infrastructure-resource identities are not invented behavior.
     if (/\b(Infrastructure|Connectivity|Integration)$/.test(structuralLabel)) return structuralLabel;
 
-    // Strip only a TRAILING invented behavior suffix; keep the domain subject.
-    // NOTE: the bare subject returned below (e.g. "Invoice", "Gateway") is a
-    // deliberate PLACEHOLDER — name_source stays unset ("awaiting-ai-
-    // comprehension") — meant to be overwritten by the AI naming pass with a
-    // purpose-headed display name. It is intentionally NOT purpose-headed
-    // itself; repairing it here would just be a different unauthored guess.
-    // The bare-noun guard belongs at the point where a placeholder like this
-    // is about to ship AS THE FINAL name with no further AI pass coming —
-    // see the bare-noun guard in recordComprehensionSkipped (structure-only
-    // runs) and applyDeterministicCapabilityFallback (AI ran but produced
-    // nothing usable) below, not here.
     const words = structuralLabel.trim().split(/\s+/);
     while (words.length > 1 &&
       AnalyzerOrchestrator.INVENTED_CAPABILITY_SUFFIXES.has((words[words.length - 1] || '').toLowerCase())) {
@@ -26770,11 +20460,6 @@ export class AnalyzerOrchestrator {
     const subject = words.join(' ').trim();
     if (!subject) return structuralLabel;
 
-    // Anchor on what the capability PRODUCES: the terminal (api-response) or
-    // persisted entities. If the produced-entity name is not already implied by
-    // the subject, surface the entity — the honest fact about what this yields —
-    // rather than an invented verb. This mirrors the four-question description's
-    // terminal-output anchoring, at label granularity.
     const producedEntity = entities.find(entity =>
       entity.kind === 'api-response' || entity.kind === 'persisted-entity');
     if (producedEntity?.name) {
@@ -26796,40 +20481,10 @@ export class AnalyzerOrchestrator {
     projectPath?: string,
     nodes: CASNode[] = []
   ): string {
-    // Authentication is labeled from framework/library-analyzer EVIDENCE — a
-    // member node the auth analyzer tagged (auth_strategy/guard/auth_policy) —
-    // never from an /auth|login|jwt/ regex on the key/name/operation text.
     const hasAuthEvidence = this.capabilityHasAuthEvidence(nodes);
 
     const lower = label.toLowerCase();
     const operationText = operations.map(operation => operation.action).join(' ').toLowerCase();
-    // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10): a
-    // tradingContext gate (hasTradingCapabilityContext, itself deleted) used
-    // to unlock ~12 branches here that stamped fixed labels ("Fee Transfer",
-    // "Token Balance Discovery", "Market Data Discovery", "Token Purchase
-    // Execution", "Batch Trade Execution", ...) onto any capability whose
-    // key/label/operation text scanned as crypto-trading vocabulary
-    // (on-chain protocol/wallet/swap terms among others). A literal
-    // whitelist of specific exchange/aggregator/market-data product names
-    // was stamped "<Name> Integration" the same way. Every
-    // one of these labels IS the business-domain conclusion, not a
-    // structural fact about the code — there is no terminality/entity/
-    // reachability signal that distinguishes "Fee Transfer" from "Token
-    // Purchase Execution"; that distinction is what the AI comprehension
-    // pass exists for. Removed outright (no evidence-based replacement is
-    // obviously correct) rather than replaced with a subtler word-based
-    // rule; capabilities that used to hit these branches now fall through
-    // to the generic operation-verb-driven labeling below (Settlement,
-    // Rebalancing, Generation, Synchronization, Analysis, Reporting,
-    // Management, Capability), same as every other repo's capabilities.
-    // The two branches immediately below are NOT part of that removal: they
-    // key only on the literal phrase "token balance"/"token launch" actually
-    // appearing in this capability's own label/operation text (an evidence
-    // fact about THIS capability, not a brand/vocabulary bag scanning for a
-    // business domain) so any token-balance or token-launch feature — loyalty
-    // points, game currency, or on-chain — gets a legible name instead of a
-    // generic fallback or, worse, a false "Authentication" label picked up by
-    // the word "token" alone.
     if (/\btoken[-_\s]?balance\b/.test(`${lower} ${operationText}`)) return 'Token Balance Discovery';
     if (/\btoken[-_\s]?launch\b/.test(`${lower} ${operationText}`)) return 'Token Launch Monitoring';
     if (key === 'ecr') return 'Container Registry Infrastructure';
@@ -26838,9 +20493,6 @@ export class AnalyzerOrchestrator {
     if (/^(risk|control|controls)$/.test(key) && /\b(trade|trading|position|order|market|token)\b/.test(operationText)) return 'Trading Risk Control';
     if (/^(pnl|p-l|profit-loss|profit-and-loss)$/.test(key)) return 'Profit And Loss Reporting';
     if (/^(rpc|node-rpc)$/.test(key)) return 'RPC Connectivity';
-    // Authentication ONLY when member nodes carry auth-analyzer evidence; a name
-    // like `auth`/`login` with no auth mechanism node is left to normal labeling
-    // (and the AI comprehension pass) rather than keyword-stamped.
     if (hasAuthEvidence) {
       if (lower === 'auth' || lower === 'login') return 'Authentication';
       return this.appendCapabilitySuffix(label, 'Authentication');
@@ -26880,8 +20532,6 @@ export class AnalyzerOrchestrator {
     projectPath?: string,
     nodes: CASNode[] = []
   ): string {
-    // Authentication is labeled from auth-analyzer evidence on member nodes, not
-    // from an /auth|login|jwt|token/ regex on the operation text.
     const hasAuthEvidence = this.capabilityHasAuthEvidence(nodes);
     const operationText = [
       key,
@@ -26891,18 +20541,6 @@ export class AnalyzerOrchestrator {
     if (key === 'ecr') return 'Container Registry Infrastructure';
     if (key === 'ecs') return 'Container Service Infrastructure';
     if (key === 'route53') return 'DNS Routing Infrastructure';
-    // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10): a
-    // tradingContext gate (hasTradingCapabilityContext, itself deleted — see
-    // formatTerminalCapabilityName above for the full removal note) used to
-    // unlock "Pre Market Rate Analysis"/"Scaled Market Analysis" here from a
-    // crypto-protocol/exchange/aggregator product-name prose scan. Removed
-    // outright; keys that used to hit those two branches now fall through to
-    // the generic operation-verb-driven labeling below. The two branches
-    // immediately below are NOT part of that removal: like their twins in
-    // formatTerminalCapabilityName above, they key only on the literal
-    // phrase "token balance"/"token launch" appearing in this capability's
-    // own operation text, an evidence fact about THIS capability rather than
-    // a business-domain vocabulary bag.
     if (/\btoken[-_\s]?balance\b/.test(operationText)) return 'Token Balance Discovery';
     if (/\btoken[-_\s]?launch\b/.test(operationText)) return 'Token Launch Monitoring';
     if (/^(trading|trade|trades)$/.test(key) || /\btrade execution|automated trading|trading\b/.test(operationText)) return 'Trade Execution';
@@ -26968,16 +20606,6 @@ export class AnalyzerOrchestrator {
     return 'Coordinate';
   }
 
-  /**
-   * True when the observability library analyzer tagged this node as
-   * telemetry/instrumentation surface. The analyzer
-   * (analyzer/libraries/observability/observability-analyzer.ts) stamps
-   * `subcategories: ['observability-module']` /
-   * `['observability-instrumentation', kind, ruleId]` plus
-   * `metadata.observability_system` / `metadata.instrumentation_kind` on every
-   * hit. Framework evidence only — never a name regex — mirroring
-   * hasAuthAnalyzerEvidence (docs/cas/DETERMINISM-BOUNDARY.md).
-   */
   private hasObservabilityAnalyzerEvidence(node: CASNode): boolean {
     const meta = (node.metadata as any) || {};
     if (meta.observability_system || meta.instrumentation_kind) return true;
@@ -26985,28 +20613,12 @@ export class AnalyzerOrchestrator {
     return subs.includes('observability-module') || subs.includes('observability-instrumentation');
   }
 
-  /**
-   * True when a framework/library analyzer tagged this node as an auth
-   * MECHANISM (strategy/policy/guard — auth-analyzer.ts stamps
-   * `subcategories: ['auth', kind]` on mechanism sites). Deliberately narrower
-   * than hasAuthAnalyzerEvidence: an 'auth-protected' ROUTE is a business
-   * surface guarded BY auth, not identity plumbing itself, so it must not pull
-   * its capability into the supporting gate.
-   */
   private isAuthMechanismNode(node: CASNode): boolean {
     if (this.authMechanismKindOf(node)) return true;
     const subs = [...(node.subcategories || []), ...((((node.metadata as any)?.subcategories) || []) as string[])];
     return subs.includes('auth');
   }
 
-  /**
-   * Repo-level plumbing-evidence profile: what share of the WHOLE graph's
-   * nodes carry analyzer-tagged identity/observability mechanism evidence.
-   * This is the evidence-based EXCEPTION to the supporting gate below: when a
-   * repo's own evidence mass says the product IS an auth/identity or
-   * observability product, identity/telemetry-shaped capabilities are its core
-   * value, not plumbing. An evidence share, never a name/keyword check.
-   */
   private repoPlumbingEvidenceProfile(allNodes: CASNode[]): { identityShare: number; observabilityShare: number } {
     if (allNodes.length === 0) return { identityShare: 0, observabilityShare: 0 };
     let identity = 0;
@@ -27021,14 +20633,6 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * Evidence-shaped plumbing detection for ONE capability group: the group is
-   * identity- or observability-plumbing when analyzer-tagged mechanism nodes
-   * make up at least half of its node evidence (group nodes include the
-   * lifecycle nodes of the group's entities, so a session/user table written
-   * mostly by auth-mechanism code lands here transitively). Framework evidence
-   * only — a group whose nodes merely have auth-looking NAMES is untouched.
-   */
   private terminalGroupPlumbingKind(nodes: CASNode[]): 'identity' | 'observability' | undefined {
     if (nodes.length === 0) return undefined;
     const identity = nodes.filter(node => this.isAuthMechanismNode(node)).length;
@@ -27038,17 +20642,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /**
-   * CATEGORY IS AN EVIDENCE CALL, NEVER A VOCABULARY CALL
-   * (docs/cas/DETERMINISM-BOUNDARY.md). `core` = what the app was BUILT FOR,
-   * proven by what the group PRODUCES: terminal api-response entities,
-   * persisted/domain state with real lifecycle breadth, or a substantial
-   * business-node cluster. Analyzer-tagged identity/telemetry plumbing is
-   * `supporting` unless the repo's own evidence mass says it IS an
-   * identity/observability product. The former hardcoded token list
-   * (trade|market|price|sol|bundler|… → core) was a crypto-benchmark leftover
-   * that shipped 12/12-core pharma portals; a domain token is not evidence.
-   */
   private inferTerminalCapabilityCategory(
     key: string,
     nodes: CASNode[],
@@ -27058,10 +20651,6 @@ export class AnalyzerOrchestrator {
     if (/(admin|setting|config|system|manage)/.test(key)) return 'admin';
     if (/(health|metric|telemetry|log|debug|cache|queue|worker|infra)/.test(key)) return 'internal';
 
-    // Evidence-based SUPPORTING gate: a capability whose node evidence is
-    // predominantly analyzer-tagged auth/observability mechanism is
-    // infrastructure the product uses, not value the product provides —
-    // UNLESS the repo-wide evidence share says the product IS that thing.
     const PLUMBING_PRODUCT_EVIDENCE_SHARE = 0.15;
     const plumbing = this.terminalGroupPlumbingKind(nodes);
     if (plumbing === 'identity' && (repoProfile?.identityShare ?? 0) < PLUMBING_PRODUCT_EVIDENCE_SHARE) {
@@ -27071,27 +20660,15 @@ export class AnalyzerOrchestrator {
       return 'supporting';
     }
 
-    // `core` requires PRODUCED-VALUE evidence, so category distributions stay
-    // honest (a group merely HAVING an entity is not proof of product value):
-    // 1) terminal api-response entities — consumer-visible output;
     if (entities.some(entity => entity.kind === 'api-response')) return 'core';
-    // 2) persisted domain state the graph actually operates on;
     if (entities.some(entity => entity.kind === 'persisted-entity') && nodes.length >= 2) return 'core';
-    // 3) unclassified (not proven-plumbing) entities with lifecycle breadth;
     if (entities.some(entity => !entity.kind_source) && nodes.length >= 2) return 'core';
-    // 4) a substantial business-implementation cluster.
     if (nodes.length >= 3 && nodes.some(node => /\b(service|usecase|workflow|entity|model)\b/i.test(`${node.type} ${node.name}`))) {
       return 'core';
     }
     return 'supporting';
   }
 
-  /**
-   * Criticality is evidence-only: sensitive-field entities (field-level
-   * analyzer evidence) and the breadth of the implementing cluster. The former
-   * /(auth|…|user|account)/ name boost is gone — it shipped identity plumbing
-   * as high-criticality on non-auth apps; a domain NAME is not impact evidence.
-   */
   private inferTerminalCriticality(
     nodes: CASNode[],
     entities: CASDataEntity[]
@@ -27123,18 +20700,10 @@ export class AnalyzerOrchestrator {
     const lowerLabel = label.toLowerCase();
     void lowerLabel;
     void nodes;
-    // Callers now pass the SAME label the capability ships as its `name`
-    // (terminalGroundedCapabilityName's placeholder), which may carry a
-    // trailing "(EntityName)" disambiguator ("Invoice (InvoiceRecord)") that
-    // reads awkwardly as a sentence subject — strip it for prose purposes,
-    // same as the trailing invented-behavior-suffix strip below.
     const label_ = label.replace(/\s*\([^)]*\)\s*$/, '').trim() || label;
     const subject = label_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || label_;
     const subjectLower = subject.toLowerCase();
 
-    // Deterministic, fact-grounded description: state what the code actually
-    // exposes (entry-point surfaces + verbs) and which data entities it touches.
-    // This is the honest, AI-free baseline; the AI overlay rewrites it into prose.
     const actions = Array.from(new Set(
       operations.map(operation => operation.action.toLowerCase())
         .filter(action => action && action !== 'coordinate' && action !== 'action')
@@ -27253,11 +20822,6 @@ export class AnalyzerOrchestrator {
     })
       .map(area => area.replace(/[._-]/g, ' ').trim().toLowerCase())
       .filter(area => area && !area.split(/\s+/).every(token => this.isGenericCapabilityToken(this.normalizeDomainToken(token))))
-      // Structural / layer / folder names ("lib", "entities", "components",
-      // "adapters", "ai", "repositories", "blockchains") are not meaningful
-      // owners. Dropping them keeps descriptions from leaking "owned by lib and
-      // entities" / "in ai, finance domain, and repositories workflows"; when
-      // nothing meaningful survives, callers omit the ownership clause entirely.
       .filter(area => !this.isStructuralAreaName(area));
 
     return Array.from(new Set(areas)).slice(0, 3);
@@ -27267,16 +20831,6 @@ export class AnalyzerOrchestrator {
     return area.split(/\s+/).every(token => CAPABILITY_STRUCTURAL_AREA_NAMES.has(token));
   }
 
-  /**
-   * Resource key for a seam-only capability candidate (root cause #1): the
-   * handler node has no entry point of its own, so there is no route/CLI/
-   * event NAME to key off of — only its file location. Prefers a conventional
-   * module container segment (modules/<name>, apps/<name>, services/<name>,
-   * ...) exactly like Django/Rails/NestJS project layout convention, since
-   * that segment IS the subsystem's own name by construction. Falls back to
-   * the nearest containing directory that survives the same generic-token
-   * filters every other resource key in this file is judged by.
-   */
   private inferModuleResourceKeyFromPath(filePath: string): string | undefined {
     if (!filePath) return undefined;
     const segments = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
@@ -27296,18 +20850,7 @@ export class AnalyzerOrchestrator {
   private inferResourceKey(ep: CASEntryPoint): string {
     if (ep.type === 'http') {
       const path = ep.trigger?.path || '';
-      const cleanPath = path.replace(/^\/api\//, '').replace(/^\//, '');
-      // The resource segment is the first NON-GENERIC one, not blindly the
-      // first: APIs commonly nest an audience/version tier between the api
-      // prefix and the resource (/api/web/eld/dailies, /api/mobile/eld/...,
-      // /api/v2/orders). Taking segment[0] made every such route group under
-      // the tier token ('web'/'mobile'/'v2') — a generic key the group filter
-      // then discards wholesale, so entire resource families (30+ routes)
-      // produced NO route-area capability at all. Walk forward past segments
-      // the existing generic-token classifiers reject; the first segment that
-      // survives IS the resource. Purely classifier-driven — no audience/
-      // version vocabulary of its own; falls back to the old first-segment
-      // behavior when nothing survives.
+      const cleanPath = path.replace(/^\/api\
       const segments = cleanPath.split('/').filter(segment => segment && !segment.startsWith(':') && !segment.startsWith('{'));
       for (const segment of segments) {
         const key = this.normalizeHttpCapabilitySegment(segment);
@@ -27382,14 +20925,6 @@ export class AnalyzerOrchestrator {
     }
 
     if (ep.type === 'train') {
-      // Root cause (2026-08-10 shape audit): the previous fallback
-      // (`return String(ep.type)`) keyed EVERY training entry point across
-      // the whole repo on the literal string 'train' — one resourceGroup for
-      // the entire codebase, which is what collapsed a multi-model ML repo
-      // into a single undescribed capability. Key on the model this entry
-      // trains when known (modelRef, set by ml-training-analyzer.ts), then
-      // fall back to the containing module/file — same per-script altitude
-      // 'cli' already gets, never a single repo-wide bucket.
       const modelRef = ep.metadata?.modelRef as string | undefined;
       return this.domainKeyFromEntryPointText(modelRef || '') ||
         this.inferModuleResourceKeyFromPath(ep.handler?.file || '') ||
@@ -27398,12 +20933,7 @@ export class AnalyzerOrchestrator {
     }
 
     if (ep.type === 'notebook-cell') {
-      // Altitude fix: group at the NOTEBOOK, not the cell — every code cell
-      // in a .ipynb shares the same handler.file, so keying on the file (like
-      // 'cli' scripts) naturally collapses a notebook's dozens of cells into
-      // ONE resource group per notebook instead of one candidate per cell
       // (the struct-field-style over-fragmentation this same fix must not
-      // reintroduce in the other direction).
       return this.inferModuleResourceKeyFromPath(ep.handler?.file || '') ||
         this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
         'notebook';
@@ -27457,11 +20987,6 @@ export class AnalyzerOrchestrator {
       'http', 'websocket', 'ws_handler', 'cli', 'event', 'message',
       'schedule', 'scheduled', 'cron', 'queue', 'grpc', 'graphql',
       'page', 'route',
-      // Data/ML & notebook repos (2026-08-10 shape audit): 'train' and
-      // 'notebook-cell' are the outward face of a script/notebook repo
-      // (see USER_FACING_ENTRY_TYPES in journey-builder.ts for the same
-      // structural justification) — excluding them here is what collapsed
-      // an entire ML repo to a single undescribed fallback capability.
       'train', 'notebook-cell',
     ].includes(type)) {
       return true;
@@ -27528,10 +21053,7 @@ export class AnalyzerOrchestrator {
     if (tokens.length === 0) return undefined;
     const meaningfulTokens = tokens.filter(token => !/^(app|bin|console|command|event|message|handler|handlers)$/.test(token));
     const startIndex = tokens.findIndex(token => meaningfulTokens.includes(token));
-    // Preserve the FULL meaningful phrase, not just its first word: a subject
     // like "Monte Carlo" or "Profit And Loss" must not collapse to a single
-    // truncated token ("monte"), which downstream naming turns into malformed
-    // capability names ("Monte Management" instead of "Monte Carlo Analysis").
     return (startIndex >= 0 ? tokens.slice(startIndex) : tokens).join('-');
   }
 
@@ -27618,17 +21140,6 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  /**
-   * SystemCapability operation trigger (method + path) for a real HTTP
-   * entry point — sibling of extractPathOrCommand, kept separate rather than
-   * folded into it because path_or_command is consumed generically for
-   * CLI/internal operations too (where "method" has no meaning). Only
-   * `entry_point_type === 'http'` operations get a trigger; never fabricated
-   * for other entry kinds. This is the route-match evidence
-   * flow-concepts.ts's deriveCapabilityRelationships needs to relate a
-   * frontend flow's own outbound API calls (e.g. Angular per-call HttpClient
-   * extraction) to the backend operation those calls actually invoke.
-   */
   private extractTrigger(ep: CASEntryPoint): { method?: string; path?: string } | undefined {
     if (ep.type !== 'http') return undefined;
     if (!ep.trigger?.path && !ep.trigger?.method) return undefined;
@@ -27767,66 +21278,20 @@ export class AnalyzerOrchestrator {
     const normalized = String(input || '').replace(/\\/g, '/');
     const root = (this.activeAnalysisProjectPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
     if (root && normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1);
-    // Absolute path outside the known root: keep the last two segments for context.
-    if (/^(?:[a-zA-Z]:)?\//.test(normalized)) {
+    if (/^(?:[a-zA-Z]:)?\
       const segments = normalized.split('/').filter(Boolean);
       return segments.slice(-2).join('/');
     }
     return normalized;
   }
 
-  // CHOKE POINT (2026-08-10 provenance invariant, live comprehension audit):
   // `description_source` and the PRESENCE of `description` text must never
-  // disagree — a source can only ever describe text that actually exists.
-  // This defect escaped two branch-level fixes and was independently sighted
-  // a third time (orchestrator.ts's per-capability repair loop x2, then
-  // product-map.ts's view-time `description_source || 'deterministic'`
   // default) before it was recognized as a missing INVARIANT rather than a
-  // missing branch. Every site above that sets provenance already keeps text
-  // and source in lockstep by construction, but a 32k-line orchestrator with
-  // half a dozen output-assembly branches (synchronous / deferred-pending /
-  // AI-disabled / incremental-rebuild) and a catalog-reconciliation/reuse/
-  // stabilize layer downstream of them is exactly the shape where a future
-  // write site reintroduces this silently. Run this once over the FINAL
-  // `system_capabilities` array at every point the output is about to be
-  // exposed (mirrors buildProductMap's own defensive
-  // resolveCapabilityDescriptionProvenance, but normalizes the RAW array too
-  // — callers that read system_capabilities directly, not just product_map,
-  // must see the same honest state). Never fabricates text: a capability
-  // with no description simply ships with no provenance either ("not
-  // described" is honest; "deterministic" over nothing is not).
-  /**
-   * A shipped capability always carries a description.
-   *
-   * This used to enforce only the WEAK direction — strip a `description_source`
-   * left dangling with no text — which kept the two fields consistent but let a
-   * capability ship with NO description at all. Measured live 2026-08-11 on a real
-   * CLI repo: `View and manage findings` shipped with `description_source:
-   * undefined` and no text, because its AI description was rejected by the
-   * grounding gate (`read-only-capability-claims-mutation`) and nothing replaced
-   * it. The gate was right to reject a false mutation claim; the result was a
-   * customer-facing capability with a name and a blank.
-   *
-   * `lastResortCapabilityDescription` was written for precisely this and its own
-   * comment states the rule — "A capability must never end up with
-   * description_source: 'deterministic' and no description text" — but nothing
-   * called it from here. Documented intent, unimplemented.
-   *
-   * Filling it in is strictly better than clearing the provenance: "zero is
-   * essentially never correct" applies to a capability's description as much as to
-   * the capability itself. Degrade in CONFIDENCE (deterministic, not authored),
-   * never to a blank. Which text depends on what evidence actually exists — the
-   * fact-grounded sentence when there are operations or entities to cite, the
-   * last-resort sentence only when there is genuinely nothing, so it never claims
-   * "no operations resolved" about a capability that has some.
-   */
   private enforceCapabilityDescriptionProvenanceInvariant(capabilities: SystemCapability[] | undefined): void {
     for (const capability of capabilities || []) {
       if (capability.description) continue;
       const name = String(capability.name || '').trim();
       if (!name) {
-        // Nameless AND textless: nothing honest to say, and clearing the dangling
-        // provenance is all the old behaviour could do here either.
         capability.description_source = undefined;
         continue;
       }
@@ -27841,32 +21306,18 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  // Guaranteed-safe deterministic text for a capability with no operations,
-  // entities, or prior stored description to draw on. Names the capability
-  // and states plainly that no further evidence resolved for it — nothing
-  // else — so it structurally cannot trip the marketing/scaffold/filler
-  // grounding gate every other capability description must also pass.
   // A capability must never end up with description_source: 'deterministic'
-  // and no description text (see the degradation-repair path above).
   private lastResortCapabilityDescription(name: string): string {
     const name_ = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
     return `${name_} is a structural capability grouping identified in the codebase; no operations or related data entities have been resolved for it.`;
   }
 
-  // Deterministic, fact-grounded capability description from the structural
-  // detector: verbs from operations, the data entities touched, the entry-point
-  // surfaces exposed, and a couple of repo-relative source paths. Honest and
-  // navigable without AI; the AI overlay rewrites it into prose.
   private generateCapabilityDescription(
     name: string,
     operations: Array<{ action: string; entry_point_type?: string; path_or_command?: string }>,
     entities: Array<{ name: string }> = [],
     entryPoints: CASEntryPoint[] = [],
   ): string {
-    // Callers pass the SAME label the capability ships as its `name`
-    // (terminalGroundedCapabilityName's placeholder), which may carry a
-    // trailing "(EntityName)" disambiguator — strip it for prose purposes
-    // (see the matching strip in generateTerminalCapabilityDescription).
     const name_ = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
     const subject = name_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name_;
     const subjectLower = subject.toLowerCase();
@@ -27918,11 +21369,6 @@ export class AnalyzerOrchestrator {
   }
 
   private productSpecificCapabilityDescription(_name: string): string | undefined {
-    // DELETED: this was a hardcoded keyword/brand template builder that emitted
-    // canned capability sentences (trade execution, token balance, portfolio,
-    // exchange connection, cal.com/supabase/medusa frames, ...). Capability
-    // descriptions are AI comprehension, grounded in the evidence bundle. There
-    // is no deterministic capability-description template.
     return undefined;
   }
 
@@ -27935,10 +21381,6 @@ export class AnalyzerOrchestrator {
       .filter(Boolean);
   }
 
-  // Pure token->singular transform, memoized: matchesSignalPattern re-singularizes
-  // the SAME node tokens once per candidate pattern (hundreds of patterns x
-  // thousands of nodes), so the same short strings are transformed repeatedly.
-  // A plain string->string cache collapses that with identical output.
   private readonly singularSignalCache = new Map<string, string>();
   private singularizeSignalToken(token: string): string {
     const cached = this.singularSignalCache.get(token);
@@ -27951,12 +21393,6 @@ export class AnalyzerOrchestrator {
     return out;
   }
 
-  /**
-   * Compound identifiers whose surrounding tokens change the meaning of an
-   * otherwise distinctive signal token. `credit_card`/`gift_card` are commerce
-   * vocabulary, not gaming "card" evidence; `dash board`/`key board` style
-   * splits must not count as game "board" evidence.
-   */
   private isBlockedSignalCompound(tokens: string[], start: number, end: number): boolean {
     if (end - start !== 1) return false;
     const blockers: Record<string, { before: string[]; after: string[] }> = {
@@ -27976,20 +21412,6 @@ export class AnalyzerOrchestrator {
       (after !== undefined && rule.after.includes(after));
   }
 
-  /**
-   * Whole-token signal matching. The pattern must appear as a contiguous run
-   * of complete identifier tokens (snake_case/camelCase split), never as a
-   * substring of a larger token: "card" does not match `credit_card`,
-   * "board" does not match `dashboard`, "turn" does not match
-   * `return_authorization`. Single-token patterns may also match a join of
-   * two or more adjacent tokens ("viewmodel" matches `MuscleTestViewModel`).
-   */
-  // Pattern-tokenization cache: matchesSignalPattern is called millions of times
-  // per run (nodes x ~40 signatures x patterns) with a CONSTANT set of pattern
-  // strings, yet re-ran `toLowerCase().split(/[^a-z0-9]+/).map(singularize)` every
-  // call — the split regex was hot in the CPU profile (748ms self-time). The
-  // tokenization is a pure function of `pattern`, so memoize by the pattern string:
-  // identical output, just skips the repeated regex + tokenize.
   private readonly signalPatternTokenCache = new Map<string, string[]>();
   private normalizedSignalPatternTokens(pattern: string): string[] {
     let patternTokens = this.signalPatternTokenCache.get(pattern);
@@ -28043,9 +21465,6 @@ export class AnalyzerOrchestrator {
     capabilities: SystemCapability[],
     nodes: CASNode[]
   ): Promise<SystemPurpose> {
-    // Budget-yield in the whale-scaling sweeps below (product-node minimatch
-    // filter + signature matching over every node-name token list was a
-    // measured multi-second stall). Order and scoring unchanged.
     const maybeYield = createYieldBudget();
     interface SystemSignature {
       type: string;
@@ -28061,35 +21480,7 @@ export class AnalyzerOrchestrator {
       weight: number;
     }
 
-    // Klauro cardinal rule: this table must contain only structural/technical
-    // discriminators (real declared node types, framework routing
-    // conventions, self-anchored evidence), never a hardcoded
-    // business-vertical/domain-vocabulary categorizer. It previously carried
-    // ~30 business-domain entries (e-commerce keyed on cart/checkout/product/
-    // payment, notification-service keyed on alert/webhook, crm-system,
-    // payment-service, iot-platform, medical-device-software,
-    // patient-management, etc.) that concluded a product's business identity
-    // from generic English words with no dependency/manifest/schema evidence
-    // behind them — the same defect class that once described an unrelated
-    // repo in trading terms off vocabulary overlap alone. None of those
-    // entries had a single asserting test or downstream consumer (audited via
-    // repo-wide grep before removal), and the anchor-gated overrides further
-    // below in this function already own the small number of these
-    // categories (clinical-testing-platform, content-management, ...) that
-    // are still reachable, with their own independent, tested anchor logic.
-    // Removing this table's redundant/unguarded duplicates is a pure
-    // narrowing of the guess-from-vocabulary surface, not a loss of any
-    // tested or evidence-backed capability. See orchestrator.ts inline
-    // history / commit message for the full per-entry disposition.
     const signatures: SystemSignature[] = [
-      // REMOVED (task #90): the 'gaming-platform' entry. Its indicators were
-      // pure business vocabulary — 'card', 'player', 'match', 'score',
-      // 'board', 'hand', 'deal', 'draw', 'cast' — every one of which is a
-      // common word in unrelated software (payment CARDs, media PLAYERs,
-      // regex MATCHing, DASHBOARDs, CASTing types, DRAWing on a canvas, DEALs
-      // in a CRM). It had accumulated two layers of damage control (a
-      // strong-signal re-gate and two dedicated negative tests) and still
-      // needed them. The verdict is now dependency-gated further below.
       {
         type: 'web-application',
         description: 'Full-stack web application with frontend and backend',
@@ -28102,13 +21493,6 @@ export class AnalyzerOrchestrator {
         distinctiveness: 1,
         weight: 0
       },
-      // REMOVED (task #90): the 'devtools-platform' entry. Its token list had
-      // already been narrowed once (generic 'node'/'edge'/'graph'/'token'
-      // removed after a React app and an agent manager were both mislabeled
-      // devtools) and the residue was still vocabulary: 'analyzer',
-      // 'blueprint', 'diagnostic', 'profile', 'instrument' name things in
-      // medical, industrial, financial and observability software that are
-      // not developer tools. The verdict is now dependency-gated below.
     ];
 
     const productNodes: CASNode[] = [];
@@ -28130,18 +21514,7 @@ export class AnalyzerOrchestrator {
       ];
       return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
     });
-    // Excludes UNANCHORED capabilities too (0 related_entities AND 0
-    // operations — no resolvable entity, operation, or entry point): the
-    // aiExtractCapabilityCatalog assembly-loop gate (STRUCTURAL ANCHOR GATE)
-    // now rejects these at catalog-build time, but this classifier reads
-    // whatever `capabilities` it's handed (including `manual`/`reused`
-    // carry-forward capabilities the gate never re-checks), so a fabricated
     // capability that somehow still ships must never feed primary_type
-    // classification either — that's exactly how "Manages fleet operations"
-    // (0 operations, 0 entities) got read back as fleet-operations EVIDENCE
-    // by the fleet-management-platform signature below (capabilityNames /
-    // fleetSignals), which is a second-order fabrication effect, not a fix
-    // for the fabrication itself.
     const productCapabilities = capabilities.filter(capability =>
       capability.category !== 'internal' &&
       ((capability.related_entities || []).length > 0 || (capability.operations || []).length > 0)
@@ -28231,9 +21604,6 @@ export class AnalyzerOrchestrator {
     for (const sig of signatures) {
       let score = 0;
       const typeEvidence: string[] = [];
-      // Distinct indicator tokens that actually matched (path/verb/entity/
-      // capability vocabulary — NOT the generic nodeTypePatterns). Used by the
-      // single-token evidence gate below.
       const distinctSignals = new Set<string>();
 
       if (sig.indicators.pathPatterns) {
@@ -28291,14 +21661,7 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // Single-token evidence gate: a domain claim needs at least TWO distinct
       // matched indicator tokens. One incidental keyword must never assert a
-      // business domain — live audit 2026-07-14: a 41-node k8s/compose-only
-      // CAS was labeled 'education-platform' on the single token
-      // 'certificate' (TLS/cert-manager vocabulary), evidence
-      // "Endpoints: certificate". Structural fallbacks (api-service /
-      // general-application / infrastructure-codebase) remain available when
-      // every signature is gated to zero.
       if (score > 0 && distinctSignals.size < 2) {
         score = 0;
         typeEvidence.length = 0;
@@ -28322,9 +21685,6 @@ export class AnalyzerOrchestrator {
     );
     let confidence = topMatch.weight / maxPossibleScore;
 
-    // secondBest is optional: the signature table is down to shape entries
-    // after task #90 removed the business-vertical ones, so there may be no
-    // runner-up at all. A separation bonus needs two scoring signatures.
     if (topMatch.weight > 0 && (secondBest?.weight ?? 0) > 0) {
       const separation = (topMatch.weight - secondBest.weight) / topMatch.weight;
       confidence = Math.min(confidence + (separation * 0.3), 1.0);
@@ -28345,40 +21705,8 @@ export class AnalyzerOrchestrator {
     const pageEntryPoints = productEntryPoints.filter(ep => ep.type === 'page' || ep.type === 'route');
     const desktopUiSignals = await countMatches([...nodeNames, ...paths], ['window', 'viewmodel', 'xaml', 'modal']);
     const nameEntityCapabilityPathTokens = [...nodeNames, ...entityNames, ...capabilityNames, ...paths];
-    // ANCHOR-GATED (live self-analysis defect 2026-07-20 — quality-iter-1): a
-    // 53k-node monorepo trivially racks up 5+ raw matches of the generic web
-    // vocabulary 'window'/'modal' (React ConfirmModal/DeleteModal-style
-    // component names, DOM `window` references) with ZERO real desktop-native
-    // evidence. 'viewmodel'/'xaml' are the only tokens in this list that are
-    // actually desktop/WPF-native — require one of THEM specifically, not raw
-    // count, so a large web app's incidental "modal" naming can never alone
-    // read as a dominant desktop UI.
-    // NOTE: this used to also short-circuit true whenever topMatch.type was
-    // 'desktop-application'/'medical-device-software'/
-    // 'clinical-testing-platform'/'hardware-device-software' — but that
-    // was never independent evidence, it was a silent backdoor into the
-    // now-removed hardcoded business-vocabulary `signatures` table entries
-    // for those exact types (they were the only way topMatch.type could ever
-    // equal one of them). Now that those table entries are gone, this gate
-    // is pure structural evidence: a genuinely desktop/WPF-native token
-    // (viewmodel or xaml) actually present, full stop — no raw-count floor
-    // layered on top, since requiring the distinctive token itself already
-    // is the anti-generic-overmatch invariant this gate exists for.
     const hasDominantDesktopUi =
       desktopUiSignals.matched.includes('viewmodel') || desktopUiSignals.matched.includes('xaml');
-    // RE-GROUNDED (task #90): the clinical verdict no longer reads vocabulary.
-    // It previously counted 'patient'/'muscle'/'device'/'measurement'/'force'
-    // and required one "clinical-specific" word as an anchor — but a word list
-    // is a word list however carefully curated, and 'patient'/'grip'/'pinch'
-    // appear in scheduling software, gesture/input libraries and physiotherapy
-    // CONTENT sites that are not clinical systems.
-    //
-    // Healthcare is one of the few domains with a genuinely domain-defining
-    // dependency class: the interop standards. Nothing outside healthcare
-    // software links against a FHIR client, an HL7v2 parser or a DICOM
-    // toolkit — these encode patient-record and medical-imaging wire formats
-    // and have no use elsewhere. That declaration, not the presence of the
-    // word "patient", is the evidence.
     const CLINICAL_INTEROP_PACKAGES = [
       'fhir', 'fhirclient', 'hl7', 'hl7v2', 'nhapi', 'hapi-fhir',
       'dicom', 'fo-dicom', 'pydicom', 'dcmtk', 'gdcm', 'dicomweb-client',
@@ -28387,17 +21715,6 @@ export class AnalyzerOrchestrator {
       this.activeAnalysisProjectPath || '',
       CLINICAL_INTEROP_PACKAGES,
     );
-    // RE-GROUNDED (task #90): the devtools verdict was a word count over
-    // 'analyzer'/'analysis'/'codebase' — which is exactly how a product that
-    // ANALYSES something other than code (logs, images, markets, patients)
-    // acquired it, and how a product's own documentation about analysis
-    // acquired it too. Saying "analysis" is not evidence of parsing code.
-    //
-    // Parsing source into an AST is: a source-parser/AST toolkit taken as a
-    // direct RUNTIME dependency has essentially one use, and it is the thing
-    // that makes a developer tool a developer tool. Formatters, bundlers and
-    // test runners are excluded — every repo of every domain depends on
-    // those as tooling, which is the false-positive class being removed.
     const SOURCE_PARSER_PACKAGES = [
       'tree-sitter', 'ts-morph', 'jscodeshift', 'recast', 'acorn', 'esprima',
       '@babel/parser', 'babel-parser', 'libcst', 'javaparser', 'ast-grep',
@@ -28418,10 +21735,6 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    // The desktop-shape half is kept as a discriminator between a clinical
-    // DESKTOP instrument application and a clinical web/API service — but it
-    // can no longer produce the verdict on its own, and neither can vocabulary:
-    // the interop declaration is now a hard precondition.
     if (hasClinicalInteropEvidence && hasDominantDesktopUi) {
       return {
         primary_type: 'clinical-testing-platform',
@@ -28433,52 +21746,6 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    // REMOVED (task #90): the 'fleet-management-platform' override, anchor and
-    // all. The anchor tokens were narrower than the ones they replaced, but
-    // they were still words: a repo earns this verdict by containing the
-    // string 'vehicle' or 'odometer' somewhere in a name. That is exactly the
-    // rule this sweep exists to delete, and narrowing a word list only moves
-    // the misfire — a parts catalog, an insurance rater, a mapping SDK, a
-    // physics sim and a regulatory-forms library all carry the same nouns
-    // without being fleet-operations software.
-    //
-    // No deterministic replacement is offered: fleet identity has no
-    // distinguishing CAS shape (it is CRUD over records on a schedule), and
-    // the honest signal — a declared telematics/ELD provider SDK — is not
-    // enumerable across ecosystems without re-importing a vendor list, i.e.
-    // the same hardcoded-knowledge defect wearing a manifest costume. This
-    // judgment goes to the AI interpretation layer, which reaches primary_type
-    // through refinePurposeTypeForDomain (already covered: a grounded
-    // 'fleet-management' domain overrides the structural verdict there).
-    // Honest cost: real fleet repos now report their structural shape until AI
-    // grounds them.
-
-    // REMOVED (task #90): the 'network-access-platform' half of this override.
-    // Its anchor was either the literal phrase 'zero trust' appearing in a
-    // name, or the co-occurrence of 'policy'+'resource'+'agent'+'device' —
-    // four of the most generic nouns in software. Any agent-coordination,
-    // IaC, IAM, MDM or plugin-host codebase satisfies that set incidentally,
-    // and the verdict it produced was a business identity, not a shape.
-    //
-    // KEPT AND RE-GROUNDED: 'security-scanning-tool', now decided ONLY by
-    // dependency evidence. Linking a scanner ENGINE into the shipped product
-    // is a declared, checkable fact about what the code does; vocabulary about
-    // scanning is not (a product that REPORTS ON vulnerabilities necessarily
-    // talks about them, which is precisely how this classifier once labeled a
-    // codebase-analysis product a security scanner off its own docs).
-    //
-    // Two deliberate narrowings versus the previous dependency check:
-    //  - runtime dependency only. The old list was matched against every
-    //    manifest including devDependencies and raw manifest text, so a
-    //    routine CI security step was enough. That is the same shape as the
-    //    live "menu-bar utility labeled security-scanning-tool off its
-    //    dependency list" defect.
-    //  - engine packages only. Hygiene tooling that a security-conscious repo
-    //    of ANY domain adds to CI (lint security plugins, dependency
-    //    audit/report wrappers, SAST quality platforms) is removed from the
-    //    list: depending on them means the team scans its own code, not that
-    //    the product is a scanner. What remains are engines you only take as a
-    //    RUNTIME dependency in order to perform scans as a feature.
     const SECURITY_SCANNER_ENGINE_PACKAGES = [
       'semgrep', 'trivy', 'grype', 'nuclei', 'gitleaks', 'trufflehog',
       'zaproxy', 'owasp-zap', 'clair', 'anchore', 'syft', 'osv-scanner',
@@ -28487,14 +21754,6 @@ export class AnalyzerOrchestrator {
       this.activeAnalysisProjectPath || '',
       SECURITY_SCANNER_ENGINE_PACKAGES,
     );
-    // RE-GROUNDED (task #90), replacing the deleted 'gaming-platform'
-    // vocabulary signature: a game engine or multiplayer game server is a
-    // domain-defining dependency. You do not link a game engine into software
-    // that is not a game — unlike the words 'card', 'player' and 'match',
-    // which are ambient across all software. Deliberately excludes general
-    // rendering/physics libraries (WebGL scene graphs, canvas toolkits): those
-    // are used by data-visualisation, CAD and mapping products too, so their
-    // presence would re-create the false-positive class this replaces.
     const GAME_ENGINE_PACKAGES = [
       'phaser', 'excalibur', 'melonjs', 'kaboom', 'playcanvas', 'colyseus',
       'boardgame.io', 'godot', 'unityengine', 'monogame', 'libgdx', 'pygame',
@@ -28528,50 +21787,9 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    // REMOVED (task #90, hardcoded-knowledge sweep): the 'tray-icon-library'
-    // override. Its gate was the repo's own DIRECTORY NAME containing 'tray',
-    // corroborated by the same word appearing in node names — i.e. the verdict
-    // was "this is a tray library because it is called tray". A checkout path
-    // is not evidence about what code does (it is chosen by whoever cloned it),
-    // and restating a name is not an inference.
-    //
-    // The 'library' half of this verdict is genuinely structural and is not
-    // lost: artifact-type.ts derives library/artifact shape from packaging and
-    // export surface, independently of this classifier. What is dropped is the
-    // domain half ('tray icon'), which belongs to the AI interpretation layer.
-
-    // REMOVED (task #90, hardcoded-knowledge sweep): the 'trading-automation'
-    // override. It concluded a product's business identity from a bag of
-    // market words ('trade', 'swap', 'token', 'market', 'price', 'bundle',
-    // 'liquidity') plus named third-party chain/exchange products used as
-    // anchors — the exact defect this sweep exists to remove, and a
     // spec-purity violation besides (product source must never name specific
-    // ecosystem products). 'token', 'market', 'price' and 'bundle' in
-    // particular are generic across auth, pricing, and build tooling, so the
-    // 4-match count gate was satisfiable with zero trading evidence.
-    //
-    // No structural replacement is offered here on purpose. Trading identity
-    // is not observable in the CAS shape: a market-making bot and a job
-    // scheduler are the same graph. The one admissible signal would be a
-    // declared exchange/market-data SDK dependency, which the deterministic
-    // layer cannot enumerate honestly across ecosystems. Business identity for
-    // these repos is therefore handed to the AI interpretation layer, whose
-    // grounded primary_domain already reaches primary_type through
-    // refinePurposeTypeForDomain. Honest cost: a trading repo with no other
-    // distinguishing shape now reports a structural type (api-service /
-    // cli-tool / general-application) until AI grounds it.
 
-    // RE-GROUNDED (task #90): this gate read better than its siblings — it
-    // keyed on DECLARED ENTITIES rather than path words — but entity names are
-    // still names. 'Page', 'Document', 'Revision', 'Collection' and 'Media'
-    // are the vocabulary of any document-versioning, records-management,
     // e-signature, wiki or DAM product, and 'revision' as the load-bearing
-    // anchor is satisfied by any audit-trail table.
-    //
-    // A CMS is, in practice, always built ON a CMS: the framework is a
-    // declared dependency, and it is domain-defining in a way its nouns are
-    // not. That declaration replaces both the entity anchor and the publishing
-    // word list.
     const CMS_FRAMEWORK_PACKAGES = [
       'wagtail', 'django-cms', 'mezzanine', 'strapi', 'sanity', 'contentful',
       'keystone', '@keystone-6/core', 'payload', 'directus', 'decap-cms',
@@ -28625,26 +21843,6 @@ export class AnalyzerOrchestrator {
         };
       }
 
-      // LIBRARY, before the shrug. Measured live 2026-08-11 on a real npm package
-      // (`main`, no `bin`, 300 nodes, 2 entities): it fell to
-      // 'general-application' with evidence "No distinctive patterns detected",
-      // and the cost was not cosmetic. An ungrounded type gives the narrative
-      // stage nothing to describe, the model reached for compound modifiers to
-      // cover the gap ("interacts-local"), the grounding gate correctly rejected
-      // the fabrication, and the analysis shipped a BLANK system description with
-      // `domain: null` — the single most customer-visible field in the payload,
-      // empty, on a 300-node repo where there is no excuse for it.
-      //
-      // Being consumed as a library IS a distinctive pattern, and it is decidable
-      // from evidence already here: nothing invokes this as a program (no HTTP,
-      // no CLI, no page/route, no scheduled or event entry — `test` and
-      // `lifecycle` excluded because a harness and a load-time hook are not
-      // invocation surfaces), yet there is real analysed code with declared
-      // entities or capabilities. Code that runs nothing on its own but defines
-      // domain types is consumed BY other code. Same reasoning as
-      // determineSystemType's tier-3 branch in system-type.ts, expressed with the
-      // inputs this method actually receives rather than by duplicating its
-      // deployable-evidence plumbing.
       const invocationEntryPoints = entryPoints.filter(entry =>
         entry.type !== 'test' && entry.type !== 'lifecycle');
       const hasAnalysedSubstance = productDataEntities.length > 0 || capabilities.length > 0;
@@ -28677,31 +21875,7 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  /**
-   * Lift class-validator DTO decorators onto `entry_point.input.validation`.
-   *
-   * The validation-schema analyzer already emits one `validation_contract` node
-   * per decorated DTO class (with fields + decorators + args on
-   * metadata.attributes.fields), but nothing ever connected those to the
-   * controller entry points that consume them — so on NestJS repos every entry
-   * point had empty `input.validation` and the flow-concepts deriver never
-   * grounded a kind='validation' constraint (a benchmarked NestJS API: 581 entry points / 0
-   * with validation, 0/400 flows with a validation constraint).
-   *
-   * Resolution is evidence-gated, not name-heuristic: for each http/ws/message
-   * entry point we resolve its handler function/method node (ep.handler.node_id,
-   * set by linkRouteHandlers) and match a handler PARAMETER TYPE against a real
-   * DTO contract name. NestJS binds the request body/query/params by the param's
-   * declared type (`@Body() dto: CreateFooDto`), so a param whose type is a
-   * genuine validation_contract DTO is proof that route validates against it.
-   * Only then do we populate input.validation with the human-legible rules
-   * derived from that DTO's decorators (describeValidationRules). Additive: never
-   * overwrites an existing input.validation (e.g. the trpc analyzer's ['zod']).
-   */
   private liftValidationToEntryPoints(nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
-    // Collect DTO contracts by class name. A name can appear in >1 file; keep the
-    // first (they are almost always identical shapes; over-precision here is not
-    // worth a second pass).
     const dtoByName = new Map<string, ValidationContractField[]>();
     for (const node of nodes) {
       if (node.type !== 'validation_contract') continue;
@@ -28718,13 +21892,10 @@ export class AnalyzerOrchestrator {
 
     for (const ep of entryPoints) {
       if (!supported.has(ep.type)) continue;
-      if (ep.input?.validation && ep.input.validation.length > 0) continue; // additive, never clobber.
+      if (ep.input?.validation && ep.input.validation.length > 0) continue;
 
       const handler = ep.handler?.node_id ? nodeById.get(ep.handler.node_id) : undefined;
       const params = handler?.signature?.parameters || [];
-      // First param whose declared type is a genuine DTO contract. NestJS route
-      // handlers carry at most one @Body DTO; if several params are DTOs (rare),
-      // fold all their rules in so nothing is silently dropped.
       const matchedDtos: ValidationContractField[][] = [];
       const matchedNames: string[] = [];
       for (const p of params) {
@@ -28764,13 +21935,6 @@ export class AnalyzerOrchestrator {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[]
   ): void {
-    // Test/fixture source is never a real implementation target: a handler
-    // (route/mcp-tool/cli/etc.) is production code, so its resolved callee
-    // must be too. Without this exclusion, a same-named function that only
-    // happens to live in a *.test.ts or fixtures/ file — regardless of
-    // language — can win an otherwise-legitimate-looking match purely on
-    // name, producing a fabricated cross-file (or cross-language) edge. See
-    // isTestOrFixtureFileNode for the concrete evidence.
     const functionNodesByFile = new Map<string, CASNode[]>();
     const functionNodesByName = new Map<string, CASNode[]>();
     const nodeById = new Map(nodes.map(node => [node.id, node]));
@@ -28788,12 +21952,6 @@ export class AnalyzerOrchestrator {
 
     const existingEdgeIds = new Set(edges.map(e => e.id));
 
-    // Which nodes actually own outgoing call edges. Framework analyzers
-    // (Symfony, ...) mint their OWN method node ids for route handlers while
-    // the language analyzer attaches the call graph to ITS method nodes —
-    // an entry point rooted at the framework twin is a dead end even though
-    // the same method's chain exists on the language twin. Used below to
-    // bridge the two.
     const callEdgeSources = new Set<string>();
     for (const edge of edges) {
       if (edge.type === 'calls' || edge.type === 'invokes' || edge.type.includes('call')) {
@@ -28836,16 +21994,11 @@ export class AnalyzerOrchestrator {
       const supportedTypes = ['http', 'websocket', 'message', 'event', 'cli'];
       if (!supportedTypes.includes(ep.type)) continue;
 
-      // CLI commands (Symfony console etc.) root at a class-level command
-      // node with no handler method — link them to their conventional
-      // entry method when one exists in the same file (evidence: a real
-      // `execute`/`__invoke`/`run` method node extracted from that class).
       if (!ep.handler?.method_name) {
         if (ep.type !== 'cli') continue;
         const commandNode = nodeById.get(ep.source_node);
         const commandFile = commandNode?.source?.file;
         if (!commandNode || !commandFile) continue;
-        // Analyzers disagree on absolute vs relative paths — match by suffix.
         const fns: CASNode[] = [];
         for (const [candidateFile, candidates] of functionNodesByFile) {
           if (candidateFile === commandFile ||
@@ -28892,8 +22045,6 @@ export class AnalyzerOrchestrator {
       const sourceNode = nodeById.get(routeNodeId);
       if ((sourceNode?.type === 'function' || sourceNode?.type === 'method') && sourceNode.name === handlerName) {
         ep.handler.node_id = sourceNode.id;
-        // Framework twin with no outgoing calls: bridge to the language
-        // analyzer's node for the SAME file+method, which carries the chain.
         if (!callEdgeSources.has(sourceNode.id)) {
           const twin = findLanguageTwin(sourceNode, handlerName, handlerFile);
           if (twin) bridgeToTwin(ep, sourceNode, twin);
@@ -28904,7 +22055,7 @@ export class AnalyzerOrchestrator {
       const filesToSearch: string[] = [];
       if (handlerFile) {
         for (const file of functionNodesByFile.keys()) {
-          if (file.includes(handlerFile) || handlerFile.includes(file.replace(/^.*?\//, ''))) {
+          if (file.includes(handlerFile) || handlerFile.includes(file.replace(/^.*?\
             filesToSearch.push(file);
           }
         }
@@ -28918,8 +22069,6 @@ export class AnalyzerOrchestrator {
 
       for (const file of filesToSearch) {
         const functionsInFile = functionNodesByFile.get(file) || [];
-        // Among same-named twins (framework + language analyzer both minted
-        // a node for this method), prefer the one owning the call chain.
         const exactMatch = functionsInFile.find(n => n.name === handlerName && callEdgeSources.has(n.id))
           || functionsInFile.find(n => n.name === handlerName);
         if (exactMatch) {
@@ -28928,23 +22077,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // filesToSearch is narrowed by handlerFile — the file that REGISTERS
-      // the route — but a route-registration file and the file that
-      // IMPLEMENTS the handler are frequently different in the same package
-      // (Go especially: e.g. miniflux's internal/api/api.go registers every
-      // route while each handler is a struct method defined in a sibling
-      // file — entries.go, feeds.go, users.go, ...). handlerFile always
-      // self-matches the `file.includes(handlerFile)` scoping filter above,
-      // so filesToSearch is never empty and the "search everything" fallback
-      // a few lines up never fires even though the real handler lives
-      // outside the narrowed set. Measured live (task/#131): this left
-      // ep.handler.node_id unset for nearly every Go HTTP route, so
-      // journey-builder's chain walk rooted on the FILE node (no outgoing
-      // call edges) and dead-ended at depth 0. An EXACT project-wide name
-      // match is safe evidence here — same identifier, a real function node,
-      // never fabricated — as long as it's unambiguous; when more than one
-      // same-named function exists, prefer the one that actually owns
-      // outgoing calls (the real implementation, not an unrelated stub/twin).
       if (!matchedFunctionNode && handlerName) {
         const globalMatches = functionNodesByName.get(handlerName) || [];
         if (globalMatches.length === 1) {
@@ -28956,15 +22088,6 @@ export class AnalyzerOrchestrator {
       }
 
       if (!matchedFunctionNode) {
-        // Substring containment (`handlerName.includes(n.name)` /
-        // `n.name.includes(handlerName)`) is only meaningful evidence when
-        // the shorter side is long enough to not be a coincidental
-        // sub-sequence of common English/code words — a 2-char name like
-        // "ep" is a substring of huge numbers of unrelated identifiers
-        // ("deploy", "sleep", "keep", ...). Evidence: quality-iter-1 #6 —
-        // deploy.sh's resolved chain picked up an unrelated test-helper
-        // variable named `ep` purely because "deploy".includes("ep"). Exact
-        // case-insensitive equality has no such risk and stays unguarded.
         const MIN_SUBSTRING_MATCH_LEN = 4;
         for (const file of filesToSearch) {
           const functionsInFile = functionNodesByFile.get(file) || [];
@@ -29012,48 +22135,15 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // Registration/entry-point markers whose handler is an inline
-      // arrow/function (not a bare identifier) carry no resolvable
-      // `handler.method_name` — the block above legitimately finds nothing.
-      // `handlerCallCandidates` (populated by e.g. mcp-tool-registration-analyzer
-      // by scanning the inline handler body's text for call expressions) gives
-      // a second, independent shot: resolve each candidate name to an actual
-      // function/method node by EXACT name match only (no fuzzy substring —
-      // these are text-scraped, not scope-checked, so a loose match risks a
-      // false edge). First candidate that resolves to a unique function node
-      // wins; ambiguous or unresolved candidates are honestly skipped, not
-      // guessed. This lets `server.registerTool('x', schema, async () => {
-      // return json(query.buildSummary(...)) })`-style handlers still produce
-      // a real edge to `buildSummary` even though the handler itself is inline.
       if (!matchedFunctionNode) {
         const candidates: string[] = Array.isArray(ep.metadata?.handlerCallCandidates)
           ? ep.metadata!.handlerCallCandidates
           : [];
-        // Emit an edge for every candidate that resolves UNIQUELY to a real
-        // function/method node, not just the first — the inline handler body
-        // often makes several real calls (e.g. a wrapper like
-        // withErrorHandling(...) around the actual logic function), and the
-        // point of this pass is a multi-step flow, not a single arbitrary
-        // pick. Bounded to keep a pathological candidate list (e.g. a huge
-        // schema-description object misread as call text) from exploding
-        // edge count. Ambiguous names (2+ distinct functions with that name)
-        // are skipped, never guessed.
         const MAX_CANDIDATE_EDGES = 5;
         let addedForThisEntryPoint = 0;
         for (const candidate of candidates) {
           if (addedForThisEntryPoint >= MAX_CANDIDATE_EDGES) break;
           const bare = candidate.includes('.') ? candidate.split('.').pop()! : candidate;
-          // Exact-name uniqueness alone is not enough evidence to link across
-          // file/language boundaries: `bare` is text-scraped from an inline
-          // handler body (never scope- or import-checked), so a candidate
-          // that happens to have exactly one same-named function/method
-          // PROJECT-WIDE can still be pure coincidence when that lone match
-          // lives in test/fixture source — e.g. a common test-DSL name like
-          // `describe` matching a single Kotlin fixture function while the
-          // real handler is TypeScript. Test/fixture nodes are excluded from
-          // the candidate pool entirely (never counted, so they can't even
-          // make a genuine same-file/language match ambiguous) — see
-          // isTestOrFixtureFileNode and quality-iter-1 #6.
           const allMatches = functionNodesByName.get(bare) || [];
           if (allMatches.length !== 1) continue;
           const target = allMatches[0];
@@ -29083,24 +22173,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Link React `hook_usage` nodes (useQuery/useMutation/useSWR/...) to the
-   * fetcher function they actually invoke. ReactAnalyzer surfaces the
-   * candidate callee name(s) scraped from the hook's inline callback body in
-   * `node.metadata.attributes.dependencies` (see
-   * ReactAnalyzer.extractFetcherCallCandidates) but cannot resolve them
-   * itself — the fetcher (e.g. `apiGet` in `shared/api/fetch.ts`) is very
-   * often declared in a different file and shows up as a plain `function`
-   * node from a different analyzer entirely (typescript-javascript-analyzer),
-   * not as one of ReactAnalyzer's own `util` nodes. This is exactly the same
-   * cross-analyzer resolution problem `linkRouteHandlers` solves for
-   * registration entry points, so it lives here for the same reason: only
-   * the orchestrator sees every analyzer's contributed nodes at once.
-   *
-   * EXACT name match only, and only when it resolves to exactly one
-   * function/method node — an ambiguous or unresolved candidate name yields
-   * no edge (never guessed).
-   */
   private linkHookUsageFetchers(nodes: CASNode[], edges: CASEdge[]): void {
     const existingEdgeIds = new Set(edges.map(e => e.id));
     const callableNodesByName = new Map<string, CASNode[]>();
@@ -29147,62 +22219,12 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Merge same-element NODE twins minted by different analyzer passes for the
-   * exact same source construct (the #27 twin-node family). Framework
-   * analyzers (e.g. angular-analyzer.ts: `generateId('method', file,
-   * \`${service.name}_${method.name}\`)`) mint their OWN id for a class
-   * member, while the language analyzer (typescript-javascript-analyzer.ts:
-   * `method_${classId}_${method.name}_${methodIndex}`) mints an entirely
-   * independent id scheme for the SAME method — two node ids for one source
-   * construct. Confirmed concretely on a benchmarked Angular UI: `FuelService
-   * .getFuelStationsArray`'s per-call API exit point lands on the angular
-   * twin while its DI `calls` edges land on the TS twin, so flow tracing
-   * (which follows `calls` edges from the TS twin) never reaches the exit
-   * hanging off the angular twin — route-matched flows starve even though
-   * both facts are real and about the same method.
-   *
-   * This is a full MERGE, not a bridge edge (contrast `linkRouteHandlers`'s
-   * `bridgeToTwin`, which adds one alias edge for a single route->handler
-   * hop): a method twin can carry MANY independent kinds of evidence on
-   * either side (exit points, calls edges, entry points, metadata, tags) that
-   * one bridge edge cannot reunify. Every edge/entry-point/exit-point
-   * reference to the loser id is remapped onto the survivor and the loser is
-   * dropped from `nodes`, so every consumer (flow tracing, get_callers,
-   * lineage) sees ONE node carrying ALL the evidence.
-   *
-   * Two passes, so member identity can lean on an already-unified parent id
-   * instead of re-deriving class-name equality per method:
-   *
-   *  1. Container twins: class-like nodes (TS/generic `class` vs framework
-   *     `angular_service`/`angular_component`/`angular_directive`/
-   *     `angular_pipe`/`angular_guard`/`controller`/`service`/`command`)
-   *     sharing (normalized file, name) are merged first. (`command` covers
-   *     the sibling ENTRY twin case: php-analyzer.ts's generic `class` node
-   *     and symfony-analyzer.ts's own `command` node for the same Symfony
-   *     console-command class — merging them here unifies both twins'
-   *     `entry_point.source_node`, so the CLI entry-twin dedupe pass below
-   *     can key on it.)
-   *  2. Member twins: `method`/`function` nodes sharing (normalized file,
-   *     PARENT node id, name) are merged next — after pass 1 both twins'
-   *     `.parent` already points at the same unified container id, so pass 2
-   *     needs no name-based class matching of its own.
-   *
-   * Identity is always file + parent + name, never name alone — a same-named
-   * method in a genuinely different class or file is never merged. The
-   * survivor is the twin that owns outgoing call-graph edges (the one flow
-   * tracing/get_callers actually follow); ties break on more total evidence,
-   * then a deterministic id compare so output stays byte-stable across runs.
-   */
   private resolveNodeTwins(
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[]
   ): void {
-    // Mirrors dedupeUtilNodeDuplicates's normalizeFile below: collapse an
-    // absolute-vs-workspace-relative source.file discrepancy between
-    // analyzers onto the same `src/...`-rooted suffix.
     const normalizeFile = (file: string | undefined): string => {
       if (!file) return '';
       const idx = file.indexOf('src/');
@@ -29268,15 +22290,7 @@ export class AnalyzerOrchestrator {
         if (loser.id === survivor.id) continue;
         redirect.set(loser.id, survivor.id);
         removals.add(loser.id);
-        // Fold the loser's evidence onto the survivor additively — same
-        // never-drop-evidence policy as mergeAnalysisResult's node
-        // collaboration merge (existing keys on the survivor win ties).
         if (loser.metadata) {
-          // Additive fold: survivor wins scalar collisions, but ARRAY values
-          // union (dedupe by JSON identity) — last-write-wins on arrays
-          // silently drops the loser's evidence (measured: EF Core relations
-          // 3 -> 1 when the entity twin's relations array lost to the class
-          // twin's shorter one).
           const folded: Record<string, unknown> = { ...loser.metadata, ...survivor.metadata };
           for (const [k, lv] of Object.entries(loser.metadata)) {
             const sv = (survivor.metadata as Record<string, unknown> | undefined)?.[k];
@@ -29310,7 +22324,6 @@ export class AnalyzerOrchestrator {
       }
     };
 
-    // Pass 1: container twins (file, name).
     const CONTAINER_TYPES = new Set([
       'class', 'controller', 'service', 'command',
       'angular_service', 'angular_component', 'angular_directive', 'angular_pipe', 'angular_guard',
@@ -29326,11 +22339,6 @@ export class AnalyzerOrchestrator {
       runPass(groups);
     }
 
-    // Pass 2: member twins (file, parent, name) — orphan top-level functions
-    // (no `.parent`) are out of scope: with no class context to key on, a
-    // (file, name) match alone risks merging two genuinely different
-    // functions in the same file, which the file+class+member identity rule
-    // above forbids.
     const MEMBER_TYPES = new Set(['method', 'function']);
     {
       const groups = new Map<string, CASNode[]>();
@@ -29344,23 +22352,10 @@ export class AnalyzerOrchestrator {
       runPass(groups);
     }
 
-    // Both passes can leave structurally-duplicate edges behind (e.g. two
-    // `contains` edges from the same now-unified container to the same
-    // now-unified method). Edge ids in this codebase already embed
-    // source+target+relationship (addCallEdge-style dedup upstream), so a
-    // post-redirect (source,target,type) collision is a genuine duplicate,
-    // not two independent facts — collapse it, folding any metadata the
-    // dropped copy carried that the survivor lacks.
     if (edges.length > 0) {
       const survivorByKey = new Map<string, CASEdge>();
       const deduped: CASEdge[] = [];
       for (const edge of edges) {
-        // Relation identity must survive the collapse: two ORM relations
-        // between the SAME node pair (different navigation fields / relation
-        // kinds, e.g. EF Core Order->User via Buyer AND via Approver, or a
-        // relation + its inverse both stored source->target) are distinct
-        // facts, not duplicates. Fold the metadata field that carries that
-        // identity into the key; edges without one keep the plain triple.
         const meta = edge.metadata as Record<string, unknown> | undefined;
         const attrs = meta?.attributes as Record<string, unknown> | undefined;
         const relIdent = meta?.field ?? meta?.via ?? meta?.relation ?? meta?.relationType ?? meta?.relation_type
@@ -29376,60 +22371,16 @@ export class AnalyzerOrchestrator {
           existing.metadata = { ...edge.metadata, ...existing.metadata };
         }
       }
-      // Whole-graph replacement: `push(...deduped)` here is what made an
-      // ordinary-sized repository unanalyzable (one argument per edge, past the
-      // engine's argument limit).
       replaceArrayContents(edges, deduped);
     }
   }
 
-  /**
-   * Collapse duplicate declaration nodes in place, in particular the `*_util`
-   * nodes react-analyzer.ts's analyzeUtils/extractUtils emits for EVERY
-   * FunctionDeclaration/VariableDeclarator in any file whose path merely looks
-   * util-ish (`/services/`, `/api/`, `.util.`, `.service.`, ...). That pass runs
-   * independently of typescript-javascript-analyzer.ts, which already emits the
-   * canonical `variable_`/`function_`/`class_` node for the same declaration (via
-   * generateId('util', ...) vs the TS analyzer's own id scheme — two different ID
-   * SHAPES for the same source construct). Each analyzer's cross-file reference
-   * resolver (findNodeIdByNameIndexed / nodesByName) only sees that analyzer's own
-   * contribution, so the two nodes never converge on their own: whichever one a
-   * consumer (get_callers, search_nodes, get_node) happens to land on, the OTHER
-   * one silently owns zero or a subset of the edges. This was the root cause behind
-   * exported consts in service/util-like files (e.g. API_CONFIG, API_ENDPOINTS,
-   * STORAGE_KEYS in a typical ui/src/services/*.config.ts) showing 0 incoming
-   * `references`/`calls` edges on the `util_`-shaped duplicate while the real
-   * traffic landed on the `variable_`-shaped twin instead.
-   *
-   * Dedupe key is (source file, name) — not the node id — so it is agnostic to
-   * whichever id-generation scheme produced either node. When both a `*_util` node
-   * and a non-util node exist for the same (file, name), the non-util node is
-   * canonical (richer type: 'variable'/'function'/'class'/'service'/... vs the
-   * generic 'constant_util'/'function_util'); the util node is removed and ANY
-   * edge referencing it (source or target) is redirected onto the canonical node
-   * id so no signal is dropped even if some edge did resolve to the util shape.
-   * If two `*_util` nodes collide (no canonical twin), the first one wins and
-   * later ones are merged into it — never silently doubling a symbol's edges.
-   */
   private dedupeUtilNodeDuplicates(nodes: CASNode[], edges: CASEdge[]): void {
     const isUtilNode = (n: CASNode) => typeof n.type === 'string' && n.type.endsWith('_util');
-    // react-analyzer.ts stores an ABSOLUTE path in source.file for every node it
-    // emits (built via path.join(projectPath, relativeFile) — see analyzeUtils/
-    // withSource({ file: fullPath, ... })), while every other analyzer (e.g.
-    // typescript-javascript-analyzer.ts) stores the workspace-RELATIVE path. The
-    // same declaration can therefore carry two different `source.file` strings
-    // depending on which analyzer produced the node, which would silently defeat
-    // a naive (file, name) dedupe key. Normalize to the relative suffix — the
-    // path segment starting at the first `src/` (or `/src/`) component, which is
-    // present in both forms — so the key matches regardless of which analyzer's
-    // absolute-vs-relative convention produced it. Falls back to the raw value
-    // when no `src/` segment is found rather than losing the signal entirely.
     const normalizeFile = (file: string | undefined): string => {
       if (!file) return '';
       const idx = file.indexOf('src/');
       if (idx === -1) return file;
-      // Prefer a `/src/` boundary (avoids matching a mid-segment substring like
-      // `resrc/`), but tolerate a leading `src/` with no preceding slash too.
       const boundaryIdx = file.lastIndexOf('/src/');
       return boundaryIdx !== -1 ? file.slice(boundaryIdx + 1) : file.slice(idx);
     };
@@ -29442,17 +22393,14 @@ export class AnalyzerOrchestrator {
       if (!canonicalByKey.has(key)) canonicalByKey.set(key, node);
     }
 
-    const redirect = new Map<string, string>(); // dropped util node id -> surviving node id
-    const removals = new Set<string>(); // node ids to drop
+    const redirect = new Map<string, string>();
+    const removals = new Set<string>();
 
     for (const node of nodes) {
       if (!isUtilNode(node)) continue;
       const key = keyOf(node);
       let survivor = canonicalByKey.get(key);
       if (!survivor) {
-        // No non-util twin — first util node with this key becomes canonical so
-        // duplicate util-only declarations (e.g. two util passes over the same
-        // file) still collapse to one node instead of silently fragmenting edges.
         canonicalByKey.set(key, node);
         continue;
       }
@@ -29475,19 +22423,10 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Collapse duplicate HTTP route entry points in place. The same route can be
-   * emitted more than once — by overlapping framework passes, by a route declared
-   * in multiple router compositions, or by builder-API extraction — which makes a
-   * route table look noisy and untrustworthy. Dedupe by method+path+handler-file
-   * (distinct handlers for the same path, e.g. an SPA page vs a server endpoint,
-   * are legitimately kept); when merging, keep the richest record (one that has a
-   * handler file and a security/auth model).
-   */
   private dedupeHttpEntryPoints(entryPoints: CASEntryPoint[], projectPath?: string): void {
     const isHttp = (entry: CASEntryPoint) => entry.type === 'http' || entry.type === 'route';
     const normalizeFile = (entry: CASEntryPoint): string =>
-      String(entry.handler?.file || entry.metadata?.file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+      String(entry.handler?.file || entry.metadata?.file || '').replace(/\\/g, '/').replace(/^\.\
     const fileExists = (file: string): boolean => Boolean(
       projectPath && file && fs.existsSync(path.isAbsolute(file) ? file : path.join(projectPath, file))
     );
@@ -29535,29 +22474,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  /**
-   * Collapse ENTRY-POINT twins across ALL entry types (cli/message/event/
-   * websocket, not just http/route — `dedupeHttpEntryPoints` above already
-   * covers http/route by method+path+file). Sibling of the node-twin family
-   * fixed by `resolveNodeTwins`: a framework-specific analyzer and a generic
-   * language analyzer can each independently register the SAME handler as
-   * its own entry point. Concretely on a benchmarked PHP monolith: php-analyzer.ts (generic,
-   * evidence-based) and symfony-analyzer.ts (framework-specific) both detect
-   * the same Symfony console-command class and each mint their OWN `cli`
-   * entry point for it — 130 groups / 263 entries, none of it a real second
-   * command. (Concretely on a benchmarked PHP monolith.)
-   *
-   * Must run AFTER `resolveNodeTwins` (which merges the underlying
-   * `class`/`command` container nodes so both entries' `source_node` already
-   * agree) and after `linkRouteHandlers` (which resolves `handler.node_id`
-   * for cli entries from `source_node`). Identity is (type, source_node,
-   * trigger signature) — never source_node alone, so a class that
-   * legitimately registers >1 distinct trigger (e.g. a subscriber handling
-   * two different events) keeps both entries. Keeps the richer record (the
-   * one with a resolved handler / security / more descriptive text),
-   * folding the dropped twin's metadata onto the survivor so no fact —
-   * handler resolution, validation, docs — is silently lost.
-   */
   private dedupeEntryPointTwins(entryPoints: CASEntryPoint[], projectPath?: string): void {
     const triggerSignature = (entry: CASEntryPoint): string => {
       const t = entry.trigger || {};
@@ -29566,7 +22482,7 @@ export class AnalyzerOrchestrator {
       return `${method}::${path}`;
     };
     const normalizedHandlerFile = (entry: CASEntryPoint): string =>
-      String(entry.handler?.file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+      String(entry.handler?.file || '').replace(/\\/g, '/').replace(/^\.\
     const semanticTriggerSignature = (entry: CASEntryPoint): string => {
       const trigger = triggerSignature(entry);
       return entry.type === 'cli' && trigger === '::' ? `::${entry.name}` : trigger;
@@ -29606,15 +22522,12 @@ export class AnalyzerOrchestrator {
     const bestByKey = new Map<string, CASEntryPoint>();
     const removals = new Set<CASEntryPoint>();
     for (const entry of entryPoints) {
-      if (!entry.source_node) continue; // no identity to key on — leave untouched.
+      if (!entry.source_node) continue;
       const key = keyOf(entry);
       const existing = bestByKey.get(key);
       if (!existing) { bestByKey.set(key, entry); continue; }
       const loser = richness(entry) > richness(existing) ? existing : entry;
       const winner = loser === existing ? entry : existing;
-      // Fold the loser's evidence onto the survivor additively before it's
-      // dropped — never silently lose a fact one twin carried and the other
-      // didn't (same policy as resolveNodeTwins/mergeAnalysisResult).
       if (loser.metadata) winner.metadata = { ...loser.metadata, ...winner.metadata };
       if (!winner.handler?.node_id && loser.handler?.node_id) winner.handler = loser.handler;
       if (!winner.description && loser.description) winner.description = loser.description;
@@ -29647,16 +22560,6 @@ export class AnalyzerOrchestrator {
       const entryId = `entry_discovered_${candidate.file.replace(/[^a-zA-Z0-9]/g, '_')}`;
       if (existingIds.has(entryId)) continue;
 
-      // Library public-API entry-point model: for a package whose main/module/
-      // exports field IS the product surface, the meaningful "entry points"
-      // are its exported symbols, not the barrel file itself. When we can
-      // resolve real exported declarations under this entry file, emit one
-      // `api` entry point per export (evidence-based — only nodes the
-      // language analyzer already marked exported) instead of a single
-      // generic file-level entry. Falls through to the existing file-level
-      // entry when no exports are resolvable (e.g. languages where the
-      // analyzer doesn't yet tag is_exported) so behavior for those repos is
-      // unchanged.
       if (candidate.libraryPublicApi) {
         const exportEntryPoints = this.buildLibraryPublicApiEntryPoints(
           nodes, projectPath, candidate, sourceNode, existingIds, existingSourceNodes
@@ -29682,13 +22585,6 @@ export class AnalyzerOrchestrator {
         handler: {
           node_id: sourceNode.id,
           method_name: sourceNode.name || path.basename(candidate.file),
-          // Normalise here rather than trust the backing node: many
-          // analyzers still record `source.file` as an absolute sandbox
-          // path (see task #115), and this backfill would otherwise
-          // faithfully copy it into customer-visible output. `candidate.file`
-          // is already known repo-relative (collectEntryPointCandidates
-          // normalizes it), so prefer that when the node's own file doesn't
-          // resolve to something repo-relative.
           file: toRepoRelativeSourceFile(sourceNode.source?.file, projectPath) || candidate.file,
           line: sourceNode.source?.line || 1,
         },
@@ -29719,9 +22615,6 @@ export class AnalyzerOrchestrator {
           handler: {
             node_id: fallbackNode.id,
             method_name: fallbackNode.name,
-            // Was `file` (the raw, possibly-absolute source field) — every
-            // other field on this entry point already uses `relativeFile`;
-            // `handler.file` was the one that leaked the sandbox path.
             file: relativeFile,
             line: fallbackNode.source?.line || 1,
           },
@@ -29739,7 +22632,7 @@ export class AnalyzerOrchestrator {
   private collectEntryPointCandidates(projectPath: string): DiscoveredEntryPointCandidate[] {
     const candidates: DiscoveredEntryPointCandidate[] = [];
     const add = (candidate: DiscoveredEntryPointCandidate) => {
-      const normalized = candidate.file.replace(/\\/g, '/').replace(/^\.\//, '');
+      const normalized = candidate.file.replace(/\\/g, '/').replace(/^\.\
       if (!normalized || candidates.some(existing => existing.file === normalized)) return;
       if (fs.existsSync(path.join(projectPath, normalized))) {
         candidates.push({ ...candidate, file: normalized });
@@ -29773,13 +22666,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // A package.json main/module/exports field is the PUBLIC API SURFACE of
-      // a library — not just "a file to point at". Libraries have no
-      // route/page shape; their entry points are their exported symbols. Gate
-      // on the same structural evidence deployable/artifact-type classification
-      // uses (publishable, no bin, no app framework dependency) so server/app
-      // repos that merely happen to declare `main` (e.g. for tooling) are
-      // unaffected — they keep the existing single file-level entry below.
       const depsText = JSON.stringify({ ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) }).toLowerCase();
       const isLibraryShaped = Boolean(packageJson.main || packageJson.module || packageJson.exports) &&
         !packageJson.bin && packageJson.private !== true && !APP_FRAMEWORK_MARKERS.test(depsText);
@@ -29881,7 +22767,7 @@ export class AnalyzerOrchestrator {
   }
 
   private findNodeForEntryFile(nodes: CASNode[], projectPath: string, entryFile: string): CASNode | undefined {
-    const normalizedEntry = entryFile.replace(/\\/g, '/').replace(/^\.\//, '');
+    const normalizedEntry = entryFile.replace(/\\/g, '/').replace(/^\.\
     const candidates = nodes.filter(node => {
       const sourceFile = node.source?.file;
       return Boolean(sourceFile && this.sourcePathMatches(projectPath, sourceFile, normalizedEntry));
@@ -29892,34 +22778,13 @@ export class AnalyzerOrchestrator {
   }
 
   private sourcePathMatches(projectPath: string, sourceFile: string, expectedRelativeFile: string): boolean {
-    const normalizedSource = sourceFile.replace(/\\/g, '/').replace(/^\.\//, '');
+    const normalizedSource = sourceFile.replace(/\\/g, '/').replace(/^\.\
     const relative = path.isAbsolute(sourceFile)
       ? path.relative(projectPath, sourceFile).replace(/\\/g, '/')
       : normalizedSource;
     return relative === expectedRelativeFile || normalizedSource.endsWith(`/${expectedRelativeFile}`);
   }
 
-  /**
-   * Library public-API entry-point model: resolve the real exported
-   * declarations under a package's main/module/exports entry file and emit
-   * one `api` entry point per PUBLIC export, so get_flow_concepts/
-   * capabilities root at the actual public surface and get_callers on an
-   * export shows external-consumer shape — the real "entry" to a library.
-   *
-   * Evidence-based only: a node counts as a public export when the
-   * analyzer that produced it explicitly marked it (`metadata.is_exported`
-   * true, or `metadata.access_modifier === 'public'` for languages that use
-   * that field instead — Elixir/Kotlin/Solidity/Swift). Internal helpers
-   * (unexported, private/protected) are excluded. Coverage today is
-   * whatever the per-language analyzers already tag: solid for
-   * TypeScript/JavaScript (typescript-javascript-analyzer.ts sets
-   * is_exported on every top-level function/class/const), partial for
-   * Go/Rust (isExported/isPublic tracked in-analyzer but not consistently
-   * copied onto CASNode.metadata yet), and absent for Python (no
-   * __all__/leading-underscore signal wired to metadata yet) — for those,
-   * this returns no entries and the caller falls back to the single
-   * file-level entry point that already existed, so nothing regresses.
-   */
   private buildLibraryPublicApiEntryPoints(
     nodes: CASNode[],
     projectPath: string,
@@ -29928,7 +22793,7 @@ export class AnalyzerOrchestrator {
     existingIds: Set<string>,
     existingSourceNodes: Set<string>
   ): CASEntryPoint[] {
-    const normalizedEntryFile = candidate.file.replace(/\\/g, '/').replace(/^\.\//, '');
+    const normalizedEntryFile = candidate.file.replace(/\\/g, '/').replace(/^\.\
     const isPublicExport = (node: CASNode): boolean => {
       if (node.metadata?.is_exported === true) return true;
       if (node.metadata?.access_modifier === 'public') return true;
@@ -30002,7 +22867,7 @@ export class AnalyzerOrchestrator {
     const file = (node.source?.file || '').replace(/\\/g, '/');
     let score = 0;
     if (/\/?(main|index|app|program|startup)\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|cs|dart)$/i.test(file)) score += 80;
-    if (/\/src\//i.test(`/${file}`)) score += 25;
+    if (/\/src\
     if (/function|method|class|component|module|service|react_app|file/i.test(node.type)) score += 20;
     if (node.level) score += Math.max(0, 10 - node.level);
     if (/config|migration|generated|schema|model|entity/i.test(file)) score -= 35;
@@ -30010,19 +22875,12 @@ export class AnalyzerOrchestrator {
   }
 
   private async buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string, edges: CASEdge[] = []): Promise<CASTestSuite[]> {
-    // Budget-yield in the whale-scaling sweeps (part of a measured ~1.8s
-    // pp_flowCoverage stall on a 76k-node repo); order and results unchanged.
     const maybeYield = createYieldBudget();
     const testSuites: CASTestSuite[] = [];
     const addedSuiteIds = new Set<string>();
     const childrenByParent = new Map<string, CASNode[]>();
     const nodesByFile = new Map<string, CASNode[]>();
 
-    // Subject-under-test map: analyzers emit `covers`/`tests` edges from a test
-    // (or suite) node to the source symbol it exercises. Fold those into each
-    // suite's coverage.nodes_tested so find_tests / get_test_summary can answer
-    // "which tests cover this node" — otherwise the edges are structurally
-    // present but invisible to the coverage queries.
     const coversByOriginNode = new Map<string, Set<string>>();
     for (const edge of edges) {
       if (edge.type !== 'covers' && edge.type !== 'tests') continue;
@@ -30379,7 +23237,7 @@ export class AnalyzerOrchestrator {
     const name = path.basename(file);
     return /\.(test|spec)\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(name) ||
       /\.cy\.(js|jsx|ts|tsx)$/i.test(name) ||
-      /(^|\/)tests?\//i.test(file) && /\.(js|jsx|ts|tsx|mjs|cjs|py|go|rs|dart|java|kt|cs|php)$/i.test(name) ||
+      /(^|\/)tests?\
       /^test_.*\.py$/i.test(name) ||
       /_test\.(py|go|rs|dart)$/i.test(name) ||
       /(Test|Tests)\.(java|kt|cs|php)$/i.test(name);
@@ -30403,7 +23261,7 @@ export class AnalyzerOrchestrator {
         const relative = path.relative(projectPath, file).replace(/\\/g, '/');
         return relative && !relative.startsWith('..') ? relative : normalized;
       }
-      return normalized.replace(/^\.\//, '');
+      return normalized.replace(/^\.\
     };
     const a = normalize(left);
     const b = normalize(right);
@@ -30418,26 +23276,10 @@ export class AnalyzerOrchestrator {
       .toLowerCase() || 'unknown';
   }
 
-  /**
-   * Broader than `isTestFileNode`: also excludes fixture/mock directories
-   * (`fixtures/`, `__fixtures__/`, `mocks/`, `__mocks__/`) — deliberately
-   * scoped to CALL-RESOLUTION call sites only (linkRouteHandlers and its
-   * handlerCallCandidates fallback), never to the shared `isTestFileNode`
-   * itself, whose other callers (test-suite discovery, security-node
-   * filtering) reasonably still want a narrower "is this a test file" check.
-   *
-   * Evidence: a real cross-contamination bug (quality-iter-1 #6) where a
-   * bare-name candidate resolution linked an MCP-tool entry point's handler
-   * straight to an unrelated Kotlin function living under
-   * apps/mcp-server/fixtures/... — a fixture directory that `isTestFileNode`
-   * (which only recognizes `test(s)/` and `*.test.*`/`*Test.*` naming) does
-   * not catch. Resolution must never treat fixture/mock source as a real
-   * implementation target.
-   */
   private isTestOrFixtureFileNode(node: CASNode): boolean {
     if (this.isTestFileNode(node)) return true;
     const file = (node.source?.file || node.name || '').replace(/\\/g, '/');
-    return /(^|\/)(fixtures?|__fixtures__|mocks?|__mocks__)\//i.test(file);
+    return /(^|\/)(fixtures?|__fixtures__|mocks?|__mocks__)\
   }
 
   private isTestFileNode(node: CASNode): boolean {
@@ -30449,7 +23291,7 @@ export class AnalyzerOrchestrator {
       /_test\.py$/i.test(name) ||
       /_test\.(go|rs|dart)$/i.test(name) ||
       /(Test|Tests)\.(java|kt|cs|php)$/i.test(name) ||
-      (/\/tests?\//i.test(file) && this.looksLikeExecutableTestFile(file));
+      (/\/tests?\
   }
 
   private looksLikeExecutableTestFile(file: string): boolean {
@@ -30584,11 +23426,6 @@ export class AnalyzerOrchestrator {
   }
 
   private inferTestFramework(node: CASNode): string {
-    // Trust the analyzer's own framework label when it named a real test
-    // framework — a test-framework analyzer that parsed the imports (e.g. vitest
-    // vs jest, testng vs junit) knows better than a filename guess. Gated to a
-    // known-framework allowlist so unrelated analyzer metadata (e.g. a language
-    // analyzer stamping "python language") can't leak in as a framework name.
     const KNOWN_TEST_FRAMEWORKS = new Set([
       'jest', 'vitest', 'mocha', 'jasmine', 'node:test', 'cypress', 'playwright',
       'selenium', 'pytest', 'unittest', 'django.test', 'go-test', 'rust-test',
@@ -30760,29 +23597,6 @@ export class AnalyzerOrchestrator {
     return fixtures;
   }
 
-  /**
-   * The ONE source of truth for "does this codebase have tests, and how
-   * many" — derived from `testSuites` (buildTestSuites' output), never
-   * recomputed from raw nodes. `testSuites` is the robust, multi-fallback
-   * discovery pass (dedicated `type==='test'` suite nodes, then test-module
-   * nodes, then *Test-named classes, then test-file naming conventions, then
-   * a direct filesystem glob) that already resolves correctly across
-   * languages — it is what get_test_summary/orient_capsule read and, on a
-   * real Java Spring repo with 8 genuine JUnit test classes, it counts 8.
-   *
-   * Before this fix, buildTestSummary independently re-derived the same fact
-   * from `nodes.filter(n => n.type === 'test')` alone — a signal ONLY
-   * TestFrameworkAnalyzer's own dedicated suite/case nodes ever set. Java
-   * (and any language where the deep analyzer tags tests via
-   * `metadata.is_test`/`category:'test'` on ordinary method/class nodes
-   * rather than emitting synthetic `type:'test'` nodes) always produced
-   * zero here, contradicting cas.test_suites in the same response:
-   * orient_capsule.dimensions.tests reported 8 while product_map.health.tests
-   * and the "No tests detected" coverage caveat (both sourced from this
-   * function) reported 0 — four surfaces, two answers, from one CAS. Basing
-   * both on the same `testSuites` array is what makes them agree by
-   * construction rather than by coincidence.
-   */
   private buildTestSummary(nodes: CASNode[], entryPoints: CASEntryPoint[], testSuites: CASTestSuite[]): CASTestSummary {
     const allTests = testSuites.flatMap(suite => suite.tests);
 
@@ -30817,11 +23631,6 @@ export class AnalyzerOrchestrator {
         other: 0
       },
       by_status: {
-        // Static analysis has no execution result to read, so — same
-        // convention the previous implementation used — every discovered
-        // test is counted as passing unless the suite itself marked it
-        // skipped/flaky; "0 failing" here means "no failure evidence
-        // observed", not "verified green".
         passing: allTests.length - skipped,
         failing: 0,
         skipped,
@@ -31349,20 +24158,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // Score calibration rationale:
-    // - Every penalty is proportional to the measured extent of the problem
-    //   (affected count over its relevant population), capped per category.
-    //   The previous flat per-category deduction (high=18, medium=10) meant
-    //   any production repo with the usual mix of signals (some duplication,
-    //   a few complexity hotspots, thin tests, no telemetry yet) bottomed out
-    //   at 26-36 and always read "critical", which carried no signal.
-    // - Category caps express how strongly each dimension predicts change
-    //   failure: untested critical paths (25) and incomplete implementations
-    //   (20) dominate; coherence and convention drift are bounded (5-12);
-    //   absent runtime telemetry is informational (3) because it describes
-    //   SDK rollout status, not code health.
-    // - Status bands: critical < 25 means structurally unsafe to modify;
-    //   at-risk < 50; watch < 75; healthy >= 75.
     const extentRatio = (count: number, population: number): number =>
       Math.min(1, count / Math.max(1, population));
     const calibratedPenalties = new Map<string, number>([
@@ -31682,7 +24477,6 @@ export class AnalyzerOrchestrator {
           binaryMap.set(this.normalizeDistributionName(packageName), folderMatch[1]);
         }
       } catch {
-        // Package manifests are evidence helpers only; ignore unreadable files.
       }
     }
 
@@ -32084,8 +24878,6 @@ export class AnalyzerOrchestrator {
     repositoryLinks: CASCrossRepositoryLink[],
     contributions: any[]
   ): Promise<CASAnalysisFact[]> {
-    // Budget-yield in the fact loops (whale-scaling; part of a measured >2s
-    // pp_traceability stall). Order and emitted facts unchanged.
     const maybeYield = createYieldBudget();
     const analyzerName = contributions[0]?.analyzer_name || 'AnalyzerOrchestrator';
     const facts: CASAnalysisFact[] = [];
@@ -32174,11 +24966,6 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    // Journeys ARE the fact-worthy user-facing paths now (workflows collapsed
-    // into a derived view over flows — docs/cas/SPECIFICATION.md §0.5.1); a
-    // fact about "this path exists and is user-facing/system/scheduled" is
-    // the same claim a workflow fact used to make, sourced from the same
-    // entry point.
     for (const journey of journeys) {
       const evidence = journey.entry_point_id
         ? [{
@@ -32503,12 +25290,6 @@ export class AnalyzerOrchestrator {
     for (const node of nodes) {
       const callGraphDecs = node.call_graph?.decorators || [];
       const attrDecs = (node.metadata?.attributes as any)?.decorators || [];
-      // Parallel to `attrDecs`: the language analyzers now also carry each decorator's
-      // statically-evaluable call arguments (`decoratorArgs: [{ name, args:[{name,value,type}] }]`),
-      // captured GENERICALLY for any decorator, not only recognized-framework ones. This is
-      // what lets a custom route decorator (`@Endpoint('/orders','GET')`) resolve its
-      // path/method — `attrDecs` alone is just the bare name string. Absent for nodes whose
-      // decorators had no evaluable args (the common case), so guarded per-name below.
       const attrDecArgs: Array<{ name: string; args: Array<{ name: string; value: any; type: string }> }> =
         (node.metadata?.attributes as any)?.decoratorArgs || [];
 
@@ -32553,18 +25334,10 @@ export class AnalyzerOrchestrator {
 
         const category = this.classifyDecoratorCategory(name);
 
-        // Lift this decorator's captured literal args (if any) into CASDecorator.parameters
-        // in call-site order — positional args keyed '0','1',..., named/object-property args
-        // keyed by property name — so an unrecognized decorator resolves arguments exactly
-        // like a recognized-framework one. Only decorators that carried evaluable args appear
-        // in `attrDecArgs`; a decorator with none stays parameter-less (never fabricated).
         const capturedArgs = attrDecArgs.find(d => d.name === name)?.args || [];
         const parameters = capturedArgs.length > 0
           ? capturedArgs.map(a => ({ name: a.name, value: a.value, type: a.type }))
           : undefined;
-        // Shape the args as a name->value map so extractRoutingInfo/extractSecurityInfo
-        // (which read `dec.arguments`) can lift a path/method/roles the same way they do
-        // for framework decorators. Positional keys ('0','1') are preserved alongside named.
         const argMap = capturedArgs.length > 0
           ? Object.fromEntries(capturedArgs.map(a => [a.name, a.value]))
           : undefined;
@@ -32733,21 +25506,7 @@ export class AnalyzerOrchestrator {
     const contexts: CASSecurityContext[] = [];
     const securityKeywords = ['auth', 'guard', 'middleware', 'permission', 'role', 'token', 'jwt', 'session', 'encrypt', 'decrypt', 'hash', 'password', 'credential', 'security', 'validate', 'sanitize'];
 
-    // KEYWORD-FALLBACK HYGIENE: this vocabulary scan is a last resort for
     // repos no framework analyzer recognized, and it MUST NOT run on prose
-    // about security code — a test named "reports permission-denied
-    // subdirectories" or a benchmark harness named `passesTokenPolicy` is
-    // ABOUT auth/permissions/tokens, not enforcement code, and previously got
-    // swept in wholesale (this is the false-positive class a peer flagged via
-    // get_security_overview: minhash-clone-detection tests classified as
-    // "encryption" off the substring "hash" inside "minhash"). Two fixes:
-    // (1) exclude test/benchmark nodes outright, (2) match whole NAME TOKENS
-    // (signalTokens splits camelCase/snake_case) instead of raw substrings,
-    // so "minhash" is one token that never equals "hash".
-    // `isTestFileNode` catches the FILE-node case too (a `file` node named
-    // `container-topology-hash-identity.test.ts` isn't `type === 'test'`, but
-    // its path is unmistakably a test file) — a node-type check alone misses
-    // that and still let test-suite files leak into the encryption context.
     const isTestOrBenchmarkNode = (n: CASNode): boolean =>
       n.type === 'test' || n.category === 'test' ||
       (n.subcategories || []).some(s => s.toLowerCase() === 'benchmark') ||
@@ -32758,12 +25517,6 @@ export class AnalyzerOrchestrator {
       return securityKeywords.some(kw => nameTokens.includes(kw));
     });
 
-    // ROUTE-SURFACE BRIDGE (mirrors buildSecurityBoundaries): `guards`/`authorizes`
-    // edges of category 'security' point straight at the protected route/handler
-    // node (edge.target) and, via metadata.target_entry_point, straight at the
-    // entry point id itself — real per-route evidence that a security-context
-    // scope built from mechanism-declaration nodes alone can never express,
-    // since a mechanism's own node id is never the route it protects.
     const securityEdges = edges.filter(e =>
       e.category === 'security' && (e.type === 'guards' || e.type === 'authorizes')
     );
@@ -32774,8 +25527,6 @@ export class AnalyzerOrchestrator {
         .map(e => (e.metadata as any)?.target_entry_point as string | undefined)
         .filter((id): id is string => Boolean(id));
 
-    // Prefer framework/library-analyzer evidence for the auth node set. Only fall
-    // back to the name substrings when the auth analyzer produced no evidence.
     const evidenceAuthNodes = nodes.filter(n => this.hasAuthAnalyzerEvidence(n));
     const authNodes = evidenceAuthNodes.length > 0
       ? evidenceAuthNodes
@@ -32787,9 +25538,6 @@ export class AnalyzerOrchestrator {
     if (authNodes.length > 0 || guardEdges.length > 0) {
       const methods = new Set<string>();
       for (const node of authNodes) {
-        // The method is derived from the analyzer's OWN mechanism identity
-        // (metadata.library / auth_library rule name) when present — a structural
-        // fact — rather than substring-matching the node name.
         const method = this.authMethodFromEvidence(node);
         if (method) methods.add(method);
       }
@@ -32869,18 +25617,6 @@ export class AnalyzerOrchestrator {
 
     const encryptionNodes = securityNodes.filter(n => {
       const tokens = this.signalTokens(n.name);
-      // Whole-token match: "minhash" (clone-detection) is one token and never
-      // equals "hash" here, unlike the previous `.includes('hash')` substring
-      // check that misclassified minhash-clone-detection tests as encryption.
-      // "encrypt"/"decrypt"/"cipher" are unambiguous crypto verbs — one hit is
-      // enough. "hash" alone is NOT: this codebase's own `contentHash`,
-      // `gitCommitHash`, `computeFileHash`, `casContentHash` are
-      // content-addressing/dedup, not encryption, and there is no dedicated
-      // crypto-library analyzer (unlike auth) to evidence-gate this the way
-      // `hasAuthAnalyzerEvidence` does — so a bare hash token only counts when
-      // it co-occurs with a credential-ish token, keeping the generic
-      // (non-repo-specific) signal "hashing a secret" apart from "hashing
-      // content for identity/caching".
       const unambiguousCrypto = ['encrypt', 'encrypts', 'encrypted', 'encryption', 'decrypt', 'decrypts', 'decrypted', 'decryption', 'cipher'];
       if (unambiguousCrypto.some(kw => tokens.includes(kw))) return true;
       const hashTokens = ['hash', 'hashed', 'hashing'];
@@ -33312,17 +26048,6 @@ export class AnalyzerOrchestrator {
             continue;
           }
           if (inDeps) {
-            // Skip extras/group KEY lines that introduce an ARRAY of the real packages.
-            // In [project.optional-dependencies] (PEP 621) the extras keys map to arrays:
-            //   dev = [ "pytest", "ruff" ]
-            // and the same array-of-strings form appears for grouped extras. The `dev`/
-            // `test`/`ml` key here is a group name, NOT a package — treating it as one
-            // produced a spurious "dev" library. The array MEMBERS ("pytest", ...) live on
-            // the following lines and are still extracted by the package regex below.
-            // NOTE: we only skip ARRAY assignments. Poetry group tables
-            // ([tool.poetry.group.<name>.dependencies]) use scalar assignments where the
-            // KEY *is* the package, e.g. `pytest = "^8.0"` — those must fall through and be
-            // captured, so we do not skip `<name> = "..."` / `<name> = {...}` lines.
             if (/^"?[a-zA-Z0-9_.-]+"?\s*=\s*\[/.test(trimmed)) {
               continue;
             }
