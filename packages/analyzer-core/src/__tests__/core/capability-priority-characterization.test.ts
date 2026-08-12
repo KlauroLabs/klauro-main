@@ -15,6 +15,23 @@ const corpus: Array<{ repo: string; capabilities: any[] }> =
 // literal, across 10 repositories. Replacing that with evidence is #149; this
 // baseline exists so the replacement is visible per capability instead of being a
 // silent reordering of what the customer sees first.
+// The fixture stores evidence as COUNTS (ops, ents), so a capability must be
+// materialized into the shape production passes before its priority means
+// anything. My first version of this file read the raw fixture objects, where
+// operations/related_entities are undefined — so it characterized a code path
+// production never takes. Same class as the other measurement bugs this session:
+// the tool was wrong, and it looked green.
+const materialize = (capability: any) => ({
+  name: capability.name,
+  category: capability.category,
+  description_source: capability.description_source,
+  description: capability.desc || '',
+  criticality: capability.criticality,
+  operations: Array.from({ length: capability.ops }, (_, index) => ({ name: `op${index}` })),
+  related_entities: Array.from({ length: capability.ents }, (_, index) => `ent${index}`),
+  related_domains: capability.domains || [],
+});
+
 describe('capability priority characterization', () => {
   const orch = new (AnalyzerOrchestrator as any)() as any;
 
@@ -107,7 +124,7 @@ describe('capability priority characterization', () => {
     const actual: Record<string, Record<string, number>> = {};
     for (const repo of corpus) {
       for (const capability of repo.capabilities) {
-        const priority = orch.systemCapabilityProductPriority(capability);
+        const priority = orch.systemCapabilityProductPriority(materialize(capability));
         if (priority !== 3) {
           actual[repo.repo] = actual[repo.repo] || {};
           actual[repo.repo][capability.name] = priority;
