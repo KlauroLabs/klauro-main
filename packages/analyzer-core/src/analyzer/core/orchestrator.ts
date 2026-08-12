@@ -15036,11 +15036,10 @@ export class AnalyzerOrchestrator {
 
   private isGenericCapabilityDisplayName(name: string): boolean {
     if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
-    if (/^(help management|jobs? workflow)$/i.test(name)) return true;
+    if (/^(help management|report reporting|jobs? workflow)$/i.test(name)) return true;
     if (/^dismiss[_\s]/i.test(name)) return true;
     if (/^(action[_\s]?text|active[_\s]?storage|action[_\s]?cable|action[_\s]?mailbox)\b/i.test(name)) return true;
     if (/[()[\]{}<>'"`:]|\.with\b/i.test(name)) return true;
-    if (this.nameIsStutter(name)) return true;
     const subject = name
       .toLowerCase()
       .replace(/\b(management|capability|authentication|reporting|commands|handlers|tasks|workflow)\b/g, ' ')
@@ -15051,16 +15050,6 @@ export class AnalyzerOrchestrator {
       .split(/\s+/)
       .map(token => this.normalizeDomainToken(token))
       .every(token => token.length <= 2 || this.isGenericCapabilityToken(token) || /^(toggle|success|failure|misc|root|read|write|use|used|using|item|items|flat|tiered|available|bogus)$/.test(token));
-  }
-
-  private nameIsStutter(name: string): boolean {
-    const stems = String(name || '')
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean)
-      .map(token => token.replace(/(ings?|ment|ments|ions?|ers?|s)$/, ''))
-      .filter(stem => stem.length >= 3);
-    return new Set(stems).size < stems.length;
   }
 
   private summarizeEntryPoints(entryPoints: CASEntryPoint[]): { type: string; count: number }[] {
