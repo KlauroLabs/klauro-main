@@ -43,7 +43,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence.ts",
-      "ceiling": 767
+      "ceiling": 406
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/system-type.ts",
