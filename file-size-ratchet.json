@@ -3,7 +3,7 @@
   "files": [
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "ceiling": 26060
+      "ceiling": 25797
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
@@ -44,6 +44,10 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence.ts",
       "ceiling": 405
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/incremental-scope.ts",
+      "ceiling": 287
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/capability-description.ts",
