@@ -12,45 +12,6 @@ import type {
 import { buildTerminalSignal } from './terminal-signal';
 import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel } from './journey-builder';
 
-/**
- * FLOW CONCEPTS — the FLOW -> STEP tier of the conceptual understanding layer
- * (docs/SPEC-CONCEPTUAL-LAYER.md). Capabilities (already computed — CAS,
- * repo- or workspace-level — product_map/system_capabilities) answer "what does it do". Flows answer
- * "how does a request/job move through it, step by step" — an ordered set of
- * semantic STEPS (Validate -> Charge -> Persist -> Notify), each carrying the
- * same I/L/S/O + Constraints contract used everywhere else in the product
- * (get_interface_signature's join), aggregated flow-level.
- *
- * DETERMINISTIC-FIRST: this module composes facts CAS already has —
- * entry_points (flow roots), call edges + method_calls (the chain),
- * exit_points + data_lineage (side-effect character, used both to segment
- * and to fill side_effects), data_entities.invariants + entry_point
- * validation/security guards (constraints), system_capabilities.operations
- * (capability linkage). AI is not used for facts; `opts.nameStep` is the only
- * seam, and it is fully inert when omitted.
- */
-
-/**
- * THE UNIFORM UNDERSTANDING CONTRACT — "ICELOT". The model name lives in ONE
- * place so it is trivially renamable. Every unit (flow, step, function/node)
- * carries the same 6-facet contract, and every facet is EVIDENCE-GATED: a facet
- * is only populated from a fact the CAS already extracted, never fabricated.
- * Absent facets are omitted, not invented.
- *
- * ICELOT is NOT an execution order — it is the six questions asked of every unit:
- *   I. Input        — what does it take?    params / consumed request shape / reads.
- *   C. Constraints  — what bounds it?       validation / auth / rate-limit / error /
- *                     invariant / consistency rules, each with kind + evidence.
- *   E. Effects      — what does it touch?   system effects: integrations (outbound
- *                     calls) + state_changes (DB/cache/file writes, mutations).
- *   L. Logic        — how does it decide?   what it computes / the ordered behavior.
- *   O. Output       — what does it emit?    returns / produced responses & entities.
- *   T. Telemetry    — how does it behave?   joined runtime metrics (traffic / errors /
- *                     latency) when real observations exist for the unit.
- *
- * Reads as: contract surface (I, C) → impact surface (E) → internal behavior
- * (L, O) → observable runtime behavior (T).
- */
 export const CONTRACT_MODEL_NAME = 'ICELOT';
 
 export const UNDERSTANDING_CONTRACT_FACETS = [
@@ -64,65 +25,39 @@ export const UNDERSTANDING_CONTRACT_FACETS = [
 
 export type UnderstandingContractFacet = (typeof UNDERSTANDING_CONTRACT_FACETS)[number];
 
-/** What kind of constraint this is — governs how an agent should honor it.
- *  Each value maps 1:1 to a fact source the CAS already computes. */
 export type ConstraintKind =
-  | 'validation'   // input validation schema / required fields / types
-  | 'auth'         // authentication / authorization guard on the entry point
-  | 'rate-limit'   // throughput / quota guard, when surfaced
-  | 'error'        // failure-mode / error contract (throws, uncaught paths)
-  | 'invariant'    // data-entity or behavioral invariant enforced here
-  | 'business-rule'// guard clause / gating conditional in the unit's own source
-  | 'consistency'; // CAP / staleness posture: reads here may be eventual
+  | 'validation'
+  | 'auth'
+  | 'rate-limit'
+  | 'error'
+  | 'invariant'
+  | 'business-rule'
+  | 'consistency';
 
-/** A single first-class constraint on a unit, carrying its evidence + kind so
- *  an agent can both honor it and trace WHY it holds. Never fabricated — the
- *  `evidence` string is always the concrete fact that produced it. */
 export interface FacetConstraint {
   kind: ConstraintKind;
-  /** Human-legible rule ("caller must be authenticated", "amount > 0"). */
   rule: string;
-  /** The concrete CAS fact that drove this constraint (guard text, guard
-   *  name, invariant description, consistency posture evidence, …). */
   evidence: string;
 }
 
-/** Runtime "how this unit actually runs" — a compact projection of the
- *  per-node runtime metrics (buildNodeRuntimeMetrics) joined onto a unit when
- *  real observations exist for it. Omitted entirely when there is no runtime
- *  data — never fabricated, never zero-filled. */
 export interface ContractTelemetry {
-  /** CAS static id the metrics correlated to (node / entry-point / route). */
   static_id: string;
   request_count: number;
   error_rate: number;
-  /** Latency percentiles in ms (only the ones present are set). */
   p50_ms?: number;
   p95_ms?: number;
   p99_ms?: number;
   status_code_distribution?: Record<string, number>;
-  /** 'ingested' | 'simulated' | 'mixed' — provenance of the observations. */
   source: string;
   last_seen?: string;
 }
 
-/** AI-REFRAME PLUG POINT (D2, docs/SEMANTIC-MODEL.md ICELOT): the interpretive
- *  Logic summary of a unit — "Logic and interpretive reframing are AI-only,
- *  evidence-gated, with provenance". This field is AI-ONLY-OR-ABSENT
- *  (docs/cas/DETERMINISM-BOUNDARY.md): the deterministic pass NEVER populates
- *  it under any circumstances; only the query-layer AI enrichment pass may set
- *  it, and every claim in `text` must be backed by the `evidence_refs` it
- *  cites (facet values / node ids / constraint rules already on the contract). */
 export interface LogicSummary {
   text: string;
   description_source: 'ai';
-  /** Refs into the deterministic evidence the summary reframes — facet entry
-   *  values, node/step ids, or constraint rules. Never empty: an AI summary
-   *  with nothing to cite must be rejected, not stored. */
   evidence_refs: string[];
 }
 
-/** Which facet a provenance record annotates. */
 export type ProvenanceFacet =
   | 'input'
   | 'output'
@@ -131,28 +66,11 @@ export type ProvenanceFacet =
   | 'constraint'
   | 'telemetry';
 
-/**
- * FACET PROVENANCE (D2, docs/SEMANTIC-MODEL.md "Evidence and confidence —
- * everywhere"): where a facet ENTRY came from, so the chain flow facet → step
- * → code fact is walkable. At the STEP level `contributed_by_step_ids` is
- * absent (the step itself is the contributor) and `evidence` is the concrete
- * code-level fact (signature / exit point / data_lineage membership) that
- * produced the entry. At the FLOW level `contributed_by_step_ids` names the
- * step(s) whose contracts contributed the entry, and `evidence` is LIFTED from
- * the contributing step's own facet evidence — never re-derived, never
- * fabricated. `source` is always 'deterministic' here: an AI pass that wants
- * to reframe a facet plugs in via `logic_summary` / `description_source`, not
- * by writing provenance records.
- */
 export interface FacetProvenance {
   facet: ProvenanceFacet;
-  /** The exact facet entry this annotates (the input/output/effect string, or
-   *  the constraint's `rule`). */
   value: string;
-  /** FLOW level only: step_id(s) whose contract contributed this entry, sorted. */
   contributed_by_step_ids?: string[];
   source: 'deterministic';
-  /** The concrete fact that produced the entry. */
   evidence: string;
 }
 
@@ -164,102 +82,17 @@ export interface ILSOContract {
     external_integrations: string[];
   };
   output: string[];
-  /** Business rules / invariants / guards / auth / validation / consistency
-   *  enforced here — each a first-class {kind, rule, evidence} record derived
-   *  from guard clauses, validation schemas, auth guards, data-entity/behavioral
-   *  invariants, and the consistency model. Deterministic extraction only;
-   *  never fabricated. Empty when none could be derived. */
   constraints: FacetConstraint[];
-  /** Runtime metrics joined onto this unit when observations exist. Absent
-   *  (undefined) when there is no runtime data — the pure/static analyzer never
-   *  populates this; it is joined at the query layer from persisted telemetry. */
   telemetry?: ContractTelemetry;
-  /** Per-entry provenance for input/output/effect facet entries (constraints
-   *  carry their evidence inline and additionally surface here at the FLOW
-   *  level so the step attribution is walkable). Sorted (facet, value);
-   *  omitted when no entries carry evidence. Additive — serialization spreads. */
   facet_provenance?: FacetProvenance[];
-  /** AI-reframe plug point — see LogicSummary. ABSENT in deterministic runs. */
   logic_summary?: LogicSummary;
 }
 
-/**
- * FLOW-level contract (D2 aggregation/reframe rules): the flow's ICELOT is a
- * REFRAME of its steps' facets, never a simple union (docs/SEMANTIC-MODEL.md):
- *   Input  = the flow's INITIATING input only (the entry step's contract —
- *            entry-point signature params + entry-step reads); interior step
- *            inputs are DEMOTED to `internal_inputs_count`, not unioned.
- *   Output = the flow's TERMINAL output (last step's output, plus the resolved
- *            terminus emission folded in by the terminal path); intermediate
- *            returns are demoted to `internal_outputs_count`.
- *   Effects = union deduped by target, each stamped with the contributing
- *            step(s) via `facet_provenance`.
- *   Constraints = entry-scoped error constraints + step constraints that GATE
- *            the whole flow (a guard on a non-terminal step gates everything
- *            after it; a guard on the last step gates nothing downstream and
- *            stays step-level only).
- *   Telemetry = joined end-to-end at the query layer (unchanged), stamped
- *            with provenance when attached.
- */
 export interface FlowILSOContract extends ILSOContract {
-  /** Distinct interior-step input entries demoted from flow-level Input
-   *  (present only when > 0 — never zero-filled). They remain fully visible
-   *  on their own steps' contracts. */
   internal_inputs_count?: number;
-  /** Distinct non-terminal-step output entries demoted from flow-level Output
-   *  (present only when > 0). */
   internal_outputs_count?: number;
 }
 
-/**
- * D1 (docs/SEMANTIC-MODEL.md, Step): "Step ↔ code is many-to-many. One step may
- * span several functions plus a branch inside another; one large function may
- * contain several steps; a generic authorizeRequest() may serve hundreds of
- * steps." The mapping is TYPED — how a code region relates to the step, not
- * just that it does.
- *
- * Deterministic (Camp-B) derivation rules — every relationship is grounded in a
- * fact the CAS already computed, never fabricated:
- *   - 'implements'            — default for the SOLE node of a step's segment
- *                               when no more-specific relationship applies.
- *   - 'partially_implements'  — default for each node of a MULTI-node segment
- *                               when no more-specific relationship applies.
- *   - 'initiates'             — the node bound to the flow's entry point
- *                               (first step only).
- *   - 'completes'             — the node resolving the flow's terminus exit
- *                               point (terminal step of a terminal-chain flow).
- *   - 'validates'             — the node contributes a non-error constraint
- *                               (source guard clause, entry-point auth/
- *                               validation facts, data-entity invariant
- *                               enforced_by — the same facts D2's provenance
- *                               cites).
- *   - 'handles_failure'       — the node is an instance of a try-catch pattern
- *                               (cas.patterns) — it sits on a catch path.
- *   - 'branches'              — the node has a conditional control-flow
- *                               successor (buildConditionalOutIndex evidence,
- *                               the same facts C1's 'branch' step-graph edges
- *                               use).
- *   - 'causes_effect'         — the node contributes a state change or
- *                               external integration (its own exit points /
- *                               data_lineage writes — D2's effects facts).
- *   - 'observes'              — the node contributes TELEMETRY ONLY (all its
- *                               exits are telemetry kinds, no writes).
- *   - 'provides_input'        — the node writes an entity the NEXT step's
- *                               nodes read (data_lineage only; skipped when
- *                               not derivable — no fabrication).
- *   - 'consumes_output'       — the node reads an entity the PREVIOUS step's
- *                               nodes wrote (data_lineage only).
- *   - 'transforms'            — in the vocabulary (doctrine) but carries NO
- *                               deterministic derivation rule yet; only an
- *                               AI/manual pass may assert it, evidence-gated
- *                               (same posture as the prerequisite/recovery
- *                               capability-flow roles).
- *
- * A node can carry MULTIPLE mappings within one step (e.g. a controller node
- * that initiates + validates + causes_effect), and the SAME node mapped into
- * different steps (shared helpers across flows) can carry different
- * relationships in each — that is the many-to-many point.
- */
 export type StepCodeRelationship =
   | 'implements'
   | 'partially_implements'
@@ -274,22 +107,12 @@ export type StepCodeRelationship =
   | 'provides_input'
   | 'consumes_output';
 
-/** The code region a mapping points at. Node-level today; `line_range` is
- *  present only when the node carries real span facts (source.line/end_line) —
- *  never invented. */
 export interface StepCodeRegion {
   node_id: string;
   file?: string;
   line_range?: [number, number];
 }
 
-/** INTRA-FUNCTION SEGMENTATION PLUG POINT (D1, docs/SEMANTIC-MODEL.md:
- *  "intra-function step segmentation (AI-proposed, evidence-gated)"): a
- *  sub-region INSIDE the mapped node that realizes just this step. AI-ONLY-
- *  OR-ABSENT per docs/cas/DETERMINISM-BOUNDARY.md — the deterministic pass
- *  NEVER populates it; only a future AI enrichment pass may, and every
- *  proposed segment must cite the deterministic evidence (`evidence_refs`)
- *  that grounds it. */
 export interface StepCodeSubSegment {
   label: string;
   line_range: [number, number];
@@ -301,13 +124,8 @@ export interface StepCodeMapping {
   step_id: string;
   code_region: StepCodeRegion;
   relationship: StepCodeRelationship;
-  /** Short deterministic phrase citing the concrete fact that produced this
-   *  mapping (same style as D2's facet-provenance evidence strings). */
   contribution: string;
-  /** 1.0 for mappings derived from direct CAS facts (all deterministic rules
-   *  above are). Weaker derivations should be omitted, not down-weighted. */
   confidence: number;
-  /** ABSENT in deterministic runs — see StepCodeSubSegment. */
   sub_segments?: StepCodeSubSegment[];
 }
 
@@ -316,64 +134,17 @@ export interface FlowStep {
   order: number;
   name: string;
   description: string;
-  /**
-   * Provenance of `name`/`description` — the ICELOT doctrine seam made
-   * explicit. 'deterministic-label' = the structural template label
-   * (nameStepForRole), a FACT-shaped label, never interpretation.
-   * 'ai' = the interpretive naming/description pass (opts.nameStep, fed by
-   * the query layer from the persisted AI element-description store) replaced
-   * the label. The deterministic label always remains the fallback: when the
-   * AI pass has not run (or was rejected), the step stays
-   * 'deterministic-label' — provenance is never fabricated.
-   */
   description_source: 'deterministic-label' | 'ai';
   contract: ILSOContract;
-  /** 1:1, 1:many, or a SUB-SECTION of a single function (section present
-   *  when the step is only part of one function's body). */
   functions: Array<{
     function_id: string;
     section?: { start_line: number; end_line: number; label?: string };
   }>;
-  /** Data entities this step's own functions read or write (by name), from
-   *  data_lineage/data_entities.lifecycle membership restricted to just this
-   *  step's nodes — the same derivation as FlowConcept.entities, scoped
-   *  down. Empty (not omitted) when this step genuinely touches no known
-   *  entity. */
   entities: string[];
-  /** D1 typed step↔code mappings (many-to-many; see StepCodeMapping). One or
-   *  more mappings per node in this step's segment, each grounded in a CAS
-   *  fact. Sorted (node_id, relationship), capped at STEP_CODE_MAPPING_CAP.
-   *  Additive — consumers reading `functions`/`contract` see no change. */
   code_mappings?: StepCodeMapping[];
-  /** Honest truncation marker: how many derived mappings were dropped by the
-   *  STEP_CODE_MAPPING_CAP. Present only when > 0 — never zero-filled. */
   code_mappings_truncated?: number;
 }
 
-/**
- * Role of a flow ON A SPECIFIC capability↔flow relationship EDGE — RELATIONAL,
- * not intrinsic (docs/SEMANTIC-MODEL.md, Flow section): "Connect wallet" is
- * supporting for Trade-crypto and primary for Manage-wallets, simultaneously.
- * The role therefore lives on the edge, never on the flow itself.
- *
- * Deterministic (Camp-B) derivation rules — every role is grounded in a
- * structural ref, never a name keyword:
- *   - 'primary'       — a capability operation references this flow's entry
- *                        point (operations[].entry_point_id match).
- *   - 'supporting'    — the flow's TOUCHED ENTITIES overlap the capability's
- *                        related_entities, but its entry point is NOT among
- *                        the capability's operations.
- *   - 'operational'   — an entity-overlap edge whose flow the semantic-role
- *                        classifier classified 'infrastructure' (deploy /
- *                        install script entry — applied at the query layer via
- *                        applyFlowRoleToCapabilityRelationships).
- *   - 'observability' — an entity-overlap edge whose flow's exits are
- *                        dominated by telemetry exit kinds (exit-point type
- *                        facts, e.g. 'analytics').
- *   - 'prerequisite' / 'recovery' — in the vocabulary (doctrine roles) but
- *                        carry NO deterministic derivation rule yet; only an
- *                        AI/manual pass may assert them, evidence-gated.
- */
 export type CapabilityFlowRole =
   | 'primary'
   | 'supporting'
@@ -382,56 +153,23 @@ export type CapabilityFlowRole =
   | 'recovery'
   | 'observability';
 
-/** One capability↔flow relationship edge. `rationale` always cites the
- *  concrete structural evidence that produced the edge (the operation ref,
- *  the shared entity names, the telemetry exit facts) — never fabricated. */
 export interface CapabilityFlowRelationship {
   capability_id: string;
   role: CapabilityFlowRole;
   rationale: string;
-  /** Which structural anchor produced this edge. Entity-overlap edges are the
-   *  weakest tier and are subject to the blanket-linkage prune
-   *  (pruneBlanketCapabilityRelationships); anchor-based edges never are. */
   evidence?: 'operation' | 'interior-step' | 'route' | 'entity-overlap' | 'surface-membership';
 }
 
-/**
- * A single edge of a flow's STEP GRAPH (docs/SEMANTIC-MODEL.md, Flow section:
- * "Flow = semantic step GRAPH … the ordered step list shown to humans is a
- * PROJECTION of that graph, not its structure"). Edges connect the flow's
- * ordered `steps` by step_id. Kind is derived from EVIDENCE the CAS already
- * carries — never fabricated:
- *   - 'sequence'     — default ordering (step i → step i+1); the honest backbone
- *                      when no stronger evidence exists.
- *   - 'branch'       — the FROM step has a conditional control-flow successor
- *                      (a call edge flagged metadata.conditional, or a
- *                      method_call whose execution_context.is_conditional set).
- *   - 'error'        — the TO step is on a throw/catch path: it carries an
- *                      already-computed kind:'error' constraint (reuses the
- *                      error-contract evidence). Transitioning here enters
- *                      error-handling territory.
- *   - 'compensation' — the FROM step is itself on an error path AND the TO step
- *                      reverts state (a data_entities.lifecycle.deleted_by node
- *                      runs in it) — a rollback/cleanup after a failure edge.
- */
 export type FlowEdgeKind = 'sequence' | 'branch' | 'error' | 'compensation';
 
 export interface FlowStepEdge {
   from_step_id: string;
   to_step_id: string;
   kind: FlowEdgeKind;
-  /** The concrete CAS fact that upgraded this edge above 'sequence' (the
-   *  conditional edge/call, the error-constraint evidence, the state-revert
-   *  signal). Omitted for a plain 'sequence' backbone edge — never fabricated. */
   evidence?: string;
 }
 
 export interface FlowStepGraph {
-  /** Backbone edges over the flow's ordered `steps` (which remain the default
-   *  human PROJECTION). One edge per consecutive step pair, its kind upgraded
-   *  from 'sequence' to branch/error/compensation where evidence exists. A flow
-   *  with no branch/error/compensation evidence is just the sequence chain —
-   *  honest, not fabricated. */
   edges: FlowStepEdge[];
 }
 
@@ -439,122 +177,35 @@ export interface FlowConcept {
   flow_id: string;
   name: string;
   intent: string;
-  /** Interpretive flow-level description. ONLY ever populated by the AI
-   *  enrichment pass (query layer joins the persisted element-description
-   *  store) — omitted otherwise, never fabricated. `intent` remains the
-   *  deterministic fact-shaped fallback. */
   description?: string;
   description_source?: 'ai';
   entry_point: string;
-  /** BACK-COMPAT single link: the PRIMARY relationship's capability when one
-   *  exists (= the first capability whose operations reference this flow's
-   *  entry point). `capability_relationships` is the real model — M:N with
-   *  the role on the edge; this stays populated so existing consumers keep
-   *  working. Omitted (not fabricated) when no primary relationship exists. */
   capability_id?: string;
-  /** ALL capability↔flow relationship edges for this flow (M:N — a flow may
-   *  relate to multiple capabilities with different roles). Deterministic
-   *  derivation (see CapabilityFlowRole); each edge carries the structural
-   *  evidence in `rationale`. Omitted (never []) when no capability relates
-   *  to this flow by operation ref or entity overlap. */
   capability_relationships?: CapabilityFlowRelationship[];
-  /** Data entities the flow's functions read or write (by name), from
-   *  data_lineage membership across all of the flow's functions. */
   entities: string[];
-  /** Flow-level I/L/S/O + Constraints — a REFRAME of the steps' facets, not a
-   *  union (FlowILSOContract: initiating input, terminal output, deduped
-   *  effects with step provenance, flow-gating constraints). */
   contract: FlowILSOContract;
   steps: FlowStep[];
-  /**
-   * The TERMINAL this flow is anchored on — what the system actually produces
-   * at the end of this chain (the exit point the pre-computed entry-to-exit
-   * call chain ends at). Present only for flows derived from a real terminal
-   * call chain (buildTerminalFlows); omitted for entry-point-rooted flows that
-   * have no resolved exit terminus. This is the deterministic answer to "why
-   * this flow exists" — it ends by writing a store, calling an integration, or
-   * emitting a response. */
   terminus?: {
-    /** exit_point id (resolves in cas.exit_points). */
     exit_point_id: string;
-    /** api | database | sdk | webhook | event | navigation | … (exit type). */
     kind: string;
-    /** The produced target — service_id / resource / route / method name. */
     produces: string;
-    /** The node at the terminus (last node on the chain that emits the exit). */
     node_id: string;
   };
-  /**
-   * Criticality of the anchoring call chain, joined from the materialized
-   * `flow_graph.flows` index (CASFlowRef.criticality — the same rank-based
-   * value `flow_summary.by_criticality` counts). Present only for
-   * chain-anchored flows: an entry-point-rooted flow has no chain, so there is
-   * no criticality to report and the field is omitted rather than invented.
-   * Before this join every flow read through get_flow_concepts / /conceptual
-   * reported `criticality: undefined` even when the CAS carried a real value.
-   */
   criticality?: 'critical' | 'high' | 'medium' | 'low';
-  /** The flow's semantic STEP GRAPH over `steps` — branches, error paths, and
-   *  compensations layered on the sequence backbone (docs/SEMANTIC-MODEL.md:
-   *  the ordered `steps` list is a PROJECTION of this graph). Deterministic,
-   *  evidence-gated. Omitted when the flow has <2 steps (no edge to draw). */
   step_graph?: FlowStepGraph;
-  /** Flow ids this flow CONTINUES INTO via an async handoff: this flow's
-   *  terminus is a publish/emit whose channel matches a consumer flow's entry
-   *  point — a continuation segment of the SAME end-to-end flow, not a new flow
-   *  (docs/SEMANTIC-MODEL.md: "Async continuation ≠ new flow"). Evidence-gated
-   *  on a real publish↔consume seam match; omitted (never []) when none. */
   continuations?: string[];
-  /** Back-ref of `continuations`: flow ids that CONTINUE INTO this flow (this
-   *  flow is the async consumer they hand off to). Omitted when none. */
   continued_from?: string[];
-  /** True when this flow is a reusable continuation segment — a consumer reached
-   *  by an async publish from ≥1 other flow (it has `continued_from`). Omitted
-   *  (never false) otherwise. */
   is_subflow?: boolean;
-  /**
-   * Distinct DOM/UI event triggers that all resolve to this SAME flow (same
-   * handler root, same downstream reach) — collapsed here rather than
-   * emitted as N near-duplicate flows (flow-quality lane: 6 GraphCanvas mouse
-   * bindings — wheel/click/mouseEnter/… — all wired to the identical
-   * `clampZoom` handler used to surface as 6 templated "Handle <event> ->
-   * clampZoom" flows differing only in which DOM event fired; effect-based
-   * naming plus this collapse make them ONE flow named for the effect, e.g.
-   * "Zoom The Architecture Canvas", carrying `triggers: ["click","drag",
-   * "wheel"]`). Populated only when ≥2 real entry points collapsed into this
-   * flow; omitted (never a single-element array) otherwise — see
-   * groupEventVariantEntryPoints. Never fabricated: each string is a real
-   * `trigger.pattern`/`trigger.event`/`metadata.event` value from a grouped
-   * entry point.
-   */
   triggers?: string[];
-  /** Honest caveats about this specific flow's segmentation/derivation. */
   gaps?: string[];
 }
 
 export interface ComputeFlowConceptsOptions {
-  /** Bound on forward call-chain traversal depth from the entry point. */
   maxDepth?: number;
-  /** Cap on number of distinct functions traced per flow (dedupe applies). */
   maxFunctionsPerFlow?: number;
-  /** Cap on number of flows returned (one per entry point, by default all). */
   maxFlows?: number;
-  /**
-   * Skip the first N flows of the RANKED order before applying `maxFlows` —
-   * the page-2 mechanism. Meaningful only on the ranked-window path (no
-   * `target`, and the CAS carries a materialized `flow_graph.flows` index);
-   * see rankStoredFlowRefs for the order it pages through.
-   */
   offset?: number;
-  /** Restrict to entry points matching this id, name, or route path substring. */
   target?: string;
-  /**
-   * Optional AI/naming hook: given a deterministic step (already named),
-   * may return a replacement name/description. Never called for anything
-   * else — segmentation, I/L/S/O aggregation, constraint extraction, and
-   * function refs are always deterministic. Fully inert (no-op) when
-   * omitted.
-   */
   nameStep?: (step: FlowStep, ctx: { flowEntryPoint: CASEntryPoint }) => { name?: string; description?: string } | undefined;
 }
 
@@ -569,89 +220,29 @@ const DEFAULT_MAX_FUNCTIONS = 40;
 export const TRACEABLE_NODE_TYPES = new Set([
   'function', 'method', 'controller', 'handler', 'route', 'resolver', 'gateway',
   'service', 'usecase', 'repository', 'dao',
-  // frontend / SPA route->view chains (reached via 'renders'/'uses' edges):
-  // a react_route renders a functional_component/component, which uses hook
-  // nodes (useQuery/useMutation are the actual data-fetch/persist step —
-  // this is where the flow's real side effects live in a React app).
   'react_route', 'component', 'functional_component', 'class_component', 'page', 'view',
   'hook_usage', 'hook',
-  // A store node IS a callable hook in the frameworks that emit one
-  // (`useXStore()`), and it is precisely the "where the flow's real side
-  // effects live" node the comment above is about — state reads/writes and the
-  // service calls behind them. Leaving it untraceable meant a component's call
-  // into its own store was a dead end, which on store-centric SPAs is most of
-  // the interesting behavior.
   'zustand_store', 'store',
 ]);
 
 const VALIDATE_NAME_RE = /\b(validate|guard|check|assert|sanitize|verify|authoriz|authentic)/i;
 const RESPOND_NAME_RE = /\b(respond|render|reply|serialize|format|toJson|toResponse|present)/i;
 
-/**
- * SEMANTIC STEP ROLE (docs/SEMANTIC-MODEL.md, Step: "Framework semantics
- * locate steps … a validator/form boundary IS a Validate step; an ORM
- * flush/save IS a Persist step … a serializer/response boundary IS a Respond
- * step; a queue/messenger dispatch IS an async handoff"). This REPLACES the
- * old one-role-per-node `StepCharacter` model: a SINGLE node can carry
- * MULTIPLE roles at once (a controller that both authenticates AND validates
- * input is 'validate'; a repository call that both writes AND is named
- * `createOrder` is still 'persist', just NAMED from the verb — see
- * nameStepForRole). `deriveNodeRoleOccurrences` below is what makes the
- * doctrine's SPLIT rule possible: it returns every role a node's OWN facts
- * support, not just the dominant one.
- */
 export type StepRole = 'validate' | 'persist' | 'dispatch' | 'call_external' | 'respond' | 'process';
 
-/** Fixed precedence for (a) ordering the roles a single SPLIT node emits, and
- *  (b) the same-role-in-a-row MERGE test in segmentIntoStepsByRole. Mirrors
- *  the natural request lifecycle (Validate -> Persist -> Dispatch -> Call ->
- *  Respond), with 'process' last as the evidence-named fallback role. */
 const ROLE_PRIORITY: StepRole[] = ['validate', 'persist', 'dispatch', 'call_external', 'respond', 'process'];
 
-/** One role a single node's OWN facts ground — the SPLIT unit
- *  (docs/SEMANTIC-MODEL.md: "ONE node whose facts show MULTIPLE roles … yields
- *  MULTIPLE steps, each mapped back to that same node"). `evidence` is always
- *  the concrete CAS fact that produced it — never fabricated. */
 interface RoleOccurrence {
   node: CASNode;
   role: StepRole;
   evidence: string;
 }
 
-/**
- * Derive EVERY semantic role a node's own facts ground — the doctrine's
- * "framework semantics locate steps" rule, applied per node. A node can
- * return MULTIPLE occurrences (the SPLIT case: e.g. a controller action that
- * both carries an auth guard AND resolves the flow's HTTP response is both
- * 'validate' and 'respond'). Facts consulted, all already on the CAS:
- *   - VALIDATE   — the node's OWN entry_point security (auth/guards/roles) or
- *                  input.validation facts (structural, doctrine-cited); a
- *                  validate/guard/check/assert/verify/authoriz name pattern
- *                  is only a FALLBACK when no structural fact fired.
- *   - PERSIST    — the node's own exit_points of kind database/cache/file, or
- *                  data_lineage writes (an ORM flush/save boundary).
- *   - DISPATCH   — the node's own exit_points of kind message/event — an
- *                  async handoff (queue/messenger dispatch), never a sync call.
- *   - CALL_EXTERNAL — the node's own exit_points of kind api/webhook/sdk,
- *                  UNLESS that exact exit IS this flow's own resolved response
- *                  terminus (that is 'respond', not an outbound call).
- *   - RESPOND    — the node resolves the flow's own terminus as an api/
- *                  navigation exit (the response/serializer boundary), or a
- *                  respond/render/serialize name pattern as a fallback.
- * A node with NONE of the above facts gets exactly one 'process' occurrence
- * (the HONEST FALLBACK — segmentIntoStepsByRole/nameStepForRole still name it
- * from whatever entity/verb evidence exists, never a fabricated role label).
- * Occurrences are returned in ROLE_PRIORITY order so segmentation and naming
- * are deterministic run-to-run.
- */
 function deriveNodeRoleOccurrences(
   node: CASNode,
   exitPointsByNode: Map<string, CASExitPoint[]>,
   lineageByNode: Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }>,
   entryPointsByNode: Map<string, CASEntryPoint[]>,
-  /** The flow's resolved terminus (terminal-chain flows only) — grounds the
-   *  respond-vs-call distinction. Both undefined on entry-point-rooted flows
-   *  with no resolved terminus (honest omission, not fabrication). */
   terminusNodeId?: string,
   terminusKind?: string
 ): RoleOccurrence[] {
@@ -660,8 +251,6 @@ function deriveNodeRoleOccurrences(
   const lineage = lineageByNode.get(node.id);
   const eps = entryPointsByNode.get(node.id) || [];
 
-  // VALIDATE — the node's own entry_point auth/validation facts (structural);
-  // a name-pattern fallback only when no structural fact fired.
   let validateEvidence: string | undefined;
   for (const ep of eps) {
     const hasAuth = Boolean(ep.security?.authenticated)
@@ -679,8 +268,6 @@ function deriveNodeRoleOccurrences(
   }
   if (validateEvidence) occurrences.push({ node, role: 'validate', evidence: validateEvidence });
 
-  // PERSIST — an ORM flush/save boundary: own db/cache/file exit, or a
-  // data_lineage write.
   const dbExit = ownExits.find(e => e.type === 'database' || e.type === 'cache' || e.type === 'file');
   const writesEntity = lineage && lineage.writes.length > 0 ? lineage.writes[0] : undefined;
   if (dbExit || writesEntity) {
@@ -690,8 +277,6 @@ function deriveNodeRoleOccurrences(
     occurrences.push({ node, role: 'persist', evidence });
   }
 
-  // DISPATCH — a queue/messenger dispatch: own message/event exit (async
-  // handoff; the continuation is a DIFFERENT flow segment, see stitchContinuations).
   const dispatchExit = ownExits.find(e => e.type === 'message' || e.type === 'event');
   if (dispatchExit) {
     occurrences.push({
@@ -700,8 +285,6 @@ function deriveNodeRoleOccurrences(
     });
   }
 
-  // CALL_EXTERNAL — an outbound api/webhook/sdk exit, UNLESS it IS this flow's
-  // own resolved response terminus (that's 'respond', not an outbound call).
   const isResponseTerminus = Boolean(
     terminusNodeId !== undefined && node.id === terminusNodeId
     && terminusKind && ['api', 'navigation'].includes(terminusKind)
@@ -714,8 +297,6 @@ function deriveNodeRoleOccurrences(
     });
   }
 
-  // RESPOND — the serializer/response boundary: resolves the flow's own
-  // terminus, or a respond/render/serialize name pattern as a fallback.
   if (isResponseTerminus) {
     occurrences.push({
       node, role: 'respond',
@@ -728,10 +309,6 @@ function deriveNodeRoleOccurrences(
     });
   }
 
-  // HONEST FALLBACK: zero role-indicating facts. Still yields a sane step
-  // (never crashes, never fabricates a role) — nameStepForRole's 'process'
-  // branch further tries entity/verb evidence before falling back to a bare
-  // function-name label.
   if (occurrences.length === 0) {
     occurrences.push({
       node, role: 'process',
@@ -742,15 +319,6 @@ function deriveNodeRoleOccurrences(
   return occurrences.sort((a, b) => ROLE_PRIORITY.indexOf(a.role) - ROLE_PRIORITY.indexOf(b.role));
 }
 
-/** Layer used as a secondary segmentation boundary (in addition to side-effect
- *  character): a jump between architectural layers is itself a step boundary
- *  even when the side-effect character doesn't change (e.g. controller ->
- *  service, both "logic", still worth separating as distinct semantic units
- *  when the node `category`/`type` signals a layer change). */
-/** The source file a node was declared in, from whichever fact the
- *  contributing analyzer recorded. Used as a segmentation boundary (see
- *  segmentIntoStepsByRole) — never fabricated: nodes with no file fact answer
- *  the same sentinel and therefore never split on this axis. */
 export function sourceFileOf(node: CASNode): string {
   return (node as any).file_path || node.source?.file || '';
 }
@@ -765,9 +333,6 @@ export function layerOf(node: CASNode): string {
   return 'unknown';
 }
 
-/** Prebuilt forward-traversal index over the CAS graph, so callers that trace
- *  many roots (union path, entry-family entity rollup) build the O(edges)
- *  adjacency maps ONCE instead of once per root. */
 export interface TraversalIndex {
   nodesById: Map<string, CASNode>;
   outgoingEdges: Map<string, CASEdge[]>;
@@ -776,18 +341,6 @@ export interface TraversalIndex {
 
 export function buildTraversalIndex(cas: CASOutput): TraversalIndex {
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  // Traversable edge kinds: function-call edges (backend/service chains) AND
-  // 'renders'/'uses' (frontend route -> component chains, e.g. React Router
-  // handler nodes are 'react_route' entities connected to their view via
-  // 'renders', not a call edge) AND 'triggers' (JSX/template event-entry ->
-  // resolved named handler function, emitted by react/vue/angular/svelte-
-  // analyzer.ts and journey-builder.ts — mirrors the identical fix in
-  // orchestrator.ts's buildCallChains relationshipTypes set; see that
-  // comment for the evidence this starved event-entry chains at the
-  // enclosing component's node instead of reaching the actual handler).
-  // All three are "how the flow moves forward" — segmentation still only
-  // fires on side-effect/layer character, so this does not change what
-  // counts as a step boundary, only what is reachable.
   const TRAVERSABLE_EDGE_TYPES = new Set(['renders', 'uses', 'triggers']);
   const outgoingEdges = new Map<string, CASEdge[]>();
   for (const edge of cas.edges) {
@@ -805,11 +358,6 @@ export function buildTraversalIndex(cas: CASOutput): TraversalIndex {
   return { nodesById, outgoingEdges, outgoingMethodCalls };
 }
 
-/**
- * Trace the forward call chain from an entry point's handler node, bounded
- * by depth, deduped by node id (a diamond-shaped call graph must not be
- * walked twice or produce duplicate steps).
- */
 export function traceForwardChain(
   index: TraversalIndex,
   rootId: string,
@@ -823,8 +371,6 @@ export function traceForwardChain(
   const rootNode = nodesById.get(rootId);
   if (rootNode) chain.push({ node: rootNode, depth: 0 });
 
-  // BFS to preserve call-order-ish breadth-first ordering; ties broken by
-  // discovery order (stable, deterministic).
   let frontier: string[] = [rootId];
   let depth = 0;
   while (frontier.length > 0 && depth < maxDepth && chain.length < maxFunctions) {
@@ -838,11 +384,6 @@ export function traceForwardChain(
         if (visited.has(targetId)) continue;
         const targetNode = nodesById.get(targetId);
         if (!targetNode) continue;
-        // only trace through callable/renderable node types — skip data/type
-        // nodes that are call-graph noise, not semantic flow steps. Includes
-        // frontend route/component types (react_route, component, page) so
-        // SPA route->view chains are traceable via 'renders'/'uses' edges,
-        // not just backend call chains.
         if (!TRACEABLE_NODE_TYPES.has(targetNode.type)) continue;
         visited.add(targetId);
         next.push(targetId);
@@ -858,28 +399,6 @@ export function traceForwardChain(
   return chain;
 }
 
-/**
- * SEMANTIC SEGMENTATION (docs/SEMANTIC-MODEL.md, Step doctrine): draw step
- * boundaries by ROLE, not by function. Every node in the chain contributes
- * one or more ROLE OCCURRENCES (deriveNodeRoleOccurrences — evidence-gated,
- * never fabricated); this walks the chain in order, flattens every node's
- * occurrences (in ROLE_PRIORITY order), and then:
- *   - MERGE: a run of CONSECUTIVE occurrences sharing the same role collapses
- *     into ONE step, however many functions it spans (many-functions : one-step
- *     — "a validator/form boundary IS a Validate step" whether that's one
- *     function or three).
- *   - SPLIT: a single node whose OWN facts ground multiple roles emits
- *     multiple ADJACENT occurrences for that node (in ROLE_PRIORITY order —
- *     e.g. validate before persist), which — because they carry DIFFERENT
- *     roles — never merge with each other. The same node then legitimately
- *     maps into multiple steps (one-function : many-steps), each via its own
- *     StepCodeMapping (deriveStepCodeMappings re-derives relationships per
- *     node independently of this grouping, so a split node's two steps still
- *     each carry the correct typed mapping).
- * A chain with zero role-indicating facts anywhere still yields sane
- * 'process' steps (the HONEST FALLBACK; see deriveNodeRoleOccurrences) —
- * never crashes, never invents a role label.
- */
 function segmentIntoStepsByRole(
   chain: ChainNode[],
   exitPointsByNode: Map<string, CASExitPoint[]>,
@@ -895,30 +414,6 @@ function segmentIntoStepsByRole(
     );
   }
 
-  // MERGE test: same role, always — EXCEPT the 'process' fallback role, which
-  // additionally requires the same architectural LAYER (layerOf). Once a
-  // node's OWN facts ground a real role (validate/persist/dispatch/
-  // call_external/respond), doctrine says framework semantics locate the
-  // step and merging across layers is correct (the acceptance case: a
-  // controller's auth check + a service-level validator collapse into ONE
-  // Validate step). 'process' carries no such fact — it is the honest
-  // catch-all for nodes with no role-indicating evidence at all — so two
-  // unrelated business-logic hops in DIFFERENT layers (e.g. a bare
-  // dispatching controller and an unrelated downstream helper) stay distinct
-  // steps rather than collapsing into one undifferentiated blob.
-  //
-  // FILE BOUNDARY — THE FALLBACK AXIS when layer carries no signal. `layerOf`
-  // discriminates only where a contributing analyzer stamped `category` or a
-  // layered node `type`. On stacks where it does not (systems languages, plain
-  // module code), EVERY node answers 'unknown' and the layer test degenerates
-  // to "always merge": an eight-hop chain collapses into one
-  // "Process (8 functions: …)" blob, which is precisely the one-step flow this
-  // doctrine exists to prevent. When BOTH nodes are layer-unknown, crossing
-  // into a different SOURCE FILE is the best boundary evidence available — a
-  // hop out of the current file is a hop into a different unit of work.
-  // Deliberately NOT applied when either side has a real layer: on a stack
-  // that does stamp layers, layer is the better (coarser, semantic) boundary
-  // and file would shatter one service into one step per helper module.
   const segments: Array<{ role: StepRole; nodes: CASNode[]; evidences: string[] }> = [];
   for (const occ of occurrences) {
     const last = segments[segments.length - 1];
@@ -940,18 +435,6 @@ function segmentIntoStepsByRole(
   return segments;
 }
 
-/**
- * SUB-SECTION detection: within a single large function whose body spans
- * multiple side-effect phases, split it into contiguous line-range sections
- * using guard-clause / assignment / call boundaries visible in raw source —
- * a lightweight, deterministic line-scan (no re-parse), only attempted when
- * the node's own raw source is present and long enough to plausibly contain
- * more than one phase. Conservative: emits at most a validate-prefix split
- * (early guard clauses) followed by the remaining body, since that is the
- * one sub-section boundary derivable from text alone without a real AST
- * walk of the function body. Never fabricates line ranges — omitted when
- * `source.raw`/`source.line`/`source.end_line` aren't all present.
- */
 function detectSubSections(
   node: CASNode
 ): Array<{ start_line: number; end_line: number; label: string }> | undefined {
@@ -959,13 +442,11 @@ function detectSubSections(
   const startLine = node.source?.line;
   const endLine = node.source?.end_line;
   if (!raw || !startLine || !endLine || endLine <= startLine) return undefined;
-  if (endLine - startLine < 6) return undefined; // too small to sub-section meaningfully
+  if (endLine - startLine < 6) return undefined;
 
   const lines = raw.split('\n');
   if (lines.length < 6) return undefined;
 
-  // find the last contiguous leading guard-clause line (if/throw/return-early
-  // pattern) starting from the top of the body.
   let lastGuardLineIdx = -1;
   const GUARD_RE = /\b(if|throw|require|assert)\s*\(/;
   const RETURN_EARLY_RE = /\breturn\b/;
@@ -974,7 +455,6 @@ function detectSubSections(
     if (GUARD_RE.test(line) || (RETURN_EARLY_RE.test(line) && i < 15)) {
       lastGuardLineIdx = i;
     } else if (lastGuardLineIdx >= 0 && line.trim() !== '' && !line.trim().startsWith('}') && !line.trim().startsWith('//')) {
-      // first substantive non-guard line after guards seen — stop scanning.
       break;
     }
   }
@@ -987,8 +467,6 @@ function detectSubSections(
   ];
 }
 
-/** Dominant terminal-entity name touched by a step's functions, via
- *  data_lineage writer/reader membership — used only for step naming. */
 function dominantEntityForNodes(
   nodeIds: Set<string>,
   lineage: CASEntityLineage[]
@@ -1018,10 +496,6 @@ function externalServiceForNodes(nodeIds: Set<string>, exitPointsByNode: Map<str
   return undefined;
 }
 
-/** The OPERATION invoked at an outbound call — the remote method/function the
- *  exit point already names, in specificity order. Naming only; never
- *  fabricated (returns undefined when the analyzer recorded no operation, and
- *  a bare HTTP verb is not one). */
 function externalOperationForNodes(
   nodeIds: Set<string>,
   exitPointsByNode: Map<string, CASExitPoint[]>
@@ -1032,8 +506,6 @@ function externalOperationForNodes(
     const md: any = ep.metadata || {};
     const candidates = [md.function, ep.target?.endpoint, ep.operation?.action];
     for (const c of candidates) {
-      // Only an identifier-shaped token is an operation name; a URL path, a
-      // bare "external_call" placeholder or an HTTP verb is not.
       if (typeof c !== 'string') continue;
       if (!/^[A-Za-z_$][\w$]*$/.test(c)) continue;
       if (/^(external_call|call|get|post|put|patch|delete|head|options)$/i.test(c)) continue;
@@ -1043,10 +515,6 @@ function externalOperationForNodes(
   return undefined;
 }
 
-/** Dispatch/publish target for a DISPATCH-role segment — the channel/event
- *  name from the node's own message/event exit point (never a name pattern:
- *  this is only called on nodes that already grounded 'dispatch' via a real
- *  exit fact in deriveNodeRoleOccurrences). */
 function dispatchTargetForNodes(nodeIds: Set<string>, exitPointsByNode: Map<string, CASExitPoint[]>): string | undefined {
   for (const id of nodeIds) {
     const eps = exitPointsByNode.get(id) || [];
@@ -1056,16 +524,6 @@ function dispatchTargetForNodes(nodeIds: Set<string>, exitPointsByNode: Map<stri
   return undefined;
 }
 
-/**
- * Real per-call outbound API exit points (method + resolved endpoint) on any
- * node of this flow's path — the evidence route-matching in
- * deriveCapabilityRelationships consumes to relate a UI flow to the backend
- * capability operation it actually calls over the network. Only exit points
- * with BOTH a resolved endpoint and a method survive: an exit whose endpoint
- * couldn't be statically resolved (angular-analyzer.ts's per-call extraction
- * marks these `endpoint: undefined` rather than fabricating a path) carries
- * no route evidence and is correctly invisible to this match.
- */
 function apiRouteCallsForNodes(
   nodeIds: Set<string>,
   exitPointsByNode: Map<string, CASExitPoint[]>
@@ -1084,9 +542,6 @@ function apiRouteCallsForNodes(
   return calls;
 }
 
-/** `:id` / `{id}` / `*` — any of the path-param syntaxes real route
- *  extractors emit (Express/NestJS `:id`, OpenAPI/ASP.NET-style `{id}`,
- *  wildcard `*`) match ANY concrete segment on the other side. */
 const ROUTE_PARAM_SEGMENT = /^(:[\w-]+|\{[\w-]+\}|\*)$/;
 
 function routeSegmentMatches(a: string, b: string): boolean {
@@ -1098,22 +553,6 @@ function normalizeRouteSegments(p: string): string[] {
   return p.split('?')[0].split('/').filter(Boolean);
 }
 
-/**
- * Path-param-aware route match, case-insensitive. Segment COUNT must match
- * for a normal (full-path) comparison — a call to `/fuel/:id` and an
- * operation trigger `/fuel/:id/history` are different routes, never treated
- * as equal just because one is a prefix of the other.
- *
- * EXCEPTION: a call whose endpoint could only be resolved as a symbolic
- * base's TAIL (angular-analyzer.ts's per-call extraction: `${base}/fuel/
- * cards` → endpoint `/fuel/cards`, base unresolved cross-file) is naturally
- * SHORTER than the real operation path (`/api/web/fuel/cards`) — the base
- * prefix the call couldn't see. When the call path is strictly shorter, it
- * is matched as a SUFFIX of the operation path instead of requiring an exact
- * segment count, so this real, unavoidable gap (the base constant usually
- * lives in a different file than the call site) doesn't strand every
- * base_ref-relative call as unmatched.
- */
 function routePathsMatch(callPath: string, opPath: string): boolean {
   const callSegs = normalizeRouteSegments(callPath);
   const opSegs = normalizeRouteSegments(opPath);
@@ -1126,17 +565,9 @@ function routePathsMatch(callPath: string, opPath: string): boolean {
     const opTail = opSegs.slice(opSegs.length - callSegs.length);
     return callSegs.every((seg, i) => routeSegmentMatches(seg, opTail[i]));
   }
-  return false; // call path has MORE segments than the operation's declared route — not the same route.
+  return false;
 }
 
-/** CRUD-shaped verbs a PERSIST-role writer's own name can carry — grounds the
- *  "Create/Update/Delete <Entity>" naming the doctrine's acceptance case asks
- *  for (a `saveOrder`/`createBooking`-style write gets a MORE SPECIFIC name
- *  than the generic 'Persist <Entity>' fallback, when the writer's own name
- *  carries the verb). Also reused by the 'process' fallback naming below for
- *  the broader business-verb vocabulary. Deterministic name-pattern
- *  extraction on the SAME writer node the persist role's exit/lineage fact
- *  already grounded — not a new unrelated heuristic. */
 const CRUD_VERB_RE = /^(create|update|delete|remove|save|register|reserve|cancel|approve|reject|complete|submit|book|schedule)/i;
 const PROCESS_VERB_RE = /^(create|update|delete|remove|save|register|reserve|cancel|approve|reject|complete|submit|book|schedule|process|handle|apply|assign|generate|calculate|build|prepare|charge|refund|transfer|assign)/i;
 
@@ -1149,13 +580,6 @@ function titleizeWord(w: string): string {
   return w.length ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w;
 }
 
-/**
- * NAMING (docs/SEMANTIC-MODEL.md, Step): deterministic, byte-stable,
- * evidence-grounded action phrases. `grounded: false` marks the ONE honest
- * fallback case — a 'process' segment with no entity/verb evidence at all —
- * so callers can surface it as a gap instead of silently pretending the label
- * is meaningful.
- */
 function nameStepForRole(
   role: StepRole,
   nodes: CASNode[],
@@ -1163,11 +587,6 @@ function nameStepForRole(
   lineage: CASEntityLineage[]
 ): { name: string; description: string; grounded: boolean } {
   const result = nameStepForRoleImpl(role, nodes, exitPointsByNode, lineage);
-  // Defect #3 hygiene (see dedupeAdjacentWords): a template prefix ("Validate
-  // "/"Persist "/titleized verb) combined with an independently-sourced
-  // entity/target string can land the SAME word twice back-to-back (e.g. a
-  // verb "schedule" next to an entity already named "Scheduled Scan"). Applied
-  // uniformly to every branch's output, not just the ones observed to collide.
   return { ...result, name: dedupeAdjacentWords(result.name) };
 }
 
@@ -1188,10 +607,6 @@ function nameStepForRoleImpl(
 
   if (role === 'persist') {
     const entity = dominantEntityForNodes(nodeIds, lineage);
-    // A writer whose OWN name carries a CRUD verb (createOrder, saveBooking,
-    // cancelReservation, …) gets the MORE SPECIFIC evidence-named form —
-    // this is what the doctrine's acceptance case asks for: "Create <Entity>"
-    // rather than the generic "Persist <Entity>" when that evidence exists.
     const verbNode = nodes.find(n => verbForNode(n, CRUD_VERB_RE));
     const verb = verbNode ? verbForNode(verbNode, CRUD_VERB_RE) : undefined;
     if (verb && entity) {
@@ -1220,12 +635,6 @@ function nameStepForRoleImpl(
   }
 
   if (role === 'call_external') {
-    // NAME THE OPERATION, NOT THE IMPORT. "Call <service>" repeated across a
-    // flow population carries almost no information (and, before in-repo call
-    // resolution landed, <service> was frequently a same-repo module). The
-    // OPERATION being invoked is the real fact the exit point already
-    // carries — the remote method/endpoint/action — so lead with it and keep
-    // the service as the qualifier.
     const service = externalServiceForNodes(nodeIds, exitPointsByNode);
     const operation = externalOperationForNodes(nodeIds, exitPointsByNode);
     if (operation) {
@@ -1250,11 +659,7 @@ function nameStepForRoleImpl(
     return { name: 'Respond', description: `Formats/returns the result via ${fnNames}.`, grounded: true };
   }
 
-  // role === 'process' — the evidence-named fallback the doctrine requires:
   // "NEVER a bare 'Process (fnName)' placeholder name". Try entity + verb
-  // (e.g. "Reserve Inventory"), then entity alone, then verb alone, and only
-  // fall back to a bare function-name label when the node truly carries no
-  // entity/verb evidence at all (the HONEST FALLBACK — flagged ungrounded).
   const entity = dominantEntityForNodes(nodeIds, lineage);
   const verbNode = nodes.find(n => verbForNode(n, PROCESS_VERB_RE));
   const verb = verbNode ? verbForNode(verbNode, PROCESS_VERB_RE) : undefined;
@@ -1267,14 +672,6 @@ function nameStepForRoleImpl(
   if (verb) {
     return { name: titleizeWord(verb), description: `Core logic (verb "${verb}" on "${verbNode!.name}") via ${fnNames}.`, grounded: true };
   }
-  // HONEST FALLBACK, but a LEGIBLE one. There is no entity and no verb here,
-  // so the only real fact left is the identifier the segment's ENTRY-MOST
-  // function was given by its author. Presenting that as a title-cased phrase
-  // ("Add Agent To Notify") is the same deterministic string surgery every
-  // other naming branch uses on a real token — it invents nothing that
-  // `Process (add_agent_to_notify)` did not already show, and unlike the
-  // parenthesized form it actually distinguishes one step from the next.
-  // Still flagged ungrounded: the caller records the honest-fallback gap.
   const lead = titleCaseWords(nodes[0]?.name || '');
   const name = lead
     ? (nodes.length === 1 ? lead : `${lead} (+${nodes.length - 1} more)`)
@@ -1286,9 +683,6 @@ function nameStepForRoleImpl(
   };
 }
 
-/** The real trigger label a single entry point's own facts carry — a DOM/UI
- *  event name, a schedule expression, or (last resort) the entry's own name.
- *  Never fabricated: picks the first populated fact in specificity order. */
 function entryPointTriggerLabel(ep: CASEntryPoint): string {
   return (
     ep.trigger?.pattern ||
@@ -1299,32 +693,6 @@ function entryPointTriggerLabel(ep: CASEntryPoint): string {
   );
 }
 
-/**
- * EVENT-VARIANT COLLAPSE (flow-quality lane, defect #2): multiple `event`
- * entry points that resolve to the IDENTICAL handler root (same
- * `handler.node_id`/`source_node`) trace the IDENTICAL downstream chain —
- * they are not N flows that happen to look alike, they are the SAME flow
- * reached by N different DOM/UI triggers (a canvas wired so wheel/click/
- * mouseEnter/drag all call the same `clampZoom`-style handler). Grounded
- * ONLY on root-node identity (a real graph fact — same node id means the
- * traced chain, steps, and effects are byte-identical), never on name
- * similarity or event-type heuristics, so distinct handlers that merely
- * share a naming convention never collapse.
- *
- * Scoped to `type === 'event'` only: HTTP routes/CLI commands/schedules that
- * happen to share a handler function keep their own route/command identity
- * (that identity IS the meaningful fact there), unlike a raw DOM event name.
- *
- * Returns, for entry points that should be grouped:
- *   - `primaryByRoot`: root node id -> the one entry point (earliest in the
- *     caller's original order, so output stays deterministic) that will own
- *     the resulting flow.
- *   - `triggersByPrimaryId`: that primary entry point's id -> the deduped,
- *     sorted list of every grouped member's trigger label (>= 2 entries;
- *     never populated for a root with only one entry point).
- *   - `groupedAwayIds`: every non-primary entry point id in a multi-member
- *     group — the caller skips these so they don't also emit their own flow.
- */
 function groupEventVariantEntryPoints(
   entryPoints: CASEntryPoint[],
   originalIndex: Map<string, number>
@@ -1375,10 +743,6 @@ function buildLineageIndex(cas: CASOutput): Map<string, { writes: CASEntityLinea
   return index;
 }
 
-/** Map every REAL entry point's id → its handler NODE id. Interior capability↔
- *  flow matching (deriveCapabilityRelationships) consults this to resolve a
- *  capability operation's `entry_point_id` to the node it anchors on, gated to
- *  genuine entry-point handlers so utility node refs can never over-link. */
 function buildEntryHandlerNodeIdByEpId(cas: CASOutput): Map<string, string> {
   const index = new Map<string, string>();
   for (const ep of cas.entry_points || []) {
@@ -1495,11 +859,6 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
   return index;
 }
 
-/** Constraints from a node's own raw source: guard clauses, throws, asserts,
- *  and require()-style gating conditionals, translated into a plain-English
- *  business rule where the condition is legible, or the raw guarded
- *  condition text otherwise. Deterministic text-pattern extraction only —
- *  never invents rules that aren't textually present. */
 function extractConstraintsFromSource(node: CASNode): FacetConstraint[] {
   const raw = node.source?.raw;
   if (!raw) return [];
@@ -1511,7 +870,6 @@ function extractConstraintsFromSource(node: CASNode): FacetConstraint[] {
     out.push({ kind, rule, evidence });
   };
 
-  // require(expr) / assert(expr) -> "expr" as a stated invariant.
   const callGuardRe = /\b(?:require|assert)\s*\(\s*([^,)]+?)\s*(?:,|\))/g;
   let m: RegExpExecArray | null;
   while ((m = callGuardRe.exec(raw))) {
@@ -1519,14 +877,12 @@ function extractConstraintsFromSource(node: CASNode): FacetConstraint[] {
     if (expr) push('business-rule', `must satisfy: ${expr}`, m[0].trim());
   }
 
-  // if (!cond) throw ... -> "cond must hold" (negated guard -> positive rule).
   const negatedThrowRe = /if\s*\(\s*!\s*([^)]+?)\s*\)\s*(?:\{[^}]*)?throw/g;
   while ((m = negatedThrowRe.exec(raw))) {
     const cond = m[1].trim();
     if (cond) push('business-rule', `must hold: ${cond}`, m[0].trim());
   }
 
-  // if (cond) throw ... (direct gating conditional guarding via throw).
   const directThrowRe = /if\s*\(\s*([^)!][^)]*?)\s*\)\s*(?:\{[^}]*)?throw/g;
   while ((m = directThrowRe.exec(raw))) {
     const cond = m[1].trim();
@@ -1536,10 +892,6 @@ function extractConstraintsFromSource(node: CASNode): FacetConstraint[] {
   return out;
 }
 
-/** Constraints derivable from CAS structural facts rather than raw-source
- *  text: entry-point security guards/roles, entry-point input validation
- *  rules, and data-entity invariants whose enforced_by includes a node in
- *  this step. All are already-computed facts (never inferred here). */
 function extractStructuralConstraints(
   nodeIds: Set<string>,
   cas: CASOutput,
@@ -1557,7 +909,6 @@ function extractStructuralConstraints(
     out.push({ kind, rule, evidence });
   };
 
-  // --- Auth constraints (auth analyzer -> entry_point.security). ---
   for (const ep of ownEntryPoints) {
     if (ep.security?.authenticated) {
       push('auth', 'caller must be authenticated', `entry point "${ep.name}" security.authenticated=true`);
@@ -1568,11 +919,9 @@ function extractStructuralConstraints(
     for (const guard of ep.security?.guards || []) {
       push('auth', `guarded by: ${guard}`, `entry point "${ep.name}" security.guards`);
     }
-    // --- Validation constraints (validation-schema analyzer -> input.validation). ---
     for (const rule of ep.input?.validation || []) {
       push('validation', rule, `entry point "${ep.name}" input.validation`);
     }
-    // --- Rate-limit constraints, when the entry point security surfaces one. ---
     const rateLimit = (ep.security as any)?.rate_limit ?? (ep as any)?.rate_limit;
     if (rateLimit) {
       push('rate-limit', `rate limited: ${typeof rateLimit === 'string' ? rateLimit : JSON.stringify(rateLimit)}`,
@@ -1580,17 +929,12 @@ function extractStructuralConstraints(
     }
   }
 
-  // --- Data-entity invariants enforced by a node in this unit. ---
   for (const nodeId of nodeIds) {
     for (const invariant of facts.invariantsByNode.get(nodeId) || []) {
       push('invariant', invariant.description, `data_entity "${invariant.entityName}" invariant enforced_by a node in this unit`);
     }
   }
 
-  // --- Consistency / CAP constraints: if any exit point of this unit reads
-  //     from a store that the consistency model tagged eventual / staleness-
-  //     risky, that is a real correctness constraint ("reads here may be
-  //     stale"). Evidence-gated by ref_id match against this unit's exits. ---
   if (cas.consistency_model) {
     const ownExitIds = new Set<string>();
     for (const id of nodeIds) {
@@ -1603,8 +947,6 @@ function extractStructuralConstraints(
       push('consistency', `reads from ${sc.store} are eventually consistent${cap} — may observe stale data`,
         sc.consistency.evidence);
     }
-    // Passive seams whose reader side is one of this unit's nodes: the landed
-    // data is eventual by construction (replica / CDC / sink / materialized).
     for (const nodeId of nodeIds) {
       for (const seam of facts.passiveSeamsByTarget.get(nodeId) || []) {
         push('consistency', `reads via ${seam.channel} (${seam.shared_resource}) are eventually consistent — may lag the source`,
@@ -1613,36 +955,14 @@ function extractStructuralConstraints(
     }
   }
 
-  // --- Error / failure-mode constraints (kind: 'error'). Derived from the same
-  //     CAS primitives get_error_contracts (query.ts getErrorContracts) reads —
-  //     node.signature.throws + call_chains — but scoped to THIS unit's own
-  //     nodes. Evidence-gated: only emitted when the fact NAMES one of this
-  //     unit's nodes (throws declared on the node, or an uncaught propagation
-  //     path that traverses the node). Never a generic "may throw". ---
   for (const c of extractErrorConstraints(nodeIds, cas, scopeEntryPointIds)) push(c.kind, c.rule, c.evidence);
 
   return out;
 }
 
-/** Failure-mode constraints for a unit (kind: 'error'). Pure static pass over
- *  the CAS primitives — never imports the app / query layer. Reads exactly the
- *  facts get_error_contracts derives from:
- *    - node.signature.throws           -> "throws <ErrorType>"
- *    - call_chains traversing the node -> "uncaught path to entry point <X>"
- *  and gates every emission on one of THIS unit's own node ids being named by
- *  the fact (declaring node for throws; a call_path step's node_id for paths).
- *  A node that neither declares a throw nor lies on a throwing chain yields
- *  nothing — no fabrication, no generic "may throw". */
 function extractErrorConstraints(
   nodeIds: Set<string>,
   cas: CASOutput,
-  /** When building a FLOW/STEP contract, the flow's own entry point ids.
-   *  Uncaught-path constraints are then scoped to chains rooted at THIS
-   *  flow's entry — a shared helper (e.g. a storage loader) sits on chains
-   *  reaching hundreds of OTHER entry points, and those paths are not part
-   *  of this flow's contract (measured live: 106 cross-entry constraints ≈
-   *  29KB duplicated per flow+step before scoping). Absent scope keeps the
-   *  unit-level behavior (a function's error contract spans all entries). */
   scopeEntryPointIds?: Set<string>
 ): FacetConstraint[] {
   const facts = contractFactIndex(cas);
@@ -1654,7 +974,6 @@ function extractErrorConstraints(
     out.push({ kind: 'error', rule, evidence });
   };
 
-  // "throws <ErrorType>" — only for nodes in THIS unit that declare throws.
   const throwingHere = new Set<string>();
   for (const nodeId of nodeIds) {
     const node = facts.nodesById.get(nodeId);
@@ -1665,22 +984,14 @@ function extractErrorConstraints(
     }
   }
 
-  // "uncaught path to entry point <X>" — a call chain whose path traverses one
-  // of this unit's throwing nodes AND does not surface a caught-here handler
-  // for it. We only assert the path when the throwing node is on the chain
-  // (the fact names the node), mirroring getErrorContracts' uncaught_paths.
   if (throwingHere.size > 0) {
     for (const indexedChain of facts.callChains) {
       const { chain } = indexedChain;
-      // Flow/step scope: only chains rooted at this flow's own entry point.
       if (scopeEntryPointIds && scopeEntryPointIds.size > 0) {
         if (![...indexedChain.entryKeys].some(key => scopeEntryPointIds.has(key))) continue;
       }
       const throwerOnPath = (chain.call_path || []).find(step => throwingHere.has(step.node_id));
       if (!throwerOnPath) continue;
-      // Evidence-gated caught check: a try-catch pattern instance on a node that
-      // sits on this chain downstream of / at the thrower means the error is
-      // handled — do not report it as uncaught.
       if (indexedChain.caught) continue;
       const epName = indexedChain.entryName;
       push(`uncaught path to entry point ${epName}`,
@@ -1688,9 +999,6 @@ function extractErrorConstraints(
     }
   }
 
-  // Defensive size cap for any unscoped caller: a widely-shared throwing
-  // helper can otherwise emit one constraint per reachable entry point.
-  // Keep the deterministic first N and summarize the rest honestly.
   const ERROR_CONSTRAINT_CAP = 12;
   if (out.length > ERROR_CONSTRAINT_CAP) {
     const dropped = out.length - ERROR_CONSTRAINT_CAP;
@@ -1705,20 +1013,11 @@ function extractErrorConstraints(
   return out;
 }
 
-/** Build the ILSOContract for a set of functions (a step, or the whole flow
- *  when aggregating). Reuses the same fact sources getInterfaceSignature
- *  joins in query.ts: params/entry_points for input, return types +
- *  produced entities for output, exit_points + data_lineage external
- *  recipients for side_effects.external_integrations, data_lineage writes
- *  for side_effects.state_changes, and guard/validation/invariant facts for
- *  constraints — applied over a SET of functions instead of one node. */
 function buildContract(
   nodes: CASNode[],
   cas: CASOutput,
   exitPointsByNode: Map<string, CASExitPoint[]>,
   entryPointsByNode: Map<string, CASEntryPoint[]>,
-  /** The owning flow's entry point ids — scopes error constraints to THIS
-   *  flow's chains (see extractErrorConstraints). */
   scopeEntryPointIds?: Set<string>
 ): ILSOContract {
   const facts = contractFactIndex(cas);
@@ -1735,10 +1034,6 @@ function buildContract(
     constraints.push(c);
   };
 
-  // STEP-LEVEL facet provenance (D2): every input/output/effect entry carries
-  // the concrete code fact that produced it (first fact wins for a deduped
-  // entry — stable, since node iteration order is the segment order). The
-  // evidence is a fact ALREADY AT HAND at extraction time, never re-derived.
   const provenanceByKey = new Map<string, FacetProvenance>();
   const recordEvidence = (facet: ProvenanceFacet, value: string, evidence: string) => {
     const key = `${facet}\u0000${value}`;
@@ -1773,10 +1068,6 @@ function buildContract(
     for (const c of extractConstraintsFromSource(node)) addConstraint(c);
   }
 
-  // entity-level side effects (writes/reads), named by entity rather than by
-  // accessor node id, joined the same way getInterfaceSignature does via
-  // data_lineage external_recipients. writes -> state_changes; recipients
-  // external to the process -> external_integrations.
   const relevantLineage = new Set<CASEntityLineage>();
   for (const nodeId of nodeIds) {
     for (const lineage of facts.lineageByNode.get(nodeId) || []) relevantLineage.add(lineage);
@@ -1823,53 +1114,18 @@ function buildContract(
   };
 }
 
-/** Defensive bound on provenance records per contract — facet arrays are
- *  already capped by maxFunctionsPerFlow, so this only guards pathology. */
 const FACET_PROVENANCE_CAP = 200;
 
-/** Deterministic order for provenance records: (facet, value) — byte-stable
- *  run-to-run regardless of extraction order. Capped sanely. */
 function sortFacetProvenance(entries: FacetProvenance[]): FacetProvenance[] {
   const sorted = [...entries].sort((a, b) =>
     a.facet.localeCompare(b.facet) || a.value.localeCompare(b.value));
   return sorted.length > FACET_PROVENANCE_CAP ? sorted.slice(0, FACET_PROVENANCE_CAP) : sorted;
 }
 
-/** Evidence a step's own contract recorded for a facet entry, when present —
- *  the LIFT source for flow-level provenance (flow facet → step → code fact). */
 function stepFacetEvidence(step: FlowStep, facet: ProvenanceFacet, value: string): string | undefined {
   return step.contract.facet_provenance?.find(p => p.facet === facet && p.value === value)?.evidence;
 }
 
-/**
- * Aggregate step contracts up to the flow-level contract — the D2 REFRAME
- * rules (docs/SEMANTIC-MODEL.md ICELOT: "a flow's ICELOT aggregates its steps
- * and adds flow-level semantics … never a simple union"):
- *
- *   (a) Input  = the INITIATING step's input only (the entry-point handler
- *       segment — its signature params + its own reads). Interior step inputs
- *       are demoted to `internal_inputs_count`, never unioned up.
- *   (b) Output = the TERMINAL step's output only (what survives to the end of
- *       the chain; the terminal path additionally folds the resolved terminus
- *       emission in afterwards). Intermediate returns are demoted to
- *       `internal_outputs_count`.
- *   (c) Effects = union deduped by target (they OUTLIVE the flow regardless of
- *       which step caused them), each stamped in `facet_provenance` with the
- *       contributing step id(s) and the step's own code-fact evidence.
- *   (d) Constraints = only constraints that GATE the flow: 'error' constraints
- *       (already entry-scoped to this flow's chains) always stay; any other
- *       constraint is promoted only when a NON-TERMINAL step enforces it (a
- *       guard on step 1 gates everything after it — a guard on the last step
- *       gates nothing downstream and stays step-level). A single-step flow's
- *       constraints gate the whole flow trivially.
- *   (e) Telemetry is joined end-to-end at the query layer (attachTelemetryToFlows).
- *
- * Every flow-level facet entry gets a `facet_provenance` record —
- * {facet, value, contributed_by_step_ids (sorted), source:'deterministic',
- * evidence lifted from the step} — so the chain flow → step → code is
- * walkable. Deterministic: provenance sorted (facet, value), step ids sorted,
- * capped at FACET_PROVENANCE_CAP.
- */
 function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
   const provenanceByKey = new Map<string, FacetProvenance & { contributed_by_step_ids: string[] }>();
   const record = (facet: ProvenanceFacet, value: string, stepId: string, evidence: string) => {
@@ -1886,7 +1142,6 @@ function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
   const initiating = steps[0];
   const terminal = steps[lastIdx];
 
-  // (a) Input = initiating input only; interior inputs demoted to a count.
   const input = [...initiating.contract.input];
   const inputSet = new Set(input);
   for (const v of input) {
@@ -1898,7 +1153,6 @@ function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
     for (const v of step.contract.input) if (!inputSet.has(v)) interiorInputs.add(v);
   }
 
-  // (b) Output = terminal output only; intermediate returns demoted to a count.
   const output = [...terminal.contract.output];
   const outputSet = new Set(output);
   for (const v of output) {
@@ -1910,7 +1164,6 @@ function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
     for (const v of step.contract.output) if (!outputSet.has(v)) interiorOutputs.add(v);
   }
 
-  // (c) Effects = union deduped by target, stamped with contributing step(s).
   const stateChanges = new Set<string>();
   const externalIntegrations = new Set<string>();
   for (const step of steps) {
@@ -1926,10 +1179,6 @@ function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
     }
   }
 
-  // (d) Constraints that gate the flow. 'error' kind is already entry-scoped
-  // to this flow's own chains (extractErrorConstraints) — always flow-level.
-  // Everything else promotes only from a step with downstream steps to gate
-  // (or from the only step of a single-step flow).
   const constraints: FacetConstraint[] = [];
   const constraintKeys = new Set<string>();
   for (let i = 0; i < steps.length; i++) {
@@ -1967,19 +1216,6 @@ function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
   };
 }
 
-/**
- * Data entities any node in `nodeIds` genuinely touches. Two independent CAS
- * signals are consulted — data_lineage (writers/readers keyed by node_id)
- * AND data_entities[].lifecycle (created_by/read_by/updated_by/deleted_by,
- * also keyed by node_id) — since either can carry membership the other
- * lacks depending on which analyzer pass populated it, and both already key
- * on the same node-id namespace as `cas.nodes` (verified: these are the
- * literal ids traceForwardChain visits, not a separate id scheme — no
- * cross-namespace translation is needed, only checking both sources so a
- * flow whose traced set intersects EITHER one is credited). Never attaches
- * an entity without a real touching node in `nodeIds` — no name-similarity,
- * no capability-co-membership shortcut.
- */
 function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
   const names = new Set<string>();
   for (const entry of cas.data_lineage || []) {
@@ -1998,25 +1234,8 @@ function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
   return [...names];
 }
 
-/** Edge types a delegation hop can cross for CLI one-hop entity association —
- *  identical vocabulary to the capability-building one-hop pass
- *  (orchestrator.ts buildSystemCapabilities' CALLEE_EDGE_TYPES): a controller/
- *  command handler routinely persists one call away (live on a benchmarked fleet-management repo:
- *  ElectronicLoggingDeviceController -> DataTransferManager -> persist(...)),
- *  and 'delegates_to'/'queries' edges are NOT in traceForwardChain's
- *  traversable set (TRAVERSABLE_EDGE_TYPES only follows calls, invokes, any
- *  type containing "call", renders, uses), so those delegated persistence
- *  nodes never land in a CLI
- *  flow's own traced `allNodeIds` — entitiesForNodes then sees no touching
- *  node and the flow carries entities:[] even though its handler clearly
- *  delegates persistence one hop away. */
 const CLI_ONE_HOP_CALLEE_EDGE_TYPES = new Set(['calls', 'invokes', 'delegates_to', 'uses', 'queries']);
 
-/** Builds the CLI-flow one-hop entity resolver once per computeFlowConcepts
- *  pass (memoized by root node id — many chains can share a root). Direct
- *  callees ONLY (one hop, never recursive) — same shallowness discipline as
- *  the capability-building pass, so entity attribution stays tight to a real
- *  delegation edge rather than smearing across the whole reachable graph. */
 function makeCliOneHopEntities(cas: CASOutput): (nodeIds: Set<string>) => string[] {
   const directCalleesBySource = new Map<string, Set<string>>();
   for (const edge of cas.edges || []) {
@@ -2037,34 +1256,10 @@ function makeCliOneHopEntities(cas: CASOutput): (nodeIds: Set<string>) => string
   };
 }
 
-/**
- * Normalize an entity reference to a comparison key that reconciles the TWO
- * shapes the CAS uses for the SAME entity: the display NAME carried on
- * flow.entities (from data_lineage.entity_name / data_entities.name, e.g.
- * "WorkingMemorySession") and the ID carried on capability.related_entities
- * (e.g. "entity_workingmemorysession"). Without this reconciliation the path-(b)
- * overlap in deriveCapabilityRelationships compares "entity_workingmemorysession"
- * against "workingmemorysession" and NEVER matches — silently zeroing every
- * entity-overlap capability↔flow edge. Lowercases, strips a leading `entity_`
- * id-prefix, and drops non-alphanumerics so "WorkingMemorySession",
- * "working_memory_session", and "entity_workingmemorysession" all collapse to
- * one key. Deterministic, evidence-preserving (no fuzzy matching — exact key
- * equality after canonicalization).
- */
 export function normalizeEntityKey(ref: string): string {
   return String(ref).toLowerCase().replace(/^entity_/, '').replace(/[^a-z0-9]/g, '');
 }
 
-/**
- * ENTRY-POINT-FAMILY entity rollup: the full forward-reachable node set from a
- * flow's root ("the route/handler's lineage"), used to attach entities the
- * flow genuinely reaches even when the specific recorded chain path missed the
- * write/read node (a terminal chain records ONE path; the handler's family
- * covers the sibling branches). Still evidence-gated — the entity must have a
- * real accessor node inside the traced family; no name-similarity, no
- * capability-co-membership shortcut. Memoized per root so many chains sharing
- * one handler pay for the BFS once.
- */
 function makeEntryFamilyEntities(
   cas: CASOutput,
   index: TraversalIndex,
@@ -2085,7 +1280,6 @@ function makeEntryFamilyEntities(
   };
 }
 
-/** Union of two entity-name lists, order-stable (first list wins ordering). */
 function unionEntities(primary: string[], extra: string[]): string[] {
   if (extra.length === 0) return primary;
   const seen = new Set(primary);
@@ -2096,18 +1290,8 @@ function unionEntities(primary: string[], extra: string[]): string[] {
   return out;
 }
 
-/** Exit-point kinds that ARE telemetry emission (exit-point TYPE facts from
- *  the CAS exit-point union — never a name pattern). 'analytics' is the only
- *  telemetry-shaped kind in EXIT_POINT_TYPES today; extend here if the union
- *  grows a metrics/log/trace kind. */
 const TELEMETRY_EXIT_KINDS = new Set(['analytics']);
 
-/** Whether a flow's observable exits are DOMINATED by telemetry exit kinds —
- *  the deterministic ground for an 'observability' capability relationship.
- *  Facts only: the flow's own nodes' exit points (by type) plus the resolved
- *  terminus kind. Dominated = the terminus itself is a telemetry exit, or
- *  strictly more telemetry exits than non-telemetry ones across the flow's
- *  nodes. Returns the concrete evidence string alongside the verdict. */
 function telemetryExitDominance(
   nodeIds: Set<string>,
   exitPointsByNode: Map<string, CASExitPoint[]>,
@@ -2134,17 +1318,6 @@ function telemetryExitDominance(
   return { dominated: false };
 }
 
-/**
- * CLI-command -> CronJob scheduling evidence, reused from journey-builder.ts
- * (buildCronScheduleIndex / findCronSchedule — the SAME kubernetes_cronjob
- * `command`+`schedule` facts that make a user journey 'scheduled', 4e34b9ed).
- * Only `cli` entry points are eligible (an HTTP/websocket/page entry is never
- * "run by a CronJob") and only when the entry carries a resolvable console
- * command name (CASEntryPoint.metadata.commandName — php-analyzer /
- * extractPhpConsoleCommandName). Returns the CronJob's schedule expression on
- * a real container-command match, else undefined — never fabricated from the
- * command/file name alone.
- */
 function deriveCliCronSchedule(
   entryPoint: CASEntryPoint | undefined,
   cronScheduleIndex: Map<string, string>
@@ -2155,80 +1328,16 @@ function deriveCliCronSchedule(
   return findCronSchedule(commandName, cronScheduleIndex);
 }
 
-/**
- * Derive ALL capability↔flow relationship edges for one flow — DETERMINISTIC
- * (Camp-B), structural refs only, never name keywords:
- *
- *   (a) a capability operation references this flow's entry point
- *       (operations[].entry_point_id === entry-point id | `node:<root>` |
- *       root node id — the same three shapes deriveCapabilityOperationRoots
- *       documents) → 'primary'; rationale cites the operation ref.
- *   (b) the flow's touched entities overlap the capability's related_entities
- *       but its entry point is NOT among the capability's operations →
- *       'supporting'; rationale cites the shared entity names.
- *   (c2) an entity-overlap edge on a flow rooted at a CLI entry point whose
- *       console command a real kubernetes_cronjob (incl. Helm-templated,
- *       resolved from values.yaml) schedules → 'operational'; rationale cites
- *       the CronJob's schedule expression (deriveCliCronSchedule, reusing
- *       journey-builder.ts's buildCronScheduleIndex/findCronSchedule —
- *       SAME evidence that makes a user journey 'scheduled', 4e34b9ed). A
- *       scheduled CLI job realizing a capability's entities is operational
- *       upkeep FOR that capability, not incidental support. Telemetry
- *       dominance (d) is checked first — a flow whose exits are genuinely
- *       telemetry-shaped keeps 'observability' even when cron-scheduled.
- *   (d) an entity-overlap edge on a flow whose exits are dominated by
- *       telemetry exit kinds → 'observability'; rationale cites the exit
- *       facts. (An operation ref still wins: realizing an operation of the
- *       capability is stronger evidence than the exit mix.)
- *
- * Rule (c) — entity-overlap edge + flow classified 'infrastructure' by the
- * semantic-role classifier → 'operational' — is applied at the QUERY layer
- * (applyFlowRoleToCapabilityRelationships), because the role classifier lives
- * there; this pure static pass never sees it.
- *
- * A flow may relate to MULTIPLE capabilities (one edge per capability, in
- * capabilities array order — stable run-to-run). Returns [] when nothing
- * relates; callers omit the field rather than serializing an empty array.
- */
 function deriveCapabilityRelationships(args: {
   capabilities: SystemCapability[];
-  /** Resolved cas.entry_points[].id for the flow root, when one exists. */
   entryPointId?: string;
-  /** The flow root's handler node id (always known). */
   rootNodeId?: string;
-  /** Entity names the flow's functions genuinely touch (entitiesForNodes). */
   entities: string[];
-  /** Telemetry-dominance verdict for this flow (telemetryExitDominance). */
   telemetry: { dominated: boolean; evidence?: string };
-  /** ALL node ids on the flow's traced path (root + every interior step) — lets
-   *  a capability whose own entry-point handler is realized as an INTERIOR step
-   *  of this larger flow link to it (→ supporting). Omitted → interior matching
-   *  is skipped (behavior unchanged). */
   pathNodeIds?: Set<string>;
-  /** Resolver from a capability operation's `entry_point_id` to the handler
-   *  NODE id it anchors on (real cas.entry_points). `node:`-anchored operations
-   *  resolve by stripping the prefix instead — a capability-DECLARED operation
-   *  anchor is evidence (deriveCapabilityOperationRoots trusts the same shape
-   *  to root whole flows), so a flow passing through it exercises the
-   *  capability (re-validation F3: excluding this shape made the
-   *  supporting/observability vocabulary unreachable on real CAS, where
-   *  operations are predominantly node-anchored). */
   entryHandlerNodeIdByEpId?: Map<string, string>;
-  /** This flow's CLI cron-schedule evidence (deriveCliCronSchedule), when the
-   *  flow's entry point is a CLI command a real kubernetes_cronjob schedules.
-   *  Undefined for every non-CLI / unscheduled flow — never fabricated. */
   cronSchedule?: string;
-  /** The flow root entry point's type (cli/message/event/route/http/...) —
-   *  grounds surface-membership fallback edges (see below). */
   entryType?: string;
-  /** Real outbound (method, path) API calls this flow's own path nodes make
-   *  (apiRouteCallsForNodes) — e.g. an Angular UI flow's per-call HttpClient
-   *  exit points (angular-analyzer.ts). Lets a flow that never runs THROUGH a
-   *  capability's handler node (impossible across a real network boundary —
-   *  the opMatch/interiorOp anchors above only ever fire for same-process
-   *  flows) still relate to the capability whose operation it calls, via
-   *  route evidence instead. Omitted → route matching is skipped (behavior
-   *  unchanged). */
   apiRouteCalls?: Array<{ method: string; path: string }>;
 }): CapabilityFlowRelationship[] {
   const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule, entryType, apiRouteCalls } = args;
@@ -2239,15 +1348,6 @@ function deriveCapabilityRelationships(args: {
     const opMatch = (cap.operations || []).find(op => {
       if (entryPointId !== undefined && op.entry_point_id === entryPointId) return true;
       if (rootNodeId !== undefined && (op.entry_point_id === `node:${rootNodeId}` || op.entry_point_id === rootNodeId)) return true;
-      // SAME-HANDLER bridge: two analyzers can emit distinct CLI entry points
-      // for the SAME console command (e.g. a framework-detection pass and a
-      // language-level class-detection pass both registering it), sharing one
-      // handler node but carrying different entry_point ids. A capability
-      // operation anchored on either sibling entry point still designates
-      // THIS flow as primary once resolved to the identical handler node —
-      // real structural evidence (entryHandlerNodeIdByEpId), not a name
-      // heuristic. Without this, a duplicate entry point stays stranded even
-      // though its own sibling is already the capability's declared primary.
       if (rootNodeId !== undefined && entryHandlerNodeIdByEpId) {
         const handlerNodeId = entryHandlerNodeIdByEpId.get(op.entry_point_id);
         if (handlerNodeId !== undefined && handlerNodeId === rootNodeId) return true;
@@ -2264,22 +1364,8 @@ function deriveCapabilityRelationships(args: {
       continue;
     }
 
-    // INTERIOR entry-point anchor: a capability whose OWN entry-point handler is
-    // realized as a step on THIS flow's path (but is not the flow's root) — the
-    // flow passes THROUGH that capability's entry point, so the capability is
-    // 'supporting' to this flow. Evidence-gated to real entry-point handlers
-    // (entryHandlerNodeIdByOpEp) — never a bare utility node ref — and stronger
-    // than entity overlap, so it wins when both would fire.
     if (pathNodeIds && entryHandlerNodeIdByEpId) {
       const interiorOp = (cap.operations || []).find(op => {
-        // Real entry-point anchors resolve via the handler map; `node:`-anchored
-        // operations (the common shape — capability ops anchored directly on a
-        // function/method node) resolve by stripping the prefix. Without the
-        // second form, interior matching silently never fired for node-anchored
-        // ops while the primary op-match (which handles `node:`) did — so every
-        // relationship collapsed to 'primary' (re-validation F3: 39/39 primary
-        // on a fresh hosted analysis; the supporting/observability/operational
-        // vocabulary was unreachable for node-anchored capabilities).
         const handlerNodeId = entryHandlerNodeIdByEpId.get(op.entry_point_id)
           ?? (op.entry_point_id?.startsWith('node:') ? op.entry_point_id.slice('node:'.length) : undefined);
         return handlerNodeId !== undefined
@@ -2297,18 +1383,6 @@ function deriveCapabilityRelationships(args: {
       }
     }
 
-    // ROUTE-MATCH: this flow's own exit points call an HTTP (method, path)
-    // that resolves to one of the capability's declared operation triggers
-    // (op.trigger.method/path — buildTrigger in capability-detector.ts
-    // mirrors a real cas.entry_points route onto the operation). Placed
-    // ABOVE entity overlap: "this UI flow calls exactly this backend
-    // operation" is direct network-boundary evidence, stronger than merely
-    // touching the same named entities the way entity-overlap infers
-    // relatedness. Placed BELOW the entry-point anchors (opMatch/interiorOp)
-    // since those are SAME-PROCESS structural anchors (the flow literally
-    // runs through the operation's own handler node) — strictly stronger
-    // than a cross-network route match, when both are available. Never a
-    // name-similarity match: purely (method, path), path-param-aware.
     if (apiRouteCalls && apiRouteCalls.length > 0) {
       let routeMatch: { op: SystemCapability['operations'][number]; call: { method: string; path: string } } | undefined;
       for (const op of cap.operations || []) {
@@ -2340,14 +1414,6 @@ function deriveCapabilityRelationships(args: {
         evidence: 'entity-overlap',
       });
     } else if (cronSchedule) {
-      // Rule (c2): a CLI command a real CronJob schedules, whose path touches
-      // this capability's entities, is SCHEDULED OPERATIONAL work for that
-      // capability (docs/SEMANTIC-MODEL.md coverage invariants: operational/
-      // maintenance are exactly the roles for cron/console flows) — not
-      // incidental 'supporting'. Telemetry dominance is checked first: a
-      // cron job whose own exits are genuinely telemetry-shaped keeps
-      // 'observability' (a more specific signal about what the flow itself
-      // is), never demoted to 'operational' by its trigger alone.
       out.push({
         capability_id: cap.id,
         role: 'operational',
@@ -2364,17 +1430,6 @@ function deriveCapabilityRelationships(args: {
     }
   }
 
-  // SURFACE-MEMBERSHIP FALLBACK: behavior surfaces are the registration
-  // registries for entry KINDS (command/message/event/route), but their
-  // `operations` list is a capped SAMPLE (12) — op-matching against it strands
-  // every registered flow past the sample (measured live: an AI-on catalog of
-  // 13 purposeful capabilities left 437/896 flows unmapped, mostly CLI/route
-  // flows whose only home IS a surface). Membership evidence is structural:
-  // a surface whose sampled operations are homogeneously one entry_point_type
-  // registers every entry of that type, by construction of
-  // buildBehaviorCapabilities. Fallback-only (never dilutes a real
-  // capability edge): applied when nothing else related, with the cron rule
-  // upgrading scheduled CLI work to 'operational'.
   if (out.length === 0 && entryType) {
     for (const cap of capabilities) {
       if ((cap as { evidence_kind?: string }).evidence_kind !== 'behavior-surface') continue;
@@ -2388,23 +1443,13 @@ function deriveCapabilityRelationships(args: {
           : `registered on the "${cap.name}" behavior surface (entry type ${entryType}) — no core capability references this flow`,
         evidence: 'surface-membership',
       });
-      break; // one surface per entry type by construction
+      break;
     }
   }
 
   return out;
 }
 
-/**
- * Rule (c) of the capability↔flow role derivation, applied at the QUERY layer
- * where the semantic-role classifier (apps/mcp-server/src/semantic-roles.ts
- * classifyFlowRole) runs: a flow the classifier grounds as 'infrastructure'
- * (deploy/install script entry, plumbing surface) relates to a capability via
- * shared entities as 'operational', not 'supporting'. Only entity-overlap
- * edges flip — an operation ref ('primary') and telemetry dominance
- * ('observability') are stronger, more specific evidence and keep their role.
- * Mutates in place; a no-op for any other role / when no relationships exist.
- */
 export function applyFlowRoleToCapabilityRelationships(
   flow: Pick<FlowConcept, 'capability_relationships'>,
   role: string | undefined,
@@ -2418,33 +1463,12 @@ export function applyFlowRoleToCapabilityRelationships(
   }
 }
 
-/** entry_point_type values on a capability operation don't necessarily line
- *  up with CASEntryPoint's stricter type union (e.g. 'internal' isn't a
- *  valid CASEntryPoint.type) — map to the closest real type, defaulting to
- *  the always-valid 'message' for anything unrecognized rather than
- *  fabricating a category. */
 const CAPABILITY_ENTRY_TYPE_MAP: Record<string, CASEntryPoint['type']> = {
   http: 'http', websocket: 'websocket', cli: 'cli', event: 'event',
   schedule: 'schedule', page: 'page', route: 'route', message: 'message',
   file: 'file', test: 'test', lifecycle: 'lifecycle',
 };
 
-/**
- * Bridge gap: `cas.entry_points` is the flow-root source, but on backend
- * services whose route/controller entry points aren't (yet, or ever, for
- * some frameworks) surfaced there, `system_capabilities[].operations[]`
- * already names the real handler/method node directly via a `node:<id>`
- * reference — the CAS's own capability-detection pass already resolved
- * "what operation this is" against real nodes, independent of entry-point
- * extraction. When such an operation's node exists in the graph and isn't
- * already covered by a real entry_points root, synthesize a minimal
- * CASEntryPoint-shaped root for it so computeFlowConcepts can trace a flow
- * from it too — this is not a guess: the node id, and the capability that
- * names it, both come straight off the CAS. The synthesized id is tagged
- * `synthflow:` so it never collides with a real entry_points id, and the
- * flow's `gaps` records that its root was synthesized this way (honest, not
- * hidden).
- */
 function deriveCapabilityOperationRoots(
   cas: CASOutput,
   capabilities: SystemCapability[],
@@ -2456,12 +1480,12 @@ function deriveCapabilityOperationRoots(
 
   for (const cap of capabilities) {
     for (const op of cap.operations || []) {
-      if (!op.entry_point_id.startsWith('node:')) continue; // only the direct-node-reference shape is a candidate root; plain ids already resolve via cas.entry_points.
+      if (!op.entry_point_id.startsWith('node:')) continue;
       const nodeId = op.entry_point_id.slice('node:'.length);
-      if (existingRootNodeIds.has(nodeId)) continue; // already traceable as a real entry point — no synthetic root needed.
+      if (existingRootNodeIds.has(nodeId)) continue;
       if (seen.has(nodeId)) continue;
       const node = nodesById.get(nodeId);
-      if (!node) continue; // capability references a node id the CAS no longer has — never fabricate a root for it.
+      if (!node) continue;
       if (!TRACEABLE_NODE_TYPES.has(node.type) && node.type !== 'method') continue;
       seen.add(nodeId);
 
@@ -2484,20 +1508,6 @@ function deriveCapabilityOperationRoots(
   return roots;
 }
 
-/**
- * Collapse immediately-ADJACENT duplicate words in an assembled name,
- * case-insensitively — generic name-assembly hygiene (defect #3: a name
- * template's own prefix combining with an independently-sourced token that
- * already carries the same word, e.g. a "Scheduled " prefix template applied
- * to an entity/handler name that already starts with "Scheduled", yielding
- * "Scheduled Scheduled Scan"). Keeps the FIRST occurrence's casing; only
- * strips a run of the SAME word repeated back-to-back — a legitimately
- * repeated word elsewhere in the name (non-adjacent) is left untouched. A
- * no-op on any name with no adjacent repeat. Not a special case for any one
- * template: every name this file assembles from independently-derived parts
- * (prefix + resolved token, verb + entity, …) is expected to route through
- * this before it becomes a flow/step `name`.
- */
 export function dedupeAdjacentWords(name: string): string {
   const words = name.split(/\s+/).filter(Boolean);
   const out: string[] = [];
@@ -2509,42 +1519,16 @@ export function dedupeAdjacentWords(name: string): string {
   return out.join(' ');
 }
 
-/** camelCase/kebab/snake -> "Title Case Words" — the one word-splitting
- *  transform every flow/step name path shares (never a keyword table, just
- *  boundary detection: case changes and separators). Adjacent-duplicate
- *  tokens are collapsed as the final step (dedupeAdjacentWords) so this
- *  stays the single choke point every name assembled from raw identifier
- *  text passes through. */
 function titleCaseWords(raw: string): string {
   const words = (raw || '').replace(/[-_]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
   const title = words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
   return dedupeAdjacentWords(title);
 }
 
-/** A route parameter name that self-declares its value is a content-derived,
- *  immutable identifier — the mechanism static-asset pipelines use to
- *  cache-bust (`/js/:checksum/:filename`) and the mechanism proxy passthrough
- *  handlers use to name an opaque forwarded target (`/proxy/:encodedDigest/
- *  :encodedURL`). A structural shape test on the PARAMETER'S OWN name, not a
- *  lookup against a product-domain word list. */
 const IMMUTABLE_CONTENT_PARAM = /(checksum|digest|fingerprint|etag)/i;
 
-/** A concrete (non-parameter) final path segment ending in a well-known
- *  static-artifact file extension — the shape of a request for a literal
- *  asset file, never a JSON/HTML API response. */
 const STATIC_ASSET_EXTENSION = /\.(?:ico|css|map|woff2?|ttf|eot|manifest|json)$/i;
 
-/**
- * True when an entry point's own declared route shape self-identifies as
- * static-asset or proxy-passthrough plumbing: an immutable-content route
- * parameter, or a fixed static-file extension on the final path segment.
- * Callers must ALSO require zero entity evidence and zero grounded business
- * steps before treating a route as asset/proxy plumbing — this function only
- * answers the path-shape half of that test, and intentionally does not match
- * on any product-domain vocabulary, so `GET /v1/entries` and `POST /v1/import`
- * (ordinary path, no content-hash param, no static extension) never qualify
- * regardless of how thin their derived flow evidence is.
- */
 function isAssetOrProxyPlumbingRoute(ep: CASEntryPoint): boolean {
   const path = ep.trigger?.path;
   if (!path) return false;
@@ -2560,17 +1544,6 @@ function isAssetOrProxyPlumbingRoute(ep: CASEntryPoint): boolean {
 }
 
 function flowNameForEntryPoint(ep: CASEntryPoint): string {
-  // Prefer the RESOLVED HANDLER's own name over the entry's synthesized
-  // name/id when one exists — react/vue/angular/svelte-analyzer.ts stamp the
-  // event binding's target function onto entry_points[].metadata.handler_name
-  // whenever the JSX/template callback resolved to a named function (the same
-  // fact the 'triggers' edge above is grounded on). That handler name IS the
-  // purpose ("addMember", "onSubmitOrder") — leading with it instead of the
-  // owning component/event scaffolding ("App click") gives a verb-headed name
-  // ("Add Member") from a real fact, not a keyword table: same
-  // titleCaseWords split every other branch here already uses, just applied
-  // to a better-scoped source string. Falls through to the existing
-  // path/name derivation when no such fact exists.
   const handlerName = typeof ep.metadata?.handler_name === 'string' ? ep.metadata.handler_name : undefined;
   if (handlerName && handlerName.trim().length > 0) {
     const title = titleCaseWords(handlerName);
@@ -2586,43 +1559,16 @@ function flowNameForEntryPoint(ep: CASEntryPoint): string {
   return title || cleanRawFallbackName(ep.name);
 }
 
-/**
- * NAMING FALLBACK OF LAST RESORT: when nothing purposeful is derivable (no
- * resolved entry point, no handler/route name — only a raw synthesized
- * method_name/id string to work with), clean it of path segments and
- * generated-id noise before title-casing rather than surfacing the raw token
- * verbatim (e.g. "entry_apps_app_src_main_tsx_App_addMember_10_91766548" ->
- * "Add Member", not the literal id). Deterministic string surgery only — no
- * fabricated purpose, just honest presentation of whatever real word tokens
- * survive the id's own conventions:
- *   1. strip known analyzer id prefixes (entry_/exit_/node:/flow::/chain:/synthflow:)
- *   2. drop leading path-shaped segments (…/src/…/<file>.<ext>_ prefix) up to
- *      and including the last recognized source-file extension token
- *   3. strip a trailing numeric index and/or hex-hash suffix (…_10_91766548)
- *   4. title-case whatever underscore/camelCase words remain
- * Falls back to the original raw string only if every token above strips
- * away to nothing (never returns an empty name).
- */
 function cleanRawFallbackName(raw: string): string {
   if (!raw) return raw;
   let s = raw.replace(/^(entry_|exit_|node:|flow::|chain:|synthflow:)+/i, '');
 
-  // Drop a leading file-path-shaped prefix: analyzer-generated ids join the
-  // relative path into the token with underscores (apps_app_src_main_tsx_App_…).
-  // A source-file extension token followed by an underscore is the boundary
-  // between "path" and "the actual name" in that convention. Anchored on a
-  // LEADING underscore (or string start) before the token too — otherwise a
-  // short token like "c"/"rs"/"go" false-positives mid-word (e.g. the "c" in
-  // "src_" would otherwise strip everything up to "main_tsx_App…", leaving
-  // that path noise in the result).
   const EXT_TOKENS = /(^|_)(tsx|ts|jsx|js|py|rb|go|rs|java|kt|swift|php|cs|cpp|c|mjs|cjs|vue|svelte)_/i;
   const extMatch = EXT_TOKENS.exec(s);
   if (extMatch) {
     s = s.slice(extMatch.index + extMatch[0].length);
   }
 
-  // Strip trailing generated-id noise: a run of one-or-more purely
-  // numeric/hex segments at the very end (an index, a content hash, or both).
   s = s.replace(/(?:_[0-9a-f]{4,}|_\d+)+$/i, '');
 
   const title = titleCaseWords(s);
@@ -2636,18 +1582,6 @@ function flowIntentForEntryPoint(ep: CASEntryPoint): string {
   return `Handles ${ep.type} entry "${via}"${ep.description ? `: ${ep.description}` : ''}`;
 }
 
-// ---------------------------------------------------------------------------
-// STEP GRAPH (C1) — the ordered `steps` list is a PROJECTION of a step GRAPH
-// (docs/SEMANTIC-MODEL.md, Flow). We layer branch/error/compensation edge kinds
-// onto the sequence backbone, each gated on a fact the CAS already computed.
-// ---------------------------------------------------------------------------
-
-/** Node ids that make a CONDITIONAL control-flow successor — the deterministic
- *  ground for a 'branch' step-graph edge. Two already-computed CAS facts feed
- *  it: a call EDGE flagged `metadata.conditional`, and a method_call whose
- *  `execution_context.is_conditional` is set. Keyed by the SOURCE/caller node →
- *  the concrete evidence string. Facts only; a node with no conditional
- *  successor never appears (no fabrication). Computed once per CAS. */
 function buildConditionalOutIndex(cas: CASOutput): Map<string, string> {
   const index = new Map<string, string>();
   for (const edge of cas.edges || []) {
@@ -2666,9 +1600,6 @@ function buildConditionalOutIndex(cas: CASOutput): Map<string, string> {
   return index;
 }
 
-/** Node ids that DELETE an entity (data_entities.lifecycle.deleted_by) — the
- *  structural ground for a 'compensation' step (a state-reverting cleanup that
- *  follows a failure edge). Facts only. Computed once per CAS. */
 function buildDeleterNodeIds(cas: CASOutput): Set<string> {
   const ids = new Set<string>();
   for (const entity of cas.data_entities || []) {
@@ -2677,22 +1608,8 @@ function buildDeleterNodeIds(cas: CASOutput): Set<string> {
   return ids;
 }
 
-// ---------------------------------------------------------------------------
-// STEP↔CODE MAPPINGS (D1) — typed many-to-many mappings from a step to the
-// code regions that realize it (docs/SEMANTIC-MODEL.md, Step). Deterministic:
-// every relationship is grounded in a fact the CAS already computed (the same
-// facts C1's step-graph edges and D2's facet provenance cite).
-// ---------------------------------------------------------------------------
-
-/** Sane per-step cap on code mappings — a step's segment is already bounded by
- *  maxFunctionsPerFlow, so this only guards a pathological many-relationship
- *  blowup. Overflow is reported honestly via `code_mappings_truncated`. */
 const STEP_CODE_MAPPING_CAP = 50;
 
-/** Per-CAS evidence indexes for the D1 mapping rules that aren't already
- *  indexed elsewhere: try-catch pattern membership (→ 'handles_failure') and
- *  data-entity invariant enforcement (→ 'validates'). node id → the concrete
- *  evidence string. Facts only; built once per CAS. */
 function buildStepMappingEvidence(cas: CASOutput): {
   tryCatchEvidence: Map<string, string>;
   invariantEvidence: Map<string, string>;
@@ -2719,8 +1636,6 @@ function buildStepMappingEvidence(cas: CASOutput): {
   return { tryCatchEvidence, invariantEvidence };
 }
 
-/** The code region for a node: node-level always; file + line_range only when
- *  the node carries the real span facts — never invented. */
 function codeRegionFor(node: CASNode): StepCodeRegion {
   const region: StepCodeRegion = { node_id: node.id };
   if (node.source?.file) region.file = node.source.file;
@@ -2732,31 +1647,14 @@ function codeRegionFor(node: CASNode): StepCodeRegion {
   return region;
 }
 
-/**
- * Derive the typed StepCodeMappings for one step's segment — the D1 rules
- * (see StepCodeRelationship for the rule table). Each node gets its specific
- * relationships when the facts support them; a node with NO specific
- * relationship falls back to the default ('implements' for a sole node,
- * 'partially_implements' in a multi-node segment). The same node may carry
- * multiple mappings (many-to-many within the step), and the same node mapped
- * into a different step/flow derives its relationships independently there
- * (many-to-many across steps). Deterministic: deduped per (node, relationship),
- * sorted (node_id, relationship), capped with an honest overflow count.
- * `sub_segments` is NEVER populated here (AI-only-or-absent).
- */
 function deriveStepCodeMappings(args: {
   stepId: string;
   segNodes: CASNode[];
   isFirstStep: boolean;
   isTerminalStep: boolean;
-  /** The flow root's handler node id — grounds 'initiates' on the first step. */
   rootNodeId?: string;
-  /** Display ref for the entry point cited in the 'initiates' contribution. */
   rootEpRef?: string;
-  /** Resolved terminus (terminal-chain flows only) — grounds 'completes'. */
   terminus?: { node_id: string; exit_point_id: string; kind: string };
-  /** Neighboring segments' nodes — ground provides_input/consumes_output via
-   *  data_lineage. Absent for the first/last step respectively. */
   prevNodes?: CASNode[];
   nextNodes?: CASNode[];
   exitPointsByNode: Map<string, CASExitPoint[]>;
@@ -2785,9 +1683,6 @@ function deriveStepCodeMappings(args: {
     });
   };
 
-  // Entity names the neighboring steps' nodes read/write — the data_lineage
-  // ground for provides_input/consumes_output. Empty sets → the rules never
-  // fire (skipped, not fabricated).
   const nextReads = new Set<string>();
   for (const n of nextNodes || []) {
     for (const e of lineageByNode.get(n.id)?.reads || []) nextReads.add(e.entity_name);
@@ -2805,18 +1700,13 @@ function deriveStepCodeMappings(args: {
       add(node, relationship, contribution);
     };
 
-    // initiates — the node bound to the flow's entry point (first step only).
     if (isFirstStep && rootNodeId !== undefined && node.id === rootNodeId) {
       mark('initiates', `bound to the flow's entry point${rootEpRef ? ` ${rootEpRef}` : ''} (root handler node)`);
     }
-    // completes — the node resolving the flow's terminus (terminal step only).
     if (isTerminalStep && terminus && node.id === terminus.node_id) {
       mark('completes', `resolves the flow's terminus exit point ${terminus.exit_point_id} (${terminus.kind})`);
     }
 
-    // validates — non-error constraint facts THIS node contributes (the same
-    // facts D2's provenance cites): source guard clauses, entry-point auth/
-    // validation facts, data-entity invariants enforced by the node.
     const srcGuard = extractConstraintsFromSource(node)[0];
     if (srcGuard) mark('validates', `enforces "${srcGuard.rule}" (guard clause in node source)`);
     for (const ep of entryPointsByNode.get(node.id) || []) {
@@ -2831,17 +1721,12 @@ function deriveStepCodeMappings(args: {
     const invEv = invariantEvidence.get(node.id);
     if (invEv) mark('validates', invEv);
 
-    // handles_failure — the node sits on a catch path (try-catch pattern instance).
     const tcEv = tryCatchEvidence.get(node.id);
     if (tcEv) mark('handles_failure', tcEv);
 
-    // branches — the node has a conditional control-flow successor (the same
-    // buildConditionalOutIndex evidence C1's 'branch' step-graph edges use).
     const branchEv = conditionalOut.get(node.id);
     if (branchEv) mark('branches', branchEv);
 
-    // causes_effect / observes — the node's own exits + lineage writes (D2's
-    // effects facts). Telemetry-only exits with no writes → 'observes' instead.
     const exits = exitPointsByNode.get(node.id) || [];
     const writes = lineageByNode.get(node.id)?.writes || [];
     const effectExit = exits.find(e => !TELEMETRY_EXIT_KINDS.has(e.type));
@@ -2856,7 +1741,6 @@ function deriveStepCodeMappings(args: {
       mark('observes', `all exits on this node are telemetry kinds (exit point ${telemetryExit.id}, ${telemetryExit.type}) and it writes no entity`);
     }
 
-    // provides_input / consumes_output — data_lineage-derivable ONLY.
     if (nextReads.size > 0) {
       const provided = writes.find(w => nextReads.has(w.entity_name));
       if (provided) {
@@ -2871,7 +1755,6 @@ function deriveStepCodeMappings(args: {
       }
     }
 
-    // Default mapping when nothing more specific applied.
     if (!specific) {
       add(
         node,
@@ -2892,19 +1775,8 @@ function deriveStepCodeMappings(args: {
   return { mappings: sorted, truncated: 0 };
 }
 
-/** Sane cap on step-graph edges (steps are already function-capped, so this is
- *  a defensive bound only — a pathological flow never emits an unbounded graph). */
 const STEP_GRAPH_EDGE_CAP = 250;
 
-/**
- * Build the step GRAPH for a flow: the sequence backbone (step i → step i+1),
- * each edge upgraded to branch/error/compensation where the CAS carries the
- * evidence. `segmentNodes[i]` are the nodes of `steps[i]` (aligned by index —
- * both come from the same `segments` array). Returns undefined for a <2-step
- * flow (no edge to draw). Deterministic: edges are in step order; each edge's
- * kind is chosen by a fixed precedence (compensation > error > branch >
- * sequence) so the same CAS yields byte-identical graphs run-to-run.
- */
 function buildStepGraph(
   steps: FlowStep[],
   segmentNodes: CASNode[][],
@@ -2920,18 +1792,12 @@ function buildStepGraph(
     const fromNodes = segmentNodes[i] || [];
     const toNodes = segmentNodes[i + 1] || [];
 
-    // error: the TO step is on a throw/catch path — reuse the already-computed
-    // kind:'error' constraint (extractErrorConstraints), scoped to this flow.
     const toErr = to.contract.constraints.find(c => c.kind === 'error');
-    // branch: any node in the FROM step has a conditional control-flow successor.
     let branchEv: string | undefined;
     for (const n of fromNodes) {
       const ev = conditionalOut.get(n.id);
       if (ev) { branchEv = ev; break; }
     }
-    // compensation: the FROM step is itself on an error path AND the TO step
-    // reverts state (a delete-lifecycle node runs in it) — a cleanup after the
-    // failure. Structural + evidence-gated; deliberately conservative.
     const fromIsError = from.contract.constraints.some(c => c.kind === 'error');
     const revertsState = toNodes.some(n => deleterNodeIds.has(n.id));
 
@@ -2954,18 +1820,6 @@ function buildStepGraph(
   return { edges };
 }
 
-// ---------------------------------------------------------------------------
-// ASYNC CONTINUATIONS (C1) — an event/message PUBLISH whose channel matches a
-// CONSUMER entry point is a continuation of the SAME end-to-end flow (and the
-// consumer is a reusable subflow). docs/SEMANTIC-MODEL.md: "Async continuation
-// ≠ new flow". Evidence-gated on a real publish↔consume seam match.
-// ---------------------------------------------------------------------------
-
-/** Normalize an async channel/target string for publish↔consume matching.
- *  Lowercases, trims, strips surrounding quotes, drops non-alphanumerics so
- *  "order.created", "Order.Created", and "order_created" collapse to one key.
- *  Generic seam FALLBACK tokens ('external', 'channel') and single-char noise
- *  are treated as non-channels (→ '') so they can never stitch unrelated flows. */
 function normalizeChannelKey(raw: string | undefined): string {
   if (raw === undefined || raw === null) return '';
   const trimmed = String(raw).trim().toLowerCase().replace(/^['"]+|['"]+$/g, '');
@@ -2974,17 +1828,6 @@ function normalizeChannelKey(raw: string | undefined): string {
   return key.length < 2 ? '' : key;
 }
 
-/**
- * Pair publisher EXIT points to consumer ENTRY points by matching channel keys —
- * the deterministic publish↔consume seam graph. Prefers the pre-computed
- * `cas.communication_seams` (the seam graph the deployable inventory already
- * builds — producer messaging seams carry `metadata.exit_point` + target=channel;
- * consumer messaging seams carry `metadata.entry_point` + source=channel), and
- * falls back to deriving the SAME pairing from `cas.exit_points` (message/event)
- * and `cas.entry_points` (message/event) when seams aren't populated. Either way
- * the evidence is a real publish-target ↔ consume-channel match. Returns
- * {exitId, entryId, channel} triples, sorted, deduped — never fabricated.
- */
 function pairPublishConsumeSeams(cas: CASOutput): Array<{ exitId: string; entryId: string; channel: string }> {
   const pairs: Array<{ exitId: string; entryId: string; channel: string }> = [];
   const seen = new Set<string>();
@@ -2996,7 +1839,6 @@ function pairPublishConsumeSeams(cas: CASOutput): Array<{ exitId: string; entryI
     pairs.push({ exitId, entryId, channel });
   };
 
-  // --- Preferred: the classified communication_seams graph. ---
   const seams = cas.communication_seams?.seams;
   if (seams && seams.length > 0) {
     const consumersByChannel = new Map<string, string[]>();
@@ -3023,7 +1865,6 @@ function pairPublishConsumeSeams(cas: CASOutput): Array<{ exitId: string; entryI
     }
   }
 
-  // --- Fallback: derive the same pairing from the raw exit/entry facts. ---
   const consumersByChannel = new Map<string, string[]>();
   for (const ep of cas.entry_points || []) {
     if (ep.type !== 'message' && ep.type !== 'event') continue;
@@ -3044,22 +1885,11 @@ function pairPublishConsumeSeams(cas: CASOutput): Array<{ exitId: string; entryI
   return pairs;
 }
 
-/**
- * Stitch async continuations across the full flow set: when a flow's terminus
- * is an event/message PUBLISH whose channel matches a CONSUMER flow's entry
- * point (via pairPublishConsumeSeams), the publisher CONTINUES INTO the consumer
- * (`continuations`) and the consumer is a reusable subflow (`continued_from` +
- * `is_subflow`). Mutates in place; a no-op when there are <2 flows or no seam
- * pair matches. Deterministic: continuation lists are sorted, byte-stable.
- */
 export function stitchContinuations(flows: FlowConcept[], cas: CASOutput): FlowConcept[] {
   if (flows.length < 2) return flows;
   const pairs = pairPublishConsumeSeams(cas);
   if (pairs.length === 0) return flows;
 
-  // A publisher flow's terminus resolves an exit_point_id; a consumer flow is
-  // rooted at the consumer entry point (flow.entry_point === ep.id). First flow
-  // wins for a given key (stable: flows are already sorted).
   const flowByTerminusExit = new Map<string, FlowConcept>();
   const flowByEntryPoint = new Map<string, FlowConcept>();
   for (const f of flows) {
@@ -3094,40 +1924,10 @@ export function stitchContinuations(flows: FlowConcept[], cas: CASOutput): FlowC
   return flows;
 }
 
-/**
- * TERMINAL-CHAIN FLOWS — the primary flow-derivation path. A flow is a logical
- * unit over the compile graph ANCHORED ON A TERMINAL CHAIN: a pre-computed
- * `call_chains` entry of `chain_type === 'entry-to-exit'`, i.e. a chain that
- * runs from an entry point all the way to an EXIT point (an api response, a DB
- * write, an SDK/integration call, a webhook, an emitted event) — what the
- * system actually PRODUCES. Chains that dead-end (produce nothing) are NOT
- * flows; the terminal is the whole point (terminal-signal.ts: "terminal call
- * chains end at what the system produces").
- *
- * Every fact used here is already on the CAS and deterministic: the ordered
- * `call_path` (entry → terminus), the resolved exit point, the same
- * exit_points / data_lineage / data_entities.invariants / entry-point
- * security+validation the entry-point path uses. The chain's own `call_path`
- * IS the chain — we do NOT re-trace a BFS; we segment the exact recorded path
- * into steps. `opts.nameStep` remains the only AI seam and stays inert when
- * omitted; Logic + interpretive meaning are AI-only-or-omitted downstream.
- *
- * Returns [] when there are no entry-to-exit chains, so callers can fall back
- * to entry-point-rooted flows without a regression on repos that don't emit
- * call_chains.
- */
 function buildTerminalFlows(
   cas: CASOutput,
   opts: ComputeFlowConceptsOptions,
-  /** Internal (continuation partner derivation): restrict to chains ending at
-   *  these exit point ids. Set only by computeFlowConcepts when a seam pair's
-   *  publisher falls outside the maxFlows window — derives JUST that publisher
-   *  instead of the full uncapped set (which would blow the latency budget). */
   onlyExitIds?: Set<string>,
-  /** Internal (ranked-window derivation): restrict to these call-chain ids —
-   *  the chain-anchored members of the ranked page. The rank/page decision has
-   *  already been made against the materialized flow index, so this derives
-   *  exactly that page instead of scanning until a cap trips. */
   onlyChainIds?: Set<string>
 ): FlowConcept[] {
   let chains = (cas.call_chains || []).filter(c => c.chain_type === 'entry-to-exit' && c.exit_point);
@@ -3143,19 +1943,6 @@ function buildTerminalFlows(
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  // COVERAGE DECISION (flows_to_capabilities invariant): behavior surfaces
-  // moved out of system_capabilities into the behavior_surfaces navigation
-  // tier (SURFACES ARE NOT CAPABILITIES — docs/SEMANTIC-MODEL.md), but a flow
-  // rooted at a surface-registered entry point (a command handler, an event
-  // subscriber, an MCP tool) is still genuinely OWNED by that surface for
-  // navigation. Deriving relationships against capabilities-only would strand
-  // every such flow (capability_relationships: []) and crater
-  // flows_to_capabilities on registration-heavy repos — an artifact of the
-  // tier split, not a real coverage loss. Surfaces therefore stay in the
-  // relationship-derivation pool: a surface-anchored link satisfies the
-  // coverage invariant (capability_id may reference a behavior_surfaces
-  // entry), while ranking/summary consumers stay surface-free because those
-  // read system_capabilities directly.
   const capabilities = [...(cas.system_capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const exitPointsByNode = buildExitPointIndex(cas);
@@ -3165,9 +1952,6 @@ function buildTerminalFlows(
   const mappingEvidence = buildStepMappingEvidence(cas);
   const exitById = new Map((cas.exit_points || []).map(e => [e.id, e]));
   const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
-  // Rule (c2) evidence: real kubernetes_cronjob command/schedule facts (incl.
-  // Helm-templated ones resolved from values.yaml), indexed once for every
-  // flow this pass derives (see deriveCliCronSchedule).
   const cronScheduleIndex = buildCronScheduleIndex(cas.nodes || []);
 
   const entryPointsByNode = new Map<string, CASEntryPoint[]>();
@@ -3179,38 +1963,10 @@ function buildTerminalFlows(
 
   const allLineage = [...(cas.data_lineage || [])];
 
-  // Entry-family entity rollup (memoized BFS per root): attaches entities the
-  // handler's forward-reachable family touches even when this specific chain
-  // path missed the accessor node.
   const traversal = buildTraversalIndex(cas);
   const familyEntities = makeEntryFamilyEntities(cas, traversal, maxDepth, maxFunctions);
-  // CLI one-hop entity supplement (see makeCliOneHopEntities) — scoped to
-  // `cli` entry points only: an HTTP/route flow's forward chain already
-  // traverses 'calls'/'invokes'/'uses'/'renders' edges deep enough that
-  // widening to delegates_to/queries system-wide risks smearing ubiquity
-  // entities across unrelated HTTP flows (no per-flow document-frequency
-  // guard here, unlike the capability-building pass' per-resource-group DF
-  // limit) — CLI console commands are the evidenced, narrow case (live on
-  // a benchmarked fleet-management repo's ELD module: app:eld:* commands delegate FMCSA/DriverHistory persistence
-  // one hop through a manager/service).
   const cliOneHopEntities = makeCliOneHopEntities(cas);
 
-  // SIGNIFICANCE-FIRST WINDOW ORDER (flow-flooding fix, mirrors
-  // computeEntryPointFlows' identical class-rank sort below): this is the
-  // PRIMARY flow path whenever the CAS carries entry-to-exit call chains, and
-  // it used to sort purely by `chain.id` — a byte-stable but
-  // significance-blind order. On a test-heavy CAS (live measurement on a benchmarked Go RSS-reader server:
-  // entry_points_by_type http:213 vs test:1234) a lexicographic chain-id sort
-  // interleaves test-rooted chains into the front of the array with no regard
-  // for entry type, so the maxFlows window (and therefore total_available/
-  // role_breakdown, which are computed over that same probed window in
-  // getFlowConcepts) filled almost entirely with test flows, drowning the 213
-  // real HTTP flows. Tests remain first-class structural facts — nothing is
-  // dropped, excluded chains are still reachable via a wider maxFlows/target —
-  // this only reorders the window so product entries are seen first.
-  // Deterministic: a pure stable class sort (real/synthesized entries before
-  // test entries) over facts already on each chain, tie-broken by the
-  // original id sort so output stays byte-stable within a class.
   const entryClassRank = (chain: CASCallChain): number => {
     const ep = chain.entry_point.entry_point_id ? entryById.get(chain.entry_point.entry_point_id) : undefined;
     return ep?.type === 'test' ? 1 : 0;
@@ -3219,12 +1975,6 @@ function buildTerminalFlows(
     (entryClassRank(a) - entryClassRank(b)) || a.id.localeCompare(b.id)
   );
 
-  // EVENT-VARIANT COLLAPSE (defect #2 — see groupEventVariantEntryPoints):
-  // applies here too when the collided handler's terminal chains ALSO resolve
-  // to real exit points (not just the entry-point-rooted union path below).
-  // One pass over `sorted` (already in the chosen output order) collects each
-  // distinct `event`-type entry point once, in that same order, so grouping's
-  // "earliest wins" tie-break matches the chain ordering above.
   const eventEntryPoints: CASEntryPoint[] = [];
   const seenEventEpIds = new Set<string>();
   for (const c of sorted) {
@@ -3246,12 +1996,8 @@ function buildTerminalFlows(
       chain.entry_point.entry_point_id &&
       terminalGroupedAwayEpIds.has(chain.entry_point.entry_point_id)
     ) {
-      continue; // folded into its group's primary entry point's terminal flow, below.
+      continue;
     }
-    // Resolve the ordered chain nodes from the pre-computed call_path (this IS
-    // the terminal chain — no re-tracing). Skip unresolvable path nodes rather
-    // than fabricating; depth-bound and function-cap still honored so a flow's
-    // step count matches the entry-point path's shape.
     const chainNodes: ChainNode[] = [];
     const seen = new Set<string>();
     for (const step of chain.call_path || []) {
@@ -3270,14 +2016,11 @@ function buildTerminalFlows(
       : undefined;
     const rootNode = nodesById.get(chain.entry_point.node_id);
 
-    // Resolve the terminus: the exit point this chain ends at (what it
-    // produces). exit_point_id resolves against cas.exit_points.
     const exit = chain.exit_point?.exit_point_id ? exitById.get(chain.exit_point.exit_point_id) : undefined;
     const terminusNodeId = chain.exit_point?.node_id
       || exit?.source_node
       || chainNodes[chainNodes.length - 1].node.id;
 
-    // `target` narrowing: id / entry method / route / exit target substring.
     if (opts.target) {
       const t = opts.target.toLowerCase();
       const hay = [
@@ -3329,9 +2072,6 @@ function buildTerminalFlows(
 
       const stepNodeIds = new Set(seg.nodes.map(n => n.id));
       const stepId = `flow::${chain.id}::step${i}`;
-      // D1 typed step↔code mappings — grounded in the same facts as the step
-      // graph (branches), D2 provenance (validates/causes_effect/observes) and
-      // the resolved terminus (initiates/completes).
       const { mappings: codeMappings, truncated: mappingsTruncated } = deriveStepCodeMappings({
         stepId,
         segNodes: seg.nodes,
@@ -3369,47 +2109,24 @@ function buildTerminalFlows(
       return step;
     });
 
-    // STEP GRAPH: the ordered `steps` are a PROJECTION of a graph — layer
-    // branch/error/compensation edges on the sequence backbone (segments align
-    // 1:1 with steps by index).
     const stepGraph = buildStepGraph(steps, segments.map(s => s.nodes), conditionalOut, deleterNodeIds);
 
     const allNodeIds = new Set(chainNodes.map(c => c.node.id));
 
-    // Terminus ICELOT enrichment: the exit the chain ends at IS a produced
-    // Output / Effect. Fold it into the flow-level contract deterministically
-    // (evidence = the resolved exit point) so the flow's Output/Effects reflect
-    // what it actually produces at the terminus, not just node return types.
     const contract = aggregateFlowContract(steps);
     let terminus: FlowConcept['terminus'];
     if (exit) {
-      // Same evidence-only standard as journey-builder's collectTerminalEffects
-      // and data-lineage's resolveRecipientService: a resolved destination
-      // (service_id/resource/endpoint, set only by analyzers that confirmed a
-      // genuine external call) or nothing. `exit.name` on an unresolved 'sdk'
-      // exit is a raw source expression ("External call: errors.New",
-      // "External call: h.store.DeleteCredentialByHandle") — stdlib and
-      // same-process calls that never populate `target`. Falling back to it
-      // here is exactly what leaked raw source into customer-facing flow
-      // names via disambiguateFlowNames's terminus.produces qualifier. An
-      // unresolved sdk-type exit falls back to its own type (e.g. "sdk")
-      // instead of the source text; every other exit type still uses its name
-      // (those are resolved facts, not raw call expressions).
       const resolvedTarget = exit.target?.service_id || exit.target?.resource || exit.target?.endpoint;
       const hasResolvedDestination = Boolean(resolvedTarget);
       const produces = resolvedTarget
         || (exit.type === 'sdk' && !hasResolvedDestination ? exit.type : exit.name)
         || exit.type;
       terminus = { exit_point_id: exit.id, kind: exit.type, produces, node_id: terminusNodeId };
-      // Provenance for terminus-folded facet entries: attributed to the step
-      // whose functions contain the terminus node (the last step is the
-      // fallback when the terminus node was skipped from the resolved path);
-      // evidence = the resolved exit point itself (a fact already at hand).
       const terminusStep = [...steps].reverse().find(s => s.functions.some(f => f.function_id === terminusNodeId)) || steps[steps.length - 1];
       const terminusEvidence = `terminal chain ${chain.id} resolves exit point ${exit.id} (${exit.type} → ${produces})`;
       const stampTerminus = (facet: ProvenanceFacet, value: string) => {
         const existing = contract.facet_provenance?.find(p => p.facet === facet && p.value === value);
-        if (existing) return; // a step already contributed this exact entry with real evidence.
+        if (existing) return;
         const entry: FacetProvenance = {
           facet, value, contributed_by_step_ids: [terminusStep.step_id],
           source: 'deterministic', evidence: terminusEvidence,
@@ -3423,16 +2140,10 @@ function buildTerminalFlows(
           stampTerminus('state_change', label);
         }
       } else {
-        // An unresolved sdk call (no service_id/resource/endpoint) is not
-        // evidence of an external integration — same standard as above, it
-        // just never became a customer-facing side-effect fact.
         if ((exit.type !== 'sdk' || hasResolvedDestination) && !contract.side_effects.external_integrations.includes(label)) {
           contract.side_effects.external_integrations.push(label);
           stampTerminus('external_integration', label);
         }
-        // api / webhook / event terminals are the flow's response/emission —
-        // record what it emits in Output too (deterministic, evidence-gated on
-        // the resolved exit point).
         if (['api', 'webhook', 'event', 'navigation'].includes(exit.type)) {
           const out = exit.data?.output_type || `${exit.type} ${produces}`;
           if (!contract.output.includes(out)) {
@@ -3443,44 +2154,11 @@ function buildTerminalFlows(
       }
     }
 
-    // M:N capability relationships (role on the EDGE — doctrine: flow roles
-    // are relational, not intrinsic). capability_id stays populated as the
-    // primary relationship's capability for back-compat.
     const directFlowEntities = unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id));
-    // ZERO-ENTITY FALLBACK HOP: a handler that delegates persistence/lookup one
-    // call away through a `delegates_to`/`queries` edge (a repository/service
-    // field, common in Go/Java/C# handler->store patterns) is invisible to the
-    // direct trace + family rollup above, which only follow calls/invokes/uses/
-    // renders — see CLI_ONE_HOP_CALLEE_EDGE_TYPES's doc comment for the
-    // identical shape already fixed for `cli` entries. Restricting this hop to
-    // the case where direct evidence came up EMPTY (rather than enabling it for
-    // every HTTP flow, which the CLI-only gate above was deliberately scoped to
-    // avoid — see makeCliOneHopEntities' comment on ubiquity-entity smearing)
-    // means it can only rescue a flow that currently contributes ZERO entity
-    // evidence; a flow that already resolved real entities directly is
-    // untouched, so this cannot inflate or loosen any flow that already links.
     const flowEntities = directFlowEntities.length > 0
       ? unionEntities(directFlowEntities, rootEp?.type === 'cli' ? cliOneHopEntities(allNodeIds) : [])
       : cliOneHopEntities(allNodeIds);
 
-    // ASSET/PROXY PLUMBING EXCLUSION: a route can never be a customer-legible
-    // journey/flow when it carries NO business evidence at all — no entity
-    // this repo tracks, and no step whose role resolved to validate/persist/
-    // dispatch/call/respond/entity/verb (every step fell back to the honest
-    // "no evidence" grouping) — AND its own route shape self-declares as a
-    // content-addressed or fixed static artifact: a path segment/param name
-    // that denotes an immutable content identifier (checksum/hash/digest/
-    // fingerprint/etag — the mechanism a build pipeline uses to cache-bust
-    // js/css/image bundles and CDN passthroughs), or a final path segment
-    // ending in a well-known static-file extension. This is a shape test on
-    // the route's OWN declared parameters/extension, never a lookup against
-    // an invented word list, so it cannot mistake a real resource route
-    // (`GET /v1/entries`, `POST /v1/import`) for asset plumbing: those carry
-    // entity evidence and normal path segments with no content-hash param and
-    // no static extension. A route with zero business evidence but an
-    // ordinary path (no hash param, no static extension) is left alone —
-    // structural signal absent means this exclusion does not apply, however
-    // thin the flow looks; that thinness is a separate (linkage) concern.
     if (rootEp && flowEntities.length === 0 && !anyStepGrounded && isAssetOrProxyPlumbingRoute(rootEp)) {
       continue;
     }
@@ -3527,7 +2205,7 @@ function buildTerminalFlows(
       triggers: rootEp ? terminalTriggersByPrimaryId.get(rootEp.id) : undefined,
       gaps: gaps.length ? gaps : undefined,
     });
-    void rootNode; // rootNode resolution kept for symmetry / future naming; not required.
+    void rootNode;
 
     if (opts.maxFlows && opts.maxFlows > 0 && flows.length >= opts.maxFlows) break;
   }
@@ -3535,63 +2213,19 @@ function buildTerminalFlows(
   return flows;
 }
 
-// ---------------------------------------------------------------------------
-// RANK BEFORE TRUNCATING (P0)
-// ---------------------------------------------------------------------------
-// The derivation loops above stop at `maxFlows`, so the window used to be
-// "whatever storage/entry-point order produced first" — an order that
-// correlates with SHALLOW, because the terminal-chain pass runs first and
-// terminal chains are short by construction (they stop at the exit point),
-// while the deep flows are entry-point-rooted and land at the back. Measured
-// on three real stored CASes: the first 50 flows averaged 1.1-2.2 steps while
-// the full set averaged 2.2-3.5 with maxima of 16-18, and the fully-evidenced
-// multi-constraint flows sat entirely outside the window. Every flow-quality
-// metric anyone measured was measuring the window, not the product.
-//
-// The fix is to order candidates BEFORE the cap applies, using the
-// materialized `flow_graph.flows` index (CASFlowRef) the analyzer already
-// persists for every flow: it carries step_count, criticality, terminus and
-// capability links per flow at zero derivation cost, so ranking never forces
-// the uncapped derivation the latency budget forbids on a large repo.
-
-/** Per-signal weights for the flow rank. Explicit and grep-visible so the
- *  ordering is auditable rather than an opaque formula. Every input is a fact
- *  already on the CAS — no keyword lists, no name matching. */
 const FLOW_RANK_WEIGHTS = {
-  /** Class gate: a product (non-test) flow always outranks a test flow. Set
-   *  above the maximum achievable sum of every other signal so it cannot be
-   *  outvoted — the same product-first doctrine the pre-existing class sorts
-   *  in buildTerminalFlows/computeEntryPointFlows encode. */
   product: 1000,
-  /** Per step of derived depth (capped) — the signal the defect was about: a
-   *  flow with real steps answers a question, a 1-step leaf teases one. */
   stepDepth: 12,
-  /** Flow serves a named system capability / behavior surface. */
   capability: 120,
-  /** Flow resolves a terminus (it PRODUCES something). Deliberately weighted
-   *  BELOW ~7 steps of depth: terminus is only derivable for chain-anchored
-   *  flows, so weighting it higher would re-punish exactly the deep
-   *  entry-point-rooted flows this fix exists to surface. */
   terminus: 80,
-  /** Anchoring chain's criticality rank (0-3). */
   criticality: 40,
-  /** Structural importance of the flow's root node, [0,1] from
-   *  structural-importance.ts (seeded random-walk centrality over the call
-   *  graph) — the live layer, used as the fine-grained ordering signal. */
   importance: 100,
 } as const;
 
-/** Depth past which extra steps stop adding rank — a 40-step flow is not
- *  4x more worth reading than a 10-step one, and the cap keeps depth from
- *  swamping capability/terminus/importance entirely. */
 const FLOW_RANK_STEP_CAP = 20;
 
 const FLOW_RANK_CRITICALITY: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
 
-/**
- * Deterministic rank score for one materialized flow ref. Pure function of
- * facts on the CAS; identical inputs always produce an identical score.
- */
 function scoreStoredFlowRef(
   ref: CASFlowRef,
   isTestRooted: boolean,
@@ -3609,15 +2243,6 @@ function scoreStoredFlowRef(
   );
 }
 
-/**
- * Rank every materialized flow ref, highest first. BYTE-STABLE: scores are a
- * pure function of stored facts and ties break on `flow_id` localeCompare, so
- * two runs over the same CAS produce the identical order (and therefore the
- * identical page 1, page 2, … partition).
- *
- * Returns [] when the CAS carries no `flow_graph.flows` (pre-index analyses) —
- * callers fall back to the legacy derive-then-cap path unchanged.
- */
 export function rankStoredFlowRefs(cas: CASOutput): CASFlowRef[] {
   const refs = cas.flow_graph?.flows || [];
   if (refs.length === 0) return [];
@@ -3648,51 +2273,19 @@ export function rankStoredFlowRefs(cas: CASOutput): CASFlowRef[] {
   return scored.map(s => s.ref);
 }
 
-/**
- * computeFlowConcepts — flows over the compile graph. UNION of two anchors:
- * terminal call chains (buildTerminalFlows) — a flow is a chain that runs from
- * an entry point to an EXIT point (what the system produces) — PLUS
- * entry-point-rooted flows for significant entry points whose chains dead-end
- * (event handlers, routes, MCP tools, scheduled jobs legitimately lacking a
- * clean exit). Deduped by entry point (terminal wins). When the CAS carries no
- * entry-to-exit chains at all, every flow is entry-point-rooted (the original
- * behavior), so repos without call_chains still get flows.
- *
- * Deterministic-first either way: composes entry_points, call
- * edges/method_calls, exit_points, data_lineage, data_entities.invariants,
- * entry_point security/validation, and system_capabilities already on the CAS.
- * `opts.nameStep` is the only AI seam and is fully inert when omitted.
- */
 export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
-  // RANKED WINDOW (P0 rank-before-truncate) — see rankStoredFlowRefs. Applies
-  // to the BROWSE case only: no `target` (a targeted lookup is already an
-  // explicit narrow ask), a real cap or offset in play (an uncapped ask must
-  // still derive everything, so a stale index can never drop a flow), and a
-  // materialized flow_graph.flows index to rank with. Ranks first, pages
-  // second, then derives ONLY the resulting window — so the cost stays
-  // proportional to the page, not to the repo.
   const rankedWindowFlows = computeRankedWindowFlows(cas, opts);
   if (rankedWindowFlows) return finalizeFlows(cas, rankedWindowFlows, opts);
 
-  // PRIMARY: terminal-chain-anchored flows (what the system produces).
   const terminalFlows = buildTerminalFlows(cas, opts);
 
   // UNION (not all-or-nothing): a handful of terminal chains must not suppress
-  // every entry-point flow — entry points whose chains dead-end (event
-  // handlers, HTTP routes, MCP tools, scheduled jobs legitimately lacking a
-  // clean exit) still deserve flows. Dedup by entry point: an entry point
-  // already covered by a terminal-anchored flow contributes no second flow
-  // (terminal wins — it carries the terminus). Entry-point flows in the union
-  // are significance-filtered (non-test, non-trivial) so the count stays sane.
   let flows: FlowConcept[];
   if (terminalFlows.length === 0) {
     flows = computeEntryPointFlows(cas, opts);
   } else if (opts.maxFlows && opts.maxFlows > 0 && terminalFlows.length >= opts.maxFlows) {
     flows = terminalFlows;
   } else {
-    // Covered keys: the terminal flow's entry_point is entry_point_id when the
-    // chain resolved one, else the raw root node id — exclude BOTH forms so an
-    // entry-point-rooted flow for the same root never duplicates it.
     const coveredEntryKeys = new Set<string>();
     const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
     for (const flow of terminalFlows) {
@@ -3713,30 +2306,8 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
   return finalizeFlows(cas, flows, opts);
 }
 
-/**
- * Shared tail of both derivation paths (legacy derive-then-cap and the ranked
- * window): stitch async continuation partners, prune blanket capability
- * relationships, collapse duplicate function steps, disambiguate names, and
- * join the materialized criticality. Extracted so the ranked path can never
- * drift from the legacy one on anything but the ORDER of the window.
- */
 function finalizeFlows(cas: CASOutput, input: FlowConcept[], opts: ComputeFlowConceptsOptions): FlowConcept[] {
   let flows = input;
-  // ASYNC CONTINUATION STITCHING (C1): a publisher flow whose terminus is an
-  // event/message publish CONTINUES INTO the consumer flow whose entry matches
-  // the seam channel — the SAME end-to-end flow, and the consumer is a reusable
-  // subflow. Evidence-gated + deterministic; no-op when no pair.
-  //
-  // PARTNER DERIVATION (re-validation F2): the maxFlows window is applied
-  // DURING derivation, so a seam pair whose partner flow falls outside the
-  // window used to be unstitchable — on a 3,600-entry-point repo a 20-flow
-  // window made continuations near-unobservable. Deriving the FULL uncapped
-  // union just to stitch would blow the latency budget (~9.5s on a whale), so
-  // instead: seam pairs are computed first (one cheap pass over exit/entry
-  // points), and ONLY the missing partners of in-window flows are derived —
-  // the matched consumer entry points / publisher exit chains, nothing else.
-  // Partners append past maxFlows deliberately: a continuation partner is part
-  // of the SAME end-to-end flow, not an extra window slot.
   const pairs = pairPublishConsumeSeams(cas);
   if (pairs.length > 0) {
     const byExit = new Set(flows.map(f => f.terminus?.exit_point_id).filter(Boolean) as string[]);
@@ -3764,14 +2335,6 @@ function finalizeFlows(cas: CASOutput, input: FlowConcept[], opts: ComputeFlowCo
   return attachStoredCriticality(cas, finalized);
 }
 
-/**
- * Join `criticality` from the materialized flow index onto each derived flow.
- * The value already exists on the CAS (CASFlowRef.criticality, computed from
- * the anchoring call chain) but was never surfaced through get_flow_concepts /
- * /conceptual, so every flow an agent read reported `criticality: undefined`.
- * Evidence-gated: only flows whose flow_id resolves in the index get a value;
- * entry-point-rooted flows have no chain and stay honestly absent.
- */
 function attachStoredCriticality(cas: CASOutput, flows: FlowConcept[]): FlowConcept[] {
   const refs = cas.flow_graph?.flows;
   if (!refs || refs.length === 0) return flows;
@@ -3787,19 +2350,6 @@ function attachStoredCriticality(cas: CASOutput, flows: FlowConcept[]): FlowConc
   return flows;
 }
 
-/**
- * Derive exactly the RANKED page of flows the caller asked for, or null when
- * this CAS/request is not eligible for the ranked path (caller falls back to
- * the legacy derive-then-cap union, unchanged).
- *
- * Eligibility is deliberately narrow:
- *  - no `target` — a targeted lookup is already an explicit narrow ask, and
- *    ranking it would only reorder a handful of flows;
- *  - a cap or an offset is actually in play — an uncapped ask still derives
- *    the full union, so a `flow_graph.flows` index that lags the current
- *    derivation can never silently DROP a flow from an "everything" request;
- *  - the CAS carries a materialized flow index to rank with.
- */
 function computeRankedWindowFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): FlowConcept[] | null {
   if (opts.target) return null;
   const limit = opts.maxFlows && opts.maxFlows > 0 ? Math.floor(opts.maxFlows) : undefined;
@@ -3812,9 +2362,6 @@ function computeRankedWindowFlows(cas: CASOutput, opts: ComputeFlowConceptsOptio
   const window = limit === undefined ? ranked.slice(offset) : ranked.slice(offset, offset + limit);
   if (window.length === 0) return [];
 
-  // Rank position of every ref in the window — the output order. Derivation
-  // below runs in two passes (chain-anchored, entry-rooted) whose natural
-  // output order is NOT the rank order, so re-sort against this index.
   const rankIndex = new Map<string, number>();
   window.forEach((ref, index) => rankIndex.set(ref.flow_id, index));
 
@@ -3825,9 +2372,6 @@ function computeRankedWindowFlows(cas: CASOutput, opts: ComputeFlowConceptsOptio
     else entryKeys.add(ref.entry_point);
   }
 
-  // Derive ONLY the window. Both passes run uncapped over their (already
-  // tiny) restricted candidate set — the cap has been applied by the slice
-  // above, so re-applying maxFlows here would truncate the page a second time.
   const windowOpts: ComputeFlowConceptsOptions = { ...opts, maxFlows: undefined, offset: undefined };
   const derived: FlowConcept[] = [];
   if (chainIds.size > 0) derived.push(...buildTerminalFlows(cas, windowOpts, undefined, chainIds));
@@ -3835,9 +2379,6 @@ function computeRankedWindowFlows(cas: CASOutput, opts: ComputeFlowConceptsOptio
     derived.push(...computeEntryPointFlows(cas, windowOpts, { onlyEntryKeys: entryKeys }));
   }
 
-  // A ref whose flow no longer derives (index lagging the current graph) just
-  // doesn't appear — honest, and the page still carries the rest. Flows the
-  // index never knew about sort to the end rather than being dropped.
   const seen = new Set<string>();
   const deduped = derived.filter(f => (seen.has(f.flow_id) ? false : (seen.add(f.flow_id), true)));
   deduped.sort((a, b) =>
@@ -3847,23 +2388,6 @@ function computeRankedWindowFlows(cas: CASOutput, opts: ComputeFlowConceptsOptio
   return deduped;
 }
 
-/**
- * ONE FUNCTION-ID SET, ONE STEP.
- *
- * A node whose OWN facts ground several roles legitimately emits several
- * adjacent occurrences (see segmentIntoStepsByRole's SPLIT rule) — but that is
- * only a real narrative split when the resulting steps point at DIFFERENT code.
- * When two adjacent steps resolve to the identical set of function ids AND
- * neither one is scoped to its own sub-section (line range), the reader is
- * being shown the same function twice under two labels, which reads as a
- * two-step flow that is really one step. Collapse those: keep the
- * higher-priority role's step (occurrences are emitted in ROLE_PRIORITY order,
- * so that is the earlier one), append the dropped step's name as a qualifier
- * so no observed role is silently lost, and renumber.
- *
- * Non-adjacent repeats of the same function id are left alone: a genuine loop
- * back through the same function later in a flow is real structure.
- */
 function dedupeStepEdges<T extends { from_step_id: string; to_step_id: string; kind: string }>(edges: T[]): T[] {
   const seen = new Set<string>();
   const out: T[] = [];
@@ -3882,9 +2406,6 @@ function collapseDuplicateFunctionSteps(flow: FlowConcept): FlowConcept {
   const isSectioned = (s: FlowStep) => s.functions.some(f => f.section !== undefined);
 
   const kept: FlowStep[] = [];
-  /** absorbed step_id -> surviving step_id, so every reference the flow already
-   *  holds (contract facet provenance, step-graph edges) is re-pointed instead
-   *  of left dangling. */
   const absorbedInto = new Map<string, string>();
   let collapsed = 0;
   for (const step of flow.steps) {
@@ -3894,8 +2415,6 @@ function collapseDuplicateFunctionSteps(flow: FlowConcept): FlowConcept {
       absorbedInto.set(step.step_id, prev.step_id);
       if (!prev.name.includes(step.name)) prev.name = `${prev.name} & ${step.name}`;
       prev.description = `${prev.description} Also: ${step.description}`;
-      // The absorbed step's typed code mappings describe the same functions —
-      // keep them so the step↔code join stays complete.
       if (step.code_mappings?.length) {
         prev.code_mappings = [...(prev.code_mappings || []), ...step.code_mappings.map(m => ({ ...m, step_id: prev.step_id }))];
       }
@@ -3908,9 +2427,6 @@ function collapseDuplicateFunctionSteps(flow: FlowConcept): FlowConcept {
   const survivingIds = new Set(kept.map(s => s.step_id));
   kept.forEach((s, i) => { s.order = i; });
 
-  // Re-point the flow contract's provenance at the surviving steps. The
-  // aggregate was built from the pre-collapse step list, so without this a
-  // flow would keep citing step ids its own `steps` no longer contains.
   const contract = flow.contract && flow.contract.facet_provenance
     ? {
         ...flow.contract,
@@ -3927,8 +2443,6 @@ function collapseDuplicateFunctionSteps(flow: FlowConcept): FlowConcept {
     ...flow,
     steps: kept,
     ...(contract ? { contract } : {}),
-    // Step-graph edges pointing at an absorbed step no longer resolve; drop
-    // them rather than leaving dangling references.
     ...(flow.step_graph
       ? {
           step_graph: {
@@ -3940,8 +2454,6 @@ function collapseDuplicateFunctionSteps(flow: FlowConcept): FlowConcept {
                   from_step_id: absorbedInto.get(e.from_step_id) ?? e.from_step_id,
                   to_step_id: absorbedInto.get(e.to_step_id) ?? e.to_step_id,
                 }))
-                // an edge that became a self-loop described a hop between two
-                // labels of ONE step — it is not a step transition any more.
                 .filter(e => e.from_step_id !== e.to_step_id
                   && survivingIds.has(e.from_step_id) && survivingIds.has(e.to_step_id))
             ),
@@ -3955,21 +2467,6 @@ function collapseDuplicateFunctionSteps(flow: FlowConcept): FlowConcept {
   };
 }
 
-/**
- * FLOW NAMES MUST DISTINGUISH FLOWS.
- *
- * Entry-point-derived names collide hard on repos with many similar entries —
- * every binary's `main`, every route file's `handler`. A population where a
- * name maps to a dozen flows carries no navigational information. Qualify each
- * colliding name with the most specific REAL fact that separates its flows,
- * tried in order and only kept when it actually splits the collision group:
- *   1. the deployable / package-root directory of the entry file
- *      (`bin/coordinator`, `apps/app`) — the unit a reader already thinks in;
- *   2. the entry file's own basename;
- *   3. the flow's terminus (what it produces).
- * A name that still collides after all three is left alone — a fabricated
- * discriminator would be worse than an honest duplicate.
- */
 function disambiguateFlowNames(cas: CASOutput, flows: FlowConcept[]): FlowConcept[] {
   if (flows.length < 2) return flows;
   const nodesById = new Map((cas.nodes || []).map(n => [n.id, n]));
@@ -3999,16 +2496,8 @@ function disambiguateFlowNames(cas: CASOutput, flows: FlowConcept[]): FlowConcep
     if (group.length < 2) continue;
     for (const qualify of qualifiers) {
       const values = group.map(qualify);
-      // Only useful when it genuinely partitions: every flow gets a value and
-      // the values are not all identical.
       if (values.some(v => !v)) continue;
       if (new Set(values).size < 2) continue;
-      // A qualifier may return a repo path (measured live: flows/journeys
-      // shipped titled `Config (<dir>/<file>.py)`, the first text a customer
-      // reads). This is the SECOND independent disambiguator in the codebase —
-      // journey-builder's disambiguateJourneyNames is the other — so the
-      // path-to-name rule is shared from there rather than written a third
-      // time. discriminatorLabel is a no-op on values that are not paths.
       group.forEach((f, i) => { f.name = dedupeAdjacentWords(`${name} (${discriminatorLabel(values[i])})`); });
       break;
     }
@@ -4016,25 +2505,9 @@ function disambiguateFlowNames(cas: CASOutput, flows: FlowConcept[]): FlowConcep
   return flows;
 }
 
-/** A capability must relate to at least this many flows via entity overlap
- *  before blanket detection can apply (small flow sets can't distinguish a
- *  blanket from a genuinely central capability). */
 const BLANKET_LINKAGE_MIN_FLOWS = 12;
-/** Entity-overlap edges spanning at least this fraction of ALL flows mark the
- *  capability's entity anchors as non-discriminative. */
 const BLANKET_LINKAGE_FRACTION = 0.8;
 
-/**
- * BLANKET-LINKAGE PRUNE: entity overlap is the weakest relationship tier — a
- * capability whose related_entities set is broad enough to overlap (nearly)
- * EVERY flow's entities is not evidence of relatedness, it is evidence the
- * anchor set does not discriminate (measured live on the v1.0.126 Klauro
- * self-CAS: 3 capabilities each carried the IDENTICAL 175/175 related_flows,
- * all via entity overlap). Anchor-based edges (operation / interior-step /
- * route / surface-membership) are never pruned; only entity-overlap edges of
- * capabilities that overlap >= BLANKET_LINKAGE_FRACTION of all flows are
- * dropped. Mutates the flows in place and returns them.
- */
 export function pruneBlanketCapabilityRelationships(flows: FlowConcept[]): FlowConcept[] {
   const totalFlows = flows.length;
   if (totalFlows < BLANKET_LINKAGE_MIN_FLOWS) return flows;
@@ -4067,19 +2540,6 @@ export function pruneBlanketCapabilityRelationships(flows: FlowConcept[]): FlowC
   return flows;
 }
 
-/**
- * Entry-point-rooted flows — one FlowConcept per (matching) entry point,
- * forward-traced. The ONLY derivation path when the CAS carries no
- * entry-to-exit call chains; the UNION complement (dead-end entries) when it
- * does. Same deterministic fact sources as the terminal path.
- *
- * `unionOpts` (internal, set only by computeFlowConcepts' union path):
- *   - excludeEntryKeys: entry-point ids / root node ids already covered by a
- *     terminal-anchored flow (dedup — terminal wins).
- *   - significantOnly: drop test entries and trivial dead flows (a single
- *     traced node with no exits, no lineage, and no security/validation
- *     surface) so 3,700 raw entry points don't become 3,700 noise flows.
- */
 function computeEntryPointFlows(
   cas: CASOutput,
   opts: ComputeFlowConceptsOptions = {},
@@ -4089,22 +2549,8 @@ function computeEntryPointFlows(
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  // COVERAGE DECISION (flows_to_capabilities invariant): behavior surfaces
-  // moved out of system_capabilities into the behavior_surfaces navigation
-  // tier (SURFACES ARE NOT CAPABILITIES — docs/SEMANTIC-MODEL.md), but a flow
-  // rooted at a surface-registered entry point (a command handler, an event
-  // subscriber, an MCP tool) is still genuinely OWNED by that surface for
-  // navigation. Deriving relationships against capabilities-only would strand
-  // every such flow (capability_relationships: []) and crater
-  // flows_to_capabilities on registration-heavy repos — an artifact of the
-  // tier split, not a real coverage loss. Surfaces therefore stay in the
-  // relationship-derivation pool: a surface-anchored link satisfies the
-  // coverage invariant (capability_id may reference a behavior_surfaces
-  // entry), while ranking/summary consumers stay surface-free because those
-  // read system_capabilities directly.
   const capabilities = [...(cas.system_capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
-  // Rule (c2) evidence: see buildTerminalFlows' identical index (deriveCliCronSchedule).
   const cronScheduleIndex = buildCronScheduleIndex(cas.nodes || []);
 
   const realEntryPoints = cas.entry_points || [];
@@ -4114,9 +2560,6 @@ function computeEntryPointFlows(
 
   let entryPoints: CASEntryPoint[] = [...realEntryPoints, ...synthesizedRoots.map(r => r.ep)];
   if (unionOpts.onlyEntryKeys && unionOpts.onlyEntryKeys.size > 0) {
-    // Internal (continuation partner derivation): derive JUST these consumer
-    // entry points — they are seam-evidence-matched, so the significance
-    // filter does not apply to them.
     const only = unionOpts.onlyEntryKeys;
     entryPoints = entryPoints.filter(ep => only.has(ep.id) || only.has(ep.handler?.node_id || ep.source_node));
   }
@@ -4127,7 +2570,6 @@ function computeEntryPointFlows(
     );
   }
   if (unionOpts.significantOnly) {
-    // Test entries never make product flows (the union must stay sane).
     entryPoints = entryPoints.filter(ep => ep.type !== 'test');
   }
   if (opts.target) {
@@ -4141,17 +2583,6 @@ function computeEntryPointFlows(
   }
   const maxEntryFlows = opts.maxFlows && opts.maxFlows > 0 ? opts.maxFlows : undefined;
 
-  // SIGNIFICANCE-FIRST WINDOW ORDER (re-validation: flow-entity starvation):
-  // the maxFlows window used to slice entry points in raw array order, so on a
-  // test-heavy CAS (e.g. 972/976 'test' entries) the whole window filled with
-  // test-suite roots — which have no forward reach into the call graph — while
-  // the synthesized capability-operation roots (appended after the real
-  // entries) never entered the window. Result: 0/100 flows with entities, and
-  // every capability↔flow role starved. Order the candidates by significance
-  // CLASS, stable within class (original array order), so the window prefers
-  // product entries: (0) real non-test entry points, (1) synthesized
-  // capability-operation roots, (2) test entries. Deterministic — a pure
-  // stable class sort over facts already on each candidate, no sampling.
   const entryClassRank = (ep: CASEntryPoint): number =>
     ep.type === 'test' ? 2 : synthesizedRootIds.has(ep.id) ? 1 : 0;
   const entryOriginalIndex = new Map(entryPoints.map((ep, i) => [ep.id, i]));
@@ -4160,10 +2591,6 @@ function computeEntryPointFlows(
     (entryOriginalIndex.get(a.id)! - entryOriginalIndex.get(b.id)!)
   );
 
-  // EVENT-VARIANT COLLAPSE (defect #2 — see groupEventVariantEntryPoints):
-  // N `event` entry points sharing one handler root are the SAME flow, not N
-  // near-duplicate ones. Non-primary members are skipped in the loop below;
-  // the primary's resulting flow carries every member's trigger label.
   const { primaryByRoot, triggersByPrimaryId, groupedAwayIds } =
     groupEventVariantEntryPoints(entryPoints, entryOriginalIndex);
   void primaryByRoot;
@@ -4173,11 +2600,6 @@ function computeEntryPointFlows(
   const conditionalOut = buildConditionalOutIndex(cas);
   const deleterNodeIds = buildDeleterNodeIds(cas);
   const mappingEvidence = buildStepMappingEvidence(cas);
-  // CLI one-hop entity supplement — see buildTerminalFlows' identical setup
-  // (makeCliOneHopEntities) for why: traceForwardChain doesn't follow
-  // delegates_to/queries edges, so a CLI command's delegated persistence
-  // (live on a benchmarked fleet-management repo's ELD module) is invisible to entitiesForNodes on the flow's own
-  // traced path without this.
   const cliOneHopEntities = makeCliOneHopEntities(cas);
 
   const entryPointsByNode = new Map<string, CASEntryPoint[]>();
@@ -4189,11 +2611,7 @@ function computeEntryPointFlows(
 
   const allLineage = [...(cas.data_lineage || [])];
 
-  // terminal-signal is used ONLY as an optional naming aid downstream (via
-  // dominantEntityForNodes -> data_lineage, not terminal-signal directly);
-  // kept here so a future naming refinement can rank steps against it
-  // without another CAS-wide pass. Computed once, lazily unused otherwise.
-  void buildTerminalSignal; // referenced for future step-naming refinement; not required for correctness today.
+  void buildTerminalSignal;
 
   const traversal = buildTraversalIndex(cas);
 
@@ -4201,7 +2619,7 @@ function computeEntryPointFlows(
 
   for (const ep of entryPoints) {
     if (maxEntryFlows !== undefined && flows.length >= maxEntryFlows) break;
-    if (groupedAwayIds.has(ep.id)) continue; // folded into its group's primary entry point's flow, below.
+    if (groupedAwayIds.has(ep.id)) continue;
     const rootNode = nodesById.get(ep.handler?.node_id || ep.source_node);
     if (!rootNode) continue;
 
@@ -4209,10 +2627,6 @@ function computeEntryPointFlows(
     if (chain.length === 0) continue;
 
     if (unionOpts.significantOnly && chain.length === 1) {
-      // A single traced node with NO observable surface — no exits, no entity
-      // lineage, no auth/validation on the entry — is a trivial dead flow;
-      // skip it in the union so the flow count stays product-shaped. All
-      // checks are existing CAS facts (evidence, not name heuristics).
       const rootId = rootNode.id;
       const hasExit = (exitPointsByNode.get(rootId) || []).length > 0;
       const hasLineage = Boolean(lineageByNode.get(rootId));
@@ -4247,10 +2661,6 @@ function computeEntryPointFlows(
       }
       const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode, flowEntryScope);
 
-      // sub-section detection: only meaningful when the step maps to a
-      // SINGLE function (a multi-function step is already segmented at
-      // function granularity — sub-sectioning is for splitting the inside
-      // of one large function).
       let functions: FlowStep['functions'];
       if (seg.nodes.length === 1) {
         const sections = detectSubSections(seg.nodes[0]);
@@ -4263,8 +2673,6 @@ function computeEntryPointFlows(
 
       const stepNodeIds = new Set(seg.nodes.map(n => n.id));
       const stepId = `${ep.id}::step${i}`;
-      // D1 typed step↔code mappings. No resolved terminus on entry-point-rooted
-      // flows — 'completes' is never derived here (omitted, not fabricated).
       const { mappings: codeMappings, truncated: mappingsTruncated } = deriveStepCodeMappings({
         stepId,
         segNodes: seg.nodes,
@@ -4301,22 +2709,14 @@ function computeEntryPointFlows(
       return step;
     });
 
-    // STEP GRAPH: ordered `steps` are a PROJECTION — layer branch/error/
-    // compensation edges on the sequence backbone (segments align 1:1 by index).
     const stepGraph = buildStepGraph(steps, segments.map(s => s.nodes), conditionalOut, deleterNodeIds);
 
     const allNodeIds = new Set(chain.map(c => c.node.id));
-    // M:N capability relationships (role on the EDGE); capability_id stays the
-    // primary relationship's capability for back-compat.
-    // ZERO-ENTITY FALLBACK HOP — see buildTerminalFlows' identical rationale:
-    // only rescues flows whose direct trace found no entities at all; never
-    // widens a flow that already resolved real entities.
     const directEntryFlowEntities = entitiesForNodes(allNodeIds, cas);
     const flowEntities = directEntryFlowEntities.length > 0
       ? unionEntities(directEntryFlowEntities, ep.type === 'cli' ? cliOneHopEntities(allNodeIds) : [])
       : cliOneHopEntities(allNodeIds);
 
-    // ASSET/PROXY PLUMBING EXCLUSION — see buildTerminalFlows' identical rule.
     if (flowEntities.length === 0 && !anyStepGrounded && isAssetOrProxyPlumbingRoute(ep)) {
       continue;
     }
@@ -4326,8 +2726,6 @@ function computeEntryPointFlows(
       entryPointId: ep.id,
       rootNodeId: ep.handler?.node_id || ep.source_node,
       entities: flowEntities,
-      // No resolved terminus on entry-point-rooted flows — dominance derives
-      // from the traced nodes' own exit points alone.
       telemetry: telemetryExitDominance(allNodeIds, exitPointsByNode),
       pathNodeIds: allNodeIds,
       entryHandlerNodeIdByEpId,
@@ -4347,9 +2745,6 @@ function computeEntryPointFlows(
       name: flowNameForEntryPoint(ep),
       intent: flowIntentForEntryPoint(ep),
       entry_point: ep.id,
-      // No separate entry-family union here: this chain IS the root's forward
-      // family (same traversal, same bounds), unlike the terminal path where
-      // the recorded call_path is one narrow route through it.
       capability_id: capabilityId,
       capability_relationships: capabilityRelationships.length ? capabilityRelationships : undefined,
       entities: flowEntities,
@@ -4364,17 +2759,6 @@ function computeEntryPointFlows(
   return flows;
 }
 
-// ---------------------------------------------------------------------------
-// TELEMETRY FACET (facet 6) — evidence-gated runtime join
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal per-unit runtime metric shape the telemetry join consumes. It is a
- * structural subset of the MCP server's `NodeRuntimeMetrics`
- * (product.buildNodeRuntimeMetrics) — declared here so analyzer-core carries
- * no dependency on the app layer; the query layer maps NodeRuntimeMetrics onto
- * this. Every field that reaches a unit came from a real observation.
- */
 export interface RuntimeMetricLike {
   static_id: string;
   node_id?: string;
@@ -4389,8 +2773,6 @@ export interface RuntimeMetricLike {
   last_seen?: string;
 }
 
-/** Build a lookup from every id/route a metric can be keyed by -> the metric,
- *  so a unit can be matched by node id, entry-point id, or "METHOD /route". */
 function indexRuntimeMetrics(metrics: RuntimeMetricLike[]): Map<string, RuntimeMetricLike> {
   const index = new Map<string, RuntimeMetricLike>();
   for (const m of metrics) {
@@ -4423,9 +2805,6 @@ function toContractTelemetry(m: RuntimeMetricLike): ContractTelemetry {
   return t;
 }
 
-/** Find the telemetry for a unit given the node ids it owns plus an optional
- *  entry-point id (flow root) / route key. Returns undefined when NO real
- *  runtime data matches — the facet is then omitted, never fabricated. */
 function telemetryForUnit(
   index: Map<string, RuntimeMetricLike>,
   nodeIds: Iterable<string>,
@@ -4440,16 +2819,6 @@ function telemetryForUnit(
   return undefined;
 }
 
-/**
- * Join runtime telemetry (facet 6) onto already-computed flows: attaches
- * `contract.telemetry` to a flow (keyed on its entry point / root node) and to
- * each step (keyed on the step's own function ids). Purely additive — mutates
- * in place and returns the same array. When `metrics` is empty, or nothing
- * matches, every telemetry field is simply left absent (evidence-gated: no
- * observation -> no facet). This runs at the query layer, where persisted
- * observations are available, NOT inside computeFlowConcepts (which stays a
- * pure static pass over the CAS).
- */
 export function attachTelemetryToFlows(flows: FlowConcept[], metrics: RuntimeMetricLike[]): FlowConcept[] {
   if (!metrics || metrics.length === 0) return flows;
   const index = indexRuntimeMetrics(metrics);
@@ -4470,9 +2839,6 @@ export function attachTelemetryToFlows(flows: FlowConcept[], metrics: RuntimeMet
     const flowTel = telemetryForUnit(index, flowNodeIds, [flow.entry_point]);
     if (flowTel) {
       flow.contract.telemetry = flowTel;
-      // Facet provenance for the end-to-end telemetry join (facet 'telemetry'):
-      // which steps carried matching observations, and the observation source.
-      // Deterministic — real observations only; never stamped when no match.
       const entry: FacetProvenance = {
         facet: 'telemetry',
         value: flowTel.static_id,
@@ -4487,49 +2853,19 @@ export function attachTelemetryToFlows(flows: FlowConcept[], metrics: RuntimeMet
   return flows;
 }
 
-/** Standalone telemetry lookup for a single node (used by get_coding_context,
- *  which resolves one target node rather than a whole flow). Undefined when no
- *  observation matches. */
 export function telemetryForNode(nodeId: string, metrics: RuntimeMetricLike[]): ContractTelemetry | undefined {
   if (!metrics || metrics.length === 0) return undefined;
   const index = indexRuntimeMetrics(metrics);
   return telemetryForUnit(index, [nodeId]);
 }
 
-/**
- * CAPABILITY-LEVEL rollup of Tier 4 telemetry, closing the gap the flow/step
- * join alone leaves open: "which capabilities are exercised versus dormant"
- * needs an aggregate ACROSS a capability's flows, not a fact per flow.
- *
- * Ground truth for "how many flows does this capability have" is
- * `SystemCapability.related_flows` — computed once at analysis time,
- * un-capped, and persisted (docs comment on that field). That set is the
- * denominator; `flows` (already telemetry-joined by `attachTelemetryToFlows`)
- * is whatever this call actually computed, which may be a capped/targeted
- * subset. Coverage is reported honestly rather than assumed:
- *   - 'full'    — every related flow_id was present in `flows` this call.
- *   - 'partial' — some but not all related flow_ids were present.
- *   - 'none'    — none of the capability's flows were computed this call
- *                 (e.g. it was outside the browse window) — telemetry
- *                 presence cannot be assessed, so `exercised` stays undefined.
- *
- * `dormant` is only ever asserted under 'full' coverage — per §8.3 of the
- * spec, an unobserved path is not proof of dead code on partial evidence,
- * and asserting dormancy from a capped window would be exactly that error.
- */
 export interface CapabilityTelemetry {
   capability_id: string;
-  /** Total flows this capability relates to (SystemCapability.related_flows.length). */
   flows_total: number;
-  /** Of `flows_total`, how many were part of this call's computed flow set. */
   flows_in_scope: number;
-  /** Of the in-scope flows, how many carried a real observation. */
   flows_observed: number;
   coverage: 'full' | 'partial' | 'none';
-  /** true when >=1 in-scope flow was observed; false only under 'full'
-   *  coverage with zero observed; undefined when coverage is 'none'. */
   exercised?: boolean;
-  /** true only under 'full' coverage with zero observed flows — see doc above. */
   dormant: boolean;
   request_count: number;
   error_rate: number;
@@ -4548,7 +2884,7 @@ export function computeCapabilityTelemetry(
 
   for (const capability of capabilities) {
     const relatedFlowIds = (capability.related_flows || []).map(r => r.flow_id);
-    if (relatedFlowIds.length === 0) continue; // no known flows -> nothing to roll up, not a zero-observation claim
+    if (relatedFlowIds.length === 0) continue;
 
     const inScopeIds = relatedFlowIds.filter(id => flowById.has(id));
     const observedFlows = inScopeIds
@@ -4592,15 +2928,6 @@ export function computeCapabilityTelemetry(
   return results;
 }
 
-/**
- * "Paths that exist in source but never run in production" (§8.3 — telemetry
- * annotates, it does not delete): flows that were actually computed AND for
- * which real telemetry data exists for the scope (metrics non-empty), but
- * which themselves carry no `contract.telemetry`. Never asserted when metrics
- * is empty — absence of telemetry data entirely is a different fact than
- * "instrumented and still silent", and conflating them would be exactly the
- * kind of unearned dead-code claim §8.3 forbids.
- */
 export function unexercisedFlows(
   flows: FlowConcept[],
   metrics: RuntimeMetricLike[],
