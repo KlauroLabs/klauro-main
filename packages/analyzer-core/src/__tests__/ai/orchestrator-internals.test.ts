@@ -11146,6 +11146,10 @@ describe('P1 characterization: capability classification against real production
       'soon-lens': ['Provides technical indicators and analysis'],
       v2: ['Secure user authentication'],
       truckspy: ['Manage user profiles and authentication'],
+      // Added deliberately when the stutter rule landed: "Manages mcp management"
+      // repeats its own verb as its noun, so it names no outcome. Recorded by NAME
+      // so this line is a claim about one capability, not a number that moved.
+      'klauro-self': ['Manages mcp management'],
     };
     let totalKept = 0;
     for (const repo of corpus) {
@@ -11160,7 +11164,7 @@ describe('P1 characterization: capability classification against real production
         .toEqual({ repo: repo.repo, trimmed: (BASELINE_TRIMMED_BY_REPO[repo.repo] || []).slice().sort() });
       totalKept += kept.length;
     }
-    expect(totalKept).toBe(212);
+    expect(totalKept).toBe(211);
   });
 
   it('a capability that was strong ONLY because a literal named it is no longer strong', () => {
