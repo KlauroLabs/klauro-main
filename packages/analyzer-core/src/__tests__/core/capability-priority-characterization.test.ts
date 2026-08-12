@@ -15,6 +15,13 @@ const corpus: Array<{ repo: string; capabilities: any[] }> =
 // literal, across 10 repositories. Replacing that with evidence is #149; this
 // baseline exists so the replacement is visible per capability instead of being a
 // silent reordering of what the customer sees first.
+//
+// MEASURED SCALE: 69 of the 215 corpus capabilities (32%) receive a non-default
+// priority, and effectively all of it comes from vocabulary rather than evidence:
+//   24 demoted to 6  — isCrossCuttingCapabilityName, which includes the word `user`
+//   26 at 1          — the portfolio/trading token sets
+//   14 at 0 (top)    — the ~65 product-phrase tables
+//    2 at 2, 3 at 5  — the billing and demo/framework word sets
 // The fixture stores evidence as COUNTS (ops, ents), so a capability must be
 // materialized into the shape production passes before its priority means
 // anything. My first version of this file read the raw fixture objects, where
