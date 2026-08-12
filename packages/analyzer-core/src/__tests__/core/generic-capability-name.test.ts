@@ -3,7 +3,10 @@ import * as path from 'path';
 
 const ORCHESTRATOR = path.join(__dirname, '../../analyzer/core/orchestrator.ts');
 
-describe('isGenericCapabilityDisplayName carries no repo-specific vocabulary', () => {
+// `isGenericCapabilityDisplayName` gates six call sites that DROP a capability
+// from the customer-facing catalog, so what it matches decides what a customer
+// never sees. This file records what is settled and what is still debt.
+describe('generic capability name detection', () => {
   const source = fs.readFileSync(ORCHESTRATOR, 'utf8');
   const body = (() => {
     const start = source.indexOf('private isGenericCapabilityDisplayName');
@@ -12,54 +15,40 @@ describe('isGenericCapabilityDisplayName carries no repo-specific vocabulary', (
     return source.slice(start, end === -1 ? source.length : end);
   })();
 
-  // These six capabilities DROP a capability from the customer-facing catalog, so
-  // a word list here decides what a customer never sees. Three literal phrases
-  // and one framework's class names were in this predicate with no test proving
-  // any of them — the shape of "a lane needed a decision and a literal list was
-  // the fastest way to get it". Removed; this asserts they stay gone.
-  it('does not suppress specific observed output phrases', () => {
-    expect(body).not.toMatch(/help management/i);
+  it('detects a stutter structurally, with no phrase list', () => {
+    // "Report Reporting" says nothing: the subject and its qualifier share a stem.
+    // That is a property of the string, so it holds for any repo — it replaced a
+    // literal `report reporting` suppression.
+    expect(body).toContain('nameIsStutter');
     expect(body).not.toMatch(/report reporting/i);
-    expect(body).not.toMatch(/jobs\?? workflow/i);
-    expect(body).not.toMatch(/dismiss/i);
   });
 
-  it('does not name one web framework\'s components', () => {
-    // Framework machinery must be recognised from evidence (the code is owned by
-    // a framework path / dependency), never from that framework's brand nouns —
-    // a name list only ever covers the frameworks someone happened to hit.
-    expect(body).not.toMatch(/action[_\s]?text/i);
-    expect(body).not.toMatch(/active[_\s]?storage/i);
-    expect(body).not.toMatch(/action[_\s]?cable/i);
-    expect(body).not.toMatch(/action[_\s]?mailbox/i);
-    expect(body).not.toMatch(/bin\\?\/console/i);
+  it('does NOT reject a name merely for containing an underscore', () => {
+    // Tried and falsified. `gift_cards`, `product_translations` and
+    // `payment_links` are REAL commerce capabilities whose names are snake_case
+    // because the ENTITIES are; `dismiss_updater_notice` and `action_text` are
+    // code identifiers. Both shapes are snake_case, so the underscore carries no
+    // signal. Separating them needs entity evidence (does the subject resolve to
+    // a known entity?), which this string-only predicate cannot see — see the
+    // remaining literals below, which stand in for that evidence until it does.
+    expect(body).not.toContain('nameCarriesCodeIdentifier');
+  });
+
+  it('still carries identifier-shaped literals, which is known debt not a design', () => {
+    // Deliberately asserted as PRESENT so this test turns red the day someone
+    // makes the predicate evidence-aware and can honestly delete them — the
+    // point being that the removal is then proven, not assumed.
+    expect(body).toMatch(/dismiss/i);
+    expect(body).toMatch(/action[_\s]?text/i);
   });
 
   it('still rejects names carrying code syntax, which no capability name has', () => {
-    // The structural half of the predicate, kept: punctuation and member access
-    // are evidence the label came from an identifier, not from an outcome.
     expect(body).toMatch(/\[\(\)/);
     expect(body).toMatch(/\\\.with/);
   });
-
-  it('still rejects mechanism nouns that name a dispatch shape, not an outcome', () => {
-    for (const mechanism of ['handlers', 'console commands']) {
-      expect(body.toLowerCase()).toContain(mechanism);
-    }
-  });
-
-  it('replaces the removed literals with the two structural rules', () => {
-    expect(body).toContain('nameCarriesCodeIdentifier');
-    expect(body).toContain('nameIsStutter');
-  });
 });
 
-// The rules that replaced the literals, tested as behaviour. Both are properties
-// of the STRING, so they hold for any framework and any repo — which is the whole
-// point: the literals they replace only ever covered the frameworks someone had
-// already hit, and each new one needed another line.
-describe('structural replacements for the removed vocabulary', () => {
-  const carriesCodeIdentifier = (name: string) => /[A-Za-z0-9]_[A-Za-z0-9]/.test(name);
+describe('nameIsStutter', () => {
   const isStutter = (name: string) => {
     const stems = String(name || '')
       .toLowerCase()
@@ -69,21 +58,12 @@ describe('structural replacements for the removed vocabulary', () => {
       .filter(stem => stem.length >= 3);
     return new Set(stems).size < stems.length;
   };
-  const isGeneric = (name: string) => carriesCodeIdentifier(name) || isStutter(name);
 
-  it('catches every name the removed literals were written for', () => {
-    for (const name of [
-      'Report Reporting',
-      'Dismiss_enterprise_edition_notice Workflow',
-      'Dismiss_updater_notice Workflow',
-      'Json_previews Workflow',
-      'Action_text Management',
-    ]) {
-      expect(isGeneric(name)).toBe(true);
-    }
+  it('catches a repeated stem', () => {
+    expect(isStutter('Report Reporting')).toBe(true);
   });
 
-  it('keeps real capability names — measured live, not invented for this test', () => {
+  it('keeps real capability names — measured live on prod, not invented here', () => {
     for (const name of [
       'Pair devices for communication',
       'Organize and publish topics',
@@ -94,7 +74,21 @@ describe('structural replacements for the removed vocabulary', () => {
       'View and manage findings',
       'Integrate with external services',
     ]) {
-      expect(isGeneric(name)).toBe(false);
+      expect(isStutter(name)).toBe(false);
+    }
+  });
+
+  it('keeps the genuine commerce names the corpus characterization test pins', () => {
+    for (const name of [
+      'Orders Management',
+      'Gift_cards Management',
+      'Stock Management',
+      'Product_translations Workflow',
+      'Payment_links Workflow',
+      'Jobs Management',
+      'Proposal Preview',
+    ]) {
+      expect(isStutter(name)).toBe(false);
     }
   });
 });

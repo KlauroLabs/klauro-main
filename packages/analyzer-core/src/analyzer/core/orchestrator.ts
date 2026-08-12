@@ -15035,9 +15035,11 @@ export class AnalyzerOrchestrator {
   }
 
   private isGenericCapabilityDisplayName(name: string): boolean {
-    if (/\b(console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
+    if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
+    if (/^(help management|jobs? workflow)$/i.test(name)) return true;
+    if (/^dismiss[_\s]/i.test(name)) return true;
+    if (/^(action[_\s]?text|active[_\s]?storage|action[_\s]?cable|action[_\s]?mailbox)\b/i.test(name)) return true;
     if (/[()[\]{}<>'"`:]|\.with\b/i.test(name)) return true;
-    if (this.nameCarriesCodeIdentifier(name)) return true;
     if (this.nameIsStutter(name)) return true;
     const subject = name
       .toLowerCase()
@@ -15049,10 +15051,6 @@ export class AnalyzerOrchestrator {
       .split(/\s+/)
       .map(token => this.normalizeDomainToken(token))
       .every(token => token.length <= 2 || this.isGenericCapabilityToken(token) || /^(toggle|success|failure|misc|root|read|write|use|used|using|item|items|flat|tiered|available|bogus)$/.test(token));
-  }
-
-  private nameCarriesCodeIdentifier(name: string): boolean {
-    return /[A-Za-z0-9]_[A-Za-z0-9]/.test(name);
   }
 
   private nameIsStutter(name: string): boolean {
