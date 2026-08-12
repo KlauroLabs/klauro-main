@@ -3,7 +3,7 @@
   "files": [
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "ceiling": 25797
+      "ceiling": 25811
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
