@@ -102,7 +102,7 @@ describe('generateCapabilityDescription', () => {
       [entryPoint('/repo/src/orders.ts')],
       '/repo',
     );
-    expect(text).toContain('creates, reads Order');
+    expect(text).toContain('creates and reads Order');
     expect(text).toContain('2 HTTP routes');
     expect(text).toContain('src/orders.ts');
   });
