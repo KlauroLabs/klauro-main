@@ -1,0 +1,53 @@
+{
+  "note": "Ceilings may only go DOWN. See apps/mcp-server/src/file-size-ratchet-gate.ts",
+  "files": [
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "ceiling": 33441
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
+      "ceiling": 4612
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/tree-sitter-ts-extractor.ts",
+      "ceiling": 2377
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-spec.ts",
+      "ceiling": 2260
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "ceiling": 1856
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
+      "ceiling": 1253
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "ceiling": 1104
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
+      "ceiling": 997
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/product-map.ts",
+      "ceiling": 868
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
+      "ceiling": 867
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence.ts",
+      "ceiling": 767
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/system-type.ts",
+      "ceiling": 110
+    }
+  ]
+}

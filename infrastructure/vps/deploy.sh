@@ -209,6 +209,15 @@ if ! ( cd "$APP_DIR/apps/mcp-server" && npx tsx src/spec-purity-gate-cli.ts "$AP
   exit 1
 fi
 
+# File-size ratchet: no tracked file may grow past its recorded ceiling. This is
+# the gate whose absence let orchestrator.ts go 23,103 -> 33,441 lines in five
+# weeks without ever shrinking, while every other gate stayed green — see
+# apps/mcp-server/src/file-size-ratchet-gate.ts.
+echo "==> Checking file-size ratchet (no tracked file may grow — see file-size-ratchet-gate.ts)"
+if ! ( cd "$APP_DIR/apps/mcp-server" && npx tsx src/file-size-ratchet-gate-cli.ts "$APP_DIR" ); then
+  exit 1
+fi
+
 # --- creds -----------------------------------------------------------------
 if [ -f "$APP_DIR/.env" ]; then set -a; . "$APP_DIR/.env"; set +a; fi
 if [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_USER:-}" ] || [ -z "${VPS_PASSWORD:-}" ]; then
