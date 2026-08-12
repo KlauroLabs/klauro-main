@@ -10,7 +10,7 @@ import type {
   SystemCapability,
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
-import { buildCronScheduleIndex, findCronSchedule } from './journey-builder';
+import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel } from './journey-builder';
 
 /**
  * FLOW CONCEPTS — the FLOW -> STEP tier of the conceptual understanding layer
@@ -4003,7 +4003,13 @@ function disambiguateFlowNames(cas: CASOutput, flows: FlowConcept[]): FlowConcep
       // the values are not all identical.
       if (values.some(v => !v)) continue;
       if (new Set(values).size < 2) continue;
-      group.forEach((f, i) => { f.name = dedupeAdjacentWords(`${name} (${values[i]})`); });
+      // A qualifier may return a repo path (measured live: flows/journeys
+      // shipped titled `Config (<dir>/<file>.py)`, the first text a customer
+      // reads). This is the SECOND independent disambiguator in the codebase —
+      // journey-builder's disambiguateJourneyNames is the other — so the
+      // path-to-name rule is shared from there rather than written a third
+      // time. discriminatorLabel is a no-op on values that are not paths.
+      group.forEach((f, i) => { f.name = dedupeAdjacentWords(`${name} (${discriminatorLabel(values[i])})`); });
       break;
     }
   }
