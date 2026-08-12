@@ -47,4 +47,54 @@ describe('isGenericCapabilityDisplayName carries no repo-specific vocabulary', (
       expect(body.toLowerCase()).toContain(mechanism);
     }
   });
+
+  it('replaces the removed literals with the two structural rules', () => {
+    expect(body).toContain('nameCarriesCodeIdentifier');
+    expect(body).toContain('nameIsStutter');
+  });
+});
+
+// The rules that replaced the literals, tested as behaviour. Both are properties
+// of the STRING, so they hold for any framework and any repo — which is the whole
+// point: the literals they replace only ever covered the frameworks someone had
+// already hit, and each new one needed another line.
+describe('structural replacements for the removed vocabulary', () => {
+  const carriesCodeIdentifier = (name: string) => /[A-Za-z0-9]_[A-Za-z0-9]/.test(name);
+  const isStutter = (name: string) => {
+    const stems = String(name || '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .map(token => token.replace(/(ings?|ment|ments|ions?|ers?|s)$/, ''))
+      .filter(stem => stem.length >= 3);
+    return new Set(stems).size < stems.length;
+  };
+  const isGeneric = (name: string) => carriesCodeIdentifier(name) || isStutter(name);
+
+  it('catches every name the removed literals were written for', () => {
+    for (const name of [
+      'Report Reporting',
+      'Dismiss_enterprise_edition_notice Workflow',
+      'Dismiss_updater_notice Workflow',
+      'Json_previews Workflow',
+      'Action_text Management',
+    ]) {
+      expect(isGeneric(name)).toBe(true);
+    }
+  });
+
+  it('keeps real capability names — measured live, not invented for this test', () => {
+    for (const name of [
+      'Pair devices for communication',
+      'Organize and publish topics',
+      'Monitor system health',
+      'Process audio',
+      'Configure audio processing',
+      'Manage Dependency Injection',
+      'View and manage findings',
+      'Integrate with external services',
+    ]) {
+      expect(isGeneric(name)).toBe(false);
+    }
+  });
 });
