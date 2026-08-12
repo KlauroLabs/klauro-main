@@ -226,6 +226,8 @@ function aiConcurrencyLimit(): number {
 // also must never be missed by an unbounded amount.
 const UNGROUNDED_FALLBACK_KEEP = 3;
 
+const STUTTER_MAX_TOKENS = 3;
+
 const CATALOG_HARD_DEADLINE_MS = (() => {
   const configured = Number(process.env.KLAURO_AI_CATALOG_HARD_DEADLINE_MS || '');
   return Number.isFinite(configured) && configured > 0 ? configured : 100_000;
@@ -15060,6 +15062,7 @@ export class AnalyzerOrchestrator {
       .filter(Boolean)
       .map(token => token.replace(/(ings?|ment|ments|ions?|ers?|s)$/, ''))
       .filter(stem => stem.length >= 3);
+    if (stems.length > STUTTER_MAX_TOKENS) return false;
     return new Set(stems).size < stems.length;
   }
 
