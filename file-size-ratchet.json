@@ -3,7 +3,7 @@
   "files": [
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "ceiling": 26191
+      "ceiling": 26060
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
@@ -26,24 +26,28 @@
       "ceiling": 1239
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "ceiling": 812
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
       "ceiling": 868
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/product-map.ts",
-      "ceiling": 635
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
       "ceiling": 831
     },
     {
+      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
+      "ceiling": 812
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/product-map.ts",
+      "ceiling": 635
+    },
+    {
       "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence.ts",
       "ceiling": 405
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-description.ts",
+      "ceiling": 176
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/system-type.ts",

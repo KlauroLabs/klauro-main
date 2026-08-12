@@ -88,6 +88,7 @@ import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSi
 import { collectDeployableEvidence } from './deployable-evidence';
 import { attachDeployable } from './entry-point-deployable';
 import { determineSystemType as determineSystemTypeImpl } from './system-type';
+import * as CapabilityText from './capability-description';
 import { isIdentifierShapedRepoBasename } from './deployable-evidence/util';
 import { buildDependencyManifest } from './dependency-manifest';
 import { classifyCodebaseTypes } from './codebase-type';
@@ -15232,13 +15233,7 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private joinHumanList(values: string[]): string {
-    const items = values.map(value => value.trim()).filter(Boolean);
-    if (items.length === 0) return '';
-    if (items.length === 1) return items[0];
-    if (items.length === 2) return `${items[0]} and ${items[1]}`;
-    return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
-  }
+  private joinHumanList(values: string[]): string { return CapabilityText.joinHumanList(values); }
 
   private humanizePascalName(value: string): string {
     return (value || '')
@@ -20720,78 +20715,13 @@ export class AnalyzerOrchestrator {
     entities: CASDataEntity[],
     operations: SystemCapability['operations']
   ): string {
-    const productSpecific = this.productSpecificCapabilityDescription(label);
-    if (productSpecific) return productSpecific;
-    const lowerLabel = label.toLowerCase();
-    void lowerLabel;
     void nodes;
-    const label_ = label.replace(/\s*\([^)]*\)\s*$/, '').trim() || label;
-    const subject = label_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || label_;
-    const subjectLower = subject.toLowerCase();
-
-    const actions = Array.from(new Set(
-      operations.map(operation => operation.action.toLowerCase())
-        .filter(action => action && action !== 'coordinate' && action !== 'action')
-    ));
-    const verbClause = this.capabilityVerbClause(actions);
-    const entityNames = Array.from(new Set(entities.map(entity => entity.name).filter(Boolean))).slice(0, 4);
-
-    const byType = new Map<string, number>();
-    const samplePaths: string[] = [];
-    for (const operation of operations) {
-      const type = (String(operation.entry_point_type || '').toLowerCase() || 'operation').replace(/^route$/, 'http');
-      byType.set(type, (byType.get(type) || 0) + 1);
-      const pathOrCommand = this.relativizeRepoPath(String(operation.path_or_command || '').trim());
-      if (pathOrCommand && !pathOrCommand.startsWith('entry_') && samplePaths.length < 2 && !samplePaths.includes(pathOrCommand)) {
-        samplePaths.push(pathOrCommand);
-      }
-    }
-    const surfaceParts = [...byType.entries()].map(([type, count]) => `${count} ${this.entryPointSurfaceLabel(type, count)}`);
-
-    const dataClause = entityNames.length
-      ? ` ${verbClause || 'manages'} ${entityNames.join(', ')}`
-      : verbClause ? ` ${verbClause} ${subjectLower} records` : '';
-    const surfaceClause = surfaceParts.length ? ` through ${this.joinHumanList(surfaceParts)}` : '';
-    const pathClause = samplePaths.length ? ` (e.g. ${samplePaths.join(', ')})` : '';
-
-    if (!dataClause && !surfaceClause) {
-      return `${label_} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
-    }
-    return `${label_}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
+    return CapabilityText.generateTerminalCapabilityDescription(label, entities, operations || [], this.activeAnalysisProjectPath);
   }
 
-  private capabilityVerbClause(actions: string[]): string {
-    const set = new Set(actions);
-    const verbs: string[] = [];
-    if (set.has('create')) verbs.push('creates');
-    if (set.has('read') || set.has('query')) verbs.push('reads');
-    if (set.has('update')) verbs.push('updates');
-    if (set.has('delete')) verbs.push('deletes');
-    if (verbs.length === 0) {
-      if (set.has('analyze')) return 'analyzes';
-      if (set.has('validate')) return 'validates';
-      if (set.has('generate')) return 'generates';
-      if (set.has('send')) return 'sends';
-      if (set.has('process')) return 'processes';
-      if (set.has('transform')) return 'transforms';
-      return '';
-    }
-    return this.joinHumanList(verbs);
-  }
+  private capabilityVerbClause(actions: string[]): string { return CapabilityText.capabilityVerbClause(actions); }
 
-  private entryPointSurfaceLabel(type: string, count: number): string {
-    const plural = count > 1;
-    switch (type) {
-      case 'http': case 'route': return plural ? 'HTTP routes' : 'HTTP route';
-      case 'cli': return plural ? 'CLI commands' : 'CLI command';
-      case 'event': case 'message': return plural ? 'event handlers' : 'event handler';
-      case 'schedule': return plural ? 'scheduled jobs' : 'scheduled job';
-      case 'websocket': return plural ? 'WebSocket handlers' : 'WebSocket handler';
-      case 'graphql': return plural ? 'GraphQL operations' : 'GraphQL operation';
-      case 'page': return plural ? 'pages/screens' : 'page/screen';
-      default: return plural ? 'operations' : 'operation';
-    }
-  }
+  private entryPointSurfaceLabel(type: string, count: number): string { return CapabilityText.entryPointSurfaceLabel(type, count); }
 
   private capabilityActionPhrase(actions: string[]): string {
     const actionSet = new Set(actions.map(action => action.toLowerCase()));
@@ -21299,19 +21229,8 @@ export class AnalyzerOrchestrator {
     return 'supporting';
   }
 
-  private relativizeRepoPath(input: string): string {
-    const normalized = String(input || '').replace(/\\/g, '/');
-    const root = (this.activeAnalysisProjectPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
-    if (root && normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1);
-    if (/^(?:[a-zA-Z]:)?\//.test(normalized)) {
-      const segments = normalized.split('/').filter(Boolean);
-      return segments.slice(-2).join('/');
-    }
-    return normalized;
-  }
+  private relativizeRepoPath(input: string): string { return CapabilityText.relativizeRepoPath(input, this.activeAnalysisProjectPath); }
 
-  // `description_source` and the PRESENCE of `description` text must never
-  // default) before it was recognized as a missing INVARIANT rather than a
   private enforceCapabilityDescriptionProvenanceInvariant(capabilities: SystemCapability[] | undefined): void {
     for (const capability of capabilities || []) {
       if (capability.description) continue;
@@ -21331,11 +21250,7 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  // A capability must never end up with description_source: 'deterministic'
-  private lastResortCapabilityDescription(name: string): string {
-    const name_ = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
-    return `${name_} is a structural capability grouping identified in the codebase; no operations or related data entities have been resolved for it.`;
-  }
+  private lastResortCapabilityDescription(name: string): string { return CapabilityText.lastResortCapabilityDescription(name); }
 
   private generateCapabilityDescription(
     name: string,
@@ -21343,59 +21258,12 @@ export class AnalyzerOrchestrator {
     entities: Array<{ name: string }> = [],
     entryPoints: CASEntryPoint[] = [],
   ): string {
-    const name_ = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
-    const subject = name_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name_;
-    const subjectLower = subject.toLowerCase();
-
-    const actions = Array.from(new Set(
-      operations.map(operation => operation.action.toLowerCase())
-        .filter(action => action && action !== 'coordinate' && action !== 'action')
-    ));
-    const verbClause = this.capabilityVerbClause(actions);
-    const entityNames = Array.from(new Set(entities.map(entity => entity.name).filter(Boolean))).slice(0, 4);
-
-    const byType = new Map<string, number>();
-    for (const operation of operations) {
-      const type = (String((operation as any).entry_point_type || '').toLowerCase() || 'operation').replace(/^route$/, 'http');
-      byType.set(type, (byType.get(type) || 0) + 1);
-    }
-    const surfaceParts = [...byType.entries()].map(([type, count]) => `${count} ${this.entryPointSurfaceLabel(type, count)}`);
-
-    const samplePaths: string[] = [];
-    for (const entryPoint of entryPoints) {
-      const file = entryPoint.handler?.file;
-      if (!file) continue;
-      const relative = this.relativizeRepoPath(file);
-      if (relative && !samplePaths.includes(relative) && samplePaths.length < 2) samplePaths.push(relative);
-    }
-
-    const dataClause = entityNames.length
-      ? ` ${verbClause || 'manages'} ${entityNames.join(', ')}`
-      : verbClause ? ` ${verbClause} ${subjectLower} records` : '';
-    const surfaceClause = surfaceParts.length ? ` through ${this.joinHumanList(surfaceParts)}` : '';
-    const pathClause = samplePaths.length ? ` (${samplePaths.join(', ')})` : '';
-
-    if (!dataClause && !surfaceClause) {
-      return `${name_} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
-    }
-    return `${name_}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
+    return CapabilityText.generateCapabilityDescription(name, operations, entities, entryPoints, this.activeAnalysisProjectPath);
   }
 
-  private capabilityInteractionPhrase(entryTypes: string[]): string {
-    const normalized = new Set(entryTypes.map(type => type.toLowerCase()).filter(Boolean));
-    const phrases: string[] = [];
-    if (normalized.has('http') || normalized.has('route')) phrases.push('from product request flows');
-    if (normalized.has('page')) phrases.push('from application screens');
-    if (normalized.has('cli')) phrases.push('from command-line tasks');
-    if (normalized.has('event') || normalized.has('message') || normalized.has('queue')) phrases.push('from asynchronous messages');
-    if (normalized.has('schedule') || normalized.has('scheduled') || normalized.has('cron')) phrases.push('from scheduled jobs');
-    if (phrases.length === 0) return '';
-    return ` ${this.joinHumanList(phrases.slice(0, 3))}`;
-  }
+  private capabilityInteractionPhrase(entryTypes: string[]): string { return CapabilityText.capabilityInteractionPhrase(entryTypes); }
 
-  private productSpecificCapabilityDescription(_name: string): string | undefined {
-    return undefined;
-  }
+
 
   private signalTokens(item: string): string[] {
     return item
