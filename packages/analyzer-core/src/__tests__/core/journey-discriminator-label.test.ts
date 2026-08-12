@@ -18,13 +18,24 @@ describe('journey discriminator label', () => {
     expect(first).not.toEqual(second);
   });
 
-  it('qualifies a generic stem with its parent directory so it still distinguishes', () => {
-    // `main.py` alone names nothing; the directory is what identifies it.
-    const label = discriminatorLabel('audio_processor/src/main.py');
-    expect(label.toLowerCase()).toContain('src');
-    expect(label).not.toContain('/');
-    expect(discriminatorLabel('audio_processor/src/main.py'))
-      .not.toEqual(discriminatorLabel('gateway/lib/main.py'));
+  it('widens by one path segment per depth, so a colliding stem can be distinguished', () => {
+    // Genericness is a property of the SET, not of the word "main": at depth 1
+    // these two collide, and the caller's job is to widen until they don't.
+    expect(discriminatorLabel('audio_processor/src/main.py', 1))
+      .toEqual(discriminatorLabel('gateway/lib/main.py', 1));
+    expect(discriminatorLabel('audio_processor/src/main.py', 2))
+      .not.toEqual(discriminatorLabel('gateway/lib/main.py', 2));
+    const wide = discriminatorLabel('audio_processor/src/main.py', 2);
+    expect(wide.toLowerCase()).toContain('src');
+    expect(wide).not.toContain('/');
+  });
+
+  it('never exposes a path no matter how wide the label gets', () => {
+    for (const depth of [1, 2, 3, 9]) {
+      const label = discriminatorLabel('a/b/c/deep_handler.py', depth);
+      expect(label).not.toContain('/');
+      expect(label).not.toContain('.py');
+    }
   });
 
   it('leaves a real identifier untouched', () => {

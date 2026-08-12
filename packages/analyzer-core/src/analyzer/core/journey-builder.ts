@@ -1434,7 +1434,18 @@ function disambiguateJourneyNames(built: Array<{ journey: CASUserJourney; entryP
   for (const item of built) {
     let name = item.journey.name;
     if ((counts.get(name) || 0) > 1 || assigned.has(name)) {
-      name = `${name} (${journeyDiscriminator(item.entryPoint)})`;
+      // Widen the discriminator one path segment at a time and stop at the first
+      // width that is actually unique — see discriminatorLabel's `depth`: how
+      // much of a path is needed to identify something is a fact about the set,
+      // not about which words are "generic". MAX_DEPTH bounds the label length;
+      // beyond it the entry-point id below guarantees uniqueness regardless.
+      const MAX_DEPTH = 3;
+      let widened = '';
+      for (let depth = 1; depth <= MAX_DEPTH; depth += 1) {
+        widened = `${name} (${journeyDiscriminator(item.entryPoint, depth)})`;
+        if (!assigned.has(widened)) break;
+      }
+      name = widened;
     }
     if (assigned.has(name)) {
       name = `${item.journey.name} (${journeyDiscriminator(item.entryPoint)}, ${item.entryPoint.id})`;
@@ -1444,7 +1455,7 @@ function disambiguateJourneyNames(built: Array<{ journey: CASUserJourney; entryP
   }
 }
 
-function journeyDiscriminator(entryPoint: CASEntryPoint): string {
+function journeyDiscriminator(entryPoint: CASEntryPoint, depth = 1): string {
   const method = entryPoint.trigger?.method?.toUpperCase();
   const path = entryPoint.trigger?.path;
   if (method && path) return `${method} ${path}`;
@@ -1463,7 +1474,7 @@ function journeyDiscriminator(entryPoint: CASEntryPoint): string {
     || entryPoint.metadata?.controller
     || entryPoint.handler?.method_name;
   if (handler) return String(handler);
-  return discriminatorLabel(entryPoint.name);
+  return discriminatorLabel(entryPoint.name, depth);
 }
 
 /**
@@ -1474,24 +1485,31 @@ function journeyDiscriminator(entryPoint: CASEntryPoint): string {
  * `Config (<dir>/<file>.py)` as the first thing a customer reads.
  *
  * Converts a path-shaped value to its file stem (reusing the same
- * stem-extraction shape as cliProgramFromFilePath), qualified by the parent
- * directory when the stem alone is a generic container word that would not
- * distinguish anything. Anything not path-shaped is returned untouched — this
- * only rewrites values that are paths, never real names.
+ * stem-extraction shape as cliProgramFromFilePath). Anything not path-shaped is
+ * returned untouched — this only rewrites values that are paths, never names.
+ *
+ * `depth` controls how many trailing path segments the label keeps. It exists
+ * because "is this stem too generic to identify anything?" must NOT be answered
+ * with a list of generic words (`main|index|lib|api|...`) — that is the
+ * hardcoded-vocabulary class the spec-purity gate rejects, and it rejected
+ * exactly that first attempt here. Genericness is not a property of a word, it
+ * is a property of a SET: a stem is insufficient precisely when some sibling
+ * shares it. So the caller widens depth until the labels are distinct, which
+ * qualifies `src/main.py` as "src main" only when another `main` exists to
+ * collide with — and never pays that cost when the stem already distinguishes.
  */
-export function discriminatorLabel(raw: string | undefined): string {
+export function discriminatorLabel(raw: string | undefined, depth = 1): string {
   const value = String(raw || '').trim();
   if (!value) return value;
   // Path-shaped = has a directory separator or a file extension. A bare
   // identifier (`createOrder`, `UserController`) has neither and is left alone.
   if (!/[\\/]/.test(value) && !/\.\w{1,6}$/.test(value)) return value;
   const segments = value.split(/[\\/]/).filter(Boolean);
-  const stem = (segments[segments.length - 1] || value).replace(/\.\w{1,6}$/, '');
-  if (!stem) return value;
-  const parent = segments.length > 1 ? segments[segments.length - 2] : '';
-  const generic = /^(main|index|mod|lib|app|api|server|program|__init__|handler|route|routes|views?)$/i.test(stem);
-  const label = generic && parent ? `${humanizeLabel(parent)} ${humanizeLabel(stem)}` : humanizeLabel(stem);
-  return label.trim() || value;
+  if (segments.length === 0) return value;
+  segments[segments.length - 1] = segments[segments.length - 1].replace(/\.\w{1,6}$/, '');
+  const kept = segments.slice(Math.max(0, segments.length - Math.max(1, depth)));
+  const label = kept.map(segment => humanizeLabel(segment)).filter(Boolean).join(' ').trim();
+  return label || value;
 }
 
 function buildJourneyName(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
