@@ -47,7 +47,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/system-type.ts",
-      "ceiling": 110
+      "ceiling": 32
     }
   ]
 }

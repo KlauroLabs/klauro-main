@@ -1,11 +1,3 @@
-// Direct-import tests for system-type.ts (task #121 extraction from
-// orchestrator.ts's private `determineSystemType`). These fixtures mirror
-// the `determineSystemType` describe block in
-// src/__tests__/ai/orchestrator-internals.test.ts exactly, so both suites
-// passing is the parity evidence that the move changed nothing: the
-// orchestrator suite still calls the method through the orchestrator
-// instance (now a thin delegator), this suite calls the extracted function
-// directly with no orchestrator involved at all.
 import { determineSystemType } from '../../analyzer/core/system-type';
 import { CASEntryPoint, DeployableEvidence } from '../../types/cas.types';
 
@@ -38,6 +30,20 @@ describe('determineSystemType (extracted, tier-2 module)', () => {
       deployable({ tier: 3, kind: 'package', name: 'feedreader' }),
     ];
     expect(determineSystemType(entryPoints, deployableEvidence)).toBe('service');
+  });
+
+  it('package manifest identity does NOT make a library when something can still invoke the code', () => {
+    const entryPoints = [entry({ type: 'cli', name: 'build' })];
+    const deployableEvidence = [deployable({ tier: 3, kind: 'package', name: 'toolkit' })];
+    expect(determineSystemType(entryPoints, deployableEvidence)).toBe('application');
+  });
+
+  it('package manifest identity does NOT make a library when the repo also ships or runs something', () => {
+    const deployableEvidence = [
+      deployable({ tier: 3, kind: 'package', name: 'toolkit' }),
+      deployable({ tier: 2, kind: 'bin', name: 'toolkit-cli' }),
+    ];
+    expect(determineSystemType([], deployableEvidence)).toBe('application');
   });
 
   it('package manifest identity alone, with no entry points and no ship/runnable evidence, is a genuine library', () => {
