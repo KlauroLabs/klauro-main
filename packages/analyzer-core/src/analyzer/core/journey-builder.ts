@@ -1463,7 +1463,35 @@ function journeyDiscriminator(entryPoint: CASEntryPoint): string {
     || entryPoint.metadata?.controller
     || entryPoint.handler?.method_name;
   if (handler) return String(handler);
-  return entryPoint.name;
+  return discriminatorLabel(entryPoint.name);
+}
+
+/**
+ * A journey discriminator is rendered inside the journey's own title, so it is
+ * read by a person: it must be a NAME, not a repo path. `entryPoint.name` is
+ * the last-resort source above and for several analyzers it IS a source path —
+ * measured live on a Python app, which shipped journeys titled
+ * `Config (<dir>/<file>.py)` as the first thing a customer reads.
+ *
+ * Converts a path-shaped value to its file stem (reusing the same
+ * stem-extraction shape as cliProgramFromFilePath), qualified by the parent
+ * directory when the stem alone is a generic container word that would not
+ * distinguish anything. Anything not path-shaped is returned untouched — this
+ * only rewrites values that are paths, never real names.
+ */
+export function discriminatorLabel(raw: string | undefined): string {
+  const value = String(raw || '').trim();
+  if (!value) return value;
+  // Path-shaped = has a directory separator or a file extension. A bare
+  // identifier (`createOrder`, `UserController`) has neither and is left alone.
+  if (!/[\\/]/.test(value) && !/\.\w{1,6}$/.test(value)) return value;
+  const segments = value.split(/[\\/]/).filter(Boolean);
+  const stem = (segments[segments.length - 1] || value).replace(/\.\w{1,6}$/, '');
+  if (!stem) return value;
+  const parent = segments.length > 1 ? segments[segments.length - 2] : '';
+  const generic = /^(main|index|mod|lib|app|api|server|program|__init__|handler|route|routes|views?)$/i.test(stem);
+  const label = generic && parent ? `${humanizeLabel(parent)} ${humanizeLabel(stem)}` : humanizeLabel(stem);
+  return label.trim() || value;
 }
 
 function buildJourneyName(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
