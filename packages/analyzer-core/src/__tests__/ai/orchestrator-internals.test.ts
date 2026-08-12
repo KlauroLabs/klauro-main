@@ -11136,16 +11136,28 @@ describe('P1 characterization: capability classification against real production
     // exactly three repositories trimming one entry each. The allowlist's
     // removal changes strength classification (below) but not what survives
     // trimming, on any of the 25 repositories.
-    const BASELINE_TRIMMED_BY_REPO: Record<string, number> = {
-      'soon-lens': 1, v2: 1, truckspy: 1,
+    // Baseline holds the trimmed NAMES, not counts. A count-only baseline told me
+    // "212 became 211" and nothing else, so a one-capability change across 25
+    // repositories was unidentifiable without instrumenting the test by hand —
+    // which is what made a candidate change to isGenericCapabilityDisplayName
+    // unshippable and got it reverted. Names make the same failure self-describing:
+    // the diff says which capability appeared or disappeared, in which repository.
+    const BASELINE_TRIMMED_BY_REPO: Record<string, string[]> = {
+      'soon-lens': ['Provides technical indicators and analysis'],
+      v2: ['Secure user authentication'],
+      truckspy: ['Manage user profiles and authentication'],
     };
     let totalKept = 0;
     for (const repo of corpus) {
       const capabilities = repo.capabilities.map(materialize);
       const kept = orch.trimLowValueFallbackCapabilities(capabilities);
-      const expectedTrimmed = BASELINE_TRIMMED_BY_REPO[repo.repo] || 0;
-      expect({ repo: repo.repo, trimmed: capabilities.length - kept.length })
-        .toEqual({ repo: repo.repo, trimmed: expectedTrimmed });
+      const keptNames = new Set(kept.map((capability: any) => capability.name));
+      const trimmedNames = capabilities
+        .map((capability: any) => capability.name)
+        .filter((name: string) => !keptNames.has(name))
+        .sort();
+      expect({ repo: repo.repo, trimmed: trimmedNames })
+        .toEqual({ repo: repo.repo, trimmed: (BASELINE_TRIMMED_BY_REPO[repo.repo] || []).slice().sort() });
       totalKept += kept.length;
     }
     expect(totalKept).toBe(212);
