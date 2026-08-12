@@ -100,6 +100,10 @@ const DEPENDENCY_INJECTION_DECORATORS = new Set([
 ]);
 
 export async function detectCodebaseIdioms(input: IdiomDetectionInput): Promise<IdiomDetectionResult> {
+  // Yield between detector families: each sweeps every node (several run
+  // regexes over node source), which on a whale (76k nodes) added up to a
+  // measured >2s synchronous event-loop stall inside pp_traceability. The
+  // hops change no detector's input, order, or output.
   const files = buildFileInventory(input);
   const detectors: Array<() => IdiomDraft[]> = [
     () => detectNamingIdioms(input),
@@ -1131,7 +1135,7 @@ function isConfigPath(file: string): boolean {
 }
 
 function normalizePath(file: string): string {
-  return file.replace(/\\/g, '/').replace(/^\.\
+  return file.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
 function normalizeProjectPath(projectPath: string, file: string): string {
@@ -1142,6 +1146,16 @@ function normalizeProjectPath(projectPath: string, file: string): string {
   return relative;
 }
 
+/**
+ * Rewrites an evidence's `claim` text to use the relativized file path
+ * instead of whatever raw (possibly workspace-absolute, possibly
+ * hash-directory-rooted) path it was originally built with. `claim` is a
+ * free-text string baked at construction time (fileEvidence/nodeEvidence
+ * interpolate `file` directly into the sentence), so relativizing the
+ * sibling `file` field alone isn't enough — the same raw path can still be
+ * sitting inside the sentence. Only rewrites when the original raw file
+ * value actually appears in the claim, to avoid mangling unrelated text.
+ */
 function normalizeEvidenceClaim(evidence: CASIdiomEvidence, rawFile: string | undefined, normalizedFile: string): CASIdiomEvidence {
   if (!rawFile || !evidence.claim || !evidence.claim.includes(rawFile)) return { ...evidence, file: normalizedFile };
   return { ...evidence, file: normalizedFile, claim: evidence.claim.split(rawFile).join(normalizedFile) };

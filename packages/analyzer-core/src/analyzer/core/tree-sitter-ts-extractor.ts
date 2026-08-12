@@ -1,10 +1,41 @@
 import * as fs from 'fs';
 import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './errors';
 
+/**
+ * tree-sitter's native scanners treat a literal U+0000 byte as an end-of-input
+ * sentinel rather than an ordinary character (confirmed against
+ * tree-sitter-typescript: `` `a\0b` `` parses to an ERROR node — `UNEXPECTED '\0'`
+ * — even though the construct is valid JS/TS). Several analyzer-core modules
+ * deliberately embed a raw NUL as a collision-proof separator inside template
+ * literals used for cache/hash keys (e.g. `` `${a}\0${b}` ``); that's legitimate
+ * source, not corruption, so it must not be edited. Replace NUL with a
+ * same-length, non-NUL placeholder ONLY in the string handed to the parser —
+ * the original file content/return value seen by every other caller (hashing,
+ * embeddings, display) is untouched. Grammar-general: any parser fed through
+ * this module (or wasm-tree-sitter, which reuses this) gets the same
+ * treatment regardless of which analyzer's source triggered it.
+ */
 export function sanitizeForTreeSitterParse(source: string): string {
   return source.indexOf('\0') === -1 ? source : source.replace(/\0/g, '�');
 }
 
+/**
+ * `abstract` is the one TS modifier keyword this tree-sitter-typescript grammar
+ * version (0.23.2) cannot disambiguate from a property/field NAME: unlike
+ * `static`/`readonly`/`public`/etc (all fine as property names), a bare
+ * `abstract` immediately followed by `:`/`?:` inside an interface body, object
+ * type, or class field produces an ERROR node and the grammar then misreads
+ * the type annotation's own identifier as the property name (e.g.
+ * `abstract?: boolean` extracts a bogus property named "boolean"). Confirmed
+ * via minimal repro: `interface X { abstract?: boolean }` -> ERROR;
+ * `interface X { static?: boolean }` -> clean. Quoting the key
+ * (`"abstract"?: boolean`) is valid TS/JS in every position (interface,
+ * object type, object literal) and sidesteps the reserved-word lexing
+ * entirely without touching real abstract-modifier usage (`abstract class`,
+ * `abstract foo(): void`, both unaffected since neither is followed directly
+ * by `:`/`?:`). Only rewrites the string handed to the parser — never the
+ * file on disk.
+ */
 const ABSTRACT_AS_PROPERTY_KEY = /([{;,\n]\s*)abstract(\??\s*:)/g;
 export function sanitizeAbstractPropertyKeyword(source: string): string {
   return source.indexOf('abstract') === -1
@@ -16,7 +47,14 @@ let ParserClass: any = null;
 let tsGrammar: any = null;
 let tsxGrammar: any = null;
 let jsGrammar: any = null;
+// Cached load failure. A failed native-addon require() is a deterministic,
+// process-wide condition (the binary is missing/ABI-mismatched for this Node
+// build) — it will not succeed on a later attempt within the same process, so
+// re-attempting require() per file would just repeat the same failure at
+// startup cost on every parse. Cache the ONE failure and rethrow the SAME
+// diagnostic every time: one clear error, not one per file (see
 // NativeAddonUnavailableError doc comment for why this must never be
+// swallowed into a per-file warning).
 let loadFailure: NativeAddonUnavailableError | null = null;
 
 function loadParser(): any {
@@ -39,6 +77,16 @@ function loadParser(): any {
 
 const SAVED_ROOT_NODE_DESCRIPTOR = '__klauroSavedRootNodeDescriptor';
 
+/*
+ * The tree-sitter JS wrapper replaces Tree.prototype.rootNode with a getter that closes
+ * over the original native accessor. When the wrapper is evaluated a second time in the
+ * same process through a separate module registry (e.g. two Jest test files in one worker),
+ * it destructures the already-replaced getter -- which returns undefined for a prototype
+ * receiver -- and redefines the shared native prototype with that captured undefined,
+ * breaking rootNode for every module registry in the process. The native Tree prototype is
+ * shared process-wide, so we stash the first working descriptor on it and restore it when
+ * corruption is detected.
+ */
 function getRootNode(tree: any): any {
   if (!tree) return undefined;
   let root = tree.rootNode;
@@ -61,6 +109,18 @@ function getRootNode(tree: any): any {
   return root;
 }
 
+/**
+ * Deterministic identity comparison for two tree-sitter nodes.
+ *
+ * The native tree-sitter binding does NOT guarantee a single persistent JS
+ * wrapper object per underlying node — repeated accessors (`.parent`,
+ * `childForFieldName`, `namedChild`) may hand back freshly-allocated wrappers
+ * for the very same node, so `a === b` is unreliable and, worse, its result can
+ * differ run-to-run depending on wrapper allocation/GC timing. Every node
+ * exposes a stable numeric `id` (the underlying node address) which IS a true
+ * identity, so compare on that. Guards against null/undefined so callers can
+ * pass a possibly-absent `childForFieldName(...)` result directly.
+ */
 function nodeIdEquals(a: any, b: any): boolean {
   if (!a || !b) return false;
   return a.id === b.id;
@@ -91,6 +151,26 @@ export interface TSExtractedParameter {
   defaultValue?: string;
 }
 
+/**
+ * Receiver marker for a method call whose receiver is not a NAME.
+ *
+ * `foo().bar()`, `(a ?? b).bar()`, `arr[0].bar()` — the receiver is a computed
+ * value, so there is no name to record. The receiver used to be filled in with
+ * the receiver node's raw SOURCE TEXT, which for a chained call is the whole
+ * preceding expression, newlines and all. Downstream consumers split that blob
+ * on `.` and treated its tail as a receiver name, so
+ *
+ *   dataEntities
+ *     .sort((left, right) => right.canonical.length - left.canonical.length)
+ *     .find(...)
+ *
+ * was reported as a `database` exit point on a repository named `Length)`.
+ *
+ * Deliberately not a legal JS identifier, so it can never collide with a real
+ * receiver name, and never resolves by name lookup. Absence of a receiver name
+ * is UNKNOWN, not evidence: a call through this marker must not be classified
+ * as a store or API exit (see `isRepositoryCall` / `isApiCall`).
+ */
 export const UNRESOLVED_RECEIVER = '<unresolved>';
 
 export interface TSExtractedCall {
@@ -117,12 +197,31 @@ export interface TSExtractedCall {
   };
 }
 
+/**
+ * One statically-evaluable call argument of a decorator invocation. Positional
+ * arguments carry their index as `name` ('0','1',...); named/object-property
+ * arguments carry the property key. `value`/`type` are only ever populated for
+ * literals we can evaluate without executing code — string, number, boolean,
+ * null, and no-substitution template strings. Any non-literal argument
+ * (identifier, call, computed object value, spread, template with `${}`) is
+ * OMITTED entirely rather than guessed: a downstream consumer that needs an
+ * argument it cannot see must fail evidence-gated, never fabricate a value.
+ */
 export interface TSDecoratorArg {
   name: string;
   value: string | number | boolean | null;
   type: 'string' | 'number' | 'boolean' | 'null';
 }
 
+/**
+ * A decorator invocation with its literal-evaluable call arguments captured
+ * generically for ANY decorator (not just recognized-framework ones). Runs
+ * ALONGSIDE the bare `decorators: string[]` name list — the string list is
+ * left untouched so every existing `.includes(name)` consumer keeps working;
+ * this parallel list is purely additive, and only carries the args we could
+ * statically resolve (an empty `args` means the decorator had none we could
+ * evaluate, not that it had no arguments).
+ */
 export interface TSDecoratorDetail {
   name: string;
   args: TSDecoratorArg[];
@@ -147,9 +246,21 @@ export interface TSExtractedFunction {
   calls: TSExtractedCall[];
   complexity: number;
   decorators: string[];
+  /** Parallel to `decorators` — same decorators, with their literal-evaluable call args. Additive. */
   decoratorArgs?: TSDecoratorDetail[];
   documentation?: string;
+  /**
+   * Error TYPE names thrown by `throw new Foo(...)` / `throw Foo(...)` inside this
+   * function's body, deduped. Bare re-throws (`throw err`) yield no recoverable type
+   * and are intentionally omitted (evidence-gated). Feeds `signature.throws`.
+   */
   throws?: string[];
+  /**
+   * True for a nameless arrow/function-expression callback extracted only to
+   * carry its outbound calls (e.g. an Express route handler at module scope).
+   * Consumers should NOT emit a graph node for these — they exist so calls made
+   * directly inside the callback (fetch/axios) are not silently dropped.
+   */
   isAnonymousCallback?: boolean;
 }
 
@@ -163,6 +274,7 @@ export interface TSExtractedProperty {
   lineStart: number;
   lineEnd: number;
   decorators: string[];
+  /** Parallel to `decorators` — same decorators, with their literal-evaluable call args. Additive. */
   decoratorArgs?: TSDecoratorDetail[];
   defaultValue?: string;
 }
@@ -179,6 +291,7 @@ export interface TSExtractedClass {
   isExported: boolean;
   isAbstract: boolean;
   decorators: string[];
+  /** Parallel to `decorators` — same decorators, with their literal-evaluable call args. Additive. */
   decoratorArgs?: TSDecoratorDetail[];
   documentation?: string;
 }
@@ -202,8 +315,18 @@ export interface TSExtractedExport {
 }
 
 export interface TSSyntaxErrorLocation {
+  /** 1-indexed line, matching how the rest of this file reports `line`. */
   line: number;
+  /** Short, control-character-sanitized preview of the offending text — never the raw slice (which may itself contain the very non-printable bytes that broke parsing, e.g. an embedded NUL). */
   snippet: string;
+  /**
+   * When set, this location matches a KNOWN tree-sitter-typescript grammar
+   * limitation on otherwise-valid TypeScript/JavaScript — not a defect in the
+   * analyzed codebase. Populated by `classifyKnownGrammarLimitation`. Callers
+   * should word any user-facing message around this field so a construct our
+   * parser can't yet handle is never reported as if the user's source were
+   * broken (see collectSyntaxErrorLocations doc comment).
+   */
   knownLimitation?: string;
 }
 
@@ -215,6 +338,21 @@ export interface TSFileExtraction {
   exports: TSExtractedExport[];
   comments: Array<{ type: string; text: string; line: number }>;
   hasSyntaxErrors: boolean;
+  /**
+   * WHERE `hasSyntaxErrors` came from, capped and sanitized — additive, so
+   * anything reading only the boolean is unaffected. Real tree-sitter ERROR
+   * nodes are almost always LOCALIZED (one bad construct, not the whole
+   * file): reporting the actual line(s) turns a blanket "this file is
+   * broken" warning into an honest, actionable one. Evidence: quality-iter-1
+   * #9 traced two "syntax error" flags on real, valid analyzer-core source
+   * (cas.types.ts, revision.ts) to (1) `import('m').T[]` — an array-suffixed
+   * inline import-type, valid TS that this tree-sitter-typescript grammar
+   * version cannot parse — and (2) a literal embedded NUL byte inside a
+   * template literal used deliberately as a hash separator, which this
+   * grammar's scanner also chokes on. Both are genuine (not a heuristic
+   * false positive) but file-level-scary wording overstated the blast
+   * radius of a single misparsed token.
+   */
   syntaxErrorLocations?: TSSyntaxErrorLocation[];
 }
 
@@ -229,6 +367,10 @@ export function treeHasSyntaxErrors(root: any): boolean {
 const MAX_SYNTAX_ERROR_LOCATIONS = 3;
 const SYNTAX_ERROR_SNIPPET_MAX_LEN = 40;
 
+/** Sanitize a raw tree-sitter node text slice for safe inclusion in a log/warning
+ *  string: collapse whitespace runs, escape control characters (including the
+ *  literal NUL byte that is itself one of the two known real triggers) so the
+ *  message can never itself embed an unprintable/NUL byte, and cap length. */
 function sanitizeSyntaxErrorSnippet(raw: string): string {
   const escaped = Array.from(raw).map(ch => {
     const code = ch.codePointAt(0) ?? 0;
@@ -243,6 +385,30 @@ function sanitizeSyntaxErrorSnippet(raw: string): string {
     : collapsed;
 }
 
+/**
+ * Two KNOWN tree-sitter-typescript (0.23.2) grammar limitations that fire on
+ * genuinely valid TypeScript, confirmed by direct repro against the native
+ * grammar (see task #84 investigation):
+ *
+ * 1. An inline `import('module').Type` type reference immediately followed
+ *    by an array (`[]`) or generic (`<...>`) suffix. The bare form
+ *    (`import('m').T`) parses fine; only the suffixed form breaks — the
+ *    grammar emits a MISSING ';' and then misreads the suffix as a stray
+ *    statement. Valid TS (checked by `tsc`); tree-sitter-typescript just
+ *    can't express it yet.
+ * 2. The contextual keyword `using` (TC39 explicit resource management,
+ *    `using x = getResource();`) used as an ordinary identifier — a function
+ *    parameter name, arrow-function parameter, or plain variable name. Every
+ *    other contextual keyword this grammar supports (`of`, `from`, `as`,
+ *    `satisfies`, ...) parses fine as an identifier in the same positions;
+ *    `using` alone does not, confirmed by minimal repro
+ *    (`(using) => using.x` / `function f(using) {}` both error while
+ *    `(satisfies) => satisfies.x` does not). Valid TS; grammar limitation.
+ *
+ * Matched against the raw source line (not the ERROR/MISSING node's own
+ * text, which for a MISSING token is empty) so classification survives
+ * exactly which node tree-sitter chose to blame.
+ */
 function classifyKnownGrammarLimitation(lineText: string | undefined): string | undefined {
   if (!lineText) return undefined;
   if (/\bimport\s*\(\s*(['"])(?:(?!\1).)*\1\s*\)(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*(?:\[\s*\]|<)/.test(lineText)) {
@@ -254,6 +420,13 @@ function classifyKnownGrammarLimitation(lineText: string | undefined): string | 
   return undefined;
 }
 
+/** Walks the tree collecting up to MAX_SYNTAX_ERROR_LOCATIONS real ERROR/
+ *  missing-token node positions. Bounded traversal (stops once the cap is
+ *  hit) so a pathologically damaged file can't turn this into an expensive
+ *  full-tree walk on every parse. `sourceLines`, when provided, is used only
+ *  to classify KNOWN grammar limitations (see classifyKnownGrammarLimitation)
+ *  so the resulting message can say "known parser limitation" instead of
+ *  blaming the analyzed file's syntax. */
 export function collectSyntaxErrorLocations(root: any, sourceLines?: string[]): TSSyntaxErrorLocation[] {
   const locations: TSSyntaxErrorLocation[] = [];
   if (!root) return locations;
@@ -271,7 +444,7 @@ export function collectSyntaxErrorLocations(root: any, sourceLines?: string[]): 
           snippet: sanitizeSyntaxErrorSnippet(String(node.text ?? '')),
           ...(knownLimitation ? { knownLimitation } : {})
         });
-        continue;
+        continue; // don't descend into an already-flagged ERROR subtree
       }
       const childCount = node.childCount ?? 0;
       for (let i = childCount - 1; i >= 0; i--) {
@@ -279,6 +452,8 @@ export function collectSyntaxErrorLocations(root: any, sourceLines?: string[]): 
       }
     }
   } catch {
+    // Best-effort diagnostics only — never let a traversal failure here mask
+    // the underlying hasSyntaxErrors signal, which is computed independently.
   }
   return locations;
 }
@@ -416,6 +591,8 @@ export class TreeSitterTSExtractor {
       exports: [],
       comments: traversal.comments,
       hasSyntaxErrors,
+      // Only walk for locations (and only split into lines) when the boolean
+      // is already true — the common case (a healthy file) pays nothing extra.
       syntaxErrorLocations: hasSyntaxErrors
         ? collectSyntaxErrorLocations(root, content.split('\n'))
         : undefined
@@ -445,6 +622,11 @@ export class TreeSitterTSExtractor {
       const content = fs.readFileSync(filePath, 'utf-8');
       return this.extractFromSource(content, filePath);
     } catch (error) {
+      // A native-addon load failure is not "this file couldn't be parsed" —
+      // it means NO file can be parsed for the rest of this process's life.
+      // Swallowing it here to null looks identical to a legitimately empty
+      // file to every caller upstream. Rethrow so it propagates as a hard
+      // failure instead.
       if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
@@ -514,6 +696,15 @@ export class TreeSitterTSExtractor {
       }
     }
 
+    // Object-literal shorthand methods (`{ add(a, b) { ... } }`) parse as
+    // `method_definition` too, same as class methods, but their parent is an
+    // `object` node rather than `class_body`. extractClasses() only walks
+    // `class_body` members, so these were falling through entirely: not a
+    // "standalone function" (excluded from funcTypes above to avoid
+    // double-counting class methods) and not attached to any class. Collect
+    // them explicitly here, restricted to method_definitions whose immediate
+    // parent is an object literal, so real class methods stay handled solely
+    // by extractClasses().
     for (const func of traversal.objectMethods) {
       const extracted = this.extractFunction(func, traversal.functions.get(func.id));
       if (extracted && !extracted.className) {
@@ -570,6 +761,14 @@ export class TreeSitterTSExtractor {
       funcType = 'function';
     }
 
+    // Nameless arrow/function-expression callbacks passed as call arguments —
+    // e.g. an Express route handler `app.get('/orders', (req, res) => { fetch(...) })`
+    // — carry no name and would be dropped, taking their outbound calls with
+    // them (a server that is also an API client then shows zero exit points).
+    // Extract such a callback as an `anonymous` carrier ONLY when it sits at
+    // module scope: a callback nested inside another function is already covered
+    // because that function's extractCalls() collects the whole subtree, so
+    // extracting it here too would double-count the call.
     let isAnonymousCallback = false;
     if (!funcName &&
         (func.type === 'arrow_function' || func.type === 'function_expression') &&
@@ -583,6 +782,10 @@ export class TreeSitterTSExtractor {
 
     let classParent = traversal ? null : func.parent;
     while (classParent) {
+      // `abstract_class_declaration` (a distinct node type from `class_declaration` in
+      // tree-sitter-typescript, used for `abstract class X`) needs the same className
+      // attribution as a plain class, or every method of every abstract class silently
+      // loses its className and gets misfiled as a standalone function.
       if (classParent.type === 'class_declaration' || classParent.type === 'class' || classParent.type === 'abstract_class_declaration') {
         className = classParent.childForFieldName('name')?.text;
         break;
@@ -643,6 +846,16 @@ export class TreeSitterTSExtractor {
     };
   }
 
+  /**
+   * Collect the error TYPE names thrown by `throw` statements in this function's own
+   * body. Evidence-gated: only forms where a type is recoverable are emitted —
+   *   `throw new Foo(...)`        -> "Foo"     (new_expression constructor)
+   *   `throw new errors.Foo(...)` -> "Foo"     (member_expression -> property)
+   *   `throw Foo(...)`            -> "Foo"     (call_expression factory, PascalCase only)
+   *   `throw err` / `throw e`     -> (skipped, no type recoverable)
+   * Nested function/method bodies are NOT descended into (each gets its own scan).
+   * Returns undefined when nothing is recoverable so we never emit an empty array.
+   */
   private extractThrows(func: any): string[] | undefined {
     const body = func.childForFieldName('body');
     if (!body) return undefined;
@@ -654,6 +867,7 @@ export class TreeSitterTSExtractor {
     ]);
 
     const types = new Set<string>();
+    // Manual walk so we can prune nested function bodies (their throws belong to them).
     const stack: any[] = [body];
     while (stack.length > 0) {
       const node = stack.pop()!;
@@ -670,7 +884,9 @@ export class TreeSitterTSExtractor {
     return types.size > 0 ? Array.from(types) : undefined;
   }
 
+  /** Extract the error type name from a `throw_statement`, or undefined if none is recoverable. */
   private throwTypeName(throwStmt: any): string | undefined {
+    // The thrown value is the first (and only) named child of `throw_statement`.
     const expr = throwStmt.namedChild(0);
     if (!expr) return undefined;
 
@@ -680,15 +896,20 @@ export class TreeSitterTSExtractor {
     }
 
     if (expr.type === 'call_expression') {
+      // Factory form `throw makeError()` — only treat as a type when the callee is
+      // PascalCase (looks like a constructor/error factory), to avoid lifting plain
+      // helper calls like `throw buildResponse()`.
       const callee = expr.childForFieldName('function');
       const name = this.identifierTail(callee);
       if (name && /^[A-Z]/.test(name)) return name;
       return undefined;
     }
 
+    // `throw err`, `throw obj.field`, string/object literals — no error TYPE to record.
     return undefined;
   }
 
+  /** Resolve `identifier` directly or the trailing `property` of a `member_expression`. */
   private identifierTail(node: any): string | undefined {
     if (!node) return undefined;
     if (node.type === 'identifier') return node.text;
@@ -698,6 +919,7 @@ export class TreeSitterTSExtractor {
     return undefined;
   }
 
+  /** Whether `node` is lexically nested inside any function-like ancestor. */
   private hasEnclosingFunction(node: any): boolean {
     const fnTypes = new Set([
       'function_declaration',
@@ -773,6 +995,10 @@ export class TreeSitterTSExtractor {
     const returnType = func.childForFieldName('return_type') ||
                        this.findFirst(func, 'type_annotation');
 
+    // Compare by stable node id, not object identity — `.parent` may return a
+    // freshly-allocated wrapper for the same node, making `===` nondeterministic
+    // across processes (see nodeIdEquals). A spurious mismatch here would drop
+    // the return type run-to-run.
     if (returnType && nodeIdEquals(returnType.parent, func)) {
       return this.extractTypeText(returnType);
     }
@@ -807,14 +1033,31 @@ export class TreeSitterTSExtractor {
     return decorators;
   }
 
+  // Structured counterpart to extractDecorators: the SAME decorators, but each paired with
+  // the call arguments we can STATICALLY EVALUATE. This exists so a custom decorator
+  // (`@Endpoint('/orders','GET')`) carries its literal path/method the same way a
+  // recognized-framework decorator does — the bare-name list alone (extractDecorators)
+  // gave downstream consumers (buildAllDecorators -> CASDecorator.parameters -> the
+  // `.klaurorc` conventions applier) nothing to resolve a declared route's args from, so
+  // they correctly refused to emit a route. We only surface args we can evaluate WITHOUT
+  // running code (string/number/boolean/null/no-substitution template); anything else is
+  // omitted, never guessed — evidence-first, same discipline as the reference scan above.
+  //
+  // tree-sitter places a decorator differently by target: on a method/property it is a
+  // PREVIOUS NAMED SIBLING, but on a class_declaration it is a DIRECT CHILD (`decorator`
+  // before the `class` token). We walk both so class-level decorator args resolve too —
+  // extractDecorators (bare names) only ever looks at previous siblings, so class-level
+  // NAMES are a known pre-existing gap there; here we cover both placements.
   private extractDecoratorArgs(node: any): TSDecoratorDetail[] {
     const details: TSDecoratorDetail[] = [];
 
     const decoratorNodes: any[] = [];
+    // Class-level decorators sit as leading children of the declaration node.
     for (const child of node.namedChildren || []) {
       if (child.type === 'decorator') decoratorNodes.push(child);
-      else break;
+      else break; // decorators only ever lead; stop at the first non-decorator child.
     }
+    // Method/property decorators sit as preceding siblings (collected in source order).
     const siblingDecorators: any[] = [];
     let sibling = node.previousNamedSibling;
     while (sibling && sibling.type === 'decorator') {
@@ -825,6 +1068,7 @@ export class TreeSitterTSExtractor {
 
     for (const decoratorNode of decoratorNodes) {
       const call = this.findFirst(decoratorNode, 'call_expression');
+      // Bare `@Foo` with no call: record the name with no args (mirrors extractDecorators).
       const calleeNode = call
         ? (call.childForFieldName('function') || call.namedChild(0))
         : this.findFirst(decoratorNode, 'identifier');
@@ -841,6 +1085,8 @@ export class TreeSitterTSExtractor {
             const argNode = argList.namedChild(i);
             if (!argNode) continue;
 
+            // Object argument (`@Foo({ path: '/p', method: 'GET' })`): each key/value
+            // pair whose value is a literal becomes a named entry keyed by the property.
             if (argNode.type === 'object') {
               for (let p = 0; p < argNode.namedChildCount; p++) {
                 const pair = argNode.namedChild(p);
@@ -856,6 +1102,9 @@ export class TreeSitterTSExtractor {
               continue;
             }
 
+            // Positional argument: only kept when the expression is a literal we can
+            // evaluate. A skipped non-literal still consumes its positional index so the
+            // remaining args keep their true call-site positions (a consumer selecting
             // `arg[2]` must not silently shift onto `arg[3]`).
             const evaluated = this.evaluateLiteralNode(argNode);
             if (evaluated) args.push({ name: String(positional), value: evaluated.value, type: evaluated.type });
@@ -869,6 +1118,9 @@ export class TreeSitterTSExtractor {
     return details;
   }
 
+  // The property key of an object-literal `pair`. Handles both `path:` (property_identifier)
+  // and `'path':` / `"path":` (string) forms; a computed key (`[expr]:`) is not statically
+  // resolvable and yields undefined so the whole pair is skipped.
   private decoratorObjectKey(keyNode: any): string | undefined {
     if (!keyNode) return undefined;
     if (keyNode.type === 'property_identifier') return keyNode.text;
@@ -879,16 +1131,25 @@ export class TreeSitterTSExtractor {
     return undefined;
   }
 
+  // Statically evaluate a single expression node to a literal value, or return undefined
+  // when it is not a literal we can resolve without executing code. Intentionally narrow:
+  // string, number, boolean, null, and template strings with NO `${}` substitution. An
+  // identifier, call, member access, spread, binary expression, or a template carrying a
+  // substitution all return undefined — the caller drops them rather than fabricating.
   private evaluateLiteralNode(node: any): { value: string | number | boolean | null; type: TSDecoratorArg['type'] } | undefined {
     if (!node) return undefined;
     switch (node.type) {
       case 'string': {
+        // A `string` node wraps `string_fragment` child(ren) plus quote tokens; empty
+        // string has no fragment. Concatenate fragments (escapes are left as written —
+        // we surface the source text, not a re-parsed runtime value).
         const fragments = node.namedChildren
           .filter((c: any) => c.type === 'string_fragment' || c.type === 'escape_sequence')
           .map((c: any) => c.text);
         return { value: fragments.join(''), type: 'string' };
       }
       case 'template_string': {
+        // Only a substitution-free template is a static string literal.
         if (this.findFirst(node, 'template_substitution')) return undefined;
         const fragments = node.namedChildren
           .filter((c: any) => c.type === 'string_fragment' || c.type === 'escape_sequence')
@@ -920,6 +1181,14 @@ export class TreeSitterTSExtractor {
     const body = func.childForFieldName('body');
     if (!body) return calls;
 
+    // extractCalls walked the body for call_expression and then
+    // extractIdentifierReferences walked the SAME body again for identifier —
+    // two full DFS per function body across the native tree-sitter boundary.
+    // Do ONE walk that buckets both types (identifiers only when there are
+    // imports, matching extractIdentifierReferences' early-return so no extra
+    // work when it would be a no-op). Same pre-order DFS => same node order in
+    // each bucket, and calls are still emitted before identifier refs, so
+    // output is byte-identical.
     const needIdentifiers = this.imports.size > 0;
     let callNodes: TSIndexedCall[];
     let identifierNodes: TSIndexedIdentifier[];
@@ -972,11 +1241,29 @@ export class TreeSitterTSExtractor {
     const seenAtLine = new Set<string>();
     calls.push(...this.extractIdentifierReferences(body, enclosingFunction, enclosingClass, seenAtLine, identifierNodes));
 
+    // Decorators on this method itself (e.g. `@InternalGet('x', [...ERRORS])` on a
+    // route handler) sit as a sibling of `func`, not inside its `body`, so the scan
+    // above never reaches identifiers used in decorator call arguments. Method-level
+    // decorators are already in scope for this function's call list, so fold their
+    // argument references in here directly. See extractDecoratorArgumentReferences
+    // for why this closes a real, previously-invisible reference-miss class.
     calls.push(...this.extractDecoratorArgumentReferences(func, enclosingFunction, enclosingClass, seenAtLine));
 
     return calls;
   }
 
+  // Cross-file reads of an imported CONSTANT / INTERFACE / TYPE / CLASS that are never
+  // called — e.g. `TIER_RATE_LIMITS[tier]`, `return limits.endpoints`. Plain
+  // extractCalls only ever fires on call_expression/new_expression, so a bare read of an
+  // imported const/object was previously invisible to the call graph even though the
+  // consumer genuinely breaks if the export's shape changes (the #1 flagship gap from the
+  // 2026-07-04 impact benchmark: get_callers on an exported const/interface property
+  // returned nothing beyond same-file containment). Recorded with targetType 'property'
+  // (distinct from 'function'/'method'/'constructor') so the CAS integration layer can
+  // emit a 'references' edge instead of a 'calls' edge — never claiming a call that never
+  // happened. Deliberately conservative: only fires for identifiers present in this
+  // file's import map, so a same-named local variable is never mistaken for a cross-file
+  // reference (no fabricated edges).
   private extractIdentifierReferences(
     body: any,
     enclosingFunction: string,
@@ -1002,6 +1289,11 @@ export class TreeSitterTSExtractor {
     return refs;
   }
 
+  // Shared per-identifier-node reference builder used by both the function-body scan
+  // (extractIdentifierReferences) and the decorator-argument scan
+  // (extractDecoratorArgumentReferences) so the exclusion rules, de-dupe key, and
+  // conditional/loop-depth walk stay in exactly one place. Returns null for anything
+  // that isn't a genuine cross-file read of an imported binding (never fabricates).
   private buildIdentifierReference(
     idNode: any,
     enclosingFunction: string,
@@ -1015,6 +1307,18 @@ export class TreeSitterTSExtractor {
     const parent = indexed?.parent ?? idNode.parent;
     if (!parent) return null;
 
+    // Already captured as a real call/constructor edge by extractCall/extractCalls —
+    // don't double-record the same site as a 'reference' too.
+    //
+    // Compare tree-sitter nodes by their stable numeric `id`, NOT by object
+    // identity (`===`). The native binding does not guarantee a single persistent
+    // JS wrapper per underlying node: a fresh access (here `childForFieldName`)
+    // can return a newly-allocated wrapper for the same node, so `===` is
+    // nondeterministic across processes (it depends on wrapper GC/allocation
+    // timing). When `===` spuriously fails on a genuine call callee, the call
+    // site leaks in as a bogus `references` edge, flipping the edge set run-to-run
+    // (Camp-B determinism defect). `id` is the underlying node identity and is
+    // stable, so this exclusion is now deterministic. See `nodeIdEquals`.
     if (indexed?.excludeFromReference) return null;
     if (!indexed) {
       if (parent.type === 'call_expression' && nodeIdEquals(parent.childForFieldName('function'), idNode)) return null;
@@ -1023,6 +1327,9 @@ export class TreeSitterTSExtractor {
           parent.type === 'namespace_import') return null;
     }
 
+    // De-dupe multiple identifier occurrences resolving to the same import at the same
+    // source line (e.g. `TIER_RATE_LIMITS[tier] || TIER_RATE_LIMITS.free` on one line) —
+    // one reference edge per line is enough signal without inflating counts.
     const line = idNode.startPosition.row + 1;
     const dedupeKey = `${name}:${line}`;
     if (seenAtLine.has(dedupeKey)) return null;
@@ -1071,6 +1378,18 @@ export class TreeSitterTSExtractor {
     };
   }
 
+  // Decorators (`@InternalGet('x', [[200, Y], ...INTERNAL_GET_ERRORS])`,
+  // `@Module({ providers: [...], })`, ...) sit as `decorator` siblings immediately
+  // before the function/class/property they annotate — tree-sitter does NOT nest them
+  // inside that node's `body`/`class_body`, so identifiers referenced in decorator
+  // arguments (e.g. a spread-imported error-list constant, or a DI token array element)
+  // were entirely invisible to the reference/call graph. Measured on a benchmarked NestJS API: a
+  // decorator-array-spread constant resolved 1/18 real consumers before this fix
+  // (every site was a decorator argument). Only decorator ARGUMENTS are scanned here —
+  // the decorator's own callee name (e.g. `AllowAnonymous` in `@AllowAnonymous()`) is
+  // handled separately by extractDecoratorNameReferences so a same-named local isn't
+  // conflated and so decorator-as-annotation vs decorator-argument stay distinguishable
+  // in the evidence trail.
   private extractDecoratorArgumentReferences(
     func: any,
     enclosingFunction: string,
@@ -1098,6 +1417,14 @@ export class TreeSitterTSExtractor {
     return refs;
   }
 
+  // The decorator invocation itself (`@AllowAnonymous()`, `@InternalGet(...)`) is a
+  // genuine cross-file usage of the imported decorator factory/function — e.g.
+  // `AllowAnonymous` re-exported through a barrel (`@<scope>/auth`) and applied to 23
+  // route handlers project-wide resolved 0/23 before this fix, because extractDecorators
+  // only ever kept the bare name string for display, never fed it through the
+  // identifier-reference path. Recorded the same conservative way as a bare read
+  // (targetType 'property', not 'calls') since a decorator is compile-time metadata
+  // attachment, not a runtime call — never claim a call that doesn't happen.
   private extractDecoratorNameReference(
     decoratorNode: any,
     enclosingFunction: string,
@@ -1111,7 +1438,14 @@ export class TreeSitterTSExtractor {
     if (!calleeNode || calleeNode.type !== 'identifier') return [];
     if (!this.imports.has(calleeNode.text)) return [];
 
+    // buildIdentifierReference() normally skips an identifier whose parent is a
+    // call_expression function position, to avoid double-recording a real function
+    // call already captured by extractCall/extractCalls as a 'calls' edge. A decorator
     // invocation (`@Controller()`) is NEVER walked by extractCall (extractCalls only
+    // ever collects call_expression nodes reachable from a function BODY, and
+    // decorators sit outside every body), so there is no real 'calls' edge here to
+    // collide with — bypass that specific exclusion by building the reference
+    // directly instead of routing through buildIdentifierReference's parent check.
     const line = calleeNode.startPosition.row + 1;
     const dedupeKey = `${calleeNode.text}:${line}`;
     if (seenAtLine.has(dedupeKey)) return [];
@@ -1142,6 +1476,11 @@ export class TreeSitterTSExtractor {
     }];
   }
 
+  // True only when `name` is imported from a genuine external package (bare specifier, no
+  // leading `.`/`/`), not a same-project relative import. A same-project import (e.g.
+  // `import { initializeAuth0Token } from '../api/fetch'`) must still resolve through the
+  // normal call-graph name resolver (findNodeIdByNameIndexed) so get_callers can find it —
+  // see bug #2 in the 2026-07-04 impact benchmark.
   private isExternalImport(name: string): boolean {
     const info = this.imports.get(name);
     if (!info) return false;
@@ -1149,6 +1488,17 @@ export class TreeSitterTSExtractor {
     return !(source.startsWith('.') || source.startsWith('/'));
   }
 
+  /**
+   * The NAME of a call's receiver, or null when the receiver has no name.
+   *
+   * Whitelist, not blacklist: only node types that ARE a name contribute one
+   * (`x`, `this`, `super`, and dotted chains of those). Everything else — a
+   * call result, a subscript, a parenthesized or awaited expression, a literal
+   * — is a computed value with no name, and yields null so the caller records
+   * UNRESOLVED_RECEIVER. A blacklist would have to enumerate every expression
+   * form the grammar can put in receiver position, and each one it missed
+   * would leak source text back into the call graph.
+   */
   private resolveReceiverName(node: any): string | null {
     if (!node) return null;
 
@@ -1159,14 +1509,23 @@ export class TreeSitterTSExtractor {
         return 'this';
       case 'super':
         return 'super';
+      // `import('./Foo')` — the grammar gives the callee its own node type, but
+      // `import` IS the name of what is being called, and a dynamic import is a
+      // real cross-file dependency the pipeline already understands by that name.
       case 'import':
         return 'import';
 
-      case 'non_null_expression':
-      case 'parenthesized_expression':
-      case 'as_expression':
-      case 'satisfies_expression':
+      // Transparent wrappers: TYPE-LEVEL or grouping syntax that does not change
+      // WHAT the receiver is. `capability.relatedFlows!.map(...)` calls through a
+      // named receiver; dropping the name because of a `!` would lose real call
+      // edges (DI-field and typed-receiver resolution both key off the name).
+      case 'non_null_expression':          // x!
+      case 'parenthesized_expression':     // (x)
+      case 'as_expression':                // x as T
+      case 'satisfies_expression':         // x satisfies T
         return this.resolveReceiverName(node.namedChild(0));
+      // `<T>x` is the one wrapper that puts the TYPE first, so index 0 is the
+      // type_arguments node and the value is index 1.
       case 'type_assertion':
         return this.resolveReceiverName(node.namedChild(1));
 
@@ -1174,6 +1533,8 @@ export class TreeSitterTSExtractor {
         const base = this.resolveReceiverName(node.childForFieldName('object'));
         if (!base) return null;
         const prop = node.childForFieldName('property');
+        // A computed member (`a[k].m()`) has no property_identifier, so the
+        // chain has no name past this point.
         if (!prop || prop.type !== 'property_identifier') return null;
         return `${base}.${prop.text}`;
       }
@@ -1197,10 +1558,23 @@ export class TreeSitterTSExtractor {
     if (callee.type === 'member_expression') {
       const obj = callee.childForFieldName('object');
       const prop = callee.childForFieldName('property');
+      // NAME the receiver or mark it unresolved — never paste its source text.
+      // resolveReceiverName returns null for any receiver that is a computed
+      // value rather than a name (a call result, a subscript, a parenthesized
+      // expression), which is the whole reason UNRESOLVED_RECEIVER exists.
       const receiver = this.resolveReceiverName(obj);
       target = `${receiver ?? UNRESOLVED_RECEIVER}.${prop?.text || ''}`;
       targetType = 'method';
 
+      // Only classify as a 'library' (external SDK) call when the import source is a real
+      // package, not a same-project relative import (e.g. `import { x } from '../api/y'`).
+      // Without this check, any call through an object imported from ANYWHERE — including
+      // this project's own modules — was routed to the external/exit-point branch instead
+      // of resolving to a real 'calls' edge, which is bug #2 from the 2026-07-04 impact
+      // benchmark (get_callers inconsistently missing cross-file calls to imported
+      // functions/objects that happen to be local, not third-party).
+      // Gated on a RESOLVED receiver: an import lookup keyed by source text is
+      // meaningless, and an unresolved receiver is not evidence of anything.
       if (receiver && this.isExternalImport(receiver)) {
         targetType = 'library';
       }
@@ -1218,6 +1592,12 @@ export class TreeSitterTSExtractor {
       target = 'super';
       targetType = 'constructor';
     } else {
+      // A callee that is not a name either: an IIFE `(async () => {...})()`, a
+      // returned function `f()()`, `arr[0]()`. This branch used to paste
+      // `callee.text`, so every IIFE carried its ENTIRE body — kilobytes of
+      // source, newlines and all — as its call target. Same rule as a receiver:
+      // name it if it has a name (`f!()` is a call to `f`), else record it as
+      // unresolved.
       target = this.resolveReceiverName(callee) ?? UNRESOLVED_RECEIVER;
     }
 
@@ -1369,6 +1749,13 @@ export class TreeSitterTSExtractor {
 
   private extractClasses(root: any, preCollected?: any[], traversal?: TSRootTraversal): TSExtractedClass[] {
     const classes: TSExtractedClass[] = [];
+    // `abstract class Foo extends Base` parses as `abstract_class_declaration`, a
+    // DIFFERENT node type from plain `class_declaration` in tree-sitter-typescript —
+    // discovered while diagnosing the callers-completeness gap (an abstract base class
+    // like a benchmarked NestJS API's AgentAccessServiceBase/CheckAccess/AccessMutation chain was
+    // invisible to extractClasses entirely, not just to reference resolution). Include
+    // it here so abstract classes get nodes, methods, heritage, and (via
+    // extractClassLevelReferences) reference edges at all.
     const classNodes = preCollected ?? this.collectByTypes(root, new Set([
       'class_declaration',
       'abstract_class_declaration',
@@ -1448,6 +1835,16 @@ export class TreeSitterTSExtractor {
       }
     }
 
+    // Class-level cross-file reads that have no natural enclosing function of their
+    // own: the class decorator (`@Module({ providers: [...], inject: [EventBusService] })`,
+    // `@Controller()`) and the heritage clause (`class Foo extends Base implements I`).
+    // Both sit outside every method's body, so extractCalls()/extractIdentifierReferences
+    // never see them. There is no graph node for "the class's decorator" or "the class's
+    // heritage" in isolation, so — same device already used for anonymous-callback exit
+    // points (see resolveAnonymousContainerNodeIdIndexed in the framework analyzer) —
+    // attribute these reads to the constructor if one exists, else the first extracted
+    // method, so they ride along on a node that genuinely gets indexed. If the class has
+    // no methods at all, the references are dropped rather than fabricating a carrier.
     const referenceCarrier = methods.find(m => m.type === 'constructor') || methods[0];
     if (referenceCarrier) {
       const classRefs = this.extractClassLevelReferences(cls, heritage, className);
@@ -1471,6 +1868,14 @@ export class TreeSitterTSExtractor {
     };
   }
 
+  // Identifier references that belong to the class as a whole rather than to any one
+  // method: the class decorator's arguments/name (@Module/@Controller/...) and the
+  // heritage clause's type identifiers (`extends Base`, `implements I1, I2`). Heritage
+  // uses `type_identifier` nodes, not `identifier` — a distinct node type the body scan
+  // never looks for, and one that sits outside any method body regardless. Measured on
+  // a benchmarked NestJS API: `class CheckAccess extends AgentAccessServiceBase` produced ZERO
+  // resolvable references before this fix (0 decl candidates even), because the base
+  // class was never linked as a read of the imported binding.
   private extractClassLevelReferences(cls: any, heritage: any, className: string): TSExtractedCall[] {
     const refs: TSExtractedCall[] = [];
     const seenAtLine = new Set<string>();
@@ -1490,6 +1895,11 @@ export class TreeSitterTSExtractor {
     }
 
     if (heritage) {
+      // `implements Foo` types parse as `type_identifier`, but `extends Base` parses
+      // Base as a plain `identifier` (JS/TS grammar treats the extends target as a
+      // value-position expression, not a type) — both node types appear under
+      // class_heritage depending on which clause, so both must be scanned or a plain
+      // `extends Base` (the common case) resolves nothing at all.
       const heritageIdNodes = [
         ...this.collectByType(heritage, 'type_identifier'),
         ...this.collectByType(heritage, 'identifier'),

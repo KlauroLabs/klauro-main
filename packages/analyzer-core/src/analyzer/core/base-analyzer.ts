@@ -47,6 +47,15 @@ export {
 
 export type CASAnalysisResult = CASContribution;
 
+/**
+ * True only for a well-formed CASCategories tree: a plain object whose every
+ * value is a plain object of category descriptors (`{ name?, types?, ... }`).
+ * Arrays and strings are REJECTED — a flat tag list is not a categories tree,
+ * and letting one through is what produced the character-indexed
+ * `categories: {"0":{"0":"v",...}}` corruption in every stored CAS (a string
+ * reaching mergeCategories' object spread). Descriptor values are only
+ * shape-checked, never invented.
+ */
 export function isCASCategoriesShape(value: unknown): value is CASCategories {
   if (!isPlainRecord(value)) return false;
   const levels = Object.values(value);
@@ -57,6 +66,9 @@ export function isCASCategoriesShape(value: unknown): value is CASCategories {
   );
 }
 
+/** A flat `categories: ['validation', ...]` tag list, normalized to unique
+ *  non-empty strings. Anything else (including a malformed nested object)
+ *  yields an empty list rather than a fabricated tag. */
 export function normalizeCategoryTags(value: unknown): string[] {
   const raw = Array.isArray(value)
     ? value
@@ -350,9 +362,9 @@ export abstract class BaseAnalyzer {
     const normalized = relativePath.replace(/\\/g, '/').toLowerCase();
     let score = 0;
 
-    if (/(^|\/)(src|app|apps|packages|products|server|frontend|backend|api|web|services|lib)\
-    if (/(^|\/)(controllers?|routes?|pages?|app|models?|entities|schemas?|services?|repositories?|workers?|jobs?|consumers?|commands?|views?|components?|hooks|stores?|state|domains?)\
-    if (/(^|\/)(posthog|saleor|medusa|supabase|appwrite|ghost|immich|mastodon|nocodb|budibase|outline|cal\.com)\
+    if (/(^|\/)(src|app|apps|packages|products|server|frontend|backend|api|web|services|lib)\//.test(normalized)) score -= 8;
+    if (/(^|\/)(controllers?|routes?|pages?|app|models?|entities|schemas?|services?|repositories?|workers?|jobs?|consumers?|commands?|views?|components?|hooks|stores?|state|domains?)\//.test(normalized)) score -= 6;
+    if (/(^|\/)(posthog|saleor|medusa|supabase|appwrite|ghost|immich|mastodon|nocodb|budibase|outline|cal\.com)\//.test(normalized)) score -= 4;
     if (/(\b|\/)(index|main|app|server|bootstrap|router|routes?|schema|models?|entities|controller|service|repository)\.[^.]+$/.test(normalized)) score -= 5;
 
     if (/(^|\/)(docs?|documentation|examples?|samples?|fixtures?|__fixtures__|testdata|benchmark|benchmarks|storybook|playwright|cypress)(\/|$)/.test(normalized)) score += 25;
@@ -381,6 +393,28 @@ export abstract class BaseAnalyzer {
     }
   }
 
+  /**
+   * True when `needle` (a package name, matched case-insensitively as a
+   * substring) appears as a REAL dependency inside pyproject.toml content —
+   * `[project]`'s top-level `dependencies = [...]` array, `[tool.poetry.
+   * dependencies]`, or a `[tool.poetry.group.<name>.dependencies]` table.
+   *
+   * Deliberately excludes `[project.optional-dependencies]` (PEP 621 extras)
+   * and `[tool.poetry.extras]`: those sections name OTHER packages/frameworks
+   * a library can optionally integrate with, not what the project itself is
+   * built with or depends on. Self-detection defect this fixes: Klauro ships
+   * packages/klauro-sdk-py/pyproject.toml, a telemetry SDK whose own
+   * `dependencies = []` is empty but whose `[project.optional-dependencies]`
+   * lists integration-target extras (`django = ["django>=3.2"]`, `flask =
+   * ["flask>=2.0"]`, `fastapi = ["starlette>=0.27"]`) — packages a customer's
+   * app might use, wired up so the SDK can instrument THEIR Django/Flask/
+   * FastAPI/Starlette app, not evidence that Klauro itself is a Django/Flask/
+   * FastAPI/Starlette product. The naive `pyproject.includes(needle)`
+   * substring check every web-framework analyzer used previously (django-
+   * analyzer.ts, flask-analyzer.ts, fastapi-analyzer.ts, starlette-analyzer.ts)
+   * matched those extras-table lines directly and reported confidence-1
+   * framework detections for all four on Klauro's own ~99% TypeScript repo.
+   */
   protected pyprojectHasRealDependency(pyprojectContent: string, needle: string): boolean {
     const lowerNeedle = needle.toLowerCase();
     let inRealDependencyTable = false;
@@ -425,6 +459,15 @@ export abstract class BaseAnalyzer {
   ): CASContribution {
     this.backfillEntryPointHandlers(nodes, entryPoints);
     const { categories, ...metadataWithoutCategories } = additionalMetadata;
+    // `categories` is lifted out of the metadata bag ONLY when it is a real
+    // CASCategories tree (level -> category -> descriptor object). Most callers
+    // pass a flat tag list (`categories: ['validation','contracts']`) as plain
+    // analyzer metadata; lifting that array into `contribution.categories` fed
+    // a string where an object was expected into the orchestrator's
+    // mergeCategories spread, which then spread the STRING character by
+    // character and produced the character-indexed `{"0":{"0":"v",...}}` shape
+    // that shipped in every stored CAS. A tag list stays in analyzer_metadata,
+    // where it belongs, instead of corrupting the CAS categories tree.
     const casCategories = isCASCategoriesShape(categories) ? categories : undefined;
     const categoryTags = casCategories ? undefined : normalizeCategoryTags(categories);
 
@@ -457,16 +500,29 @@ export abstract class BaseAnalyzer {
     return contribution;
   }
 
+  /**
+   * Generic, evidence-gated handler backfill: an entry point's `source_node`
+   * already points at the real node it was derived from (a route, a page, an
+   * event binding's owning component, a message consumer, ...). When that
+   * node carries a real `source.file` (from `createNode`/`withSource`, never
+   * fabricated), mirror it onto `entry_point.handler` so "jump to the code"
+   * and deployable-path attribution (which resolves handler.file against
+   * deployable roots) work without every analyzer having to pass `handler`
+   * explicitly. Applies to ANY analyzer via createContribution/
+   * createFileAnalysisResult — not hardcoded to a specific framework/library.
+   * Never invents a path: an entry point whose backing node has no source
+   * location is left with `handler` unset.
+   */
   private backfillEntryPointHandlers(nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
     if (!entryPoints?.length || !nodes?.length) return;
 
     let nodeById: Map<string, CASNode> | null = null;
     for (const entryPoint of entryPoints) {
-      if (entryPoint.handler) continue;
+      if (entryPoint.handler) continue; // analyzer already set an explicit handler — respect it
 
       nodeById ??= new Map(nodes.map(node => [node.id, node] as const));
       const node = nodeById.get(entryPoint.source_node);
-      if (!node?.source?.file) continue;
+      if (!node?.source?.file) continue; // no real backing source — never fabricate one
 
       entryPoint.handler = {
         node_id: node.id,
@@ -522,6 +578,9 @@ export abstract class BaseAnalyzer {
       '**/examples/**',
       'samples/**',
       '**/samples/**',
+      // fixtures/__fixtures__/testdata/cas-tests/__tests__ — see
+      // scaffold-paths.ts (the single shared exclusion list; previously
+      // __tests__ was missing here entirely).
       ...SCAFFOLD_GLOBS,
       'venv/**',
       '**/venv/**',
@@ -610,7 +669,36 @@ export abstract class BaseAnalyzer {
     return defaultIgnore;
   }
 
+  /**
+   * getIgnorePatterns() carries a generic "documentation and example scaffolding"
+   * denylist (directories literally named samples, examples, fixtures, testdata)
+   * tuned for JS/Python-style repos where those words only ever name vendored
+   * sample code. JVM-family languages (Java, Kotlin, Scala, Groovy, ...) use a
+   * package-to-directory convention that turns those same words into common REAL
+   * package segments instead: a package like org.springframework.samples.<app>
+   * physically lives under a directory path containing org, springframework,
+   * samples, <app> in turn, so a blanket "any samples directory" exclusion
+   * silently drops 100 percent of that codebase's real source (every
+   * controller, entity, and service — not a corner case, the entire app).
+   *
+   * Any analyzer whose files can be laid out under a JVM-style reversed-domain
+   * package path should glob against this set instead of getIgnorePatterns()
+   * directly. It strips only the four directory-name patterns that collide with
+   * package segments; the rest of the shared denylist (target, vendor,
+   * node_modules, ...) still applies since those never collide with a package
+   * name. Non-JVM callers must keep using getIgnorePatterns() unfiltered — a
+   * JS repo's samples/ directory should stay excluded.
+   */
   protected getPackageDirSafeIgnorePatterns(context: AnalysisContext): string[] {
+    // Only samples/examples collide with a real JVM reversed-domain package
+    // segment (org.springframework.samples.<app>) — fixtures/testdata/
+    // cas-tests/__tests__/__fixtures__ (see scaffold-paths.ts) are never a
+    // plausible real package name, so they must stay excluded even for
+    // package-dir-safe callers. Previously this regex also stripped
+    // "fixtures", letting KotlinAnalyzer walk
+    // apps/mcp-server/fixtures/component-bench/compose-tree/App.kt and mint a
+    // duplicate "Android Activity: MainActivity" entry point from Klauro's
+    // own test fixture.
     const unsafeForPackageDirs = /^(\*\*\/)?(samples|examples)\/\*\*$/;
     return this.getIgnorePatterns(context).filter(p => !unsafeForPackageDirs.test(p));
   }
@@ -646,6 +734,7 @@ export abstract class BaseAnalyzer {
       });
     }
 
+    // Add analyzer tag for filtering
     builder.withTags([`analyzer:${this.analyzerId}`]);
 
     return builder.build();
@@ -769,6 +858,26 @@ export abstract class BaseAnalyzer {
     return crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
   }
 
+  /**
+   * Replace line-comment (`//...`) and block-comment (`/* ... *­/`) characters
+   * with spaces (newlines and string/template contents are never touched), so
+   * a plain-text regex scan cannot mistake a documentation example for real
+   * code. Shared by any regex-based library analyzer that walks raw source
+   * text for call-site patterns (mcp-tool-registration-analyzer.ts,
+   * ai-stack-analyzer.ts): a JSDoc/line-comment illustrating the exact call
+   * shape being detected (e.g. this analyzer's own header documenting
+   * `server.tool('do_thing', schema, handler)`) reads identically to a real
+   * call site and was previously extracted as one in EACH analyzer
+   * independently — mcp-tool-registration-analyzer.ts fixed its own copy of
+   * this (quality-iter-1 #8 / #2) but ai-stack-analyzer.ts ran the same
+   * `.registerTool`/`.tool(` detection unblanked, so the doc-comment example
+   * kept leaking through that second, independent pass. Centralizing here so
+   * a future regex-based detector gets comment-safety by default rather than
+   * needing its own copy-pasted fix. Tracks string/template state
+   * char-by-char so a `//` or `/*` appearing inside a string literal is left
+   * alone. Byte offsets and line numbers computed against the returned string
+   * are identical to those against the original content.
+   */
   protected blankComments(content: string): string {
     let out = '';
     let i = 0;
@@ -800,6 +909,13 @@ export abstract class BaseAnalyzer {
       if (ch === '"' || ch === "'" || ch === '`') { inString = ch; out += ch; i++; continue; }
       if (ch === '/' && next === '/') { inLineComment = true; out += '  '; i += 2; continue; }
       if (ch === '/' && next === '*') { inBlockComment = true; out += '  '; i += 2; continue; }
+      // A REGEX LITERAL must be consumed whole. Its body routinely contains
+      // unbalanced quote characters — `/([^'"`]+)/` is ordinary in this codebase
+      // — and treating one of those as the start of a string desynchronised the
+      // scanner for the REST OF THE FILE, so every comment after the first such
+      // regex silently stopped being blanked. That is how a doc comment
+      // illustrating a call shape kept being extracted as a real call site even
+      // though blanking was already applied.
       if (ch === '/' && this.regexLiteralCanStartHere(out)) {
         const end = this.skipRegexLiteral(content, i);
         if (end > i) { out += content.slice(i, end); i = end; continue; }
@@ -810,6 +926,14 @@ export abstract class BaseAnalyzer {
     return out;
   }
 
+  /**
+   * Whether a `/` at this point begins a regex literal rather than division.
+   * Decided by the previous significant token, the standard disambiguation:
+   * division can only follow a value, so anything that cannot END a value
+   * (an operator, an opening bracket, a separator, or a keyword like `return`)
+   * means a regex follows. Conservative by design — when in doubt it answers
+   * "not a regex" and the character is treated as before.
+   */
   private regexLiteralCanStartHere(emitted: string): boolean {
     const before = emitted.replace(/\s+$/, '');
     if (before.length === 0) return true;
@@ -819,12 +943,17 @@ export abstract class BaseAnalyzer {
     return keyword !== null;
   }
 
+  /**
+   * Index just past the regex literal starting at `start`, or `start` if the
+   * text there is not a well-formed one-line regex. Honours backslash escapes
+   * and character classes, inside which `/` does not terminate the literal.
+   */
   private skipRegexLiteral(content: string, start: number): number {
     let i = start + 1;
     let inClass = false;
     while (i < content.length) {
       const ch = content[i];
-      if (ch === '\n') return start;
+      if (ch === '\n') return start;      // regex literals do not span lines
       if (ch === '\\') { i += 2; continue; }
       if (inClass) {
         if (ch === ']') inClass = false;
@@ -832,7 +961,7 @@ export abstract class BaseAnalyzer {
         inClass = true;
       } else if (ch === '/') {
         i++;
-        while (i < content.length && /[a-z]/i.test(content[i])) i++;
+        while (i < content.length && /[a-z]/i.test(content[i])) i++; // flags
         return i;
       }
       i++;

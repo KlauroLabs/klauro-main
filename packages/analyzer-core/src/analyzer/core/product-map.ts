@@ -12,6 +12,19 @@ import {
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
 
+// #129 — humanizeDomainSlug (mechanical kebab-case->Title Case rendering of
+// `primary_domain`) was removed. `primary_domain` is a composed/heuristic
+// slug ("feed-integration-category", not a phrase a person wrote), so
+// title-casing its tokens produced strings like "Feed Integration Category"
+// that read as a human-authored label but are actually just capitalized
+// internal tokens — a faked label, not a derived one. See identity.domain /
+// identity.domain_label's doc comments in cas.types.ts and this function's
+// two former call sites (here and query.ts's primary_domain_label) for the
+// full reasoning. The slug itself (`domain`) is unaffected: orchestrator.ts
+// still compares primary_domain strings token-by-token across analysis runs
+// (reuse detection, truncation/plumbing gates), so it keeps shipping exactly
+// as before — only the fabricated-looking humanized rendering is gone.
+
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const RISK_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const TOP_JOURNEY_LIMIT = 10;
@@ -26,6 +39,30 @@ function normalizeEntityName(name: string): string {
   return name.toLowerCase().replace(/^entity_/, '').replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * File-basename "stem" test evidence — the second, coarser leg of the tests
+ * cross-surface invariant, alongside the exact call-graph `tests`/`covers`
+ * edges `capabilityHasTestEvidence` already consults.
+ *
+ * WHY THIS EXISTS: on a real Java Spring repo (spring-petclinic-microservices)
+ * with 8 genuine JUnit test classes (VetResourceTest, PetResourceTest, ...),
+ * every capability/journey reported `tests_present: false` while
+ * orient_capsule.dimensions.tests (get_test_summary, reading `cas.test_suites`
+ * — the same robust discovery buildTestSummary now also reads, see
+ * orchestrator.ts's buildTestSummary doc comment) correctly reported 8. The
+ * cause: TestFrameworkAnalyzer's `tests`/`covers` edges require a literal
+ * call-graph path from test code to production code, which never exists for
+ * MockMvc/Supertest-style black-box tests — the test calls the mock
+ * framework, not the controller method, so the static call graph has nothing
+ * to walk. That is real analyzer behavior, not a bug to patch there; a
+ * VetResourceTest.java that black-box-tests VetResource.java is still real,
+ * honest test coverage, just evidenced by naming/co-location instead of a
+ * traced call. Stripping the common `Test(s)`/`Spec`/`spec` suffix from a
+ * test suite's file basename and matching it against a candidate file's own
+ * basename is the same "*Test.java exercises *.java" convention every JUnit/
+ * pytest/RSpec/xUnit project already relies on — structural, not a keyword
+ * or brand table.
+ */
 const TEST_FILE_SUFFIX = /(?:[._-]?(?:test|tests|spec|specs))$/i;
 
 function fileStem(filePath: string): string {
@@ -58,6 +95,44 @@ function journeyHasFileTestEvidence(
   return candidateFiles.some(file => testedStems.has(fileStem(file)));
 }
 
+/**
+ * INVARIANT (2026-08-10 live comprehension audit): `description_source` and
+ * the PRESENCE of `description` text must never disagree — a source can only
+ * ever describe text that actually exists. This used to unconditionally
+ * default a falsy `capability.description_source` to `'deterministic'`
+ * (`capability.description_source || 'deterministic'`), regardless of
+ * whether `capability.description` held any text. A capability whose AI
+ * description attempt was rejected AND had no deterministic fallback text —
+ * `description_source` left `undefined` and `description` empty/absent by
+ * design, both honestly recording "not described" (see
+ * `capability_description_degradations` on `EnhancedSystemPurpose`) — got
+ * stamped `description_source: 'deterministic'` here anyway, the moment it
+ * reached this view. Confirmed live: a Django "Process Forms" capability and
+ * a Go "Integrate with External Services" capability both shipped
+ * `description_source: 'deterministic'` with the `description` key absent
+ * entirely. Two upstream fixes (orchestrator.ts's per-capability repair
+ * loop) already closed every path that could leave `system_capabilities`
+ * itself in that state — this was a THIRD, independent site: a view built
+ * straight off the CAS that re-derives provenance with its own (buggy)
+ * default, never routing through `capabilityDescriptionTarget`/
+ * `validateElementDescription`. The fix is the invariant, not just this one
+ * call site: only ever infer 'deterministic' provenance when there is real
+ * text to attribute it to; otherwise pass the source through as-is (honest
+ * "no provenance because no text", matching identity.description_source's
+ * documented contract just above it in cas.types.ts).
+ *
+ * HARDENED (same audit, second pass): the first version above only stopped
+ * this view from ADDING a new instance of the mismatch — `if
+ * (!capability.description) return capability.description_source;` still
+ * forwarded an ALREADY-mismatched capability (description_source set with no
+ * text) unchanged, e.g. a stored analysis computed before this invariant
+ * existed, or a future write site upstream that reintroduces the bug the
+ * repair loop and orchestrator.ts's `enforceCapabilityDescriptionProvenance
+ * Invariant` choke point were meant to prevent. This view is the last stop
+ * before a customer sees the capability, so it must not merely decline to
+ * make things worse — it must actively enforce the invariant on whatever it
+ * is handed, same as the orchestrator-side choke point.
+ */
 function resolveCapabilityDescriptionProvenance(
   capability: Pick<SystemCapability, 'description' | 'description_source'>,
 ): SystemCapability['description_source'] | undefined {
@@ -65,6 +140,16 @@ function resolveCapabilityDescriptionProvenance(
   return capability.description_source || 'deterministic';
 }
 
+/**
+ * The journey's PRIMARY entities — what it terminally PRODUCES: terminal
+ * entities it created/updated/deleted plus terminal_effects.entities_written.
+ * A read-only journey writes nothing, so its terminal READS are its actual
+ * subject and serve as the fallback. Non-write reads on a journey that DOES
+ * write never count: "reads a shared entity somewhere along the chain" is
+ * exactly the non-discriminating overlap that pastes every journey onto every
+ * capability touching that entity. A journey attaches to the few capabilities
+ * anchored on what it produces, not to everything it brushes against.
+ */
 function journeyPrimaryEntityNames(journey: CASUserJourney): Set<string> {
   const written = new Set<string>();
   for (const terminal of journey.terminal_entities || []) {
@@ -85,6 +170,22 @@ function journeyPrimaryEntityNames(journey: CASUserJourney): Set<string> {
   return read;
 }
 
+/**
+ * ALL entities a journey's call path touches — read OR write — unlike
+ * journeyPrimaryEntityNames' narrower "what it terminally PRODUCES" set.
+ * journeyPrimaryEntityNames exists to keep journey<->capability DISPLAY
+ * attribution (the `journeys` list a capability ships, and risk_level)
+ * precise: pasting a journey onto every capability it merely brushes against
+ * would make that list noise. tests_present is a different, coarser question
+ * — "is ANY of this capability's surface exercised by a test at all" — where
+ * a journey that only READS one of the capability's entities (e.g. "list API
+ * keys" exercising the APIKey capability's read path without ever writing
+ * one) is still real, honest evidence of coverage. Restricting tests_present
+ * to the same primary-produced-only set as display attribution silently
+ * dropped that evidence and was one source of capabilities reporting
+ * tests_present:false while their own entity's journeys carried real
+ * tests_covering counts in the same response.
+ */
 function journeyTouchedEntityNames(journey: CASUserJourney): Set<string> {
   const touched = new Set<string>();
   for (const terminal of journey.terminal_entities || []) touched.add(normalizeEntityName(terminal.name));
@@ -93,6 +194,35 @@ function journeyTouchedEntityNames(journey: CASUserJourney): Set<string> {
   return touched;
 }
 
+/**
+ * Whether ANY journey carries real test evidence for this capability, using a
+ * DELIBERATELY wider net than `linked` (see journeyTouchedEntityNames):
+ * structural entry-point family (same as linkJourneysToCapability's strongest
+ * branch) OR any-entity-touched overlap, not just primary-produced. `linked`
+ * stays the strict, precise list used for display/risk; this is the coarser
+ * boolean the cross-surface invariant (capabilities/journeys/health.tests
+ * must never contradict each other) depends on.
+ */
+/**
+ * Test evidence for a capability, asked directly of its own operations — no
+ * journey required.
+ *
+ * Both journey-based legs (`journeyHasFileTestEvidence` and
+ * `capabilityHasTestEvidence`) are `journeys.some(...)` at heart, so a
+ * capability with no linked journey could never report tests, whatever its code
+ * looked like. Measured live 2026-08-10 on a 92,582-node repo: 7 of 8
+ * capabilities said `tests_present: false` while the same analysis reported
+ * 12,632 passing tests, and 6 of those 8 had zero linked journeys. "No journey"
+ * was rendering as "no tests" — a false negative on the field a customer uses
+ * to decide whether a capability is safe to change, which is worse than an
+ * unknown because it looks like a finding.
+ *
+ * Uses the same `testedStems` convention the journey leg already trusts: the
+ * `*Test.java` <-> `*.java` (and `foo.test.ts` <-> `foo.ts`) stem pairing every
+ * xUnit-family framework relies on. Evidence-gated, not a guess: it fires only
+ * when a discovered test suite's stem matches the stem of the file implementing
+ * one of this capability's own entry points.
+ */
 function capabilityHasOperationFileTestEvidence(
   capability: SystemCapability,
   testedStems: Set<string>,
@@ -115,6 +245,11 @@ function capabilityHasTestEvidence(
 ): boolean {
   const entryPointIds = new Set(capability.operations.map(operation => operation.entry_point_id));
   return journeys.some(journey => {
+    // Exact evidence: a traced call-graph path from test code to this
+    // journey's production code (TestFrameworkAnalyzer's `tests`/`covers`
+    // edges). Strongest signal when present, but absent by construction for
+    // any test that exercises its subject through a framework boundary
+    // (MockMvc, Supertest, ...) rather than a literal function call.
     if ((journey.tests_covering || []).length > 0) {
       if (entryPointIds.has(journey.entry_point_id)) return true;
       if (capabilityEntities.size > 0) {
@@ -123,6 +258,9 @@ function capabilityHasTestEvidence(
         }
       }
     }
+    // Coarser evidence: this journey's own entry point is anchored to the
+    // capability AND some test suite's file stem matches the journey's
+    // handler/step files (see journeyHasFileTestEvidence's doc comment).
     if (entryPointIds.has(journey.entry_point_id) && journeyHasFileTestEvidence(journey, testedStems, nodesById)) {
       return true;
     }
@@ -140,9 +278,18 @@ function linkJourneysToCapability(
   const capabilityEntities = new Set(capabilityEntityNames.map(normalizeEntityName));
 
   return journeys.filter(journey => {
+    // PRIMARY: the journey is a flow-derived view (journey-builder.ts) and
+    // inherited that flow's own capability_relationships directly — the
+    // same evidence-gated M:N edge flows_to_capabilities measures (0.8384
+    // live on a real repo). This is the strongest link: it is the actual
+    // relationship the flow layer already proved, not a re-derived guess.
     if (journey.capability_relationships?.some(rel => rel.capability_id === capability.id)) return true;
+    // Entry-point family: the capability's own operations reference this
+    // journey's entry point — the strongest, structural attachment.
     if (entryPointIds.has(journey.entry_point_id)) return true;
     if (capabilityEntities.size === 0) return false;
+    // Otherwise the journey's PRIMARY (terminal produced) entity must be one
+    // of the capability's anchor entities — never any-shared-entity overlap.
     const primaryNames = primaryNamesByJourney.get(journey.id);
     if (!primaryNames) return false;
     for (const name of primaryNames) {
@@ -172,6 +319,14 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   const capabilityOrder = new Map((cas.system_capabilities || []).map((capability, index) => [capability.name, index]));
   const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
   const testedStems = testedFileStems(cas.test_suites);
+  // Entry-point → its own code file, so a capability's test evidence can be
+  // checked WITHOUT going through a journey. Measured live on a 92,582-node
+  // repo (2026-08-10): 7 of 8 capabilities reported `tests_present: false`
+  // beside `health.tests: 12,632 passing`, because every path to `true` ran
+  // through `journeys.some(...)` — and 6 of those 8 capabilities had no linked
+  // journey at all. So "no journey" was silently rendering as "no tests",
+  // which is a false negative about the one field a customer uses to judge
+  // whether a capability is safe to change.
   const entryPointFileById = new Map<string, string>();
   for (const entryPoint of cas.entry_points || []) {
     const file = entryPoint.handler?.node_id
@@ -192,6 +347,14 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
       (journey.tests_covering || []).length > 0 || journeyHasFileTestEvidence(journey, testedStems, nodesById)
     )
       || capabilityHasTestEvidence(capability, journeys, capabilityEntities, testedStems, nodesById)
+      // Journey-independent leg. Both legs above require a journey to exist;
+      // this one asks the question directly of the capability's OWN operations:
+      // does a discovered test suite's file stem match the file implementing
+      // this capability's entry point? Same `testedStems` convention the
+      // journey leg already trusts (the *Test.java <-> *.java stem pairing every
+      // xUnit-family framework relies on), applied one level up so a capability
+      // with real code and real neighbouring tests is not reported untested
+      // merely because journey linkage did not reach it.
       || capabilityHasOperationFileTestEvidence(capability, testedStems, entryPointFileById);
     return {
       name: capability.name,
@@ -375,6 +538,17 @@ function buildCoverageCaveats(
     caveats.push(`${errorCount} analysis error${errorCount === 1 ? '' : 's'} recorded during analysis`);
   }
 
+  // The description-vs-capability cross-check (orchestrator.ts's
+  // description_capability_gaps, EnhancedSystemPurpose) exists specifically
+  // so the product can admit when its own AI description names an entity
+  // no shipped capability is anchored on — a real, evidence-derived honesty
+  // signal that, before this, no consumer-facing tool surfaced anywhere
+  // (get_summary / get_conceptual_analysis / get_product_map /
+  // run_answer_pack / get_agent_context all omitted it): the field existed
+  // but nothing a reader would call ever showed it, so it did no work.
+  // Reported here alongside every other "here is what this analysis could
+  // not fully resolve" caveat, distinguishing the two dispositions plainly
+  // rather than collapsing them into one vague warning.
   const capabilityGaps = cas.enhanced_system_purpose?.description_capability_gaps || [];
   const reinjected = capabilityGaps.filter(gap => gap.disposition === 'reinjected-from-candidate');
   const unanchored = capabilityGaps.filter(gap => gap.disposition === 'no-structural-candidate');
@@ -410,6 +584,7 @@ function buildCoverageCaveats(
   return caveats;
 }
 
+/** The infra->code topology edge types emitted by infra-topology-linker.ts. */
 const RUNTIME_TOPOLOGY_EDGE_TYPES = new Set([
   'DEPLOYS',
   'EXPOSES',
@@ -425,6 +600,17 @@ function edgeAttr(edge: CASEdge, key: string): string | undefined {
   return value === undefined || value === null ? undefined : String(value);
 }
 
+/**
+ * Project the deployable-to-deployable communication graph out of the
+ * communication-seams pass. This is a pure re-read of already-computed Camp-B
+ * structural facts (docs/cas/DETERMINISM-BOUNDARY.md): the seams pass already
+ * classified every exit-point / messaging / passive-state fact into sync/async/
+ * passive seams and rolled them up to a deployable-level inventory. We surface
+ * that inventory as the topology's edge graph — the infra RUNTIME_DEPENDS_ON
+ * links alone are sparse (often one or zero edges), while this carries HOW
+ * components talk (modality) and how much (per-modality counts). Returns
+ * undefined when no deployable-level seam inventory exists (nothing to add).
+ */
 function buildCommunicationGraph(cas: CASOutput): CASProductMapCommunicationGraph | undefined {
   const inventory = cas.communication_seams?.deployable_inventory;
   if (!inventory || inventory.counts.total === 0) return undefined;
@@ -433,12 +619,15 @@ function buildCommunicationGraph(cas: CASOutput): CASProductMapCommunicationGrap
     .map(edge => ({
       source: edge.source,
       target: edge.target,
+      // Deterministic modality order (sync, async, passive) rather than the
+      // inventory's insertion order, so the same facts serialize identically.
       modalities: (['sync', 'async', 'passive'] as const).filter(m => edge.modalities.includes(m)),
       sync: edge.sync,
       async: edge.async,
       passive: edge.passive,
       total: edge.total,
     }))
+    // Busiest seams first; ties broken lexicographically for a stable order.
     .sort(
       (a, b) =>
         b.total - a.total ||
@@ -457,10 +646,27 @@ function buildCommunicationGraph(cas: CASOutput): CASProductMapCommunicationGrap
   };
 }
 
+/**
+ * Derive a first-class runtime-topology view from the additive infra->code
+ * edges (DEPLOYS, EXPOSES, ROUTES_TO, PROVISIONS_CHANNEL/DATABASE/STORAGE,
+ * RUNTIME_DEPENDS_ON) that infra-topology-linker.ts appends to cas.edges.
+ * Purely additive and evidence-based: reads only real edges, groups them per
+ * deployable, and returns undefined when the analysis carries no infra topology
+ * (so non-infra repos are unchanged).
+ *
+ * The linker anchors DEPLOYS/EXPOSES on the infra resource node (source) ->
+ * deployable, tagging each with a `deployable` attribute; ROUTES_TO and the
+ * PROVISIONS edges also hang off that same resource node, so we attribute those
+ * to the deployable(s) the resource fronts. RUNTIME_DEPENDS_ON carries
+ * `from`/`to` deployable names directly.
+ */
 function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | undefined {
   const topologyEdges = (cas.edges || []).filter(edge => RUNTIME_TOPOLOGY_EDGE_TYPES.has(edge.type));
   if (topologyEdges.length === 0) return undefined;
 
+  // Map each infra resource node id -> the deployable name(s) it deploys/exposes,
+  // so a ROUTES_TO / PROVISIONS_* edge from the same resource can be attributed
+  // to the right deployable.
   const resourceDeployables = new Map<string, Set<string>>();
   for (const edge of topologyEdges) {
     if (edge.type !== 'DEPLOYS' && edge.type !== 'EXPOSES') continue;
@@ -511,6 +717,8 @@ function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | un
         const deployable = edgeAttr(edge, 'deployable');
         if (!deployable) break;
         const joinKey = edgeAttr(edge, 'join_key');
+        // The join key is the port (`port:8080`) or a service name — the concrete
+        // evidence of what fronts the deployable.
         bucketsFor(deployable).exposes.add(joinKey || nodeName.get(edge.source) || edge.source);
         break;
       }
@@ -563,6 +771,8 @@ function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | un
       depends_on: [...buckets.depends_on].sort((a, b) => a.localeCompare(b)),
     }))
     .filter(
+      // A deployable with every bucket empty carries no runtime-topology signal;
+      // don't list it. (Can happen if an edge lacked a `deployable` attribute.)
       entry =>
         entry.deploys.length +
           entry.exposes.length +
@@ -579,6 +789,11 @@ function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | un
 
   const communication = buildCommunicationGraph(cas);
 
+  // Enrich each deployable's depends_on with its outbound communication seams to
+  // OTHER named deployables — the sparse RUNTIME_DEPENDS_ON links miss most real
+  // runtime coupling. We only fold in edges whose target is itself a deployable
+  // in this topology (external targets like `external_api` stay in the top-level
+  // `communication` graph, not in depends_on, which means "peer deployables").
   if (communication) {
     const topologyNames = new Set(deployables.map(d => d.name));
     const dependsOn = new Map<string, Set<string>>();
@@ -618,8 +833,26 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
     identity: {
       name: cas.system?.name || 'unknown',
       domain: purpose?.primary_domain || 'unknown',
+      // #129 — no `domain_label` here (see CASProductMap.identity.domain_label's
+      // doc comment for why: `domain` is a composed slug, not a phrase, so
+      // mechanically title-casing it does not produce something a
+      // non-technical reader would actually write).
+      // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): 'deterministic'
+      // is NOT a valid comprehension provenance. When AI hasn't run (or failed),
+      // the domain/description provenance is left UNSET rather than stamped
+      // 'deterministic' on empty output — never claim a deterministic authorship
+      // for a comprehension field.
       domain_source: purpose?.domain_source,
       description: identityDescription,
+      // Same invariant as resolveCapabilityDescriptionProvenance above, applied
+      // to the SYSTEM identity: a provenance can only ever describe text that
+      // actually exists. `purpose?.description_source` is trusted (its own
+      // write sites already keep it in lockstep with `inferred_description`),
+      // but the `|| 'manual'` default below must key off the SAME text this
+      // view actually ships (`identityDescription`), not `cas.system?.description`
+      // alone — otherwise `purpose.inferred_description` empty + `cas.system
+      // .description` empty + a stray `purpose.description_source` still
+      // truthy would ship provenance for the empty string this view assembles.
       description_source: identityDescription ? (purpose?.description_source || 'manual') : undefined,
       unanalyzed_languages: unanalyzedLanguages,
       ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),

@@ -46,6 +46,19 @@ const CORE_CONFIG_PATTERNS = CORE_CONFIG_FILES.flatMap(pattern =>
     : [pattern, `**/${pattern}`]
 );
 
+// Shape-based: files whose PRESENCE OR CONTENT define facts that a
+// project-level analyzer PASS joins across the whole codebase — a platform
+// manifest joined against every declared component/class, a container/topology
+// descriptor whose service boundaries are assembled from every service
+// definition, or a build/settings file that determines module membership.
+// Changing only the source file that such a pass reads is NOT the same as
+// changing the pass's full input scope: a single-file incremental re-analysis
+// re-parses the changed file but cannot re-run the project-level JOIN that
+// consumes it, so the join's output goes stale with zero warnings. Any change
+// to one of these forces an unconditional full rebuild — unlike
+// CORE_CONFIG_FILES below, this check is NOT gated by
+// shouldFullRebuildForCoreConfigChange()/agent-fast focus, because skipping it
+// reproduces exactly the staleness this list exists to prevent.
 const PROJECT_SCOPE_TRIGGER_FILES = [
   'AndroidManifest.xml',
   'Dockerfile*',
@@ -68,6 +81,13 @@ export const PROJECT_SCOPE_TRIGGER_PATTERNS = PROJECT_SCOPE_TRIGGER_FILES.flatMa
     : [pattern, `**/${pattern}`]
 );
 
+/**
+ * Basename-shape glob matcher supporting `*` (any run of characters) and `?`
+ * (any single character), with all other characters treated literally. Used
+ * for PROJECT_SCOPE_TRIGGER_FILES so multi-wildcard shapes like
+ * `docker-compose*.yml` match correctly (unlike the single-`*`-only regex
+ * used for the legacy CORE_CONFIG_FILES check below).
+ */
 function basenameMatchesGlob(basename: string, pattern: string): boolean {
   const escaped = pattern
     .split(/([*?])/)
@@ -424,6 +444,16 @@ export class ChangeDetector {
   }
 
   private getUncommittedChanges(): Array<{ file: string; status: string }> {
+    // `-uall` (vs. git's default `-unormal`) makes git enumerate every
+    // untracked FILE individually instead of collapsing a brand-new, entirely
+    // untracked directory into a single `?? some/new/dir/` entry. Without
+    // this, adding a whole new module (e.g. a new `coordination/` directory
+    // with new source files, none of them tracked yet) was INVISIBLE to
+    // change detection: the entry's path was the directory, isTrackedAnalysisFile
+    // has no extension to match against a directory, so it was silently
+    // dropped and the incremental analysis returned "no changes" even though
+    // real new files existed on disk. This is the exact "new files are
+    // invisible" gap described in docs/SPEC-FRESHNESS.md.
     const output = execFileSync('git', ['status', '--porcelain=v1', '-z', '-uall'], {
       cwd: this.projectPath,
       stdio: 'pipe',
@@ -768,6 +798,12 @@ export class ChangeDetector {
       matchesProjectScopeTrigger(file);
   }
 
+  /**
+   * Returns the first changed file matching PROJECT_SCOPE_TRIGGER_FILES, or
+   * null. Unlike checkCoreConfigChanges, callers must NOT gate this behind
+   * shouldFullRebuildForCoreConfigChange() — see the comment on
+   * PROJECT_SCOPE_TRIGGER_FILES above.
+   */
   private checkProjectScopeTrigger(changedFiles: string[]): string | null {
     for (const file of changedFiles) {
       if (matchesProjectScopeTrigger(file)) return file;
