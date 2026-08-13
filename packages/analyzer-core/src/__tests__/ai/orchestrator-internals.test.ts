@@ -2679,20 +2679,34 @@ describe('architecture and capability inference', () => {
     })).toBe('auth');
   });
 
-  it('prioritizes product capabilities over cross-cutting auth and billing cards', async () => {
-    const ordered = [
-      { name: 'User Management', category: 'supporting', criticality: 'high', operations: [], related_domains: ['user'], related_entities: [] },
-      { name: 'Checkout Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['checkout'], related_entities: [] },
-      { name: 'Portfolio Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['portfolio'], related_entities: [] },
-      { name: 'Token Balance Discovery', category: 'core', criticality: 'medium', operations: [], related_domains: ['token-balance'], related_entities: [] },
-    ].sort((a: any, b: any) => orch.systemCapabilityProductPriority(a) - orch.systemCapabilityProductPriority(b));
+  it('orders cross-cutting concerns after the product outcome, without burying them', async () => {
+    // REWRITTEN when the ~65-phrase tuning table was replaced by evidence. The
+    // previous version asserted Token Balance Discovery < Portfolio < Checkout <
+    // User on four capabilities that ALL had operations: [] and related_entities:
+    // [] — i.e. zero evidence. That ordering was produced entirely by the word
+    // lists (a crypto phrase -> 0, `portfolio` -> 1, `checkout` -> 2, `user` -> 6),
+    // so it asserted the vocabulary's output rather than any property of the
+    // capabilities. Portfolio-before-Checkout in particular had nothing behind it.
+    //
+    // What is defensible with no evidence to go on: category still separates them,
+    // and a cross-cutting concern sorts after a product outcome — but by a
+    // half-step inside its tier, so a real capability is never buried four ranks
+    // for naming a user.
+    const productCore = { name: 'Token Balance Discovery', category: 'core', criticality: 'medium', operations: [], related_domains: ['token-balance'], related_entities: [] };
+    const productSupporting = { name: 'Checkout Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['checkout'], related_entities: [] };
+    const crossCutting = { name: 'User Management', category: 'supporting', criticality: 'high', operations: [], related_domains: ['user'], related_entities: [] };
 
-    expect(ordered.map((capability: any) => capability.name)).toEqual([
-      'Token Balance Discovery',
-      'Portfolio Management',
-      'Checkout Management',
-      'User Management',
-    ]);
+    expect(orch.systemCapabilityProductPriority(productCore))
+      .toBeLessThan(orch.systemCapabilityProductPriority(productSupporting));
+    expect(orch.systemCapabilityProductPriority(productSupporting))
+      .toBeLessThan(orch.systemCapabilityProductPriority(crossCutting));
+
+    // And the demotion is a half-step, not a cliff: a GROUNDED cross-cutting
+    // capability still outranks an ungrounded product one, because it has more for
+    // the reader to actually go and look at.
+    const groundedAuth = { name: 'User Management', category: 'core', criticality: 'high', operations: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], related_domains: ['user'], related_entities: ['User'] };
+    expect(orch.systemCapabilityProductPriority(groundedAuth))
+      .toBeLessThan(orch.systemCapabilityProductPriority(productCore));
   });
 
   it('does not summarize the repo name as a product capability or core concept', async () => {

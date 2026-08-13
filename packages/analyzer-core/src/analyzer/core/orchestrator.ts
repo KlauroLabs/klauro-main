@@ -18771,11 +18771,25 @@ export class AnalyzerOrchestrator {
     const grounded = operationCount > 0 && entityCount > 0;
     const isCore = capability.category === 'core';
 
-    if (isCore && grounded && operationCount >= CAPABILITY_SUBSTANTIAL_OPERATIONS) return 0;
-    if (isCore && grounded) return 1;
-    if (grounded) return 2;
-    if (operationCount === 0 && entityCount === 0) return 5;
-    return 3;
+    // Cross-cutting concerns (auth, billing, admin plumbing) order AFTER the
+    // product's own outcomes — but as a tie-break WITHIN an evidence tier, never
+    // as an override. The previous code jumped them straight to 6 of 6, which
+    // demoted 24 real capabilities across the corpus ("Manages user accounts",
+    // "Manages user portfolios") purely for naming a user. A well-grounded auth
+    // capability now outranks a poorly-grounded product one, which is the correct
+    // answer: it has more for the reader to go look at.
+    //
+    // isCrossCuttingCapabilityName is still a word list, and still tracked as debt
+    // (#147) — but a half-step inside a tier cannot bury a real capability.
+    const crossCutting = this.isCrossCuttingCapabilityName(capability.name) ? 0.5 : 0;
+
+    if (isCore && grounded && operationCount >= CAPABILITY_SUBSTANTIAL_OPERATIONS) return 0 + crossCutting;
+    if (isCore && grounded) return 1 + crossCutting;
+    if (grounded) return 2 + crossCutting;
+    // Nothing grounded at all: category is the only evidence left, and it IS
+    // evidence — it came from the analysis, not from the name.
+    if (operationCount === 0 && entityCount === 0) return (isCore ? 4 : 5) + crossCutting;
+    return 3 + crossCutting;
   }
 
   private isRedundantCoveredCapability(capability: SystemCapability, allCapabilities: SystemCapability[]): boolean {
