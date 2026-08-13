@@ -18752,35 +18752,15 @@ export class AnalyzerOrchestrator {
   }
 
   private systemCapabilityProductPriority(capability: SystemCapability): number {
-    // Rank from the capability's OWN evidence, never from whether its wording
-    // happens to match a phrase someone saw in another repository.
-    //
-    // What this replaced: ~65 literal phrases (a scheduling product, a commerce
-    // product, a docs product, an analytics product, a healthcare product, a
-    // fleet product, Klauro itself, a trading product, and specific ML model
-    // names), each returning top rank. Measured over the 215-capability corpus,
-    // 69 capabilities (32%) had their rank decided by that vocabulary — and on a
-    // customer repo none of it matches, so ranking collapsed to a constant. It
-    // was tuned for the benchmark and arbitrary for the customer.
-    //
-    // The ladder below is the same question asked structurally: how much of this
-    // capability is actually backed by code a reader can go look at. Operations
-    // and entities are the two things a customer can click through to.
+    // Rank from the capability's OWN evidence, never from its wording: operations
+    // and entities are what a reader can click through to.
     const operationCount = (capability.operations || []).length;
     const entityCount = (capability.related_entities || []).length;
     const grounded = operationCount > 0 && entityCount > 0;
     const isCore = capability.category === 'core';
 
-    // Cross-cutting concerns (auth, billing, admin plumbing) order AFTER the
-    // product's own outcomes — but as a tie-break WITHIN an evidence tier, never
-    // as an override. The previous code jumped them straight to 6 of 6, which
-    // demoted 24 real capabilities across the corpus ("Manages user accounts",
-    // "Manages user portfolios") purely for naming a user. A well-grounded auth
-    // capability now outranks a poorly-grounded product one, which is the correct
-    // answer: it has more for the reader to go look at.
-    //
-    // isCrossCuttingCapabilityName is still a word list, and still tracked as debt
-    // (#147) — but a half-step inside a tier cannot bury a real capability.
+    // A half-step inside the tier, never an override: a grounded cross-cutting
+    // capability must still outrank an ungrounded product one.
     const crossCutting = this.isCrossCuttingCapabilityName(capability.name) ? 0.5 : 0;
 
     if (isCore && grounded && operationCount >= CAPABILITY_SUBSTANTIAL_OPERATIONS) return 0 + crossCutting;
