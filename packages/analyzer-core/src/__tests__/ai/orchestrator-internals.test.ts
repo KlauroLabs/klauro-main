@@ -2318,23 +2318,32 @@ describe('architecture and capability inference', () => {
     expect(orch.isLowValueFallbackCapability(genuineMuscleCapability, [strongClinical])).toBe(true);
   });
 
-  it('does not let a single generic trading-vocabulary word win top product priority (keyword-anchor-audit site 4: systemCapabilityProductPriority)', async () => {
-    // A security tool's "risk" capability and a workflow engine's "decision"
-    // capability must NOT be mistaken for trading-product core features off
-    // a single generic word, with no supporting operations/entities evidence.
-    const riskCapability = { name: 'Risk Assessment Reporting', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['risk'], related_entities: [] };
-    const decisionCapability = { name: 'Decision Workflow', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['decision'], related_entities: [] };
-    expect(orch.systemCapabilityProductPriority(riskCapability)).not.toBe(1);
-    expect(orch.systemCapabilityProductPriority(decisionCapability)).not.toBe(1);
+  it('does not let any vocabulary word decide product priority (keyword-anchor-audit site 4: systemCapabilityProductPriority)', async () => {
+    // REWRITTEN when the ~65-phrase tuning table was replaced by evidence. The
+    // original kept the trading vocabulary and only narrowed it: a single generic
+    // word must not win, but "2+ distinct trading terms" and the distinctive word
+    // `portfolio` still earned rank 1. Every capability in it has operations: []
+    // and related_entities: [] — zero evidence — so those assertions were about
+    // the word list, not the capabilities.
+    //
+    // The rule now: with no evidence, wording changes nothing at all. Two trading
+    // words rank exactly the same as one, because neither is evidence.
+    const ungroundedSupporting = (name: string, domains: string[]) =>
+      ({ name, category: 'supporting', criticality: 'medium', operations: [], related_domains: domains, related_entities: [] });
 
-    // Genuine trading vocabulary co-occurrence (2+ distinct terms) still wins.
-    const genuineTradingCapability = { name: 'Risk And Price Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['risk', 'price'], related_entities: [] };
-    expect(orch.systemCapabilityProductPriority(genuineTradingCapability)).toBe(1);
+    const oneTerm = orch.systemCapabilityProductPriority(ungroundedSupporting('Risk Assessment Reporting', ['risk']));
+    const twoTerms = orch.systemCapabilityProductPriority(ungroundedSupporting('Risk And Price Management', ['risk', 'price']));
+    const distinctiveTerm = orch.systemCapabilityProductPriority(ungroundedSupporting('Portfolio Management', ['portfolio']));
+    const noTradingTerms = orch.systemCapabilityProductPriority(ungroundedSupporting('Decision Workflow', ['decision']));
 
-    // A distinctive single term ("portfolio") still wins alone (unchanged
-    // behavior — regression guard for the existing product-priority ordering
-    // test above).
-    expect(orch.systemCapabilityProductPriority({ name: 'Portfolio Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['portfolio'], related_entities: [] })).toBe(1);
+    expect(twoTerms).toBe(oneTerm);
+    expect(distinctiveTerm).toBe(oneTerm);
+    expect(noTradingTerms).toBe(oneTerm);
+
+    // And evidence, not wording, is what moves a capability up: the same name with
+    // real operations and entities outranks all of the above.
+    const grounded = { name: 'Risk Assessment Reporting', category: 'core', criticality: 'medium', operations: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], related_domains: ['risk'], related_entities: ['RiskScore'] };
+    expect(orch.systemCapabilityProductPriority(grounded)).toBeLessThan(oneTerm);
   });
 
   it('does not let brand/protocol product nouns force top capability priority (cardinal-rule vocab-shape triage 2026-08-10)', async () => {

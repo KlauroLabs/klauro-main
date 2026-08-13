@@ -270,7 +270,7 @@ describe('capability priority characterization', () => {
         distribution[priority] = (distribution[priority] || 0) + 1;
       }
     }
-    expect(distribution).toEqual({ 0: 79, 1: 8, 2: 77, 3: 46, 5: 5 });
+    expect(distribution).toEqual({0: 72, 0.5: 7, 1: 8, 2: 67, 2.5: 10, 3: 39, 3.5: 7, 4: 5});
   });
 
   it('never demotes a capability for naming its user', () => {
