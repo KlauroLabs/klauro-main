@@ -228,6 +228,10 @@ const UNGROUNDED_FALLBACK_KEEP = 3;
 
 const STUTTER_MAX_TOKENS = 3;
 
+// p75 of operations per capability across the real corpus: above this a capability
+// is carrying substantially more implementation than the median one.
+const CAPABILITY_SUBSTANTIAL_OPERATIONS = 3;
+
 const CATALOG_HARD_DEADLINE_MS = (() => {
   const configured = Number(process.env.KLAURO_AI_CATALOG_HARD_DEADLINE_MS || '');
   return Number.isFinite(configured) && configured > 0 ? configured : 100_000;
@@ -18748,40 +18752,29 @@ export class AnalyzerOrchestrator {
   }
 
   private systemCapabilityProductPriority(capability: SystemCapability): number {
-    const text = [
-      capability.name,
-      ...(capability.related_domains || []),
-      ...(capability.related_entities || []),
-    ].join(' ').toLowerCase();
-    if (/\b(project backend provisioning|authentication services|realtime data sync|storage and functions|booking lifecycle|calendar availability|event type configuration|scheduling integrations|product catalog|cart and checkout|order fulfillment|commerce administration|document collaboration|collection organization|knowledge access control|knowledge search|app builder|data source integration|automation workflows|tenant app administration|content publishing|membership and subscriptions|newsletter delivery|publication administration|media library|backup and upload|media intelligence|sharing and access|social timelines|federation delivery|moderation and safety|notifications and messaging|table modeling|spreadsheet views|api data access|workspace collaboration|event capture|product analytics|feature flags and experiments|session replay)\b/.test(text)) {
-      return 0;
-    }
-    if (/\b(token balance discovery|trade execution|market data discovery|fee transfer|wallet withdrawal)\b/.test(text)) {
-      return 0;
-    }
-    if (this.isCrossCuttingCapabilityName(capability.name)) return 6;
-    if (/\b(database|register|signup|sign|facebook|logo|styles?|theme|analytics|alerts?|admin|settings?)\s+(management|reporting|generation|workflow)\b/.test(text)) {
-      return 5;
-    }
-    if (/\b(clinical measurements?|clinical reporting|patient records?|device connectivity|fleet operations?|fuel management|vehicle maintenance|driver communication|identity management|token lifecycle|password recovery|access authorization|wash site scheduling|location operations|inspection tracking|incident tracking|network connection control|device enrollment|organization access context|signal synchronization|codebase analysis|agent contexts?|incremental analysis|runtime telemetry)\b/.test(text)) {
-      return 0;
-    }
-    if (/\b(booking|venue|venues|hosted venue|geo code|geocode)\b/.test(text)) return 0;
-    if (/\b(audio|song|track|transcript|vocal|voice|demucs|rmvpe|fcpe)\b/.test(text)) return 0;
-    // not generic English — the exact class this function must never key
-    // workflow). A single hit from THAT generic set must not alone earn
-    if (/\b(portfolio|asset|assets|investment|investments|advisory|dca)\b/.test(text)) return 1;
-    const genericTradingMatches = new Set(
-      (text.match(/\b(automation|market|token|trade|exchange|purchase|price|currency|risk|decision|transfer|tax)\b/g) || [])
-        .map(match => match.toLowerCase())
-    );
-    if (genericTradingMatches.size >= 2 ||
-      (genericTradingMatches.size === 1 && ((capability.related_entities || []).length + (capability.operations || []).length) >= 2)) {
-      return 1;
-    }
-    if (/\b(checkout|billing|invoice|subscription|payment)\b/.test(text)) return 2;
-    if (capability.category === 'core') return 3;
-    if (/\b(demo|sample|example|react|formatter|text|tab|chevron|sidebar|empty|api)\b/.test(text)) return 5;
+    // Rank from the capability's OWN evidence, never from whether its wording
+    // happens to match a phrase someone saw in another repository.
+    //
+    // What this replaced: ~65 literal phrases (a scheduling product, a commerce
+    // product, a docs product, an analytics product, a healthcare product, a
+    // fleet product, Klauro itself, a trading product, and specific ML model
+    // names), each returning top rank. Measured over the 215-capability corpus,
+    // 69 capabilities (32%) had their rank decided by that vocabulary — and on a
+    // customer repo none of it matches, so ranking collapsed to a constant. It
+    // was tuned for the benchmark and arbitrary for the customer.
+    //
+    // The ladder below is the same question asked structurally: how much of this
+    // capability is actually backed by code a reader can go look at. Operations
+    // and entities are the two things a customer can click through to.
+    const operationCount = (capability.operations || []).length;
+    const entityCount = (capability.related_entities || []).length;
+    const grounded = operationCount > 0 && entityCount > 0;
+    const isCore = capability.category === 'core';
+
+    if (isCore && grounded && operationCount >= CAPABILITY_SUBSTANTIAL_OPERATIONS) return 0;
+    if (isCore && grounded) return 1;
+    if (grounded) return 2;
+    if (operationCount === 0 && entityCount === 0) return 5;
     return 3;
   }
 
