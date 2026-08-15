@@ -15,19 +15,19 @@ interface SqlxQuerySite {
 const WRITE_KEYWORDS = /^\s*(insert|update|delete)\b/i;
 const TABLE_KEYWORDS = /\b(?:from|into|update|join)\s+["'`]?(\w+)["'`]?/i;
 
-/**
- * sqlx analyzer (Rust).
- *
- * sqlx is a compile-time-checked raw-SQL query library, not an ORM — it has no
- * entity/model declaration at all, only call sites: `sqlx::query!("SELECT ...")`,
- * `query_as!(User, "SELECT * FROM users WHERE id = $1", id)`, and the untyped
- * `query()`/`query_as()`/`query_scalar()` builder functions. There is nothing
- * to surface as an `entity` node, so this analyzer's whole contribution is
- * `database` exit points per call site: the target table (parsed out of the
- * embedded SQL's FROM/INTO/UPDATE/JOIN clause when present) and read/write
- * direction, so `get_data_lineage` still sees sqlx access even without a
- * schema model.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class SqlxAnalyzer extends BaseAnalyzer {
   constructor() {
     super('sqlx', 'sqlx Analyzer', '1.0.0', 'library');
@@ -57,7 +57,7 @@ export class SqlxAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -184,12 +184,12 @@ export class SqlxAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Parse `sqlx::query!("...")`, `sqlx::query_as!(Type, "...")`,
-   * `sqlx::query_scalar!("...")`, and their non-macro (`query(...)`) siblings,
-   * extracting the embedded SQL literal to classify read/write and pull the
-   * target table out of FROM/INTO/UPDATE/JOIN.
-   */
+
+
+
+
+
+
   private parseQuerySites(content: string, filePath: string): SqlxQuerySite[] {
     const sites: SqlxQuerySite[] = [];
     const callRegex = /sqlx::(query(?:_as|_scalar)?)!?\s*\(\s*(?:\w+\s*,\s*)?"((?:[^"\\]|\\.)*)"/g;

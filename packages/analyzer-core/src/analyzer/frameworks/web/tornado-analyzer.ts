@@ -22,14 +22,14 @@ interface TornadoHandlerMethod {
   line: number;
 }
 
-/**
- * Tornado Framework Analyzer.
- *
- * Covers `tornado.web.Application([(r"/path", Handler), ...])` route→RequestHandler
- * class wiring, and the HTTP verb methods (`get`/`post`/`put`/`delete`/...) defined
- * on each `tornado.web.RequestHandler` subclass — those methods are the real
- * per-verb entry points, since a single handler class serves multiple methods.
- */
+
+
+
+
+
+
+
+
 export class TornadoAnalyzer extends BaseAnalyzer {
   constructor() {
     super('tornado', 'Tornado Framework Analyzer', '1.0.0', 'framework');
@@ -167,9 +167,9 @@ export class TornadoAnalyzer extends BaseAnalyzer {
       const hasTornadoSignal = content.includes('tornado') || content.includes('RequestHandler');
       if (!hasTornadoSignal || !/(?:tornado\.web\.)?Application\s*\(/.test(content)) continue;
 
-      // Two real idioms: assigned to a variable (`app = Application([...])`) or
-      // constructed and returned/passed directly (`return tornado.web.Application([...])`)
-      // from a factory function like `make_app()` — no variable name to anchor on there.
+
+
+
       const assignMatch = /(\w+)\s*=\s*(?:tornado\.web\.)?Application\s*\(/.exec(content);
       const appVariable = assignMatch ? assignMatch[1] : 'app';
       {
@@ -198,7 +198,7 @@ export class TornadoAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  /** All `def get/post/put/patch/delete/head/options(self, ...)` methods per RequestHandler subclass. */
+
   private collectHandlerMethods(content: string): TornadoHandlerMethod[] {
     const methods: TornadoHandlerMethod[] = [];
     const classPattern = /class\s+(\w+)\s*\(\s*(?:tornado\.web\.)?RequestHandler\s*\)\s*:/g;
@@ -307,7 +307,7 @@ export class TornadoAnalyzer extends BaseAnalyzer {
     return allRoutes;
   }
 
-  /** `tornado.web.Application([(r"/path", Handler), ("/other", Handler2, {kwargs})])` */
+
   private extractRouteTuples(content: string, lines: string[]): TornadoRoute[] {
     const routes: TornadoRoute[] = [];
     const appCallMatch = /(?:tornado\.web\.)?Application\s*\(\s*\[/.exec(content);
@@ -390,7 +390,7 @@ export class TornadoAnalyzer extends BaseAnalyzer {
         if (versionMatch) return versionMatch[1];
       }
     } catch {
-      // Continue
+
     }
     return 'unknown';
   }

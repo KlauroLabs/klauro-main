@@ -1,19 +1,19 @@
-/**
- * Runs a pack rule's tree-sitter query against parsed source and groups the
- * raw captures into per-match capture sets (one query can match many places
- * in a file; each match's captures must stay together so `emit` can resolve
- * `@captureName` references to the SAME match, not a cross-match mixup).
- *
- * Uses the SAME vendored tree-sitter WASM path the rest of the analyzer core
- * uses (queryWasm in wasm-tree-sitter.ts) — no separate parsing stack.
- */
+
+
+
+
+
+
+
+
+
 import { queryWasm, hasWasmGrammar, WasmCapture } from '../core/wasm-tree-sitter';
 
-/** Grammar id passed to tree-sitter-wasms/web-tree-sitter's Language.load. */
+
 const PACK_LANGUAGE_GRAMMAR: Record<string, string> = {
   typescript: 'typescript',
   javascript: 'javascript',
-  'typescript-javascript': 'typescript', // superset grammar covers plain JS too
+  'typescript-javascript': 'typescript',
 };
 
 export function grammarForPackLanguage(language: string): string {
@@ -25,9 +25,9 @@ export function packLanguageHasGrammar(language: string): boolean {
 }
 
 export interface QueryMatch {
-  /** capture name -> capture, for this single match. */
+
   captures: Record<string, WasmCapture>;
-  /** Convenience: min startLine across the match's captures (1-based). */
+
   line: number;
 }
 
@@ -38,22 +38,22 @@ export class PackQueryError extends Error {
   }
 }
 
-/**
- * Run a single tree-sitter query string against source and group captures
- * into matches. Captures sharing the same node's *ancestor match root* are
- * grouped by proximity: tree-sitter's `.captures()` returns a flat list in
- * document order, one entry per (pattern, capture) pair; we group consecutive
- * captures that share a common enclosing top-level match by re-running with
- * `.matches()`-shaped semantics is unavailable in this web-tree-sitter version,
- * so we approximate via line-adjacency clustering: captures within the same
- * rule query naturally interleave per occurrence in source order, and each
- * capture name in a rule normally appears once per logical match. Grouping
- * key = the FIRST capture name's occurrence order (each Nth occurrence of the
- * anchor capture starts a new match); every other capture name's Nth
- * occurrence joins that same match. This is exact when the query has no
- * quantified (`+`/`*`) capture, which covers the two proof packs and the
- * documented rule-authoring guidance (see docs/SPEC-ANALYZER-PACKS.md).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function runPackQuery(
   language: string,
   source: string,
@@ -70,7 +70,7 @@ export async function runPackQuery(
 
   if (captures.length === 0) return [];
 
-  // Distinct capture names in first-seen order — the first is the "anchor".
+
   const namesInOrder: string[] = [];
   for (const c of captures) if (!namesInOrder.includes(c.name)) namesInOrder.push(c.name);
   const anchorName = namesInOrder[0];

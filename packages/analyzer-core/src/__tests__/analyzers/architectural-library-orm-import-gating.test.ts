@@ -180,4 +180,53 @@ describe('ORM/framework attribution is gated on real import source, not bare sym
     expect(sourceFiles.some(file => String(file).endsWith('src/real.ts'))).toBe(true);
     expect(sourceFiles.some(file => String(file).endsWith('src/decoy.ts'))).toBe(false);
   });
+
+  it('keeps non-import library usage discoverable when prior import evidence exists', async () => {
+    await fs.writeFile(path.join(tempDir, 'Gemfile'), "gem 'sidekiq', '7.0.0'\n");
+    await fs.ensureDir(path.join(tempDir, 'app/workers'));
+    await fs.ensureDir(path.join(tempDir, 'config'));
+    await fs.writeFile(path.join(tempDir, 'app/workers/report_worker.rb'), [
+      "require 'sidekiq'",
+      'class ReportWorker',
+      '  include Sidekiq::Worker',
+      'end',
+    ].join('\n'));
+    await fs.writeFile(path.join(tempDir, 'config/routes.rb'), [
+      'Rails.application.routes.draw do',
+      '  mount Sidekiq::Web => "/jobs" if Sidekiq::Web',
+      '  schedule = :daily',
+      'end',
+    ].join('\n'));
+
+    const analyzer = new ArchitecturalLibraryAnalyzer();
+    const contribution = await analyzer.analyze({
+      projectPath: tempDir,
+      analysisRootPath: tempDir,
+      existingAnalysis: [{
+        nodes: [{
+          id: 'import_sidekiq',
+          name: 'require sidekiq',
+          type: 'import',
+          source: { file: 'app/workers/report_worker.rb', line: 1 },
+          metadata: { source: 'sidekiq' },
+        } as CASNode],
+        edges: [],
+        entry_points: [],
+        exit_points: [],
+        analyzer_metadata: {
+          analyzer_id: 'ruby',
+          analyzer_name: 'Ruby Analyzer',
+          version: '1.0.0',
+          contribution_type: 'language',
+          nodes_contributed: 1,
+          edges_contributed: 0,
+          contributed_entry_points: 0,
+          contributed_exit_points: 0,
+        },
+      }],
+    });
+
+    expect(contribution.nodes?.some(node => node.source?.file === 'config/routes.rb')).toBe(true);
+    expect(contribution.exit_points?.some(point => point.metadata?.file === 'config/routes.rb')).toBe(true);
+  });
 });

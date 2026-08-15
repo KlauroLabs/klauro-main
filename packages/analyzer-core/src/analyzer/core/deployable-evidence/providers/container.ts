@@ -4,63 +4,63 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { arrayOf, formatPort, numericPorts, safeDeployableName } from '../util';
 
-/** K8s resource kinds that actually RUN a workload (a scheduled pod running
- *  container images) — the only kinds that count as independent Tier-1 ship
- *  declarations. Service/ServiceAccount/Ingress/ConfigMap/Secret/HPA/
- *  Certificate/etc. are wiring, identity, routing, or config resources
- *  ATTACHED to a workload; they are evidence for that workload's boundary,
- *  never ship units in their own right (SPEC-DEPLOYABLE-DETECTION.md §2). */
+
+
+
+
+
+
 const WORKLOAD_KUBERNETES_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'Job']);
 
-/** A real bundle-member name (bin/crate/service name), as opposed to a
- *  base-image `FROM` ref, a registry image ref, or a CLI-flag/prose token that
- *  can leak in from a loosely-matched COPY/RUN line. `ships_paths` must carry
- *  ONLY these — downstream (context-fabric bundle rendering, cross-codebase
- *  `bundled_into` resolution) treats every entry as a real member name and
- *  matches it against sibling app names, so image refs cause false bundling.
- *  Kept at the SOURCE so the downstream filters are belt-and-suspenders. */
+
+
+
+
+
+
+
 function isRealMemberToken(token: string): boolean {
   const t = token.trim();
   if (!t || t.length < 2) return false;
-  // Image refs: `node:22-alpine`, `alpine:3.19`, `library/redis:7`, `${VAR}`.
+
   if (t.includes(':')) return false;
-  if (/^\$?\{?[A-Z0-9_]+\}?$/.test(t) && /\$|\{/.test(t)) return false; // build-arg placeholder like ${BASE}
+  if (/^\$?\{?[A-Z0-9_]+\}?$/.test(t) && /\$|\{/.test(t)) return false;
   if (/\b(alpine|debian|ubuntu|distroless|scratch|buster|bookworm|slim|busybox)\b/i.test(t)) return false;
-  // Bare CLI/tooling tokens and shell noise that can slip through a COPY/RUN match.
+
   if (/^(--?[a-z].*|&&|\|\||;|\.|\.\.|-p|from|as)$/i.test(t)) return false;
-  // Trailing prose punctuation ("below.", "bastion,") is arg noise, not a member.
+
   if (/[.,;]$/.test(t)) return false;
-  // A build/packaging SCRIPT or data/manifest file is not a shipped product
-  // binary. The COPY-based member scan above already excludes these
-  // extensions at the source (line ~71's `isBuildOutput` check); the
-  // ENTRYPOINT/CMD basename path does not go through that scan, so without
-  // this check here a Dockerfile whose ENTRYPOINT/CMD invokes a packaging
-  // script (`CMD ["/src/packaging/debian/build.sh"]`) resolves an
-  // `entrypointMember` of "build.sh" — the script gets treated as if it were
-  // the shipped product identity, and a build-only packaging container
-  // (never runs the actual binary) is misread as a genuine runtime ship
-  // unit. Real hosted defect: a Debian-packaging Dockerfile whose CMD is a
-  // build script surfaced as an independent deployable alongside the actual
-  // Docker-image container shipping the same binary.
+
+
+
+
+
+
+
+
+
+
+
+
   if (/\.(sh|bash|sql|json|yaml|yml|toml|txt|md|spec|conf)$/i.test(t)) return false;
   return true;
 }
 
-/** Does this Dockerfile's build stage copy the ENTIRE local build context in
- *  (`ADD . <dest>` / `COPY . <dest>`, source token exactly `.`, no `--from=`
- *  stage reference)? Structural fact about what the Dockerfile builds FROM,
- *  independent of what it ships — used only to recognize when several
- *  Dockerfiles in the same repo are packaging VARIANTS of the same source
- *  tree (see collapseWholeRepoPackagingVariants in deployable-evidence.ts),
- *  never to classify a container as build-only on its own. */
+
+
+
+
+
+
+
 function hasWholeRepoBuildContext(content: string): boolean {
   return /^\s*(?:ADD|COPY)\s+\.\s+\S+/m.test(content);
 }
 
-/** Parse a Dockerfile's real bundle membership: `cargo build -p X -p Y`
- *  package args, `COPY [--from=stage] .../release/<bin> <dest>` targets, and
- *  the ENTRYPOINT/CMD primary binary. Falls back to no members (caller uses
- *  base images) when the Dockerfile doesn't match any of these patterns. */
+
+
+
+
 export function parseDockerfileMembers(
   projectPath: string,
   relativeFile: string,
@@ -74,14 +74,14 @@ export function parseDockerfileMembers(
   }
 
   const members = new Set<string>();
-  // Real COMPILED build-output binaries (cargo -p package args, or a COPY
-  // sourced from a release/debug build dir) — as opposed to auxiliary
-  // scripts/tools that merely get COPYed alongside into the same bin
-  // directory (e.g. a `fetch_access_token` helper script copied to
-  // /usr/local/bin/ next to the actual service binary). Both count as
-  // `members` (real bundle membership — the auxiliary file DOES ship in the
-  // image), but only builtBinaries are candidates for the sole-member
-  // entrypoint fallback below: a helper script is never "the" service.
+
+
+
+
+
+
+
+
   const builtBinaries = new Set<string>();
   for (const match of content.matchAll(/^\s*RUN\s+.*cargo\s+(?:build|install)\b[^\n]*/gim)) {
     for (const pkgMatch of match[0].matchAll(/-p\s+([A-Za-z0-9_-]+)/g)) {
@@ -102,17 +102,17 @@ export function parseDockerfileMembers(
     }
   }
 
-  // Real Docker semantics: ENTRYPOINT is the fixed executable, CMD supplies
-  // its default arguments. A very common pattern (seen in real repos) wraps
-  // several binaries behind one ENTRYPOINT script (e.g.
-  // `ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]` + `CMD ["coordinator"]`,
-  // where entrypoint.sh execs "$1"). In that shape the ENTRYPOINT's own
-  // basename is a dispatcher/wrapper, not a shipped member — CMD's basename
-  // is the actual default-selected binary and the one that should win as
-  // primary. Resolution order: (1) ENTRYPOINT basename if it names a real
-  // member, (2) else CMD basename if it names a real member (the wrapper
-  // case above), (3) else ENTRYPOINT basename as a last resort (single-bin
-  // images with no members list still need SOME name), (4) else CMD.
+
+
+
+
+
+
+
+
+
+
+
   const firstToken = (raw: string): string => {
     const jsonArray = raw.match(/\[\s*"([^"]+)"/);
     const token = jsonArray ? jsonArray[1] : raw.trim().split(/\s+/)[0];
@@ -127,50 +127,50 @@ export function parseDockerfileMembers(
   if (entrypointBaseName && members.has(entrypointBaseName)) entrypointMember = entrypointBaseName;
   else if (cmdBaseName && members.has(cmdBaseName)) entrypointMember = cmdBaseName;
   else if (builtBinaries.size === 1) {
-    // Neither ENTRYPOINT nor CMD names a real member — often because the
-    // actual binary is selected by a runtime override this Dockerfile can't
-    // see (e.g. a docker-compose `entrypoint:`/`command:` override passing
-    // the bin name as an argument to a generic wrapper script, so the
-    // Dockerfile itself only ever names the wrapper). When this Dockerfile
-    // only builds exactly ONE real compiled binary (ignoring auxiliary
-    // helper scripts merely copied alongside it), there is no ambiguity —
-    // it must be that one, regardless of what the wrapper script is called.
+
+
+
+
+
+
+
+
     entrypointMember = [...builtBinaries][0];
   } else entrypointMember = entrypointBaseName || cmdBaseName;
 
-  // Final source-side scrub: drop any token that isn't a real member name
-  // (image refs / CLI-flag / prose noise that slipped through the COPY/RUN
-  // matchers). ships_paths must carry only true bundle members.
+
+
+
   const cleanMembers = [...members].filter(isRealMemberToken);
   const cleanEntrypoint =
     entrypointMember && isRealMemberToken(entrypointMember) ? entrypointMember : undefined;
   return { members: cleanMembers, entrypointMember: cleanEntrypoint, wholeRepoBuildContext: hasWholeRepoBuildContext(content) };
 }
 
-/** Clean deployable name for a Dockerfile — NEVER the node's display label.
- *  A `container_image_definition` node's `.name` is a human label
- *  ("Docker image definition: apps/admin-api/Dockerfile"); if that leaks into
- *  DeployableEvidence.name it flows onto the DEPLOYS edge's `deployable`
- *  attribute and shows up alongside the clean name ("admin-api") in
- *  runtime_topology. Derive a clean, still-distinguishing name from the path:
- *   - A NAMED Dockerfile (`docker/BinA.Dockerfile`, `Dockerfile.web`) carries
- *     the distinguishing token in its FILENAME stem (`bina`, `web`) — use it,
- *     so two Dockerfiles sharing a `docker/` dir don't collapse to one name.
- *   - A PLAIN `Dockerfile` takes its identity from the build-context DIR
- *     basename (`apps/admin-api/Dockerfile` -> `admin-api`).
- *   - A root-level plain `Dockerfile` falls back to a pre-inferred non-hash
- *     `service_aliases[0]`, else the project display name.
- *  All paths run through safeDeployableName so a hash workspace basename never
- *  leaks. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function dockerfileDeployableName(
   file: string,
   metadata: Record<string, any>,
   ctx: EvidenceCollectionContext,
 ): string {
   const norm = file.replace(/\\/g, '/');
-  const base = path.basename(norm); // e.g. "Dockerfile", "BinA.Dockerfile", "Dockerfile.web"
-  // Distinguishing token from a named Dockerfile: "BinA.Dockerfile" -> "BinA",
-  // "Dockerfile.web" -> "web". A plain "Dockerfile" has no such token.
+  const base = path.basename(norm);
+
+
   const namedStem =
     base !== 'Dockerfile'
       ? base.replace(/\.?dockerfile$/i, '').replace(/^dockerfile\.?/i, '') || ''
@@ -181,14 +181,14 @@ function dockerfileDeployableName(
   const dirBase = dir && dir !== '.' ? path.basename(dir) : '';
   if (dirBase) return safeDeployableName(dirBase);
 
-  // Root-level plain Dockerfile: prefer a real inferred alias, else display name.
+
   const alias = arrayOf(metadata.service_aliases)[0];
   if (alias) return safeDeployableName(alias);
   return safeDeployableName(ctx.displayName || path.basename(ctx.projectPath));
 }
 
-/** Dockerfiles (container_image_definition nodes), compose services
- *  (compose_service nodes), and kubernetes_* nodes. */
+
+
 function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, nodes } = ctx;
   const out: DeployableEvidence[] = [];
@@ -204,15 +204,15 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       const exposedPorts: string[] = arrayOf(metadata.exposed_ports);
       if (exposedPorts.length) evidence.push(`EXPOSE ${exposedPorts.join(', ')}`);
 
-      // Real bundle membership: parse the Dockerfile itself for what it
-      // actually builds/COPYs/ships, rather than base-image lineage (which is
-      // useless for membership — every stage in a multi-stage build often
-      // shares the same FROM images regardless of what binaries it packages).
-      // ships_paths carries ONLY real members: base-image FROM refs stay in
-      // `evidence` (kept above) for context but are deliberately NOT a fallback
-      // here, because every downstream consumer treats a ships_paths entry as a
-      // real member name (context-fabric bundle rendering, cross-codebase
-      // bundled_into resolution) — an image ref there causes false bundling.
+
+
+
+
+
+
+
+
+
       const dockerfileMembers = parseDockerfileMembers(projectPath, file);
       const shipsPaths = dockerfileMembers.members;
       if (dockerfileMembers.members.length) {
@@ -234,10 +234,10 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
         ships_paths: shipsPaths.length ? shipsPaths : undefined,
         ports: numericPorts(exposedPorts),
         entrypoint_member: dockerfileMembers.entrypointMember,
-        // Structured FROM-base facts (see DeployableEvidence.base_images) so
-        // the CAS-level consolidation pass can detect "this Dockerfile is
-        // itself only a base/builder image for OTHER Dockerfiles in this
-        // repo" without re-reading/re-parsing any file.
+
+
+
+
         base_images: baseImages.length ? baseImages : undefined,
       });
     }
@@ -246,16 +246,16 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       const metadata = (node.metadata || {}) as Record<string, any>;
       const file = node.source?.file || '';
 
-      // A compose service with no `build:` context ships someone else's
-      // pre-built image (redis, rabbitmq, postgres, nginx:alpine, ...) — it
-      // is a DEPENDENCY this workspace runs against, not a ship/run artifact
-      // OF this workspace (see SPEC-DEPLOYABLE-DETECTION.md §2: "a deployable
-      // is an independent SHIP/RUN artifact"). container-topology-analyzer.ts
-      // already records these as external-service exit points; emitting a
-      // Tier-1 DeployableEvidence for every image-only service over-splits
-      // the deployable count (e.g. a 6-node Redis cluster becoming 6+
-      // "deployables" of the repo that merely runs a Redis client against
-      // it). Only services this repo actually BUILDS are ship declarations.
+
+
+
+
+
+
+
+
+
+
       if (!metadata.build) continue;
 
       const evidence: string[] = [`compose service: ${metadata.deployment_service_name || node.name} (${file})`];
@@ -264,29 +264,29 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       const ports: Array<{ host?: string; container: string }> = Array.isArray(metadata.ports) ? metadata.ports : [];
       if (ports.length) evidence.push(`ports: ${ports.map(formatPort).join(', ')}`);
 
-      // A compose `build: context` path is relative to the COMPOSE FILE's
-      // directory, not the project root — `context: .` in a nested app's
-      // compose.yml means that app's own subdirectory, not the repo root.
-      // Resolving it against path.dirname(file) keeps two same-named build
-      // contexts in different compose files (or a nested-app compose file)
-      // from colliding on the same evidence root_path.
-      //
-      // BUT a real compose file may declare `build.context` as an ABSOLUTE
-      // deploy-time path that has nothing to do with the analyzed repo tree
-      // at all (2026-07 hosted defect: production docker-compose.yml built
-      // against `context: /opt/klauro/source`, the VPS rsync destination —
-      // path.join-ing that onto the compose file's own directory produced the
-      // nonsense root_path "infrastructure/vps/opt/klauro/source", which
-      // matched zero real source files and made the join with the sibling
-      // container-kind Tier-1 row for the SAME Dockerfile fail, leaving two
-      // near-empty duplicate "api" ship units instead of one correct one).
-      // `build.dockerfile` (when object-form `build:` supplies it) is always
-      // a plain repo-relative path to the real Dockerfile compose builds —
-      // the SAME path the sibling `container_image_definition` row for that
-      // Dockerfile already keys its own root_path on (path.dirname(file) at
-      // this provider's container_image_definition branch above) — so when
-      // it's available, deriving root_path from it instead keeps this row
-      // trivially joinable with that sibling row by identical root_path.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
       const composeDir = path.dirname(file) || '.';
       const buildContext = String(metadata.build);
       const dockerfilePath = metadata.dockerfile ? String(metadata.dockerfile) : undefined;
@@ -298,9 +298,9 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
               : path.join(composeDir === '.' ? '' : composeDir, dockerfilePath),
           )) || '.'
         : contextIsUnresolvable
-          // No dockerfile hint and the context points outside the repo
-          // entirely — the compose file's own directory is a strictly more
-          // honest root than joining an unrelated absolute path onto it.
+
+
+
           ? composeDir
           : path.normalize(path.join(composeDir === '.' ? '' : composeDir, buildContext)) || '.';
 
@@ -320,24 +320,24 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       const file = node.source?.file || '';
       const kind = String(metadata.kubernetes_kind || attributes.kubernetes_kind || '');
 
-      // A Helm chart already contributes exactly ONE Tier-1 ship declaration
-      // for the whole chart (deploy-manifests.ts's collectHelm, keyed on
-      // Chart.yaml + templates/). Every individual rendered resource inside
-      // that chart's templates/ (Deployment, Service, ServiceAccount,
-      // Ingress, ...) is a NODE emitted by HelmAnalyzer for graph detail, not
-      // a second independent ship unit — counting them here on top of the
-      // chart-level evidence is what over-splits one Helm-deployed app into
-      // N+1 "deployables". Skip Helm-origin kubernetes_* nodes entirely.
+
+
+
+
+
+
+
+
       const isHelmOrigin = metadata.language === 'Helm' || attributes.topology_surface === 'helm';
       if (isHelmOrigin) continue;
 
-      // Among PLAIN (non-Helm) k8s manifest resources, only WORKLOAD kinds
-      // are ship/run declarations. Service/ServiceAccount/Ingress/ConfigMap/
-      // Secret/HorizontalPodAutoscaler are wiring, identity, and routing
-      // resources attached to a workload — evidence for that workload's
-      // boundary, never independent ship units of their own (see
-      // SPEC-DEPLOYABLE-DETECTION.md doctrine: "a deployable is an
-      // independent SHIP/RUN artifact").
+
+
+
+
+
+
+
       if (!WORKLOAD_KUBERNETES_KINDS.has(kind)) continue;
 
       const evidence: string[] = [`kubernetes ${kind || node.type}: ${metadata.deployment_service_name || node.name} (${file})`];
@@ -346,10 +346,10 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       const ports: string[] = arrayOf(metadata.ports);
       if (ports.length) evidence.push(`ports: ${ports.join(', ')}`);
 
-      // Roll sibling wiring/identity/routing resources declared in the SAME
-      // manifest file into this workload's evidence trail (citations, not
-      // separate ship units) — Service/Ingress/ServiceAccount are evidence
-      // FOR this boundary per the doctrine above.
+
+
+
+
       const siblingCitations = nodes
         .filter(sibling =>
           sibling !== node &&
@@ -373,9 +373,9 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     }
   }
 
-  // External service exit points recorded by the compose analyzer (image-only
-  // services with no own build) are dependencies, not ship-declarations of
-  // this workspace — intentionally excluded here.
+
+
+
   void ctx.exitPoints;
 
   return out;

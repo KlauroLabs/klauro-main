@@ -15,9 +15,9 @@ interface AspNetController {
   filters: string[];
   dependencies: string[];
   isApiController: boolean;
-  /** Id of the surviving CAS node for this controller (the merged `class_*`
-   * node when the C# language analyzer already emitted one, else the framework
-   * id). DI edges MUST reference this so endpoints resolve to a real node. */
+
+
+
   nodeId?: string;
 }
 
@@ -45,7 +45,7 @@ interface AspNetService {
   interfaces: string[];
   lifetime: 'singleton' | 'scoped' | 'transient' | 'unknown';
   methods: Array<{ name: string; returnType?: string; parameters: string[] }>;
-  /** Id of the surviving CAS node (merged `class_*` node or framework id). */
+
   nodeId?: string;
 }
 
@@ -54,7 +54,7 @@ interface AspNetDbContext {
   filePath: string;
   dbSets: Array<{ name: string; entityType: string }>;
   connectionString?: string;
-  /** Id of the surviving CAS node (merged `class_*` node or framework id). */
+
   nodeId?: string;
 }
 
@@ -227,8 +227,8 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           const routes = this.extractRoutes(content, basePath);
           const filters = this.extractFilters(content);
           const dependencies = this.extractConstructorDependencies(content, controllerName);
-          // Class-level attributes (e.g. a controller-wide [Authorize]) apply to
-          // every action unless an action opts out with [AllowAnonymous].
+
+
           const controllerAttributes = this.extractClassAttributes(content, controllerName);
 
           const controllerInfo: AspNetController = {
@@ -289,8 +289,8 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
-          // Record the surviving node id so DI edges resolve to a real node
-          // instead of a dangling framework id (see buildDependencyInjectionRelationships).
+
+
           controllerInfo.nodeId = controllerNodeId;
 
           for (const route of routes) {
@@ -565,7 +565,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
-          // Record the surviving node id so DI edges resolve to a real node.
+
           serviceInfo.nodeId = existingNode ? existingNode.id : serviceId;
         }
       } catch {}
@@ -653,7 +653,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
-          // Record the surviving node id so DI edges resolve to a real node.
+
           dbContextInfo.nodeId = existingNode ? existingNode.id : contextId;
 
           for (const dbSet of dbSets) {
@@ -815,13 +815,13 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     dbContexts: AspNetDbContext[],
     edges: CASEdge[]
   ): void {
-    // Resolve to the SURVIVING node id captured during node reconciliation.
-    // The orchestrator dedups the framework `controller_*`/`service_*`/`dbcontext_*`
-    // nodes away in favour of the C# language analyzer's `class_*` nodes, so the
-    // framework `generateId(...)` would produce DANGLING edge endpoints that no
-    // consumer can resolve back to a node name. `nodeId` is the id that actually
-    // survives (the merged `class_*` node, or the framework id when no class
-    // node existed). Fall back to the framework id defensively.
+
+
+
+
+
+
+
     for (const controller of controllers) {
       const controllerId = controller.nodeId ?? this.generateId('controller', controller.filePath, controller.name);
 
@@ -1009,8 +1009,8 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
       let fullPath = routeTemplate
         ? `${basePath}/${routeTemplate}`.replace(/\/+/g, '/')
         : basePath;
-      // Canonical absolute path: [Route("users")] yields a slash-less prefix, but
-      // the route table (and every other framework) emits "/users".
+
+
       if (!fullPath.startsWith('/')) fullPath = `/${fullPath}`;
 
       const parameters = this.extractRouteParameters(params);
@@ -1055,7 +1055,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     return parameters;
   }
 
-  /** Attribute names on the controller class itself (e.g. [Authorize], [Route]). */
+
   private extractClassAttributes(content: string, controllerName: string): string[] {
     const attributes: string[] = [];
     const re = new RegExp(`((?:\\[[^\\]]*\\]\\s*)+)(?:public\\s+)?class\\s+${controllerName}\\b`);
@@ -1069,11 +1069,11 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     return attributes;
   }
 
-  /**
-   * Per-endpoint auth: [Authorize] (action or controller-wide) protects an
-   * endpoint; an action-level [AllowAnonymous] opts it back out. Camp A/B see no
-   * route, let alone its protection state.
-   */
+
+
+
+
+
   private aspnetSecurity(
     actionAttributes: string[] = [],
     controllerAttributes: string[] = []
@@ -1237,7 +1237,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     const inversePattern = /\[InverseProperty\("(\w+)"\)\]\s*(?:public\s+)?(?:virtual\s+)?(?:\w+<)?(\w+)>?\s+(\w+)/g;
     while ((match = inversePattern.exec(content)) !== null) {
       const inverseProp = match[1];
-      const targetType = match[2];
       const propName = match[3];
       const existing = relationships.find(r => r.propertyName === propName);
       if (existing) {
@@ -1248,49 +1247,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     return relationships;
   }
 
-  private extractFluentApiRelationships(
-    content: string,
-    dbSets: Array<{ name: string; entityType: string }>
-  ): Array<{
-    type: 'OneToOne' | 'OneToMany' | 'ManyToOne' | 'ManyToMany';
-    sourceEntity: string;
-    targetEntity: string;
-    propertyName: string;
-    isCollection: boolean;
-  }> {
-    const relationships: Array<{
-      type: 'OneToOne' | 'OneToMany' | 'ManyToOne' | 'ManyToMany';
-      sourceEntity: string;
-      targetEntity: string;
-      propertyName: string;
-      isCollection: boolean;
-    }> = [];
-
-    const hasOnePattern = /\.HasOne<(\w+)>\s*\(\s*(?:\w+\s*=>\s*\w+\.(\w+))?\)/g;
-    const hasManyPattern = /\.HasMany<(\w+)>\s*\(\s*(?:\w+\s*=>\s*\w+\.(\w+))?\)/g;
-
-    let match;
-    while ((match = hasOnePattern.exec(content)) !== null) {
-      relationships.push({
-        type: 'ManyToOne',
-        sourceEntity: '',
-        targetEntity: match[1],
-        propertyName: match[2] || match[1],
-        isCollection: false
-      });
-    }
-    while ((match = hasManyPattern.exec(content)) !== null) {
-      relationships.push({
-        type: 'OneToMany',
-        sourceEntity: '',
-        targetEntity: match[1],
-        propertyName: match[2] || match[1],
-        isCollection: true
-      });
-    }
-
-    return relationships;
-  }
 
   private classifyServiceType(name: string): string {
     const lower = name.toLowerCase();

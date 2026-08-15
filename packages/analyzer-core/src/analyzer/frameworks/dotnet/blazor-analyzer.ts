@@ -24,14 +24,14 @@ interface BlazorRoute {
 }
 
 interface BlazorHandler {
-  event: string;        // e.g. onclick, bind-Value
-  method: string;       // referenced @code method or bound property
-  target: string;       // the element/attribute context
+  event: string;
+  method: string;
+  target: string;
 }
 
 interface BlazorUsage {
-  component: string;            // child component tag name
-  passedParameters: string[];   // attribute names passed
+  component: string;
+  passedParameters: string[];
   line: number;
 }
 
@@ -41,15 +41,15 @@ interface BlazorLifecycle {
 
 interface BlazorComponent {
   name: string;
-  filePath: string;            // relative path to .razor
-  codeBehindPath?: string;     // relative path to .razor.cs if present
+  filePath: string;
+  codeBehindPath?: string;
   routes: BlazorRoute[];
   parameters: BlazorParameter[];
   injects: BlazorInject[];
   lifecycle: BlazorLifecycle[];
   handlers: BlazorHandler[];
   usages: BlazorUsage[];
-  methods: string[];           // method names declared in @code / code-behind
+  methods: string[];
 }
 
 const FRAMEWORK = 'blazor';
@@ -214,7 +214,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
 
     const name = path.basename(relativePath, '.razor');
 
-    // Code-behind (.razor.cs) sits next to the .razor file.
+
     const codeBehindRel = `${relativePath}.cs`;
     let codeBehindContent = '';
     let codeBehindPath: string | undefined;
@@ -227,7 +227,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
     } catch {}
 
     const codeBlock = this.extractCodeBlock(content);
-    // Members can live in @code or in the code-behind class.
+
     const memberSource = `${codeBlock}\n${codeBehindContent}`;
 
     const routes = this.extractRoutes(content);
@@ -253,7 +253,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
   }
 
   private extractCodeBlock(content: string): string {
-    // Match @code { ... } / @functions { ... } with brace balancing.
+
     const blocks: string[] = [];
     const directive = /@(?:code|functions)\s*\{/g;
     let match;
@@ -291,7 +291,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
 
   private extractParameters(source: string): BlazorParameter[] {
     const parameters: BlazorParameter[] = [];
-    // [Parameter] public T Name { get; set; }  and  [CascadingParameter] public T Name { get; set; }
+
     const paramPattern = /\[(Parameter|CascadingParameter)(?:\([^)]*\))?\]\s*public\s+([\w<>?,.\[\]\s]+?)\s+(\w+)\s*\{\s*get;\s*set;/g;
     let match;
     while ((match = paramPattern.exec(source)) !== null) {
@@ -308,7 +308,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
     const injects: BlazorInject[] = [];
     const seen = new Set<string>();
 
-    // @inject IFoo Foo
+
     const directivePattern = /@inject\s+([\w<>?,.\[\]]+)\s+(\w+)/g;
     let match;
     while ((match = directivePattern.exec(content)) !== null) {
@@ -319,7 +319,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // [Inject] public IFoo Foo { get; set; }
+
     const attrPattern = /\[Inject\]\s*(?:public|private|protected|internal)?\s*([\w<>?,.\[\]]+)\s+(\w+)\s*\{\s*get;\s*set;/g;
     while ((match = attrPattern.exec(memberSource)) !== null) {
       const key = `${match[1]}:${match[2]}`;
@@ -362,7 +362,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
   private extractHandlers(content: string): BlazorHandler[] {
     const handlers: BlazorHandler[] = [];
 
-    // @onclick="Handler", @onchange="X", etc. (event directives)
+
     const eventPattern = /@on(\w+)\s*=\s*"@?\(?([^"()]+)\)?"/g;
     let match;
     while ((match = eventPattern.exec(content)) !== null) {
@@ -370,7 +370,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       handlers.push({ event: `on${match[1]}`, method, target: 'element' });
     }
 
-    // @bind-Value="Prop" / @bind="Prop"
+
     const bindPattern = /@bind(?:-(\w+))?\s*=\s*"@?([^"]+)"/g;
     while ((match = bindPattern.exec(content)) !== null) {
       const target = match[1] ? `bind-${match[1]}` : 'bind';
@@ -382,13 +382,13 @@ export class BlazorAnalyzer extends BaseAnalyzer {
 
   private extractUsages(content: string, selfName: string): BlazorUsage[] {
     const usages: BlazorUsage[] = [];
-    // PascalCase opening tags => child Blazor components: <ChildComponent ... />
+
     const tagPattern = /<([A-Z][A-Za-z0-9]*)((?:\s+[^>]*)?)\/?>/g;
     let match;
     while ((match = tagPattern.exec(content)) !== null) {
       const tag = match[1];
       if (tag === selfName) continue;
-      // Skip a few HTML-ish PascalCase elements that aren't components.
+
       const attrBlob = match[2] || '';
       const passedParameters: string[] = [];
       const attrPattern = /(?:^|\s)([A-Za-z][\w]*)\s*=/g;
@@ -410,7 +410,6 @@ export class BlazorAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[]
   ): void {
-    const fullPath = path.join(projectPath, component.filePath);
     const componentId = this.componentId(component.name, component.filePath);
 
     const isRoutable = component.routes.length > 0;
@@ -436,7 +435,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       .build();
     nodes.push(componentNode);
 
-    // Parameter nodes
+
     for (const param of component.parameters) {
       const paramId = this.generateId('blazor-param', component.filePath, `${component.name}_${param.name}`);
       const paramNode = this.createNodeBuilder(paramId, param.name, 'parameter')
@@ -460,7 +459,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       ).build());
     }
 
-    // Route nodes + page entry points
+
     for (const route of component.routes) {
       const routeId = this.generateId('blazor-route', component.filePath, `${component.name}_${route.template}`);
       const routeNode = this.createNodeBuilder(routeId, route.template, 'route')
@@ -502,7 +501,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // Event handler edges (UI event -> @code method)
+
     for (const handler of component.handlers) {
       const isMethod = component.methods.includes(handler.method);
       const handlerId = this.generateId('blazor-handler', component.filePath, `${component.name}_${handler.event}_${handler.method}`);
@@ -529,7 +528,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       ).withMetadata({ attributes: { event: handler.event, method: handler.method } }).build());
     }
 
-    // DI service dependency exit points
+
     for (const inject of component.injects) {
       exitPoints.push(this.createExitPoint(
         this.generateId('exit', component.filePath, `${component.name}_inject_${inject.name}`),
@@ -556,7 +555,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       const sourceId = this.componentId(component.name, component.filePath);
       for (const usage of component.usages) {
         const target = byName.get(usage.component);
-        if (!target) continue; // only link to components we actually found
+        if (!target) continue;
         const targetId = this.componentId(target.name, target.filePath);
         const edgeId = this.generateEdgeId(sourceId, targetId, `uses-${usage.line}`);
         if (edges.find(e => e.id === edgeId)) continue;

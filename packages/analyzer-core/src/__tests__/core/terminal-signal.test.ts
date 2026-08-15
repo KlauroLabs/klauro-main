@@ -244,6 +244,21 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
     expect(verdict.reason).toBe('not-anchored-in-terminal-outputs');
   });
 
+  test('explicit product documentation can outweigh misleading terminal vocabulary', () => {
+    const orch = orchestratorWithTerminal(['CacheRecord'], ['RefreshWorker']);
+    const verdict = orch.evaluateAIDomainCandidate(
+      'source-analysis',
+      purpose('', false, ''),
+      [],
+      {
+        concepts: [], evidence: [],
+        productDocTitle: 'Source Analysis Platform',
+        productDocSummary: 'Analyzes source repositories for engineering teams.',
+      },
+    );
+    expect(verdict.accepted).toBe(true);
+  });
+
   test('terminal-anchored specific label accepted when deterministic domain is weak', () => {
     const orch = orchestratorWithTerminal(['Portfolio', 'ActionableInsight'], ['PortfolioAnalysisService']);
     const verdict = orch.evaluateAIDomainCandidate(
@@ -268,24 +283,17 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
         getCoreConcepts: () => [{ name: 'Portfolio' }],
         inferPrimaryDomain: () => 'portfolio-management',
       },
-      /* databaseEntities   */ [],
-      /* entryPointSummary  */ [],
-      /* frameworks         */ [],
-      /* externalServices   */ [],
-      /* systemCapabilities */ [],
-      /* flowGraph          */ {
-        capabilities: [],
-        dependencies: [],
-        topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
-        primary_flow: { core_capability_id: '', value_chain: [], supporting_capabilities: [], infrastructure_capabilities: [] },
-        layers: [],
-        system_insights: { detected_patterns: [], primary_entry_type: 'unknown', data_flow_type: 'unknown' },
-      },
-      /* systemName         */ 'portfolio-app',
-      /* projectTextSignal  */ { concepts: ['Portfolio'], evidence: [], primaryDomain: 'portfolio-management' },
-      /* nodes              */ [],
-      /* projectPath        */ '',
-      /* terminalSignal     */ {
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        'portfolio-app',
+        { concepts: ['Portfolio'], evidence: [], primaryDomain: 'portfolio-management' },
+        [],
+        '',
+        {
         ranked_entities: [{ name: 'Message', score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 }],
         ranked_stages: [],
         ranked_capabilities: [],

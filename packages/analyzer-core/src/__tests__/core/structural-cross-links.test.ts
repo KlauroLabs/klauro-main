@@ -87,7 +87,7 @@ function buildFixtureCas(): CASOutput {
     },
   ];
 
-  const data_entities: CASDataEntity[] = [
+  const entities: CASDataEntity[] = [
     {
       id: 'entity_order',
       name: 'Order',
@@ -96,7 +96,7 @@ function buildFixtureCas(): CASOutput {
     },
   ];
 
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_order_management',
       name: 'Order Management',
@@ -168,8 +168,8 @@ function buildFixtureCas(): CASOutput {
     entry_points,
     exit_points,
     data_lineage,
-    data_entities,
-    system_capabilities,
+    entities,
+    capabilities,
     paradigm_conformance,
     architectural_conflicts,
     principle_violations,

@@ -1,6 +1,7 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { aiService, isProviderUnavailableFailure, AI_PROVIDER_UNAVAILABLE_MARKER } from '../../ai/ai-service';
 import { SystemCapability } from '../../types/cas.types';
+import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 
 /**
  * P0 (2026-07-27 live comprehension audit): a per-capability grounding
@@ -93,18 +94,18 @@ function freshPurpose(): any {
 
 async function runInterpretation(purpose: any, capabilities: SystemCapability[]): Promise<void> {
   await orch.applyAIInterpretation(
-    purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+    purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [],
     capabilities, [], [], [], { concepts: [], evidence: [] }, [],
     undefined, [], [], [], [],
   );
 }
 
 describe('L5 capability-description failures are contained (do not null the system comprehension)', () => {
-  it('keeps the system description and the deterministic capability text when every capability description is rejected', async () => {
-    // The model returns a groundable SYSTEM description but no per-capability
-    // prose at all, so every capability target is rejected ('missing-
-    // description') and survives the repair pass still rejected. Before the
-    // fix this threw and nulled everything.
+  it('keeps the system description and excludes deterministic capability placeholders when authored comprehension is unavailable', async () => {
+
+
+
+
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
       system_description: GROUNDED_SYSTEM_DESCRIPTION,
       domain: '',
@@ -126,20 +127,8 @@ describe('L5 capability-description failures are contained (do not null the syst
     expect(purpose.inferred_description).toBeTruthy();
     expect(purpose.description_source).toBe('ai');
 
-    // Every rejected capability degraded rather than being blanked, and says so.
-    expect(Array.isArray(purpose.capability_description_degradations)).toBe(true);
-    expect(purpose.capability_description_degradations.length).toBe(capabilities.length);
-    for (const item of purpose.capability_description_degradations) {
-      expect(typeof item.reason).toBe('string');
-      expect(['provider-unavailable', 'failed-grounding']).toContain(item.failure_class);
-    }
-    for (const item of capabilities) {
-      expect(item.description).toBeTruthy();
-      expect(item.description_source).toBe('deterministic');
-      // The honesty record must never claim AI comprehension it did not get.
-      expect(item.description_generation?.status).toBe('ai_rejected');
-      expect(item.description_generation?.reason).toBeTruthy();
-    }
+    expect(capabilities).toEqual([]);
+    expect(purpose.capability_description_degradations).toBeUndefined();
   });
 
   // DEFECT (2026-08 blast-radius audit): this used to assert the system

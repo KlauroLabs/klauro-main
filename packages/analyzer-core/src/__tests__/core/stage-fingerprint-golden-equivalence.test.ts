@@ -85,6 +85,13 @@ describe('stage-fingerprint golden-snapshot equivalence', () => {
     const result = await orch.orchestrateIncrementalAnalysis(root, staleBuildOutput, state);
 
     expect(result.wasFullRebuild).toBe(false);
+    expect(result.changeReport.locality).toMatchObject({
+      strategy: 'no-change',
+      directChangedFiles: 0,
+      graphAffectedFiles: 0,
+      analyzedFiles: 0,
+      reuseRatio: 1
+    });
     // No file changes + no forced rebuild => the exact previous output object
     // is returned untouched. This IS the golden-snapshot equivalence proof:
     // there is no derived-artifact drift because nothing was recomputed.
@@ -103,6 +110,10 @@ describe('stage-fingerprint golden-snapshot equivalence', () => {
 
     expect(result.wasFullRebuild).toBe(true);
     expect(result.fullRebuildReason).toContain('Parser-layer fingerprint changed');
+    expect(result.changeReport.locality).toMatchObject({
+      strategy: 'full-rebuild',
+      reusedFiles: 0
+    });
     // A full rebuild still produces a semantically equivalent CAS for
     // unchanged source (same nodes discovered), proving the forced rebuild
     // path itself is not lossy — it is just more expensive than necessary,

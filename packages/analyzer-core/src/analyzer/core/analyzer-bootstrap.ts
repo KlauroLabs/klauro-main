@@ -1,6 +1,6 @@
-// Analyzer Bootstrap - Legacy file kept for compatibility
-// Bootstrap functionality has been replaced by CAS orchestrator and service
-// This file is kept for compatibility but is no longer used
+
+
+
 
 export async function bootstrapAnalyzers(): Promise<void> {
   console.log('bootstrapAnalyzers() is deprecated - use CAS analyzer service instead');

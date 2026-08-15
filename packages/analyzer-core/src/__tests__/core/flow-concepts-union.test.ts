@@ -94,7 +94,7 @@ function buildUnionCas(): CASOutput {
       risk_analysis: { risk_level: 'low', risk_factors: [] },
     },
   ];
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_orders', name: 'Order Management', category: 'core', criticality: 'high',
       operations: [{ action: 'create order', entry_point_id: 'ep_orders', entry_point_type: 'http' }],
@@ -107,7 +107,7 @@ function buildUnionCas(): CASOutput {
 
   return {
     analysis_id: 'test-union',
-    nodes, edges, entry_points, exit_points, data_lineage, call_chains, system_capabilities,
+    nodes, edges, entry_points, exit_points, data_lineage, call_chains, capabilities,
   } as unknown as CASOutput;
 }
 
@@ -217,7 +217,7 @@ describe('computeFlowConcepts — significance-first maxFlows window', () => {
         exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
       },
     ];
-    const system_capabilities: SystemCapability[] = [
+    const capabilities: SystemCapability[] = [
       {
         id: 'cap_recon', name: 'Order Reconciliation', category: 'core', criticality: 'high',
         operations: [{ action: 'reconcile orders', entry_point_id: 'node:n_capop', entry_point_type: 'internal' }],
@@ -226,7 +226,7 @@ describe('computeFlowConcepts — significance-first maxFlows window', () => {
     ];
     return {
       analysis_id: 'test-window',
-      nodes, edges, entry_points, exit_points: [], data_lineage, system_capabilities,
+      nodes, edges, entry_points, exit_points: [], data_lineage, capabilities,
     } as unknown as CASOutput;
   }
 

@@ -151,7 +151,7 @@ function isUtilityNodeName(rawName: string): boolean {
   return false;
 }
 
-/** A name that must never appear as a journey terminal entity or effect. */
+
 function isExcludedTerminalName(name: string): boolean {
   const trimmed = (name || '').trim();
   if (GENERIC_ERROR_TYPE_NAME.test(trimmed)) return true;
@@ -636,7 +636,7 @@ function collectPathNodeIds(
     }
   }
 
-  // method __invoke is never traced by a call-chain walker). It must never
+
   if (chains.length === 0) {
     const seeds = [...pathNodeIds.keys()];
     for (const seedId of seeds) {
@@ -853,7 +853,7 @@ function collectTerminalEffects(
   const entitiesWritten = new Set<string>();
   const entitiesRead = new Set<string>();
   for (const candidate of candidates) {
-    // builders, and helper/accessor names must never become entity names.
+
     if (isExcludedTerminalName(candidate.name)) continue;
     if (seenEntities.has(candidate.name)) continue;
     seenEntities.add(candidate.name);

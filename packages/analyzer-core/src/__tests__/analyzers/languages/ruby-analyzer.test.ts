@@ -1,4 +1,5 @@
 import { RubyAnalyzer } from '../../../analyzer/languages/ruby-analyzer';
+import { buildRubySnapshotAnalysis } from '../../../analyzer/languages/ruby-snapshot-analysis';
 
 describe('RubyAnalyzer', () => {
   let analyzer: RubyAnalyzer;
@@ -253,6 +254,60 @@ describe('RubyAnalyzer', () => {
       expect(chargeEdge.metadata.attributes.callType).toBe('method');
       expect(chargeEdge.metadata.attributes.targetClass).toBe('PaymentGateway');
       expect(chargeEdge.metadata.attributes.receiver).toBe('gateway');
+    });
+
+    it('resolves calls against owners restored from a prior CAS snapshot', () => {
+      const current = analyzer.parseRubySource([
+        'class ShiftTypesController < ApplicationController',
+        '  def initialize',
+        '    @service = ShiftTypeService.new',
+        '  end',
+        '',
+        '  def create',
+        '    @service.bulk_update(params)',
+        '  end',
+        'end',
+      ].join('\n'), 'app/controllers/shift_types_controller.rb');
+      const snapshotNodes: any[] = [
+        {
+          id: 'class_application_controller',
+          name: 'ApplicationController',
+          type: 'class',
+          source: { file: 'app/controllers/application_controller.rb', line: 1 },
+          metadata: { framework: 'ruby', attributes: { qualified_name: 'ApplicationController' } },
+        },
+        {
+          id: 'class_shift_type_service',
+          name: 'ShiftTypeService',
+          type: 'class',
+          source: { file: 'app/services/shift_type_service.rb', line: 1 },
+          metadata: { framework: 'ruby', attributes: { qualified_name: 'ShiftTypeService' } },
+        },
+        {
+          id: 'method_shift_type_service_bulk_update',
+          name: 'bulk_update',
+          type: 'method',
+          parent: 'class_shift_type_service',
+          source: { file: 'app/services/shift_type_service.rb', line: 2 },
+          metadata: { framework: 'ruby', attributes: { visibility: 'public', singleton: false } },
+          signature: { parameters: [{ name: 'params', type: 'Object' }] },
+        },
+      ];
+      const internal = analyzer as any;
+      const snapshot = buildRubySnapshotAnalysis(snapshotNodes, 'app/controllers/shift_types_controller.rb');
+      const edges: any[] = [];
+      const currentNodes: any[] = [];
+      internal.emitFileNodes(current, 'app/controllers/shift_types_controller.rb', currentNodes, edges);
+      internal.buildInheritanceEdges([current], [...snapshotNodes, ...currentNodes], edges);
+
+      analyzer.buildCallEdges([current, snapshot], edges);
+
+      expect(edges.some(edge =>
+        edge.type === 'calls' &&
+        edge.metadata.attributes.targetClass === 'ShiftTypeService' &&
+        edge.metadata.attributes.targetMethod === 'bulk_update'
+      )).toBe(true);
+      expect(edges.some(edge => edge.type === 'extends' && edge.target === 'class_application_controller')).toBe(true);
     });
 
     it('links bare calls to methods of included modules within scope', () => {

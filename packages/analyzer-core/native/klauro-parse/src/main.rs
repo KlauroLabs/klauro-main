@@ -1,6 +1,3 @@
-// klauro-parse: native tree-sitter parse stage. Reads source on stdin, language
-// as argv[1]; emits a compact JSON AST (byte offsets, no text — the TS side
-// slices). Grammars are cargo crates compiled in: no wasm, no ABI fragility.
 use std::io::Read;
 use tree_sitter::{Node, Parser};
 

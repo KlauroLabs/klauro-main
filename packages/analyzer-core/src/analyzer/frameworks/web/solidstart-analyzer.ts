@@ -10,10 +10,10 @@ import { cachedGlob as glob } from '../../core/glob-cache';
 const ROUTE_GLOBS = ['src/routes/**/*.{tsx,jsx,ts,js}'];
 const COMPONENT_GLOBS = ['src/components/**/*.{tsx,jsx,ts,js}'];
 
-// SolidStart / Solid server-data + action primitives.
+
 const SERVER_DATA_FNS = ['createServerData$', 'createRouteData', 'cache'];
 const ACTION_FNS = ['action', 'createAction'];
-// Solid reactive state primitives (light touch).
+
 const STATE_FNS = ['createSignal', 'createStore'];
 
 interface SolidRouteInfo {
@@ -48,18 +48,18 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
         if (deps['solid-start'] || deps['@solidjs/start']) return true;
       }
 
-      // app.config.ts referencing solid is a strong SolidStart signal.
+
       const appConfig = path.join(projectPath, 'app.config.ts');
       if (await fs.pathExists(appConfig)) {
         try {
           const content = await fs.readFile(appConfig, 'utf-8');
           if (/solid/i.test(content)) return true;
         } catch {
-          // ignore
+
         }
       }
 
-      // A src/routes dir with Solid conventions (index.tsx / [param]).
+
       const routesDir = path.join(projectPath, 'src', 'routes');
       if (await fs.pathExists(routesDir)) {
         const hasSolidDep = await this.getPackageVersion(projectPath, 'solid-js');
@@ -159,9 +159,9 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
     return contribution;
   }
 
-  /**
-   * Shared per-file extraction used by both the full and incremental paths.
-   */
+
+
+
   private extractFromFile(file: string, content: string): SolidFileExtraction {
     const normalized = file.replace(/\\/g, '/');
     const signals = this.findStateFns(content);
@@ -208,7 +208,7 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
       new RegExp(`\\b${this.escapeRegex(fn)}\\s*\\(`).test(content)
     );
 
-    // API route HTTP method exports (GET/POST/...).
+
     const httpMethods: string[] = [];
     const methodPattern = /export\s+(?:async\s+)?(?:function\s+|const\s+)(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b/g;
     let m: RegExpExecArray | null;
@@ -230,8 +230,8 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
   }
 
   private parseComponent(file: string, content: string): { name: string } | null {
-    // A Solid component is a function returning JSX. Use the file basename as the
-    // component name, but require JSX/component-like content to avoid plain modules.
+
+
     const looksLikeComponent =
       /return\s*\(?\s*</.test(content) ||
       /=>\s*\(?\s*</.test(content) ||
@@ -292,7 +292,7 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
       }
     }));
 
-    // Route component itself is a page entry point (GET render).
+
     if (!info.isLayout) {
       const pageEntryId = `entry_solidstart_page_${this.sanitizeId(file)}`;
       entryPoints.push({
@@ -306,7 +306,7 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Server data functions -> data entry points.
+
     for (const fn of info.serverDataFns) {
       const entryId = `entry_solidstart_serverdata_${this.sanitizeId(file)}_${fn.replace(/[^a-zA-Z0-9]/g, '_')}`;
       entryPoints.push({
@@ -321,7 +321,7 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Action functions -> mutation entry points.
+
     for (const fn of info.actionFns) {
       const entryId = `entry_solidstart_action_${this.sanitizeId(file)}_${fn.replace(/[^a-zA-Z0-9]/g, '_')}`;
       entryPoints.push({
@@ -336,7 +336,7 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // "use server" directive -> server function entry point.
+
     if (info.hasUseServer) {
       const entryId = `entry_solidstart_useserver_${this.sanitizeId(file)}`;
       entryPoints.push({
@@ -368,10 +368,10 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
     }));
   }
 
-  /**
-   * Map a SolidStart route file path to its URL path.
-   * Conventions: index, [param] dynamic, [...slug] splat, (group) pathless groups.
-   */
+
+
+
+
   private deriveRouteFromFile(file: string): { routePath: string; isIndex: boolean } {
     let rel = file.replace(/\\/g, '/').replace(/^.*?src\/routes\//, '');
     rel = rel.replace(/\.(tsx|jsx|ts|js)$/, '');
@@ -385,17 +385,17 @@ export class SolidStartAnalyzer extends BaseAnalyzer {
         isIndex = true;
         continue;
       }
-      // Pathless group: (marketing) etc.
+
       if (/^\(.+\)$/.test(seg)) {
         continue;
       }
-      // Splat: [...slug] -> *
+
       const splat = seg.match(/^\[\.\.\.(.+)\]$/);
       if (splat) {
         pathParts.push('*');
         continue;
       }
-      // Dynamic param: [id] -> :id
+
       const param = seg.match(/^\[(.+)\]$/);
       if (param) {
         pathParts.push(`:${param[1]}`);

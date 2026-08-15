@@ -7,72 +7,72 @@ import { cachedGlob as glob } from '../core/glob-cache';
 type McpRegistrationKind = 'registerTool' | 'tool' | 'setRequestHandler';
 
 interface McpToolRegistration {
-  /** Tool name from the string literal (or best-effort label for setRequestHandler). */
+
   name: string;
   kind: McpRegistrationKind;
   filePath: string;
   line: number;
-  /** The identifier the registration call was made on, e.g. `server` in `server.registerTool(...)`. */
+
   receiver: string;
-  /** Best-effort pointer to the handler — an identifier name if the last arg is a bare reference. */
+
   handlerRef?: string;
-  /**
-   * Evidence-based fallback when the handler arg is an inline arrow/function
-   * body rather than a bare identifier (the overwhelming common case for
-   * `server.registerTool('x', schema, async (...) => { ... })`). We scan the
-   * inline body text for call-expression callees (`fooBar(...)`,
-   * `ns.fooBar(...)`) so a real downstream function can still be linked, e.g.
-   * `query.buildSummary(...)` inside the arrow -> function `buildSummary` in
-   * query.ts. Never fabricated: these are literal identifiers pulled from the
-   * source text of the handler body, just not resolved to a node yet (that
-   * happens in the cross-analyzer edge-linking pass).
-   */
+
+
+
+
+
+
+
+
+
+
+
   handlerCallCandidates?: string[];
 }
 
-/**
- * MCP tool-registration analyzer.
- *
- * The gap: when a codebase itself IS an MCP server, tool names are registered
- * as STRING LITERAL arguments to calls like:
- *
- *   server.registerTool('get_summary', { ... }, handler)
- *   server.tool('do_thing', schema, handler)          // McpServer .tool() shorthand
- *   server.setRequestHandler(ListToolsRequestSchema, handler)
- *
- * These string literals are invisible to search_nodes/semantic_search because
- * they are not named declarations (functions/classes/variables) — they're
- * arguments buried inside call expressions. This analyzer walks source text
- * with a balanced-paren call-arg scanner (mirroring the approach used by
- * express-analyzer.ts / trpc-analyzer.ts in this same directory — regex to
- * find the call head, then a depth-aware scanner to pull out args, since a
- * naive `[^,)]+` regex breaks on object/schema literals and arrow handlers)
- * and emits a searchable `mcp_tool` node for every literal tool name it finds,
- * so "find the get_summary tool" resolves the same way grep would.
- *
- * IN SCOPE:
- *  - `<obj>.registerTool('name', ...)` / `.registerTool("name", ...)` (McpServer SDK)
- *  - `<obj>.tool('name', ...)` shorthand (only when the receiver looks like an
- *    MCP server variable, i.e. named `server`/`mcpServer`/ends in `Server`, to
- *    avoid false positives on unrelated `.tool(...)` calls in other domains)
- *  - `<obj>.setRequestHandler(<SchemaRef>, handler)` — best effort. The "name"
- *    here is not a string literal; we emit a node using the schema identifier
- *    (e.g. `ListToolsRequestSchema`) as the name, flagged
- *    `metadata.attributes.nameSource = 'schema-identifier'` so downstream
- *    consumers know it's inferred, not a literal tool name.
- *
- * EXPLICITLY OUT OF SCOPE (documented, not attempted):
- *  - Dynamically computed tool names (`server.registerTool(TOOL_NAME, ...)`
- *    where TOOL_NAME is a variable/expression, not a literal) — no static
- *    string to index. We skip these silently (no node emitted) rather than
- *    emit a placeholder; a follow-on could resolve simple `const X = 'name'`
- *    bindings but that requires scope-aware analysis this pass doesn't do.
- *  - Tool registration via spread/loop (`tools.forEach(t => server.tool(t.name, ...))`)
- *    — no literal at the call site at all.
- *  - Non-JS/TS MCP SDKs (Python `@mcp.tool()` decorator, etc.) — out of scope
- *    for this pass; same call-site-invisibility problem likely applies there
- *    too and would be a natural follow-on in a Python-specific detector.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
   constructor() {
     super('mcp-tool-registration', 'MCP Tool Registration Analyzer', '1.0.0', 'library');
@@ -117,16 +117,16 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       } catch {
         continue;
       }
-      // Blank out comments before scanning: this is a plain-text regex scan,
-      // not an AST walk, so an illustrative code sample inside a `/** ... */`
-      // JSDoc block (this file's own header comment documents the shorthand
-      // form as `server.tool('do_thing', schema, handler)`) reads exactly
-      // like a real registration and was previously extracted as one —
-      // quality-iter-1 #8 traced the junk "Do Thing" workflow's third entry
-      // point straight back to that doc example, not real code. Blanking
-      // (space-for-non-newline-char) rather than deleting keeps every byte
-      // offset and line number produced by extractRegisterToolCalls/etc.
-      // identical to scanning the original content.
+
+
+
+
+
+
+
+
+
+
       const scannable = this.blankComments(content);
       if (!this.hasRegistrationEvidence(scannable)) continue;
 
@@ -159,10 +159,10 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       entryPoints.push({
         id: `entry_${nodeId}`,
         name: reg.name,
-        // CASEntryPoint.type is a closed union without an 'mcp_tool' member;
-        // 'message' is the closest existing category for an RPC/tool-call
-        // style entry point (the CAS *node* itself still carries the
-        // precise 'mcp_tool' type, which is what search/lookup key off of).
+
+
+
+
         type: 'message',
         source_node: nodeId,
         source_analyzer: this.analyzerId,
@@ -178,11 +178,11 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
           receiver: reg.receiver,
           file: reg.filePath,
           line: reg.line,
-          // Evidence-based candidates for the cross-analyzer edge-linking pass
-          // to resolve into a real `calls` edge when handlerRef is absent
-          // (the common case: inline arrow/function handler body). Absent or
-          // empty when the handler body had nothing resolvable — no edge is
-          // fabricated in that case.
+
+
+
+
+
           handlerCallCandidates: reg.handlerCallCandidates && reg.handlerCallCandidates.length > 0
             ? reg.handlerCallCandidates
             : undefined
@@ -239,9 +239,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     if (/\.registerTool\s*\(/.test(content) || /\.setRequestHandler\s*\(/.test(content)) {
       return true;
     }
-    // `.tool(` shorthand only counts as evidence when the receiver looks like
-    // an MCP server variable — otherwise unrelated `.tool()` calls (e.g. a
-    // builder pattern in a non-MCP domain) would false-positive canAnalyze.
+
+
+
     const shorthand = /([A-Za-z_$][\w$]*)\s*\.\s*tool\s*\(\s*['"`]/g;
     let match;
     while ((match = shorthand.exec(content)) !== null) {
@@ -254,7 +254,7 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     return content.slice(0, index).split('\n').length;
   }
 
-  /** `<receiver>.registerTool('name', ...)` */
+
   private extractRegisterToolCalls(content: string, filePath: string): McpToolRegistration[] {
     const results: McpToolRegistration[] = [];
     const head = /([A-Za-z_$][\w$]*)\s*\.\s*registerTool\s*\(\s*(['"`])([^'"`]+)\2/g;
@@ -278,9 +278,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  /** `<receiver>.tool('name', ...)` — McpServer shorthand. Guarded on receiver
-   *  naming to avoid false positives from unrelated `.tool()` calls (e.g. a
-   *  builder pattern in a non-MCP domain). */
+
+
+
   private extractToolShorthandCalls(content: string, filePath: string): McpToolRegistration[] {
     const results: McpToolRegistration[] = [];
     const head = /([A-Za-z_$][\w$]*)\s*\.\s*tool\s*\(\s*(['"`])([^'"`]+)\2/g;
@@ -305,9 +305,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  /** `<receiver>.setRequestHandler(<SchemaRef>, handler)` — no string literal
-   *  name exists here. Best effort: use the schema identifier as the emitted
-   *  node's name so it's at least locatable, flagged via nameSource metadata. */
+
+
+
   private extractSetRequestHandlerCalls(content: string, filePath: string): McpToolRegistration[] {
     const results: McpToolRegistration[] = [];
     const head = /([A-Za-z_$][\w$]*)\s*\.\s*setRequestHandler\s*\(\s*([A-Za-z_$][\w$]*)/g;
@@ -323,17 +323,17 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
-        handlerRef: this.extractHandlerRef(args, /* firstArgIsSchema */ true),
-        handlerCallCandidates: this.extractHandlerCallCandidates(args, /* firstArgIsSchema */ true)
+        handlerRef: this.extractHandlerRef(args,   true),
+        handlerCallCandidates: this.extractHandlerCallCandidates(args,   true)
       });
     }
 
     return results;
   }
 
-  /** Best-effort handler reference: if the last parsed arg is a bare
-   *  identifier (not an inline arrow/function/object), surface it as the
-   *  handler pointer. */
+
+
+
   private extractHandlerRef(args: string[], firstArgIsSchema = false): string | undefined {
     const relevant = firstArgIsSchema ? args.slice(1) : args;
     const last = (relevant[relevant.length - 1] || '').trim();
@@ -343,18 +343,18 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /**
-   * When the handler arg is an inline arrow/function body (the common case —
-   * `extractHandlerRef` returns undefined), pull out plausible callee names
-   * from CALL EXPRESSIONS inside that body text: `identifier(...)` or
-   * `ns.identifier(...)`. This is text-based, not scope-aware, so it is
-   * evidence of "this name appears as a call target inside the handler",
-   * not a guarantee of a unique resolution — the cross-analyzer linking pass
-   * (orchestrator.linkRouteHandlers) is responsible for resolving a candidate
-   * to an actual function node and only then emitting an edge. If the last
-   * arg is itself a bare identifier (handled by extractHandlerRef), there is
-   * no body text to scan here, so this returns an empty list in that case.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private extractHandlerCallCandidates(args: string[], firstArgIsSchema = false): string[] {
     const relevant = firstArgIsSchema ? args.slice(1) : args;
     const last = (relevant[relevant.length - 1] || '').trim();
@@ -362,15 +362,15 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
 
     const candidates: string[] = [];
     const seen = new Set<string>();
-    // Matches `foo` or `ns.foo` identifier heads; keeps only the
-    // innermost/last member segment (e.g. `query.buildSummary` ->
-    // `buildSummary`) alongside the qualified form so either a namespaced or
-    // bare function node can match. Whether it's actually a call (optionally
-    // through a generic type-argument list, e.g. `apiGet<Foo>(...)`) is
-    // checked below with a balanced-bracket scan rather than folded into the
-    // regex — a naive `<[^<>(){}]*>` class breaks on the common
-    // `Thing<{ items: Foo[] }>(...)` shape (object/array types nested in the
-    // generic), silently mis-skipping the real callee.
+
+
+
+
+
+
+
+
+
     const identifierPattern = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
     const skip = new Set([
       'if', 'for', 'while', 'switch', 'catch', 'return', 'function', 'async',
@@ -409,13 +409,13 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     return /server/i.test(name) || /^mcp/i.test(name);
   }
 
-  /**
-   * Parse the arguments of a call starting just after the first argument
-   * (i.e. inside the call, depth 1). Splits on top-level commas while
-   * respecting nested parens/brackets/braces and string literals, so object
-   * literals and arrow-function handlers stay intact as single args.
-   * Mirrors ExpressAnalyzer.parseRemainingCallArgs.
-   */
+
+
+
+
+
+
+
   private parseRemainingCallArgs(content: string, pos: number): string[] {
     const args: string[] = [];
     let depth = 1;

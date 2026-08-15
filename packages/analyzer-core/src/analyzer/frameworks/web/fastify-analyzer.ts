@@ -8,9 +8,9 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * A single `fastify.<method>('/path', ...)` (or `.route({...})`) call found in a file.
- */
+
+
+
 interface FastifyRoute {
   method: string;
   path: string;
@@ -20,18 +20,18 @@ interface FastifyRoute {
   line: number;
 }
 
-/**
- * A `fastify.register(pluginRef, { prefix })` call found in a file — an edge in the
- * plugin-encapsulation graph. `pluginRef` is the local identifier being registered;
- * it's resolved to the file that exports/defines it via `importsByFile`.
- */
+
+
+
+
+
 interface RegisterCall {
   file: string;
   pluginRef: string;
   prefix?: string;
 }
 
-/** Local name -> the module specifier it was imported from, per file. */
+
 type ImportMap = Map<string, Map<string, string>>;
 
 export class FastifyAnalyzer extends BaseAnalyzer {
@@ -46,9 +46,9 @@ export class FastifyAnalyzer extends BaseAnalyzer {
 
       const packageJson = await fs.readJson(packageJsonPath);
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
-      // `fastify` itself, or any `@fastify/*` plugin — some services depend only on
-      // plugins (e.g. `@fastify/cors`) while constructing the instance via a thin
-      // wrapper; either is real evidence of Fastify usage.
+
+
+
       const hasFastify = Object.keys(deps).some(dep => dep === 'fastify' || dep.startsWith('@fastify/'));
       if (!hasFastify) return false;
 
@@ -94,8 +94,8 @@ export class FastifyAnalyzer extends BaseAnalyzer {
       }
 
       const importsByFile = this.buildImportMap(fileContents);
-      // Which local name(s) each file exports (`export const X = ...` /
-      // `export function X(...)`), so register() refs resolve across files.
+
+
       const exportsByFile = this.buildExportMap(fileContents);
 
       const allRoutes: FastifyRoute[] = [];
@@ -107,35 +107,35 @@ export class FastifyAnalyzer extends BaseAnalyzer {
       }
 
       if (allRoutes.length === 0) {
-        // Nothing to report; still return an empty-but-valid contribution.
+
         return this.createContribution(nodes, edges, entryPoints, exitPoints, {
           framework: 'fastify',
           routesFound: 0
         });
       }
 
-      // A register() call may target a plugin that's declared locally in the SAME
-      // file (`const apiRoutes = async (fastify, ...) => {...}` used without ever
-      // being exported) — common for a file's own top-level wrapper plugin (e.g.
-      // `server.register(apiRoutes, { prefix: 'sync' })` wrapping every route this
-      // file itself registers). That prefix applies to the whole file, not a
-      // cross-file edge, so it's folded in as an extra base prefix per file.
+
+
+
+
+
+
       const localPluginNamesByFile = this.buildLocalDeclarationMap(fileContents);
       const selfPrefixByFile = this.extractSelfWrapperPrefixes(allRegisters, localPluginNamesByFile);
 
-      // Resolve each register() call's plugin ref to the FILE that defines it, by
-      // following imports (local name -> module specifier -> file path) and,
-      // failing that, matching against exported names across all files.
+
+
+
       const crossFileRegisters = allRegisters.filter(r => !localPluginNamesByFile.get(r.file)?.has(r.pluginRef));
       const registerEdges = this.resolveRegisterEdges(crossFileRegisters, importsByFile, exportsByFile, context.projectPath, jsFiles);
 
-      // Compute the resolved prefix path for every file reachable from a root
-      // registration (a file that itself is never the target of any register()
-      // edge, or the app's main Fastify() setup file) by walking the graph and
-      // concatenating prefixes. Files unreachable from any root keep prefix ''.
-      // Self-wrapper prefixes seed the BFS's starting prefix at that root file so
-      // they cascade to every file the root transitively registers, not just the
-      // root's own leaf routes.
+
+
+
+
+
+
+
       const prefixByFile = this.computeFilePrefixes(registerEdges, jsFiles, selfPrefixByFile);
 
       let version = 'unknown';
@@ -143,7 +143,7 @@ export class FastifyAnalyzer extends BaseAnalyzer {
         const packageJson = await fs.readJson(path.join(context.projectPath, 'package.json'));
         const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
         version = deps.fastify || 'unknown';
-      } catch { /* best effort */ }
+      } catch {   }
 
       const appId = 'app_fastify';
       const appNode = this.createNodeBuilder(appId, 'Fastify Application', 'application')
@@ -241,24 +241,24 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return importsFastify && (constructsInstance || hasRouteCall || isPlugin);
   }
 
-  /**
-   * Extract every `fastify.<method>('/path', ...)` call in a file. Handles the
-   * optional TypeScript generic (`fastify.get<{ Reply: X }>('/path', ...)`) that
-   * Fastify's typed-route style always uses, plus `fastify.route({ method, url,
-   * handler })`. The route object is registered on whatever local identifier
-   * the plugin callback receives as its first parameter — usually `fastify`, but
-   * some files destructure or rename it, so we detect the receiver name per
-   * plugin-callback function rather than hardcoding "fastify".
-   */
+
+
+
+
+
+
+
+
+
   private extractRoutes(content: string, file: string): FastifyRoute[] {
     const routes: FastifyRoute[] = [];
     const receivers = this.findFastifyReceiverNames(content);
 
     for (const receiver of receivers) {
       const escaped = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Method form: receiver.get<...>('/path', opts?, handler) — the generic type
-      // argument (if present) is consumed by a balanced-angle-bracket skip so it
-      // doesn't interfere with finding the opening '(' of the call.
+
+
+
       const head = new RegExp(`\\b${escaped}\\.(get|post|put|patch|delete|head|options)\\s*(<[^(]*>)?\\s*\\(\\s*(['"\`])([^'"\`]+)\\3`, 'g');
       let match: RegExpExecArray | null;
       while ((match = head.exec(content)) !== null) {
@@ -270,11 +270,11 @@ export class FastifyAnalyzer extends BaseAnalyzer {
         routes.push({ method, path: routePath, handler, guards, file, line });
       }
 
-      // Object form: receiver.route({ method: 'GET', url: '/path', handler: fn }).
+
       const routeObjHead = new RegExp(`\\b${escaped}\\.route\\s*\\(\\s*\\{`, 'g');
       let objMatch: RegExpExecArray | null;
       while ((objMatch = routeObjHead.exec(content)) !== null) {
-        const objStart = objMatch.index + objMatch[0].length - 1; // position of '{'
+        const objStart = objMatch.index + objMatch[0].length - 1;
         const objText = this.extractBalancedBraces(content, objStart);
         if (!objText) continue;
         const methodMatch = /method\s*:\s*(['"\`])([^'"\`]+)\1/.exec(objText);
@@ -300,24 +300,24 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /**
-   * Find the local parameter name(s) bound to the FastifyInstance in every
-   * plugin-callback / route-registration function in this file — i.e. the
-   * first parameter of `(fastify, options, done) => ...` or `async (app) => ...`
-   * whose body actually calls a route method. Defaults to ['fastify'] when no
-   * plugin-callback signature is found (covers the top-level `const server =
-   * Fastify(...)` + `server.get(...)` style).
-   */
+
+
+
+
+
+
+
+
   private findFastifyReceiverNames(content: string): string[] {
     const names = new Set<string>(['fastify', 'server', 'app']);
-    // `(receiver, options, done) =>` / `async (receiver, options, done) =>` — the
-    // canonical FastifyPluginCallback signature.
+
+
     const pluginSigPattern = /\(\s*([A-Za-z_$][\w$]*)\s*,\s*[A-Za-z_$][\w$]*\s*,\s*(?:done|next)\s*\)\s*(?::\s*[^=]+)?=>/g;
     let m: RegExpExecArray | null;
     while ((m = pluginSigPattern.exec(content)) !== null) {
       names.add(m[1]);
     }
-    // `const X = Fastify(...)` / `const X = fastify(...)` instance construction.
+
     const instancePattern = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*Fastify\s*\(/g;
     while ((m = instancePattern.exec(content)) !== null) {
       names.add(m[1]);
@@ -325,19 +325,19 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return [...names];
   }
 
-  /** A middleware/guard reference is a bare identifier or member access — not an
-   *  inline function. Mirrors ExpressAnalyzer.isMiddlewareIdentifier. */
+
+
   private isMiddlewareIdentifier(arg: string): boolean {
     if (!arg || /=>/.test(arg)) return false;
     if (/^(async\s+)?function\b/.test(arg)) return false;
     return /^[A-Za-z_$][\w$.]*(\s*\([^)]*\))?$/.test(arg);
   }
 
-  /**
-   * Given the parsed remaining call args after `('/path'`, figure out the handler
-   * (always the last argument) and any guard/middleware identifiers surfaced via
-   * an options object's `onRequest`/`preHandler` array, or a bare middleware arg.
-   */
+
+
+
+
+
   private resolveHandlerAndGuards(args: string[]): { handler: string; guards: string[] } {
     if (args.length === 0) return { handler: 'anonymous', guards: [] };
     const last = args[args.length - 1].trim();
@@ -346,7 +346,7 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     const guards: string[] = [];
     for (const arg of args.slice(0, -1)) {
       const trimmed = arg.trim();
-      // Options object form: { onRequest: [a, b], preHandler: [c], schema }.
+
       const onRequestMatch = /onRequest\s*:\s*\[([^\]]*)\]/.exec(trimmed);
       const preHandlerMatch = /preHandler\s*:\s*\[([^\]]*)\]/.exec(trimmed);
       if (onRequestMatch) {
@@ -362,19 +362,19 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return { handler, guards };
   }
 
-  /** Best-effort human-readable handler name: bare identifier as-is; inline
-   *  arrow/function marked as inline (still a real, navigable handler via file+line). */
+
+
   private describeHandler(raw: string): string {
     if (/^[A-Za-z_$][\w$.]*$/.test(raw)) return raw;
     if (/^async\s+[A-Za-z_$][\w$.]*$/.test(raw)) return raw.replace(/^async\s+/, '');
     return 'inline handler';
   }
 
-  /**
-   * Parse the arguments of a call starting just after the path string (depth 1),
-   * splitting on top-level commas while respecting nested parens/brackets/braces
-   * and string/template literals. Mirrors ExpressAnalyzer.parseRemainingCallArgs.
-   */
+
+
+
+
+
   private parseRemainingCallArgs(content: string, pos: number): string[] {
     const args: string[] = [];
     let depth = 1;
@@ -401,9 +401,9 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return args;
   }
 
-  /** Extract the text of a balanced `{...}` object starting at `openBraceIndex`
-   *  (which must point at the '{'). Returns the inner text (without outer braces),
-   *  or null if unbalanced. */
+
+
+
   private extractBalancedBraces(content: string, openBraceIndex: number): string | null {
     let depth = 0;
     let inStr: string | null = null;
@@ -423,11 +423,11 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  /**
-   * Extract `X.register(pluginRef, { prefix: '...' })` / `X.register(pluginRef)`
-   * calls. `X` is any of the known receiver names in this file (fastify/server/app
-   * plus discovered plugin-callback params), matching findFastifyReceiverNames.
-   */
+
+
+
+
+
   private extractRegisterCalls(content: string, file: string): RegisterCall[] {
     const calls: RegisterCall[] = [];
     const receivers = this.findFastifyReceiverNames(content);
@@ -445,8 +445,8 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return calls;
   }
 
-  /** Local import name -> module specifier, per file (relative imports only —
-   *  those are the ones we can resolve to another file in this project). */
+
+
   private buildImportMap(fileContents: Map<string, string>): ImportMap {
     const result: ImportMap = new Map();
     for (const [file, content] of fileContents) {
@@ -469,7 +469,7 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  /** Exported local names per file: `export const X = ...` / `export function X(...)`. */
+
   private buildExportMap(fileContents: Map<string, string>): Map<string, Set<string>> {
     const result = new Map<string, Set<string>>();
     for (const [file, content] of fileContents) {
@@ -484,9 +484,9 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  /** ALL local top-level declaration names per file (`const X = ...` / `function
-   *  X(...)`), exported or not — used to recognize same-file plugin wrappers that
-   *  are registered without ever being imported elsewhere. */
+
+
+
   private buildLocalDeclarationMap(fileContents: Map<string, string>): Map<string, Set<string>> {
     const result = new Map<string, Set<string>>();
     for (const [file, content] of fileContents) {
@@ -501,13 +501,13 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  /**
-   * For register() calls whose plugin ref is a same-file local declaration (see
-   * buildLocalDeclarationMap), extract the prefix passed at the call site — this
-   * is a same-file "wrapper" prefix that applies to every route this file itself
-   * registers (e.g. `server.register(apiRoutes, { prefix: 'sync' })` where
-   * `apiRoutes` is a local, non-exported plugin defined further down the file).
-   */
+
+
+
+
+
+
+
   private extractSelfWrapperPrefixes(
     registers: RegisterCall[],
     localDeclsByFile: Map<string, Set<string>>
@@ -523,8 +523,8 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  /** Resolve a relative import specifier from `fromFile` to a project-relative
-   *  file path present in `allFiles`, trying common extensions and index files. */
+
+
   private resolveSpecifierToFile(fromFile: string, specifier: string, allFiles: string[]): string | undefined {
     const baseDir = path.posix.dirname(fromFile.split(path.sep).join('/'));
     const resolved = path.posix.normalize(path.posix.join(baseDir, specifier));
@@ -538,19 +538,19 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     const normalizedFiles = new Set(allFiles.map(f => f.split(path.sep).join('/')));
     for (const candidate of candidates) {
       if (normalizedFiles.has(candidate)) {
-        // Return in the same separator style as allFiles used originally.
+
         return allFiles.find(f => f.split(path.sep).join('/') === candidate);
       }
     }
     return undefined;
   }
 
-  /**
-   * Turn RegisterCall[] into resolved (fromFile -> toFile, prefix) edges by
-   * following each file's import map; if the ref isn't imported (e.g. same-file
-   * plugin), fall back to a best-effort scan of every file's exports for a match
-   * (handles path aliases / barrel re-exports we don't otherwise resolve).
-   */
+
+
+
+
+
+
   private resolveRegisterEdges(
     registers: RegisterCall[],
     importsByFile: ImportMap,
@@ -567,7 +567,7 @@ export class FastifyAnalyzer extends BaseAnalyzer {
         targetFile = this.resolveSpecifierToFile(reg.file, specifier, allFiles);
       }
       if (!targetFile) {
-        // Fallback: find any file that exports a name matching the plugin ref.
+
         for (const [file, names] of exportsByFile) {
           if (names.has(reg.pluginRef)) { targetFile = file; break; }
         }
@@ -579,12 +579,12 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return edges;
   }
 
-  /**
-   * BFS from every file that is never a `to` target (a root — typically the
-   * app's main setup file) down the register-edge graph, accumulating prefixes.
-   * A file reachable via multiple paths keeps the first (shortest/root-first)
-   * prefix found; cycles are guarded against via a visited set per traversal.
-   */
+
+
+
+
+
+
   private computeFilePrefixes(
     edges: Array<{ from: string; to: string; prefix?: string }>,
     allFiles: string[],
@@ -600,14 +600,14 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     }
 
     const roots = allFiles.filter(f => outgoing.has(f) && !targets.has(f));
-    // Files that are never a register target AND never register anything else
-    // still default to '' via the Map default below; only traverse from roots.
+
+
     const visited = new Set<string>();
 
-    // A root's own self-wrapper prefix (e.g. `server.register(apiRoutes, {
-    // prefix: 'sync' })` where apiRoutes is declared in the same file) seeds the
-    // BFS starting prefix so it cascades to everything that root registers, not
-    // just routes declared directly in the root file.
+
+
+
+
     const queue: Array<{ file: string; prefix: string }> = roots.map(f => ({ file: f, prefix: selfPrefixByFile.get(f) || '' }));
     for (const root of roots) {
       if (!prefixByFile.has(root)) prefixByFile.set(root, selfPrefixByFile.get(root) || '');
@@ -631,7 +631,7 @@ export class FastifyAnalyzer extends BaseAnalyzer {
     return prefixByFile;
   }
 
-  /** Join two path segments with exactly one '/' between them, collapsing repeats. */
+
   private joinPaths(a: string, b: string): string {
     const left = (a || '').replace(/\/+$/, '');
     const right = (b || '').replace(/^\/+/, '');

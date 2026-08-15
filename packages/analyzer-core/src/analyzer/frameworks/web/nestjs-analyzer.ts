@@ -1,28 +1,14 @@
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective,
-  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASCallGraph
-} from '../../../types/cas.types';
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus} from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
 import { isAuthenticationGuardName } from '../../core/guard-classification';
-import { EnhancedCallGraphExtractor } from '../../enhanced-call-graph-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { TSESTree } from '@typescript-eslint/typescript-estree';
 import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
 import { cachedGlob as glob } from '../../core/glob-cache';
-
-const BUILTIN_NOT_EXIT_POINTS = new Set([
-  'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
-  'Date', 'RegExp', 'Promise', 'Buffer', 'console', 'process',
-  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'Map', 'Set',
-  'WeakMap', 'WeakSet', 'Symbol', 'Proxy', 'Reflect', 'Intl',
-  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURI',
-  'decodeURI', 'encodeURIComponent', 'decodeURIComponent', 'setTimeout',
-  'setInterval', 'clearTimeout', 'clearInterval', 'setImmediate',
-  'clearImmediate', 'queueMicrotask', 'atob', 'btoa', 'fetch',
-  'require', 'module', 'exports', '__dirname', '__filename'
-]);
 
 const HTTP_DECORATOR_PATTERNS = [
   /^(Get|Post|Put|Delete|Patch|Options|Head)$/,
@@ -113,7 +99,6 @@ interface NestMiddleware {
 }
 
 export class NestJSAnalyzer extends BaseAnalyzer {
-  private callGraphExtractor?: EnhancedCallGraphExtractor;
   private globalGuardCache = new Map<string, NestGlobalGuardRegistration[]>();
 
   constructor() {
@@ -131,20 +116,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       if (!await fs.pathExists(packageJsonPath)) return false;
 
       const packageJson = await fs.readJson(packageJsonPath);
-      // NOTE: this used to hard-exclude a literal pair of package names here
-      // (the analyzer's own host package). That was a name-based hack from
-      // before scaffold-paths.ts centralized fixture/test-scaffold exclusion
-      // (SCAFFOLD_GLOBS is already applied to this analyzer's file glob via
-      // getIgnorePatterns, and framework-comprehension.ts's product-path gate
-      // filters test/fixture evidence out of system.frameworks downstream).
-      // A hardcoded name exclusion is repo-specific and evidence-free — it
-      // silently blinded detection for any nested workspace package that
-      // happens to carry one of those two exact names, INCLUDING a real,
-      // deployed NestJS application living at that path (self-analysis
-      // DEFECT: this analyzer's own analyzer-core package is a genuine NestJS
-      // service — app.module.ts/organizations.controller.ts/etc. — yet the
-      // name match suppressed canAnalyze() for it outright, well before any
-      // fixture/test path could even be considered).
+
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
       return Object.keys(deps).some(dep =>
@@ -157,9 +129,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     }
   }
 
-  supportsIncrementalAnalysis(): boolean {
-    return true;
-  }
+  supportsIncrementalAnalysis(): boolean { return false; }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.{ts,js}'], {
@@ -186,8 +156,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     const existingNodes = context.existingAnalysis?.flatMap(contribution => contribution.nodes || []) || [];
     const allNodes = [...existingNodes];
 
-    this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
-
     const modules = await this.analyzeModules([file], context.projectPath, allNodes, edges, newNodes);
     const incrementalGlobalGuards = await this.detectGlobalGuardRegistrations([file], context.projectPath);
     const controllers = await this.analyzeControllers([file], context.projectPath, allNodes, edges, entryPoints, enhancedNodes, newNodes, incrementalGlobalGuards);
@@ -197,6 +165,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     await this.analyzeEntryPoints([file], context.projectPath, allNodes, edges, entryPoints, newNodes);
     this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, newNodes, edges, exitPoints);
     this.identifyDatabaseConnections(providers, allNodes, exitPoints);
+    this.createPerspectives([], modules, controllers, providers, guards, middleware, allNodes, edges);
 
     const contributedNodes = [...enhancedNodes, ...newNodes].filter(node => {
       const nodeFile = node.source?.file;
@@ -231,9 +200,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     const existingNodes = context.existingAnalysis?.[0]?.nodes || [];
     const allNodes = [...existingNodes];
 
-
     try {
-      this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
       const ignorePatterns = [
         ...this.getIgnorePatterns(context),
@@ -279,11 +246,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       t = Date.now();
       this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, newNodes, edges, exitPoints);
       this.identifyDatabaseConnections(providers, allNodes, exitPoints);
-      this.createPerspectives(perspectives, modules, controllers, providers, allNodes, edges);
+      this.createPerspectives(perspectives, modules, controllers, providers, guards, middleware, allNodes, edges);
       timings['relationships'] = Date.now() - t;
 
-
-      // Return only enhanced and new nodes, not all nodes
       const contributedNodes = [...enhancedNodes, ...newNodes];
 
       const contribution = this.createContribution(contributedNodes, edges, entryPoints, exitPoints, {
@@ -337,7 +302,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
           const moduleId = this.generateId('module', moduleInfo.filePath, moduleInfo.name);
 
-          // Extract CAS v1.4.0 features for the module
           const moduleClassNode = this.findModuleClassNode(ast);
           const moduleDocumentation = moduleClassNode ? this.extractDocumentation(moduleClassNode, content) : undefined;
           const moduleComments = moduleClassNode ? this.extractComments(moduleClassNode, content, fullPath) : [];
@@ -376,13 +340,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return modules;
   }
 
-  /**
-   * Detects guards registered for every route of a Nest application rather
-   * than via per-controller decorators: APP_GUARD providers in modules and
-   * app.useGlobalGuards(...) calls in bootstrap files. In monorepos that
-   * follow the apps/<name> layout, a registration inside an app directory is
-   * scoped to that app; registrations in shared code apply project-wide.
-   */
   private async detectGlobalGuardRegistrations(
     files: string[],
     projectPath: string
@@ -391,9 +348,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     if (cached) return cached;
 
     const registrations: NestGlobalGuardRegistration[] = [];
-    // Global guard registrations often live in shared library modules that
-    // sibling-root scope filters exclude from this analyzer's file list, so
-    // scan the whole project for module/bootstrap files independently.
+
     let projectWideCandidates: string[] = [];
     try {
       projectWideCandidates = await glob(['**/*{module,main,bootstrap}*.{ts,js}'], {
@@ -460,14 +415,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return /^(Public|IsPublic|AllowAnonymous|AllowAnonymousRequest|SkipAuth|SkipAuthGuard|SkipJwtAuth|NoAuth|Anonymous|Unprotected|AllowUnauthorized(Request)?)$/i.test(name);
   }
 
-  /**
-   * A `@Controller` class is not gated by filename convention — Nest routes
-   * it purely on the decorator. The `.controller.` filename is a fast path,
-   * not evidence; a controller sitting in an arbitrarily named file (e.g.
-   * src/api/orders.ts) is still a controller. Files that miss the filename
-   * fast path are given a cheap textual pre-check for `@Controller(` before
-   * paying for a full AST parse, so a repo-wide scan stays affordable.
-   */
   private async findControllerCandidateFiles(files: string[], projectPath: string): Promise<string[]> {
     const filenameMatches = files.filter(f => f.includes('.controller.'));
     const filenameSet = new Set(filenameMatches);
@@ -523,14 +470,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           let existingNode = this.findNestClassNode(nodes, controllerInfo.name, file, ['class', 'controller']);
 
           if (existingNode) {
-            // Enhance existing TypeScript class node with NestJS controller metadata
-            existingNode.type = 'controller'; // Change from 'class' to 'controller'
+
+            existingNode.type = 'controller';
             existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), 'api', 'rest'])];
-            existingNode.level = 2; // Promote to architectural level
+            existingNode.level = 2;
             existingNode.level_name = 'architectural';
             existingNode.description = `NestJS controller handling HTTP requests: ${controllerInfo.name}`;
 
-            // Add NestJS-specific metadata
             existingNode.metadata = {
               ...existingNode.metadata,
               framework: 'nestjs',
@@ -545,7 +491,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               }
             };
 
-            // Track this as an enhanced node
             enhancedNodes.push(existingNode);
             controllerNodeId = existingNode.id;
           } else {
@@ -575,7 +520,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             const fullPath = this.combinePaths(controllerInfo.basePath, route.path);
             const routeId = this.generateId('route', controllerInfo.filePath, `${route.handlerName}_${route.method}_${route.path}`);
 
-            // Extract CAS v1.4.0 features for the route handler
             const handlerNode = this.findControllerHandlerMethod(ast, route.handlerName);
             const routeDocumentation = handlerNode ? this.extractDocumentation(handlerNode, content) : undefined;
             const routeComments = handlerNode ? this.extractComments(handlerNode, content, controllerInfo.filePath) : [];
@@ -716,14 +660,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const existingNode = this.findNestClassNode(nodes, providerInfo.name, file, ['class', 'service', 'repository', 'provider']);
 
           if (existingNode) {
-            // Enhance existing TypeScript class node with NestJS provider metadata
-            existingNode.type = providerInfo.type; // Change from 'class' to 'service'/'repository'/etc
+
+            existingNode.type = providerInfo.type;
             existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), 'injectable'])];
-            existingNode.level = 2; // Promote to architectural level
+            existingNode.level = 2;
             existingNode.level_name = 'architectural';
             existingNode.description = `NestJS ${providerInfo.type}: ${providerInfo.name}`;
 
-            // Add NestJS-specific metadata
             existingNode.metadata = {
               ...existingNode.metadata,
               framework: 'nestjs',
@@ -739,7 +682,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             enhancedNodes.push(existingNode);
             providerNodeId = existingNode.id;
           } else {
-            // If TypeScript analyzer didn't create the node, create it ourselves
+
             const providerNode = this.createNodeBuilder(providerId, providerInfo.name, providerInfo.type)
               .withLevel(2, 'architectural')
               .withCategory(providerInfo.type, ['nestjs', 'injectable'])
@@ -761,15 +704,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             newNodes.push(providerNode);
           }
 
-          // For methods, we'll enhance existing method nodes from TypeScript analyzer if they exist
           providerInfo.methods.forEach((method, index) => {
-            // Try to find existing method node from TypeScript analyzer
+
             const methodId = `method_${providerNodeId}_${method.name}_${index}`;
             const existingMethodNode = nodes.find(n => n.id === methodId ||
               (n.parent === providerNodeId && n.name === method.name && n.type === 'method'));
 
             if (existingMethodNode) {
-              // Enhance existing method node
+
               existingMethodNode.metadata = {
                 ...existingMethodNode.metadata,
                 attributes: {
@@ -778,7 +720,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 }
               };
             } else {
-              // Create method node if not found
+
               const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['function'])
@@ -847,14 +789,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const existingNode = this.findNestClassNode(nodes, guardInfo.name, file, ['class', 'guard']);
 
           if (existingNode) {
-            // Enhance existing TypeScript class node with NestJS guard metadata
+
             existingNode.type = 'guard';
             existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), 'security', 'auth'])];
-            existingNode.level = 3; // Code level
+            existingNode.level = 3;
             existingNode.level_name = 'code';
             existingNode.description = `NestJS guard: ${guardInfo.name}`;
 
-            // Add NestJS-specific metadata
             existingNode.metadata = {
               ...existingNode.metadata,
               framework: 'nestjs',
@@ -866,7 +807,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             };
             enhancedNodes.push(existingNode);
           } else {
-            // If TypeScript analyzer didn't create the node, create it ourselves
+
             const guardNode = this.createNodeBuilder(guardId, guardInfo.name, 'guard')
               .withLevel(3, 'code')
               .withCategory('guard', ['security', 'nestjs'])
@@ -922,14 +863,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const existingNode = this.findNestClassNode(nodes, middlewareInfo.name, file, ['class', 'middleware']);
 
           if (existingNode) {
-            // Enhance existing TypeScript class node with NestJS middleware metadata
+
             existingNode.type = 'middleware';
             existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), 'http', 'interceptor'])];
-            existingNode.level = 3; // Code level
+            existingNode.level = 3;
             existingNode.level_name = 'code';
             existingNode.description = `NestJS middleware: ${middlewareInfo.name}`;
 
-            // Add NestJS-specific metadata
             existingNode.metadata = {
               ...existingNode.metadata,
               framework: 'nestjs',
@@ -941,7 +881,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             };
             enhancedNodes.push(existingNode);
           } else {
-            // If TypeScript analyzer didn't create the node, create it ourselves
+
             const middlewareNode = this.createNodeBuilder(middlewareId, middlewareInfo.name, 'middleware')
               .withLevel(3, 'code')
               .withCategory('middleware', ['http', 'nestjs'])
@@ -986,27 +926,20 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
 
-        // 1. Analyze WebSocket Gateways
         this.analyzeWebSocketGateways(ast, file, fullPath, content, nodes, edges, entryPoints, newNodes);
 
-        // 2. Analyze Event Listeners
         this.analyzeEventListeners(ast, file, fullPath, nodes, entryPoints);
 
-        // 3. Analyze Scheduled Tasks
         this.analyzeScheduledTasks(ast, file, fullPath, nodes, entryPoints);
 
-        // 4. Analyze Queue Processors
         this.analyzeQueueProcessors(ast, file, fullPath, nodes, entryPoints);
 
-        // 5. Analyze Microservice Message Patterns
         this.analyzeMicroservicePatterns(ast, file, fullPath, nodes, entryPoints);
 
-        // 6. Analyze Application Bootstrap (main.ts)
         if (file.endsWith('main.ts')) {
           this.analyzeApplicationBootstrap(ast, file, fullPath, nodes, entryPoints, newNodes);
         }
 
-        // 7. Analyze CLI Commands
         this.analyzeCliCommands(ast, file, fullPath, nodes, entryPoints);
       } catch (error) {
         console.warn(`Failed to analyze entry points in ${file}:`, error);
@@ -1014,19 +947,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Map of local binding -> original exported name for every named import in
-   * the file, so a decorator renamed at the import site still resolves to the
-   * decorator it actually is.
-   *
-   * WHY: decorators were matched against the literal exported name
-   * (`callee.name === 'WebSocketGateway'`), which is blind to the perfectly
-   * ordinary `import { WebSocketGateway as WSGateway }` — done precisely when
-   * the class itself is named WebSocketGateway and the names would collide.
-   * A gateway declared that way, and every message handler inside it, was
-   * invisible: the class-level match failed, so the whole body was never
-   * walked. Import aliasing is a rename, never a different decorator.
-   */
   private buildImportAliasMap(ast: TSESTree.Program): Map<string, string> {
     const aliases = new Map<string, string>();
     for (const statement of ast.body || []) {
@@ -1041,19 +961,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return aliases;
   }
 
-  /**
-   * The decorator's original exported name, resolving an import alias when one
-   * is in effect. Pass the file's alias map; an empty/absent map degrades to
-   * the literal callee name.
-   */
   private resolveDecoratorName(dec: any, aliases?: Map<string, string>): string | undefined {
-    // `@Foo(...)` (CallExpression) and bare `@Foo` (Identifier) both occur.
+
     const local = dec?.expression?.callee?.name ?? dec?.expression?.name;
     if (typeof local !== 'string') return undefined;
     return aliases?.get(local) ?? local;
   }
 
-  /** True when `dec` is the named NestJS decorator, alias-aware. */
   private isDecorator(dec: any, exportedName: string, aliases?: Map<string, string>): boolean {
     return this.resolveDecoratorName(dec, aliases) === exportedName;
   }
@@ -1081,7 +995,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const className = node.id.name;
           const gatewayOptions = this.extractGatewayOptions(gatewayDecorator);
 
-          // Create or enhance the gateway node
           const gatewayId = `class_${filePath}_${className}_0`;
           let gatewayNode = nodes.find(n => n.id === gatewayId);
 
@@ -1118,7 +1031,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             };
           }
 
-          // Create WebSocket server entry point
           const wsEntryId = `entry_ws_${this.sanitizeId(className)}`;
           entryPoints.push(this.createEntryPoint(
             wsEntryId,
@@ -1140,7 +1052,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             }
           ));
 
-          // Analyze @SubscribeMessage handlers
           if (node.body && node.body.body) {
             node.body.body.forEach((member: any) => {
               if (member.type === 'MethodDefinition' && member.decorators) {
@@ -1155,7 +1066,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                     ?? member.loc?.start.line ?? 1;
                   const handlerId = `ws_handler_${this.sanitizeId(`${className}_${handlerName}`)}`;
 
-                  // Create handler node
                   const handlerNode = this.createNodeBuilder(handlerId, `${eventName} handler`, 'ws_handler')
                     .withLevel(3, 'code')
                     .withCategory('handler', ['websocket', 'event'])
@@ -1183,7 +1093,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                     'structural'
                   ));
 
-                  // Create WebSocket message entry point
                   entryPoints.push(this.createEntryPoint(
                     `entry_ws_msg_${this.sanitizeId(`${className}_${eventName}`)}`,
                     handlerId,
@@ -1199,18 +1108,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                     {
                       handler_method: handlerName,
                       gateway_class: className,
-                      // The gateway this message is addressed to: the message
-                      // name alone is not unique (two gateways may both handle
-                      // 'ping'), so the pair is the addressable identity.
+
                       message: eventName,
                       declaredAt: `${filePath}:${registrationLine}`
                     },
-                    // Anchor to the handler method so "where is this handled?"
-                    // is answerable from the entry point itself. The line is the
-                    // @SubscribeMessage decorator's own — the registration site,
-                    // and what a reader grepping for the message name will find.
-                    // A method's loc.start is its FIRST decorator, which for a
-                    // guarded handler is several lines above the registration.
+
                     {
                       node_id: handlerId,
                       method_name: handlerName,
@@ -1261,15 +1163,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const eventName = this.extractDecoratorArgument(onEventDecorator) || 'event';
           const methodName = node.key?.name || 'handleEvent';
 
-          // This parser does not populate node.parent, so the owning class
-          // must come from activeClass, tracked by the walk itself as it
-          // descends (see the recursive calls below).
           const className = activeClass?.id?.name || 'UnknownClass';
 
-          const listenerId = `event_listener_${this.sanitizeId(`${className}_${methodName}`)}`;
           const parentId = `class_${filePath}_${className}_0`;
 
-          // Check if the parent class exists
           const parentNode = nodes.find(n => n.id === parentId);
           if (parentNode) {
             entryPoints.push(this.createEntryPoint(
@@ -1328,9 +1225,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           if (decoratorName && schedulerDecorators.includes(decoratorName)) {
             const methodName = node.key?.name || 'scheduledTask';
 
-            // This parser does not populate node.parent, so the owning
-            // class must come from activeClass, tracked by the walk itself
-            // as it descends (see the recursive calls below).
             const className = activeClass?.id?.name || 'UnknownClass';
 
             const parentId = `class_${filePath}_${className}_0`;
@@ -1338,20 +1232,16 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
             if (parentNode) {
               let schedule = '';
-              let metadata: any = {};
 
               if (decoratorName === 'Cron') {
                 const cronExpression = this.extractDecoratorArgument(decorator);
                 schedule = cronExpression || '* * * * *';
-                metadata = { cron_expression: schedule };
               } else if (decoratorName === 'Interval') {
                 const interval = this.extractDecoratorArgument(decorator);
                 schedule = `every ${interval}ms`;
-                metadata = { interval_ms: interval };
               } else if (decoratorName === 'Timeout') {
                 const timeout = this.extractDecoratorArgument(decorator);
                 schedule = `after ${timeout}ms`;
-                metadata = { timeout_ms: timeout };
               }
 
               entryPoints.push(this.createEntryPoint(
@@ -1400,7 +1290,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   ): void {
     const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any) => {
-      // Check for @Processor decorator on classes
+
       if (!node || typeof node !== 'object') return;
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
@@ -1413,7 +1303,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const className = node.id.name;
           const classId = `class_${filePath}_${className}_0`;
 
-          // Check for @Process decorators on methods
           if (node.body && node.body.body) {
             node.body.body.forEach((member: any) => {
               if (member.type === 'MethodDefinition' && member.decorators) {
@@ -1539,7 +1428,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     let httpServerCount = 0;
 
     const walk = (node: any) => {
-      // Look for bootstrap function or NestFactory.create
+
       if (!node || typeof node !== 'object') return;
 
       if (node.type === 'CallExpression') {
@@ -1581,11 +1470,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               entry_file: filePath,
               bootstrap_method: bootstrapMethod
             },
-            // Explicit handler so the repo-relative path is used. Without one
-            // the generic backfill copies the backing node's source.file, which
-            // this analyzer records as an ABSOLUTE path — a location that
-            // resolves for no consumer, and the only entry point in the output
-            // that was not repo-relative.
+
             {
               node_id: bootstrapId,
               method_name: bootstrapMethod,
@@ -1595,7 +1480,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           ));
         }
 
-        // Look for app.listen() for HTTP server
         if (node.callee?.type === 'MemberExpression' &&
             node.callee.property?.name === 'listen') {
           const port = node.arguments?.[0]?.value || 3000;
@@ -1617,7 +1501,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               port: port,
               protocol: 'http'
             },
-            // Repo-relative, for the same reason as the bootstrap entry above.
+
             {
               node_id: bootstrapId,
               method_name: 'listen',
@@ -1627,7 +1511,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           ));
         }
 
-        // Look for microservice connections
         if (node.callee?.type === 'MemberExpression' &&
             node.callee.property?.name === 'connectMicroservice') {
           entryPoints.push(this.createEntryPoint(
@@ -1670,7 +1553,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   ): void {
     const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any, currentClass?: any) => {
-      // Check for @Command decorator (nest-commander)
+
       if (!node || typeof node !== 'object') return;
       const activeClass = node.type === 'ClassDeclaration' ? node : currentClass;
 
@@ -1700,7 +1583,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Check for method-level command handlers
       if (!node || typeof node !== 'object') return;
 
       if (node.type === 'MethodDefinition' && node.decorators) {
@@ -1712,9 +1594,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const subCommandName = this.extractDecoratorArgument(subCommandDecorator);
           const methodName = node.key?.name || 'handleCommand';
 
-          // This parser does not populate node.parent, so the owning class
-          // must come from activeClass, tracked by the walk itself as it
-          // descends (see the recursive calls below).
           const className = activeClass?.id?.name || 'UnknownClass';
           const parentId = `class_${filePath}_${className}_0`;
 
@@ -1773,7 +1652,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           }
         });
       } else if (arg.type === 'Literal') {
-        // Simple port number
+
         if (typeof arg.value === 'number') {
           options.port = arg.value;
         }
@@ -2171,7 +2050,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               dependencies.push(typeName);
             }
           } else if (param.type === 'TSParameterProperty' && param.parameter) {
-            // Handle TypeScript parameter properties (e.g., constructor(private readonly service: Service))
+
             if (param.parameter.typeAnnotation && param.parameter.typeAnnotation.typeAnnotation) {
               const typeName = this.extractTypeName(param.parameter.typeAnnotation.typeAnnotation);
               if (typeName) {
@@ -2210,9 +2089,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return metadata;
   }
 
-  /** Decorator names as the framework knows them, with import aliases resolved —
-   *  a consumer looking for "Controller" must not miss a class that wrote
-   *  `@Ctrl` because the import renamed it. */
   private extractAllDecoratorNames(decorators: any[] | undefined, aliases?: Map<string, string>): string[] {
     return (decorators || [])
       .map((dec: any) => this.resolveDecoratorName(dec, aliases))
@@ -2577,7 +2453,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       const moduleId = this.generateId('module', module.filePath, module.name);
 
       module.controllers.forEach(controllerName => {
-        // Find the enhanced controller node by looking for a class with the controller name
+
         const controllerNode = nodes.find(n =>
           n.name === controllerName &&
           n.type === 'controller'
@@ -2595,7 +2471,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       });
 
       module.providers.forEach(providerName => {
-        // Find the enhanced provider node by looking for a class with the provider name
+
         const providerNode = nodes.find(n =>
           n.name === providerName &&
           (n.type === 'service' || n.type === 'repository')
@@ -2624,7 +2500,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const providerNode = this.resolveNestDependencyNode(depName, nodes, newNodes);
 
           if (providerNode) {
-            // Create "calls" edge for controller -> service dependency injection
+
             const callsEdgeId = this.generateEdgeId(controllerNode.id, providerNode.id, 'calls');
             if (!edges.find(e => e.id === callsEdgeId)) {
               edges.push(this.createEdge(
@@ -2642,7 +2518,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               ));
             }
 
-            // Also keep the depends_on edge for backward compatibility
             edges.push(this.createEdge(
               this.generateEdgeId(controllerNode.id, providerNode.id, 'depends_on'),
               controllerNode.id,
@@ -2655,7 +2530,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             this.addDependencyExitPoint(depName, controllerNode.id, exitPoints, controller.name);
           }
         });
-
 
         controller.guards.forEach(guardName => {
           const guardNode = nodes.find(n =>
@@ -2687,7 +2561,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const depProviderNode = this.resolveNestDependencyNode(depName, nodes, newNodes);
 
           if (depProviderNode) {
-            // Create "calls" edge for service -> service dependency injection
+
             const callsEdgeId = this.generateEdgeId(providerNode.id, depProviderNode.id, 'calls');
             if (!edges.find(e => e.id === callsEdgeId)) {
               edges.push(this.createEdge(
@@ -2705,7 +2579,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               ));
             }
 
-            // Also keep the depends_on edge for backward compatibility
             edges.push(this.createEdge(
               this.generateEdgeId(providerNode.id, depProviderNode.id, 'depends_on'),
               providerNode.id,
@@ -2715,16 +2588,15 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               { dependency_type: 'injection' }
             ));
 
-            // If the dependency is a repository, also create method-level connections
             if (depProviderNode.type === 'repository' && provider.methods.length > 0) {
-              // For each method in the service, check if it might call repository methods
+
               provider.methods.forEach(method => {
                 const serviceMethodId = `method_${provider.filePath}_${provider.name}_${method.name}_0`;
                 const serviceMethod = nodes.find(n => n.id === serviceMethodId ||
                   (n.name === method.name && n.type === 'method' && n.parent === providerNode.id));
 
                 if (serviceMethod) {
-                  // Common repository methods that might be called
+
                   const commonRepoMethods = ['find', 'findOne', 'create', 'save', 'update', 'delete', 'remove'];
                   commonRepoMethods.forEach(repoMethodName => {
                     const repoMethodId = `method_${depProviderNode.source?.file}_${depProviderNode.name}_${repoMethodName}_0`;
@@ -2754,19 +2626,16 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           }
         });
 
-        // Create db_access edges for repositories
         if (provider.type === 'repository') {
-          // Look for entity nodes that might be referenced
+
           const entityNodes = nodes.filter(n => n.type === 'entity' ||
             (n.type === 'class' && (n.subcategories?.includes('entity') ||
                                    n.subcategories?.includes('model') ||
                                    n.source?.file?.includes('.entity.'))));
 
-          // Check for entity references in multiple ways
           entityNodes.forEach(entityNode => {
             let shouldCreateEdge = false;
 
-            // 1. Check if repository name includes entity name
             const repoBaseName = provider.name.replace('Repository', '').toLowerCase();
             const entityBaseName = entityNode.name.replace('Entity', '').toLowerCase();
 
@@ -2776,15 +2645,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               shouldCreateEdge = true;
             }
 
-            // 2. Check if repository has generic type parameter matching entity
-            // This would require deeper AST analysis but is a common pattern
-
-            // 3. Check if repository file path matches entity file path pattern
             if (!shouldCreateEdge && provider.filePath && entityNode.source?.file) {
               const repoDir = provider.filePath.split('/').slice(0, -1).join('/');
               const entityDir = entityNode.source.file.split('/').slice(0, -1).join('/');
               if (repoDir === entityDir) {
-                // Same directory, likely related
+
                 shouldCreateEdge = true;
               }
             }
@@ -2812,12 +2677,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
     });
 
-    // Create calls edges between methods within the same service/controller
     this.createIntraServiceCallEdges(nodes, edges);
   }
 
   private createIntraServiceCallEdges(nodes: CASNode[], edges: CASEdge[]): void {
-    // Group methods by their parent class
+
     const classMethods = new Map<string, CASNode[]>();
 
     nodes.filter(n => n.type === 'method' && n.parent).forEach(method => {
@@ -2828,16 +2692,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       classMethods.get(parent)!.push(method);
     });
 
-    // For each class, check if methods call each other
     classMethods.forEach((methods, classId) => {
       methods.forEach(callerMethod => {
-        // Look for method calls in the metadata or signature
-        // This is a simplified approach - in reality we'd need to parse method bodies
+
         methods.forEach(targetMethod => {
           if (callerMethod.id !== targetMethod.id) {
-            // Check if the caller method might call the target method
-            // This would require actual AST analysis of method bodies
-            // For now, we'll create edges for common patterns
+
             if (callerMethod.name.includes('handle') && targetMethod.name.includes('process')) {
               edges.push(this.createEdge(
                 this.generateEdgeId(callerMethod.id, targetMethod.id, 'calls'),
@@ -2862,7 +2722,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       const providerNode = this.findNestClassNode(nodes, provider.name, provider.filePath, ['class', 'service', 'repository', 'provider']);
       const providerId = providerNode?.id || `class_${provider.filePath}_${provider.name}_0`;
 
-      // Check for repository pattern
       if (provider.type === 'repository' || provider.name.toLowerCase().includes('repository')) {
         exitPoints.push(this.createExitPoint(
           `exit_db_${this.sanitizeId(provider.name)}`,
@@ -2884,7 +2743,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           }
         ));
 
-        // Check for MikroORM EntityRepository as external library exit point
         if (provider.dependencies.some(dep => dep.includes('EntityRepository'))) {
           exitPoints.push(this.createExitPoint(
             `exit_mikroorm_${this.sanitizeId(provider.name)}`,
@@ -2909,9 +2767,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Track other external library dependencies as exit points
       provider.dependencies.forEach(dep => {
-        // Check for common external libraries
+
         const externalLibraries = [
           { pattern: /HttpService|HttpClient/, name: 'http', desc: 'HTTP client operations' },
           { pattern: /Logger/, name: 'logging', desc: 'Logging operations' },
@@ -2995,12 +2852,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private createPerspectives(
-    perspectives: CASPerspective[],
-    modules: NestModule[],
-    controllers: NestController[],
-    providers: NestProvider[],
-    nodes: CASNode[],
-    edges: CASEdge[]
+    perspectives: CASPerspective[], modules: NestModule[], controllers: NestController[],
+    providers: NestProvider[], guards: NestGuard[], middleware: NestMiddleware[],
+    nodes: CASNode[], edges: CASEdge[]
   ): void {
     perspectives.push(
       {
@@ -3123,7 +2977,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
     );
 
-    this.tagNodesWithPerspectives(nodes, edges, perspectives);
+    const nestFiles = new Set([...modules, ...controllers, ...providers, ...guards, ...middleware]
+      .map(item => item.filePath));
+    const nestNodes = nodes.filter(node => Boolean(node.source?.file && nestFiles.has(node.source.file)));
+    const nestNodeIds = new Set(nestNodes.map(node => node.id));
+    const nestEdges = edges.filter(edge => nestNodeIds.has(edge.source) || nestNodeIds.has(edge.target));
+    this.tagNodesWithPerspectives(nestNodes, nestEdges, perspectives);
   }
 
   private tagNodesWithPerspectives(
@@ -3225,250 +3084,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return priorityMap[perspectiveId]?.[edgeType] || 99;
   }
 
-  private async performEnhancedCallGraphAnalysis(
-    files: string[],
-    projectPath: string,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[]
-  ): Promise<void> {
-    for (const file of files) {
-      const fullPath = path.join(projectPath, file);
-
-      try {
-        const stat = await fs.stat(fullPath);
-        if (!stat.isFile()) continue;
-
-        const content = await fs.readFile(fullPath, 'utf-8');
-        const ast = parse(content, { loc: true, jsx: false });
-        const { functions: extractedFunctions } = this.callGraphExtractor!.extractFromAST(ast, fullPath);
-
-        extractedFunctions.forEach(func => {
-          func.calls.forEach((call: any) => {
-            // HTTP endpoints from decorators - create entry points
-            if (call.httpMethod && call.httpPath) {
-              const funcNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
-              if (funcNode) {
-                entryPoints.push({
-                  id: `http_enhanced_${func.name}_${call.httpMethod}`,
-                  source_node: funcNode.id,
-                  type: 'http',
-                  name: `${call.httpMethod} ${call.httpPath}`,
-                  trigger: {
-                    method: call.httpMethod,
-                    path: call.httpPath
-                  },
-                  metadata: {
-                    decorators: call.decorators,
-                    framework: 'nestjs',
-                    enhanced_call_graph: true
-                  }
-                });
-              }
-            }
-
-            // Library calls - create exit points (excluding built-ins)
-            if (call.targetType === 'library' && call.library && !BUILTIN_NOT_EXIT_POINTS.has(call.library)) {
-              const funcNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
-              if (funcNode) {
-                exitPoints.push({
-                  id: `exit_enhanced_${func.name}_${call.target}`,
-                  source_node: funcNode.id,
-                  type: 'sdk',
-                  name: `${call.library}.${call.target.split('.').pop()}`,
-                  target: {
-                    sdk: call.library,
-                    endpoint: call.target.split('.').pop() || call.target
-                  },
-                  operation: {
-                    action: call.target.split('.').pop() || call.target,
-                    async: call.isAsync
-                  },
-                  metadata: {
-                    line: call.line,
-                    call_expression: call.callExpression,
-                    enhanced_call_graph: true
-                  }
-                });
-              }
-            }
-
-            // Abstract method calls - create behavior edges
-            if (call.targetType === 'abstract') {
-              const sourceNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
-              const targetNode = this.findNodeByMethodName(call.target, nodes);
-
-              if (sourceNode && targetNode) {
-                edges.push({
-                  id: `abstract_enhanced_${sourceNode.id}_${targetNode.id}`,
-                  source: sourceNode.id,
-                  target: targetNode.id,
-                  type: 'calls',
-                  metadata: {
-                    attributes: {
-                      call_type: 'abstract',
-                      is_async: call.isAsync,
-                      line: call.line,
-                      method_name: call.target.split('.').pop(),
-                      enhanced_call_graph: true
-                    }
-                  }
-                });
-              }
-            }
-
-            // Dependency injection calls - create dependency edges
-            if (call.injectionType) {
-              const sourceNode = nodes.find(n => n.name === func.name || (n.type === 'class' && n.name === func.className));
-              const targetNode = this.findNodeByTypeName(call.target, nodes);
-
-              if (sourceNode && targetNode) {
-                edges.push({
-                  id: `injection_enhanced_${sourceNode.id}_${targetNode.id}`,
-                  source: sourceNode.id,
-                  target: targetNode.id,
-                  type: 'calls',
-                  metadata: {
-                    attributes: {
-                      call_type: 'injection',
-                      injection_type: call.injectionType,
-                      line: call.line,
-                      enhanced_call_graph: true
-                    }
-                  }
-                });
-              }
-            }
-
-            // Regular method/function calls - create behavior edges
-            if ((call.targetType === 'method' || call.targetType === 'function') && !call.injectionType) {
-              let sourceNode: CASNode | undefined;
-
-              if (func.className) {
-                const classId = `class_${file}_${func.className}_0`;
-                sourceNode = nodes.find(n =>
-                  n.name === func.name &&
-                  n.type === 'method' &&
-                  n.parent === classId
-                );
-              }
-
-              if (!sourceNode) {
-                sourceNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
-              }
-
-              const targetNode = this.findNodeByMethodName(call.target, nodes);
-
-              if (sourceNode && targetNode && sourceNode.id !== targetNode.id) {
-                edges.push({
-                  id: `call_enhanced_${sourceNode.id}_${targetNode.id}`,
-                  source: sourceNode.id,
-                  target: targetNode.id,
-                  type: 'calls',
-                  metadata: {
-                    attributes: {
-                      call_type: call.targetType,
-                      is_async: call.isAsync,
-                      is_conditional: call.isConditional,
-                      is_in_loop: call.isInLoop,
-                      line: call.line,
-                      enhanced_call_graph: true
-                    }
-                  }
-                });
-              }
-            }
-          });
-        });
-
-      } catch (error) {
-        console.warn(`Failed to perform enhanced call graph analysis on ${file}:`, error);
-      }
-    }
-  }
-
-  private findNodeByMethodName(targetName: string, nodes: CASNode[]): CASNode | undefined {
-    if (this.isRepositoryCallPattern(targetName)) {
-      return undefined;
-    }
-
-    // Try exact match first
-    let targetNode = nodes.find(n => n.name === targetName && (n.type === 'method' || n.type === 'function'));
-
-    // Try method name from object.method format
-    if (!targetNode && targetName.includes('.')) {
-      const methodName = targetName.split('.').pop();
-      targetNode = nodes.find(n => n.name === methodName && n.type === 'method');
-    }
-
-    // Try function name
-    if (!targetNode) {
-      targetNode = nodes.find(n => n.name === targetName && n.type === 'function');
-    }
-
-    // Special NestJS patterns
-    if (!targetNode) {
-      // Try looking for common NestJS method patterns
-      const nestjsMethodPatterns = ['canActivate', 'validate', 'transform', 'use', 'intercept'];
-      const methodPattern = nestjsMethodPatterns.find(pattern => targetName.includes(pattern));
-      if (methodPattern) {
-        targetNode = nodes.find(n => n.name === methodPattern && n.type === 'method');
-      }
-    }
-
-    return targetNode;
-  }
-
-  private findNodeByTypeName(typeName: string, nodes: CASNode[]): CASNode | undefined {
-    // Try exact match for class/service/repository
-    let targetNode = nodes.find(n =>
-      n.name === typeName &&
-      (n.type === 'class' || n.type === 'service' || n.type === 'repository' || n.type === 'controller')
-    );
-
-    // Try without "Service" suffix
-    if (!targetNode && typeName.endsWith('Service')) {
-      const baseName = typeName.replace('Service', '');
-      targetNode = nodes.find(n =>
-        n.name === baseName &&
-        (n.type === 'service' || n.type === 'class')
-      );
-    }
-
-    // Try without "Repository" suffix
-    if (!targetNode && typeName.endsWith('Repository')) {
-      const baseName = typeName.replace('Repository', '');
-      targetNode = nodes.find(n =>
-        n.name === baseName &&
-        (n.type === 'repository' || n.type === 'class')
-      );
-    }
-
-    return targetNode;
-  }
-
-  private isRepositoryCallPattern(targetName: string): boolean {
-    if (!targetName.includes('.')) return false;
-
-    const repositoryPatterns = [
-      'Repository.', 'repository.', 'repo.',
-      '.find', '.findOne', '.findAll', '.findBy',
-      '.create', '.save', '.update', '.delete', '.remove',
-      '.count', '.exists', '.query', '.execute'
-    ];
-
-    return repositoryPatterns.some(pattern => targetName.includes(pattern));
-  }
-
-  // CAS v1.4.0 Documentation extraction methods
   private extractDocumentation(node: any, content: string): CASDocumentation | undefined {
     const lines = content.split('\n');
 
     if (!node.loc?.start?.line) return undefined;
 
-    // Look for JSDoc comments above the node
-    let lineIndex = node.loc.start.line - 2; // 0-based, start above the node
+    let lineIndex = node.loc.start.line - 2;
 
     while (lineIndex >= 0) {
       const line = lines[lineIndex]?.trim();
@@ -3478,7 +3099,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
 
       if (line.includes('*/')) {
-        // Found end of JSDoc block, extract it
+
         let docStart = lineIndex;
         while (docStart >= 0 && !lines[docStart]?.trim().includes('/**')) {
           docStart--;
@@ -3491,7 +3112,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // If we hit non-whitespace that's not a comment, stop
       if (line && !line.startsWith('//') && !line.startsWith('*') && !line.startsWith('/*')) {
         break;
       }
@@ -3509,7 +3129,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       location: { start_line: startLine, end_line: endLine }
     };
 
-    // Extract summary (first line after /** that's not a tag)
     const lines = raw.split('\n');
     for (const line of lines) {
       const cleaned = line.replace(/^\s*\*\s?/, '').trim();
@@ -3519,7 +3138,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Extract @ApiOperation for Swagger documentation
     const apiOpMatch = raw.match(/@ApiOperation\s*\(\s*{[^}]*summary:\s*['"`]([^'"`]+)['"`]/);
     if (apiOpMatch) {
       doc.framework_docs = {
@@ -3530,13 +3148,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       };
     }
 
-    // Extract @ApiResponse annotations
     const apiResponseMatches = raw.matchAll(/@ApiResponse\s*\(\s*{[^}]*description:\s*['"`]([^'"`]+)['"`]/g);
     if (apiResponseMatches) {
       doc.framework_docs = doc.framework_docs || { swagger: {} };
     }
 
-    // Extract parameters from JSDoc
     const paramMatches = raw.matchAll(/@param\s+(?:{([^}]+)}\s+)?(\w+)(?:\s+(.+))?/g);
     if (paramMatches) {
       doc.parameters = [];
@@ -3549,7 +3165,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Extract return information
     const returnMatch = raw.match(/@returns?\s+(?:{([^}]+)}\s+)?(.+)/);
     if (returnMatch) {
       doc.returns = {
@@ -3558,7 +3173,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       };
     }
 
-    // Extract deprecation info
     const deprecatedMatch = raw.match(/@deprecated\s+(.+)/);
     if (deprecatedMatch) {
       doc.tags = doc.tags || [];
@@ -3577,18 +3191,15 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     if (!node.loc?.start?.line || !node.loc?.end?.line) return comments;
 
-    // Extract comments within the node's scope
     for (let i = node.loc.start.line - 1; i < node.loc.end.line; i++) {
       const line = lines[i];
       if (!line) continue;
 
-      // Single line comments
       const singleLineMatch = line.match(/\/\/\s*(.+)/);
       if (singleLineMatch) {
         const text = singleLineMatch[1].trim();
         const comment: CASComment = {
-          // Stable order-independent id: at most one comment per source line,
-          // so file+line identifies it regardless of file visit order.
+
           id: `comment_${filePath}_${i + 1}`,
           type: 'single-line',
           style: '//',
@@ -3633,11 +3244,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
         const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
 
-        // Extract assignee from patterns like "TODO(username):"
         const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
         const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
 
-        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
         const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
         let priority: CASTodo['priority'] = 'medium';
         if (priorityMatch) {
@@ -3677,8 +3286,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     if (lowerText.includes('doc') || lowerText.includes('comment') || lowerText.includes('explain')) return 'documentation';
     return 'feature';
   }
-
-
 
   private findModuleClassNode(ast: TSESTree.Program): any {
     const aliases = this.buildImportAliasMap(ast);
@@ -3761,11 +3368,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     const startLine = node.loc?.start?.line || 1;
     const endLine = node.loc?.end?.line || lines.length;
 
-    // Extract the code content
     const codeLines = lines.slice(startLine - 1, endLine);
     const codeContent = codeLines.join('\n');
 
-    // Analyze implementation indicators
     const indicators = {
       has_todo_markers: /\b(TODO|FIXME|HACK)\b/i.test(codeContent),
       has_not_implemented_exceptions: /throw\s+.*(NotImplemented|Unsupported|TODO)/i.test(codeContent),
@@ -3775,7 +3380,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       has_commented_out_code: /\/\/.*\w+\s*\(|^\/\*[\s\S]*?\*\//m.test(codeContent)
     };
 
-    // Determine status
     let status: CASImplementationStatus['status'] = 'complete';
 
     const isEmpty = codeContent.trim().length < 20 || /^\{\s*\}$/.test(codeContent.trim());
@@ -3787,7 +3391,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       status = 'partial';
     }
 
-    // Check for deprecated/experimental markers
     if (/@deprecated/i.test(codeContent) || codeContent.includes('@Deprecated')) {
       status = 'deprecated';
     }

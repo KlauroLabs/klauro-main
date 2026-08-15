@@ -128,6 +128,14 @@ test('getIgnorePatterns excludes __tests__/ alongside fixtures/testdata/cas-test
   assert.ok(patterns.includes('**/cas-tests/**'), 'must still exclude **/cas-tests/**');
 });
 
+test('getIgnorePatterns excludes named distribution output variants', () => {
+  const analyzer = new TestAnalyzer();
+  const patterns = analyzer.exposedIgnorePatterns({ projectPath: '/repo' });
+  assert.ok(patterns.includes('**/dist-*/**'));
+  assert.ok(patterns.includes('**/dist_*/**'));
+  assert.ok(patterns.includes('**/dist.*/**'));
+});
+
 test('getPackageDirSafeIgnorePatterns keeps fixtures/testdata/__tests__ excluded (only samples/examples are JVM-package-name safe)', () => {
   const analyzer = new TestAnalyzer();
   const patterns = analyzer.exposedPackageDirSafeIgnorePatterns({ projectPath: '/repo' });

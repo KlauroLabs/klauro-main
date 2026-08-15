@@ -218,7 +218,7 @@ export class DomainExtractor {
             if (bare.includes('-')) compounds.add(bare.toLowerCase());
           }
         }
-      } catch { /* an unparseable manifest simply contributes nothing */ }
+      } catch {   }
     }
     for (const readme of ['README.md', 'README.mdx', 'readme.md', 'Readme.md']) {
       const content = readText(path.join(projectPath, readme), 40000);

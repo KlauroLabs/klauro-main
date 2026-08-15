@@ -4,7 +4,7 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
-/** Tier-2: config.ru (Rack app) — server-entry. */
+
 function collectRackup(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -27,7 +27,7 @@ function collectRackup(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   return out;
 }
 
-/** Tier-2: bin/rails or bin/rake — a Rails application's server entry point. */
+
 function collectRailsApp(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -39,7 +39,7 @@ function collectRailsApp(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   }
   const seenRoots = new Set<string>();
   for (const file of files) {
-    // bin/rails or bin/rake lives at <appRoot>/bin/<name>
+
     const root = path.dirname(path.dirname(file));
     if (seenRoots.has(root)) continue;
     seenRoots.add(root);
@@ -54,7 +54,7 @@ function collectRailsApp(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   return out;
 }
 
-/** Tier-2: gemspec executables / exe/* files — CLI bins. */
+
 function collectGemExecutables(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath } = ctx;
   const out: DeployableEvidence[] = [];
@@ -73,7 +73,7 @@ function collectGemExecutables(ctx: EvidenceCollectionContext): DeployableEviden
       continue;
     }
     const root = path.dirname(manifest);
-    // spec.executables = ["name"] or spec.executables << "name"
+
     const executablesMatch = content.match(/executables\s*=\s*\[([^\]]*)\]/);
     if (executablesMatch) {
       for (const nameMatch of executablesMatch[1].matchAll(/['"]([^'"]+)['"]/g)) {
@@ -108,7 +108,7 @@ function collectGemExecutables(ctx: EvidenceCollectionContext): DeployableEviden
   return out;
 }
 
-/** Tier-3: Gemfile / *.gemspec as package identity. */
+
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];

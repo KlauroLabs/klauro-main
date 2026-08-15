@@ -1,42 +1,42 @@
-/**
- * Module Health — "which parts of this system are dangerous to touch, and
- * why" (docs/SPEC-ABSTRACTION-TIERS.md Tier 2, §4: architecture/principles
- * adherence health — violations, overlap, drift). This module answers the
- * size/churn/coupling/mixed-concern slice of that question at FILE
- * granularity; layering/coupling/pattern-conflict findings already live in
- * principle_violations/architectural_conflicts (architectural-conflicts.ts)
- * and are cross-referenced here by file, never recomputed.
- *
- * COMPOSITION ONLY: every input below is already computed elsewhere in the
- * pipeline —
- *  - node counts + line spans per file: `nodes` (tier 1, node.source)
- *  - churn: `temporalStability` (built by buildTemporalStability from git)
- *  - fan-in: `edges` (tier 1 call/import graph)
- *  - capability anchors per file: `systemCapabilities[].operations` joined
- *    through `entryPoints` to `node.source.file`
- * This module adds no new evidence collection, only aggregation + statistics.
- *
- * THE HARD CONSTRAINT: no fixed thresholds ("files over N lines"). Every
- * finding is a file being a statistical OUTLIER within THIS codebase's own
- * distribution, so a 3,000-line file is a finding in a 200-line-median repo
- * and silence in a 2,500-line-median one. Method: median + MAD (median
- * absolute deviation), the standard robust (outlier-resistant) location/scale
- * pair — a single 30k-line file cannot drag the yardstick the way it would
- * drag a mean/stdev computation, which is exactly the failure mode a
- * god-file detector must not have. The modified z-score
- * (0.6745 * (x - median) / MAD, Iglewicz & Hoaglin 1993) is compared against
- * the conventional outlier threshold of 3.5. When MAD is degenerate (0 —
- * happens when most files cluster at an identical size/churn value, e.g. a
- * repo of near-identical small modules) the scale falls back to a
- * MAD-equivalent derived from the interquartile range (IQR / 1.349) so a
- * legitimately tight distribution still gets a working denominator instead
- * of an undefined or infinite z-score.
- *
- * BOTH EXTREMES MUST WORK: a tidy repo with no outliers returns an empty
- * `findings` array — never manufactured filler. A huge repo is not
- * truncated: every finding that clears the statistical bar is included
- * (findings are, by construction, a small minority of files).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import {
   CASNode,
@@ -50,16 +50,16 @@ import {
   CASModuleHealthFileStat,
 } from '../../types/cas.types';
 
-/** Minimum files for the distribution to be statistically meaningful — below
- *  this, "outlier" is not a meaningful concept (mirrors the
- *  COUPLING_MIN_NODES_FOR_SIGNAL convention in architectural-conflicts.ts). */
+
+
+
 const MIN_FILES_FOR_SIGNAL = 10;
 
-/** Iglewicz & Hoaglin (1993) conventional modified-z outlier threshold. */
+
 const MODIFIED_Z_THRESHOLD = 3.5;
 
-/** Edge types that count as "depends on" for file-level fan-in — the same
- *  call-ish family used by structural-importance.ts, plus imports. */
+
+
 const DEPENDENCY_EDGE_TYPES = new Set([
   'calls', 'uses', 'depends_on', 'invokes', 'delegates_to', 'maps_to', 'queries', 'wraps', 'imports', 'references',
 ]);
@@ -82,10 +82,10 @@ function quantile(sortedValues: number[], q: number): number {
   return sortedValues[base];
 }
 
-/** Robust dispersion estimate: MAD, with an IQR-derived fallback when MAD is
- *  degenerate (a tight/identical-valued distribution). 1.349 is the constant
- *  that makes IQR-derived scale consistent with MAD under a normal
- *  reference distribution — standard practice for this fallback. */
+
+
+
+
 function robustScale(values: number[], med: number): number {
   const deviations = values.map(v => Math.abs(v - med));
   const mad = median(deviations);
@@ -95,31 +95,31 @@ function robustScale(values: number[], med: number): number {
   return iqr > 0 ? iqr / 1.349 : 0;
 }
 
-/** Modified z-scores for a set of (file, value) pairs. Returns 0 for every
- *  entry when the distribution has no usable scale (all values identical) —
- *  that is the "no findings" case, not a divide-by-zero to guard against.
- *
- *  Computed on a cube-root transform of value, not the raw value.
- *  Lines/churn/fan-in are count-type metrics that span orders of magnitude
- *  in any real codebase
- *  (a repo mixes many tiny barrel/DTO files with a handful of large ones) —
- *  their distribution is right-skewed/multiplicative, not additive. Two
- *  transforms were measured against this codebase's own real file
- *  distribution (2,528 source files, task #122 verification run):
- *  - Raw (no transform): 3.5-threshold flagged ~24% of files as
- *    "size outliers" — every file even moderately above the ~70-line
- *    median of mostly-tiny (barrel/DTO) files. Noise, not "outliers named".
- *  - log1p: over-corrects the other way — orchestrator.ts (31,568 lines,
- *    the confirmed god file) scored only z=3.3, just UNDER the 3.5 bar.
- *  Cube root (Box-Cox lambda=1/3) is the standard variance-stabilizing
- *  transform for count/Poisson-like data (heavier-tailed than log1p's
- *  implicit lambda=0) and lands in between: it flagged 1.2% of files here
- *  while giving orchestrator.ts z=11.0 and the second-largest real god file
- *  in this repo (cross-codebase-analysis.ts, 14,005 lines) z=8.0 — both
- *  comfortably clear of the bar with headroom, and the flagged set stays a
- *  small, genuinely-exceptional minority rather than a quarter of the repo.
- *  `med`/`scale` are reported back on the transformed scale for provenance;
- *  findings report the raw metric_value for readability. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function modifiedZScores(values: number[]): { med: number; scale: number; z: number[] } {
   const transformed = values.map(v => Math.cbrt(Math.max(0, v)));
   const med = median(transformed);
@@ -167,14 +167,14 @@ export function computeModuleHealth(inputs: ModuleHealthInputs): CASModuleHealth
     agg.nodeCount += 1;
     const start = node.source?.line ?? 0;
     const end = node.source?.end_line ?? start;
-    if (end > agg.lines) agg.lines = end; // max end_line ~= file length (tier-1 spans, no re-read of source)
+    if (end > agg.lines) agg.lines = end;
   }
 
   if (byFile.size < MIN_FILES_FOR_SIGNAL) return undefined;
 
-  // Fan-in: distinct SOURCE FILES with a dependency edge into any node whose
-  // file is the target — file-to-file, so intra-file structure never counts
-  // as coupling against itself.
+
+
+
   for (const edge of edges) {
     if (!DEPENDENCY_EDGE_TYPES.has(edge.type)) continue;
     const targetFile = nodeToFile.get(edge.target);
@@ -185,10 +185,10 @@ export function computeModuleHealth(inputs: ModuleHealthInputs): CASModuleHealth
   }
   for (const agg of byFile.values()) agg.fanIn = agg.fanInFiles.size;
 
-  // Churn: temporal_stability is already one row per node with file-level git
-  // metrics duplicated across every node in that file — take the metrics once
-  // per file rather than summing (summing would multiply a file's real churn
-  // by its node count).
+
+
+
+
   const churnSeenFile = new Set<string>();
   for (const stab of temporalStability) {
     const file = nodeToFile.get(stab.node_id);
@@ -200,7 +200,7 @@ export function computeModuleHealth(inputs: ModuleHealthInputs): CASModuleHealth
     }
   }
 
-  // Capability anchors: operation -> entry point -> node -> file.
+
   const entryPointToFile = new Map<string, string>();
   for (const ep of entryPoints) {
     const file = nodeToFile.get(ep.source_node);
@@ -218,9 +218,9 @@ export function computeModuleHealth(inputs: ModuleHealthInputs): CASModuleHealth
     }
   }
 
-  // Layering violations composed in by file (not recomputed — cross-reference
-  // only) so a size/churn/fan-in finding can note it co-occurs with an
-  // already-detected layering break in the same file.
+
+
+
   for (const v of principleViolations) {
     if (v.principle !== 'layering' || !v.file) continue;
     const agg = byFile.get(v.file);
@@ -241,12 +241,12 @@ export function computeModuleHealth(inputs: ModuleHealthInputs): CASModuleHealth
   const fanInStats = modifiedZScores(fanInValues);
   const capStats = modifiedZScores(capValues);
 
-  // Composite "danger" score: rank-normalized (0..1) blend of size, churn,
-  // fan-in — a file dangerous to touch is some combination of "big",
-  // "constantly changing", and "everything depends on it", not any one alone.
-  // Weighted toward churn+fan-in per the owner's framing (a huge untouched
-  // file is lower risk than a medium one that is both hot and widely relied
-  // on).
+
+
+
+
+
+
   const rank = (values: number[]): number[] => {
     const sorted = [...values].map((v, i) => [v, i] as const).sort((a, b) => a[0] - b[0]);
     const r = new Array(values.length).fill(0);
@@ -259,9 +259,9 @@ export function computeModuleHealth(inputs: ModuleHealthInputs): CASModuleHealth
   const danger = files.map((_, i) => 0.25 * sizeRank[i] + 0.4 * churnRank[i] + 0.35 * fanInRank[i]);
   const dangerStats = modifiedZScores(danger);
 
-  // Report medians back on the RAW scale (expm1 of the log-space median) for
-  // human-readable detail strings — the stats themselves stay log-space
-  // internally (see modifiedZScores), this is display-only.
+
+
+
   const rawMedian = (transformedMed: number): number => Math.round(Math.pow(Math.max(0, transformedMed), 3) * 100) / 100;
 
   const findings: CASModuleHealthFinding[] = [];

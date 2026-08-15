@@ -6,7 +6,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { collectDeployableEvidence } from '../../analyzer/core/deployable-evidence';
-import type { CASEntryPoint, CASExitPoint, CASNode } from '../../types/cas.types';
+import type { CASEntryPoint, CASNode } from '../../types/cas.types';
 
 function tempProject(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-deployable-evidence-'));
@@ -1435,7 +1435,7 @@ describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DE
       expect(binRow!.evidence.some(e => /default binding via spring-boot-starter-parent/.test(e))).toBe(true);
     });
 
-    test('two Maven Spring Boot modules now clear the DAS promotion threshold (tierQualifiedShipUnits >= 2)', () => {
+    test('two Maven Spring Boot modules clear the sub-CAS promotion threshold', () => {
       projectPath = tempProject();
       for (const svc of ['orders-service', 'billing-service']) {
         fs.mkdirpSync(path.join(projectPath, svc));

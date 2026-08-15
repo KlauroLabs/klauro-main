@@ -92,8 +92,8 @@ function buildEventEntryCas(): CASOutput {
     entry_points,
     exit_points,
     data_lineage: [],
-    data_entities: [],
-    system_capabilities: [],
+    entities: [],
+    capabilities: [],
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }

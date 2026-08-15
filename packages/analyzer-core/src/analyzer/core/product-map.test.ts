@@ -24,7 +24,7 @@ function baseCas(overrides: Partial<CASOutput> = {}): CASOutput {
 
 test('capability tests_present is true when its own entry point backs a tested journey (structural match)', () => {
   const cas = baseCas({
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap1',
         name: 'Feed Ingestion',
@@ -35,7 +35,7 @@ test('capability tests_present is true when its own entry point backs a tested j
         related_entities: [],
       },
     ],
-    data_entities: [],
+    entities: [],
     user_journeys: [
       {
         id: 'journey_ep1',
@@ -73,7 +73,7 @@ test('capability tests_present is true from a READ-only journey that touches one
   // displayed `journeys` list is too narrow for the boolean tests_present
   // signal.
   const cas = baseCas({
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap1',
         name: 'API Key Management',
@@ -84,7 +84,7 @@ test('capability tests_present is true from a READ-only journey that touches one
         related_entities: ['entity_apikey'],
       },
     ],
-    data_entities: [{ id: 'entity_apikey', name: 'APIKey' } as any],
+    entities: [{ id: 'entity_apikey', name: 'APIKey' } as any],
     user_journeys: [
       {
         id: 'journey_list',
@@ -111,7 +111,7 @@ test('capability tests_present is true from a READ-only journey that touches one
 
 test('capability tests_present stays false (honest) when no journey has any real test evidence', () => {
   const cas = baseCas({
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap1',
         name: 'Feed Ingestion',
@@ -122,7 +122,7 @@ test('capability tests_present stays false (honest) when no journey has any real
         related_entities: [],
       },
     ],
-    data_entities: [],
+    entities: [],
     user_journeys: [
       {
         id: 'journey_ep1',
@@ -162,7 +162,7 @@ test('INVARIANT: tests_present never contradicts journeys.tests or health.tests 
       by_status: { passing: 1151, failing: 0, skipped: 0 },
       coverage: { overall_percentage: 0 },
     } as any,
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap1',
         name: 'Feed Ingestion',
@@ -182,7 +182,7 @@ test('INVARIANT: tests_present never contradicts journeys.tests or health.tests 
         related_entities: [],
       },
     ],
-    data_entities: [{ id: 'entity_feed', name: 'Feed' } as any],
+    entities: [{ id: 'entity_feed', name: 'Feed' } as any],
     user_journeys: [
       {
         id: 'journey_ep1',
@@ -278,7 +278,7 @@ test('INVARIANT: file-adjacency test evidence (no traced call edge) still satisf
         ],
       },
     ],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap1',
         name: 'View Vet Information',
@@ -289,7 +289,7 @@ test('INVARIANT: file-adjacency test evidence (no traced call edge) still satisf
         related_entities: [],
       },
     ],
-    data_entities: [],
+    entities: [],
     user_journeys: [
       {
         id: 'journey_ep1',
@@ -337,7 +337,7 @@ test('capability tests_present is true from its OWN operations when NO journey l
     test_suites: [
       { name: 'poller', file_path: 'src/feed/poller.test.ts', tests: [] },
     ],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap-orphan',
         name: 'Ingest Feeds On A Schedule',
@@ -348,7 +348,7 @@ test('capability tests_present is true from its OWN operations when NO journey l
         related_entities: [],
       },
     ],
-    data_entities: [],
+    entities: [],
   });
   const map = buildProductMap(cas);
   const capability = map.capabilities.find(entry => entry.name === 'Ingest Feeds On A Schedule');
@@ -374,7 +374,7 @@ test('capability tests_present stays false when no test suite matches its own op
     test_suites: [
       { name: 'poller', file_path: 'src/feed/poller.test.ts', tests: [] },
     ],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap-untested',
         name: 'Sweep Expired Sessions',
@@ -385,7 +385,7 @@ test('capability tests_present stays false when no test suite matches its own op
         related_entities: [],
       },
     ],
-    data_entities: [],
+    entities: [],
   });
   const map = buildProductMap(cas);
   const capability = map.capabilities.find(entry => entry.name === 'Sweep Expired Sessions');

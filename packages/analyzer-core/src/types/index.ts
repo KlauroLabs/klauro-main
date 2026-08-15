@@ -1,4 +1,4 @@
-// Core architecture types for Klauro visualization
+
 
 export interface ComponentNode {
   id: string;
@@ -46,21 +46,21 @@ export type ComponentType =
 
 export interface ComponentMetadata {
   lineCount: number;
-  complexity: number; // 1-10 scale
+  complexity: number;
   lastModified: Date;
   exports: string[];
   imports: string[];
-  httpMethods?: string[]; // For routes
-  dbQueries?: string[]; // For models/services
-  externalCalls?: string[]; // For API integrations
-  isEntry?: boolean; // Entry points (main routes)
-  isOrphaned?: boolean; // No dependencies or dependents
-  layer: ArchitecturalLayer; // Which architectural layer
-  responsibilities: string[]; // What this component does
-  aiDescription?: string; // AI-generated description
-  functions?: FunctionInfo[]; // Function-level analysis
-  testCoverage?: number; // Test coverage percentage
-  performanceMetrics?: PerformanceMetrics; // Performance data
+  httpMethods?: string[];
+  dbQueries?: string[];
+  externalCalls?: string[];
+  isEntry?: boolean;
+  isOrphaned?: boolean;
+  layer: ArchitecturalLayer;
+  responsibilities: string[];
+  aiDescription?: string;
+  functions?: FunctionInfo[];
+  testCoverage?: number;
+  performanceMetrics?: PerformanceMetrics;
   frameworkType?: string;
   routePrefix?: string;
   lifetime?: string;
@@ -79,7 +79,7 @@ export interface ComponentMetadata {
   vueType?: string;
   angularType?: string;
   nextjsType?: string;
-  // Additional framework-specific metadata properties
+
   actions?: string[];
   app?: string;
   baseClass?: string;
@@ -130,11 +130,11 @@ export interface ArchitectureBlueprint {
 }
 
 export interface Connection {
-  from: string; // Component ID
-  to: string; // Component ID
+  from: string;
+  to: string;
   type: ConnectionType;
-  weight?: number; // Usage frequency/importance
-  protocol?: string; // Protocol/framework used
+  weight?: number;
+  protocol?: string;
   metadata?: {
     callSites: number;
     dataFlow?: string;
@@ -156,11 +156,11 @@ export interface Connection {
   };
 }
 
-export type ConnectionType = 
-  | 'import' 
-  | 'http_call' 
-  | 'database' 
-  | 'middleware_chain' 
+export type ConnectionType =
+  | 'import'
+  | 'http_call'
+  | 'database'
+  | 'middleware_chain'
   | 'function_call'
   | 'data_flow'
   | 'dependency-injection'
@@ -207,7 +207,7 @@ export interface ProjectMetadata {
   aiGeneratedSummary?: string;
 }
 
-// Analysis request/response types
+
 export interface AnalysisRequest {
   repositoryPath: string;
   options?: {
@@ -224,7 +224,7 @@ export interface AnalysisResponse {
   processingTime: number;
 }
 
-// ===== CALL GRAPH AND DEPENDENCY ANALYSIS =====
+
 
 export interface CallGraph {
   nodes: CallGraphNode[];
@@ -271,17 +271,17 @@ export interface HotPath {
   description: string;
 }
 
-// ===== COMPREHENSIVE ARCHITECTURE INTELLIGENCE TYPES =====
 
-// Architectural Layers
-export type ArchitecturalLayer = 
-  | 'presentation'   // UI components, views, pages
-  | 'business'       // Business logic, services, controllers
-  | 'data'          // Models, repositories, data access
-  | 'infrastructure' // Configuration, utilities, frameworks
-  | 'external';     // External APIs, third-party services
 
-// Function-level Analysis
+
+export type ArchitecturalLayer =
+  | 'presentation'
+  | 'business'
+  | 'data'
+  | 'infrastructure'
+  | 'external';
+
+
 export interface FunctionInfo {
   name: string;
   signature: string;
@@ -295,8 +295,8 @@ export interface FunctionInfo {
   isConstructor?: boolean;
   isStatic?: boolean;
   isAbstract?: boolean;
-  calls: FunctionCall[]; // Functions this function calls
-  calledBy: string[]; // Functions that call this
+  calls: FunctionCall[];
+  calledBy: string[];
   aiDescription?: string;
   annotations?: Annotation[];
   testCoverage?: TestCoverageInfo;
@@ -354,7 +354,7 @@ export interface Parameter {
   defaultValue?: string;
 }
 
-// Performance Metrics
+
 export interface PerformanceMetrics {
   avgResponseTime?: number;
   throughput?: number;
@@ -364,7 +364,7 @@ export interface PerformanceMetrics {
   lastUpdated: Date;
 }
 
-// Entry Points (Comprehensive)
+
 export interface EntryPoint {
   id: string;
   type: EntryPointType;
@@ -376,9 +376,9 @@ export interface EntryPoint {
   middleware?: string[];
   authentication?: AuthenticationInfo;
   rateLimit?: RateLimitInfo;
-  componentId: string; // Links to component
-  handler?: string; // Function/method name handling this entry
-  priority?: number; // Execution order/priority
+  componentId: string;
+  handler?: string;
+  priority?: number;
   async?: boolean;
   timeout?: number;
   retryPolicy?: RetryPolicy;
@@ -412,17 +412,17 @@ export interface EntryPointMetrics {
   p99?: number;
 }
 
-export type EntryPointType = 
-  | 'http_endpoint'   // REST/GraphQL endpoints
-  | 'websocket'       // WebSocket connections
-  | 'cli_command'     // Command line interfaces
-  | 'event_handler'   // Event listeners/handlers
-  | 'scheduler'       // Cron jobs, scheduled tasks
-  | 'queue_consumer'  // Message queue consumers
-  | 'webhook'         // Webhook endpoints
-  | 'grpc_service';   // gRPC services
+export type EntryPointType =
+  | 'http_endpoint'
+  | 'websocket'
+  | 'cli_command'
+  | 'event_handler'
+  | 'scheduler'
+  | 'queue_consumer'
+  | 'webhook'
+  | 'grpc_service';
 
-// Exit Points (External Integrations)
+
 export interface ExitPoint {
   id: string;
   type: ExitPointType;
@@ -431,7 +431,7 @@ export interface ExitPoint {
   authentication?: AuthenticationInfo;
   rateLimit?: RateLimitInfo;
   critical: boolean;
-  componentId: string; // Links to component
+  componentId: string;
   errorHandling?: string[];
   retryPolicy?: RetryPolicy;
   timeout?: number;
@@ -483,18 +483,18 @@ export interface LoggingConfig {
   sanitization?: string[];
 }
 
-export type ExitPointType = 
-  | 'database_query'   // Database operations
-  | 'external_api'     // Third-party API calls
-  | 'message_publish'  // Message queue publishing
-  | 'file_operation'   // File system operations
-  | 'cache_operation'  // Cache read/write
-  | 'email_send'       // Email notifications
-  | 'sms_send'         // SMS notifications
-  | 'webhook_call'     // Outbound webhooks
-  | 'log_write';       // Logging operations
+export type ExitPointType =
+  | 'database_query'
+  | 'external_api'
+  | 'message_publish'
+  | 'file_operation'
+  | 'cache_operation'
+  | 'email_send'
+  | 'sms_send'
+  | 'webhook_call'
+  | 'log_write';
 
-// Technology Stack Analysis
+
 export interface TechnologyStack {
   primaryFramework: FrameworkInfo;
   additionalFrameworks: FrameworkInfo[];
@@ -555,7 +555,7 @@ export interface BuildToolInfo {
   scripts: string[];
 }
 
-// Dependencies Analysis
+
 export interface DependencyAnalysis {
   totalCount: number;
   directDependencies: Dependency[];
@@ -634,7 +634,7 @@ export interface LicenseInfo {
   restrictions: string[];
 }
 
-// Database Analysis
+
 export interface DatabaseAnalysis {
   type: DatabaseType;
   connectionMethod: ConnectionMethod;
@@ -728,11 +728,11 @@ export interface BackupConfig {
   location: string;
 }
 
-export type DatabaseType = 
-  | 'postgresql' | 'mysql' | 'sqlite' | 'mongodb' 
+export type DatabaseType =
+  | 'postgresql' | 'mysql' | 'sqlite' | 'mongodb'
   | 'redis' | 'elasticsearch' | 'cassandra' | 'dynamodb' | 'sqlserver';
 
-export type ConnectionMethod = 
+export type ConnectionMethod =
   | 'orm' | 'query_builder' | 'raw_sql' | 'odm' | 'driver';
 
 export interface DatabaseSchema {
@@ -805,7 +805,7 @@ export interface DatabasePerformance {
   indexUsage: Record<string, number>;
 }
 
-// API Endpoint Analysis
+
 export interface APIEndpoint {
   id: string;
   method: HTTPMethod;
@@ -817,7 +817,7 @@ export interface APIEndpoint {
   requestSchema?: any;
   responseSchema?: any;
   statusCodes: StatusCodeInfo[];
-  responses?: StatusCodeInfo[]; // Alias for statusCodes
+  responses?: StatusCodeInfo[];
   middleware: string[];
   authentication: AuthenticationInfo;
   authorization?: AuthorizationInfo;
@@ -929,7 +929,7 @@ export interface BusinessProcessInfo {
   slaRequirements?: string[];
 }
 
-// Frontend-Specific Analysis
+
 export interface FrontendAnalysis {
   framework: FrameworkInfo;
   stateManagement: StateManagementInfo;
@@ -991,7 +991,7 @@ export interface FrontendPerformance {
   cumulativeLayoutShift: number;
 }
 
-// Testing Information
+
 export interface TestingInfo {
   frameworks: TestingFrameworkInfo[];
   coverage: TestCoverage;
@@ -1140,7 +1140,7 @@ export interface TestTypeInfo {
   tools: string[];
 }
 
-// Security Analysis
+
 export interface SecurityAnalysis {
   vulnerabilities: SecurityVulnerability[];
   authenticationMethods: AuthenticationInfo[];
@@ -1179,7 +1179,7 @@ export interface SecretInfo {
   rotationPolicy?: string;
 }
 
-// Deployment Information
+
 export interface DeploymentInfo {
   platform: string;
   containerization: ContainerInfo;
@@ -1252,7 +1252,7 @@ export interface ScalingLimits {
   memory: string;
 }
 
-// Missing database and message queue types
+
 export interface DatabaseInfo {
   type: DatabaseType;
   name: string;
@@ -1270,7 +1270,7 @@ export interface MessageQueueInfo {
   usage: 'event-streaming' | 'job-queue' | 'pub-sub';
 }
 
-// ===== ANALYZER PLUGIN SYSTEM TYPES =====
+
 
 export interface AnalyzerCapabilities {
   languages: string[];
@@ -1281,10 +1281,10 @@ export interface AnalyzerCapabilities {
   performance?: PerformanceProfile;
 }
 
-export type ProjectType = 
+export type ProjectType =
   | 'web-application'
   | 'mobile-application'
-  | 'desktop-application' 
+  | 'desktop-application'
   | 'cli-tool'
   | 'library'
   | 'microservice'
@@ -1321,18 +1321,18 @@ export interface AnalyzerLimitation {
 export interface PerformanceProfile {
   filesPerSecond: number;
   memoryUsageMB: number;
-  maxProjectSize: number; // in files
+  maxProjectSize: number;
   parallelizable: boolean;
   cacheable: boolean;
 }
 
-// ===== ANALYZER RESULT VALIDATION =====
+
 
 export interface ValidationResult {
   valid: boolean;
   errors: ValidationError[];
   warnings: ValidationWarning[];
-  score: number; // 0-100
+  score: number;
 }
 
 export interface ValidationError {
@@ -1359,7 +1359,7 @@ export interface SourceLocation {
   range?: { start: { line: number; column: number }, end: { line: number; column: number } };
 }
 
-// ===== CONFIGURATION MANAGEMENT =====
+
 
 export interface AnalyzerConfiguration {
   global: GlobalConfiguration;
@@ -1420,7 +1420,7 @@ export interface ConfigurationCondition {
   operator?: 'equals' | 'contains' | 'matches' | 'greater-than' | 'less-than';
 }
 
-// ===== TELEMETRY AND MONITORING =====
+
 
 export interface TelemetryData {
   analysisId: string;
@@ -1509,12 +1509,12 @@ export interface CPUInfo {
   usage?: number;
 }
 
-// ===== PROGRESSIVE ANALYSIS =====
+
 
 export interface ProgressiveAnalysisState {
   analysisId: string;
   phase: AnalysisPhase;
-  progress: number; // 0-100
+  progress: number;
   currentOperation: string;
   estimatedTimeRemaining?: number;
   partialResults?: Partial<ArchitectureBlueprint>;
@@ -1544,7 +1544,7 @@ export interface AnalysisCheckpoint {
   error?: ErrorInfo;
 }
 
-// ===== EXTENSIBILITY AND PLUGINS =====
+
 
 export interface PluginManifest {
   id: string;
@@ -1591,7 +1591,7 @@ export interface PluginResource {
   required?: boolean;
 }
 
-// ===== BATCH AND ENTERPRISE FEATURES =====
+
 
 export interface BatchAnalysisRequest {
   id: string;
@@ -1620,7 +1620,7 @@ export interface BatchAnalysisOptions {
 
 export interface AnalysisSchedule {
   type: 'immediate' | 'cron' | 'interval' | 'trigger';
-  expression?: string; // cron expression or interval
+  expression?: string;
   timezone?: string;
   triggers?: ScheduleTrigger[];
 }
@@ -1676,7 +1676,7 @@ export interface RepositoryCredentials {
   username?: string;
 }
 
-// ===== AUTHENTICATION AND USER MANAGEMENT =====
+
 
 export interface User {
   id: string;
@@ -1736,7 +1736,7 @@ export interface RefreshToken {
 }
 
 export interface JWTPayload {
-  sub: string; // user id
+  sub: string;
   email: string;
   organizations?: {
     id: string;
@@ -1779,7 +1779,7 @@ export interface OAuthProfile {
   provider: string;
 }
 
-// ===== COMPARATIVE ANALYSIS =====
+
 
 export interface ComparativeAnalysisRequest {
   baseline: AnalysisReference;
@@ -1799,11 +1799,11 @@ export interface ComparisonOptions {
   includeConnections: boolean;
   includeMetrics: boolean;
   includeRisks: boolean;
-  sensitivityThreshold: number; // 0-1
+  sensitivityThreshold: number;
   categories?: ComparisonCategory[];
 }
 
-export type ComparisonCategory = 
+export type ComparisonCategory =
   | 'architecture'
   | 'complexity'
   | 'performance'
@@ -1849,7 +1849,7 @@ export interface ComparisonRecommendation {
 }
 
 export interface ComparisonScore {
-  overall: number; // -100 to 100
+  overall: number;
   categories: Record<ComparisonCategory, number>;
   explanation: string;
 }

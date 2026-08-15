@@ -162,6 +162,20 @@ describe('node-roles: gateway from proxy shape (framework-less)', () => {
 });
 
 describe('node-roles: controller from entry-point grouping — framework-conferred AND framework-less', () => {
+  it('recomputes derived roles when incremental topology changes', () => {
+    const formerController = node({
+      id: 'owner',
+      name: 'Operations',
+      role: 'controller',
+      role_source: 'structural-evidence',
+      role_evidence: 'owns route entry points',
+    });
+    assignNodeRoles({ nodes: [formerController], edges: [], resetDerivedRoles: true });
+    expect(formerController.role).toBeUndefined();
+    expect(formerController.role_source).toBeUndefined();
+    expect(formerController.role_evidence).toBeUndefined();
+  });
+
   it('framework-conferred: an already node.type=controller Spring/Express class is normalized to role=controller', () => {
     const controllerNode = node({
       id: 'c1', name: 'OrderController', type: 'controller',

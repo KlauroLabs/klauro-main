@@ -83,17 +83,11 @@ interface WpfConverter {
   implementsIMultiValueConverter: boolean;
 }
 
-interface WpfDeviceConnection {
-  name: string;
-  filePath: string;
-  protocol: 'serial' | 'usb' | 'bluetooth' | 'hid' | 'network' | 'unknown';
-  methods: Array<{ name: string; returnType?: string; parameters: string[] }>;
-}
 
-/** A code-behind method wired to a WPF UI event, either via XAML
- *  (`Click="OnSave"`) or code (`SaveButton.Click += OnSave`). This is the
- *  real user-initiated interaction surface of a WPF app — the analogue of an
- *  HTTP route handler for a desktop app. */
+
+
+
+
 interface WpfEventHandlerBinding {
   event: string;
   method: string;
@@ -185,7 +179,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
       const services = await this.analyzeServices(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
       const converters = await this.analyzeConverters(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
 
-      const deviceConnections = await this.analyzeDeviceConnections(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, exitPoints);
 
       this.buildMvvmRelationships(windows, viewModels, services, existingNodes, edges, newNodes);
       this.buildDataBindingRelationships(windows, userControls, viewModels, edges);
@@ -346,12 +339,12 @@ export class WPFAnalyzer extends BaseAnalyzer {
               .build());
           }
 
-          // Real WPF entry surface: user-initiated UI events (Click/Loaded/
-          // Closing/...) wired to a code-behind method, either in XAML
-          // (Click="OnSave") or in code (SaveButton.Click += OnSave). This is
-          // evidence-gated on the same known-event-token pattern used for
-          // eventHandlers above — arbitrary methods are never promoted, only
-          // methods a WPF event is structurally wired to.
+
+
+
+
+
+
           this.emitUiEventHandlerEntryPoints(
             windowId, windowName, file,
             this.extractEventHandlerBindings(content, xamlContent),
@@ -448,9 +441,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
-          // UserControls also carry user-initiated UI events (e.g. Loaded,
-          // a button Click inside the control's own code-behind) — same
-          // evidence-gated extraction as Windows.
+
+
+
           this.emitUiEventHandlerEntryPoints(
             controlId, controlName, file,
             this.extractEventHandlerBindings(content, xamlContent),
@@ -475,11 +468,11 @@ export class WPFAnalyzer extends BaseAnalyzer {
   ): Promise<WpfViewModel[]> {
     const viewModels: WpfViewModel[] = [];
 
-    // Evidence pool for gating command entry points: command names actually
-    // bound from XAML (Command="{Binding SomeCommand}") or declared as an
-    // ICommand-typed property in a window's own code-behind. Cross-file
-    // structural evidence, not a name heuristic — see WpfWindow.commands
-    // (populated by extractCommands from both code and XAML).
+
+
+
+
+
     const xamlBoundCommandNames = new Set<string>();
     for (const window of windows) {
       for (const cmd of window.commands) xamlBoundCommandNames.add(cmd);
@@ -578,13 +571,13 @@ export class WPFAnalyzer extends BaseAnalyzer {
               vmId, cmdId, 'has-command'
             ).build());
 
-            // ICommand handlers exposed by a ViewModel are a real WPF
-            // interaction entry point (bound via {Binding SomeCommand} in
-            // XAML and invoked on Execute). Evidence-gated: only wired
-            // commands are promoted — either the constructor resolved a
-            // concrete Execute target (executeMethod), or the command name
-            // is structurally bound from a window's XAML — never every
-            // ICommand-typed property regardless of wiring.
+
+
+
+
+
+
+
             const isWired = !!cmd.executeMethod || xamlBoundCommandNames.has(cmd.name);
             if (isWired) {
               entryPoints.push(this.createEntryPoint(
@@ -774,106 +767,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return converters;
   }
 
-  private async analyzeDeviceConnections(
-    csFiles: string[],
-    projectPath: string,
-    existingNodes: CASNode[],
-    newNodes: CASNode[],
-    enhancedNodes: CASNode[],
-    edges: CASEdge[],
-    exitPoints: CASExitPoint[]
-  ): Promise<WpfDeviceConnection[]> {
-    const connections: WpfDeviceConnection[] = [];
-
-    const deviceFiles = csFiles.filter(f => {
-      const lower = f.toLowerCase();
-      return lower.includes('device') || lower.includes('connection') || lower.includes('serial') ||
-             lower.includes('usb') || lower.includes('bluetooth') || lower.includes('hid') ||
-             lower.includes('port') || lower.includes('sensor') || lower.includes('hardware');
-    });
-
-    for (const file of deviceFiles) {
-      const fullPath = path.join(projectPath, file);
-      try {
-        const content = await fs.readFile(fullPath, 'utf-8');
-
-        const classPattern = /class\s+(\w+)\s*(?::\s*([\w.,\s<>]+))?/g;
-        let match;
-
-        while ((match = classPattern.exec(content)) !== null) {
-          const className = match[1];
-
-          let protocol: WpfDeviceConnection['protocol'] = 'unknown';
-          if (/SerialPort|System\.IO\.Ports|COM\d|BaudRate|Parity|StopBits/i.test(content)) protocol = 'serial';
-          else if (/UsbDevice|LibUsbDotNet|HidSharp|WinUsb/i.test(content)) protocol = 'usb';
-          else if (/Bluetooth|BluetoothClient|InTheHand|BluetoothSocket/i.test(content)) protocol = 'bluetooth';
-          else if (/HidDevice|HidStream|HumanInterfaceDevice/i.test(content)) protocol = 'hid';
-          else if (/TcpClient|UdpClient|Socket|NetworkStream/i.test(content)) protocol = 'network';
-
-          if (protocol === 'unknown' && !className.toLowerCase().includes('device') && !className.toLowerCase().includes('connection')) continue;
-
-          const methods = this.extractServiceMethods(content, className);
-
-          connections.push({ name: className, filePath: file, protocol, methods });
-
-          const connId = this.generateId('device_connection', file, className);
-
-          const existingNode = existingNodes.find(n => n.name === className && (n.type === 'class' || n.type === 'service'));
-
-          if (existingNode) {
-            existingNode.type = 'service';
-            if (!existingNode.metadata) existingNode.metadata = {};
-            existingNode.metadata.attributes = {
-              ...existingNode.metadata.attributes,
-              framework: 'wpf',
-              service_type: 'device_connection',
-              communication_protocol: protocol,
-              method_count: methods.length
-            };
-            if (!existingNode.analyzers) existingNode.analyzers = [];
-            if (!existingNode.analyzers.includes(this.analyzerId)) {
-              existingNode.analyzers.push(this.analyzerId);
-            }
-            enhancedNodes.push(existingNode);
-          } else {
-            const node = this.createNodeBuilder(connId, className, 'service')
-              .withLevel(2, this.getLevelName(2))
-              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
-              .withMetadata({
-                framework: 'wpf',
-                attributes: {
-                  service_type: 'device_connection',
-                  communication_protocol: protocol,
-                  method_count: methods.length,
-                  methods: methods.map(m => m.name)
-                }
-              })
-              .withAnalyzers([this.analyzerId], this.analyzerId)
-              .build();
-            newNodes.push(node);
-          }
-
-          for (const method of methods) {
-            const isDeviceOp = /^(Connect|Disconnect|Read|Write|Send|Receive|Open|Close|Start|Stop|Initialize|Reset|Calibrate)/i.test(method.name);
-            if (isDeviceOp) {
-              exitPoints.push(this.createExitPoint(
-                this.generateId('exit', file, `${className}_${method.name}`),
-                connId,
-                'sdk',
-                `${className}.${method.name}`,
-                `Device ${protocol} operation via ${className}`,
-                { sdk: protocol },
-                { action: 'device-io', method: method.name },
-                { framework: 'wpf', protocol, service: className }
-              ));
-            }
-          }
-        }
-      } catch {}
-    }
-
-    return connections;
-  }
 
   private buildMvvmRelationships(
     windows: WpfWindow[],
@@ -989,12 +882,12 @@ export class WPFAnalyzer extends BaseAnalyzer {
     for (const window of windows) {
       if (window.baseClass === 'Window' || window.name.toLowerCase().includes('main')) {
         const windowId = this.generateId('window', window.filePath, window.name);
-        // A solution with five projects has five `MainWindow`s. Emitting the
-        // bare class name made them one indistinguishable name in the product
-        // (measured: 5 window entry points, 1 unique name), and emitting no
-        // handler left them with no code location for the orchestrator's
-        // dedup to key on. Qualify by the owning project directory and carry
-        // the file — both are real path evidence.
+
+
+
+
+
+
         const project = path.basename(path.dirname(window.filePath));
         entryPoints.push(this.createEntryPoint(
           this.generateId('entry', window.filePath, window.name),
@@ -1081,12 +974,12 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return nsMatch ? nsMatch[1] : 'global';
   }
 
-  /** WPF app startup: a class deriving from `Application` overriding
-   *  `OnStartup`, or a `Main(...)` entry method (App.xaml.cs / App.g.cs /
-   *  Program.cs) — the process-level entry point, analogous to an ASP.NET
-   *  Program.cs `Main` or an Electron main-process bootstrap. Generic on the
-   *  `: Application` base-class + method-signature evidence, not on any file
-   *  or class name. */
+
+
+
+
+
+
   private async identifyAppStartupEntryPoints(
     csFiles: string[],
     projectPath: string,
@@ -1110,9 +1003,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
         const onStartupPattern = /(?:protected|public)\s+override\s+(?:async\s+)?void\s+OnStartup\s*\(/;
         const onStartupMatch = onStartupPattern.exec(content);
 
-        // Prefer OnStartup when an Application subclass overrides it;
-        // otherwise fall back to Main (Program.cs-style bootstrap or an
-        // Application subclass that relies on the default startup URI).
+
+
+
         const startupMatch = onStartupMatch || mainMatch;
         if (!startupMatch) continue;
         const methodName = onStartupMatch ? 'OnStartup' : 'Main';
@@ -1362,12 +1255,12 @@ export class WPFAnalyzer extends BaseAnalyzer {
   }
 
   private findMatchingXaml(csFile: string, xamlFiles: string[]): string | undefined {
-    // The common WPF code-behind convention is "X.xaml.cs" pairing with
-    // "X.xaml". Strip ".xaml.cs" as one suffix first — chaining
-    // .replace(/\.cs$/) then .replace(/\.xaml\.cs$/) never both match
-    // (the first already consumes the ".cs" the second is looking for),
-    // which silently starved every downstream XAML-content read (bindings,
-    // event handlers, commands, data context) for the code-behind case.
+
+
+
+
+
+
     const baseName = csFile.endsWith('.xaml.cs')
       ? csFile.slice(0, -'.xaml.cs'.length)
       : csFile.replace(/\.cs$/, '');
@@ -1486,9 +1379,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return handlers;
   }
 
-  /** Same known-WPF-event-token evidence as extractEventHandlers, but keeps
-   *  the (event, method) pairing so each handler can be surfaced as its own
-   *  entry point instead of collapsed into a flat name list. */
+
+
+
   private extractEventHandlerBindings(csContent: string, xamlContent: string): WpfEventHandlerBinding[] {
     const bindings: WpfEventHandlerBinding[] = [];
     const seen = new Set<string>();
@@ -1517,11 +1410,11 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return bindings;
   }
 
-  /** Emit an `event_handler` node + `handles-event` edge (mirroring the
-   *  Blazor framework analyzer's convention for @onclick handlers) plus a
-   *  CAS entry point for each WPF UI event binding, so a Window/UserControl's
-   *  user-initiated interaction surface is navigable and can seed flows the
-   *  same way an HTTP route or MCP tool registration does. */
+
+
+
+
+
   private emitUiEventHandlerEntryPoints(
     parentId: string,
     parentName: string,

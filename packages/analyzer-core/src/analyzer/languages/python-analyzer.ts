@@ -7,6 +7,8 @@ import { AnalyzerError } from '../core/errors';
 import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
+import { addPythonCallNodes, buildPythonCallIndex, selectPythonCallTarget, selectPythonSelfCallTarget, type PythonCallIndex } from './python-call-index';
+import { replaceArrayContents } from '../core/bulk-array-ops';
 
 interface PythonClass {
   name: string;
@@ -95,34 +97,12 @@ interface PythonVariable {
   scope: 'global' | 'local' | 'class';
 }
 
-interface PythonMethodCall {
-  caller: string;
-  callee: string;
-  callType: 'method' | 'function' | 'builtin' | 'library' | 'abstract';
-  line: number;
-  isAsync: boolean;
-  parameters: string[];
-  isConditional: boolean;
-  isInLoop: boolean;
-}
-
-interface PythonLibraryCall {
-  library: string;
-  method: string;
-  module?: string;
-  isAsync: boolean;
-  callType: 'http' | 'database' | 'fs' | 'logging' | 'generic';
-  line: number;
-}
-
 export class PythonAnalyzer extends BaseAnalyzer {
   private djangoFrameworkDetected = false;
   private flaskFrameworkDetected = false;
   private fastApiFrameworkDetected = false;
   private poetryProject = false;
   private pipenvProject = false;
-  private methodCalls: PythonMethodCall[] = [];
-  private libraryCalls: PythonLibraryCall[] = [];
 
   constructor() {
     super(
@@ -175,12 +155,37 @@ export class PythonAnalyzer extends BaseAnalyzer {
     const modules = new Map<string, string[]>();
     const content = await fs.readFile(context.filePath, 'utf-8');
     const stat = await fs.stat(context.filePath);
+    const retainedNodes = (context.existingAnalysis || [])
+      .flatMap(contribution => contribution.nodes || [])
+      .filter(node =>
+        node.source?.file !== context.relativePath &&
+        (node.primaryAnalyzer === this.analyzerId || node.analyzers?.includes(this.analyzerId))
+      );
+    const callIndex = buildPythonCallIndex(retainedNodes, edges, exitPoints);
 
     await this.detectProjectType(context.projectPath);
-    await this.analyzePythonFile(context.filePath, context.relativePath, nodes, edges, entryPoints, exitPoints, modules);
+    await this.analyzePythonFile(
+      context.filePath,
+      context.relativePath,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      modules,
+      retainedNodes,
+      callIndex,
+    );
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
-    this.buildInheritanceRelationships(nodes, edges);
-    this.buildCallGraph(nodes, edges, entryPoints, exitPoints);
+    const projectNodes = [...retainedNodes, ...nodes];
+    const currentNodeIds = new Set(nodes.map(node => node.id));
+    const projectEdges = [...edges];
+    const projectEntryPoints = [...entryPoints];
+    const projectExitPoints = [...exitPoints];
+    this.buildInheritanceRelationships(projectNodes, projectEdges);
+    this.buildCallGraph(projectNodes, projectEdges, projectEntryPoints, projectExitPoints);
+    replaceArrayContents(edges, projectEdges.filter(edge => currentNodeIds.has(edge.source)));
+    replaceArrayContents(entryPoints, projectEntryPoints.filter(entryPoint => currentNodeIds.has(entryPoint.source_node)));
+    replaceArrayContents(exitPoints, projectExitPoints.filter(exitPoint => currentNodeIds.has(exitPoint.source_node)));
     this.applyTestFileBoundary(nodes);
 
     const imports = this.extractImports(content).map(imp => imp.module);
@@ -224,10 +229,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
       pythonFiles.sort();
 
       const modules = new Map<string, string[]>();
+      const callIndex = buildPythonCallIndex([], edges, exitPoints);
 
       for (const file of pythonFiles) {
         const fullPath = `${context.projectPath}/${file}`;
-        await this.analyzePythonFile(fullPath, file, nodes, edges, entryPoints, exitPoints, modules);
+        await this.analyzePythonFile(fullPath, file, nodes, edges, entryPoints, exitPoints, modules, [], callIndex);
       }
 
       this.buildModuleHierarchy(modules, nodes, edges);
@@ -414,9 +420,12 @@ export class PythonAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     entryPoints: any[],
     exitPoints: any[],
-    modules: Map<string, string[]>
+    modules: Map<string, string[]>,
+    retainedNodes: CASNode[] = [],
+    callIndex?: PythonCallIndex,
   ): Promise<void> {
     try {
+      const nodeStart = nodes.length;
       const content = await fs.readFile(fullPath, 'utf-8');
       const lines = content.split('\n');
 
@@ -505,7 +514,17 @@ export class PythonAnalyzer extends BaseAnalyzer {
         await this.processPythonFunction(func, fileId, relativePath, nodes, edges, entryPoints);
       }
 
-      this.extractFunctionCalls(content, relativePath, classes, functions, nodes, edges, exitPoints);
+      if (callIndex) addPythonCallNodes(callIndex, nodes.slice(nodeStart));
+      this.extractFunctionCalls(
+        content,
+        relativePath,
+        classes,
+        functions,
+        retainedNodes.length > 0 ? [...retainedNodes, ...nodes] : nodes,
+        edges,
+        exitPoints,
+        callIndex,
+      );
 
       for (const variable of variables) {
         const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
@@ -744,8 +763,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         let classMatch = line.match(/class\s+(\w+)(?:\(([^)]*)\))?:/);
         let signatureEndIndex = i;
         if (!classMatch) {
-          // The signature may be a class statement with a base-class list
-          // split across multiple lines; join it before giving up.
+
           const collected = this.collectLogicalStatement(lines, i);
           classMatch = collected.text.match(/class\s+(\w+)(?:\(([^)]*)\))?:/);
           if (classMatch) signatureEndIndex = collected.endIndex;
@@ -812,8 +830,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         let funcMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
         let signatureEndIndex = i;
         if (!funcMatch) {
-          // Long typed parameter lists are routinely wrapped across lines by
-          // formatters; join the signature before treating it as unparsable.
+
           const collected = this.collectLogicalStatement(lines, i);
           funcMatch = collected.text.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
           if (funcMatch) signatureEndIndex = collected.endIndex;
@@ -1114,15 +1131,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /**
-   * Collects a full logical `class`/`def` statement that may span multiple
-   * physical lines (e.g. long multi-line base-class lists or typed parameter
-   * lists split across lines, common in Django/GraphQL schema files black
-   * formats). Joins continuation lines into one string so the existing
-   * single-line regexes can match, and returns the physical line index where
-   * the signature's trailing colon was found so callers can resume scanning
-   * from the real body offset instead of the signature's first line.
-   */
   private collectLogicalStatement(
     lines: string[],
     startIndex: number,
@@ -1170,14 +1178,10 @@ export class PythonAnalyzer extends BaseAnalyzer {
   private isInsideClass(lines: string[], lineIndex: number): boolean {
     const ownIndent = lines[lineIndex].length - lines[lineIndex].trimStart().length;
     if (ownIndent === 0) {
-      // A line at column 0 cannot be nested inside any class/function block in Python,
-      // regardless of what class/def statements appeared earlier in the file.
+
       return false;
     }
 
-    // Walk backwards, tracking only lines whose indent is strictly less than the
-    // smallest indent seen so far (i.e. actual enclosing blocks), so a class/def
-    // that has already been closed by a dedent is not mistaken for an ancestor.
     let minIndentSeen = ownIndent;
     for (let i = lineIndex - 1; i >= 0; i--) {
       const line = lines[i];
@@ -1299,12 +1303,16 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
   private buildInheritanceRelationships(nodes: CASNode[], edges: CASEdge[]): void {
     const classNodes = nodes.filter(n => n.type === 'class');
+    const classesByName = new Map<string, CASNode>();
+    for (const node of classNodes) {
+      if (!classesByName.has(node.name)) classesByName.set(node.name, node);
+    }
 
     for (const classNode of classNodes) {
       if (classNode.metadata?.attributes?.baseClasses) {
         const baseClasses = classNode.metadata.attributes.baseClasses as string[];
         for (const baseClassName of baseClasses) {
-          const baseClassNode = classNodes.find(n => n.name === baseClassName);
+          const baseClassNode = classesByName.get(baseClassName);
 
           if (baseClassNode) {
             edges.push(this.createEdge(
@@ -1326,8 +1334,10 @@ export class PythonAnalyzer extends BaseAnalyzer {
     functions: PythonFunction[],
     nodes: CASNode[],
     edges: CASEdge[],
-    exitPoints: CASExitPoint[]
+    exitPoints: CASExitPoint[],
+    existingCallIndex?: PythonCallIndex,
   ): void {
+    const callIndex = existingCallIndex || buildPythonCallIndex(nodes, edges, exitPoints);
     const lines = content.split('\n');
     const fileId = `file_${this.sanitizeId(relativePath)}`;
     const builtinFunctions = ['print', 'len', 'range', 'int', 'str', 'float', 'bool', 'list', 'dict', 'set',
@@ -1345,26 +1355,26 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
     for (const cls of classes) {
       const classId = `class_${fileId}_${this.sanitizeId(cls.name)}_${cls.lineStart}`;
-      const classNode = nodes.find(n => n.id === classId);
+      const classNode = callIndex.nodesById.get(classId);
       if (!classNode) continue;
 
       for (const method of cls.methods) {
         const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-        const methodNode = nodes.find(n => n.id === methodId);
+        const methodNode = callIndex.nodesById.get(methodId);
         if (!methodNode) continue;
 
         const methodLines = lines.slice(method.lineStart - 1, method.lineEnd);
-        this.extractCallsFromBlock(methodLines, method.lineStart, methodNode, nodes, edges, exitPoints, builtinFunctions, knownLibraryModules);
+        this.extractCallsFromBlock(methodLines, method.lineStart, methodNode, edges, exitPoints, builtinFunctions, knownLibraryModules, callIndex);
       }
     }
 
     for (const func of functions) {
       const functionId = `function_${fileId}_${this.sanitizeId(func.name)}_${func.lineStart}`;
-      const functionNode = nodes.find(n => n.id === functionId);
+      const functionNode = callIndex.nodesById.get(functionId);
       if (!functionNode) continue;
 
       const funcLines = lines.slice(func.lineStart - 1, func.lineEnd);
-      this.extractCallsFromBlock(funcLines, func.lineStart, functionNode, nodes, edges, exitPoints, builtinFunctions, knownLibraryModules);
+      this.extractCallsFromBlock(funcLines, func.lineStart, functionNode, edges, exitPoints, builtinFunctions, knownLibraryModules, callIndex);
     }
   }
 
@@ -1372,11 +1382,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
     lines: string[],
     startLine: number,
     callerNode: CASNode,
-    nodes: CASNode[],
     edges: CASEdge[],
     exitPoints: CASExitPoint[],
     builtinFunctions: string[],
-    knownLibraryModules: string[]
+    knownLibraryModules: string[],
+    callIndex: PythonCallIndex,
   ): void {
     const callPatterns = [
       /([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
@@ -1407,17 +1417,13 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
           if (pattern.source.includes('self\\.')) {
             targetMethod = match[1];
-            const classNode = nodes.find(n => n.id === callerNode.parent);
+            const classNode = callerNode.parent ? callIndex.nodesById.get(callerNode.parent) : undefined;
             if (classNode) {
-              const targetNode = nodes.find(n =>
-                n.name === targetMethod &&
-                n.type === 'method' &&
-                n.parent === classNode.id
-              );
+              const targetNode = selectPythonSelfCallTarget(callIndex, classNode.id, targetMethod);
 
               if (targetNode && targetNode.id !== callerNode.id) {
                 const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
-                if (!edges.find(e => e.id === edgeId)) {
+                if (!callIndex.edgeIds.has(edgeId)) {
                   edges.push(this.createEdge(
                     edgeId,
                     callerNode.id,
@@ -1430,6 +1436,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
                       line: lineNumber
                     }
                   ));
+                  callIndex.edgeIds.add(edgeId);
                 }
               }
             }
@@ -1439,7 +1446,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
             if (knownLibraryModules.includes(targetObject)) {
               const exitPointId = `exit_${callerNode.id}_to_${targetObject}_${targetMethod}`;
-              if (!exitPoints.find(e => e.id === exitPointId)) {
+              if (!callIndex.exitPointIds.has(exitPointId)) {
                 exitPoints.push({
                   id: exitPointId,
                   source_node: callerNode.id,
@@ -1457,9 +1464,10 @@ export class PythonAnalyzer extends BaseAnalyzer {
                     line: lineNumber
                   }
                 } as CASExitPoint);
+                callIndex.exitPointIds.add(exitPointId);
 
                 const edgeId = `${callerNode.id}_calls_external_${targetObject}_${targetMethod}`;
-                if (!edges.find(e => e.id === edgeId)) {
+                if (!callIndex.edgeIds.has(edgeId)) {
                   edges.push(this.createEdge(
                     edgeId,
                     callerNode.id,
@@ -1474,24 +1482,19 @@ export class PythonAnalyzer extends BaseAnalyzer {
                       line: lineNumber
                     }
                   ));
+                  callIndex.edgeIds.add(edgeId);
                 }
               }
             } else {
-              const possibleTargets = nodes.filter(n =>
-                n.name === targetMethod &&
-                (n.type === 'method' || n.type === 'function')
-              );
+              const resolution = selectPythonCallTarget(callIndex, targetMethod, callerNode.source?.file || '');
+              const possibleTargets = callIndex.callablesByName.get(targetMethod) || [];
 
               if (possibleTargets.length > 0) {
-                const callerFile = callerNode.source?.file || '';
-                let targetNode = possibleTargets.find(n => n.source?.file === callerFile);
-                if (!targetNode) {
-                  targetNode = possibleTargets[0];
-                }
+                const targetNode = resolution.target;
 
                 if (targetNode && targetNode.id !== callerNode.id) {
                   const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
-                  if (!edges.find(e => e.id === edgeId)) {
+                  if (!callIndex.edgeIds.has(edgeId)) {
                     edges.push(this.createEdge(
                       edgeId,
                       callerNode.id,
@@ -1503,9 +1506,10 @@ export class PythonAnalyzer extends BaseAnalyzer {
                         target_object: targetObject,
                         is_async: isAsync,
                         line: lineNumber,
-                        ambiguous: possibleTargets.length > 1
+                        ambiguous: resolution.candidates > 1
                       }
                     ));
+                    callIndex.edgeIds.add(edgeId);
                   }
                 }
               }
@@ -1516,21 +1520,15 @@ export class PythonAnalyzer extends BaseAnalyzer {
             if (builtinFunctions.includes(targetMethod)) {
               continue;
             } else {
-              const possibleTargets = nodes.filter(n =>
-                n.name === targetMethod &&
-                (n.type === 'function' || n.type === 'method')
-              );
+              const resolution = selectPythonCallTarget(callIndex, targetMethod, callerNode.source?.file || '');
+              const possibleTargets = callIndex.callablesByName.get(targetMethod) || [];
 
               if (possibleTargets.length > 0) {
-                const callerFile = callerNode.source?.file || '';
-                let targetNode = possibleTargets.find(n => n.source?.file === callerFile);
-                if (!targetNode) {
-                  targetNode = possibleTargets[0];
-                }
+                const targetNode = resolution.target;
 
                 if (targetNode && targetNode.id !== callerNode.id) {
                   const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
-                  if (!edges.find(e => e.id === edgeId)) {
+                  if (!callIndex.edgeIds.has(edgeId)) {
                     edges.push(this.createEdge(
                       edgeId,
                       callerNode.id,
@@ -1541,9 +1539,10 @@ export class PythonAnalyzer extends BaseAnalyzer {
                         call_type: 'function_call',
                         is_async: isAsync,
                         line: lineNumber,
-                        ambiguous: possibleTargets.length > 1
+                        ambiguous: resolution.candidates > 1
                       }
                     ));
+                    callIndex.edgeIds.add(edgeId);
                   }
                 }
               }
@@ -1575,6 +1574,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       { pattern: /@\w+\.patch\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'PATCH' },
       { pattern: /@\w+\.websocket\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'WEBSOCKET' },
     ];
+    const entryPointIds = new Set(entryPoints.map(entryPoint => entryPoint.id));
 
     for (const node of nodes) {
       if (!node || typeof node !== 'object') return;
@@ -1589,7 +1589,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
               const routePath = match[1];
               const entryPointId = `entry_http_${node.id}_${method.toLowerCase()}`;
 
-              if (!entryPoints.find(e => e.id === entryPointId)) {
+              if (!entryPointIds.has(entryPointId)) {
                 entryPoints.push({
                   id: entryPointId,
                   source_node: node.id,
@@ -1604,6 +1604,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
                     decorator
                   }
                 } as CASEntryPoint);
+                entryPointIds.add(entryPointId);
               }
 
               if (!node.metadata) node.metadata = {};
@@ -1617,227 +1618,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
         }
       }
     }
-  }
-
-  private extractEnhancedCallGraph(content: string, filePath: string, nodes: CASNode[]): void {
-    const lines = content.split('\n');
-    let currentFunction = '';
-    let currentClass = '';
-    let indentLevel = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-      const lineIndent = line.length - line.trimStart().length;
-
-      // Track current context
-      if (trimmed.startsWith('class ')) {
-        currentClass = this.extractClassName(trimmed);
-        indentLevel = lineIndent;
-      } else if (trimmed.startsWith('def ') || trimmed.startsWith('async def ')) {
-        if (lineIndent > indentLevel) {
-          currentFunction = this.extractFunctionName(trimmed);
-        } else {
-          currentClass = '';
-          currentFunction = this.extractFunctionName(trimmed);
-        }
-      }
-
-      // Extract method calls
-      this.extractMethodCallsFromLine(trimmed, i + 1, currentFunction, currentClass, filePath);
-
-      // Extract library calls
-      this.extractLibraryCallsFromLine(trimmed, i + 1, currentFunction, filePath);
-
-      // Extract abstract method calls
-      this.extractAbstractCallsFromLine(trimmed, i + 1, currentFunction, currentClass);
-    }
-
-    // Create edges from extracted calls
-    this.createCallGraphEdges(nodes);
-  }
-
-  private extractMethodCallsFromLine(line: string, lineNumber: number, currentFunction: string, currentClass: string, filePath: string): void {
-    // Pattern for method calls: object.method() or self.method() or function()
-    const methodCallPatterns = [
-      /(\w+)\.(\w+)\s*\(/g,  // object.method()
-      /self\.(\w+)\s*\(/g,   // self.method()
-      /(\w+)\s*\(/g          // function()
-    ];
-
-    methodCallPatterns.forEach(pattern => {
-      let match;
-      while ((match = pattern.exec(line)) !== null) {
-        const isAsync = line.includes('await ');
-        const isConditional = line.includes('if ') || line.includes('elif ') || line.includes('else:');
-        const isInLoop = line.includes('for ') || line.includes('while ');
-
-        if (pattern === methodCallPatterns[0]) {
-          // object.method() call
-          this.methodCalls.push({
-            caller: currentFunction || currentClass || 'module',
-            callee: `${match[1]}.${match[2]}`,
-            callType: 'method',
-            line: lineNumber,
-            isAsync,
-            parameters: this.extractCallParameters(line, match.index || 0),
-            isConditional,
-            isInLoop
-          });
-        } else if (pattern === methodCallPatterns[1]) {
-          // self.method() call
-          this.methodCalls.push({
-            caller: currentFunction || currentClass || 'module',
-            callee: `${currentClass}.${match[1]}`,
-            callType: 'method',
-            line: lineNumber,
-            isAsync,
-            parameters: this.extractCallParameters(line, match.index || 0),
-            isConditional,
-            isInLoop
-          });
-        } else {
-          // function() call
-          const callType = this.determineCallType(match[1]);
-          this.methodCalls.push({
-            caller: currentFunction || currentClass || 'module',
-            callee: match[1],
-            callType,
-            line: lineNumber,
-            isAsync,
-            parameters: this.extractCallParameters(line, match.index || 0),
-            isConditional,
-            isInLoop
-          });
-        }
-      }
-    });
-  }
-
-  private extractLibraryCallsFromLine(line: string, lineNumber: number, currentFunction: string, filePath: string): void {
-    const libraryPatterns: Array<{pattern: RegExp, library: string, callType: PythonLibraryCall['callType']}> = [
-      { pattern: /requests\.(get|post|put|delete|patch)\s*\(/g, library: 'requests', callType: 'http' },
-      { pattern: /httpx\.(get|post|put|delete|patch)\s*\(/g, library: 'httpx', callType: 'http' },
-      { pattern: /aiohttp\.(get|post|put|delete|patch)\s*\(/g, library: 'aiohttp', callType: 'http' },
-      { pattern: /sqlite3\.(connect|execute|cursor)\s*\(/g, library: 'sqlite3', callType: 'database' },
-      { pattern: /psycopg2\.(connect|cursor)\s*\(/g, library: 'psycopg2', callType: 'database' },
-      { pattern: /pymongo\.(MongoClient|find|insert|update|delete)\s*\(/g, library: 'pymongo', callType: 'database' },
-      { pattern: /open\s*\(/g, library: 'builtins', callType: 'fs' },
-      { pattern: /os\.(listdir|mkdir|remove|rename)\s*\(/g, library: 'os', callType: 'fs' },
-      { pattern: /pathlib\.Path\s*\(/g, library: 'pathlib', callType: 'fs' },
-      { pattern: /logging\.(info|debug|warning|error|critical)\s*\(/g, library: 'logging', callType: 'logging' },
-      { pattern: /print\s*\(/g, library: 'builtins', callType: 'logging' }
-    ];
-
-    libraryPatterns.forEach(({pattern, library, callType}) => {
-      let match;
-      while ((match = pattern.exec(line)) !== null) {
-        const methodName = match[1] || match[0].split('(')[0].split('.').pop() || 'unknown';
-        const isAsync = line.includes('await ');
-
-        this.libraryCalls.push({
-          library,
-          method: methodName,
-          isAsync,
-          callType,
-          line: lineNumber
-        });
-      }
-    });
-  }
-
-  private extractAbstractCallsFromLine(line: string, lineNumber: number, currentFunction: string, currentClass: string): void {
-    // Common abstract method patterns in Python
-    const abstractPatterns = [
-      /\.process\s*\(/g,
-      /\.handle\s*\(/g,
-      /\.execute\s*\(/g,
-      /\.validate\s*\(/g,
-      /\.transform\s*\(/g,
-      /super\(\)\.([\w_]+)\s*\(/g
-    ];
-
-    abstractPatterns.forEach(pattern => {
-      let match;
-      while ((match = pattern.exec(line)) !== null) {
-        const methodName = match[1] || match[0].split('(')[0].split('.').pop();
-        if (methodName) {
-          this.methodCalls.push({
-            caller: currentFunction || currentClass || 'module',
-            callee: methodName,
-            callType: 'abstract',
-            line: lineNumber,
-            isAsync: line.includes('await '),
-            parameters: this.extractCallParameters(line, match.index || 0),
-            isConditional: line.includes('if ') || line.includes('elif '),
-            isInLoop: line.includes('for ') || line.includes('while ')
-          });
-        }
-      }
-    });
-  }
-
-  private extractClassName(line: string): string {
-    const match = line.match(/class\s+(\w+)/);
-    return match ? match[1] : '';
-  }
-
-  private extractFunctionName(line: string): string {
-    const match = line.match(/(?:async\s+)?def\s+(\w+)/);
-    return match ? match[1] : '';
-  }
-
-  private extractCallParameters(line: string, callIndex: number): string[] {
-    const afterCall = line.substring(callIndex);
-    const parenStart = afterCall.indexOf('(');
-    const parenEnd = afterCall.indexOf(')', parenStart);
-
-    if (parenStart === -1 || parenEnd === -1) return [];
-
-    const paramString = afterCall.substring(parenStart + 1, parenEnd);
-    return paramString.split(',').map(p => p.trim()).filter(p => p.length > 0);
-  }
-
-  private determineCallType(functionName: string): PythonMethodCall['callType'] {
-    const builtins = ['print', 'len', 'str', 'int', 'float', 'bool', 'list', 'dict', 'set', 'tuple', 'range', 'enumerate', 'zip', 'map', 'filter', 'sorted', 'max', 'min', 'sum', 'any', 'all'];
-
-    if (builtins.includes(functionName)) {
-      return 'builtin';
-    }
-
-    // Check if it looks like a library call
-    if (functionName.includes('_') || functionName[0] === functionName[0].toUpperCase()) {
-      return 'library';
-    }
-
-    return 'function';
-  }
-
-  private createCallGraphEdges(nodes: CASNode[]): void {
-    // Create edges for method calls
-    this.methodCalls.forEach(call => {
-      const sourceNode = this.findNodeByName(call.caller, nodes);
-      const targetNode = this.findNodeByName(call.callee, nodes);
-
-      if (sourceNode && targetNode && sourceNode.id !== targetNode.id) {
-        // Add edge tracking if not already present in the main analysis
-      }
-    });
-
-    // Library calls are handled as exit points in the main analysis
-  }
-
-  private findNodeByName(name: string, nodes: CASNode[]): CASNode | undefined {
-    // Try exact match first
-    let node = nodes.find(n => n.name === name);
-
-    // Try method name from object.method format
-    if (!node && name.includes('.')) {
-      const methodName = name.split('.').pop();
-      node = nodes.find(n => n.name === methodName && n.type === 'method');
-    }
-
-    return node;
   }
 
   protected sanitizeId(name: string): string {
@@ -1997,7 +1777,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
     const lines = docstring.split('\n').map(line => line.trim());
     const firstLine = lines[0];
 
-    // Detect docstring style
     const isGoogleStyle = /Args:|Arguments:|Returns?:|Yields?:|Raises?:|Note:|Example:/i.test(docstring);
     const isNumpyStyle = /Parameters\s*\n\s*-+|Returns\s*\n\s*-+|Raises\s*\n\s*-+/i.test(docstring);
     const isSphinxStyle = /:param |:type |:returns?:|:rtype:|:raises?:/i.test(docstring);
@@ -2006,10 +1785,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
     if (isSphinxStyle) docType = 'docstring';
     else if (isGoogleStyle || isNumpyStyle) docType = 'docstring';
 
-    // Extract summary (first line or paragraph)
     const summary = firstLine;
 
-    // Extract description (everything before first section)
     let description = '';
     let parameterSection = '';
     let returnsSection = '';
@@ -2038,13 +1815,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Handle last section
     if (currentSection === 'description') description = sectionContent.trim();
     else if (currentSection === 'parameters') parameterSection = sectionContent.trim();
     else if (currentSection === 'returns') returnsSection = sectionContent.trim();
     else if (currentSection === 'examples') examplesSection = sectionContent.trim();
 
-    // Parse parameters
     const parameters: Array<{name: string; type?: string; description?: string; optional?: boolean}> = [];
     if (parameterSection) {
       const paramLines = parameterSection.split('\n');
@@ -2061,7 +1836,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Parse returns
     let returns: {type?: string; description?: string} | undefined;
     if (returnsSection) {
       const returnMatch = returnsSection.match(/^\s*(?:([^:]+):\s*)?(.*)$/);
@@ -2073,7 +1847,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Parse examples
     const examples: Array<{title?: string; code: string; language?: string}> = [];
     if (examplesSection) {
       examples.push({
@@ -2145,17 +1918,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /**
-   * Tags every node in a Python test file with `metadata.is_test`,
-   * `category: 'test'`, and a `test-code` tag, mirroring the TS/JS
-   * analyzer's applyTestSourceBoundary and the Go analyzer's
-   * applyTestFileBoundary. Python's own conventions (pytest and unittest,
-   * both universal — never a keyword/brand check): modules named
-   * `test_*.py` or `*_test.py`, or any module under a `tests/` or `test/`
-   * directory. Without this, Python test functions carried no test-owned
-   * marker, so the cross-language test-coverage graph walk could never
-   * start a traversal from this analyzer's own function nodes.
-   */
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;

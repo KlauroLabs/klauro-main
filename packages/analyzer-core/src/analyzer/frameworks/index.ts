@@ -1,15 +1,15 @@
-// NOT a registration path. The single source of truth for which analyzers run
-// against a real repo is createOrchestrator() in apps/mcp-server/src/analyzer.ts
-// — that is the only list wired into the deployed product
-// (analyzer-server / remote-analyzer-service.ts) and into analyzeForBench.
-// FRAMEWORK_ANALYZERS below is consumed only as benchmark-grid metadata by
-// apps/mcp-server/src/gauntlet/full-grid.ts (which frameworks exist, for
-// coverage-matrix reporting) — it never drives real analysis. getFrameworkAnalyzer
-// and detectFrameworkFromFiles have no callers anywhere in the codebase; they
-// are dead helper code left over from an earlier detection design. Adding a new
-// analyzer here does NOT make it run in production — register it in
-// apps/mcp-server/src/analyzer.ts instead. See scripts/verify-live-analyzer-registration.ts
-// for the guard that enforces this.
+
+
+
+
+
+
+
+
+
+
+
+
 export * from './web';
 export * from './testing';
 export * from './mobile';
@@ -406,10 +406,3 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     priority: 95
   }
 ];
-
-// getFrameworkAnalyzer() and detectFrameworkFromFiles() were removed here —
-// dead code with zero callers anywhere in the codebase (a duplicate,
-// never-invoked detection path from an earlier design; real detection is
-// AnalyzerOrchestrator.detectPatterns-based, driven by the live registration
-// list in apps/mcp-server/src/analyzer.ts). BaseAnalyzer import removed with
-// them.

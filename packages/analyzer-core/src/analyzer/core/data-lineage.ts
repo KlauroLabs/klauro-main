@@ -23,55 +23,55 @@ export interface DataLineageInput {
   userJourneys: CASUserJourney[];
 }
 
-/**
- * Recover a repo-relative file path from an accessor node's `source.file`.
- *
- * Most nodes already carry a repo-relative path, but some analyzers (and the
- * bench/remote analyzer, which snapshots source into a throwaway staged dir
- * like `/var/folders/.../klauro-bench-analyzer-*`) leave an ABSOLUTE staged/temp
- * path on `source.file`. That leaks the temp mount into `data_lineage` accessor
- * `.file` values — the same defect class already fixed for system/deployable
- * names. Normalize at emit time: for an absolute path, keep the repo-relative
- * tail starting at the first real source segment (apps/libs/packages/src);
- * relative paths pass through untouched. Mirrors communication-seams.ts's
- * componentForFile recovery so the two stay consistent.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function toRepoRelativeAccessorFile(file: string | undefined): string | undefined {
   if (!file) return file;
   const f = file.replace(/\\/g, '/');
-  if (!f.startsWith('/')) return f; // already repo-relative
+  if (!f.startsWith('/')) return f;
   const m = f.match(/\/((?:apps|libs|packages|src)\/.*)$/);
-  return m ? m[1] : undefined; // no recoverable source tail: drop the temp path
+  return m ? m[1] : undefined;
 }
 
-/**
- * Resolve a customer-facing recipient identity from an exit point using only
- * EVIDENCE that the call actually leaves the process, never the shape of its
- * name.
- *
- * `service_id`/`sdk` are structured identity fields set exclusively by
- * analyzers that resolve a genuine outbound destination — a real SDK/HTTP
- * client call (outbound-http-client-analyzer.ts), a message/queue publish
- * (messaging-analyzer.ts), a provisioned cloud resource, etc. Those analyzers
- * always populate `target`, so this is a strict identity read, never a guess.
- *
- * A prior version of this function ALSO accepted the exit point's bare NAME
- * whenever it merely *looked* like a clean identifier
- * (`word[.:/-]word...`, no whitespace/punctuation). That shape test cannot
- * tell "external service" from "in-process call": several language
- * analyzers' chained-call extraction (Go/C#/Java/PHP/Solidity `External
- * call: <target>` labels — e.g. go-analyzer.ts's isExternalLibraryCall, which
- * explicitly tags calls into fmt/errors/json/reflect/crypto/time and any
- * other non-local-package call as an exit point) means every standard-library
- * helper and even a same-process struct method (`s.db.Exec`) reads as a
- * clean identifier too, and NONE of those set `target` — so the shape
- * fallback let stdlib/local calls stand in as "external recipients" of
- * sensitive data next to real third-party SDKs, in a SECURITY-FACING field.
- * There is no string shape that reliably means "external"; only structured
- * destination evidence does. Absent it, the call is DROPPED rather than
- * guessed at — an empty `external_recipients` list is an honest "unresolved
- * from this analysis", a wrong one is a security misstatement.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function resolveRecipientService(exitPoint: CASExitPoint): string | undefined {
   return exitPoint.target?.service_id || exitPoint.target?.sdk || undefined;
 }
@@ -265,10 +265,10 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     if (!EXTERNAL_EXIT_TYPES.has(exitPoint.type) || recipients.has(exitPoint.id)) return;
     if (isLanguageBuiltinExitPoint(exitPoint)) return;
     const service = resolveRecipientService(exitPoint);
-    // No resolved identity — omit the entry rather than leak the raw exit
-    // point name (see resolveRecipientService). Other exit points for this
-    // entity that DO resolve still surface; if none do, external_transfer
-    // stays false rather than reporting a transfer to an unnamed recipient.
+
+
+
+
     if (!service) return;
     recipients.set(exitPoint.id, {
       exit_point_id: exitPoint.id,

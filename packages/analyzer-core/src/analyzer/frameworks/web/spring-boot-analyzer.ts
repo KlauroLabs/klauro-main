@@ -34,9 +34,9 @@ interface SpringEndpoint {
   produces: string[];
   consumes: string[];
   authenticated: boolean;
-  /** 1-based source line of the mapping annotation, used to give the
-   *  emitted route node/entry point a real handler.file+handler.line
-   *  (the orchestrator's dedup key on code location). */
+
+
+
   line: number;
 }
 
@@ -92,19 +92,19 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     );
   }
 
-  /**
-   * See BaseAnalyzer.getPackageDirSafeIgnorePatterns (packages/analyzer-core/src/
-   * analyzer/core/base-analyzer.ts) for the full rationale: the shared denylist
-   * excludes any `samples/**`, `examples/**`, `fixtures/**`, or `testdata/**`
-   * directory to skip vendored example code in JS/Python repos, but Java's
-   * package-to-directory convention turns those into common REAL package
-   * segments (e.g. `org.springframework.samples.<app>`). Left unfiltered, this
-   * analyzer's own java-file glob silently excludes every controller/entity/
-   * service in a codebase using that package name — which is exactly the shape
-   * of a benchmarked Spring Boot reference app this analyzer targets. This thin
-   * wrapper only exists to keep this file's `{ projectPath }`-only call sites
-   * (outside a full AnalysisContext) working.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
     return this.getPackageDirSafeIgnorePatterns(context as AnalysisContext);
   }
@@ -168,10 +168,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const configurations = await this.analyzeConfigurations(javaFiles, context.projectPath, nodes, edges);
       const entities = await this.analyzeEntities(javaFiles, context.projectPath, nodes, edges, exitPoints);
       const security = await this.analyzeSecurity(javaFiles, context.projectPath, nodes, edges);
-      // Messaging/scheduling/event/GraphQL triggers are NOT restricted to
-      // @Controller classes (a @Component/@Service can carry @KafkaListener
-      // or @Scheduled just as validly), so this scans every java file rather
-      // than only the ones already gated into analyzeControllers.
+
+
+
+
       await this.analyzeMessagingTriggers(javaFiles, context.projectPath, nodes, entryPoints);
 
       this.buildSpringBootRelationships(controllers, services, configurations, entities, nodes, edges);
@@ -302,12 +302,12 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
           endpoints.forEach((endpoint, index) => {
             const endpointId = `endpoint_${controllerId}_${endpoint.handlerName}_${index}`;
-            // NOTE: intentionally NOT named `fullPath` here — the outer scope
-            // already has a `fullPath` holding the java source file's absolute
-            // path (used below for handler.file / node source.file). A prior
-            // version of this code shadowed that outer binding with the
-            // composed ROUTE path, which silently fed the route path in as the
-            // node's source `file` instead of the real java file.
+
+
+
+
+
+
             const routePath = `${requestMapping}${endpoint.path}`.replace('//', '/');
 
             const endpointNode = this.createNodeBuilder(endpointId, `${endpoint.method.toUpperCase()} ${routePath}`, 'route')
@@ -337,10 +337,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
               'exposes'
             ));
 
-            // Canonical HTTP entry point so the orchestrator's buildRouteTable
-            // (filters ep.type==='http', reads trigger.method/path + security)
-            // surfaces Spring routes in get_route_table, like Express/NestJS.
-            // Normalize Spring's `{id}` path params to the `:id` route convention.
+
+
+
+
             const canonicalPath = routePath.replace(/\{([^}]+)\}/g, ':$1');
             entryPoints.push(this.createEntryPoint(
               `entry_${endpointId}`,
@@ -574,14 +574,14 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
               attributes: {
                 table,
                 relationships: relationships.length,
-                // The orchestrator's buildDataEntities() promotes a 'model'-type
-                // node into a database_entities entry with real field evidence by
-                // reading metadata.attributes.fields as an ARRAY of {name,type}
-                // (its fallback path for schema-file-style analyzers that don't
-                // emit one node per field, which is how this analyzer works).
-                // Storing `fields.length` (a number) here made that Array.isArray
-                // check fail silently, so every JPA entity surfaced with zero
-                // fields even once the entity node itself was detected.
+
+
+
+
+
+
+
+
                 fields
               }
             })
@@ -655,17 +655,17 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  /**
-   * Detects Spring's non-HTTP-route trigger annotations — messaging listeners,
-   * scheduled tasks, application-event listeners, and Spring GraphQL
-   * operations — and emits one entry point per annotated method. Unlike
-   * `analyzeControllers`, this deliberately scans EVERY java file rather than
-   * only files already gated on `@Controller`/`@RestController`: a
-   * `@KafkaListener` or `@Scheduled` method is just as valid on a plain
-   * `@Component`/`@Service` as on a controller, and gating on the controller
-   * check would silently make those invisible. The cheap `includes()`
-   * pre-check keeps the cost near-zero for the files that use none of these.
-   */
+
+
+
+
+
+
+
+
+
+
+
   private async analyzeMessagingTriggers(
     files: string[],
     projectPath: string,
@@ -793,15 +793,15 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Shared machinery for every Spring trigger annotation in
-   * `analyzeMessagingTriggers`: finds each method-level `@AnnotationName(...)`
-   * occurrence (mirroring the same "annotation, then eventually a
-   * public/protected method signature" shape used for `@GetMapping` etc. in
-   * `extractEndpoints`), and for each one emits a node + a matching entry
-   * point carrying `handler.file`/`handler.line` so the orchestrator's
-   * location-based dedup can key on real code, not a guess.
-   */
+
+
+
+
+
+
+
+
+
   private emitAnnotatedTriggers(
     content: string,
     className: string,
@@ -861,10 +861,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Extracts the string literal(s) assigned to a named annotation attribute,
-   *  supporting both the single-value form (`topics = "orders"`) and the
-   *  array form (`topics = {"a", "b"}`). `keyPattern` may itself be a small
-   *  regex fragment (e.g. `topics?` to match both `topic` and `topics`). */
+
+
+
+
   private extractNamedListLiteral(rawArgs: string | undefined, keyPattern: string): string[] {
     if (!rawArgs) return [];
     const keyMatch = rawArgs.match(new RegExp(`${keyPattern}\\s*=\\s*(\\{[^}]*\\}|["'][^"']*["'])`));
@@ -878,29 +878,29 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return literals;
   }
 
-  /**
-   * A class needs no access modifier to be a valid, fully-functional Spring
-   * bean/controller/entity — package-private (default-visibility) classes are
-   * a routine, idiomatic choice (a benchmarked Spring Boot reference app itself
-   * declares its `@RestController`s as bare `class OwnerResource { ... }`,
-   * no `public`). The previous `public\s+class` requirement silently dropped
-   * every non-public component: 0 controllers/services/entities detected on
-   * any codebase that follows this common style. Optional modifiers in any
-   * order/combination (public|protected|abstract|final|static, though real
-   * Java only uses valid combinations) now match, matching how JavaAnalyzer's
-   * own `extractClasses` already treats modifiers as optional.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private extractClassName(content: string): string | null {
     const classMatch = content.match(/(?:\b(?:public|protected|private|abstract|final|static)\s+)*class\s+(\w+)/);
     return classMatch ? classMatch[1] : null;
   }
 
-  /** Parse the string literal out of an annotation's parenthesized arguments,
-   *  tolerating the `value = "..."` / `path = "..."` forms Spring allows in
-   *  addition to the bare positional `@Xyz("...")` form — both are common in
-   *  real code (`@GetMapping(value = "/{ownerId}")`) and the bare-literal-only
-   *  match previously used here silently treated any `value=`/`path=` mapping
-   *  as if the annotation had no path at all. */
+
+
+
+
+
+
   private extractAnnotationPathLiteral(rawArgs: string | undefined): string {
     if (!rawArgs) return '';
     const literalMatch = rawArgs.match(/(?:(?:value|path)\s*=\s*)?["']([^"']+)["']/);
@@ -908,9 +908,9 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   }
 
   private extractRequestMapping(content: string): string {
-    // Class-level @RequestMapping precedes the `class` keyword; restricting the
-    // search to that header (rather than the whole file) keeps a method-level
-    // @RequestMapping from being mistaken for the class-level base path.
+
+
+
     const classDeclIdx = content.search(/\bclass\s+\w/);
     const header = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : content;
     const mappingMatch = header.match(/@RequestMapping\s*\(([^)]*)\)/);
@@ -918,18 +918,18 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   }
 
   private extractEndpoints(content: string): SpringEndpoint[] {
-    // Return type must allow generics/arrays (`Optional<Owner>`, `List<Owner>`,
-    // `ResponseEntity<List<Pet>>`, `Owner[]`) in addition to a bare type/`void` —
-    // real handler methods routinely wrap their response, and the previous
-    // `\w+`-only return type silently dropped every endpoint whose handler
-    // returned a generic type (i.e. nearly all of them: `findOwner`/`findAll`
-    // in the reference app both return `Optional<Owner>`/`List<Owner>`).
-    // The mapping's own arguments are captured whole (group 2) so both the
-    // bare-literal and `value=`/`path=` forms can be parsed uniformly.
+
+
+
+
+
+
+
+
     const methodPattern = /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?[\w.]+(?:<[^;{}]*>)?(?:\[\])*\s+(\w+)\s*\([^)]*\)/g;
-    // A class-level @PreAuthorize/@Secured/@RolesAllowed (declared above the class
-    // declaration) protects every endpoint. Method-level ones protect only their
-    // own endpoint. Class-level = a security annotation appearing before `class`.
+
+
+
     const classDeclIdx = content.search(/\bclass\s+\w/);
     const classHeader = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : '';
     const classGuarded = /@(?:PreAuthorize|Secured|RolesAllowed)\b/.test(classHeader);
@@ -948,13 +948,13 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Bare method-level `@RequestMapping(value = "/x", method = RequestMethod.GET)`.
-    // The class-level @RequestMapping (the controller's base path) uses the SAME
-    // annotation name and precedes the `class` keyword, so any match whose start
-    // index is before classDeclIdx is the class-level one and must be skipped —
-    // extractRequestMapping() already isolates that one separately. A method-level
-    // use with no `method=` attribute applies to ALL HTTP methods per Spring's own
-    // default, so it's recorded as verb 'all' rather than guessed.
+
+
+
+
+
+
+
     const bareRequestMappingPattern = /@RequestMapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?[\w.]+(?:<[^;{}]*>)?(?:\[\])*\s+(\w+)\s*\([^)]*\)/g;
     while ((match = bareRequestMappingPattern.exec(content)) !== null) {
       if (classDeclIdx >= 0 && match.index < classDeclIdx) continue;
@@ -975,10 +975,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const path = this.extractAnnotationPathLiteral(rm.rawArgs);
       const line = this.getLineNumber(content, rm.index);
 
-      // Per-endpoint auth: a security annotation in the window from the previous
-      // endpoint's end through this endpoint's signature guards THIS method only —
-      // whether it sits just before the @…Mapping or between the mapping and
-      // `public`. File-level inclusion would wrongly mark sibling open endpoints.
+
+
+
+
       const windowStart = i === 0
         ? Math.max(0, content.lastIndexOf('}', rm.index) + 1, prevEnd)
         : prevEnd;
@@ -1004,10 +1004,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return endpoints;
   }
 
-  /** Verbs declared via `method = RequestMethod.X` (or a `{RequestMethod.X,
-   *  RequestMethod.Y}` array) on a bare `@RequestMapping`. Absent = Spring's
-   *  own default of matching every HTTP method, recorded as 'all' rather than
-   *  guessed at a single verb. */
+
+
+
+
   private extractRequestMappingVerbs(rawArgs: string | undefined): string[] {
     if (!rawArgs) return ['all'];
     const verbs: string[] = [];
@@ -1019,7 +1019,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return verbs.length > 0 ? verbs : ['all'];
   }
 
-  /** 1-based line number of a character offset into `content`. */
+
   private getLineNumber(content: string, index: number): number {
     return content.slice(0, index).split('\n').length;
   }
@@ -1027,21 +1027,21 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   private extractFieldDependencies(content: string): string[] {
     const dependencies = new Set<string>();
 
-    // Field injection: @Autowired private Type field;
+
     const fieldPattern = /@Autowired[\s\S]*?private\s+(\w+)\s+\w+;/g;
     let match;
     while ((match = fieldPattern.exec(content)) !== null) {
       dependencies.add(match[1]);
     }
 
-    // Constructor injection (the modern Spring idiom, no @Autowired needed): the
-    // ctor parameters of the component are its injected collaborators.
+
+
     const className = this.extractClassName(content);
     if (className) {
       const ctor = new RegExp(`(?:public\\s+)?${className}\\s*\\(([^)]*)\\)`).exec(content);
       if (ctor && ctor[1].trim()) {
         for (const param of ctor[1].split(',')) {
-          // `final Type name` / `Type name` / `@Qualifier(..) Type name` -> Type.
+
           const pm = param.trim().match(/(?:@\w+(?:\([^)]*\))?\s+)*(?:final\s+)?([A-Z]\w*)\s+\w+\s*$/);
           if (pm) dependencies.add(pm[1]);
         }
@@ -1215,7 +1215,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         if (parentVersionMatch) return parentVersionMatch[1];
       }
     } catch {
-      // Continue with other methods
+
     }
 
     return 'unknown';
@@ -1318,37 +1318,37 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     ];
   }
 
-  // CAS v1.4.0 Documentation and Comment extraction methods
+
 
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
 
-    // Look for Spring Boot-specific documentation patterns
 
-    // 1. @ApiOperation annotations
+
+
     const apiOperationMatches = content.matchAll(/@ApiOperation\s*\(\s*value\s*=\s*['"]([^'"]+)['"]/g);
     const apiOperations = [];
     for (const match of apiOperationMatches) {
       apiOperations.push(match[1]);
     }
 
-    // 2. Controller method JavaDoc
+
     const javadocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\//g);
     const javadocs = [];
     for (const match of javadocMatches) {
       javadocs.push(match[1].trim());
     }
 
-    // 3. Entity class documentation
+
     const entityDocMatches = content.matchAll(/@Entity[^\n]*\n[^\n]*\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/\s*(?:public\s+)?class/g);
     const entityDocs = [];
     for (const match of entityDocMatches) {
       entityDocs.push(match[1].trim());
     }
 
-    // 4. Configuration property docs
+
     const configPropMatches = content.matchAll(/@ConfigurationProperties\s*\([^)]*\)[^\n]*\n[^\n]*\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\//g);
     const configDocs = [];
     for (const match of configPropMatches) {
@@ -1388,7 +1388,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // Java single-line comments
+
       if (trimmedLine.startsWith('//')) {
         const commentText = trimmedLine.substring(2).trim();
         if (commentText.length > 0) {
@@ -1414,7 +1414,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Multi-line comments /* */
+
       if (trimmedLine.includes('/*') && !trimmedLine.includes('/**')) {
         let commentText = '';
         let j = i;
@@ -1453,7 +1453,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           comments.push(comment);
         }
 
-        i = j - 1; // Skip processed lines
+        i = j - 1;
       }
     }
 

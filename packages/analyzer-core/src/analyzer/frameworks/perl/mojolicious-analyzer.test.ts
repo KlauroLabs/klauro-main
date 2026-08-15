@@ -121,6 +121,8 @@ test('mojolicious: F1 = 1.0 against the bench fixture truth.json (exact string m
   const analyzer = new MojoliciousAnalyzer();
   assert.equal(await analyzer.canAnalyze(fixtureDir), true, 'detects the bench fixture');
   const contribution = await analyzer.analyze({ projectPath: fixtureDir } as any);
+  const nodeIds = new Set((contribution.nodes || []).map(node => node.id));
+  assert.ok((contribution.entry_points || []).every(entryPoint => nodeIds.has(entryPoint.source_node)));
   const produced = (contribution.entry_points || []).map(
     ep => `${ep.trigger?.method} ${ep.trigger?.path}`
   );

@@ -7,33 +7,33 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * JAX-RS / Jersey framework analyzer (Java standalone REST, without Quarkus/
- * Micronaut wrapping it).
- *
- * Extracts the plain-JAX-RS conventions the generic Java analyzer cannot see:
- *   - Resources: `@Path("/x")` on a class + `@GET/@POST/@PUT/@DELETE/@PATCH` on
- *     methods (optionally with their own `@Path("/{id}")` sub-path) → routes,
- *     composed to the full path (class base + method sub-path).
- *   - `@Produces` / `@Consumes` media types.
- *   - Auth signals: `@RolesAllowed`, `@PermitAll(false)`-style gating (Jakarta
- *     Security / Shiro-style annotations used directly with JAX-RS).
- *   - `@Provider` classes (ExceptionMapper / ContextResolver / Filter) as
- *     framework-integration nodes.
- *
- * This analyzer is deliberately separate from QuarkusAnalyzer: Quarkus embeds
- * JAX-RS and is gated on Quarkus-specific signals (io.quarkus imports/deps,
- * application.properties `quarkus.*` keys). Plain JAX-RS/Jersey projects
- * (jersey-server, javax.ws.rs-api / jakarta.ws.rs-api without any quarkus
- * signal) would otherwise go unrecognized. Gating here requires JAX-RS/Jersey
- * dependency evidence AND explicitly excludes projects that already show a
- * Quarkus signal, so the two analyzers never double-count the same resource
- * (each contributes once; Quarkus wins when both are present since it is the
- * more specific runtime).
- *
- * Extraction is annotation/line-based over `.java` files (no Java AST available),
- * mirroring the Quarkus/Micronaut analyzers' proven approach.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const JAVA_GLOBS = ['**/*.java'];
 const BUILD_GLOBS = [
@@ -94,7 +94,7 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
         if (/io\.micronaut/.test(content)) hasMicronaut = true;
       }
 
-      // application.properties/yml quarkus.* keys are another Quarkus signal.
+
       for (const propRel of ['src/main/resources/application.properties', 'application.properties']) {
         const propPath = path.join(projectPath, propRel);
         if (await fs.pathExists(propPath)) {
@@ -103,11 +103,11 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
         }
       }
 
-      if (hasQuarkus || hasMicronaut) return false; // let the more specific analyzer own it
+      if (hasQuarkus || hasMicronaut) return false;
 
       if (hasJaxRsDependency) return true;
 
-      // Source-level signal: plain jakarta/javax.ws.rs imports with no quarkus/micronaut import anywhere.
+
       const javaFiles = await glob(JAVA_GLOBS, {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -225,9 +225,9 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing
-  // ---------------------------------------------------------------------------
+
+
+
 
   private parseJavaFile(relativePath: string, fullPath: string, content: string): JaxRsFileInfo {
     const lines = content.split('\n');
@@ -251,16 +251,16 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
     return m ? m[1] : null;
   }
 
-  /** Class-level `@Path("/x")` (the base path for all routes in the resource). */
+
   private extractClassPath(content: string): string {
     const classPathMatch = content.match(/@Path\s*\(\s*"([^"]*)"\s*\)\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:public\s+)?(?:abstract\s+)?class\b/);
     return classPathMatch ? this.normalizeSegment(classPathMatch[1]) : '';
   }
 
-  /**
-   * `@GET/@POST/...` method, optionally with its own `@Path` sub-path,
-   * resolved against the class-level base path.
-   */
+
+
+
+
   private extractRoutes(lines: string[], classPath: string): JaxRsRoute[] {
     const routes: JaxRsRoute[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -313,7 +313,7 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** `@Provider` classes: ExceptionMapper / ContextResolver / MessageBodyReader/Writer / filters. */
+
   private extractProviders(lines: string[], className: string | null): JaxRsProvider[] {
     if (!className) return [];
     const providers: JaxRsProvider[] = [];
@@ -328,7 +328,7 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
       else if (/ContainerRequestFilter/.test(block)) kind = 'request-filter';
       else if (/ContainerResponseFilter/.test(block)) kind = 'response-filter';
       providers.push({ name: className, kind, line: i + 1 });
-      break; // one @Provider annotation per class file
+      break;
     }
     return providers;
   }
@@ -351,9 +351,9 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
     return raw.replace(/MediaType\./g, '').replace(/["'{}]/g, '').trim();
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private emitFileContribution(
     info: JaxRsFileInfo,
@@ -457,9 +457,9 @@ export class JaxRsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   protected getLevelName(level: number): string {
     switch (level) {

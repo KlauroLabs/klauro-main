@@ -1,11 +1,10 @@
-import { computeFlowConcepts, rankStoredFlowRefs } from '../../analyzer/core/flow-concepts';
+import { computeFlowConcepts, rankMaterializedFlows } from '../../analyzer/core/flow-concepts';
 import type {
   CASOutput,
   CASNode,
   CASEdge,
   CASEntryPoint,
   CASExitPoint,
-  CASFlowRef,
   CASCallChain,
 } from '../../types/cas.types';
 
@@ -104,41 +103,21 @@ function buildRankableCas(): CASOutput {
     },
   ] as unknown as CASCallChain[];
 
-  // The materialized flow index the analyzer persists for every derived flow —
-  // the ranking input. step_count/criticality/terminus/capability links here
-  // are the same facts the derived flows carry, so ranking costs nothing.
-  const flows: CASFlowRef[] = [
-    ...Array.from({ length: LEAF_COUNT }, (_, i) => ({
-      flow_id: `flow::chain_a${i}`,
-      name: `Ping ${i}`,
-      intent: 'ping',
-      entry_point: `ep_leaf_${i}`,
-      call_chain_id: `chain_a${i}`,
-      criticality: 'low' as const,
-      step_count: 1,
-      terminus: { kind: 'api', produces: `pong_${i}` },
-    })),
-    {
-      flow_id: 'flow::chain_z_deep',
-      name: 'Create Order',
-      intent: 'create order',
-      entry_point: 'ep_deep',
-      call_chain_id: 'chain_z_deep',
-      criticality: 'high' as const,
-      capability_ids: ['cap_orders'],
-      step_count: 3,
-      terminus: { kind: 'database', produces: 'orders_table' },
-    },
-  ];
-
-  return {
+  const cas = {
     analysis_id: 'test-ranked-window',
     nodes, edges, entry_points, exit_points, call_chains,
     flow_graph: {
-      capabilities: [], dependencies: [], flows,
+      capability_candidates: [], dependencies: [],
       topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
     },
   } as unknown as CASOutput;
+  cas.flows = computeFlowConcepts(cas).map(flow => ({
+    ...flow,
+    criticality: flow.flow_id === 'flow::chain_z_deep' ? 'high' : 'low',
+    capability_id: flow.flow_id === 'flow::chain_z_deep' ? 'cap_orders' : flow.capability_id,
+  }));
+  cas.steps = cas.flows.flatMap(flow => flow.steps);
+  return cas;
 }
 
 describe('rank before truncating — the flow window is ordered by significance', () => {
@@ -150,14 +129,14 @@ describe('rank before truncating — the flow window is ordered by significance'
   });
 
   test('the deep flow outranks every 1-step leaf in the full ranked order', () => {
-    const ranked = rankStoredFlowRefs(buildRankableCas());
+    const ranked = rankMaterializedFlows(buildRankableCas());
     expect(ranked).toHaveLength(LEAF_COUNT + 1);
     expect(ranked[0].flow_id).toBe('flow::chain_z_deep');
   });
 
   test('ranking is byte-stable: identical input produces the identical order', () => {
-    const a = rankStoredFlowRefs(buildRankableCas()).map(r => r.flow_id);
-    const b = rankStoredFlowRefs(buildRankableCas()).map(r => r.flow_id);
+    const a = rankMaterializedFlows(buildRankableCas()).map(r => r.flow_id);
+    const b = rankMaterializedFlows(buildRankableCas()).map(r => r.flow_id);
     expect(a).toEqual(b);
     const flowsA = JSON.stringify(computeFlowConcepts(buildRankableCas(), { maxFlows: 3 }));
     const flowsB = JSON.stringify(computeFlowConcepts(buildRankableCas(), { maxFlows: 3 }));
@@ -170,13 +149,13 @@ describe('rank before truncating — the flow window is ordered by significance'
     // below every 1-step product leaf.
     cas.entry_points = (cas.entry_points || []).map(ep =>
       ep.id === 'ep_deep' ? ({ ...ep, type: 'test' } as CASEntryPoint) : ep);
-    const ranked = rankStoredFlowRefs(cas);
+    const ranked = rankMaterializedFlows(cas);
     expect(ranked[ranked.length - 1].flow_id).toBe('flow::chain_z_deep');
   });
 
   test('page 2 returns different flows than page 1, and the union is the total', () => {
     const cas = buildRankableCas();
-    const total = (cas.flow_graph?.flows || []).length;
+    const total = (cas.flows || []).length;
     const page1 = computeFlowConcepts(cas, { maxFlows: 3, offset: 0 }).map(f => f.flow_id);
     const page2 = computeFlowConcepts(cas, { maxFlows: 3, offset: 3 }).map(f => f.flow_id);
     expect(page1).toHaveLength(3);
@@ -194,20 +173,18 @@ describe('rank before truncating — the flow window is ordered by significance'
 
   test('a CAS with no materialized flow index falls back to the legacy order, unchanged', () => {
     const cas = buildRankableCas();
-    delete (cas as { flow_graph?: unknown }).flow_graph;
-    expect(rankStoredFlowRefs(cas)).toHaveLength(0);
+    delete cas.flows;
+    expect(rankMaterializedFlows(cas)).toHaveLength(0);
     const flows = computeFlowConcepts(cas, { maxFlows: 1 });
     // Legacy behaviour: derivation order, i.e. the alphabetically-first chain.
     expect(flows).toHaveLength(1);
     expect(flows[0].flow_id).toBe('flow::chain_a0');
   });
 
-  test('an uncapped, un-offset ask still derives the full union (a lagging index can never drop a flow)', () => {
+  test('the canonical materialized collection is authoritative for every query shape', () => {
     const cas = buildRankableCas();
-    // Index deliberately missing one real flow — the uncapped path must not
-    // inherit that gap.
-    cas.flow_graph!.flows = (cas.flow_graph!.flows || []).filter(f => f.flow_id !== 'flow::chain_a4');
+    cas.flows = (cas.flows || []).filter(flow => flow.flow_id !== 'flow::chain_a4');
     const flows = computeFlowConcepts(cas, {});
-    expect(flows.map(f => f.flow_id)).toContain('flow::chain_a4');
+    expect(flows.map(f => f.flow_id)).not.toContain('flow::chain_a4');
   });
 });

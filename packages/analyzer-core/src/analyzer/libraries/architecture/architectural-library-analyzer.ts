@@ -30,10 +30,10 @@ interface ArchitectureLibraryRule {
   packages: string[];
   usagePatterns: Array<{ label: string; pattern: RegExp; exitType?: CASExitPoint['type']; action?: string; requiresImportEvidence?: boolean }>;
   agentGuidance: string;
-  /** Other rule names whose usage-pattern symbols this rule's patterns may collide with
-   * (e.g. TypeORM's bare `EntityManager`/`Repository<` also match MikroORM). When a rule
-   * lists conflictsWith, requiresImportEvidence patterns are gated on real per-file import
-   * source, never on bare symbol/dependency presence alone. */
+
+
+
+
   conflictsWith?: string[];
 }
 
@@ -67,17 +67,17 @@ interface PreparedArchitectureSource {
 
 const RULES: ArchitectureLibraryRule[] = [
   rule('typeorm', 'TypeORM', 'orm', ['npm'], ['typeorm'], [
-    // Bare `EntityManager` / `getRepository` / `DataSource` also appear verbatim in
-    // MikroORM (@mikro-orm/core) and other ORMs, so this pattern is gated on the file
-    // actually importing from 'typeorm' (see requiresImportEvidence handling below),
-    // not just the symbol name or the package being declared anywhere in the repo.
+
+
+
+
     usage('repository access', /\b(getRepository|Repository<|DataSource|EntityManager)\b/, 'database', 'query', true),
     usage('entity decorators', /\b@(Entity|Column|PrimaryGeneratedColumn|ManyToOne|OneToMany)\b/, undefined, undefined, true),
     usage('migration', /\b(MigrationInterface|QueryRunner)\b/, undefined, undefined, true),
   ], 'Preserve repository/entity/migration boundaries and avoid bypassing TypeORM repositories with ad hoc SQL unless the repo already does that.', ['mikro-orm']),
   rule('mikro-orm', 'MikroORM', 'orm', ['npm'], ['@mikro-orm/core', '@mikro-orm/nestjs', '@mikro-orm/postgresql', '@mikro-orm/mysql', '@mikro-orm/sqlite', '@mikro-orm/mongodb'], [
-    // `EntityManager` / `EntityRepository<` / `getRepository` collide with TypeORM's
-    // symbols of the same name, so this too is gated on real import-source evidence.
+
+
     usage('repository access', /\b(getRepository|EntityRepository<|EntityManager)\b/, 'database', 'query', true),
     usage('entity decorators', /\b@(Entity|Property|PrimaryKey|ManyToOne|OneToMany|ManyToMany)\b/, undefined, undefined, true),
     usage('migration', /\b(Migration|MikroORM\.init)\b/, undefined, undefined, true),
@@ -416,18 +416,16 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
         source === pkg || source.startsWith(`${pkg}/`) || (pkg.endsWith('/') && source.startsWith(pkg))
       ))
     );
-    if (importGroundedFiles.length > 0) {
-      return this.capAndPrioritizeSourceFiles(importGroundedFiles, 'architecture library candidate files');
-    }
-
-    return this.capAndPrioritizeSourceFiles(await glob([
+    const discoveredFiles = await glob([
       '**/*.{ts,tsx,js,jsx,py,rb,java,cs,go,rs,php}',
     ], {
       cwd: context.projectPath,
       ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**'],
       nodir: true,
       absolute: false,
-    }), 'architecture library candidate files');
+    });
+    const candidates = [...new Set([...importGroundedFiles, ...discoveredFiles])].sort();
+    return this.capAndPrioritizeSourceFiles(candidates, 'architecture library candidate files');
   }
 
   private findUsages(files: string[], preparedFiles: Map<string, PreparedArchitectureSource>, rule: ArchitectureLibraryRule): UsageHit[] {
@@ -439,11 +437,11 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
       const { content, imports, lines } = prepared;
       if (!this.fileMayUseRule(content, rule)) continue;
 
-      // Import-source evidence: does this file actually import from one of the rule's
-      // packages? Computed once per file, reused for every requiresImportEvidence pattern
-      // below — this is what prevents a bare shared symbol name (e.g. EntityManager,
-      // used verbatim by both typeorm and @mikro-orm/core) from being attributed to a
-      // specific framework it wasn't actually imported from.
+
+
+
+
+
       const fileImportsRulePackage = needsImportEvidence
         ? imports.some(importSource => rule.packages.some(
             pkg => importSource === pkg || importSource.startsWith(`${pkg}/`)
@@ -503,10 +501,13 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
       if (dependencyHits.length === 0) continue;
       const usages = this.findUsages(sourceFiles, preparedFiles, rule);
       const connectedNodes: string[] = [];
+      const usageNodeIds = new Map<string, string>();
 
-      for (const usageHit of usages.slice(0, 20)) {
-        const nodeId = `archlib_${this.sanitizeId(rule.name)}_${this.sanitizeId(usageHit.file)}_${usageHit.line}`;
+      for (const usageHit of usages) {
+        const usageKey = this.usageKey(usageHit);
+        const nodeId = `archlib_${this.sanitizeId(rule.name)}_${this.sanitizeId(usageHit.pattern)}_${this.sanitizeId(usageHit.file)}_${usageHit.line}`;
         connectedNodes.push(nodeId);
+        usageNodeIds.set(usageKey, nodeId);
         nodes.push(this.createNode(
           nodeId,
           `${rule.displayName}: ${usageHit.pattern}`,
@@ -529,10 +530,10 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
 
       for (const usagePattern of rule.usagePatterns.filter(pattern => pattern.exitType)) {
         const matches = usages.filter(hit => hit.pattern === usagePattern.label);
-        for (const hit of matches.slice(0, 8)) {
-          const sourceNode = connectedNodes.find(id => id.endsWith(`_${hit.line}`)) || connectedNodes[0] || `library_${this.sanitizeId(rule.name)}`;
+        for (const hit of matches) {
+          const sourceNode = usageNodeIds.get(this.usageKey(hit)) || `library_${this.sanitizeId(rule.name)}`;
           exitPoints.push(this.createExitPoint(
-            `exit_archlib_${this.sanitizeId(rule.name)}_${this.sanitizeId(hit.file)}_${hit.line}`,
+            `exit_archlib_${this.sanitizeId(rule.name)}_${this.sanitizeId(hit.pattern)}_${this.sanitizeId(hit.file)}_${hit.line}`,
             sourceNode,
             usagePattern.exitType!,
             `${rule.displayName}: ${usagePattern.label}`,
@@ -574,6 +575,10 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
     }
 
     return { nodes, exitPoints, libraries };
+  }
+
+  private usageKey(hit: UsageHit): string {
+    return `${hit.file}:${hit.line}:${hit.pattern}`;
   }
 
   private extractImports(content: string, filePath: string): string[] {

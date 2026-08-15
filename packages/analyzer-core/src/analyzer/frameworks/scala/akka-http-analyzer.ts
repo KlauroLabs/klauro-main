@@ -7,47 +7,46 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Akka HTTP / Apache Pekko HTTP framework analyzer (Scala route DSL).
- *
- * Akka HTTP (and its Apache-licensed fork Pekko, same API surface post-rename)
- * declares routes with a nested combinator DSL:
- *
- *   val route =
- *     pathPrefix("api") {
- *       path("users") {
- *         get { complete(...) } ~
- *         post { entity(as[User]) { user => complete(...) } }
- *       } ~
- *       path("users" / IntNumber) { id =>
- *         get { complete(...) } ~
- *         authenticateBasic("realm", auth) { user => delete { complete(...) } }
- *       }
- *     }
- *
- * There is no per-route annotation or file to point at (unlike JAX-RS/Play);
- * the route tree IS the source of truth, so this analyzer walks the DSL
- * brace-nesting the same way KtorAnalyzer walks `routing { }`:
- *   - `pathPrefix("x") { ... }` / `path("x" / "y" / IntNumber) { ... }` push a
- *     path-segment scope (segments joined with `/`; `IntNumber`/`LongNumber`/
- *     `Segment`/a bound extractor become a `:param` placeholder).
- *   - `get { ... }` / `post { ... }` / etc. (the akka.http.scaladsl.server
- *     directives) close a route at the accumulated prefix.
- *   - `authenticate*` / `authorize` directives wrapping a scope mark every
- *     route nested inside as authenticated (structural signal, not inferred).
- *   - `~` (the `Route` concat combinator) is a route-tree sibling separator,
- *     not meaningful to path resolution — ignored.
- *
- * Extraction is line/brace-based over `.scala` files (same approach as Ktor's
- * Kotlin DSL and http4s' pattern-match DSL), since a shared Scala AST is not
- * assumed available for every consumer of this analyzer.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const SCALA_GLOBS = ['**/*.scala'];
 const BUILD_GLOBS = ['build.sbt', 'project/plugins.sbt', '**/build.sbt'];
 
 const HTTP_METHOD_DIRECTIVES = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options']);
-const AUTH_DIRECTIVES = new Set(['authenticateBasic', 'authenticateOAuth2', 'authenticateBasicAsync', 'authenticateOAuth2Async', 'authorize', 'authorizeAsync']);
 
 interface AkkaRoute {
   method: string;
@@ -56,7 +55,7 @@ interface AkkaRoute {
   authenticated: boolean;
 }
 
-// Brace-scope frame for resolving nested path prefixes and auth wrappers.
+
 interface Scope {
   kind: 'path' | 'auth' | 'other';
   segment?: string;
@@ -197,9 +196,9 @@ export class AkkaHttpAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing
-  // ---------------------------------------------------------------------------
+
+
+
 
   private parseAkkaFile(relativePath: string, fullPath: string, content: string): AkkaFileInfo {
     const lines = content.split('\n');
@@ -211,13 +210,13 @@ export class AkkaHttpAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /**
-   * Walk the file maintaining a brace-depth scope stack so `pathPrefix`/`path`
-   * segments and `authenticate*`/`authorize` wrappers accumulate onto the
-   * method directives (`get`/`post`/...) nested inside them — the same
-   * approach as KtorAnalyzer.extractRoutes for its `route()`/`authenticate()`
-   * DSL, adapted to Akka's `path`/`pathPrefix` segment syntax.
-   */
+
+
+
+
+
+
+
   private extractRoutes(lines: string[]): AkkaRoute[] {
     const routes: AkkaRoute[] = [];
     const scopes: Scope[] = [];
@@ -230,7 +229,7 @@ export class AkkaHttpAnalyzer extends BaseAnalyzer {
       const pathOpen = raw.match(/\b(?:pathPrefix|path)\s*\(([^)]*)\)\s*\{/);
       const authOpen = raw.match(/\b(authenticateBasic|authenticateOAuth2|authenticateBasicAsync|authenticateOAuth2Async|authorize|authorizeAsync)\s*\(/);
 
-      // Method directive: `get { ... }` / `post { ... }` on its own or chained with `~`.
+
       const methodMatch = raw.match(/\b(get|post|put|delete|patch|head|options)\s*\{/);
       if (methodMatch && HTTP_METHOD_DIRECTIVES.has(methodMatch[1])) {
         const method = methodMatch[1].toUpperCase();
@@ -260,12 +259,12 @@ export class AkkaHttpAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /**
-   * Turn a `path(...)`/`pathPrefix(...)` argument list into a `/`-joined
-   * segment: string literals become literal segments, `IntNumber`/`LongNumber`/
-   * `Segment`/`JavaUUID` extractors (bound or not) become `:param`, and `/` is
-   * the Akka path-DSL concatenation operator joining segments in one call.
-   */
+
+
+
+
+
+
   private parsePathSegment(argsRaw: string): string {
     const parts = argsRaw.split('/').map(p => p.trim()).filter(Boolean);
     const segments = parts.map(p => {
@@ -302,9 +301,9 @@ export class AkkaHttpAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private emitFileContribution(
     info: AkkaFileInfo,
@@ -355,9 +354,9 @@ export class AkkaHttpAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   protected getLevelName(level: number): string {
     switch (level) {

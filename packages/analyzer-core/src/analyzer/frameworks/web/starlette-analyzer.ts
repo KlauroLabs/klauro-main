@@ -18,13 +18,13 @@ interface StarletteRoute {
   source: 'routes_list' | 'decorator';
 }
 
-/**
- * Starlette Framework Analyzer.
- *
- * Covers `Starlette(routes=[Route('/path', endpoint), ...])` construction (route
- * -> endpoint function resolution) and the decorator-style `@app.route('/path')`
- * form used directly against a `Starlette()` instance.
- */
+
+
+
+
+
+
+
 export class StarletteAnalyzer extends BaseAnalyzer {
   constructor() {
     super('starlette', 'Starlette Framework Analyzer', '1.0.0', 'framework');
@@ -43,10 +43,10 @@ export class StarletteAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
-        // extras group naming "starlette" (an integration target the package
-        // can instrument, e.g. via a "fastapi" extra pulling in starlette) is
-        // not evidence the project itself is built with Starlette.
+
+
+
+
         if (this.pyprojectHasRealDependency(pyproject, 'starlette')) return true;
       }
 
@@ -63,13 +63,13 @@ export class StarletteAnalyzer extends BaseAnalyzer {
 
       for (const file of pythonFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        // FastAPI is built on Starlette and re-exports its symbols; only claim
-        // files that reference the starlette package directly so this analyzer
-        // does not double-count plain FastAPI apps that never touch Starlette API.
-        // Also require the reference be an actual application/routing shape,
-        // not a bare import — a framework-agnostic integration helper can
-        // mention "Starlette/FastAPI" in a comment or duck-type around it
-        // without the analyzed repo itself being a Starlette application.
+
+
+
+
+
+
+
         if (
           (content.includes('from starlette') || content.includes('import starlette')) &&
           (/\bStarlette\s*\(/.test(content) || /\bRoute\s*\(/.test(content) || /\bMount\s*\(/.test(content))
@@ -264,7 +264,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
     return allRoutes;
   }
 
-  /** `Starlette(routes=[Route('/path', endpoint, methods=['GET'])])` */
+
   private extractRoutesListEntries(content: string, lines: string[]): StarletteRoute[] {
     const routes: StarletteRoute[] = [];
     const routesArgMatch = /routes\s*=\s*\[/.exec(content);
@@ -298,7 +298,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** `@app.route('/path', methods=['GET'])` directly on a Starlette() instance */
+
   private extractDecoratorRoutes(content: string, lines: string[], application: StarletteApplication | null): StarletteRoute[] {
     const routes: StarletteRoute[] = [];
     if (!application) return routes;
@@ -383,7 +383,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
         if (versionMatch) return versionMatch[1];
       }
     } catch {
-      // Continue
+
     }
     return 'unknown';
   }

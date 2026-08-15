@@ -29,28 +29,22 @@ interface SequelizeModel {
   line: number;
 }
 
-const ASSOCIATION_CARDINALITY: Record<SequelizeAssociationKind, string> = {
-  hasMany: '1:N',
-  belongsTo: 'N:1',
-  hasOne: '1:1',
-  belongsToMany: 'N:M',
-};
 
-/**
- * Sequelize analyzer.
- *
- * Extracts `class X extends Model {}` + `X.init({...})` model definitions as
- * data-entity nodes (fields from the init attribute map), and `X.hasMany(Y)` /
- * `X.belongsTo(Y)` / `X.hasOne(Y)` / `X.belongsToMany(Y)` association calls as
- * `eloquent_relation`-shaped nodes — the orchestrator's method-based relation
- * branch (owner_model/related_model/relation_type) already understands this
- * node type regardless of which framework produced it, so associations surface
- * in `database_schema.relationships_summary` without new orchestrator wiring.
- * Also covers `sequelize.define('Name', {...})` (the non-class API).
- *
- * Node conventions mirror TypeORMAnalyzer: entity nodes are type `'entity'`,
- * level 3, id `entity_sequelize_<name>`, with embedded `fields[]` metadata.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class SequelizeAnalyzer extends BaseAnalyzer {
   constructor() {
     super('sequelize', 'Sequelize Analyzer', '1.0.0', 'library');
@@ -81,7 +75,7 @@ export class SequelizeAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -322,9 +316,9 @@ export class SequelizeAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `class User extends Model {}` followed later by `User.init({ ... }, { ... })`.
-   */
+
+
+
   private parseInitModels(content: string, filePath: string): SequelizeModel[] {
     const models: SequelizeModel[] = [];
     const initRegex = /(\w+)\.init\s*\(\s*\{/g;
@@ -336,7 +330,7 @@ export class SequelizeAnalyzer extends BaseAnalyzer {
       if (body === null) continue;
       const line = content.slice(0, match.index).split('\n').length;
 
-      // The second arg to init() may declare { tableName: '...' }.
+
       const afterBody = content.slice(initRegex.lastIndex);
       const tableNameMatch = /tableName\s*:\s*['"`](\w+)['"`]/.exec(afterBody.slice(0, 400));
 
@@ -351,9 +345,9 @@ export class SequelizeAnalyzer extends BaseAnalyzer {
     return models;
   }
 
-  /**
-   * Parse `const User = sequelize.define('User', { ... })`.
-   */
+
+
+
   private parseDefineModels(content: string, filePath: string): SequelizeModel[] {
     const models: SequelizeModel[] = [];
     const defineRegex = /(?:const|let|var)\s+(\w+)\s*=\s*\w+\.define\s*\(\s*['"`](\w+)['"`]\s*,\s*\{/g;
@@ -399,12 +393,12 @@ export class SequelizeAnalyzer extends BaseAnalyzer {
     return attrs;
   }
 
-  /**
-   * Parse `User.hasMany(Post, { foreignKey: 'userId', as: 'posts' })` and the
-   * other three association kinds, anywhere in the file (not scoped to a
-   * particular class body — Sequelize associations are usually declared at
-   * module scope after both models are defined).
-   */
+
+
+
+
+
+
   private parseAssociations(content: string): SequelizeAssociation[] {
     const associations: SequelizeAssociation[] = [];
     const assocRegex = /(\w+)\.(hasMany|belongsTo|hasOne|belongsToMany)\s*\(\s*(\w+)\s*(?:,\s*\{([^}]*)\})?\s*\)/g;

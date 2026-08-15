@@ -118,17 +118,10 @@ interface GoType {
   isExported: boolean;
 }
 
-// A simple (possibly package/receiver-qualified) identifier — `getUsers`,
-// `handler.getEntriesHandler`, `(*Handler).getFeeds` — is real evidence of a
-// handler's declared name and is resolved to its last segment. Anything else
-// (an inline `func(w, r) {...}` literal, a wrapping call like
-// `wrapAuth(getFeeds)`, a struct literal) is NOT a name and is left
-// unresolved rather than guessed at — no fabrication from a naming pattern
-// alone, same doctrine the rest of this analyzer follows.
 function resolveGoHandlerMethodName(handlerExpr: string | undefined): string | undefined {
   const expr = (handlerExpr || '').trim();
   if (!expr) return undefined;
-  if (/[(){}\[\]]/.test(expr.replace(/^\(\*?\w+\)/, ''))) return undefined; // call/closure/struct — not a bare name
+  if (/[(){}\[\]]/.test(expr.replace(/^\(\*?\w+\)/, ''))) return undefined;
   const segments = expr.replace(/^\(\*?(\w+)\)\.?/, '$1.').split('.').map(s => s.trim()).filter(Boolean);
   if (segments.length === 0) return undefined;
   const last = segments[segments.length - 1];
@@ -177,6 +170,10 @@ export class GoAnalyzer extends BaseAnalyzer {
 
   supportsIncrementalAnalysis(): boolean {
     return true;
+  }
+
+  incrementalContributionScope(): 'project' {
+    return 'project';
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
@@ -473,9 +470,6 @@ export class GoAnalyzer extends BaseAnalyzer {
         .withTodos(fileTodos.length > 0 ? fileTodos : undefined)
         .build());
 
-      // HTTP routes from Go web frameworks (Gin / Echo / Gorilla mux / net/http) —
-      // the Camp-C route fact Camp A/B can't produce. Emitted as http entry points
-      // with a trigger so buildRouteTable surfaces method + path.
       this.extractGoHttpRoutes(content, fileId, relativePath, entryPoints);
 
       for (const imp of imports) {
@@ -1610,17 +1604,6 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Extract HTTP routes from the common Go web frameworks. Gin/Echo/Fiber expose a
-   * `router.METHOD("/path", handler)` builder; Gorilla mux uses
-   * `router.HandleFunc("/path", h).Methods("GET", ...)`. Both name the verb + path
-   * explicitly — the route fact embeddings/structural indexers can't produce.
-   */
-  /**
-   * Blank out Go `//` line and `/* *​/` block comments, preserving string/rune
-   * literals (so a route path containing "//" or a `*` stays intact) and
-   * newline positions (so line-based reasoning elsewhere is unaffected).
-   */
   private stripGoComments(src: string): string {
     let out = '';
     let i = 0;
@@ -1665,34 +1648,15 @@ export class GoAnalyzer extends BaseAnalyzer {
   }
 
   private extractGoHttpRoutes(content: string, fileId: string, relativePath: string, entryPoints: any[]): void {
-    // Gate on a web-framework signal so an arbitrary `cfg.GET("key")` call in
-    // non-routing code can't masquerade as a route.
+
     if (!/gin-gonic\/gin|labstack\/echo|gofiber\/fiber|gorilla\/mux|net\/http|chi\b|\bRouter\b/.test(content)) return;
-    // Strip comments before matching so a commented-out route registration
-    // (`// mux.HandleFunc("GET /debug", h)`) can't masquerade as a live route.
+
     content = this.stripGoComments(content);
     const seen = new Set<string>();
-    // task #131 (measured live, VPS analysis of a miniflux-shaped stdlib
-    // net/http repo): 175 routes extracted here produced only ~3 journeys —
-    // every one of these entry points left `handler` unset, so
-    // orchestrator.ts's handler-resolution pass (`if (!ep.handler?.method_name) {
-    // if (ep.type !== 'cli') continue; ... }`) skips every Go route entry
-    // outright, `source_node` stays pointed at the FILE node (files have no
-    // outgoing call edges), and journey-builder.ts's call-graph walk
-    // dead-ends at depth 0 for all of them. Every OTHER framework analyzer
-    // here (express-analyzer.ts, fastify-analyzer.ts, fastapi-analyzer.ts,
-    // actix-analyzer.ts, node-http-analyzer.ts) sets `handler: { method_name,
-    // file }` on its route entry points; this was the one place that didn't.
-    // `handlerExpr` is the raw source text of the route-registration call's
-    // handler argument — captured per call site below and resolved to a
-    // plain method_name here, never fabricated: an expression that isn't a
-    // simple (possibly dotted) identifier — an inline func literal, a
-    // parenthesized wrapper call — is left unset rather than guessed at, so
-    // the handler-resolution pass's own name-matching decides whether it can
-    // actually find the real function node.
+
     const push = (method: string, rawPath: string, authed = false, handlerExpr?: string) => {
       const m = method.toUpperCase();
-      // Gorilla `{id}` / `{id:[0-9]+}` and Gin `:id` both canonicalize to `:id`.
+
       const path = rawPath
         .replace(/\{(\w+)(?:\.\.\.|:[^}]*)?\}/g, ':$1')
         .replace(/\/+$/,'') || '/';
@@ -1712,15 +1676,11 @@ export class GoAnalyzer extends BaseAnalyzer {
       });
     };
 
-    // Router groups: `v1 := r.Group("/api/v1")` (Gin) / `e.Group("/api")` (Echo)
-    // mount routes under a prefix. Resolve each group var's full prefix
-    // (transitively for nested groups) so a `v1.GET("/users")` is "/api/v1/users".
     const groupParent = new Map<string, { parent: string; local: string }>();
     for (const g of content.matchAll(/\b(\w+)\s*:=\s*(\w+)\.Group\s*\(\s*"([^"]*)"/g)) {
       groupParent.set(g[1], { parent: g[2], local: g[3] });
     }
-    // Gorilla subrouters: `api := r.PathPrefix("/api").Subrouter()` mount routes
-    // under a prefix, same prefix-resolution shape as Gin groups.
+
     for (const g of content.matchAll(/\b(\w+)\s*:=\s*(\w+)\.PathPrefix\s*\(\s*"([^"]*)"\s*\)\s*\.Subrouter\s*\(\s*\)/g)) {
       groupParent.set(g[1], { parent: g[2], local: g[3] });
     }
@@ -1737,8 +1697,6 @@ export class GoAnalyzer extends BaseAnalyzer {
       return parts.join('');
     };
 
-    // Group-wide auth: `admin.Use(AuthRequired())` protects every route registered
-    // on that group (and its nested children). Track which group vars carry auth.
     const groupAuthed = new Set<string>();
     for (const u of content.matchAll(/\b(\w+)\.Use\s*\(([^)]*(?:\([^)]*\))?[^)]*)\)/g)) {
       if ([...u[2].matchAll(/\b([A-Za-z_]\w*)\b/g)].some(id => isAuthenticationGuardName(id[1]))) {
@@ -1756,19 +1714,6 @@ export class GoAnalyzer extends BaseAnalyzer {
       return false;
     };
 
-    // Gin/Echo all-caps `r.GET(...)`, Fiber PascalCase `app.Get(...)`. Capture
-    // receiver (group prefix) + the arg tail (per-route auth mw).
-    //
-    // Structural discriminator (not a name/keyword guess): a real route
-    // registration BINDS A PATH TO A HANDLER, so the call must carry at
-    // least one argument after the path string — the handler (optionally
-    // preceded by middleware). `r.Form.Get("Email")` and `r.Header.Get(
-    // "X-Forwarded-Proto")` are accessor reads that take exactly one
-    // argument and bind nothing; the mandatory trailing comma-group below
-    // (`,[^)]*` — no longer optional) excludes them structurally, without
-    // naming a single field/header. The path argument is also required to
-    // look like a path (leading `/`) once the group prefix is resolved,
-    // since accessor keys ("Email", "output", "Passwd") are never paths.
     const builderRe = /\b(\w+)\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|Get|Post|Put|Delete|Patch|Head|Options)\s*\(\s*"([^"]+)"\s*(,[^)]*)\)/g;
     let m: RegExpExecArray | null;
     while ((m = builderRe.exec(content)) !== null) {
@@ -1776,11 +1721,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       const argsTail = m[4] || '';
       const argsList = argsTail.replace(/^,/, '').split(',').map(s => s.trim()).filter(Boolean);
       if (argsList.length === 0) continue;
-      // The handler is the last positional argument (middleware precedes
-      // it, Gin/Echo/Fiber convention). It must itself look like a callable
-      // reference — a bare/dotted identifier or an inline func literal —
-      // not another string/number literal, which would signal this isn't
-      // actually a handler-binding call.
+
       const handlerExpr = argsList[argsList.length - 1];
       if (!/^[A-Za-z_][\w.]*$|^func\s*\(/.test(handlerExpr)) continue;
       const resolvedPath = resolvePrefix(recv) + m[3];
@@ -1790,10 +1731,6 @@ export class GoAnalyzer extends BaseAnalyzer {
       push(m[2], resolvedPath, authed, handlerExpr);
     }
 
-    // Gorilla mux: `r.HandleFunc("/users", h).Methods("GET", "POST")`. Capture the
-    // receiver so a subrouter's PathPrefix is prepended. Verbs may be quoted
-    // string literals or `net/http` constants (`http.MethodGet`) — idiomatic
-    // modern Go favors the constant form, so both must resolve to the same verb.
     const httpMethodConst: Record<string, string> = {
       MethodGet: 'GET', MethodPost: 'POST', MethodPut: 'PUT', MethodDelete: 'DELETE',
       MethodPatch: 'PATCH', MethodHead: 'HEAD', MethodOptions: 'OPTIONS',
@@ -1810,12 +1747,6 @@ export class GoAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Whole-handler auth wrap: `return authMw.handle(otherMw.handle(mux))` (or
-    // `return middleware.validateAPIKeyAuth(mux)`) protects every route
-    // registered on that mux var — the net/http-stdlib equivalent of a Gin/Echo
-    // group's `.Use()`. Match the `return`-statement's innermost bare
-    // identifier as the wrapped var, and check the wrapper call names (which
-    // may be dotted, e.g. `middleware.validateAPIKeyAuth`) for an auth verb.
     const wholeHandlerAuthed = new Set<string>();
     for (const ret of content.matchAll(/\breturn\s+([^\n;]+?);?\s*(?:\n|$)/g)) {
       const expr = ret[1];
@@ -1827,13 +1758,6 @@ export class GoAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Go 1.22+ stdlib `http.ServeMux` enhanced routing patterns:
-    // `mux.HandleFunc("GET /v1/entries/{entryID}", handler.getEntriesHandler)`.
-    // The verb lives inside the pattern string itself — neither the Gin/Echo
-    // builder shape (verb as a separate method call) nor the Gorilla
-    // `.Methods()` chain above can see this. Handler can be a struct-method
-    // value (`handler.getX`) or an inline func literal; neither affects the
-    // match since only the pattern string is captured.
     const stdlibPatternRe = /\b(\w+)\.HandleFunc\s*\(\s*"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^"\s]+)"\s*(?:,\s*([^)]*))?\)/g;
     while ((m = stdlibPatternRe.exec(content)) !== null) {
       const recv = m[1];
@@ -1843,25 +1767,6 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Detects gin/echo/gorilla/fiber usage from real handler-signature evidence
-   * (a parameter typed `gin.Context`, `echo.Context`, `mux.Vars`, `fiber.Ctx`,
-   * etc — not a name/keyword match on the function itself). Two prior defects
-   * meant this evidence never reached `system.technologies.frameworks`, so a
-   * Go app that genuinely uses gin/echo/gorilla/fiber reported `frameworks:
-   * []` — indistinguishable from a hand-rolled net/http app:
-   *   1. The gate below read `node.metadata?.attributes?.parameters`, but
-   *      processGoFunction (below) never writes parameters there — it calls
-   *      `.withSignature({ parameters, ... })`, which lands at
-   *      `node.signature.parameters`. The gate's condition was therefore
-   *      never true for any real function node, framework or not.
-   *   2. Even with (1) fixed, `metadata.framework` was stamped only on the
-   *      synthetic `${framework}_handler` entry point this method creates,
-   *      never on the underlying CASNode (`node`) itself — the entry point
-   *      alone is invisible to framework-comprehension.ts's
-   *      selectProductFrameworkNames, which reads `node.metadata?.framework`
-   *      off CAS NODES only, never entry points.
-   */
   private detectFrameworkPatterns(nodes: CASNode[], _edges: CASEdge[], entryPoints: any[]): void {
     const frameworkPatterns = {
       gin: ['gin.Engine', 'gin.Context', 'gin.HandlerFunc'],
@@ -1928,23 +1833,6 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Tags every node in a `_test.go` file (Go's own, universal test-file
-   * naming convention — never a keyword/brand check) with `metadata.is_test`,
-   * `category: 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
-   * applyTestSourceBoundary. Without this, Go test functions carried NO
-   * test-owned marker of any kind, so the cross-language test-framework
-   * analyzer's coverage-graph walk (test-framework-analyzer.ts's
-   * isTestOwnedNode / graphNodesForSuite) could never start a traversal from
-   * this analyzer's OWN function nodes — only from its own synthetic
-   * suite/case nodes, which carry no `calls` edges of their own. Real hosted
-   * effect: every Go project's journeys/capabilities reported
-   * `tests_present: false` and `tests_covering: []` even when `go test`
-   * itself passed hundreds of tests (test_summary counts test FILES/CASES
-   * discovered independently of this graph link) — a self-contradiction
-   * between `test_summary.total_tests` and every per-capability/journey test
-   * signal in the same response.
-   */
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;
@@ -1988,14 +1876,6 @@ export class GoAnalyzer extends BaseAnalyzer {
     for (const file of goFiles) {
       const fullPath = path.join(projectPath, file);
 
-      // No enclosing try/catch here, to match analyzeCallGraph in
-      // csharp-analyzer.ts and php-analyzer.ts: parseGoAST (tree-sitter-parser.ts)
-      // already returns null for an ordinary per-file parse failure and
-      // rethrows NativeAddonUnavailableError when the native tree-sitter addon
-      // itself is unavailable. A try/catch around the call used to swallow
-      // that rethrow too, silently degrading Go (and only Go) to the weaker
-      // regex-based fallback for every file instead of surfacing a missing
-      // parser. A missing parser must fail the same way for every language.
       const ast = await this.astRunner.parseGoAST(fullPath);
       if (!ast) {
         await this.analyzeCallGraphEnhanced(fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, projectPath);
@@ -2019,7 +1899,7 @@ export class GoAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     const currentPackage = ast.package || 'main';
     let fileContent = '';
-    try { fileContent = fs.readFileSync(fullPath, 'utf-8'); } catch { /* best effort */ }
+    try { fileContent = fs.readFileSync(fullPath, 'utf-8'); } catch {   }
 
     for (const child of ast.children || []) {
       if (child.type === 'Function' && child.calls) {
@@ -2030,9 +1910,6 @@ export class GoAnalyzer extends BaseAnalyzer {
 
         if (!callerFunction) continue;
 
-        // Receiver var -> declared type, so `l.Save()` (l: *Logger) resolves to
-        // Logger.Save, not whichever Save method happens to be first. Built from
-        // the caller's signature (receiver + params) and simple local decls.
         const recvTypes = this.buildGoReceiverTypeMap(
           fileContent, callerFunction.source?.line, callerFunction.source?.end_line
         );
@@ -2044,13 +1921,11 @@ export class GoAnalyzer extends BaseAnalyzer {
             const stripPtr = (s: string) => String(s || '').replace(/^[\*&]+/, '');
             const recvType = stripPtr(recvTypes.get(call.package) || call.package);
 
-            // 1) Type-aware: a method named `function` whose receiver IS this type.
             targetFunction = functionNodes.find(n =>
               n.type === 'method' && n.name === call.function &&
               stripPtr(n.metadata?.attributes?.receiver?.type as string) === recvType
             );
 
-            // 2) Struct named by the resolved type -> its method.
             if (!targetFunction) {
               const targetStruct = structNodes.find(s => s.name === recvType);
               if (targetStruct) {
@@ -2061,9 +1936,6 @@ export class GoAnalyzer extends BaseAnalyzer {
               }
             }
 
-            // 3) Unambiguous fallback: exactly ONE method has this name -> use it
-            //    (preserves recall where the receiver type couldn't be resolved;
-            //    when ambiguous and unresolved, we do NOT guess — no false edge).
             if (!targetFunction) {
               const named = functionNodes.filter(n => n.type === 'method' && n.name === call.function);
               if (named.length === 1) targetFunction = named[0];
@@ -2268,11 +2140,6 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Map a Go function's local variable names to their bare struct types, from
-   *  the caller's signature (receiver + params) and simple local declarations
-   *  (`x := Foo{}`, `x := &Foo{}`, `var x Foo`). Used to resolve a method-call
-   *  receiver (`l` in `l.Save()`) to the right type so same-name methods on
-   *  different structs don't collide. */
   private buildGoReceiverTypeMap(content: string, startLine?: number, endLine?: number): Map<string, string> {
     const map = new Map<string, string>();
     if (!content || !startLine) return map;
@@ -2355,15 +2222,6 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
 
     return calls;
-  }
-
-  private findHandlerFunction(lines: string[], startIndex: number): string | null {
-    const line = lines[startIndex];
-    const handlerMatch = line.match(/,\s*(\w+)\s*[,)]/);
-    if (handlerMatch) {
-      return handlerMatch[1];
-    }
-    return null;
   }
 
   private isExternalLibraryCall(packageOrFunc: string, methodName: string | undefined, currentPackage: string): boolean {

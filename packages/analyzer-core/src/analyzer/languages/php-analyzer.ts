@@ -149,13 +149,13 @@ interface PHPEnumCase {
   lineNumber: number;
 }
 
-/**
- * Per-class type facts used by call-graph resolution: what a class extends /
- * implements / uses, and the declared type of each property (typed
- * declarations, PHP 8 promoted constructor params, constructor-assignment
- * injection, and `@var` docblocks). All names are namespace-stripped base
- * names — the analyzer's node lookup tables are keyed the same way.
- */
+
+
+
+
+
+
+
 interface PhpClassTypeInfo {
   name: string;
   isInterface: boolean;
@@ -164,16 +164,16 @@ interface PhpClassTypeInfo {
   interfaces: string[];
   traits: string[];
   propertyTypes: Map<string, string>;
-  /** Declared return types (base names) — lets `$x = $this->repo->createQb()` type $x. */
+
   methodReturnTypes: Map<string, string>;
 }
 
-/**
- * Project-wide type index for evidence-gated call resolution: Symfony DI
- * (interface -> unique implementation, or an explicit services.yaml alias)
- * and Doctrine (entity -> custom repository class from
- * `repositoryClass:`/`parent::__construct($registry, Entity::class)`).
- */
+
+
+
+
+
+
 interface PhpTypeIndex {
   classInfoByName: Map<string, PhpClassTypeInfo>;
   implsByInterface: Map<string, string[]>;
@@ -246,23 +246,23 @@ export class PHPAnalyzer extends BaseAnalyzer {
     ];
   }
 
-  /**
-   * Tags every node in a PHPUnit test file — `*Test.php` (PHPUnit's own class
-   * suffix convention) or any file under a `tests/` directory (the
-   * Laravel/Symfony/PHPUnit default `<testsuite>` root configured in
-   * phpunit.xml) — with `metadata.is_test`, `category: 'test'`, and a
-   * `test-code` tag, mirroring go-analyzer.ts's applyTestFileBoundary and
-   * using the SAME convention TestFrameworkAnalyzer's own phpunit rule
-   * already matches on (fileMatchesPatterns' 'phpunit' case) — never a
-   * keyword/brand check, and never a shared cross-language filename
-   * heuristic. Without this, PHPUnit test methods (which the AST call graph
-   * above already resolves calls FROM) carried no test-owned marker, so the
-   * cross-language coverage-graph walk (test-framework-analyzer.ts's
-   * isTestOwnedNode / graphNodesForSuite) could never start a traversal from
-   * this analyzer's own method/function nodes — only from
-   * TestFrameworkAnalyzer's synthetic suite/case nodes, which carry no
-   * `calls` edges of their own.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;
@@ -907,7 +907,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         try {
           return new URL(wsdl).hostname;
         } catch {
-          // fall through to other naming strategies
+
         }
       }
       const basename = wsdl.split('/').pop();
@@ -970,19 +970,19 @@ export class PHPAnalyzer extends BaseAnalyzer {
       'contains'
     ));
 
-    // Symfony console command entry point — evidence: the class extends a
-    // `Command` type (any namespace ending in \Command, or bare `Command`)
-    // AND the class body carries at least one console-specific marker
-    // (#[AsCommand], $defaultName, or a configure()-time ->setName() call).
-    // A bare `...Command` class with none of those markers is NOT claimed as
-    // a console entry point (no fabrication — could be an unrelated DTO/value
-    // object named "...Command", e.g. a CQRS command bus message).
+
+
+
+
+
+
+
     const extendsCommandClass = !!cls.extendsClass && /(^|\\)Command$/.test(cls.extendsClass);
     if (extendsCommandClass) {
-      // PHP 8 attributes (`#[AsCommand(...)]`) sit on the line(s) directly
-      // ABOVE the class declaration, not inside cls.lineStart..lineEnd — a
-      // few lines of lookback catches the attribute (and any docblock above
-      // it) without pulling in the previous class/function's body.
+
+
+
+
       const attributeLookback = Math.max(1, cls.lineStart - 5);
       const classBody = lines.slice(attributeLookback - 1, cls.lineEnd);
       const commandName = this.extractPhpConsoleCommandName(classBody);
@@ -1889,10 +1889,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
       const line = lines[i].trim();
 
       if (this.isMethodDeclaration(line)) {
-        // Modern PHP (Symfony especially) writes signatures across MANY lines
-        // — one param per line, attributes interleaved. Join the declaration
-        // until its parens balance so those methods exist as nodes at all
-        // (a missing controller/service method kills the whole call chain).
+
+
+
+
         let signatureText = line;
         let signatureEndIndex = i;
         {
@@ -1911,10 +1911,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
             signatureEndIndex = j;
           }
         }
-        // Visibility is OPTIONAL in PHP — a bare `function name()` inside a class
-        // is implicitly public. Capture any leading modifiers as a prefix and
-        // parse them (order-independent: `public static` or `static public`),
-        // defaulting visibility to public when none is written.
+
+
+
+
         const methodMatch = signatureText.match(/^((?:(?:public|private|protected|static|abstract|final|readonly)\s+)*)function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{;]+))?/);
         if (methodMatch) {
           const mods = methodMatch[1].trim().split(/\s+/).filter(Boolean);
@@ -1928,9 +1928,9 @@ export class PHPAnalyzer extends BaseAnalyzer {
           if (modifier) modifiers.push(modifier);
 
           const docComment = this.extractDocComment(lines, i);
-          // Abstract/interface signatures end in `;` with no body — for the
-          // multi-line form the end is where the signature closed, not the
-          // next block findBlockEnd would swallow.
+
+
+
           const methodEndLine = signatureEndIndex > i && signatureText.trimEnd().endsWith(';')
             ? signatureEndIndex + 1
             : this.findMethodEnd(lines, signatureEndIndex > i ? signatureEndIndex : i);
@@ -2211,15 +2211,15 @@ export class PHPAnalyzer extends BaseAnalyzer {
   }
 
   private isPropertyDeclaration(line: string): boolean {
-    // A typed property with a default value (`private ?int $id = null;`,
-    // `private array $items = [];`) IS a property declaration — Doctrine
-    // entities routinely default nullable/array-typed properties this way,
-    // and `id` (the primary key) is almost always one of them. Excluding any
-    // line containing `=` silently dropped exactly those properties from the
-    // graph. The structural regex in extractProperties (visibility, optional
-    // type, `$name`, optional `= value`) already rejects lines that merely
-    // resemble a declaration, so this check only needs to rule out the
-    // things that clearly aren't one: method signatures/bodies.
+
+
+
+
+
+
+
+
+
     return line.includes('$') &&
            (line.includes('public') || line.includes('private') || line.includes('protected')) &&
            !line.includes('function') &&
@@ -2241,27 +2241,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
            !line.includes('trait');
   }
 
-  private isInsideClass(lines: string[], lineIndex: number): boolean {
-    let braceCount = 0;
-
-    for (let i = lineIndex - 1; i >= 0; i--) {
-      const line = lines[i];
-
-      for (const char of line) {
-        if (char === '}') {
-          braceCount++;
-        } else if (char === '{') {
-          braceCount--;
-          if (braceCount < 0) {
-            const lineStr = lines[i].trim();
-            return lineStr.includes('class ') || lineStr.includes('interface ') || lineStr.includes('trait ');
-          }
-        }
-      }
-    }
-
-    return false;
-  }
 
   private findBlockEnd(lines: string[], startIndex: number): number {
     let braceCount = 0;
@@ -2463,33 +2442,18 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return builtinNamespaces.some(builtin => namespace === builtin || namespace.startsWith(builtin));
   }
 
-  /**
-   * Map each in-scope variable to its declared class within a method's line
-   * range, so a `$recv->method()` call resolves to $recv's class only (not the
-   * containing class, and not every same-name method). Sources: typed params
-   * (`Account $a`) and `$x = new Type()`.
-   */
-  private buildPhpReceiverTypes(lines: string[], startLine: number, endLine: number): Map<string, string> {
-    const m = new Map<string, string>();
-    const baseType = (t: string) => t.replace(/^[?\\]+/, '').split('\\').pop()!.trim();
-    const lo = Math.max(0, startLine - 1);
-    const hi = Math.min(lines.length, endLine);
-    for (let i = lo; i < hi; i++) {
-      const ln = lines[i];
-      for (const pm of ln.matchAll(/[(,]\s*(?:\.\.\.)?([A-Za-z_\\][\w\\]*)\s+&?(?:\.\.\.)?\$(\w+)/g)) {
-        const t = baseType(pm[1]);
-        if (/^[A-Z]/.test(t)) m.set(pm[2], t);
-      }
-      for (const vm of ln.matchAll(/\$(\w+)\s*=\s*new\s+\\?([A-Za-z_\\][\w\\]*)/g)) m.set(vm[1], baseType(vm[2]));
-    }
-    return m;
-  }
 
-  /**
-   * Namespace-stripped base class name of a PHP type expression, or undefined
-   * when the type is scalar/keyword-like (string, int, self, ...) and cannot
-   * name a project class. Unions take the first class-like member.
-   */
+
+
+
+
+
+
+
+
+
+
+
   private phpBaseTypeName(raw?: string): string | undefined {
     if (!raw) return undefined;
     for (const part of raw.replace(/^\?/, '').split('|')) {
@@ -2499,14 +2463,14 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /**
-   * One pass over the project's PHP files (plus Symfony service config)
-   * building the evidence needed to resolve calls across service boundaries:
-   * property/constructor-injection types, interface -> implementation
-   * candidates, and Doctrine entity -> repository class bindings.
-   * Every fact recorded here is read directly from source — nothing is
-   * guessed from names.
-   */
+
+
+
+
+
+
+
+
   private async buildPhpTypeIndex(projectPath: string, phpFiles: string[]): Promise<PhpTypeIndex> {
     const classInfoByName = new Map<string, PhpClassTypeInfo>();
     const implsByInterface = new Map<string, string[]>();
@@ -2540,8 +2504,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         const line = lines[i].trim();
         if (current && i + 1 > currentEnd) current = undefined;
 
-        // Doctrine repository binding evidence lives in attributes/annotations
-        // (often inside docblocks), so scan for it before skipping comments.
+
+
         const repoMatch = line.match(repoAttrRe);
         if (repoMatch) pendingRepoClass = this.phpBaseTypeName(repoMatch[1] || repoMatch[2]);
         const varMatch = line.match(/@var\s+([\w\\|?]+)/);
@@ -2561,7 +2525,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
               isInterface: kind === 'interface',
               isAbstract: decl[1] === 'abstract',
               extendsName: kind === 'interface' ? undefined : extendsList[0],
-              // For interfaces, `extends` lists parent interfaces.
+
               interfaces: kind === 'interface' ? extendsList : implementsList,
               traits: [],
               propertyTypes: new Map(),
@@ -2581,7 +2545,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
         if (!current) continue;
 
-        // Trait usage inside a class body: `use FooTrait;` / `use A, B;`
+
         const traitUse = line.match(/^use\s+([\w\\]+(?:\s*,\s*[\w\\]+)*)\s*;/);
         if (traitUse) {
           for (const t of traitUse[1].split(',')) {
@@ -2591,8 +2555,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
           continue;
         }
 
-        // Typed property declarations AND promoted constructor params share
-        // one shape: `<visibility> [static|readonly] Type $name`.
+
+
         const prop = line.match(propertyRe);
         if (prop) {
           const t = this.phpBaseTypeName(prop[1]);
@@ -2607,9 +2571,9 @@ export class PHPAnalyzer extends BaseAnalyzer {
           }
         }
 
-        // Accumulate method signatures (they span lines in real Symfony code)
-        // so constructor-assignment injection `$this->x = $x;` can inherit
-        // the constructor param's declared type.
+
+
+
         if (sigAccum === null && /function\s+\w+\s*\(/.test(line)) {
           sigAccum = '';
           sigDepth = 0;
@@ -2627,14 +2591,14 @@ export class PHPAnalyzer extends BaseAnalyzer {
               const t = this.phpBaseTypeName(pm[1]);
               if (t) lastSigParamTypes.set(pm[2], t);
             }
-            // Declared return type — evidence for typing fluent/assigned
-            // call results (`$qb = $this->repo->createQueryBuilder(...)`).
+
+
             const sigHead = sigAccum.match(/function\s+(\w+)\s*\(/);
             const closeParen = sigParams.lastIndexOf(')');
             const returnDecl = closeParen >= 0 ? sigParams.slice(closeParen + 1).match(/^\s*:\s*(\??[\w\\|]+)/) : null;
             if (sigHead && returnDecl) {
               const raw = returnDecl[1].replace(/^\?/, '');
-              // Fluent builders declare `self`/`static` — that IS this class.
+
               const rt = raw === 'self' || raw === 'static' ? current.name : this.phpBaseTypeName(raw);
               if (rt && !current.methodReturnTypes.has(sigHead[1])) current.methodReturnTypes.set(sigHead[1], rt);
             }
@@ -2649,7 +2613,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
           if (t && !current.propertyTypes.has(assign[1])) current.propertyTypes.set(assign[1], t);
         }
 
-        // ServiceEntityRepository convention: the repository names its entity.
+
         const parentCtor = line.match(/parent::__construct\(\s*\$\w+\s*,\s*\\?([\w\\]+)::class/);
         if (parentCtor) {
           const entity = this.phpBaseTypeName(parentCtor[1]);
@@ -2658,8 +2622,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // interface -> implementation candidates. Interface inheritance counts:
-    // a class implementing IChild also implements everything IChild extends.
+
+
     const expandInterfaces = (names: string[]): Set<string> => {
       const out = new Set<string>();
       const queue = [...names];
@@ -2681,8 +2645,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         implsByInterface.set(iface, impls);
       }
     }
-    // Prefer concrete implementations when counting candidates: an abstract
-    // base implementing the interface is not the object DI will inject.
+
+
     for (const [iface, impls] of implsByInterface) {
       const concrete = impls.filter(name => !classInfoByName.get(name)?.isAbstract);
       if (concrete.length > 0 && concrete.length < impls.length) implsByInterface.set(iface, concrete);
@@ -2693,11 +2657,11 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return { classInfoByName, implsByInterface, repoClassByEntity, bindingByInterface };
   }
 
-  /**
-   * Symfony services.yaml alias evidence for interface -> implementation
-   * binding when multiple implementations exist. Only explicit aliases are
-   * trusted: `Foo\BarInterface: '@Foo\Baz'` or a nested `alias:` key.
-   */
+
+
+
+
+
   private async collectPhpServiceBindings(projectPath: string, out: Map<string, string>): Promise<void> {
     let configFiles: string[] = [];
     try {
@@ -2745,13 +2709,13 @@ export class PHPAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Resolve a declared type to the class node a call on it would dispatch to.
-   * Interfaces bind to their implementation ONLY on concrete evidence: an
-   * explicit services.yaml alias, or exactly one implementation in the repo.
-   * Ambiguous interfaces resolve to the interface node itself (the call edge
-   * then truthfully targets the declared method, not a guessed impl).
-   */
+
+
+
+
+
+
+
   private resolvePhpTypeToClassNode(
     typeName: string | undefined,
     index: PhpTypeIndex,
@@ -2776,11 +2740,11 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return node;
   }
 
-  /**
-   * Find a method on a class or anywhere up its inheritance surface:
-   * the class itself, its traits, then the extends chain (each parent's
-   * traits included). Bounded and cycle-guarded.
-   */
+
+
+
+
+
   private findPhpMethodInHierarchy(
     startClass: CASNode | undefined,
     methodName: string | undefined,
@@ -2811,7 +2775,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Declared type of `$this->prop`, searched up the inheritance chain. */
+
   private phpPropertyTypeOf(className: string | undefined, prop: string, index: PhpTypeIndex): string | undefined {
     let cursor = className ? index.classInfoByName.get(className) : undefined;
     const visited = new Set<string>();
@@ -2830,7 +2794,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Declared return type of `Class::method`, searched up the inheritance chain. */
+
   private phpMethodReturnTypeOf(className: string | undefined, method: string, index: PhpTypeIndex): string | undefined {
     let cursor = className ? index.classInfoByName.get(className) : undefined;
     const visited = new Set<string>();
@@ -2848,13 +2812,13 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /**
-   * Per-method receiver typing (v2 of buildPhpReceiverTypes): typed params
-   * from the FULL (multi-line) signature, `new Type()` assignments,
-   * `$x = $this->prop` (property's declared type),
-   * `$x = ...->getRepository(Entity::class)` (Doctrine repository binding),
-   * and `$x = <typed receiver>->method()` (declared return type).
-   */
+
+
+
+
+
+
+
   private buildPhpReceiverTypesV2(
     lines: string[],
     startLine: number,
@@ -2866,7 +2830,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     const lo = Math.max(0, startLine - 1);
     const hi = Math.min(lines.length, endLine);
 
-    // Signature: accumulate from the declaration line until parens balance.
+
     let sig = '';
     let depth = 0;
     for (let i = lo; i < hi && i < lo + 60; i++) {
@@ -2900,8 +2864,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         const t = this.phpPropertyTypeOf(containingClassName, pm[2], index);
         if (t) m.set(pm[1], t);
       }
-      // Return-type evidence: `$x = $this->method(...)`, `$x = $this->prop->method(...)`,
-      // `$x = $var->method(...)` — the declared return type types the variable.
+
+
       for (const am of ln.matchAll(/\$(\w+)\s*=\s*\$this->(\w+)(->(\w+))?\s*\(/g)) {
         if (am[3]) {
           const propType = this.phpPropertyTypeOf(containingClassName, am[2], index);
@@ -2974,9 +2938,9 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Cross-boundary resolution evidence (DI interface bindings, Doctrine
-    // repositories, property/constructor injection types) — one pass over
-    // the same files every path below re-reads from cache.
+
+
+
     const typeIndex = await this.buildPhpTypeIndex(projectPath, phpFiles);
 
     if (phpFiles.length > 1000 || methodNodes.length > 12000) {
@@ -2985,7 +2949,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
     }
 
     const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
-    const firstMethodByFileAndName = (file: string, name?: string) => name ? methodNodesByFileAndName.get(`${file}:${name}`)?.[0] : undefined;
     const firstMethodInClass = (classId: string, name?: string) => {
       if (!name) return undefined;
       return (methodsByClassId.get(classId) || []).find(method => method.name === name);
@@ -3017,8 +2980,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         const fileLines = (await this.readFileCached(fullPath)).split('\n');
         const recvTypesByMethodId = new Map<string, Map<string, string>>();
         for (const call of ast.calls) {
-          // The caller is the method whose body spans this call's line — NOT a
-          // same-named method (call.method is the TARGET, not the caller).
+
+
           const callerMethod = (methodNodesByFile.get(file) || []).find(n =>
               n.source?.line !== undefined && n.source.line <= call.line &&
               n.source?.end_line !== undefined && n.source.end_line >= call.line
@@ -3029,13 +2992,13 @@ export class PHPAnalyzer extends BaseAnalyzer {
           let targetMethod: CASNode | undefined;
 
           if (call.receiver !== undefined) {
-            // Member call `$recv->method()`: resolve $recv to its class. `$this`
-            // (and `self`/`static`) means the containing class; `$this->prop`
-            // resolves through the property's declared type (constructor/DI
-            // injection); Doctrine `->getRepository(E::class)` chains resolve
-            // to E's repository class; any other var is type-resolved from
-            // scope. Interface types bind to their implementation only on
-            // evidence (unique impl or services.yaml alias).
+
+
+
+
+
+
+
             const recv = call.receiver;
             let recvType: string | undefined;
             const repoChain = recv.match(/getRepository\(\s*\\?([\w\\]+)(?:::class)?\s*\)$/);
@@ -3073,12 +3036,12 @@ export class PHPAnalyzer extends BaseAnalyzer {
               targetMethod = this.findPhpMethodInHierarchy(targetClass, call.method, typeIndex, firstClassByName, firstMethodInClass);
             }
           } else if (call.class && call.method) {
-            // Static/scoped call `Foo::bar()` — call.class IS the target class.
+
             const targetClass = firstClassByName(this.phpBaseTypeName(call.class));
             targetMethod = this.findPhpMethodInHierarchy(targetClass, call.method, typeIndex, firstClassByName, firstMethodInClass);
           } else if (call.function) {
-            // Bare-name calls can only be standalone functions in PHP —
-            // binding them to any same-named class METHOD fabricates edges.
+
+
             targetMethod = (methodNodesByName.get(call.function) || []).find(n => n.type === 'function');
           }
 
@@ -3123,7 +3086,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** PHP keywords/constructs a bare `name(` match must never treat as a call. */
+
   private static readonly PHP_CALL_KEYWORDS = new Set([
     'if', 'elseif', 'else', 'while', 'for', 'foreach', 'switch', 'match', 'catch',
     'fn', 'function', 'array', 'list', 'isset', 'unset', 'empty', 'echo', 'print',
@@ -3132,11 +3095,11 @@ export class PHPAnalyzer extends BaseAnalyzer {
     'throw', 'yield', 'declare', 'compact', 'extract', 'strict_types'
   ]);
 
-  /**
-   * All call sites a regex pass can see on one line, classified by receiver
-   * shape so the resolver can apply the right typing evidence. Shared by the
-   * fast fallback (whale repos) and the AST-failure fallback.
-   */
+
+
+
+
+
   private collectPhpLineCallMatches(line: string): Array<{
     kind: 'this' | 'this-prop' | 'repo' | 'var' | 'self' | 'parent' | 'static' | 'scoped' | 'new' | 'plain'
       | 'this-call-chain' | 'prop-call-chain' | 'var-call-chain';
@@ -3146,13 +3109,13 @@ export class PHPAnalyzer extends BaseAnalyzer {
   }> {
     const matches: Array<{ kind: any; objectOrClass: string; methodName?: string; chainMethod?: string }> = [];
 
-    // `$this->prop->method()` — property receiver (constructor/DI injection).
+
     for (const m of line.matchAll(/\$this->(\w+)->(\w+)\s*\(/g)) {
       matches.push({ kind: 'this-prop', objectOrClass: m[1], methodName: m[2] });
     }
-    // One-hop fluent chains, typed by the first call's declared return type:
-    // `$this->m1(...)->m2(`, `$this->prop->m1(...)->m2(`, `$var->m1(...)->m2(`.
-    // Only paren-free first arguments — regex cannot balance nesting.
+
+
+
     for (const m of line.matchAll(/\$this->(\w+)\s*\(([^()]*)\)\s*->\s*(\w+)\s*\(/g)) {
       matches.push({ kind: 'this-call-chain', objectOrClass: m[1], chainMethod: m[1], methodName: m[3] });
     }
@@ -3163,16 +3126,16 @@ export class PHPAnalyzer extends BaseAnalyzer {
       if (m[1] === 'this') continue;
       matches.push({ kind: 'var-call-chain', objectOrClass: `$${m[1]}`, chainMethod: m[2], methodName: m[4] });
     }
-    // Doctrine `...->getRepository(Entity::class)->method()` chains.
+
     for (const m of line.matchAll(/->getRepository\(\s*\\?([\w\\]+)(?:::class)?\s*\)\s*->\s*(\w+)\s*\(/g)) {
       matches.push({ kind: 'repo', objectOrClass: m[1], methodName: m[2] });
     }
-    // `$var->method()` — includes `$this->method()` (kind 'this').
+
     for (const m of line.matchAll(/(\$\w+)->(\w+)\s*\(/g)) {
       if (m[1] === '$this') matches.push({ kind: 'this', objectOrClass: '$this', methodName: m[2] });
       else matches.push({ kind: 'var', objectOrClass: m[1], methodName: m[2] });
     }
-    // `Foo::bar()` / self:: / parent:: / static::
+
     for (const m of line.matchAll(/([\w\\]+)::(\w+)\s*\(/g)) {
       if (m[1] === 'self' || m[1] === 'parent' || m[1] === 'static') {
         matches.push({ kind: m[1], objectOrClass: m[1], methodName: m[2] });
@@ -3180,13 +3143,13 @@ export class PHPAnalyzer extends BaseAnalyzer {
         matches.push({ kind: 'scoped', objectOrClass: m[1], methodName: m[2] });
       }
     }
-    // `new Foo(...)`
+
     for (const m of line.matchAll(/new\s+\\?([\w\\]+)\s*\(/g)) {
       matches.push({ kind: 'new', objectOrClass: m[1], methodName: '__construct' });
     }
-    // Bare `name(...)` — a standalone function call. The lookbehind rejects
-    // method/static/variable receivers; keyword and declaration hits are
-    // filtered here so they can never bind to a same-named class method.
+
+
+
     for (const m of line.matchAll(/(?<![\w$>:\\])([a-zA-Z_]\w*)\s*\(/g)) {
       const name = m[1];
       if (PHPAnalyzer.PHP_CALL_KEYWORDS.has(name)) continue;
@@ -3197,11 +3160,11 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return matches;
   }
 
-  /**
-   * Resolve one regex-matched call site to a target method node using the
-   * project's type evidence. Returns undefined (abstains) when there is no
-   * concrete binding fact — never guesses across same-named candidates.
-   */
+
+
+
+
+
   private resolvePhpFallbackCallTarget(
     match: { kind: string; objectOrClass: string; methodName?: string; chainMethod?: string },
     callerMethod: CASNode,
@@ -3265,8 +3228,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
       case 'new':
         return inHierarchy(firstClassByName(this.phpBaseTypeName(match.objectOrClass)), match.methodName);
       case 'plain':
-        // Bare-name calls can only be standalone functions in PHP — binding
-        // them to a same-named class METHOD would fabricate edges.
+
+
         return (methodNodesByName.get(match.objectOrClass) || []).find(n => n.type === 'function');
       default:
         return undefined;
@@ -3742,87 +3705,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return 'External Library';
   }
 
-  private extractDocumentationFromPHPDoc(content: string, lineIndex: number): CASDocumentation | undefined {
-    const lines = content.split('\n');
-    const docs: CASDocumentation = {
-      id: `doc_${lineIndex}`,
-      format: 'phpdoc',
-      raw: '',
-      location: {
-        start_line: lineIndex,
-        end_line: lineIndex
-      }
-    };
-    let hasContent = false;
-    let docBlockText = '';
-
-    for (let i = lineIndex - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (line === '/**') {
-        break;
-      }
-      if (line.startsWith('*') || line.startsWith('/**')) {
-        const cleanLine = line.replace(/^\/?\*+\s*/, '').replace(/\*\/$/, '');
-        if (cleanLine) {
-          docBlockText = cleanLine + '\n' + docBlockText;
-          hasContent = true;
-        }
-      } else if (!line.startsWith('//')) {
-        break;
-      }
-    }
-
-    if (hasContent) {
-      docs.raw = docBlockText;
-      const summaryMatch = docBlockText.match(/^([^@\n]*)/);
-      if (summaryMatch && summaryMatch[1].trim()) {
-        docs.summary = summaryMatch[1].trim();
-      }
-
-      const paramMatches = docBlockText.matchAll(/@param\s+([^\s]+)\s+\$([^\s]+)\s*(.*)/g);
-      for (const match of paramMatches) {
-        if (!docs.parameters) docs.parameters = [];
-        docs.parameters.push({
-          name: match[2],
-          type: match[1],
-          description: match[3]
-        });
-      }
-
-      const returnMatch = docBlockText.match(/@return\s+([^\s]+)\s*(.*)/);
-      if (returnMatch) {
-        docs.returns = {
-          type: returnMatch[1],
-          description: returnMatch[2]
-        };
-      }
-
-      const throwsMatches = docBlockText.matchAll(/@throws\s+([^\s]+)\s*(.*)/g);
-      for (const match of throwsMatches) {
-        if (!docs.exceptions) docs.exceptions = [];
-        docs.exceptions.push({
-          type: match[1],
-          description: match[2]
-        });
-      }
-
-      const sinceMatch = docBlockText.match(/@since\s+(.*)/);
-      if (sinceMatch) {
-        if (!docs.tags) docs.tags = [];
-        docs.tags.push({ tag: 'since', value: sinceMatch[1] });
-      }
-
-      const deprecatedMatch = docBlockText.match(/@deprecated\s*(.*)/);
-      if (deprecatedMatch) {
-        if (!docs.tags) docs.tags = [];
-        docs.tags.push({ tag: 'deprecated', value: deprecatedMatch[1] || 'true' });
-      }
-
-      return docs;
-    }
-
-    return undefined;
-  }
 
   private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
@@ -3991,17 +3873,17 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return 'general';
   }
 
-  /**
-   * `signature.throws` evidence for a PHP method/function — the fact
-   * extractErrorConstraints (flow-concepts.ts) reads to derive C1's 'error'
-   * step-graph edges. Two evidence sources, merged and deduped:
-   *   1. `throw new <Class>(...)` statements found in the method body.
-   *   2. `@throws <Type>` docblock tags (already parsed into
-   *      documentation.exceptions[].type by extractDocumentationFromPhpDoc).
-   * Mirrors the TS analyzer's buildSignatureThrows merge contract. Returns
-   * undefined (not an empty array) when neither source yields a type — no
-   * fabrication for methods that never throw.
-   */
+
+
+
+
+
+
+
+
+
+
+
   private buildPhpSignatureThrows(bodyLines: string[], docs?: CASDocumentation): string[] | undefined {
     const types = new Set<string>();
     for (const line of bodyLines) {
@@ -4015,33 +3897,33 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return types.size > 0 ? Array.from(types) : undefined;
   }
 
-  /**
-   * Line-scan classifier for PHP branch/conditional evidence — a call site
-   * whose line sits inside an if/elseif/else/switch/match block, or contains
-   * an inline ternary that resolves on the same line, is the deterministic
-   * ground for a 'branch' step-graph edge (flow-concepts.ts
-   * buildConditionalOutIndex, which reads edge.metadata.conditional).
-   * A brace-depth stack tracks nested conditional blocks across lines;
-   * string-literal contents are blanked first so quoted braces/`?`/`:` never
-   * perturb the depth count. Facts only — a call outside any of these blocks
-   * gets no conditional evidence.
-   */
+
+
+
+
+
+
+
+
+
+
+
   private computePhpConditionalLines(lines: string[]): boolean[] {
     const conditional: boolean[] = new Array(lines.length).fill(false);
     const stack: boolean[] = [];
     let pendingConditional = false;
-    // Matches an if/elseif/else/switch/match construct opening a block —
-    // covers `} elseif (...) {`, `} else {`, `switch (...) {`, `match (...) {`.
+
+
     const openerRe = /(?:^|[{};])\s*\}?\s*(elseif|else\s+if|if|else|switch|match)\s*[\(\{:]/;
     for (let i = 0; i < lines.length; i++) {
-      // Blank out string-literal contents so quoted `{`, `}`, `?`, `:` never
-      // perturb the depth/ternary scan (best-effort: no multi-line strings).
+
+
       const stripped = lines[i].replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, m => ' '.repeat(m.length));
 
       if (openerRe.test(stripped)) pendingConditional = true;
 
-      // Inline ternary `cond ? a : b` resolved entirely on one line — exclude
-      // the null-coalescing `??` operator and PHP8 nullsafe `?->`.
+
+
       const ternaryBody = stripped.replace(/\?\?/g, '  ').replace(/\?->/g, '   ');
       if (/\?(?!:)[^?:{}]*:(?!:)/.test(ternaryBody)) conditional[i] = true;
 
@@ -4058,18 +3940,18 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return conditional;
   }
 
-  /**
-   * Symfony console-command-name evidence from a Command subclass body.
-   * Checked in priority order: `#[AsCommand('x')]` / `#[AsCommand(name: 'x')]`
-   * attribute (Symfony's AsCommand takes the name as either the first
-   * positional constructor arg or the named `name:` arg — both real,
-   * measured live on a benchmarked PHP monolith: `#[AsCommand('app:cron')]` outnumbers the
-   * named form there), `protected static $defaultName = 'x'`, `->setName('x')`
-   * inside configure(). Returns undefined when NONE of the three markers are
-   * present (the class is not actually wired as a runnable command — no
-   * fabrication); returns '' when a marker is present but the name literal
-   * could not be parsed (still real evidence the class IS a command).
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private extractPhpConsoleCommandName(classBody: string[]): string | undefined {
     const text = classBody.join('\n');
     const asCommand = text.match(/#\[\s*AsCommand\s*\(\s*(?:name\s*:\s*)?['"]([^'"]+)['"]/);
@@ -4078,9 +3960,9 @@ export class PHPAnalyzer extends BaseAnalyzer {
     if (defaultName) return defaultName[1];
     const setName = text.match(/->setName\s*\(\s*['"]([^'"]+)['"]/);
     if (setName) return setName[1];
-    // Marker-only evidence: an AsCommand attribute / $defaultName / setName()
-    // call exists but the literal itself couldn't be parsed (e.g. built from
-    // a constant).
+
+
+
     if (/#\[\s*AsCommand\s*\(/.test(text) || /\$defaultName\s*=/.test(text) || /->setName\s*\(/.test(text)) {
       return '';
     }
@@ -4105,7 +3987,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     docs.summary = lines[0];
     docs.description = lines.join('\n');
 
-    // Extract parameters
+
     const paramMatches = cleanDoc.match(/@param\s+([^\s]+)\s+\$([^\s]+)(?:\s+(.*))?/g);
     if (paramMatches) {
       docs.parameters = paramMatches.map(match => {
@@ -4118,7 +4000,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Extract return type
+
     const returnMatch = cleanDoc.match(/@return\s+([^\s]+)(?:\s+(.*))?/);
     if (returnMatch) {
       docs.return_info = {
@@ -4127,14 +4009,14 @@ export class PHPAnalyzer extends BaseAnalyzer {
       };
     }
 
-    // Extract examples
+
     const exampleMatch = cleanDoc.match(/@example\s*(.*?)(?=@|$)/s);
     if (exampleMatch) {
       docs.examples = [{ code: exampleMatch[1].trim(), language: 'php' }];
     }
 
-    // Extract @throws tags — evidence for signature.throws (buildPhpSignatureThrows)
-    // and extractErrorConstraints' `throws <ErrorType>` facet rule.
+
+
     const throwsMatches = cleanDoc.matchAll(/@throws\s+([^\s]+)(?:\s+(.*))?/g);
     for (const match of throwsMatches) {
       if (!docs.exceptions) docs.exceptions = [];

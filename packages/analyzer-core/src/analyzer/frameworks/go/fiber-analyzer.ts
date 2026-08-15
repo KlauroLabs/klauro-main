@@ -13,14 +13,14 @@ import * as path from 'path';
 
 const FIBER_METHODS = ['Get', 'Post', 'Put', 'Patch', 'Delete', 'Head', 'Options', 'All'];
 
-/**
- * Fiber framework analyzer (github.com/gofiber/fiber).
- *
- * Extracts `app.Get("/path", handler)` / `grp := app.Group("/prefix")` route
- * registrations. Fiber's Group() API mirrors Gin/Echo (var-bound
- * `*fiber.Router`/`*fiber.App` scoped to a prefix); `grp.Use(...)` registers
- * guards that apply to routes on that group.
- */
+
+
+
+
+
+
+
+
 export class FiberAnalyzer extends BaseAnalyzer {
   constructor() {
     super('fiber', 'Fiber Framework Analyzer', '1.0.0', 'framework');
@@ -151,8 +151,8 @@ export class FiberAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** Local var names bound to `fiber.New()`, plus the conventional `app` name used
-   *  even when the binding isn't found in this file. */
+
+
   private findFiberReceiverNames(content: string): string[] {
     const names = new Set<string>(['app']);
     const instancePattern = /(?:const|var)?\s*([A-Za-z_][\w]*)\s*:?=\s*fiber\.New\s*\(/g;
@@ -172,7 +172,7 @@ export class FiberAnalyzer extends BaseAnalyzer {
   ): void {
     const escaped = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // receiver.Use(mw1, mw2) — applies to every route registered directly here.
+
     const usePattern = new RegExp(`\\b${escaped}\\.Use\\s*\\(`, 'g');
     const groupGuards: string[] = [];
     let match: RegExpExecArray | null;
@@ -181,7 +181,7 @@ export class FiberAnalyzer extends BaseAnalyzer {
       groupGuards.push(...args.filter(a => isGoMiddlewareIdentifier(a)));
     }
 
-    // Route calls: receiver.Get("/path", handler[, middleware...])
+
     const methodAlt = FIBER_METHODS.join('|');
     const routeCallPattern = new RegExp(`\\b${escaped}\\.(${methodAlt})\\s*\\(\\s*(['"\`])([^'"\`]*)\\2`, 'g');
     while ((match = routeCallPattern.exec(content)) !== null) {
@@ -202,7 +202,7 @@ export class FiberAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Group calls: newVar := receiver.Group("/prefix"[, mw...])
+
     const groupPattern = new RegExp(`(?:([A-Za-z_][\\w]*)\\s*:?=\\s*)?\\b${escaped}\\.Group\\s*\\(\\s*(['"\`])([^'"\`]*)\\2`, 'g');
     while ((match = groupPattern.exec(content)) !== null) {
       if (visitedGroupStarts.has(match.index)) continue;

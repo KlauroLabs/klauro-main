@@ -1,6 +1,7 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { aiService } from '../../ai/ai-service';
 import { SystemCapability } from '../../types/cas.types';
+import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 
 /**
  * CONSISTENCY-AND-COUNTING defect (2026-08 blackbox audit of a desktop app):
@@ -97,11 +98,12 @@ function aiCapability(id: string, name: string): SystemCapability {
   return {
     id,
     name,
+    name_source: 'ai',
     structural_label: name,
     description: `${name} for the audited product.`,
     description_source: 'ai',
     category: 'core',
-    operations: [],
+    operations: [{ entry_point_id: `entry_${id}`, entry_point_type: 'http', action: name }],
     related_entities: [],
     related_domains: [],
     criticality: 'medium',
@@ -123,7 +125,7 @@ function freshPurpose(): any {
 
 async function runInterpretation(purpose: any, capabilities: SystemCapability[]): Promise<void> {
   await orch.applyAIInterpretation(
-    purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+    purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [],
     capabilities, [], [], [], { concepts: [], evidence: [] }, [],
     undefined, [], [], [], [],
   );

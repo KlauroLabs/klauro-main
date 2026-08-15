@@ -1,6 +1,7 @@
 import { globSync } from 'glob';
 import * as nodePath from 'path';
 import { yieldToEventLoop } from './event-loop-yield';
+import { THIRD_PARTY_SOURCE_GLOBS } from './build-artifact-paths';
 import type {
   CASAnalysisFact,
   CASBehavioralInvariant,
@@ -907,10 +908,7 @@ function safeGlob(projectPath: string): string[] {
         '**/.scannerwork/**',
         '.scannerwork/**',
         '**/node_modules/**',
-        'vendor/**',
-        '**/vendor/**',
-        'vendors/**',
-        '**/vendors/**',
+        ...THIRD_PARTY_SOURCE_GLOBS,
         'dist/**',
         '**/dist/**',
         'build/**',

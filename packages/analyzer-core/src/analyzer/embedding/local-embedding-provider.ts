@@ -33,9 +33,9 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
       return [];
     }
 
-    // Budget-yield between texts: hashing a whale batch synchronously was a
-    // measured >1s event-loop stall (the analyzer shares its process with the
-    // HTTP server). Order and results are unchanged.
+
+
+
     const maybeYield = createYieldBudget();
     const vectors: Float32Array[] = [];
     for (const text of texts) {

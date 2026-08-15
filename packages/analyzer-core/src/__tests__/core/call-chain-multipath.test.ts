@@ -224,7 +224,7 @@ describe('buildCallChains multi-path exploration', () => {
 
 describe('buildCallChains capability-operation seeded roots', () => {
   // Bridge-gap shape: entry_points only carries a test suite (no outgoing call
-  // edges), while a system_capabilities operation anchors the REAL handler via
+  // edges), while a capabilities operation anchors the REAL handler via
   // a node: reference. The seeded root must produce an entry-to-exit chain.
   function seededFixture() {
     const nodes = [

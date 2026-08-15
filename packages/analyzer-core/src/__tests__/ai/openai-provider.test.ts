@@ -71,6 +71,46 @@ describe('OpenAIProvider compatible endpoint support', () => {
     expect(provider.name).toBe('deepinfra');
   });
 
+  it('honors request-specific timeout and retry controls', async () => {
+    let requests = 0;
+    const server = http.createServer((req, res) => {
+      requests += 1;
+      req.resume();
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'chatcmpl-timeout-override',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: 'local-test-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'completed' }, finish_reason: 'stop' }],
+        }));
+      }, 40);
+    });
+
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
+      const config = getAIConfig();
+      config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
+      config.openai.model = 'local-test-model';
+      config.openai.apiKey = 'local-test-key';
+      config.openai.timeout = 10;
+      config.openai.maxRetries = 3;
+
+      const provider = new OpenAIProvider(config);
+      const description = await provider.generateDescription({
+        additionalContext: { requestTimeoutMs: 100, requestRetries: 0 },
+      });
+
+      expect(description).toBe('completed');
+      expect(requests).toBe(1);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it('uses Ollama native chat with thinking disabled when OLLAMA_BASE_URL is configured', async () => {
     const seen: Array<{ url?: string; body?: any }> = [];
     const server = http.createServer((req, res) => {

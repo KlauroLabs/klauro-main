@@ -4,60 +4,60 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
-/**
- * Universal PaaS/orchestration Tier-1 ship declarations, beyond Docker/
- * compose/k8s/installer/CI (already covered by container.ts, installer.ts,
- * ci-deploy.ts). These are deploy MANIFESTS — files whose entire purpose is
- * "here is what gets deployed and where" — for ecosystems that don't route
- * through a Dockerfile at all:
- *
- *   - Helm charts (Chart.yaml + templates/)
- *   - Serverless (serverless.yml/.ts, AWS SAM template.yaml, SST config)
- *   - PaaS process/site manifests (Procfile, fly.toml, vercel.json,
- *     netlify.toml, app.yaml, railway.json, render.yaml)
- *
- * DEPLOY-UNIT MODELING CHOICE (documented once, applies to both serverless
- * and Procfile):
- *
- *   A serverless.yml declares one SERVICE; `functions:` entries are members
- *   of that service, not independent deployables — they share one
- *   `serverless deploy`, one CloudFormation stack, one deploy artifact. This
- *   mirrors how container.ts treats a multi-stage Dockerfile with several
- *   COPY'd binaries as ONE deployable with `ships_paths` naming the members
- *   (see parseDockerfileMembers), not N deployables. So: 1 DeployableEvidence
- *   per serverless.yml, `ships_paths` = the function names, and
- *   `entrypoint_member` set only when there is exactly one function (the
- *   unambiguous common case; ambiguous with 2+ functions, left unset).
- *
- *   A Procfile is the same shape: one app directory, several PROCESS TYPES
- *   (web, worker, release, ...). `web` is the primary/shipped entry (it is
- *   what a PaaS routes traffic to and what `entrypoint_member` should name);
- *   `worker`/other process types are members of the same deployable, not
- *   separate ones — they deploy together from the same app/slug. This is the
- *   same "one Dockerfile can name multiple ships_paths members" model as
- *   container.ts, applied to Procfile process types instead of Dockerfile
- *   COPY targets.
- *
- * kind reuse (no new kinds added to DeployableEvidence['kind']):
- *   - Helm chart                       -> 'k8s'         (it deploys to k8s)
- *   - serverless.yml/.ts, SAM template -> 'serverless'
- *   - Procfile / fly.toml / vercel.json / netlify.toml / app.yaml /
- *     railway.json / render.yaml       -> 'installer'   (closest existing
- *     Tier-1 "ship declaration for a PaaS target" kind; these are not
- *     containers, not k8s, not serverless-functions-as-a-service, but they
- *     unambiguously declare "this directory/process gets deployed to a
- *     platform" the same way an installer/distribution-artifact declares
- *     "this gets packaged for distribution").
- *
- * SHIPPED-GATE SYNERGY: a Procfile `web: gunicorn app:app` or
- * `web: node server.js` is exactly the kind of Tier-1 ship evidence the
- * downstream shipped-gate (apps/mcp-server/src/cross-codebase-analysis.ts)
- * needs to confirm a Tier-2 runnable entry (a python/node server-entry with
- * no Dockerfile) is actually SHIPPED, not just runnable. `ships_paths` on the
- * Procfile/serverless evidence names the shipped process/handler/function so
- * the resolver can attribute it to the right runnable entry by module path
- * or file basename.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 interface HelmChart {
   file: string;
@@ -77,9 +77,9 @@ function findHelmCharts(projectPath: string): HelmChart[] {
   const charts: HelmChart[] = [];
   for (const file of files) {
     const dir = path.dirname(file);
-    // A Chart.yaml only counts as a real Helm chart deployable when it is
-    // accompanied by templates/ (distinguishes a real chart from a stray
-    // Chart.yaml-shaped file with no rendered manifests).
+
+
+
     if (!fs.existsSync(path.join(projectPath, dir, 'templates'))) continue;
 
     let name: string | undefined;
@@ -89,7 +89,7 @@ function findHelmCharts(projectPath: string): HelmChart[] {
       name = content.match(/^\s*name\s*:\s*(.+?)\s*$/m)?.[1]?.replace(/^["']|["']$/g, '');
       version = content.match(/^\s*version\s*:\s*(.+?)\s*$/m)?.[1]?.replace(/^["']|["']$/g, '');
     } catch {
-      // unreadable Chart.yaml — still counts as a chart, just unnamed
+
     }
 
     charts.push({ file, dir, name, version });
@@ -105,7 +105,7 @@ function collectHelm(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     const evidence: string[] = [`Helm Chart.yaml: ${chart.file}`, `templates/: ${path.join(chart.dir, 'templates')}`];
     if (chart.version) evidence.push(`chart version: ${chart.version}`);
 
-    // values.yaml image refs -> ships_paths (repository[:tag]).
+
     const shipsPaths: string[] = [];
     const valuesPath = path.join(projectPath, chart.dir, 'values.yaml');
     if (fs.existsSync(valuesPath)) {
@@ -121,7 +121,7 @@ function collectHelm(ctx: EvidenceCollectionContext): DeployableEvidence[] {
         });
         if (shipsPaths.length) evidence.push(`values.yaml image(s): ${shipsPaths.join(', ')}`);
       } catch {
-        // unreadable values.yaml contributes no ships_paths
+
       }
     }
 
@@ -163,8 +163,8 @@ function collectServerless(ctx: EvidenceCollectionContext): DeployableEvidence[]
     }
 
     const serviceName = content.match(/^\s*service\s*:\s*(.+?)\s*$/m)?.[1]?.replace(/^["']|["']$/g, '');
-    // `functions:` block members: top-level keys under a `functions:` section
-    // (YAML) or object keys inside `functions: { ... }` (TS/JS config).
+
+
     const functionNames = new Set<string>();
     const yamlBlock = content.match(/^functions:\s*\n((?:[ \t]+.+\n?)*)/m)?.[1];
     if (yamlBlock) {
@@ -189,13 +189,13 @@ function collectServerless(ctx: EvidenceCollectionContext): DeployableEvidence[]
       kind: 'serverless',
       evidence,
       ships_paths: functionNames.size ? [...functionNames] : undefined,
-      // Unambiguous only when there is exactly one function; 2+ functions
-      // share one deploy with no single "primary" member (see header note).
+
+
       entrypoint_member: functionNames.size === 1 ? [...functionNames][0] : undefined,
     });
   }
 
-  // AWS SAM: template.yaml with AWS::Serverless::Function resources.
+
   let samFiles: string[] = [];
   try {
     samFiles = safeGlobSync(['**/template.yaml', '**/template.yml'], {
@@ -229,7 +229,7 @@ function collectServerless(ctx: EvidenceCollectionContext): DeployableEvidence[]
     });
   }
 
-  // SST (.sst config or sst.config.ts)
+
   let sstFiles: string[] = [];
   try {
     sstFiles = safeGlobSync(['**/sst.config.ts', '**/.sst/**/config.json'], {
@@ -289,9 +289,9 @@ function collectProcfile(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       kind: 'installer',
       evidence,
       ships_paths: [...processes.keys()],
-      // web is the primary/shipped process (what a PaaS routes traffic to);
-      // if there is no `web` (e.g. a worker-only app), leave unset — no
-      // single unambiguous primary.
+
+
+
       entrypoint_member: processes.has('web') ? 'web' : undefined,
     });
   }
@@ -313,8 +313,8 @@ const SIMPLE_PAAS_MANIFESTS: SimplePaasManifest[] = [
   { glob: '**/render.yaml', label: 'Render' },
 ];
 
-/** fly.toml / vercel.json / netlify.toml / app.yaml / railway.json / render.yaml —
- *  each declares "this dir is a deployable PaaS site/app", one per manifest. */
+
+
 function collectSimplePaasManifests(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -348,7 +348,7 @@ function collectSimplePaasManifests(ctx: EvidenceCollectionContext): DeployableE
           name = json.name;
           if (name) evidence.push(`name: ${name}`);
         } catch {
-          // unreadable JSON — still counts as a manifest, just unnamed
+
         }
       } else if (file.endsWith('app.yaml')) {
         name = content.match(/^\s*service\s*:\s*(.+?)\s*$/m)?.[1]?.replace(/^["']|["']$/g, '');

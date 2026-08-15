@@ -55,6 +55,7 @@ describe('buildDeployableRoots', () => {
     // deterministic: re-running on the same input yields identical ids
     const rootsAgain = buildDeployableRoots(deployableEvidence);
     expect(rootsAgain).toEqual(roots);
+    expect(buildDeployableRoots([...deployableEvidence].reverse())).toEqual(roots);
   });
 
   it('returns an empty list when there is no evidence', () => {

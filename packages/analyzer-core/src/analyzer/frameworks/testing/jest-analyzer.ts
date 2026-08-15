@@ -102,42 +102,42 @@ export class JestAnalyzer extends BaseAnalyzer {
     );
   }
 
-  /** True when a test file imports vitest — such files belong to the
-   *  cross-language TestFramework analyzer's vitest rule, never to jest. */
+
+
   static isVitestFile(content: string): boolean {
     return /\bfrom\s+['"`]vitest['"`]|\brequire\(\s*['"`]vitest['"`]\s*\)/.test(content);
   }
 
-  /**
-   * True when a `*.test.{js,ts,jsx,tsx}` / `*.spec.{js,ts,jsx,tsx}` file carries
-   * hard evidence of a DIFFERENT JS/TS test framework that the cross-language
-   * TestFrameworkAnalyzer owns (see its `rules()` table). JestAnalyzer's own
-   * file glob (`**\/*.{test,spec}.{js,ts,jsx,tsx}`) is naming-convention-only —
-   * it matches vitest/mocha/jasmine/node:test/playwright/selenium files too,
-   * since they share the exact same `*.test.ts` convention and `describe`/
-   * `it`/`test` call shape. `isVitestFile` already carried this same fix for
-   * vitest alone (corpus-depth sweep: claiming vitest files here duplicated
-   * every suite/case id TestFrameworkAnalyzer independently emits for them,
-   * via the identical `test_suite_<file>_<name>` id scheme — see
-   * TestFrameworkAnalyzer.suiteNodeId). node:test/mocha/jasmine/playwright/
-   * selenium files hit the exact same id-collision class (2026-07
-   * quality-iter-1 self-analysis: 2306/2319 analysis_errors were "Duplicate
-   * entry point id" warnings for exactly this reason) — this generalizes the
-   * guard to the full sibling-framework set instead of vitest alone.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   static isForeignTestFrameworkFile(content: string): boolean {
     if (JestAnalyzer.isVitestFile(content)) return true;
-    // node:test
+
     if (/\bfrom\s+['"`]node:test['"`]|\brequire\(\s*['"`]node:test['"`]\s*\)/.test(content)) return true;
-    // mocha (explicit import/require; the bare-word fallback TestFrameworkAnalyzer
-    // also accepts is deliberately NOT mirrored here — too weak a signal to
-    // disqualify a file from jest ownership on its own).
+
+
+
     if (/\bfrom\s+['"`]mocha['"`]|\brequire\(\s*['"`]mocha['"`]\s*\)/.test(content)) return true;
-    // jasmine
+
     if (/\bfrom\s+['"`]jasmine-core['"`]|\brequire\(\s*['"`]jasmine-core['"`]\s*\)/.test(content)) return true;
-    // playwright
+
     if (/\bfrom\s+['"`]@playwright\/test['"`]|\brequire\(\s*['"`]@playwright\/test['"`]\s*\)/.test(content)) return true;
-    // selenium
+
     if (/\bfrom\s+['"`]selenium-webdriver['"`]|\brequire\(\s*['"`]selenium-webdriver['"`]\s*\)/.test(content)) return true;
     return false;
   }
@@ -176,12 +176,12 @@ export class JestAnalyzer extends BaseAnalyzer {
       if (testFiles.length > 0) {
         for (const file of testFiles) {
           const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-          // A file with hard evidence of a sibling JS/TS test framework (vitest,
-          // node:test, mocha, jasmine, playwright, selenium) is NOT jest evidence
-          // — those repos share the *.test.ts naming + describe/it/test shape,
-          // and claiming them here duplicated every suite/case id the
-          // cross-language TestFramework analyzer (the rightful owner) emits
-          // (corpus-depth sweep fix, generalized past vitest-only 2026-07).
+
+
+
+
+
+
           if (JestAnalyzer.isForeignTestFrameworkFile(content)) continue;
           if (content.includes('describe(') || content.includes('test(') || content.includes('it(')) {
             return true;
@@ -203,7 +203,7 @@ export class JestAnalyzer extends BaseAnalyzer {
 
     try {
       const ignorePatterns = this.getIgnorePatterns(context);
-      // Skip compliance test files that contain non-JS/TS code
+
       ignorePatterns.push('**/compliance/**');
 
       const testFiles = await glob(['**/*.{test,spec}.{js,ts,jsx,tsx}'], {
@@ -296,7 +296,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Check package.json for Jest config
+
     try {
       const packageJsonPath = path.join(projectPath, 'package.json');
       if (await fs.pathExists(packageJsonPath)) {
@@ -325,7 +325,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // Continue without package.json config
+
     }
 
     return null;
@@ -344,14 +344,14 @@ export class JestAnalyzer extends BaseAnalyzer {
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
-      // Vitest/node:test/mocha/jasmine/playwright/selenium own their own files
-      // (via the cross-language TestFramework analyzer). Claiming them as jest
-      // suites emitted duplicate suite/case ids for every such file — same
-      // `test_suite_<file>_<name>` id scheme on both sides — and the
-      // orchestrator dedup then logged one PARTIAL_ANALYSIS "Duplicate entry
-      // point id" warning per suite+case (2306/2319 analysis_errors in the
-      // 2026-07 quality-iter-1 self-analysis) and dropped one analyzer's
-      // version of each. Generalized past vitest-only.
+
+
+
+
+
+
+
+
       if (JestAnalyzer.isForeignTestFrameworkFile(content)) continue;
 
         try {
@@ -477,7 +477,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       } catch (error) {
         console.warn(`Failed to parse Jest test file ${file}:`, error);
 
-        // Fallback: basic analysis without AST
+
         const suite = this.extractTestSuiteBasic(content, file);
         if (suite.tests.length > 0) {
           testSuites.push(suite);
@@ -654,7 +654,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       transform: {}
     };
 
-    // Basic extraction - could be enhanced with actual JS parsing
+
     if (content.includes('testEnvironment')) {
       const envMatch = content.match(/testEnvironment:\s*['"]([^'"]+)['"]/);
       if (envMatch) config.testEnvironment = envMatch[1];
@@ -688,10 +688,10 @@ export class JestAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /**
-   * Stable node id for a test suite, namespaced by the suite's project-relative
-   * file path so same-named suites in different files never collide.
-   */
+
+
+
+
   private suiteNodeId(suite: JestTestSuite): string {
     return `test_suite_${this.sanitizeId(suite.filePath)}_${this.sanitizeId(suite.name)}`;
   }
@@ -719,7 +719,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         if (callee.type === 'Identifier') {
           if (['describe', 'test', 'it', 'fit', 'xit'].includes(callee.name)) {
             if (callee.name === 'describe') {
-              // Handle nested describes
+
             } else {
               const test = this.extractTest(node, content);
               suite.tests.push(test);
@@ -763,7 +763,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       imports: this.extractImports(content)
     };
 
-    // Extract tests using regex
+
     const testPatterns = [
       /(?:test|it)\s*\(\s*['"`]([^'"`]+)['"`]/g,
       /(?:test|it)\s*\.\s*(?:each|skip|only)\s*\(\s*['"`]([^'"`]+)['"`]/g
@@ -875,12 +875,12 @@ export class JestAnalyzer extends BaseAnalyzer {
   }
 
   private extractTestMocks(node: any, content: string): string[] {
-    // Extract mocks used in this specific test
+
     return [];
   }
 
   private extractSpies(node: any, content: string): string[] {
-    // Extract spies used in this specific test
+
     return [];
   }
 
@@ -940,22 +940,6 @@ export class JestAnalyzer extends BaseAnalyzer {
     return 'unit';
   }
 
-  private detectTestStyle(content: string): 'procedural' | 'bdd' | 'property-based' | 'snapshot' | 'parameterized' {
-    if (content.includes('given(') || content.includes('when(') || content.includes('then(') ||
-        content.includes('Given ') || content.includes('When ') || content.includes('Then ')) {
-      return 'bdd';
-    }
-    if (content.includes('fc.') || content.includes('fast-check') || content.includes('jsverify')) {
-      return 'property-based';
-    }
-    if (content.includes('toMatchSnapshot') || content.includes('toMatchInlineSnapshot')) {
-      return 'snapshot';
-    }
-    if (content.includes('.each(') || content.includes('.each`') || content.includes('test.each')) {
-      return 'parameterized';
-    }
-    return 'procedural';
-  }
 
   private detectTestingFramework(content: string): string {
     if (content.includes('@testing-library')) return 'testing-library';

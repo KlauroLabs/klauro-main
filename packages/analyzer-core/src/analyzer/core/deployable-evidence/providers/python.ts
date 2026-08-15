@@ -4,8 +4,8 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
-/** Tier-2: pyproject.toml [project.scripts] / [tool.poetry.scripts], setup.py
- *  console_scripts/entry_points — CLI entry points that ship as `bin`. */
+
+
 function collectConsoleScripts(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath } = ctx;
   const out: DeployableEvidence[] = [];
@@ -24,7 +24,7 @@ function collectConsoleScripts(ctx: EvidenceCollectionContext): DeployableEviden
       continue;
     }
     const root = path.dirname(manifest);
-    // [project.scripts] / [tool.poetry.scripts] table: `name = "module:func"`
+
     const scriptsSectionMatch = content.match(/\[(?:project\.scripts|tool\.poetry\.scripts)\]\s*\n((?:[^\n[]*\n)*)/);
     if (scriptsSectionMatch) {
       for (const lineMatch of scriptsSectionMatch[1].matchAll(/^\s*([A-Za-z0-9_.-]+)\s*=\s*"([^"]+)"/gm)) {
@@ -53,7 +53,7 @@ function collectConsoleScripts(ctx: EvidenceCollectionContext): DeployableEviden
       continue;
     }
     const root = path.dirname(manifest);
-    // entry_points={'console_scripts': ['name = module:func', ...]}
+
     const consoleScriptsMatch = content.match(/console_scripts['"]\s*:\s*\[([^\]]*)\]/s);
     if (consoleScriptsMatch) {
       for (const entryMatch of consoleScriptsMatch[1].matchAll(/['"]\s*([A-Za-z0-9_.-]+)\s*=\s*[^'"]+['"]/g)) {
@@ -71,8 +71,8 @@ function collectConsoleScripts(ctx: EvidenceCollectionContext): DeployableEviden
   return out;
 }
 
-/** Tier-2: __main__.py with `if __name__ == '__main__':` — module runnable via
- *  `python -m package`. */
+
+
 function collectMainModules(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -102,7 +102,7 @@ function collectMainModules(ctx: EvidenceCollectionContext): DeployableEvidence[
   return out;
 }
 
-/** Tier-2: manage.py (Django) — server-entry. */
+
 function collectDjango(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -125,8 +125,8 @@ function collectDjango(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   return out;
 }
 
-/** Tier-2: wsgi.py/asgi.py (gunicorn/uvicorn target) or a Flask/FastAPI `app = `
- *  instantiation — web server entry points. */
+
+
 function collectWsgiAsgiApp(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -151,7 +151,7 @@ function collectWsgiAsgiApp(ctx: EvidenceCollectionContext): DeployableEvidence[
     });
   }
 
-  // Flask/FastAPI `app = Flask(...)` / `app = FastAPI(...)` at module scope.
+
   let pyFiles: string[] = [];
   try {
     pyFiles = safeGlobSync('**/*.py', { cwd: projectPath, ignore: IGNORE_GLOBS, nodir: true, absolute: false });
@@ -182,7 +182,7 @@ function collectWsgiAsgiApp(ctx: EvidenceCollectionContext): DeployableEvidence[
   return out;
 }
 
-/** Tier-3: pyproject.toml / setup.py / requirements.txt as package identity. */
+
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -203,7 +203,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
         });
       }
     } catch {
-      // unreadable manifest contributes nothing
+
     }
   }
 
@@ -222,7 +222,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
         });
       }
     } catch {
-      // unreadable manifest contributes nothing
+
     }
   }
 

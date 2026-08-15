@@ -18,20 +18,20 @@ interface ObjectionModel {
   line: number;
 }
 
-/**
- * Objection.js analyzer.
- *
- * Objection models are ES classes extending `Model` with a static
- * `tableName` getter and a static `relationMappings` getter/property whose
- * value is an object keyed by relation name, each entry declaring
- * `relation: Model.HasManyRelation` (or BelongsToOneRelation /
- * HasOneRelation / ManyToManyRelation) and `modelClass: Target`.
- *
- * Node conventions mirror TypeORM/Mongoose: entity nodes are type `'entity'`,
- * level 3, id `entity_objection_<name>`; relation edges are `references`,
- * category `'database'`, with a `relationType` attribute the orchestrator's
- * edge-based relation reader already understands.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class ObjectionAnalyzer extends BaseAnalyzer {
   constructor() {
     super('objection', 'Objection.js Analyzer', '1.0.0', 'library');
@@ -62,7 +62,7 @@ export class ObjectionAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -216,10 +216,10 @@ export class ObjectionAnalyzer extends BaseAnalyzer {
     return 'OneToOne';
   }
 
-  /**
-   * Parse `class User extends Model { static get tableName() { return 'users'; }
-   * static get relationMappings() { return { posts: { relation: Model.HasManyRelation, modelClass: Post, ... } }; } }`.
-   */
+
+
+
+
   private parseModels(content: string, filePath: string): ObjectionModel[] {
     const models: ObjectionModel[] = [];
     const classRegex = /class\s+(\w+)\s+extends\s+Model\s*\{/g;
@@ -255,7 +255,7 @@ export class ObjectionAnalyzer extends BaseAnalyzer {
     const body = this.extractBalanced(classBody, bodyStart);
     if (body === null) return relations;
 
-    // Each top-level entry: `posts: { relation: Model.HasManyRelation, modelClass: Post, join: {...} }`
+
     const entryRegex = /(\w+)\s*:\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g;
     let entryMatch: RegExpExecArray | null;
     while ((entryMatch = entryRegex.exec(body)) !== null) {

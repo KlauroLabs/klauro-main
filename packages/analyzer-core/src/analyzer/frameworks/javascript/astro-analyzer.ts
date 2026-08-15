@@ -61,7 +61,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
       'Astro component files'
     );
 
-    // file -> node id, so import edges can resolve to component nodes
+
     const componentNodeIds = new Map<string, string>();
     const components: AstroComponent[] = [];
 
@@ -137,7 +137,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Markdown/MDX pages under src/pages
+
     const mdPages = await glob(['**/pages/**/*.{md,mdx}'], {
       cwd: context.projectPath,
       ignore: ignorePatterns,
@@ -165,7 +165,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // API endpoints: src/pages/api/**/*.{ts,js} exporting HTTP method handlers
+
     const apiFiles = await glob(['**/pages/**/*.{ts,js}'], {
       cwd: context.projectPath,
       ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*', '**/*.d.ts'],
@@ -205,10 +205,10 @@ export class AstroAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Content collections: src/content/config.ts defineCollection(...)
+
     await this.analyzeContentCollections(context, ignorePatterns, nodes);
 
-    // Import edges between components + island markers
+
     this.buildImportEdges(components, componentNodeIds, context.projectPath, edges);
 
     return this.createContribution(nodes, edges, entryPoints, exitPoints, {
@@ -244,7 +244,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
     const normalized = file.replace(/\\/g, '/');
     const isPage = /(^|\/)src\/pages\//.test(normalized);
 
-    // Frontmatter fence: content between the first pair of `---` lines.
+
     let frontmatter = '';
     let template = content;
     const fenceMatch = content.match(/^\s*---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
@@ -275,7 +275,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
   private extractProps(frontmatter: string): string[] {
     const props = new Set<string>();
 
-    // interface Props { foo: string; bar?: number }
+
     const ifaceMatch = frontmatter.match(/interface\s+Props\s*\{([\s\S]*?)\}/);
     if (ifaceMatch) {
       const body = ifaceMatch[1];
@@ -284,7 +284,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
       while ((m = fieldPattern.exec(body)) !== null) props.add(m[1]);
     }
 
-    // const { foo, bar } = Astro.props
+
     const destructurePattern = /const\s*\{([^}]*)\}\s*=\s*Astro\.props/g;
     let dm: RegExpExecArray | null;
     while ((dm = destructurePattern.exec(frontmatter)) !== null) {
@@ -299,7 +299,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
 
   private extractIslands(template: string): Array<{ component: string; directive: string }> {
     const islands: Array<{ component: string; directive: string }> = [];
-    // <Component client:load /> etc. — capitalized tag carrying a client: directive
+
     const islandPattern = /<([A-Z]\w*)[^>]*\sclient:(load|idle|visible|media|only)\b/g;
     let match: RegExpExecArray | null;
     while ((match = islandPattern.exec(template)) !== null) {
@@ -373,7 +373,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // const blog = defineCollection({ ... })
+
       const collectionPattern = /(?:const|let|var)\s+(\w+)\s*=\s*defineCollection\s*\(/g;
       let match: RegExpExecArray | null;
       const found = new Set<string>();
@@ -381,7 +381,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
         found.add(match[1]);
       }
 
-      // Also pick up names registered in the exported collections map.
+
       const mapMatch = content.match(/export\s+const\s+collections\s*=\s*\{([\s\S]*?)\}/);
       if (mapMatch) {
         const keyPattern = /(\w+)\s*[:,}]/g;
@@ -414,7 +414,7 @@ export class AstroAnalyzer extends BaseAnalyzer {
 
       for (const imp of component.imports) {
         if (!imp.from.startsWith('.')) continue;
-        // resolve relative import to a known .astro file
+
         const resolved = this.resolveAstroImport(component.file, imp.from);
         const targetId = resolved ? componentNodeIds.get(resolved) : undefined;
         if (!targetId) continue;

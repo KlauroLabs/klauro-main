@@ -4,26 +4,26 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
-/**
- * Desktop packaging-plugin evidence: electron-builder (and its close cousin
- * electron-forge) config files are the packaging-tool equivalent of a
- * Dockerfile COPY/ENTRYPOINT or a `spring-boot-maven-plugin repackage` goal —
- * a real ship/run artifact declaration, not a folder-name guess. Doctrine
- * (SPEC-DEPLOYABLE-DETECTION.md): deployable boundaries come from evidence
- * like this, never from "the repo mentions electron" or a directory named
- * `desktop/`.
- *
- * electron-builder's own config filename convention
- * (electron-builder.{yml,yaml,json,json5,toml,config.js,config.cjs,
- * config.mjs,config.ts}) is unambiguous positive evidence on its own — same
- * class of signal as docker-compose.yml or Cargo.toml naming the tool that
- * reads it, not a name a project author picked incidentally. electron-forge's
- * config (forge.config.js/cjs/mjs/ts, or a "config.forge" key in
- * package.json) gets the same treatment. Both tools produce installable
- * desktop artifacts (.dmg/.exe/.deb/.AppImage/...) from a `make`/`build`
- * step, so this is TIER 1 'installer' evidence — the packaging config itself
- * IS the ship declaration, the same way a Dockerfile's COPY/ENTRYPOINT is.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const ELECTRON_BUILDER_CONFIG_GLOBS = [
   'electron-builder.yml',
@@ -52,16 +52,16 @@ function readFileSafe(projectPath: string, relFile: string): string | undefined 
   }
 }
 
-/** Extract `productName`/`appId` from a YAML/JSON/JSON5/TOML/JS config body
- *  without a full parser for every format — all of them share the same
- *  `key: value` / `key = value` / `"key": "value"` shape for these two
- *  top-level scalar fields, which is all this needs. */
+
+
+
+
 function extractScalarField(content: string, field: string): string | undefined {
-  // Covers YAML (`productName: MyApp` or `productName: "MyApp"`), JSON/JSON5
-  // (`"productName": "MyApp"`), TOML (`productName = "MyApp"`), and JS/TS
-  // config objects (`productName: 'MyApp'`) with one pattern: an optionally
-  // quoted key, a `:`/`=` separator, then either a quoted value or a bare
-  // unquoted scalar run to end-of-line (YAML's common unquoted-string form).
+
+
+
+
+
   const match = content.match(
     new RegExp(`["']?${field}["']?\\s*[:=]\\s*(?:["']([^"']+)["']|([^\\n,}]+))`)
   );
@@ -87,11 +87,11 @@ function collectElectronBuilder(ctx: EvidenceCollectionContext): DeployableEvide
     configFiles = [];
   }
 
-  // electron-builder also reads a `"build"` object straight out of
-  // package.json when no standalone config file exists. Only treat that as
-  // evidence when it is co-located with the `electron-builder` package
-  // itself (devDependencies/dependencies) — an arbitrary `build` key with no
-  // electron-builder dependency is not positive evidence of this tool.
+
+
+
+
+
   const packageJsonPath = path.join(projectPath, 'package.json');
   let packageJsonBuildEvidence: { rootPath: string; productName?: string; appId?: string } | undefined;
   if (configFiles.length === 0 && fs.existsSync(packageJsonPath)) {
@@ -106,7 +106,7 @@ function collectElectronBuilder(ctx: EvidenceCollectionContext): DeployableEvide
         };
       }
     } catch {
-      // unreadable/unparseable package.json contributes nothing here
+
     }
   }
 
@@ -148,10 +148,10 @@ function collectElectronBuilder(ctx: EvidenceCollectionContext): DeployableEvide
   return out;
 }
 
-/** electron-forge: forge.config.{js,cjs,mjs,ts}, or a `"config": { "forge":
- *  ... }` block in package.json — only counted when the `@electron-forge/*`
- *  tooling itself is a dependency, for the same positive-evidence reason as
- *  electron-builder's package.json fallback above. */
+
+
+
+
 function collectElectronForge(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -192,7 +192,7 @@ function collectElectronForge(ctx: EvidenceCollectionContext): DeployableEvidenc
         });
       }
     } catch {
-      // unreadable/unparseable package.json contributes nothing here
+
     }
   }
 

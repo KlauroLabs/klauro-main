@@ -63,7 +63,7 @@ function buildRouteMatchCas(args: {
       operation: { action: 'read-write', method: callMethod, async: true },
     } as CASExitPoint,
   ];
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_fuel',
       name: 'Fuel Management',
@@ -110,8 +110,8 @@ function buildRouteMatchCas(args: {
     entry_points,
     exit_points,
     data_lineage: [],
-    data_entities: [],
-    system_capabilities,
+    entities: [],
+    capabilities,
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }

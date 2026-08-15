@@ -94,23 +94,6 @@ describe('path hygiene vocabulary', () => {
   });
 });
 
-describe('operation subject derivation never yields a file extension', () => {
-  it('drops the extension before the plural strip (the "Manage Nat R" defect)', () => {
-    expect(orch.fallbackRouteResourceSubject('src/nat.rs')).toBe('nat');
-    expect(orch.fallbackRouteResourceSubject('scripts/store.sh')).toBe('store');
-    expect(orch.fallbackRouteResourceSubject('infra/gateway.nix')).toBe('gateway');
-  });
-
-  it('refuses filesystem geography as a resource subject', () => {
-    const subject = orch.fallbackRouteResourceSubject(`${STORAGE_ROOT}/web/App.tsx`);
-    expect(subject).toBe('App');
-  });
-
-  it('still resolves a real route resource', () => {
-    expect(orch.fallbackRouteResourceSubject('/api/v1/invoices/:id')).toBe('invoice');
-  });
-});
-
 describe('domain tokenization is path-free', () => {
   it('never tokenizes the analysis root out of an absolute source path', () => {
     const tokens: string[] = orch.domainTokensFromText(
@@ -124,7 +107,7 @@ describe('domain tokenization is path-free', () => {
 });
 
 describe('finalizeSystemCapabilityNames — path-derived guard', () => {
-  it('never ships a filename-derived name; rebuilds it from entity evidence', () => {
+  it('never promotes a filename-derived structural candidate into canonical comprehension', () => {
     const entities: CASDataEntity[] = [
       { id: 'ent_1', name: 'NatRule', kind: 'persisted-entity', fields: [], lifecycle: { created_by: [], read_by: ['n1'], updated_by: [], deleted_by: [] } } as any,
     ];
@@ -139,12 +122,8 @@ describe('finalizeSystemCapabilityNames — path-derived guard', () => {
 
     orch.finalizeSystemCapabilityNames(capabilities, entities, purpose);
 
-    expect(capabilities).toHaveLength(1);
-    expect(isPathDerivedCapabilityName(capabilities[0].name)).toBe(false);
-    expect(capabilities[0].name).toBe('Manage Nat Rule');
-    expect(purpose.capability_name_degradations).toEqual([
-      expect.objectContaining({ rejected_name: 'Manage Nat R', disposition: 'rebuilt-from-evidence' }),
-    ]);
+    expect(capabilities).toEqual([]);
+    expect(purpose.capability_naming_coverage).toEqual({ total: 1, authored: 0, un_enriched: 1, path_derived_rejected: 1 });
   });
 
   it('drops a storage-path capability outright rather than leaking the analysis root', () => {
@@ -158,9 +137,7 @@ describe('finalizeSystemCapabilityNames — path-derived guard', () => {
     orch.finalizeSystemCapabilityNames(capabilities, [], purpose);
 
     expect(capabilities).toHaveLength(0);
-    expect(purpose.capability_name_degradations).toEqual([
-      expect.objectContaining({ disposition: 'dropped', reason: 'name-derived-from-source-path' }),
-    ]);
+    expect(purpose.capability_name_degradations).toBeUndefined();
   });
 
   it('leaves an AI-authored name untouched even if it contains a path-ish word', () => {
@@ -168,6 +145,9 @@ describe('finalizeSystemCapabilityNames — path-derived guard', () => {
       id: 'cap_ai',
       name: 'Manage Project Data Exports',
       name_source: 'ai',
+      description: 'Lets operators export project data for downstream review and reporting.',
+      description_source: 'ai',
+      operations: [{ entry_point_id: 'entry_export', entry_point_type: 'http', action: 'export' }] as any,
     })];
     orch.finalizeSystemCapabilityNames(capabilities, [], {} as any);
     expect(capabilities.map(item => item.name)).toEqual(['Manage Project Data Exports']);

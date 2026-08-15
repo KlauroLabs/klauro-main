@@ -7,20 +7,20 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-// ---- Parsed shapes -------------------------------------------------------
+
 
 interface PhoenixRoute {
-  method: string;          // GET/POST/... or LIVE
-  routePath: string;       // resolved, scope-prefixed path
-  controller: string;      // module name (last segment), e.g. UserController / DashLive
-  action?: string;         // controller action, undefined for live
+  method: string;
+  routePath: string;
+  controller: string;
+  action?: string;
   kind: 'verb' | 'live' | 'resources';
-  pipelines: string[];     // pipe_through pipelines in scope
+  pipelines: string[];
   line: number;
 }
 
 interface PhoenixRouter {
-  module: string;          // qualified name
+  module: string;
   filePath: string;
   routes: PhoenixRoute[];
 }
@@ -31,18 +31,18 @@ interface PhoenixActionFn {
 }
 
 interface PhoenixController {
-  module: string;          // qualified name, e.g. AppWeb.UserController
-  name: string;            // last segment
+  module: string;
+  name: string;
   filePath: string;
   kind: 'controller' | 'liveview';
-  actions: PhoenixActionFn[];   // controller action / liveview callbacks
+  actions: PhoenixActionFn[];
   lineEnd: number;
 }
 
 interface EctoAssociation {
   type: 'belongs_to' | 'has_many' | 'has_one' | 'many_to_many';
   name: string;
-  targetSchema: string;    // module name referenced (last segment)
+  targetSchema: string;
   line: number;
 }
 
@@ -53,8 +53,8 @@ interface EctoField {
 }
 
 interface EctoSchema {
-  module: string;          // qualified name
-  name: string;            // last segment
+  module: string;
+  name: string;
   filePath: string;
   table: string;
   fields: EctoField[];
@@ -63,8 +63,8 @@ interface EctoSchema {
 }
 
 interface PhoenixContext {
-  module: string;          // qualified name, e.g. App.Accounts
-  name: string;            // last segment
+  module: string;
+  name: string;
   filePath: string;
   publicFunctions: string[];
   lineEnd: number;
@@ -74,7 +74,7 @@ const ELIXIR_GLOBS = ['**/*.ex', '**/*.exs'];
 
 const ROUTE_VERBS = new Set(['get', 'post', 'put', 'patch', 'delete', 'options', 'head']);
 
-// Pipelines that imply authentication / authorization.
+
 const AUTH_PIPELINE = /auth|require_|logged_in|ensure_|protect|admin|verified|authenticate/i;
 
 const IGNORE_DIRS = [
@@ -90,17 +90,17 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     super('phoenix', 'Phoenix Analyzer', '1.0.0', 'framework');
   }
 
-  // ---- Detection ---------------------------------------------------------
+
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      // 1. phoenix in mix.exs deps.
+
       const mixPath = path.join(projectPath, 'mix.exs');
       if (await fs.pathExists(mixPath)) {
         const mix = await fs.readFile(mixPath, 'utf-8');
         if (/[:{]\s*phoenix\b/.test(mix) || /\{\s*:phoenix\b/.test(mix)) return true;
       }
-      // 2. A `use Phoenix.Router` / `use <App>Web, :controller|:router|:live_view` module.
+
       const files = await glob(ELIXIR_GLOBS, { cwd: projectPath, nodir: true, ignore: IGNORE_DIRS });
       for (const rel of files) {
         let content = '';
@@ -147,7 +147,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     ];
   }
 
-  // ---- Analysis ----------------------------------------------------------
+
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     this.resetAnalysisWarnings();
@@ -168,7 +168,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
         try {
           sources.push({ file: rel, content: await fs.readFile(path.join(projectPath, rel), 'utf-8') });
         } catch {
-          // unreadable file; skip.
+
         }
       }
 
@@ -197,11 +197,11 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
         const ctx = this.extractContext(projectPath, src.file, src.content, lines);
         if (ctx) contexts.push(ctx);
 
-        // emit node-level structures as we go below after collecting maps
+
         void fullPath;
       }
 
-      // Emit nodes/edges/entrypoints now that everything is collected.
+
       const controllerByName = new Map<string, PhoenixController>();
       for (const c of controllers) {
         controllerByName.set(c.name, c);
@@ -255,7 +255,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Router parsing ----------------------------------------------------
+
 
   private isRouterFile(content: string): boolean {
     return /\buse\s+Phoenix\.Router\b/.test(content) ||
@@ -267,10 +267,10 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     const module = moduleMatch ? moduleMatch[1] : path.basename(filePath, path.extname(filePath));
 
     const routes: PhoenixRoute[] = [];
-    // Scope/pipeline state stacks. Each scope frame contributes a path prefix.
+
     const scopePrefixStack: string[] = [];
     const pipelineStack: string[][] = [];
-    // Generic `do`/`end` block depth, with markers for scope frames.
+
     const blockStack: Array<'scope' | 'pipeline-def' | 'other'> = [];
 
     for (let i = 0; i < lines.length; i++) {
@@ -287,25 +287,25 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // scope "/path"[, Module][, ...] do
+
       const scopeMatch = trimmed.match(/^scope\s+("(?:[^"]*)"|[^\s,]+)?(.*)\bdo\b\s*$/);
       if (scopeMatch && /^scope\b/.test(trimmed)) {
         const rawPrefix = scopeMatch[1] ? scopeMatch[1].replace(/['"]/g, '') : '';
         const prefix = rawPrefix.startsWith('/') || rawPrefix === '' ? rawPrefix : `/${rawPrefix}`;
         scopePrefixStack.push(prefix);
-        // Inherit parent pipelines.
+
         pipelineStack.push([...(pipelineStack[pipelineStack.length - 1] || [])]);
         blockStack.push('scope');
         continue;
       }
 
-      // pipeline :name do  -> definition block, not a route container.
+
       if (/^pipeline\s+:\w+\s+do\b/.test(trimmed)) {
         blockStack.push('pipeline-def');
         continue;
       }
 
-      // pipe_through :a  OR  pipe_through [:a, :b]
+
       const pipeMatch = trimmed.match(/^pipe_through\s+(.+)$/);
       if (pipeMatch && pipelineStack.length > 0) {
         const names = [...pipeMatch[1].matchAll(/:(\w+)/g)].map(m => m[1]);
@@ -316,7 +316,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
       const prefix = scopePrefixStack.join('');
       const pipelines = pipelineStack[pipelineStack.length - 1] || [];
 
-      // live "/path", LiveView[, :action]
+
       const liveMatch = trimmed.match(/^live\s+("[^"]*"|'[^']*'|[^\s,]+)\s*,\s*([A-Z][\w.]*)(.*)$/);
       if (liveMatch) {
         routes.push({
@@ -330,7 +330,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // resources "/path", Controller[, ...]
+
       const resourcesMatch = trimmed.match(/^resources\s+("[^"]*"|'[^']*'|[^\s,]+)\s*,\s*([A-Z][\w.]*)(.*)$/);
       if (resourcesMatch) {
         routes.push({
@@ -341,12 +341,12 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
           pipelines: [...pipelines],
           line: lineNo,
         });
-        // resources may open a nested block.
+
         if (/\bdo\s*$/.test(trimmed)) blockStack.push('other');
         continue;
       }
 
-      // get/post/... "/path", Controller, :action
+
       const verbMatch = trimmed.match(
         /^(get|post|put|patch|delete|options|head)\s+("[^"]*"|'[^']*'|[^\s,]+)\s*,\s*([A-Z][\w.]*)\s*,\s*:(\w+)/
       );
@@ -363,7 +363,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // Track other `do` openers so scope/pipeline frames stay balanced.
+
       if (/\bdo\s*$/.test(trimmed) && !/,\s*do:/.test(trimmed)) {
         blockStack.push('other');
       }
@@ -379,11 +379,11 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     return joined === '' ? '/' : joined;
   }
 
-  // ---- Controller / LiveView parsing -------------------------------------
+
 
   private extractControllers(filePath: string, content: string, lines: string[]): PhoenixController[] {
     const results: PhoenixController[] = [];
-    // Locate each defmodule and inspect its `use` directives.
+
     const modules = this.findModules(lines);
     for (const mod of modules) {
       const body = lines.slice(mod.start - 1, mod.end).join('\n');
@@ -398,8 +398,8 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
       const actions: PhoenixActionFn[] = [];
       for (let i = mod.start - 1; i < mod.end && i < lines.length; i++) {
         const trimmed = this.stripComment(lines[i]).trim();
-        // public def name(... ) — controller actions take (conn, params);
-        // liveview callbacks (mount/handle_event/handle_info) also captured.
+
+
         const defMatch = trimmed.match(/^def\s+([a-z_][\w?!]*)\s*\(/);
         if (defMatch) {
           if (!actions.some(a => a.name === defMatch[1])) {
@@ -420,7 +420,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  // ---- Ecto schema parsing -----------------------------------------------
+
 
   private extractSchemas(filePath: string, content: string, lines: string[]): EctoSchema[] {
     const results: EctoSchema[] = [];
@@ -443,7 +443,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
           fields.push({ name: fieldMatch[1], type: fieldMatch[2], line: i + 1 });
           continue;
         }
-        // field :x without explicit type defaults to :string in Ecto.
+
         const fieldNoType = trimmed.match(/^field\s+:(\w+)\s*$/);
         if (fieldNoType) {
           fields.push({ name: fieldNoType[1], type: 'string', line: i + 1 });
@@ -474,10 +474,10 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  // ---- Context parsing ---------------------------------------------------
 
-  // A Phoenix "context" is a public API module under lib/<app>/ (NOT lib/<app>_web/)
-  // that is neither a schema nor a controller/liveview/router. Heuristic, evidence-based.
+
+
+
   private extractContext(
     projectPath: string,
     filePath: string,
@@ -485,7 +485,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     lines: string[]
   ): PhoenixContext | null {
     const normalized = filePath.replace(/\\/g, '/');
-    // Must be in lib/, must not be the *_web tree.
+
     if (!/(^|\/)lib\//.test(normalized)) return null;
     if (/(^|\/)lib\/[^/]*_web\//.test(normalized)) return null;
 
@@ -501,7 +501,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
 
     const modules = this.findModules(lines);
     if (modules.length === 0) return null;
-    // Use the outermost module as the context module.
+
     const mod = modules[0];
 
     const publicFunctions: string[] = [];
@@ -512,7 +512,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
         publicFunctions.push(defMatch[1]);
       }
     }
-    // A context exposes a public API. Skip pure data/util modules with no public funcs.
+
     if (publicFunctions.length === 0) return null;
 
     return {
@@ -524,7 +524,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     };
   }
 
-  // ---- Node / edge emission ----------------------------------------------
+
 
   private emitController(
     projectPath: string,
@@ -533,7 +533,6 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[]
   ): void {
-    const fullPath = path.join(projectPath, ctrl.filePath);
     const controllerId = this.controllerId(ctrl);
     const nodeType = ctrl.kind === 'liveview' ? 'phoenix_liveview' : 'phoenix_controller';
 
@@ -572,7 +571,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
         controllerId, actionId, 'contains', 'structural'
       ));
 
-      // LiveView lifecycle/event callbacks are runtime entry points.
+
       if (ctrl.kind === 'liveview' &&
           (action.name === 'mount' || action.name === 'handle_event' || action.name === 'handle_info' || action.name === 'handle_params')) {
         entryPoints.push(this.createEntryPoint(
@@ -597,7 +596,6 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     exitPoints: CASExitPoint[]
   ): void {
-    const fullPath = path.join(projectPath, schema.filePath);
     const schemaId = this.schemaId(schema);
 
     nodes.push(this.createNodeBuilder(schemaId, schema.name, 'ecto_schema')
@@ -676,7 +674,6 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
   }
 
   private emitContext(projectPath: string, ctx: PhoenixContext, nodes: CASNode[]): void {
-    const fullPath = path.join(projectPath, ctx.filePath);
     const contextId = this.contextId(ctx);
     nodes.push(this.createNodeBuilder(contextId, ctx.name, 'phoenix_context')
       .withLevel(2, 'architectural')
@@ -703,7 +700,6 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[]
   ): void {
-    const fullPath = path.join(projectPath, router.filePath);
     const routerId = this.generateId('router', router.filePath, router.module);
 
     nodes.push(this.createNodeBuilder(routerId, router.module.split('.').pop()!, 'phoenix_router')
@@ -783,7 +779,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
           routeId, controllerId, 'routes_to', 'behavioral',
           { action: route.action, kind: route.kind }
         ));
-        // route -> specific action node if it resolves.
+
         if (route.action) {
           const action = controller.actions.find(a => a.name === route.action);
           if (action) {
@@ -798,7 +794,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // Heuristic link controllers/liveviews -> contexts they reference by qualified call.
+
   private linkControllersToContexts(
     projectPath: string,
     controllers: PhoenixController[],
@@ -819,7 +815,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
       if (!content) continue;
       const controllerId = this.controllerId(ctrl);
       const referenced = new Set<string>();
-      // Qualified calls Context.func( — match against known context modules/names.
+
       for (const m of content.matchAll(/\b([A-Z][\w.]*)\.[a-z_]\w*\s*\(/g)) {
         const ref = m[1];
         const ctx = contextByName.get(ref) || contextByName.get(ref.split('.').pop()!);
@@ -835,9 +831,9 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Shared helpers ----------------------------------------------------
 
-  // Find all `defmodule` blocks with their line ranges using a do/end depth counter.
+
+
   private findModules(lines: string[]): Array<{ name: string; start: number; end: number }> {
     const modules: Array<{ name: string; start: number; end: number }> = [];
     interface Frame { kind: 'module' | 'block'; idx?: number; }
@@ -903,7 +899,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     return underscored.endsWith('s') ? underscored : `${underscored}s`;
   }
 
-  // ---- ID helpers --------------------------------------------------------
+
 
   private controllerId(ctrl: PhoenixController): string {
     return this.generateId(ctrl.kind === 'liveview' ? 'liveview' : 'controller', ctrl.filePath, ctrl.module);

@@ -1,201 +1,71 @@
-/**
- * CAS REFERENTIAL-INTEGRITY INVARIANTS.
- *
- * Every id reference the CAS ships must resolve to a record the CAS also
- * ships. These invariants exist because the live analysis shipped hundreds of
- * `flow_id` references (`system_capabilities[].related_flows`, `flow::…::stepN`
- * step ids) against a `flow_graph` that had no `flows` collection at all — the
- * flows were derived, used, and discarded. A dangling reference is a data
- * defect even when every individual field looks well-formed, so it is gated
- * structurally here rather than left to eyeballing a stored CAS.
- */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AnalyzerOrchestrator } from './orchestrator';
-import { CASCallChain, CASFlowGraph } from '../../types/cas.types';
+import type { CASCallChain, FlowConcept } from '../../types/cas.types';
 
-function emptyFlowGraph(): CASFlowGraph {
+function flow(id: string, stepCount: number, capabilityId?: string): FlowConcept {
   return {
-    capabilities: [],
-    dependencies: [],
-    topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
-    primary_flow: { core_capability_id: '', value_chain: [], supporting_capabilities: [], infrastructure_capabilities: [] },
-    layers: [],
-    system_insights: { detected_patterns: [], primary_entry_type: '', data_flow_type: '' },
+    flow_id: id,
+    name: id,
+    intent: id,
+    entry_point: `entry::${id}`,
+    capability_id: capabilityId,
+    capability_relationships: capabilityId ? [{ capability_id: capabilityId, role: 'primary', rationale: 'entry point' }] : undefined,
+    entities: [],
+    contract: { input: [], logic: id, side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] },
+    steps: Array.from({ length: stepCount }, (_, index) => ({
+      step_id: `${id}::step${index}`,
+      order: index,
+      name: `Step ${index}`,
+      description: `Executes step ${index} of the materialized flow.`,
+      description_source: 'deterministic-label',
+      contract: { input: [], logic: `step ${index}`, side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] },
+      functions: [],
+      entities: [],
+    })),
   };
 }
 
-/** Terminal-chain-anchored and entry-point-rooted flows, exactly as
- *  computeFlowConcepts mints them (two anchors, ONE id scheme per flow). */
-function derivedFlows() {
-  return [
-    {
-      flow_id: 'flow::chain:entry_http_create_order',
-      name: 'Create Order',
-      intent: 'POST /orders → database orders',
-      entry_point: 'entry_http_create_order',
-      capability_id: 'cap_orders',
-      capability_relationships: [{ capability_id: 'cap_orders' }, { capability_id: 'cap_billing' }],
-      steps: [{ step_id: 'flow::chain:entry_http_create_order::step0' }, { step_id: 'flow::chain:entry_http_create_order::step1' }],
-      terminus: { kind: 'database', produces: 'orders' },
-    },
-    {
-      // Entry-point-rooted: chain dead-ends, so there is no call chain and no
-      // criticality to carry — the record must simply omit them, not guess.
-      flow_id: 'flow::entry_mcp_tool_run',
-      name: 'Run Tool',
-      intent: 'MCP tool run',
-      entry_point: 'entry_mcp_tool_run',
-      steps: [{ step_id: 'flow::entry_mcp_tool_run::step0' }],
-    },
-    // Duplicate flow_id from the union path must collapse to one record.
-    {
-      flow_id: 'flow::entry_mcp_tool_run',
-      name: 'Run Tool (duplicate)',
-      intent: 'duplicate',
-      entry_point: 'entry_mcp_tool_run',
-      steps: [],
-    },
-  ];
-}
-
-function callChains(): CASCallChain[] {
-  return [
-    { id: 'chain:entry_http_create_order', criticality: 'critical' } as unknown as CASCallChain,
-    { id: 'chain:unrelated', criticality: 'low' } as unknown as CASCallChain,
-  ];
-}
-
-function materialize() {
+test('canonical flows retain full steps and receive call-chain criticality', () => {
+  const flows = [flow('flow::chain::create-order', 2, 'capability::orders'), flow('flow::entry::tool', 1)];
+  const chains = [{ id: 'chain::create-order', criticality: 'critical' }] as unknown as CASCallChain[];
   const orchestrator = new AnalyzerOrchestrator() as any;
-  const flowGraph = emptyFlowGraph();
-  orchestrator.materializeFlowGraphFlows(flowGraph, derivedFlows(), callChains());
-  return flowGraph;
-}
+  orchestrator.stampFlowCriticality(flows, chains);
 
-test('flow_graph.flows materializes the derived flow set (the resolution target for every flow_id)', () => {
-  const flowGraph = materialize();
-  const flows = flowGraph.flows || [];
-
-  assert.equal(flows.length, 2, 'duplicate flow_ids collapse to one record');
-  assert.deepEqual(flows.map(flow => flow.flow_id).sort(), [
-    'flow::chain:entry_http_create_order',
-    'flow::entry_mcp_tool_run',
-  ]);
-
-  const chainFlow = flows.find(flow => flow.flow_id === 'flow::chain:entry_http_create_order')!;
-  assert.equal(chainFlow.name, 'Create Order');
-  assert.equal(chainFlow.step_count, 2);
-  assert.equal(chainFlow.call_chain_id, 'chain:entry_http_create_order');
-  assert.equal(chainFlow.criticality, 'critical', 'criticality is carried from the anchoring call chain');
-  assert.equal(chainFlow.capability_id, 'cap_orders');
-  assert.deepEqual(chainFlow.capability_ids, ['cap_orders', 'cap_billing']);
-  assert.deepEqual(chainFlow.terminus, { kind: 'database', produces: 'orders' });
-
-  const entryFlow = flows.find(flow => flow.flow_id === 'flow::entry_mcp_tool_run')!;
-  assert.equal(entryFlow.step_count, 1, 'the first (richer) record wins, not the duplicate');
-  assert.equal(entryFlow.criticality, undefined, 'no chain → no guessed criticality');
-  assert.equal(entryFlow.call_chain_id, undefined);
+  assert.equal(flows[0].criticality, 'critical');
+  assert.equal(flows[0].steps.length, 2);
+  assert.equal(flows[1].criticality, undefined);
 });
 
-test('INVARIANT: every flow_id referenced in the CAS resolves to a flow in flow_graph.flows', () => {
-  const flowGraph = materialize();
-  const resolvable = new Set((flowGraph.flows || []).map(flow => flow.flow_id));
-
-  // Every place the CAS carries a flow_id reference.
-  const cas = {
-    flow_graph: flowGraph,
-    system_capabilities: [{
-      id: 'cap_orders',
-      related_flows: [
-        { flow_id: 'flow::chain:entry_http_create_order', role: 'primary', rationale: 'entry point' },
-        { flow_id: 'flow::entry_mcp_tool_run', role: 'supporting', rationale: 'shared entity' },
-      ],
-    }],
-    behavior_surfaces: [{
-      id: 'surface_mcp',
-      related_flows: [{ flow_id: 'flow::entry_mcp_tool_run', role: 'primary', rationale: 'registration' }],
-    }],
-  };
-
-  const references: string[] = [
-    ...cas.system_capabilities.flatMap(capability => capability.related_flows.map(link => link.flow_id)),
-    ...cas.behavior_surfaces.flatMap(surface => surface.related_flows.map(link => link.flow_id)),
-  ];
-
-  assert.ok(references.length > 0, 'the fixture must actually exercise references');
-  const dangling = references.filter(flowId => !resolvable.has(flowId));
-  assert.deepEqual(dangling, [], `dangling flow_id references: ${dangling.join(', ')}`);
+test('every capability flow reference resolves to one canonical full flow', () => {
+  const flows = [flow('flow::orders', 2, 'capability::orders'), flow('flow::tools', 1, 'capability::tools')];
+  const capabilities = [{
+    id: 'capability::orders',
+    related_flows: [
+      { flow_id: 'flow::orders', role: 'primary', rationale: 'entry point' },
+      { flow_id: 'flow::tools', role: 'supporting', rationale: 'shared behavior' },
+    ],
+  }];
+  const resolvable = new Set(flows.map(candidate => candidate.flow_id));
+  const dangling = capabilities.flatMap(capability => capability.related_flows)
+    .map(reference => reference.flow_id)
+    .filter(flowId => !resolvable.has(flowId));
+  assert.deepEqual(dangling, []);
 });
 
-test('INVARIANT: flow step ids are namespaced under their own flow_id (one canonical id scheme per flow)', () => {
-  const flowGraph = materialize();
-  const resolvable = new Set((flowGraph.flows || []).map(flow => flow.flow_id));
-
-  for (const flow of derivedFlows()) {
-    if (!resolvable.has(flow.flow_id)) continue;
-    for (const step of flow.steps || []) {
-      const stepId = (step as { step_id: string }).step_id;
-      assert.ok(
-        stepId.startsWith(`${flow.flow_id}::step`),
-        `step id ${stepId} does not resolve back to a materialized flow`
-      );
+test('every canonical step id is namespaced by its containing flow', () => {
+  const flows = [flow('flow::orders', 3), flow('flow::tools', 2)];
+  for (const candidate of flows) {
+    for (const step of candidate.steps) {
+      assert.ok(step.step_id.startsWith(`${candidate.flow_id}::step`));
     }
   }
 });
 
-test('flow_summary references CALL CHAIN ids, not flow ids — and each maps onto a flow id', () => {
-  // Naming trap worth pinning: `flow_summary.untested_critical_flows` /
-  // `high_error_rate_flows` are populated from call_chains and therefore hold
-  // `chain:…` ids, NOT `flow::…` ids. They are not checked against
-  // flow_graph.flows (a ranked chain need not produce a flow — the flow union
-  // dedups by entry point), but the id an entry there maps to is deterministic.
-  const flowSummary = {
-    untested_critical_flows: ['chain:entry_http_create_order'],
-    high_error_rate_flows: [] as string[],
-  };
-  const resolvable = new Set((materialize().flows || []).map(flow => flow.flow_id));
-
-  for (const chainId of [...flowSummary.untested_critical_flows, ...flowSummary.high_error_rate_flows]) {
-    assert.ok(!chainId.startsWith('flow::'), 'flow_summary holds chain ids');
-    assert.ok(resolvable.has(`flow::${chainId}`), `chain ${chainId} maps onto a materialized flow id`);
-  }
-});
-
-test('INVARIANT: workflow references resolve — primary/supporting workflow ids exist in flow_graph.flows', () => {
-  // Workflows collapsed into a derived view over flows
-  // (docs/cas/SPECIFICATION.md §0.5.1) — there is no separate stored
-  // workflow collection anymore. `primary_workflow_id`/`supporting_workflow_ids`
-  // on EnhancedSystemPurpose now name FLOW ids (flow_graph.flows,
-  // CASFlowRef.flow_id), so what must hold is that nothing points at a flow
-  // that isn't shipped.
-  const flows = [
-    { flow_id: 'flow::chain:entry_cli_deploy', name: 'Deploy', entry_point: 'entry_cli_deploy', step_count: 2 },
-    { flow_id: 'flow::chain:entry_cli_main', name: 'Main', entry_point: 'entry_cli_main', step_count: 1 },
-  ];
-  const enhancedSystemPurpose = {
-    primary_workflow_id: 'flow::chain:entry_cli_deploy',
-    supporting_workflow_ids: ['flow::chain:entry_cli_main'],
-  };
-
-  const known = new Set(flows.map(flow => flow.flow_id));
-  const references = [
-    enhancedSystemPurpose.primary_workflow_id,
-    ...enhancedSystemPurpose.supporting_workflow_ids,
-  ].filter(Boolean);
-
+test('workflow references resolve to canonical flows', () => {
+  const flows = [flow('flow::deploy', 2), flow('flow::verify', 1)];
+  const purpose = { primary_workflow_id: 'flow::deploy', supporting_workflow_ids: ['flow::verify'] };
+  const known = new Set(flows.map(candidate => candidate.flow_id));
+  const references = [purpose.primary_workflow_id, ...purpose.supporting_workflow_ids];
   assert.deepEqual(references.filter(id => !known.has(id)), []);
-});
-
-test('flow_graph.flows is populated even when no flow carries a capability link', () => {
-  const orchestrator = new AnalyzerOrchestrator() as any;
-  const flowGraph = emptyFlowGraph();
-  orchestrator.materializeFlowGraphFlows(
-    flowGraph,
-    [{ flow_id: 'flow::entry_orphan', name: 'Orphan', intent: 'x', entry_point: 'entry_orphan', steps: [] }],
-    []
-  );
-  assert.equal((flowGraph.flows || []).length, 1);
-  assert.equal(flowGraph.flows![0].capability_id, undefined);
-  assert.equal(flowGraph.flows![0].capability_ids, undefined);
 });

@@ -3,15 +3,15 @@ export interface ElementDescriptionSubject {
   kind?: string;
   relatedDomains?: string[];
   fields?: string[];
-  /** Entity names connected to the subject; ground domain-legitimate vocabulary. */
+
   relatedEntities?: string[];
-  /**
-   * System-level grounding vocabulary: primary domain, core concepts, and the
-   * deterministic overview text. Marketing-flagged words that are grounded in
-   * this vocabulary are domain terms (e.g. "compliance" in a fleet-compliance
-   * system) and must not be rejected — parity with the system description
-   * validator's grounded-words-allowed rule.
-   */
+
+
+
+
+
+
+
   domainVocabulary?: string[];
 }
 
@@ -82,19 +82,19 @@ const FILLER_PHRASE_PATTERN = new RegExp([
   '\\bcentralizes? the coordination of [^.]{0,140}\\bscripts?\\b',
 ].join('|'), 'i');
 
-/**
- * ENTITY-KIND recalibration of the filler gate. FILLER_PHRASE_PATTERN was authored
- * entirely from CAPABILITY-description failures — it rejects capability plumbing /
- * mechanism-restatement scaffolds. A handful of its phrases, however, describe
- * exactly what a state/record ENTITY legitimately IS: a Session that holds the
- * "current product context", an AuditLog that records "state mutations", a
- * view-model that captures "screen state" or "workflow state". For an entity these
- * are accurate record semantics, not filler. When the subject is an entity and the
- * ONLY filler hits are these state/record phrases, the description is not rejected.
- * Capabilities still reject them (they remain plumbing there). This list is the
- * intersection of FILLER_PHRASE_PATTERN with legitimate entity record/state
- * vocabulary — nothing here is generic "X manages X" filler, which stays rejected.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 const ENTITY_LEGITIMATE_STATE_PATTERN = /\b(?:state mutations?|screen state|workflow state|current product context|surrounding product workflows?|records?, lists?, or screen state)\b/gi;
 
 const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|performance|compliant|compliance|advanced|modern|leverag(?:e|es|ing)|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|scalability|flexibility|secure by design|user experience|strong foundation|ideal solution|best[- ]in[- ]class|state[- ]of[- ]the[- ]art|cutting[- ]edge|feature[- ]rich|decision[- ]making|collaboration|metrics?)\b/gi;
@@ -115,21 +115,26 @@ function subjectGroundingTokens(
   normalizeToken: (token: string) => string,
   isGenericToken: (token: string) => boolean,
 ): string[] {
-  return [
+  const semanticTokens = [
     ...splitGroundingSource(subject.name),
     ...(subject.relatedDomains || []),
     ...(subject.fields || []).map(field => field.split(':')[0]),
   ]
     .map(token => normalizeToken(token.toLowerCase()))
     .filter(token => token.length > 2 && !isGenericToken(token));
+  const entityTokens = (subject.relatedEntities || [])
+    .flatMap(splitGroundingSource)
+    .map(token => normalizeToken(token.toLowerCase()))
+    .filter(token => token.length > 2);
+  return [...new Set([...semanticTokens, ...entityTokens])];
 }
 
-/**
- * Grounding tokens that legitimize marketing-flagged vocabulary but do NOT
- * count toward target-not-grounded: entity names and system-level domain
- * vocabulary. Kept separate so a description still has to mention the subject
- * itself, while domain terms like "compliance" survive in a compliance system.
- */
+
+
+
+
+
+
 function marketingGroundingTokens(
   subject: ElementDescriptionSubject,
   normalizeToken: (token: string) => string,
@@ -182,13 +187,13 @@ function unsupportedEnumeratedDetail(
   return undefined;
 }
 
-/**
- * THE shared unsupported-marketing-language lint (project tier AND workspace
- * tier reuse this — never fork the list). Returns the distinct marketing
- * matches in `description` that are NOT legitimized by the supplied grounding
- * tokens/vocabulary. Exported so the workspace-level-CAS narrative/product-value gate applies
- * the exact same mechanism as the element-description gate.
- */
+
+
+
+
+
+
+
 export function ungroundedMarketingMatches(
   description: string,
   subjectTokens: string[],
@@ -265,20 +270,26 @@ export function validateElementDescription(
       ...(subject.domainVocabulary || []),
     ]);
     if (scaffoldReason) return { ok: false, reason: scaffoldReason };
-    if (/\bthe\s+[^.]{1,100}\s+capability\b/i.test(cleaned)) {
+    if (/\b(?:the|this)\s+[^.]{0,100}\bcapability\b/i.test(cleaned)) {
       return { ok: false, reason: 'internal-analysis-vocabulary' };
     }
     const unsupportedDetail = unsupportedEnumeratedDetail(cleaned, subject, normalizeToken, isGenericToken);
     if (unsupportedDetail) return { ok: false, reason: `unsupported-enumerated-detail:${unsupportedDetail}` };
   }
   if (FILLER_PHRASE_PATTERN.test(cleaned)) {
-    // Entity recalibration: if the subject is an entity and the filler match is
-    // ENTIRELY entity-legitimate state/record vocabulary (see
-    // ENTITY_LEGITIMATE_STATE_PATTERN), it is accurate record semantics, not
-    // filler — re-test with those phrases stripped and only reject if capability-
-    // plumbing filler remains. Capabilities are unaffected (always reject).
-    const fillerRemains = subject.kind !== 'entity'
-      || FILLER_PHRASE_PATTERN.test(cleaned.replace(ENTITY_LEGITIMATE_STATE_PATTERN, ' '));
+    const subjectVocabulary = [
+      subject.name,
+      ...(subject.relatedDomains || []),
+      ...(subject.relatedEntities || []),
+      ...(subject.domainVocabulary || []),
+    ].join(' ');
+    const withoutGroundedRuntimeBehavior = /\bruntime\b/i.test(subjectVocabulary)
+      ? cleaned.replace(/\bruntime behavior\b/gi, ' ')
+      : cleaned;
+    const fillerCandidate = subject.kind === 'entity'
+      ? withoutGroundedRuntimeBehavior.replace(ENTITY_LEGITIMATE_STATE_PATTERN, ' ')
+      : withoutGroundedRuntimeBehavior;
+    const fillerRemains = FILLER_PHRASE_PATTERN.test(fillerCandidate);
     if (fillerRemains) return { ok: false, reason: 'generic-structural-phrase' };
   }
   if (/\borientation entry\b/i.test(cleaned)) return { ok: false, reason: 'source-bucket-restatement' };
@@ -333,36 +344,36 @@ export function validateElementDescription(
   return { ok: true };
 }
 
-/**
- * TEMPLATE-SCAFFOLD lint for capability descriptions (live audit on a benchmarked PHP monolith:
- * 12/12 domain capabilities read "Lets users <verb> <noun>" — the exact noun
- * already in the capability name — and surface capabilities read "The X
- * Surface capability owns the Y lifecycle...". Both are scaffolds that add
- * NOTHING over the name). Two rejections:
- *
- *  1. 'owns-lifecycle-template' — the literal "<...> capability owns the
- *     <...> lifecycle" house template (prompt-vocabulary leak, not product
- *     meaning).
- *  2. 'lets-users-scaffold-restatement' — a "lets users <verb> <noun>"
- *     sentence whose content past the scaffold carries NO information beyond
- *     the subject's own name tokens and generic scaffold verbs. This is an
- *     information-gain check, NOT a ban on the phrase "lets users": "Portfolio
- *     Management lets users track their crypto holdings — balances, allocation,
- *     and performance across connected wallets" passes (holdings/balances/
- *     wallets are new information); "Vehicle Management lets users manage
- *     vehicles" is rejected (nothing past the name).
- *  3. 'lets-users-scaffold-ungrounded' — when grounding vocabulary is supplied
- *     (entity names, domains, fields), the informative content past the
- *     scaffold must anchor at least one token in that EVIDENCE — otherwise the
- *     sentence is free-floating template filler ("lets users store, retrieve,
- *     and organize their knowledge and skills") that no fact supports. This is
- *     evidence-grounding, not a vocabulary blocklist: the same sentence passes
- *     when the capability's entities actually carry those concepts.
- *
- * Exported so the orchestrator can re-queue catalog-authored capability
- * descriptions that shipped scaffold-shaped (they bypass this validator on the
- * catalog path).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function capabilityDescriptionScaffoldReason(
   description: string,
   subjectName: string,
@@ -375,7 +386,9 @@ export function capabilityDescriptionScaffoldReason(
     return 'owns-lifecycle-template';
   }
   const letsScaffold = /\blets?\s+(?:the\s+)?(?:its\s+)?(?:product(?:'s)?\s+)?(?:users?|operators?|teams?|agents?|customers?|engineers?)\s+(.+)$/i.exec(cleaned);
-  if (!letsScaffold) return undefined;
+  const directScaffold = /^(?:manages?|tracks?|coordinates?|supports?|provides?|handles?)\s+(.+)$/i.exec(cleaned);
+  const scaffold = letsScaffold || directScaffold;
+  if (!scaffold) return undefined;
   const scaffoldVerbs = new Set([
     'manage', 'manages', 'managing', 'track', 'tracks', 'tracking', 'view', 'views', 'viewing',
     'create', 'creates', 'creating', 'update', 'updates', 'updating', 'delete', 'deletes',
@@ -384,19 +397,21 @@ export function capabilityDescriptionScaffoldReason(
     'record', 'records', 'data', 'information', 'items', 'lists', 'list', 'details', 'entries',
     'their', 'them', 'these', 'those', 'with', 'within', 'related', 'associated', 'relevant',
     'system', 'systems', 'product', 'products', 'application', 'operations', 'workflows',
+    'activity', 'activities', 'codebase', 'codebases', 'software', 'people', 'agents',
   ]);
   const nameStems = new Set(
     splitGroundingSource(subjectName)
       .filter(token => token.length >= 3)
       .map(token => token.slice(0, 5)),
   );
-  const informative = letsScaffold[1]
+  const informative = scaffold[1]
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(token =>
       token.length >= 4 &&
       !scaffoldVerbs.has(token) &&
       !nameStems.has(token.slice(0, 5)));
+  if (!letsScaffold) return informative.length === 0 ? 'generic-name-restatement' : undefined;
   if (informative.length === 0) return 'lets-users-scaffold-restatement';
   if (groundingTokens.length > 0) {
     const groundedStems = new Set(

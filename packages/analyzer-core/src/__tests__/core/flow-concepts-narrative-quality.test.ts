@@ -66,8 +66,8 @@ describe('event-variant flow collapse (defect #2)', () => {
       entry_points,
       exit_points,
       data_lineage: [],
-      data_entities: [],
-      system_capabilities: [],
+      entities: [],
+      capabilities: [],
       analyzer_contributions: [],
     } as unknown as CASOutput;
   }
@@ -123,7 +123,7 @@ describe('distinct-effect event handlers stay distinct flows', () => {
       analysis_id: 'test',
       system: { name: 'test-system' } as any,
       nodes, edges, entry_points, exit_points: [],
-      data_lineage: [], data_entities: [], system_capabilities: [], analyzer_contributions: [],
+      data_lineage: [], entities: [], capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
   }
 
@@ -157,7 +157,7 @@ describe('adjacent repeated-token dedupe in name assembly (defect #3)', () => {
       analysis_id: 'test',
       system: { name: 'test-system' } as any,
       nodes, edges: [], entry_points, exit_points: [],
-      data_lineage: [], data_entities: [], system_capabilities: [], analyzer_contributions: [],
+      data_lineage: [], entities: [], capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
   }
 
@@ -189,7 +189,7 @@ describe('adjacent repeated-token dedupe in name assembly (defect #3)', () => {
       analysis_id: 'test',
       system: { name: 'test-system' } as any,
       nodes, edges: [], entry_points, exit_points: [],
-      data_lineage: [], data_entities: [], system_capabilities: [], analyzer_contributions: [],
+      data_lineage: [], entities: [], capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
     const flows = computeFlowConcepts(cas);
     expect(flows[0].name).toBe('Order Service Order');

@@ -51,6 +51,21 @@ describe('incremental dependency impact', () => {
 
     expect(affected).toEqual(['api/handler.go', 'service/orders.go']);
   });
+  it('normalizes absolute changed paths before walking relative graph dependencies', () => {
+    const affected = computeGraphAffectedFileClosure({
+      projectPath: '/repo',
+      changedFiles: ['/repo/domain/order.py'],
+      nodes: [
+        { id: 'order', name: 'Order', type: 'function', source: { file: 'domain/order.py' } },
+        { id: 'test', name: 'test_order', type: 'function', source: { file: 'tests/test_order.py' } },
+      ],
+      edges: [
+        { id: 'test-order', source: 'test', target: 'order', type: 'calls' },
+      ],
+    });
+
+    expect(affected).toEqual(['tests/test_order.py']);
+  });
   it('walks every downstream layer without a depth cutoff', () => {
     const files = chain(12);
     expect(computeAffectedFileClosure(['src/layer-0.ts'], files)).toEqual(
@@ -71,7 +86,7 @@ describe('incremental dependency impact', () => {
     ]);
   });
 
-  it('includes affected files in incremental execution and excludes deletions', () => {
+  it('reanalyzes direct source changes while retaining affected files as impact evidence', () => {
     expect(filesRequiringIncrementalAnalysis({
       added: ['src/new.ts'],
       modified: ['src/base.ts'],
@@ -80,7 +95,7 @@ describe('incremental dependency impact', () => {
       affectedNodeIds: new Set(),
       requiresFullRebuild: false,
       detectionMethod: 'hybrid',
-    })).toEqual(['src/base.ts', 'src/dependent.ts', 'src/new.ts']);
+    })).toEqual(['src/base.ts', 'src/new.ts']);
   });
 
   it('resolves common cross-language import forms conservatively', () => {
@@ -117,7 +132,8 @@ describe('incremental node reference remapping', () => {
     ];
     const nodes: CASNode[] = [
       previousNodes[0],
-      { id: 'function_service_calculate_1', name: 'calculate', type: 'function', parent: 'file_service', source: { file: 'src/service.ts', line: 2 } },
+      { id: 'new_service_owner', name: 'service', type: 'service', source: { file: 'src/service.ts', line: 1 } },
+      { id: 'function_service_calculate_1', name: 'calculate', type: 'function', parent: 'new_service_owner', source: { file: 'src/service.ts', line: 2 } },
       previousNodes[2],
     ];
     const edges: CASEdge[] = [{
@@ -136,8 +152,52 @@ describe('incremental node reference remapping', () => {
       exitPoints: [],
     });
 
-    expect(remapped).toBe(1);
+    expect(remapped).toBe(2);
     expect(edges[0].target).toBe('function_service_calculate_1');
+  });
+
+  it('does not redirect a retained member to a different same-named member', () => {
+    const previousNodes: CASNode[] = [
+      { id: 'old_owner_a', name: 'Severity', type: 'enum', source: { file: 'src/model.rs', line: 1 } },
+      { id: 'old_owner_b', name: 'Category', type: 'enum', source: { file: 'src/model.rs', line: 20 } },
+      { id: 'method_a', name: 'as_str', type: 'method', parent: 'old_owner_a', source: { file: 'src/model.rs', line: 5 } },
+      { id: 'method_b', name: 'as_str', type: 'method', parent: 'old_owner_b', source: { file: 'src/model.rs', line: 24 } },
+    ];
+    const nodes: CASNode[] = [
+      previousNodes[2],
+      { ...previousNodes[3], parent: 'new_owner_b' },
+      { id: 'new_owner_b', name: 'Category', type: 'enum', source: { file: 'src/model.rs', line: 20 } },
+    ];
+    const edges: CASEdge[] = [{ id: 'edge', source: 'caller', target: 'method_a', type: 'calls' }];
+
+    expect(remapIncrementalNodeReferences({
+      projectPath: '/repo',
+      previousNodes,
+      nodes,
+      edges,
+      entryPoints: [],
+      exitPoints: [],
+    })).toBe(1);
+    expect(edges[0].target).toBe('method_a');
+  });
+
+  it('does not infer member identity when the previous owner is unavailable', () => {
+    const previousNodes: CASNode[] = [
+      { id: 'method_a', name: 'as_str', type: 'method', parent: 'missing_owner_a', source: { file: 'src/model.rs', line: 5 } },
+      { id: 'method_b', name: 'as_str', type: 'method', parent: 'missing_owner_b', source: { file: 'src/model.rs', line: 24 } },
+    ];
+    const nodes: CASNode[] = [...previousNodes];
+    const edges: CASEdge[] = [{ id: 'edge', source: 'caller', target: 'method_a', type: 'calls' }];
+
+    expect(remapIncrementalNodeReferences({
+      projectPath: '/repo',
+      previousNodes,
+      nodes,
+      edges,
+      entryPoints: [],
+      exitPoints: [],
+    })).toBe(0);
+    expect(edges[0].target).toBe('method_a');
   });
 
   it('does not guess when the replacement identity is ambiguous', () => {

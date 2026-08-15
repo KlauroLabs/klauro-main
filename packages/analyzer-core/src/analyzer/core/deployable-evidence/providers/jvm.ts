@@ -4,37 +4,37 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
-/**
- * JVM ecosystem (Java/Kotlin, Gradle/Maven, Spring Boot) deployable evidence.
- *
- * Tier 2 (runnable entry):
- *  - Spring Boot: `@SpringBootApplication` class with `public static void
- *    main(String[] args)` -> kind 'server-entry'.
- *  - Gradle `application` plugin / `mainClass` (build.gradle or
- *    build.gradle.kts, top-level `application { mainClass = ... }` or the
- *    legacy `mainClassName` property) -> kind 'bin' (or 'server-entry' when
- *    the module also looks like Spring Boot).
- *  - Maven `spring-boot-maven-plugin` or `maven-shade-plugin`/`assembly`
- *    mainClass in pom.xml -> kind 'server-entry'.
- *  - Any bare `public static void main(String[]` / `public static void
- *    main(String... args)` Java/Kotlin source not already claimed above
- *    -> kind 'bin'.
- *
- * Tier 3 (package identity):
- *  - pom.xml / build.gradle / build.gradle.kts / settings.gradle(.kts) as a
- *    'package' candidate (module or workspace identity), independent of
- *    whether the module is runnable — this is what lets a library module
- *    (no main, no application plugin) still surface as a non-deployable
- *    package that later rolls up under a parent app.
- *
- * Multi-module awareness: Gradle/Maven multi-module builds are walked by
- * globbing every build.gradle(.kts)/pom.xml in the tree, so each submodule
- * is evaluated independently — a submodule with its own Spring Boot main is
- * its own Tier-2 candidate at that submodule's root_path, while a sibling
- * library submodule (no main, no application plugin) only contributes a
- * Tier-3 package candidate. The evidence-gated deployable resolver decides
- * top-level vs. rolled-up from there (see cross-codebase-analysis.ts).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const BUILD_GRADLE_GLOBS = ['**/build.gradle', '**/build.gradle.kts'];
 const SETTINGS_GRADLE_GLOBS = ['**/settings.gradle', '**/settings.gradle.kts'];
@@ -62,7 +62,7 @@ function moduleNameFromRoot(rootPath: string, projectPath: string, displayName?:
   return path.basename(rootPath);
 }
 
-/** Spring Boot: `@SpringBootApplication` + `public static void main` in the same source file. */
+
 function collectSpringBootApplications(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -75,9 +75,9 @@ function collectSpringBootApplications(ctx: EvidenceCollectionContext): Deployab
     const hasMain = /public\s+static\s+void\s+main\s*\(\s*String(\[\]|\.\.\.)/.test(content);
     if (!hasMain) continue;
 
-    // root_path: walk up from the source file to the nearest build file
-    // (build.gradle(.kts) or pom.xml) so the module's evidence lands at the
-    // module root rather than deep inside src/main/java/....
+
+
+
     const rootPath = nearestModuleRoot(projectPath, file);
     const className = path.basename(file, path.extname(file));
 
@@ -95,7 +95,7 @@ function collectSpringBootApplications(ctx: EvidenceCollectionContext): Deployab
   return out;
 }
 
-/** Walk upward from a source file toward the project root looking for the nearest build.gradle(.kts)/pom.xml, defaulting to '.'. */
+
 function nearestModuleRoot(projectPath: string, sourceFile: string): string {
   let dir = path.dirname(sourceFile);
   const seen: string[] = [];
@@ -113,7 +113,7 @@ function nearestModuleRoot(projectPath: string, sourceFile: string): string {
   return '.';
 }
 
-/** Gradle `application` plugin with `mainClass`/`mainClassName`, per build.gradle(.kts) module. */
+
 function collectGradleApplicationTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -148,7 +148,7 @@ function collectGradleApplicationTargets(ctx: EvidenceCollectionContext): Deploy
   return out;
 }
 
-/** Maven `spring-boot-maven-plugin` or shade/assembly mainClass in pom.xml, per pom.xml module. */
+
 function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -161,18 +161,18 @@ function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): Deployable
 
     const springBootPluginBlockMatch = content.match(/<plugin>\s*(?:(?!<\/plugin>)[\s\S])*?<artifactId>\s*spring-boot-maven-plugin\s*<\/artifactId>(?:(?!<\/plugin>)[\s\S])*?<\/plugin>/);
     const hasSpringBootPlugin = Boolean(springBootPluginBlockMatch);
-    // The `repackage` goal is what actually produces the shippable artifact
-    // (a self-contained executable fat-jar Maven binds into the `package`
-    // phase) -- everything else about the plugin is configuration. It is
-    // usually bound one of two ways: an explicit <executions><goal>repackage
-    // </goal> block (the shape Spring Initializr scaffolds), or implicitly,
-    // inherited from spring-boot-starter-parent's own <pluginManagement>
-    // when the child pom just lists the bare plugin with no <executions> at
-    // all -- which is equally common and, because the binding lives in a
-    // parent POM this scan never resolves, textually invisible here. Bare
-    // plugin presence is therefore already the right signal for "this
-    // module ships its own repackaged jar"; the explicit-goal match below is
-    // additional corroborating evidence text, not an extra gate.
+
+
+
+
+
+
+
+
+
+
+
+
     const hasExplicitRepackageGoal = hasSpringBootPlugin
       && /<goal>\s*repackage\s*<\/goal>/.test(springBootPluginBlockMatch![0]);
     const shadeMainClassMatch = content.match(/<artifactId>\s*maven-shade-plugin\s*<\/artifactId>[\s\S]*?<mainClass>([^<]+)<\/mainClass>/)
@@ -189,17 +189,17 @@ function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): Deployable
       root_path: rootPath,
       name: moduleNameFromRoot(rootPath, projectPath, displayName),
       tier: 2,
-      // A Spring Boot Maven module IS its own build target -- the plugin
-      // repackages this module's own jar into a standalone runnable
-      // artifact, exactly like a Gradle `application`/`bootJar` target or a
-      // cargo [[bin]] -- never a 'server-entry' (an in-process HTTP route
-      // handler with no build artifact of its own). Misclassifying it as
-      // 'server-entry' made deployable-analysis.ts's isBuildTargetDeclaration
-      // (tier===2 && kind==='bin') silently drop every Spring Boot Maven
-      // module from ship-evidence qualification -- a repo whose only runnable
-      // units are Spring Boot Maven apps could never promote to a
-      // Deployable-Analysis Workspace no matter how many independently
-      // shippable services it had.
+
+
+
+
+
+
+
+
+
+
+
       kind: 'bin',
       evidence: [
         `pom.xml: ${pom}`,
@@ -217,7 +217,7 @@ function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): Deployable
   return out;
 }
 
-/** Any bare `public static void main` in a .java/.kt file not already claimed as Spring Boot. */
+
 function collectBareMainMethods(ctx: EvidenceCollectionContext, alreadyClaimed: Set<string>): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -226,15 +226,15 @@ function collectBareMainMethods(ctx: EvidenceCollectionContext, alreadyClaimed: 
   for (const file of sources) {
     const content = readFileSafe(projectPath, file);
     if (!content) continue;
-    if (/@SpringBootApplication\b/.test(content)) continue; // handled by collectSpringBootApplications
+    if (/@SpringBootApplication\b/.test(content)) continue;
     const hasMain =
-      /public\s+static\s+void\s+main\s*\(\s*String(\[\]|\.\.\.)/.test(content) || // Java
-      /fun\s+main\s*\(/.test(content); // Kotlin top-level main
+      /public\s+static\s+void\s+main\s*\(\s*String(\[\]|\.\.\.)/.test(content) ||
+      /fun\s+main\s*\(/.test(content);
     if (!hasMain) continue;
 
     const rootPath = nearestModuleRoot(projectPath, file);
     const dedupeKey = `${rootPath}`;
-    if (alreadyClaimed.has(dedupeKey)) continue; // module already has a Tier-2 candidate from Gradle/Maven scan
+    if (alreadyClaimed.has(dedupeKey)) continue;
 
     const className = path.basename(file, path.extname(file));
     out.push({
@@ -250,7 +250,7 @@ function collectBareMainMethods(ctx: EvidenceCollectionContext, alreadyClaimed: 
   return out;
 }
 
-/** Tier 3: pom.xml / build.gradle(.kts) / settings.gradle(.kts) as package identity, per module. */
+
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];

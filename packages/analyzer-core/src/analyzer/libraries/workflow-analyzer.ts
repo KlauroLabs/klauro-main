@@ -6,30 +6,20 @@ import { cachedGlob as glob } from '../core/glob-cache';
 
 type WorkflowSystem = 'temporal' | 'celery' | 'sidekiq' | 'bullmq' | 'kafka' | 'rabbitmq' | 'nats' | 'step-functions' | 'durable-functions' | 'camunda-zeebe' | 'cadence';
 
-interface JobNodeSpec {
-  id: string;
-  name: string;
-  type: string; // 'workflow' | 'activity' | 'job' | 'queue' | 'worker' | 'consumer' | 'producer' | 'topic'
-  system: WorkflowSystem;
-  filePath: string;
-  line?: number;
-  isEntryPoint: boolean;
-  metadata?: Record<string, any>;
-}
 
-/**
- * WorkflowAnalyzer
- *
- * Extracts async FLOWS / background jobs across TS/JS, Python and Ruby:
- *   - Temporal   (@temporalio, temporalio): workflows + activities + edges
- *   - Celery     (celery, Python): @app.task / @shared_task + .delay()/.apply_async() enqueues
- *   - Sidekiq    (sidekiq, Ruby): Sidekiq::Job/Worker perform + .perform_async/.perform_in enqueues
- *   - BullMQ/Bull (TS/JS): new Queue / new Worker / queue.add producers
- *   - Kafka      (kafkajs): consumer.subscribe/run + producer.send
- *
- * Each job/workflow/consumer becomes a FLOW node + an async entry point.
- * Producer -> queue/topic -> consumer/worker edges express the cross-service flow.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class WorkflowAnalyzer extends BaseAnalyzer {
   constructor() {
     super('workflow', 'Workflow Analyzer', '1.0.0', 'library');
@@ -57,8 +47,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       return true;
     }
 
-    // Fallback: scan a bounded set of source files for import markers
-    // (Python/Ruby projects have no package.json dependency list).
+
+
     const ignorePatterns = this.getIgnorePatterns({ projectPath });
     const files = await glob('**/*.{ts,js,py,rb,go,rs,java,cs}', {
       cwd: projectPath,
@@ -75,7 +65,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
         const content = await fs.readFile(file, 'utf-8');
         if (importRe.test(content)) return true;
       } catch {
-        // ignore unreadable files
+
       }
     }
     return false;
@@ -92,8 +82,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
     files = this.capAndPrioritizeSourceFiles(files, 'workflow source files');
-    // ASL state-machine JSON is opt-in: only *.asl.json (avoids scanning every
-    // package.json / config file for a StartAt/States shape).
+
+
     try {
       const aslFiles = await glob('**/*.asl.json', {
         cwd: context.projectPath,
@@ -103,7 +93,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       });
       files = [...files, ...aslFiles];
     } catch {
-      // ignore
+
     }
 
     const { nodes, edges, entryPoints } = await this.processFiles(files, context.projectPath);
@@ -160,8 +150,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     const content = await fs.readFile(context.filePath, 'utf-8');
     const stat = await fs.stat(context.filePath);
 
-    // Single-file scope: enqueue/producer edges to jobs/queues defined in other
-    // files under-populate here and re-derive on full analysis.
+
+
     const { nodes, edges, entryPoints } = await this.processFiles(
       [context.filePath],
       context.projectPath
@@ -184,11 +174,11 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     );
   }
 
-  /**
-   * Extract workflow nodes/edges/entry points from a list of absolute file
-   * paths. Cross-file enqueue/producer resolution is limited to the maps built
-   * from exactly the files in `files`.
-   */
+
+
+
+
+
   private async processFiles(
     files: string[],
     projectPath: string
@@ -197,9 +187,9 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
 
-    // Track queue/topic node ids so producer/worker edges link to a shared node.
-    const queueNodeIds = new Map<string, string>(); // `${system}:${name}` -> nodeId
-    const jobNodeIds = new Map<string, string>(); // `${system}:${name}` -> nodeId (celery/sidekiq jobs)
+
+    const queueNodeIds = new Map<string, string>();
+    const jobNodeIds = new Map<string, string>();
     const pendingEnqueues: Array<{ system: WorkflowSystem; jobName: string; filePath: string; line: number }> = [];
     const pendingQueueAdds: Array<{ queueName: string; jobName: string; filePath: string; line: number }> = [];
 
@@ -232,32 +222,32 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       const lineOf = (index: number): number => content.slice(0, index).split('\n').length;
 
       if (ext === '.json') {
-        // AWS Step Functions ASL state-machine definitions.
+
         this.extractStepFunctions(content, relativePath, nodes, edges, entryPoints);
       } else if (ext === '.py') {
         this.extractCelery(content, lines, relativePath, nodes, entryPoints, jobNodeIds, pendingEnqueues);
         this.extractPythonTemporal(content, relativePath, nodes, edges, entryPoints, lineOf);
-        // Python kafka-python / confluent-kafka topic graph (the Python forms in
-        // extractKafka are content-gated, so the TS forms simply no-op here).
+
+
         this.extractKafka(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
       } else if (ext === '.rb') {
         this.extractSidekiq(content, lines, relativePath, nodes, entryPoints, jobNodeIds, pendingEnqueues);
       } else if (ext === '.go') {
-        // Go event-driven wiring: segmentio/kafka-go writers/readers + nats.go pub/sub.
+
         this.extractGoMessaging(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
-        // Cadence/Temporal Go: workflow.ExecuteActivity dispatch seams.
+
         this.extractGoCadence(content, relativePath, nodes, edges, entryPoints, lineOf);
       } else if (ext === '.rs') {
-        // Rust event-driven wiring: rdkafka producers/consumers + async-nats pub/sub.
+
         this.extractRustMessaging(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
       } else if (ext === '.java') {
-        // Java event-driven wiring: spring-kafka KafkaTemplate.send + @KafkaListener.
+
         this.extractJavaMessaging(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
       } else if (ext === '.cs') {
-        // C# event-driven wiring: Confluent.Kafka ProduceAsync + Subscribe.
+
         this.extractCSharpMessaging(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
       } else {
-        // TS / JS
+
         this.extractBullMQ(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, pendingQueueAdds, lineOf);
         this.extractKafka(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
         this.extractRabbitMQ(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
@@ -268,7 +258,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Resolve Celery/Sidekiq enqueue call sites -> edge from a synthetic call-site node into the job entry node.
+
     for (const enq of pendingEnqueues) {
       const targetId = jobNodeIds.get(`${enq.system}:${enq.jobName}`);
       if (!targetId) continue;
@@ -292,7 +282,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       );
     }
 
-    // Resolve BullMQ queue.add() -> queue node edges (producer -> queue).
+
     for (const add of pendingQueueAdds) {
       const queueId = queueNodeIds.get(`bullmq:${add.queueName}`);
       const siteId = `flow_bullmq_add_${this.sanitizeId(add.queueName)}_${this.sanitizeId(add.jobName)}_${add.line}`;
@@ -320,7 +310,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     return { nodes, edges, entryPoints };
   }
 
-  // ---- Temporal (TS) ----
+
   private extractTemporal(
     content: string,
     filePath: string,
@@ -331,8 +321,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
   ): void {
     const isWorkflowFile = /(^|\/)workflows?(\/|\.)/.test(filePath.replace(/\\/g, '/'));
 
-    // Activity names pulled into scope via `const { a, b } = proxyActivities<...>()`.
-    // These are the activities a workflow dispatches — the orchestrator->activity seam.
+
+
     const proxiedActivities = new Set<string>();
     const proxyRe = /proxyActivities\s*</g;
     let m: RegExpExecArray | null;
@@ -345,7 +335,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
           subcategories: ['async-flow', 'temporal', 'activity'],
         })
       );
-      // `const { chargeCard, sendEmail } = proxyActivities<Activities>({...})`
+
       const destructure = content.slice(Math.max(0, m.index - 200), m.index).match(/\{\s*([^}]+?)\s*\}\s*=\s*$/);
       if (destructure) {
         for (const raw of destructure[1].split(',')) {
@@ -355,7 +345,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Activity definitions via export functions in activities files
+
     if (/(^|\/)activities?(\/|\.)/.test(filePath.replace(/\\/g, '/'))) {
       const fnRe = /export\s+(?:async\s+)?function\s+(\w+)\s*\(/g;
       while ((m = fnRe.exec(content)) !== null) {
@@ -373,7 +363,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
 
     if (!isWorkflowFile) return;
 
-    // Workflow functions: exported (async) functions in a workflows/ file are workflow entry points.
+
     const wfRe = /export\s+(?:async\s+)?function\s+(\w+)\s*\(/g;
     const workflowIds: string[] = [];
     while ((m = wfRe.exec(content)) !== null) {
@@ -401,8 +391,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       );
     }
 
-    // Orchestrator -> activity edges. `executeActivity('name', ...)` or a
-    // proxied `chargeCard(...)` call dispatches an async activity task.
+
+
     if (workflowIds.length === 0) return;
     const sourceWorkflow = workflowIds[0];
     const dispatched = new Set<string>();
@@ -417,11 +407,11 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Emit an orchestrator->activity edge. If the target activity node was not
-   * (yet) defined (cross-file / external), create a lightweight reference node
-   * so the async task seam is still visible in the graph.
-   */
+
+
+
+
+
   private addActivityDispatchEdge(
     sourceId: string,
     activityId: string,
@@ -442,7 +432,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     edges.push(this.createEdge(edgeId, sourceId, activityId, 'dispatches', 'async-flow', { system, activity: activityName, async: true }));
   }
 
-  // ---- Temporal (Python) ----
+
   private extractPythonTemporal(
     content: string,
     filePath: string,
@@ -451,7 +441,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     lineOf: (index: number) => number
   ): void {
-    // @workflow.defn ... class X / @workflow.run def ...
+
     const wfDefnRe = /@workflow\.defn[\s\S]{0,200}?class\s+(\w+)/g;
     let m: RegExpExecArray | null;
     const workflowIds: string[] = [];
@@ -493,7 +483,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       );
     }
 
-    // workflow.execute_activity(activity_fn, ...) -> orchestrator->activity edge.
+
     if (workflowIds.length > 0) {
       const sourceWorkflow = workflowIds[0];
       const execRe = /(?:workflow\.)?execute_activity(?:_method)?\s*\(\s*([\w.]+)/g;
@@ -507,7 +497,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- AWS Step Functions (Amazon States Language, JSON) ----
+
   private extractStepFunctions(
     content: string,
     filePath: string,
@@ -515,7 +505,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[]
   ): void {
-    // Cheap pre-check before JSON.parse: an ASL document has StartAt + States.
+
     if (!/"StartAt"/.test(content) || !/"States"/.test(content)) return;
     let doc: any;
     try {
@@ -535,7 +525,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }));
     entryPoints.push(this.createEntryPoint(`ep_${wfId}`, wfId, 'event', wfName, `AWS Step Functions state machine ${wfName}`, { event: `step-functions:workflow:${wfName}` }, undefined, { system: 'step-functions', kind: 'workflow' }));
 
-    // Recursively walk States (Task/Choice/Parallel/Map/Wait/Pass/Succeed/Fail).
+
     const walkStates = (states: Record<string, any>, parentId: string): void => {
       for (const [stateName, state] of Object.entries(states || {})) {
         if (!state || typeof state !== 'object') continue;
@@ -548,10 +538,10 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
           resource: (state as any).Resource,
           subcategories: ['async-flow', 'step-functions', isTask ? 'activity' : 'step'],
         }));
-        // orchestrator -> state (Task states are async task seams).
+
         const edgeType = isTask ? 'dispatches' : 'transitions';
         edges.push(this.createEdge(`${parentId}__${edgeType}__${stateId}`, parentId, stateId, edgeType, 'async-flow', { system: 'step-functions', stateType, resource: (state as any).Resource, async: isTask }));
-        // Nested Parallel branches / Map iterator.
+
         for (const branch of (state as any).Branches || []) {
           if (branch?.States) walkStates(branch.States, stateId);
         }
@@ -564,7 +554,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
 
   private findAslStateMachine(doc: any): { StartAt: string; States: Record<string, any> } | undefined {
     if (doc && typeof doc === 'object' && doc.StartAt && doc.States) return doc;
-    // Common wrappers: a CDK/SAM template embeds the definition under a key.
+
     for (const key of ['definition', 'Definition', 'StateMachine', 'stateMachine']) {
       const nested = doc?.[key];
       if (nested?.StartAt && nested?.States) return nested;
@@ -572,7 +562,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  // ---- Azure Durable Functions (JS/TS) ----
+
   private extractDurableFunctions(
     content: string,
     filePath: string,
@@ -581,7 +571,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     lineOf: (index: number) => number
   ): void {
-    // Gate on the durable-functions orchestrator idiom.
+
     if (!/df\.orchestrator|durable-functions|IDurableOrchestrationContext|DurableOrchestrationContext/.test(content)) return;
 
     const wfName = path.basename(filePath).replace(/\.[jt]s$/i, '');
@@ -592,7 +582,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }));
     entryPoints.push(this.createEntryPoint(`ep_${wfId}`, wfId, 'event', wfName, `Azure Durable Functions orchestrator ${wfName}`, { event: `durable-functions:orchestrator:${wfName}` }, undefined, { system: 'durable-functions', kind: 'orchestrator' }));
 
-    // context.df.callActivity('name') / callActivityWithRetry('name', ...) -> activity dispatch.
+
     const actRe = /call(?:Sub[Oo]rchestrator|Activity)(?:WithRetry)?\s*\(\s*['"`]([^'"`]+)['"`]/g;
     let m: RegExpExecArray | null;
     const seen = new Set<string>();
@@ -604,7 +594,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Camunda / Zeebe (JS/TS) ----
+
   private extractCamundaZeebe(
     content: string,
     filePath: string,
@@ -630,7 +620,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       return wfId;
     };
 
-    // zbc.createWorker({ taskType: 'charge-card', ... }) / createWorker('charge-card', handler)
+
     const workerRe = /createWorker\s*\(\s*(?:\{[\s\S]{0,160}?taskType\s*:\s*(['"`])([^'"`]+)\1|(['"`])([^'"`]+)\3)/g;
     let m: RegExpExecArray | null;
     const seen = new Set<string>();
@@ -650,7 +640,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Cadence / Temporal (Go) ----
+
   private extractGoCadence(
     content: string,
     filePath: string,
@@ -662,7 +652,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     if (!/go\.uber\.org\/cadence|go\.temporal\.io|workflow\.ExecuteActivity|RegisterWorkflow/.test(content)) return;
     const system: WorkflowSystem = /cadence/.test(content) ? 'cadence' : 'temporal';
 
-    // func XxxWorkflow(ctx workflow.Context, ...) -> workflow node.
+
     const wfRe = /func\s+(\w*[Ww]orkflow\w*)\s*\(\s*ctx\s+workflow\.Context/g;
     let m: RegExpExecArray | null;
     let sourceWorkflow: string | undefined;
@@ -678,7 +668,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
 
     if (!sourceWorkflow) return;
-    // workflow.ExecuteActivity(ctx, ActivityFn, ...) -> orchestrator->activity edge.
+
     const execRe = /workflow\.ExecuteActivity\s*\(\s*[\w.]+\s*,\s*([\w.]+)/g;
     const seen = new Set<string>();
     while ((m = execRe.exec(content)) !== null) {
@@ -689,7 +679,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Celery (Python) ----
+
   private extractCelery(
     content: string,
     lines: string[],
@@ -699,11 +689,11 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     jobNodeIds: Map<string, string>,
     pendingEnqueues: Array<{ system: WorkflowSystem; jobName: string; filePath: string; line: number }>
   ): void {
-    // @app.task / @shared_task / @celery.task decorated def -> task entry point.
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (/@(?:\w+\.)?(?:shared_task|task)\b/.test(line) || /@shared_task\b/.test(line)) {
-        // find the next def
+
         for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
           const defMatch = lines[j].match(/^\s*(?:async\s+)?def\s+(\w+)\s*\(/);
           if (defMatch) {
@@ -737,7 +727,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // .delay() / .apply_async() call sites -> enqueue edges.
+
     const enqueueRe = /(\w+)\.(?:delay|apply_async)\s*\(/g;
     let m: RegExpExecArray | null;
     while ((m = enqueueRe.exec(content)) !== null) {
@@ -747,7 +737,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Sidekiq (Ruby) ----
+
   private extractSidekiq(
     content: string,
     lines: string[],
@@ -757,7 +747,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     jobNodeIds: Map<string, string>,
     pendingEnqueues: Array<{ system: WorkflowSystem; jobName: string; filePath: string; line: number }>
   ): void {
-    // class X ... include Sidekiq::Job/Worker ... def perform
+
     const classRe = /class\s+(\w+)[\s\S]*?include\s+Sidekiq::(?:Job|Worker)/g;
     let m: RegExpExecArray | null;
     while ((m = classRe.exec(content)) !== null) {
@@ -788,7 +778,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // .perform_async / .perform_in call sites -> enqueue edges (target = worker class).
+
     const enqueueRe = /(\w+)\.(?:perform_async|perform_in|perform_at|set\s*\([^)]*\)\.perform_async)\s*\(?/g;
     while ((m = enqueueRe.exec(content)) !== null) {
       const jobName = m[1];
@@ -797,7 +787,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- BullMQ / Bull (TS/JS) ----
+
   private extractBullMQ(
     content: string,
     filePath: string,
@@ -808,8 +798,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     pendingQueueAdds: Array<{ queueName: string; jobName: string; filePath: string; line: number }>,
     lineOf: (index: number) => number
   ): void {
-    // new Queue('name') — also capture `const VAR = new Queue('name')` bindings so
-    // VAR.add(...) call sites resolve to the right queue node.
+
+
     const varToQueue = new Map<string, string>();
     const bindingRe =
       /(?:const|let|var)\s+(\w+)\s*=\s*new\s+Queue\s*(?:<[^>]*>)?\s*\(\s*['"`]([^'"`]+)['"`]/g;
@@ -823,7 +813,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       ensureQueueNode('bullmq', m[1], filePath, lineOf(m.index));
     }
 
-    // new Worker('name', processor)
+
     const workerRe = /new\s+Worker\s*(?:<[^>]*>)?\s*\(\s*['"`]([^'"`]+)['"`]/g;
     while ((m = workerRe.exec(content)) !== null) {
       const queueName = m[1];
@@ -850,7 +840,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
           { system: 'bullmq', kind: 'worker', queue: queueName }
         )
       );
-      // queue -> worker edge (the consume side of the flow)
+
       edges.push(
         this.createEdge(`${queueId}__to__${id}`, queueId, id, 'consumes', 'async-flow', {
           system: 'bullmq',
@@ -859,19 +849,19 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       );
     }
 
-    // queue.add('jobName', data)  /  q.add('send', {})
+
     const addRe = /(\w+)\.add\s*\(\s*['"`]([^'"`]+)['"`]/g;
     while ((m = addRe.exec(content)) !== null) {
       const varName = m[1];
       const jobName = m[2];
       const line = lineOf(m.index);
-      // Resolve the receiver variable to the queue string it was bound to; fall back to the var name.
+
       const queueName = varToQueue.get(varName) || varName;
       pendingQueueAdds.push({ queueName, jobName, filePath, line });
     }
   }
 
-  // ---- Kafka (kafkajs, TS/JS) ----
+
   private extractKafka(
     content: string,
     filePath: string,
@@ -881,7 +871,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     ensureQueueNode: (system: WorkflowSystem, name: string, filePath: string, line?: number) => string,
     lineOf: (index: number) => number
   ): void {
-    // consumer.subscribe({ topic: 'name' })
+
     const subRe = /\.subscribe\s*\(\s*\{[^}]*topic\s*:\s*['"`]([^'"`]+)['"`]/g;
     let m: RegExpExecArray | null;
     const hasRun = /\.run\s*\(\s*\{[^}]*eachMessage/.test(content);
@@ -919,7 +909,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       );
     }
 
-    // producer.send({ topic: 'name' })
+
     const sendRe = /\.send\s*\(\s*\{[^}]*topic\s*:\s*['"`]([^'"`]+)['"`]/g;
     while ((m = sendRe.exec(content)) !== null) {
       const topic = m[1];
@@ -942,9 +932,9 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       );
     }
 
-    // Python kafka-python / confluent-kafka: `producer.send('topic', value)` +
-    // `KafkaConsumer('topic')` / `consumer.subscribe(['topic'])`. Gated on a Kafka
-    // signal so a generic `.send('msg', cb)` can't masquerade as a topic.
+
+
+
     if (/kafka/i.test(content)) {
       const pySend = /\.send\s*\(\s*['"`]([^'"`]+)['"`]\s*,/g;
       while ((m = pySend.exec(content)) !== null) {
@@ -974,7 +964,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- RabbitMQ (amqplib, TS/JS) ----
+
   private extractRabbitMQ(
     content: string,
     filePath: string,
@@ -984,7 +974,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     ensureQueueNode: (system: WorkflowSystem, name: string, filePath: string, line?: number) => string,
     lineOf: (index: number) => number
   ): void {
-    // Producer: `ch.sendToQueue('queue', ...)` / `ch.publish('exchange', 'routingKey', ...)`.
+
     const sendRe = /\.sendToQueue\s*\(\s*['"`]([^'"`]+)['"`]|\.publish\s*\(\s*['"`][^'"`]*['"`]\s*,\s*['"`]([^'"`]+)['"`]/g;
     let m: RegExpExecArray | null;
     while ((m = sendRe.exec(content)) !== null) {
@@ -999,7 +989,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       edges.push(this.createEdge(`${id}__to__${queueId}`, id, queueId, 'produces', 'async-flow', { system: 'rabbitmq', topic: queue }));
     }
 
-    // Consumer: `ch.consume('queue', handler)`.
+
     const consumeRe = /\.consume\s*\(\s*['"`]([^'"`]+)['"`]/g;
     while ((m = consumeRe.exec(content)) !== null) {
       const queue = m[1];
@@ -1014,7 +1004,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- NATS (nats.js, TS/JS) ----
+
   private extractNATS(
     content: string,
     filePath: string,
@@ -1024,9 +1014,9 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     ensureQueueNode: (system: WorkflowSystem, name: string, filePath: string, line?: number) => string,
     lineOf: (index: number) => number
   ): void {
-    // `.publish('subject')` / `.subscribe('subject')` are too generic on their own
-    // (redis/socket.io reuse them) — gate on the NATS library being present so we
-    // only attribute these calls to a NATS subject graph in a real NATS file.
+
+
+
     if (!/\bnats\b/.test(content)) return;
 
     const pubRe = /\.publish\s*\(\s*['"`]([^'"`]+)['"`]/g;
@@ -1056,7 +1046,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Go (segmentio/kafka-go + nats.go) ----
+
   private extractGoMessaging(
     content: string,
     filePath: string,
@@ -1087,14 +1077,14 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     };
 
     let m: RegExpExecArray | null;
-    // segmentio/kafka-go: NewWriter/Writer{...Topic:"x"} -> produces; NewReader/Reader{...} -> consumes.
+
     const writerRe = /kafka\.(?:NewWriter\s*\(\s*)?(?:kafka\.)?Writer(?:Config)?\s*\{[\s\S]{0,300}?Topic\s*:\s*"([^"]+)"/g;
     while ((m = writerRe.exec(content)) !== null) emitProducer('kafka', m[1], lineOf(m.index));
     const readerRe = /kafka\.(?:NewReader\s*\(\s*)?(?:kafka\.)?Reader(?:Config)?\s*\{[\s\S]{0,300}?Topic\s*:\s*"([^"]+)"/g;
     while ((m = readerRe.exec(content)) !== null) emitConsumer('kafka', m[1], lineOf(m.index));
 
-    // nats.go: nc.Publish("subj") -> produces; nc.Subscribe/QueueSubscribe("subj") -> consumes.
-    // Gate on the NATS library so a generic `.Publish(` can't masquerade as a subject.
+
+
     if (/\bnats\b/.test(content)) {
       const pubRe = /\.Publish\s*\(\s*"([^"]+)"/g;
       while ((m = pubRe.exec(content)) !== null) emitProducer('nats', m[1], lineOf(m.index));
@@ -1103,7 +1093,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Rust (rdkafka + async-nats) ----
+
   private extractRustMessaging(
     content: string,
     filePath: string,
@@ -1134,8 +1124,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     };
 
     let m: RegExpExecArray | null;
-    // rdkafka: `FutureRecord::to("topic")` -> produces; `.subscribe(&["topic", ...])` -> consumes.
-    // FutureRecord::to is rdkafka-specific, so no extra gate needed for the producer.
+
+
     const recordRe = /FutureRecord::to\s*\(\s*"([^"]+)"/g;
     while ((m = recordRe.exec(content)) !== null) emitProducer('kafka', m[1], lineOf(m.index));
     const sliceSubRe = /\.subscribe\s*\(\s*&\[([\s\S]{0,200}?)\]/g;
@@ -1146,19 +1136,19 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       while ((t = topicRe.exec(m[1])) !== null) emitConsumer('kafka', t[1], line);
     }
 
-    // async-nats: `client.publish("subject", ...)` -> produces; `client.subscribe("subject")`
-    // -> consumes. Gate on the NATS crate so a generic `.publish(` can't masquerade.
-    // The crate is `async_nats` (underscore = word char, so \bnats\b would miss it).
+
+
+
     if (/async[_-]nats|\bnats\b/.test(content)) {
       const pubRe = /\.publish\s*\(\s*"([^"]+)"/g;
       while ((m = pubRe.exec(content)) !== null) emitProducer('nats', m[1], lineOf(m.index));
-      // async-nats subscribe takes a single subject string (not a slice like rdkafka).
+
       const subRe = /\.subscribe\s*\(\s*"([^"]+)"/g;
       while ((m = subRe.exec(content)) !== null) emitConsumer('nats', m[1], lineOf(m.index));
     }
   }
 
-  // Shared producer/consumer node+edge emitters (broker pub/sub wiring).
+
   private brokerEmitters(
     filePath: string,
     nodes: CASNode[],
@@ -1191,7 +1181,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     return { emitProducer, emitConsumer };
   }
 
-  // ---- Java (spring-kafka) ----
+
   private extractJavaMessaging(
     content: string,
     filePath: string,
@@ -1201,16 +1191,16 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     ensureQueueNode: (system: WorkflowSystem, name: string, filePath: string, line?: number) => string,
     lineOf: (index: number) => number
   ): void {
-    // Gate on spring-kafka so a generic `.send("x", y)` can't masquerade as a topic.
+
     if (!/KafkaTemplate|@KafkaListener|org\.apache\.kafka|spring-kafka/.test(content)) return;
     const { emitProducer, emitConsumer } = this.brokerEmitters(filePath, nodes, edges, entryPoints, ensureQueueNode);
 
     let m: RegExpExecArray | null;
-    // Producer: kafkaTemplate.send("orders", payload) / .send("orders", key, payload).
+
     const sendRe = /\.send\s*\(\s*"([^"]+)"/g;
     while ((m = sendRe.exec(content)) !== null) emitProducer('kafka', m[1], lineOf(m.index));
 
-    // Consumer: @KafkaListener(topics = "shipments") / topics = {"a", "b"}.
+
     const listenerRe = /@KafkaListener\s*\([^)]*?topics\s*=\s*(\{[^}]*\}|"[^"]+")/g;
     while ((m = listenerRe.exec(content)) !== null) {
       const line = lineOf(m.index);
@@ -1220,7 +1210,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- C# (Confluent.Kafka) ----
+
   private extractCSharpMessaging(
     content: string,
     filePath: string,
@@ -1230,16 +1220,16 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     ensureQueueNode: (system: WorkflowSystem, name: string, filePath: string, line?: number) => string,
     lineOf: (index: number) => number
   ): void {
-    // Gate on Confluent.Kafka so a generic `.Subscribe("x")` (e.g. Rx) can't masquerade.
+
     if (!/Confluent\.Kafka|IProducer|IConsumer|ProduceAsync/.test(content)) return;
     const { emitProducer, emitConsumer } = this.brokerEmitters(filePath, nodes, edges, entryPoints, ensureQueueNode);
 
     let m: RegExpExecArray | null;
-    // Producer: producer.Produce("orders", ...) / ProduceAsync("orders", ...).
+
     const produceRe = /\.Produce(?:Async)?\s*\(\s*"([^"]+)"/g;
     while ((m = produceRe.exec(content)) !== null) emitProducer('kafka', m[1], lineOf(m.index));
 
-    // Consumer: consumer.Subscribe("shipments").
+
     const subRe = /\.Subscribe\s*\(\s*"([^"]+)"/g;
     while ((m = subRe.exec(content)) !== null) emitConsumer('kafka', m[1], lineOf(m.index));
   }
@@ -1255,9 +1245,9 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
-    // Python requirements
+
     try {
       const reqPath = path.join(projectPath, 'requirements.txt');
       if (await fs.pathExists(reqPath)) {
@@ -1268,9 +1258,9 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
-    // Ruby Gemfile
+
     try {
       const gemPath = path.join(projectPath, 'Gemfile');
       if (await fs.pathExists(gemPath)) {
@@ -1280,7 +1270,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
         while ((g = gemRe.exec(txt)) !== null) names.add(g[1].toLowerCase());
       }
     } catch {
-      // ignore
+
     }
     return names;
   }

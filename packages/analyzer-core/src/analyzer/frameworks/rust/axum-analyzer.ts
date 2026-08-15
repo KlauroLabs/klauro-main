@@ -1,34 +1,30 @@
 import { AnalysisContext, BaseAnalyzer } from '../../core/base-analyzer';
 import { CASContribution, CASEntryPoint } from '../../../types/cas.types';
-import { RustAnalyzer } from '../../languages/rust-analyzer';
 import { isAuthenticationGuardName } from '../../core/guard-classification';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Axum framework analyzer.
- *
- * Route EXTRACTION (the `.route("/path", method(handler))` builder API) is done by
- * the base RustAnalyzer. This analyzer adds the axum-specific intelligence that has
- * no other home: the tower middleware model. In axum, authentication is applied with
- * `.layer(...)` on a router GROUP, not per route — so which endpoints are protected
- * is a composition fact, resolved from how module routers are `.merge()`d into a
- * layered router and `.nest()`ed under a prefix. Without this, every axum route shows
- * `auth: unknown`, which for a zero-trust product is the most damaging possible gap.
- */
-// A `.layer(...)` whose closing paren is followed (after optional whitespace) by a
-// chain continuation `.`, a statement end `;`, a block close `}` (the layer is the
-// router's final return expression), or end-of-input. The `}` case is essential:
-// `fn router() -> Router { Router::new().route(...).layer(auth) }` carries no `;`.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const LAYER_CALL = /\.layer\s*\(([\s\S]*?)\)\s*(?=[.;}]|$)/g;
 
 export class AxumAnalyzer extends BaseAnalyzer {
-  private rustAnalyzer: RustAnalyzer;
-
   constructor() {
     super('axum', 'Axum Framework Analyzer', '1.0.0', 'framework');
-    this.rustAnalyzer = new RustAnalyzer();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -47,11 +43,10 @@ export class AxumAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
-    const rust = await this.rustAnalyzer.analyze(context);
-    const nodes = [...(rust.nodes || [])];
-    const edges = [...(rust.edges || [])];
-    const entryPoints = [...(rust.entry_points || [])];
-    const exitPoints = [...(rust.exit_points || [])];
+    const nodes: NonNullable<CASContribution['nodes']> = [];
+    const edges: NonNullable<CASContribution['edges']> = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: NonNullable<CASContribution['exit_points']> = [];
 
     try {
       const files = await this.findRustFiles(context.projectPath);
@@ -61,8 +56,8 @@ export class AxumAnalyzer extends BaseAnalyzer {
         stem: path.basename(file, '.rs'),
         content: await fs.readFile(file, 'utf-8'),
       })));
-      // Extraction lives here (not in the base Rust analyzer) so axum routes are
-      // emitted exactly once — by this analyzer, with auth + prefix resolved.
+
+
       for (const src of sources) this.extractAxumRoutes(src.content, src.relativePath, entryPoints);
       const model = this.buildAxumRouterModel(sources);
       const routeAuth = this.computeScopeRouteAuth(sources);
@@ -95,13 +90,13 @@ export class AxumAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Walk every `.route("/path", method(handler))` occurrence in a source, invoking
-   * `cb` with the method/path/handler and the byte offset of the `.route(` call. The
-   * single source of truth for route extraction so the entry points emitted by
-   * {@link extractAxumRoutes} and the route keys computed by {@link computeScopeRouteAuth}
-   * are always derived identically (and therefore always match).
-   */
+
+
+
+
+
+
+
   private static forEachAxumRoute(content: string, cb: (method: string, path: string, handler: string, index: number) => void): void {
     if (!/\.route\s*\(/.test(content) || !/\bRouter::|axum/.test(content)) return;
     const routeCall = /\.route\(\s*"([^"]+)"\s*,/g;
@@ -121,12 +116,12 @@ export class AxumAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Stable key identifying one route, shared by extraction and the scope-auth pass. */
+
   private static routeKey(file: string, method: string, path: string, handler: string): string {
     return `${file}\0${method}\0${path}\0${handler}`;
   }
 
-  /** Extract `.route("/path", method(handler))` builder routes into entry points. */
+
   private extractAxumRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): void {
     if (!/\.route\s*\(/.test(content) || !/\bRouter::|axum/.test(content)) return;
     const lines = content.split('\n');
@@ -159,26 +154,26 @@ export class AxumAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Resolve, per route-module, whether it is behind an auth layer and what path
-   * prefix it is nested under, by parsing the router-composition expressions.
-   */
+
+
+
+
   private buildAxumRouterModel(sources: Array<{ stem: string; content: string }>): { authedModules: Set<string>; modulePrefix: Map<string, string> } {
     interface RouterVar { directModules: Set<string>; mergedVars: string[]; authed: boolean; nests: Array<{ prefix: string; target: string }> }
     const vars = new Map<string, RouterVar>();
 
     const parseExpression = (name: string, expr: string) => {
       const directModules = new Set<string>();
-      // `merge(<path::>module::router(...))` and a bare `<path::>module::router()` RHS.
+
       for (const m of expr.matchAll(/(?:merge|nest)\s*\([^)]*?(?:[A-Za-z_]\w*::)*([A-Za-z_]\w*)::router\s*\(/g)) directModules.add(m[1]);
       const bare = expr.match(/^\s*(?:[A-Za-z_]\w*::)*([A-Za-z_]\w*)::router\s*\(/);
       if (bare) directModules.add(bare[1]);
-      // `merge(<var>)` / `nest("/p", <var>)` where the arg is a local variable.
+
       const mergedVars: string[] = [];
       for (const m of expr.matchAll(/merge\s*\(\s*([a-z_]\w*)\s*\)/g)) if (!/::/.test(m[0])) mergedVars.push(m[1]);
       const nests: Array<{ prefix: string; target: string }> = [];
       for (const m of expr.matchAll(/nest\s*\(\s*"([^"]+)"\s*,\s*([a-z_]\w*)\s*\)/g)) nests.push({ prefix: m[1], target: m[2] });
-      // Auth layer: a `.layer(...)` whose argument references an auth-classified symbol.
+
       let authed = false;
       for (const m of expr.matchAll(LAYER_CALL)) {
         for (const sym of m[1].matchAll(/\b([A-Za-z_]\w*)\b/g)) {
@@ -190,17 +185,17 @@ export class AxumAnalyzer extends BaseAnalyzer {
     };
 
     for (const { content } of sources) {
-      // `let <var> = <expr>;`
+
       for (const m of content.matchAll(/\blet\s+([a-z_]\w*)\s*=\s*([\s\S]*?);/g)) {
         if (/Router::new\s*\(|::router\s*\(/.test(m[2])) parseExpression(m[1], m[2]);
       }
-      // Bare returned router chains (no `let`): the function's final `Router::new()...`.
+
       for (const m of content.matchAll(/\bRouter::new\s*\([\s\S]*?(?=\n\s*\}|;)/g)) {
         if (/\.nest\s*\(|\.merge\s*\(|\.layer\s*\(/.test(m[0])) parseExpression(`__return_${vars.size}__`, m[0]);
       }
     }
 
-    // Resolve each var's full module set by expanding merged vars (fixpoint).
+
     const resolved = new Map<string, Set<string>>();
     const resolveModules = (name: string, seen = new Set<string>()): Set<string> => {
       if (resolved.has(name)) return resolved.get(name)!;
@@ -214,9 +209,9 @@ export class AxumAnalyzer extends BaseAnalyzer {
     };
     for (const name of vars.keys()) resolveModules(name);
 
-    // A module is authenticated if it is reachable from any expression carrying an
-    // auth layer. A module's prefix is the nest() prefix of any var it is reached
-    // through (accumulated outer-to-inner for stacked nests).
+
+
+
     const authedModules = new Set<string>();
     for (const [name, info] of vars) {
       if (info.authed) for (const mod of resolved.get(name) || []) authedModules.add(mod);
@@ -232,7 +227,7 @@ export class AxumAnalyzer extends BaseAnalyzer {
     return { authedModules, modulePrefix };
   }
 
-  /** Stamp auth + nest prefix onto the axum route entry points the Rust analyzer emitted. */
+
   private applyRouterModel(
     entryPoints: CASEntryPoint[],
     model: { authedModules: Set<string>; modulePrefix: Map<string, string> },
@@ -242,8 +237,8 @@ export class AxumAnalyzer extends BaseAnalyzer {
       if (ep.metadata?.framework !== 'axum') continue;
       const file = ep.handler?.file || (ep.metadata?.file as string) || '';
       const moduleName = file ? path.basename(file, '.rs') : '';
-      // Resolve auth against the RAW (pre-prefix) path the scope pass keyed on, before
-      // the nest prefix mutates ep.metadata.path below.
+
+
       const rawPath = String(ep.metadata?.path ?? '');
       const method = String(ep.metadata?.method ?? '');
       const handler = String(ep.metadata?.handler ?? '');
@@ -256,11 +251,11 @@ export class AxumAnalyzer extends BaseAnalyzer {
         if (ep.metadata.method) ep.name = `${ep.metadata.method} ${fullPath}`;
         ep.metadata.nested_prefix_unresolved = false;
       }
-      // Auth is known either at the route's own chain scope (handles same-file local
-      // routers and a `.layer(auth)` inside the module's own router() body) or at the
-      // module-composition level (the cross-module `.merge(m::router()).layer(auth)`
-      // convention). Only assert auth where one of these applies; leave standalone
-      // routers (e.g. a captive portal) as unknown rather than guessing.
+
+
+
+
+
       const moduleKnown = model.authedModules.has(moduleName) || model.modulePrefix.has(moduleName);
       const known = routeAuth.knownRoutes.has(rk) || moduleKnown;
       if (known) {
@@ -270,25 +265,25 @@ export class AxumAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Route-scope auth: attribute each `.route()` to the innermost router-building
-   * scope (a `let <var> = Router::new()...` binding or a `fn ...() -> Router { ... }`
-   * body) that lexically contains it, then propagate the auth carried by `.layer(auth)`
-   * from each scope down through the scopes it `.merge()`/`.nest()`s.
-   *
-   * This is what lets auth be resolved WITHIN a single file (`Router::new().route(...)
-   * .layer(auth)` returned from a local `fn protected_routes()`, then `.merge`d) and
-   * when the `.layer(auth)` sits inside a module's own `router()` body — neither of
-   * which the module-composition pass ({@link buildAxumRouterModel}) attributes,
-   * because it keys auth by file/module name, not by the chain a route hangs off.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private computeScopeRouteAuth(sources: Array<{ relativePath: string; stem: string; content: string }>): { authedRoutes: Set<string>; knownRoutes: Set<string> } {
     interface Scope {
       id: number;
-      refNames: string[];   // names this scope can be referenced by (var/fn name; module stem for `pub fn router()`)
-      selfAuthed: boolean;  // carries a `.layer(auth)` directly on its own chain
-      composes: string[];   // ref-names of the scopes it merges/nests
-      routeKeys: string[];  // routes whose innermost containing scope is this one
+      refNames: string[];
+      selfAuthed: boolean;
+      composes: string[];
+      routeKeys: string[];
       start: number;
       end: number;
     }
@@ -300,8 +295,8 @@ export class AxumAnalyzer extends BaseAnalyzer {
       if (!/\.route\s*\(/.test(content) || !/\bRouter::|axum/.test(content)) continue;
       const fileScopes: Scope[] = [];
 
-      // Function bodies: span = [`fn` keyword .. matching `}`]. A `pub fn router()` is
-      // also referenceable cross-file as `<module>::router()`, so add the file stem.
+
+
       for (const m of content.matchAll(/\bfn\s+([A-Za-z_]\w*)/g)) {
         const span = AxumAnalyzer.braceSpan(content, m.index!);
         if (!span) continue;
@@ -309,7 +304,7 @@ export class AxumAnalyzer extends BaseAnalyzer {
         if (m[1] === 'router') refNames.push(stem);
         fileScopes.push({ id: idCounter++, refNames, selfAuthed: false, composes: [], routeKeys: [], start: span[0], end: span[1] });
       }
-      // `let <var> = <router chain>;` bindings — the innermost scope for any route they hold.
+
       for (const m of content.matchAll(/\blet\s+([a-z_]\w*)\s*=\s*([\s\S]*?);/g)) {
         if (!/Router::new\s*\(|::router\s*\(/.test(m[2])) continue;
         fileScopes.push({ id: idCounter++, refNames: [m[1]], selfAuthed: false, composes: [], routeKeys: [], start: m.index!, end: m.index! + m[0].length });
@@ -324,34 +319,34 @@ export class AxumAnalyzer extends BaseAnalyzer {
         return best;
       };
 
-      // Attribute each route to the innermost scope holding it.
+
       AxumAnalyzer.forEachAxumRoute(content, (method, routePath, handler, index) => {
         innermost(index)?.routeKeys.push(AxumAnalyzer.routeKey(relativePath, method, routePath, handler));
       });
-      // A `.layer(auth)` marks the scope it sits on as self-authed.
+
       for (const m of content.matchAll(LAYER_CALL)) {
         let isAuth = false;
         for (const sym of m[1].matchAll(/\b([A-Za-z_]\w*)\b/g)) { if (isAuthenticationGuardName(sym[1])) { isAuth = true; break; } }
         if (isAuth) { const s = innermost(m.index!); if (s) s.selfAuthed = true; }
       }
-      // Composition edges: `merge`/`nest` of a `module::router()`, a local `fn()`, or a bare var.
+
       const addComposed = (re: RegExp, group: number) => {
         for (const m of content.matchAll(re)) { const s = innermost(m.index!); if (s) s.composes.push(m[group]); }
       };
-      addComposed(/(?:merge|nest)\s*\([^)]*?(?:[A-Za-z_]\w*::)*([A-Za-z_]\w*)::router\s*\(/g, 1);      // module::router()
-      addComposed(/(?:merge|nest)\s*\(\s*(?:"[^"]+"\s*,\s*)?([a-z_]\w*)\s*\(\s*\)/g, 1);                // local fn()
-      addComposed(/merge\s*\(\s*([a-z_]\w*)\s*\)/g, 1);                                                 // merge(var)
-      addComposed(/nest\s*\(\s*"[^"]+"\s*,\s*([a-z_]\w*)\s*\)/g, 1);                                    // nest("/p", var)
+      addComposed(/(?:merge|nest)\s*\([^)]*?(?:[A-Za-z_]\w*::)*([A-Za-z_]\w*)::router\s*\(/g, 1);
+      addComposed(/(?:merge|nest)\s*\(\s*(?:"[^"]+"\s*,\s*)?([a-z_]\w*)\s*\(\s*\)/g, 1);
+      addComposed(/merge\s*\(\s*([a-z_]\w*)\s*\)/g, 1);
+      addComposed(/nest\s*\(\s*"[^"]+"\s*,\s*([a-z_]\w*)\s*\)/g, 1);
 
       scopes.push(...fileScopes);
     }
 
-    // Index scopes by every name they can be referenced under (module refs are cross-file).
+
     const byName = new Map<string, Scope[]>();
     for (const s of scopes) for (const n of s.refNames) { (byName.get(n) ?? byName.set(n, []).get(n)!).push(s); }
 
-    // Auth propagation: a self-authed scope is authed, and any scope it composes is
-    // authed too (the layer applies over the merged/nested routers) — to a fixpoint.
+
+
     const authed = new Set<number>();
     const queue: Scope[] = [];
     for (const s of scopes) if (s.selfAuthed) { authed.add(s.id); queue.push(s); }
@@ -360,9 +355,9 @@ export class AxumAnalyzer extends BaseAnalyzer {
       for (const ref of c.composes) for (const t of byName.get(ref) ?? []) if (!authed.has(t.id)) { authed.add(t.id); queue.push(t); }
     }
 
-    // A route's auth is "known" once its scope participates in a composition (it
-    // composes, is composed, or carries auth) — mirrors the module pass's known-gate,
-    // so a route can be asserted open rather than left unknown.
+
+
+
     const composedNames = new Set<string>();
     for (const s of scopes) for (const r of s.composes) composedNames.add(r);
     const authedRoutes = new Set<string>();
@@ -375,7 +370,7 @@ export class AxumAnalyzer extends BaseAnalyzer {
     return { authedRoutes, knownRoutes };
   }
 
-  /** Span `[fnKeywordIndex, matching `}` index]` of the brace block that follows. */
+
   private static braceSpan(content: string, fromIndex: number): [number, number] | null {
     const open = content.indexOf('{', fromIndex);
     if (open === -1) return null;

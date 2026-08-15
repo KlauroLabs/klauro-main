@@ -7,10 +7,10 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * A Luigi task: `class MyTask(luigi.Task):` with a `requires()` method that names
- * its upstream task(s) — that's Luigi's DAG edge (in contrast to Airflow's `>>`).
- */
+
+
+
+
 interface LuigiTask {
   className: string;
   file: string;
@@ -183,7 +183,7 @@ export class LuigiAnalyzer extends BaseAnalyzer {
       while ((match = returnRegex.exec(requiresBody)) !== null) {
         requires.push(match[1]);
       }
-      // Also handle `yield MyTask()` (dynamic dependencies) and bare list items `MyTask()`.
+
       const yieldRegex = /yield\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
       while ((match = yieldRegex.exec(requiresBody)) !== null) {
         if (!requires.includes(match[1])) requires.push(match[1]);

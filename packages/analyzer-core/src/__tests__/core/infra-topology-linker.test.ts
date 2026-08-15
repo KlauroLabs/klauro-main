@@ -112,7 +112,7 @@ function base(partial: Partial<CASOutput>): Parameters<typeof linkInfraTopology>
     entry_points: [],
     exit_points: [],
     external_services: [],
-    data_entities: [],
+    entities: [],
     deployable_evidence: [],
     ...partial,
   };
@@ -123,6 +123,15 @@ describe('linkInfraTopology', () => {
     const result = linkInfraTopology(base({ nodes: [node({ id: 'fn', name: 'foo', type: 'function' })] }));
     expect(result.edges).toEqual([]);
     expect(result.nodes).toEqual([]);
+  });
+
+  test('duplicate deployable evidence emits one synthetic anchor node', () => {
+    const duplicate = deployable('openclaw', '.', [3000]);
+    const result = linkInfraTopology(base({
+      nodes: [composeServiceNode('openclaw', '.', '3000')],
+      deployable_evidence: [duplicate, { ...duplicate }],
+    }));
+    expect(result.nodes.filter(candidate => candidate.id === 'deployable:openclaw')).toHaveLength(1);
   });
 
   test('Dockerfile + compose + k8s Service join the orders deployable (deploys / exposes / routes_to)', () => {

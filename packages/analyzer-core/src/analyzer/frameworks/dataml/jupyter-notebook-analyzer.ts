@@ -7,16 +7,16 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Jupyter notebooks (.ipynb) are not source code — they're JSON documents whose
- * `cells` array holds an ordered sequence of code/markdown cells. This is a
- * distinct file format we parse directly (no tree-sitter grammar for JSON-embedded
- * Python cells), not a framework detected by import statements. Each code cell
- * becomes an ordered `notebook-cell` entry point; consecutive code cells get a
- * `precedes` edge representing the notebook's linear execution flow (top to bottom,
- * the default Jupyter execution order — this does not model out-of-order manual
- * re-execution, which is undetectable statically).
- */
+
+
+
+
+
+
+
+
+
+
 interface NotebookCell {
   index: number;
   cellType: 'code' | 'markdown' | 'raw';
@@ -70,7 +70,7 @@ export class JupyterNotebookAnalyzer extends BaseAnalyzer {
 
     const allImports = new Set<string>();
     const allDefs = new Set<string>();
-    // Re-derive quickly for imports/exports summary (cheap; notebooks are small).
+
     try {
       const parsed = JSON.parse(raw);
       for (const cell of parsed.cells || []) {
@@ -79,7 +79,7 @@ export class JupyterNotebookAnalyzer extends BaseAnalyzer {
         this.extractImports(source).forEach(i => allImports.add(i));
         this.extractDefs(source).forEach(d => allDefs.add(d));
       }
-    } catch { /* malformed notebook JSON — handled by analyzeNotebookFile's own try/catch */ }
+    } catch {   }
 
     return this.createFileAnalysisResult(
       context.filePath,
@@ -134,7 +134,7 @@ export class JupyterNotebookAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Returns the number of code cells extracted, or null if the notebook JSON couldn't be parsed. */
+
   private analyzeNotebookFile(
     file: string,
     raw: string,
@@ -147,7 +147,7 @@ export class JupyterNotebookAnalyzer extends BaseAnalyzer {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      return null; // not valid JSON — evidence-gated, never fabricate cell structure
+      return null;
     }
     if (!Array.isArray(parsed.cells)) return null;
 

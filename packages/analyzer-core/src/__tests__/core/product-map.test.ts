@@ -150,7 +150,7 @@ const fullCas = {
     description_source: 'ai',
     supporting_workflow_ids: [],
   },
-  system_capabilities: capabilities,
+  capabilities: capabilities,
   user_journeys: journeys,
   user_journey_summary: {
     total_discovered: 5,
@@ -265,7 +265,7 @@ describe('buildProductMap', () => {
         criticality_factors: [],
       },
     ];
-    const cas = { ...fullCas, system_capabilities: undescribed } as unknown as CASOutput;
+    const cas = { ...fullCas, capabilities: undescribed } as unknown as CASOutput;
     const undescribedMap = buildProductMap(cas);
     expect(undescribedMap.capabilities).toHaveLength(1);
     expect(undescribedMap.capabilities[0].description).toBeFalsy();
@@ -293,7 +293,7 @@ describe('buildProductMap', () => {
         criticality_factors: [],
       },
     ];
-    const cas = { ...fullCas, system_capabilities: staleCorrupted } as unknown as CASOutput;
+    const cas = { ...fullCas, capabilities: staleCorrupted } as unknown as CASOutput;
     const map = buildProductMap(cas);
     expect(map.capabilities).toHaveLength(1);
     expect(map.capabilities[0].description).toBeFalsy();
@@ -324,7 +324,7 @@ describe('buildProductMap', () => {
         });
       }
     }
-    const cas = { ...fullCas, system_capabilities: sweep } as unknown as CASOutput;
+    const cas = { ...fullCas, capabilities: sweep } as unknown as CASOutput;
     const map = buildProductMap(cas);
     for (const capability of map.capabilities) {
       if (capability.description_source) {
@@ -569,7 +569,7 @@ describe('journey attachment discriminates on primary (terminal produced) entiti
     edges: [],
     analyzer_contributions: [],
     progressive_levels: {} as any,
-    system_capabilities: discriminationCapabilities,
+    capabilities: discriminationCapabilities,
     user_journeys: discriminationJourneys,
   } as unknown as CASOutput;
 

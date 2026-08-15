@@ -10,10 +10,10 @@ import { cachedGlob as glob } from '../../core/glob-cache';
 const ROUTE_GLOBS = ['app/routes/**/*.{tsx,jsx,ts,js}'];
 const ROOT_GLOBS = ['app/root.{tsx,jsx,ts,js}'];
 
-// Remix data/mutation export names.
+
 const LOADER_EXPORTS = new Set(['loader', 'clientLoader']);
 const ACTION_EXPORTS = new Set(['action', 'clientAction']);
-// Other recognized Remix route module exports we tag.
+
 const TAGGED_EXPORTS = new Set(['ErrorBoundary', 'meta', 'links', 'headers', 'handle', 'shouldRevalidate', 'HydrateFallback']);
 
 interface RouteModuleInfo {
@@ -40,7 +40,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
         const packageJson = await fs.readJson(packageJsonPath);
         const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
         if (Object.keys(deps).some(d => d.startsWith('@remix-run/'))) return true;
-        // react-router v7 framework mode reuses Remix conventions.
+
         if (deps['react-router'] || deps['@react-router/dev'] || deps['@react-router/node']) return true;
       }
 
@@ -49,7 +49,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
         if (await fs.pathExists(path.join(projectPath, configFile))) return true;
       }
 
-      // A conventional app/routes dir is a strong signal.
+
       const routesDir = path.join(projectPath, 'app', 'routes');
       if (await fs.pathExists(routesDir)) {
         const root = ['root.tsx', 'root.jsx', 'root.ts', 'root.js'];
@@ -140,14 +140,14 @@ export class RemixAnalyzer extends BaseAnalyzer {
       byRoutePath.set(info.relativePath, info);
     }
 
-    // Detect root.tsx as a top-level layout/entry.
+
     await this.detectRoot(context, nodes, entryPoints);
 
     for (const info of modules) {
       this.emitRouteNodes(info, info.relativePath, nodes, entryPoints);
     }
 
-    // Nested-route composition edges from dotted/folder nesting.
+
     this.emitNestingEdges(modules, context, nodes, edges);
 
     const perspectives: CASPerspective[] = [];
@@ -240,7 +240,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
       }
     }));
 
-    // The route component itself is a page entry point (GET render).
+
     if (!info.isLayout) {
       const pageEntryId = `entry_remix_page_${this.sanitizeId(file)}`;
       entryPoints.push({
@@ -254,7 +254,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Loaders -> data entry points.
+
     for (const loader of info.loaders) {
       const entryId = `entry_remix_loader_${this.sanitizeId(file)}_${loader}`;
       entryPoints.push({
@@ -269,7 +269,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Actions -> mutation entry points.
+
     for (const action of info.actions) {
       const entryId = `entry_remix_action_${this.sanitizeId(file)}_${action}`;
       entryPoints.push({
@@ -291,7 +291,6 @@ export class RemixAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
-    const byRelative = new Map(modules.map(m => [m.relativePath, m]));
     const byRouteSegments = new Map<string, RouteModuleInfo>();
     for (const m of modules) {
       byRouteSegments.set(this.routeKey(m), m);
@@ -312,10 +311,10 @@ export class RemixAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Find the closest ancestor route module by route-segment containment.
-   * Remix nests by dotted segments (users.$id <- users) and by _layout pathless routes.
-   */
+
+
+
+
   private findParentModule(child: RouteModuleInfo, modules: RouteModuleInfo[]): RouteModuleInfo | undefined {
     const childSegs = this.routeSegments(child.relativePath);
     if (childSegs.length === 0) return undefined;
@@ -339,26 +338,26 @@ export class RemixAnalyzer extends BaseAnalyzer {
     return this.routeSegments(m.relativePath).join('.');
   }
 
-  /**
-   * Convert a route file path into its Remix conventional segment list,
-   * stripping the app/routes prefix, extension, _index, and route.tsx folder files.
-   */
+
+
+
+
   private routeSegments(file: string): string[] {
     let rel = file.replace(/\\/g, '/');
     rel = rel.replace(/^app\/routes\//, '');
-    // Folder form: foo.bar/route.tsx -> foo.bar
+
     rel = rel.replace(/\/route\.\w+$/, '');
-    // Strip a remaining extension (flat file form).
+
     rel = rel.replace(/\.\w+$/, '');
-    // Drop trailing _index marker; it shares its parent's segment set.
+
     const raw = rel.split('.').filter(seg => seg.length > 0);
     return raw.filter(seg => seg !== '_index');
   }
 
-  /**
-   * Map a Remix route filename to its URL path.
-   * Conventions: _index, dotted segments, $param dynamic, ($optional), _layout pathless, route.tsx folders.
-   */
+
+
+
+
   private deriveRouteFromFile(file: string): { routePath: string; isIndex: boolean; isLayout: boolean; parentPath?: string } {
     let rel = file.replace(/\\/g, '/').replace(/^app\/routes\//, '');
     rel = rel.replace(/\/route\.\w+$/, '');
@@ -375,12 +374,12 @@ export class RemixAnalyzer extends BaseAnalyzer {
         isIndex = true;
         continue;
       }
-      // Pathless layout segment: starts with _ (e.g. _layout, _auth).
+
       if (seg.startsWith('_')) {
         isLayout = true;
         continue;
       }
-      // Optional segment: ($lang) -> :lang? ; (foo) -> foo?
+
       const optional = seg.match(/^\((.+)\)$/);
       if (optional) {
         const inner = optional[1];
@@ -391,17 +390,17 @@ export class RemixAnalyzer extends BaseAnalyzer {
         }
         continue;
       }
-      // Splat.
+
       if (seg === '$') {
         pathParts.push('*');
         continue;
       }
-      // Dynamic param: $id -> :id
+
       if (seg.startsWith('$')) {
         pathParts.push(`:${seg.slice(1)}`);
         continue;
       }
-      // Escaped literal dot: [.] etc — keep inner.
+
       const escaped = seg.match(/^\[(.+)\]$/);
       if (escaped) {
         pathParts.push(escaped[1]);
@@ -412,7 +411,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
 
     let routePath = '/' + pathParts.join('/');
     if (routePath === '/' && !isIndex && pathParts.length === 0) {
-      // Pure pathless layout maps to '/'.
+
       routePath = '/';
     }
     routePath = routePath.replace(/\/+/g, '/');
@@ -437,7 +436,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
       names.push(match[1]);
     }
 
-    // export { loader, action } and `export { foo as loader }`
+
     const namedPattern = /export\s*\{([^}]+)\}/g;
     while ((match = namedPattern.exec(content)) !== null) {
       const inner = match[1];
@@ -454,7 +453,7 @@ export class RemixAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // export class ErrorBoundary {}
+
     const classPattern = /export\s+(?:default\s+)?class\s+(\w+)/g;
     while ((match = classPattern.exec(content)) !== null) {
       names.push(match[1]);

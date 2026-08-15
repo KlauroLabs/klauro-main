@@ -9,7 +9,6 @@ import type {
   CASExitPoint,
   CASExternalService,
   CASConfiguration,
-  CASEntityLineage,
 } from '../../types/cas.types';
 
 function exit(overrides: Partial<CASExitPoint> & { id: string; type: CASExitPoint['type'] }): CASExitPoint {
@@ -24,7 +23,7 @@ function out(partial: Partial<CASOutput>): Parameters<typeof deriveConsistencyMo
     external_services: [],
     configuration: undefined,
     data_lineage: [],
-    data_entities: [],
+    entities: [],
     ...partial,
   } as any;
 }

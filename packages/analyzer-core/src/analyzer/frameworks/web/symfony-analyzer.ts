@@ -224,7 +224,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
       timeSync('relationships', timings, () => this.buildRelationships(controllers, entities, repositories, services, forms, subscribers, migrations, templates, nodes, edges));
       await time('exit_points', () => this.identifyExitPoints(entities, repositories, services, messageHandlers, phpFiles, context.projectPath, exitPoints));
       if (process.env.KLAURO_DEBUG_ANALYSIS_TIMINGS === '1') {
-        console.error('[Klauro] Symfony breakdown:', JSON.stringify(timings, null, 2));
+        console.log('[Klauro] Symfony breakdown:', JSON.stringify(timings, null, 2));
       }
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
@@ -1635,11 +1635,11 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     const isClassLevel = (index: number) => classDeclIndex >= 0 && index < classDeclIndex;
     const hasFosRest = content.includes('FOS\\RestBundle');
 
-    // FOSRestBundle verb shortcuts are commonly written uppercase (#[Rest\POST(...)],
-    // #[Rest\DELETE(...)]) as well as capitalized (#[Rest\Post(...)]); match case-
-    // insensitively and normalize below. FOSRestBundle also defines Link/Unlink
-    // pseudo-HTTP-verb attributes for relation endpoints (#[Rest\Link(...)],
-    // #[Rest\Unlink(...)]) which were previously invisible to route extraction.
+
+
+
+
+
     const attributeNamePattern = /(?:#\[|,)\s*((?:[A-Za-z_]\w*\\)*)(Route|Get|Post|Put|Patch|Delete|Head|Options|Link|Unlink)\s*(?=[(,\]])/gi;
     let match: RegExpExecArray | null;
     while ((match = attributeNamePattern.exec(content)) !== null) {
@@ -2716,8 +2716,8 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     const comments: CASComment[] = [];
     const twigCommentPattern = /\{#\s*([\s\S]*?)\s*#\}/g;
 
-    // Stable order-independent ids: seq follows content order within this file,
-    // so ids derive from file+position, not cross-file visit order.
+
+
     let commentSeq = 0;
     let match;
     while ((match = twigCommentPattern.exec(content)) !== null) {

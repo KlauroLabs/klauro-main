@@ -7,20 +7,20 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Micronaut framework analyzer (Java, compile-time-DI JVM microservices).
- *
- * Extracts the Micronaut-specific conventions the generic Java analyzer cannot see:
- *   - Controllers: `@Controller("/x")` classes + `@Get/@Post/@Put/@Delete("/sub")` → routes.
- *   - Beans: `@Singleton/@Bean/@Factory` + `@Inject` / constructor injection.
- *   - Data: `@Entity` / `@MappedEntity` + `@Repository interface X extends CrudRepository<E,ID>`.
- *   - Scheduling / async: `@Scheduled`, `@Async`.
- *   - Declarative HTTP clients: `@Client("svc")` → external service nodes.
- *
- * Extraction is annotation/line-based over `.java` files. Per-file extraction is
- * factored into {@link parseJavaFile} + {@link emitFileContribution} so both full
- * `analyze()` and incremental `analyzeFileSingle()` share one code path.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const JAVA_GLOBS = ['**/*.java'];
 const BUILD_GLOBS = [
@@ -30,8 +30,8 @@ const BUILD_GLOBS = [
 const HTTP_METHOD_ANNOTATIONS = new Set(['Get', 'Post', 'Put', 'Delete', 'Patch', 'Head', 'Options', 'Trace']);
 
 interface MicronautRoute {
-  method: string;        // GET/POST/...
-  path: string;          // resolved full path
+  method: string;
+  path: string;
   handlerName: string;
   line: number;
   produces?: string;
@@ -48,7 +48,7 @@ interface MicronautBean {
 interface MicronautEntity {
   name: string;
   kind: 'entity' | 'mapped-entity' | 'repository';
-  superType?: string;     // CrudRepository<E,ID> element type
+  superType?: string;
   fields: Array<{ name: string; type: string }>;
   line: number;
 }
@@ -61,8 +61,8 @@ interface MicronautScheduled {
 }
 
 interface MicronautClient {
-  name: string;            // interface name
-  serviceId: string;       // @Client("...") value
+  name: string;
+  serviceId: string;
   line: number;
 }
 
@@ -86,7 +86,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      // 1. Build-file dependency signal (io.micronaut).
+
       const buildFiles = await glob(BUILD_GLOBS, {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -97,7 +97,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
         if (/io\.micronaut/.test(content)) return true;
       }
 
-      // 2. Source-level signal: io.micronaut imports or @Controller usage.
+
       const javaFiles = await glob(JAVA_GLOBS, {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -106,7 +106,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
       for (const rel of javaFiles) {
         const content = await fs.readFile(path.join(projectPath, rel), 'utf-8').catch(() => '');
         if (/import\s+io\.micronaut/.test(content)) return true;
-        // @Controller from micronaut.http.annotation specifically.
+
         if (/import\s+io\.micronaut\.http\.annotation/.test(content)) return true;
         if (/@Controller\b/.test(content) && /micronaut/.test(content)) return true;
       }
@@ -185,16 +185,16 @@ export class MicronautAnalyzer extends BaseAnalyzer {
         } catch {
           continue;
         }
-        // Skip files with no Micronaut signal to keep the contribution focused.
+
         if (!/@Controller\b|@(?:Get|Post|Put|Delete|Patch)\b|@Singleton\b|@Factory\b|@Bean\b|@Inject\b|@MappedEntity\b|@Entity\b|@Repository\b|@Scheduled\b|@Client\b|io\.micronaut/.test(content)) {
           continue;
         }
         fileInfos.push(this.parseJavaFile(relativePath, fullPath, content));
       }
 
-      // Resolve injected collaborators across files: a bean's `@Inject`/ctor dep
-      // type names to the actual bean/repository node id (which carries a per-file
-      // slug). Without this the DI edges dangled (target matched no node).
+
+
+
       const injectableIdByName = new Map<string, string>();
       for (const info of fileInfos) {
         const slug = this.sanitizeId(info.relativePath);
@@ -238,9 +238,9 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing
-  // ---------------------------------------------------------------------------
+
+
+
 
   private parseJavaFile(relativePath: string, fullPath: string, content: string): MicronautFileInfo {
     const lines = content.split('\n');
@@ -267,14 +267,14 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return m ? m[1] : null;
   }
 
-  /** Class-level `@Controller("/x")` base path. */
+
   private extractControllerBase(content: string): string {
     const m = content.match(/@Controller\s*(?:\(\s*"([^"]*)"\s*\))?/);
     if (!m) return '';
     return m[1] ? this.normalizeSegment(m[1]) : '';
   }
 
-  /** `@Get/@Post/...("/sub")` methods resolved against the controller base. */
+
   private extractRoutes(lines: string[], base: string): MicronautRoute[] {
     const routes: MicronautRoute[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -315,7 +315,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** Beans: `@Singleton/@Factory/@Bean` classes + `@Inject`/constructor deps. */
+
   private extractBeans(lines: string[], content: string, className: string | null): MicronautBean[] {
     const beans: MicronautBean[] = [];
     if (!className) return beans;
@@ -335,16 +335,16 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return beans;
   }
 
-  /** `@Inject` fields + constructor-parameter types. */
+
   private extractInjects(content: string, className: string): string[] {
     const injects: string[] = [];
 
-    // @Inject fields.
+
     const fieldPattern = /@Inject[\s\S]{0,80}?(?:[\w.]+\s+)?([A-Z]\w+)\s+\w+\s*;/g;
     let m: RegExpExecArray | null;
     while ((m = fieldPattern.exec(content)) !== null) injects.push(m[1]);
 
-    // Constructor injection: `public ClassName(Foo foo, Bar bar) {`.
+
     const ctorMatch = content.match(new RegExp(`(?:public|protected)\\s+${className}\\s*\\(([^)]*)\\)`));
     if (ctorMatch && ctorMatch[1].trim()) {
       for (const param of ctorMatch[1].split(',')) {
@@ -355,7 +355,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return Array.from(new Set(injects));
   }
 
-  /** `@Entity`/`@MappedEntity` types and `@Repository` interfaces. */
+
   private extractEntities(lines: string[], className: string | null, content: string): MicronautEntity[] {
     const entities: MicronautEntity[] = [];
     if (!className) return entities;
@@ -391,7 +391,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return fields;
   }
 
-  /** `@Scheduled(cron = "...")` / `@Scheduled(fixedRate = "...")`. */
+
   private extractScheduled(lines: string[]): MicronautScheduled[] {
     const jobs: MicronautScheduled[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -405,7 +405,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return jobs;
   }
 
-  /** Declarative HTTP clients: `@Client("svc") interface FooClient`. */
+
   private extractClients(content: string, className: string | null): MicronautClient[] {
     const clients: MicronautClient[] = [];
     if (!className) return clients;
@@ -416,7 +416,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return clients;
   }
 
-  /** Pull the method identifier (the word immediately before the parameter `(`). */
+
   private extractMethodName(block: string): string | undefined {
     const cleaned = block.replace(/@\w+\s*\([^)]*\)/g, ' ').replace(/@\w+/g, ' ');
     const m = cleaned.match(/\b([A-Za-z_]\w*)\s*\(/);
@@ -444,9 +444,9 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     return raw.replace(/MediaType\./g, '').replace(/["'{}]/g, '').trim();
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private emitFileContribution(
     info: MicronautFileInfo,
@@ -458,7 +458,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
   ): void {
     const fileSlug = this.sanitizeId(info.relativePath);
 
-    // Controller node groups its routes.
+
     let controllerId: string | null = null;
     if (info.isController && info.className) {
       controllerId = `micronaut_controller_${fileSlug}_${this.sanitizeId(info.className)}`;
@@ -475,7 +475,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
         .build());
     }
 
-    // Routes + entry points.
+
     info.routes.forEach((route, index) => {
       const routeId = `micronaut_route_${fileSlug}_${route.method}_${this.sanitizeId(route.path)}_${index}`;
       const label = `${route.method} ${route.path}`;
@@ -524,7 +524,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
       ));
     });
 
-    // Beans + injection edges.
+
     for (const bean of info.beans) {
       const beanId = `micronaut_bean_${fileSlug}_${this.sanitizeId(bean.name)}`;
       nodes.push(this.createNodeBuilder(beanId, bean.name, 'bean')
@@ -540,8 +540,8 @@ export class MicronautAnalyzer extends BaseAnalyzer {
         .build());
 
       for (const dep of bean.injects) {
-        // Resolve the injected type to the real collaborator node id (per-file
-        // slug); fall back to the slug-less id only if unresolved.
+
+
         const targetId = injectableIdByName?.get(dep) || `micronaut_bean_${this.sanitizeId(dep)}`;
         edges.push({
           id: `${beanId}_injects_${this.sanitizeId(dep)}`,
@@ -553,7 +553,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Entities + repositories.
+
     for (const entity of info.entities) {
       if (entity.kind === 'repository') {
         const repoId = `micronaut_repository_${fileSlug}_${this.sanitizeId(entity.name)}`;
@@ -602,7 +602,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // Scheduled jobs → entry points.
+
     info.scheduled.forEach((job, index) => {
       const jobId = `micronaut_scheduled_${fileSlug}_${this.sanitizeId(job.handlerName)}_${index}`;
       const schedule = job.cron || (job.fixedRate ? `fixedRate ${job.fixedRate}` : 'scheduled');
@@ -631,7 +631,7 @@ export class MicronautAnalyzer extends BaseAnalyzer {
       ));
     });
 
-    // Declarative HTTP clients → external service nodes + exit points.
+
     for (const client of info.clients) {
       const clientId = `micronaut_client_${fileSlug}_${this.sanitizeId(client.name)}`;
       nodes.push(this.createNodeBuilder(clientId, client.name, 'external-service')
@@ -659,9 +659,9 @@ export class MicronautAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   protected getLevelName(level: number): string {
     switch (level) {

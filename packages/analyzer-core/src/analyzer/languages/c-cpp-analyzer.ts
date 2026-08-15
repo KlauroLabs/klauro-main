@@ -15,7 +15,7 @@ interface CFunction {
   filePath: string;
   lineStart: number;
   lineEnd: number;
-  className?: string;     // set when this is a C++ method (X::method or in-class)
+  className?: string;
   classNodeId?: string;
 }
 
@@ -25,12 +25,12 @@ interface CClass {
   filePath: string;
   lineStart: number;
   lineEnd: number;
-  bases: string[];        // base class names from inheritance list
+  bases: string[];
 }
 
 interface CInclude {
   rawPath: string;
-  system: boolean;        // <...> vs "..."
+  system: boolean;
   lineNumber: number;
 }
 
@@ -52,7 +52,7 @@ const C_GLOBS = [
   '**/*.hpp', '**/*.hh', '**/*.hxx',
 ];
 
-// Keywords that look like `name(` but are control-flow / operators, not calls or defs.
+
 const C_KEYWORDS = new Set([
   'if', 'for', 'while', 'switch', 'return', 'sizeof', 'else', 'do', 'case',
   'goto', 'break', 'continue', 'default', 'typedef', 'struct', 'union', 'enum',
@@ -79,6 +79,10 @@ export class CCppAnalyzer extends BaseAnalyzer {
 
   supportsIncrementalAnalysis(): boolean {
     return true;
+  }
+
+  incrementalContributionScope(): 'project' {
+    return 'project';
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
@@ -143,7 +147,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
         fileInfos.push(this.parseFile(relativePath, fullPath, content));
       }
 
-      // Resolve calls against the full set of repo-defined function names.
+
       const definedFunctionNames = new Set<string>();
       const fileByRel = new Map<string, CFileInfo>();
       for (const info of fileInfos) {
@@ -201,10 +205,10 @@ export class CCppAnalyzer extends BaseAnalyzer {
   private classifyLanguage(relativePath: string, content: string): 'c' | 'cpp' {
     const ext = path.extname(relativePath).toLowerCase();
     if (CPP_EXTS.has(ext)) {
-      // .hpp/.hh/.hxx are always C++; .cpp/.cc/.cxx are always C++.
+
       return 'cpp';
     }
-    // .c is C. .h is ambiguous: sniff for C++-only constructs.
+
     if (ext === '.h') {
       if (/\b(class|namespace|template)\b|::|\bstd::/.test(content)) return 'cpp';
     }
@@ -231,7 +235,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     };
   }
 
-  // Replace comment characters with spaces but keep line count/positions stable.
+
   private stripCommentsPreserveLines(content: string): string {
     let out = '';
     let i = 0;
@@ -298,7 +302,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (!trimmed) continue;
-      // class X ... {   or   struct X ... {   (definitions, not forward decls or vars)
+
       const m = trimmed.match(
         /^(?:template\s*<[^>]*>\s*)?(class|struct)\s+([A-Za-z_]\w*)\b([^;{]*)\{/
       );
@@ -324,8 +328,8 @@ export class CCppAnalyzer extends BaseAnalyzer {
     const functions: CFunction[] = [];
     const seen = new Set<string>();
     const text = lines.join('\n');
-    // Match definitions: optional qualifiers, return type, name(args) {  (allowing newline before brace)
-    // Group: returnType (greedy-ish words/pointers), name, then `(...)` then `{`.
+
+
     const re =
       /(?:^|\n)[ \t]*((?:(?:static|inline|virtual|extern|const|constexpr|explicit|friend|unsigned|signed|struct|enum|class|typename|register|volatile)\s+)*[A-Za-z_][\w:<>,*&\s]*?[\s*&])([A-Za-z_]\w*(?:::~?[A-Za-z_]\w*)?)\s*\(([^;{}()]*)\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?(?:->[^;{]+)?\{/g;
     let m: RegExpExecArray | null;
@@ -340,17 +344,17 @@ export class CCppAnalyzer extends BaseAnalyzer {
         : rawName;
       if (!baseName || C_KEYWORDS.has(baseName)) continue;
       if (C_KEYWORDS.has(returnType.split(/\s+/).pop() || '')) {
-        // e.g. matched a control construct; skip
+
       }
-      // Skip obvious control keywords appearing as name (defensive).
+
       if (C_KEYWORDS.has(rawName)) continue;
 
-      // Determine class association for X::method or constructors/destructors.
+
       let className: string | undefined;
       if (rawName.includes('::')) {
         className = rawName.split('::').slice(-2)[0];
       } else {
-        // In-class method definition: find an enclosing class block.
+
         const enclosing = classes.find(c => lineStart > c.lineStart && lineStart <= c.lineEnd);
         if (enclosing) className = enclosing.name;
       }
@@ -375,7 +379,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     return functions;
   }
 
-  // Find the closing brace line for a block whose `{` is on/after startIndex line.
+
   private findBlockEnd(lines: string[], startIndex: number): number {
     let depth = 0;
     let seenOpen = false;
@@ -388,7 +392,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     return startIndex + 1;
   }
 
-  // Given a char index at the opening brace, return the 1-based line of the matching close.
+
   private findBlockEndChar(text: string, openBraceIndex: number): number {
     let depth = 0;
     for (let i = openBraceIndex; i < text.length; i++) {
@@ -427,7 +431,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
       })
       .build());
 
-    // Class / struct nodes
+
     const classNodeIds = new Map<string, string>();
     for (const cls of info.classes) {
       const classId = this.classId(info.relativePath, cls.name, cls.lineStart);
@@ -448,7 +452,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
         `${fileId}_contains_${classId}`, fileId, classId, 'contains'
       ));
 
-      // Inheritance edges to bases defined in this repo (resolved later by name).
+
       for (const base of cls.bases) {
         edges.push(this.createEdge(
           `inherit_${classId}_${this.sanitizeId(base)}`,
@@ -461,7 +465,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Function / method nodes
+
     for (const fn of info.functions) {
       const isMethod = !!fn.className;
       const fnId = isMethod
@@ -492,7 +496,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
         `${containerId}_contains_${fnId}`, containerId, fnId, 'contains'
       ));
 
-      // Entry point: int main(...)
+
       if (fn.name === 'main' && !isMethod) {
         entryPoints.push(this.createEntryPoint(
           `entry_${fnId}`,
@@ -523,16 +527,20 @@ export class CCppAnalyzer extends BaseAnalyzer {
       } catch {
         continue;
       }
-      // AST primary: resolves member-call targets (`c.run()`, `c->run()`,
-      // `ns::run()`) that the regex pass deliberately excludes (it skips an
-      // identifier preceded by `.`/`->` to avoid matching member access).
-      // Fall back to regex if the grammar is unavailable or parsing throws.
+
+
+
+
       let usedAst = false;
       if (astAvailable) {
         try {
           const tree = await parseWasm('c-cpp', raw);
-          this.emitCallEdgesFromAst(info, tree, raw, fileInfos, definedFunctionNames, edgeIds, edges);
-          usedAst = true;
+          try {
+            this.emitCallEdgesFromAst(info, tree, raw, fileInfos, definedFunctionNames, edgeIds, edges);
+            usedAst = true;
+          } finally {
+            tree.delete?.();
+          }
         } catch {
           usedAst = false;
         }
@@ -543,7 +551,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Record a resolved caller→callee edge (shared by AST + regex passes). */
+
   private addCallEdge(
     info: CFileInfo,
     caller: CFunction,
@@ -558,8 +566,8 @@ export class CCppAnalyzer extends BaseAnalyzer {
     if (callee === caller.name) return;
     if (C_KEYWORDS.has(callee)) return;
     if (!definedFunctionNames.has(callee)) return;
-    // Receiver typed -> the method on THAT class (excludes same-name methods on
-    // other classes); else fall back to the existing name-based resolution.
+
+
     let target: { info: CFileInfo; fn: CFunction } | undefined;
     if (recvType) {
       for (const fi of fileInfos) {
@@ -585,9 +593,9 @@ export class CCppAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  /** AST call-edge pass: walk call_expression nodes, resolve the callee name
-   *  (identifier, field_expression `obj.m()`/`obj->m()`, qualified `ns::m()`,
-   *  or template `m<T>()`), attribute to the enclosing function by source line. */
+
+
+
   private emitCallEdgesFromAst(
     info: CFileInfo,
     tree: any,
@@ -605,7 +613,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
       })(n);
       return last;
     };
-    // callee name + receiver var (the `obj` in `obj.method()` / `obj->method()`).
+
     const calleeAndReceiver = (call: any): { callee?: string; receiver?: string } => {
       const f = call.childForFieldName('function');
       if (!f) return {};
@@ -642,9 +650,9 @@ export class CCppAnalyzer extends BaseAnalyzer {
     walk(tree.rootNode);
   }
 
-  /** Map a C/C++ function's local var names to their bare class types, from
-   *  parameters (`Account& a`, `const Account* a`) and local declarations
-   *  (`Account a;`, `Account a = ...`). C/C++ types precede the name. */
+
+
+
   private buildCppVarTypes(content: string, fn: CFunction): Map<string, string> {
     const map = new Map<string, string>();
     const lines = content.split('\n');
@@ -663,8 +671,8 @@ export class CCppAnalyzer extends BaseAnalyzer {
     return map;
   }
 
-  /** Regex fallback call-edge pass (used when the AST grammar is unavailable).
-   *  Note: misses member calls (`obj.m()`) by design — the AST pass covers them. */
+
+
   private emitCallEdgesFromRegex(
     info: CFileInfo,
     content: string,
@@ -677,7 +685,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (!line.trim()) continue;
-      if (/^\s*#/.test(line)) continue; // preprocessor
+      if (/^\s*#/.test(line)) continue;
       const caller = this.enclosingFunction(info, i + 1);
       if (!caller) continue;
 
@@ -709,7 +717,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     edges: CASEdge[]
   ): void {
     const edgeIds = new Set(edges.map(e => e.id));
-    // Build basename -> relativePath index for fuzzy resolution.
+
     const byBasename = new Map<string, string[]>();
     for (const info of fileInfos) {
       const base = path.basename(info.relativePath);
@@ -721,7 +729,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     for (const info of fileInfos) {
       const sourceDir = path.dirname(info.fullPath);
       for (const inc of info.includes) {
-        if (inc.system) continue; // system header: external, no repo edge
+        if (inc.system) continue;
         const resolved = this.resolveInclude(inc.rawPath, sourceDir, projectPath, byBasename, fileByRel);
         if (!resolved) continue;
         const sourceId = this.fileId(info.relativePath);
@@ -745,16 +753,16 @@ export class CCppAnalyzer extends BaseAnalyzer {
     byBasename: Map<string, string[]>,
     fileByRel: Map<string, CFileInfo>
   ): string | undefined {
-    // Try path relative to including file.
+
     const abs = path.resolve(sourceDir, rawPath);
     let rel = this.normalize(path.relative(projectPath, abs));
     if (!rel.startsWith('..') && fileByRel.has(rel)) return rel;
 
-    // Fall back to basename match within the repo.
+
     const base = path.basename(rawPath);
     const candidates = byBasename.get(base);
     if (candidates && candidates.length > 0) {
-      // Prefer a candidate whose tail matches the included path.
+
       const tail = this.normalize(rawPath);
       const exact = candidates.find(c => this.normalize(c).endsWith(tail));
       return exact || candidates[0];

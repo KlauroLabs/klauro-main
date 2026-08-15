@@ -7,10 +7,10 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-// Qwik City routes live as index.tsx files inside src/routes folders; layout.tsx are layouts.
+
 const ROUTE_GLOBS = ['src/routes/**/*.{tsx,jsx,ts,js}'];
-// Reusable components live outside src/routes (commonly src/components); we scan
-// them too so the component tree (parent renders child) spans the whole app.
+
+
 const COMPONENT_GLOBS = ['src/components/**/*.{tsx,jsx}', 'src/**/*.{tsx,jsx}'];
 
 const ENDPOINT_HANDLERS: Array<{ name: string; method: string }> = [
@@ -115,8 +115,8 @@ export class QwikAnalyzer extends BaseAnalyzer {
       nodir: true
     });
 
-    // Collect each component's child JSX tags so a post-pass can resolve them to
-    // the component that defines them and emit the parent->child `renders` edges.
+
+
     const renderSites: Array<{ owner: string; ownerFile: string; children: string[] }> = [];
 
     for (const file of [...new Set(routeFiles)]) {
@@ -159,9 +159,9 @@ export class QwikAnalyzer extends BaseAnalyzer {
     return contribution;
   }
 
-  /**
-   * Shared per-file extraction used by both the full and incremental paths.
-   */
+
+
+
   private extractFromFile(file: string, content: string): QwikFileExtraction {
     const normalized = file.replace(/\\/g, '/');
     const components = this.findComponents(content);
@@ -189,7 +189,7 @@ export class QwikAnalyzer extends BaseAnalyzer {
     if (extraction.route) {
       routeNodeId = this.emitRouteNodes(extraction.route, file, nodes, entryPoints);
     }
-    // Components -> component nodes, linked to the route they live in.
+
     for (const name of extraction.components) {
       this.emitComponentNode(name, file, nodes, edges, routeNodeId);
     }
@@ -252,7 +252,7 @@ export class QwikAnalyzer extends BaseAnalyzer {
       }
     }));
 
-    // Route component itself is a page entry point (GET render). Layouts don't render a page.
+
     if (!info.isLayout) {
       const pageEntryId = `entry_qwik_page_${this.sanitizeId(file)}`;
       entryPoints.push({
@@ -266,7 +266,7 @@ export class QwikAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // routeLoader$ -> data entry points.
+
     for (const loader of info.loaders) {
       const entryId = `entry_qwik_loader_${this.sanitizeId(file)}_${loader}`;
       entryPoints.push({
@@ -281,7 +281,7 @@ export class QwikAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // routeAction$ -> mutation entry points.
+
     for (const action of info.actions) {
       const entryId = `entry_qwik_action_${this.sanitizeId(file)}_${action}`;
       entryPoints.push({
@@ -296,7 +296,7 @@ export class QwikAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // server$ -> server function entry points.
+
     for (const fn of info.serverFns) {
       const entryId = `entry_qwik_server_${this.sanitizeId(file)}_${fn}`;
       entryPoints.push({
@@ -311,7 +311,7 @@ export class QwikAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // onRequest/onGet/onPost/... -> endpoint entry points.
+
     for (const endpoint of info.endpoints) {
       const entryId = `entry_qwik_endpoint_${this.sanitizeId(file)}_${endpoint.name}`;
       entryPoints.push({
@@ -352,10 +352,10 @@ export class QwikAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * PascalCase JSX tags rendered inside a component are its child components
-   * (the Camp-C component-tree fact). We exclude lowercase host elements.
-   */
+
+
+
+
   private extractChildComponentTags(content: string): string[] {
     const tags = new Set<string>();
     const re = /<([A-Z][A-Za-z0-9]*)\b/g;
@@ -364,10 +364,10 @@ export class QwikAnalyzer extends BaseAnalyzer {
     return [...tags];
   }
 
-  /**
-   * Resolve each component's child tags to the component that defines them and
-   * emit a `renders` edge — structural indexers see the import, not the render.
-   */
+
+
+
+
   private emitRendersEdges(
     renderSites: Array<{ owner: string; ownerFile: string; children: string[] }>,
     nodes: CASNode[],
@@ -391,21 +391,21 @@ export class QwikAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Find `export const Foo = component$(...)` and bare `component$(...)` default exports.
-   */
+
+
+
   private findComponents(content: string): string[] {
     const names: string[] = [];
 
-    // Allow an optional generic on component$ — `component$<Props>(...)` is the
-    // typed idiom and must still be recognised as a component definition.
+
+
     const namedPattern = /(?:export\s+)?const\s+(\w+)\s*=\s*component\$\s*(?:<[^>]*>)?\s*\(/g;
     let match: RegExpExecArray | null;
     while ((match = namedPattern.exec(content)) !== null) {
       names.push(match[1]);
     }
 
-    // export default component$(...) with no binding.
+
     if (/export\s+default\s+component\$\s*(?:<[^>]*>)?\s*\(/.test(content) && names.length === 0) {
       names.push('default');
     }
@@ -413,9 +413,9 @@ export class QwikAnalyzer extends BaseAnalyzer {
     return Array.from(new Set(names));
   }
 
-  /**
-   * Find `export const foo = routeLoader$(...)` style bindings for a given primitive.
-   */
+
+
+
   private findAssignedCalls(content: string, primitive: string): string[] {
     const names: string[] = [];
     const escaped = primitive.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -427,30 +427,30 @@ export class QwikAnalyzer extends BaseAnalyzer {
     return Array.from(new Set(names));
   }
 
-  /**
-   * Map a Qwik City route file path to its URL path. The folder structure under
-   * src/routes is the route; the index.tsx/layout.tsx basename is dropped.
-   * Conventions: [param] dynamic, [...slug] splat, (group) pathless groups.
-   */
+
+
+
+
+
   private deriveRouteFromFile(file: string): string {
     let rel = file.replace(/\\/g, '/').replace(/^.*?src\/routes\//, '');
-    // Drop the index/layout basename; the folder path is the route.
+
     rel = rel.replace(/\/?(index|layout(?:-[\w-]+)?)\.(tsx|jsx|ts|js)$/, '');
 
     const segments = rel.split('/').filter(s => s.length > 0);
     const pathParts: string[] = [];
 
     for (const seg of segments) {
-      // Pathless group: (auth) etc.
+
       if (/^\(.+\)$/.test(seg)) {
         continue;
       }
-      // Splat: [...slug] -> *
+
       if (/^\[\.\.\..+\]$/.test(seg)) {
         pathParts.push('*');
         continue;
       }
-      // Dynamic param: [id] -> :id
+
       const param = seg.match(/^\[(.+)\]$/);
       if (param) {
         pathParts.push(`:${param[1]}`);

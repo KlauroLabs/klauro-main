@@ -90,6 +90,15 @@ describe('AnalyzerOrchestrator.detectZeroYieldForClaimedFiles', () => {
     expect(error).toBeNull();
   });
 
+  it('does NOT flag a language analyzer that matched files and produced only an exit point', async () => {
+    const registration = fakeRegistration('language', ['src/client.py']);
+    const result = { ...fakeContribution(), exit_points: [{ id: 'exit_1' }] } as CASContribution;
+
+    const error = await orchestrator.detectZeroYieldForClaimedFiles(registration, result, '/fake/project');
+
+    expect(error).toBeNull();
+  });
+
   it('does NOT flag a FRAMEWORK/pattern analyzer that matched files but found nothing — that is a legitimate "not present" result, not a crash', async () => {
     const registration = fakeRegistration('framework', ['package.json']);
     const result = fakeContribution([], []);

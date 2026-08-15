@@ -1,20 +1,20 @@
-/**
- * PackAnalyzer — a single BaseAnalyzer that runs EVERY loaded declarative
- * pack against a project. One analyzer instance (not one per pack) because
- * packs are additive/data-only and the orchestrator's analyzer list is coded
- * in TypeScript; a pack does not need its own class, only its own YAML.
- *
- * This is the "declarative analyzer" the SPEC promises: instead of writing a
- * new *-analyzer.ts, a community author writes a *.pack.yaml with tree-sitter
- * queries, and it produces real CAS entry_points/entities/edges the same way
- * a coded analyzer would — see docs/SPEC-ANALYZER-PACKS.md.
- *
- * Additive by design: PackAnalyzer registers alongside coded analyzers in
- * apps/mcp-server/src/analyzer.ts (own registerAnalyzer() call) and never
- * replaces one — if a coded analyzer AND a pack both match a repo, both
- * contribute (duplicate facts are a follow-up dedup concern, out of scope for
- * this prototype; see SPEC "honest scope").
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
@@ -41,11 +41,11 @@ export interface PackAnalyzerDiagnostics {
 }
 
 export class PackAnalyzer extends BaseAnalyzer {
-  /** Local pack globs declared by .klaurorc (analyzer-packs section), set by
-   *  the host before analyze() runs. Optional — defaults to built-ins only. */
+
+
   public localPackGlobs: string[] = [];
 
-  /** Populated after analyze() runs — surfaced by the caller for reporting/tests. */
+
   public lastDiagnostics: PackAnalyzerDiagnostics = {
     packsConsidered: [], packsApplied: [], packsSkipped: [], loadErrors: [], ruleErrors: [],
   };
@@ -74,8 +74,8 @@ export class PackAnalyzer extends BaseAnalyzer {
       diagnostics.loadErrors = errors;
       diagnostics.packsConsidered = packs.map(p => p.pack.pack);
 
-      // Track named facts (entry_point/entity) so edge/binding/role rules in
-      // later packs can resolve @capture names against a REAL emitted node id.
+
+
       const nodeIdByName = new Map<string, string>();
 
       for (const loaded of packs) {
@@ -149,7 +149,7 @@ export class PackAnalyzer extends BaseAnalyzer {
         } catch (error) {
           if (error instanceof PackQueryError) {
             diagnostics.ruleErrors.push({ pack: pack.pack, rule: rule.name, error: error.message });
-            continue; // bad query in one rule must not crash the whole pack/file
+            continue;
           }
           throw error;
         }
@@ -223,16 +223,16 @@ export class PackAnalyzer extends BaseAnalyzer {
       case 'edge': {
         const fromId = nodeIdByName.get(fact.from) || fact.from;
         const toId = nodeIdByName.get(fact.to) || fact.to;
-        // Both endpoints must resolve to a real emitted node — never fabricate
-        // an edge to a name nothing in this analysis actually produced.
+
+
         if (!nodeIdByName.has(fact.from) || !nodeIdByName.has(fact.to)) break;
         edges.push(this.createEdge(generateEdgeId(fromId, toId, fact.edgeType), fromId, toId, fact.edgeType, 'pack', { attributes: { pack: packId } }));
         break;
       }
       case 'binding': {
-        // Bindings surface as a `binds` edge between token and implementation
-        // entity nodes when both are known; otherwise as node metadata only
-        // (recorded via a lightweight node so it's queryable even standalone).
+
+
+
         const tokenId = nodeIdByName.get(fact.token);
         const implId = nodeIdByName.get(fact.implementation);
         if (tokenId && implId) {

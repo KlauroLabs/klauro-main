@@ -30,12 +30,12 @@ interface KotlinType {
   name: string;
   kind: KotlinTypeKind;
   visibility: string;
-  supertypes: string[]; // raw supertype names (base classes + interfaces), constructor args stripped
+  supertypes: string[];
   annotations: string[];
   lineStart: number;
   lineEnd: number;
-  // Primary-constructor val/var properties, populated only for `data class` —
-  // these are the component/copy() fields, i.e. the DTO's actual data shape.
+
+
   dataFields?: KotlinDataField[];
 }
 
@@ -45,8 +45,8 @@ interface KotlinFunction {
   isSuspend: boolean;
   isComposable: boolean;
   isTopLevel: boolean;
-  receiver?: string; // extension-function receiver, e.g. Application in `fun Application.module()`
-  ownerType?: string; // enclosing type name when member function
+  receiver?: string;
+  ownerType?: string;
   lineStart: number;
   lineEnd: number;
 }
@@ -57,11 +57,11 @@ interface KotlinImport {
   lineNumber: number;
 }
 
-// A Compose Navigation destination (`composable("route"){}` / `dialog("route"){}`
-// / `navigation(startDestination=..., route="graph"){}`) found strictly inside a
-// `NavHost(...) { ... }` builder block. Route text is the literal string
-// passed to the call — never fabricated when the argument isn't a plain
-// string literal (interpolated/const-referenced routes are silently skipped).
+
+
+
+
+
 interface KotlinNavDestination {
   route: string;
   kind: 'composable' | 'dialog' | 'navigation';
@@ -80,7 +80,7 @@ interface KotlinFileInfo {
 }
 
 const KOTLIN_GLOBS = ['**/*.kt', '**/*.kts'];
-// Kotlin soft keywords / control words that look like calls but are not function calls.
+
 const KOTLIN_CALL_KEYWORDS = new Set([
   'if', 'else', 'for', 'while', 'do', 'when', 'return', 'throw', 'try', 'catch',
   'finally', 'is', 'as', 'in', 'val', 'var', 'fun', 'class', 'object', 'super',
@@ -91,48 +91,48 @@ const KOTLIN_CALL_KEYWORDS = new Set([
 const ANDROID_ACTIVITY_BASES = new Set([
   'ComponentActivity', 'AppCompatActivity', 'Activity', 'FragmentActivity',
 ]);
-// Structural (supertype-based) detection for the other Android component
-// families — analogous to ANDROID_ACTIVITY_BASES, so these are found even in
-// repos with no AndroidManifest.xml in the analyzed source (or whose manifest
-// wasn't reachable — see the 2026-07-17 warning below), not only via the
-// manifest pass. `type` mirrors MANIFEST_COMPONENT_ENTRY_TYPES below so a
-// structurally-detected class and a manifest-declared one resolve to the same
-// CAS entry-point `type` for the same component kind.
+
+
+
+
+
+
+
 const ANDROID_APPLICATION_BASES = new Set(['Application']);
 const ANDROID_SERVICE_BASES = new Set(['Service', 'IntentService', 'LifecycleService']);
 const ANDROID_RECEIVER_BASES = new Set(['BroadcastReceiver']);
 const ANDROID_PROVIDER_BASES = new Set(['ContentProvider']);
-// WorkManager background-work units — not an Android manifest component
-// (Workers are dispatched programmatically via WorkManager, never declared in
-// AndroidManifest.xml), so this is structural-only, no manifest counterpart.
+
+
+
 const ANDROID_WORKER_BASES = new Set(['Worker', 'CoroutineWorker', 'ListenableWorker', 'RxWorker']);
 const ANDROID_MANIFEST_GLOB = ['**/AndroidManifest.xml'];
-// Manifest component kinds resolved to entry points, and the CAS entry-point
-// `type` each maps to: Activity is a UI screen ('page', matching the existing
-// supertype-detected Activity entry below); Service has no UI but a component
-// lifecycle bound by the OS ('lifecycle', matching the Ktor module precedent);
-// BroadcastReceiver reacts to system/app broadcast events ('event'); Provider
-// exposes structured data to other processes via a query-style API ('api').
+
+
+
+
+
+
 const MANIFEST_COMPONENT_ENTRY_TYPES: Record<string, CASEntryPoint['type']> = {
   activity: 'page',
   service: 'lifecycle',
   receiver: 'event',
   provider: 'api',
 };
-// Kotlin `data class` fields whose types are EXCLUSIVELY Compose theming
-// value types (Color/Dp/...) describe a design-token/theme shape, not a
-// domain DTO — excluded from data-entity emission even though the class is
-// structurally a data class.
+
+
+
+
 const COMPOSE_THEME_ONLY_TYPES = new Set([
   'Color', 'Dp', 'TextUnit', 'Shape', 'FontFamily', 'Painter', 'ImageVector',
   'Brush', 'PaddingValues', 'Modifier', 'TextStyle', 'Typography',
 ]);
 
 export class KotlinAnalyzer extends BaseAnalyzer {
-  // android:name / android:authorities attributes live under the "android"
-  // XML namespace — removeNSPrefix strips that prefix so `android:name`
-  // parses to the plain `name` key, same convention as soap-wsdl-analyzer's
-  // WSDL/XSD parser.
+
+
+
+
   private readonly manifestParser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: '',
@@ -146,10 +146,10 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     super('kotlin', 'Kotlin Language Analyzer', '1.0.0', 'language');
   }
 
-  // Kotlin shares Java's JVM package-to-directory convention, so a package like
-  // org.example.samples.<app> is a real source path, not vendored scaffolding —
-  // route every glob call through BaseAnalyzer.getPackageDirSafeIgnorePatterns()
-  // (see its doc comment for the full rationale) instead of getIgnorePatterns().
+
+
+
+
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const files = await glob(KOTLIN_GLOBS, {
@@ -257,9 +257,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
         framework_specific: {
           language: 'kotlin',
           filesAnalyzed: fileInfos.length,
-          // 'dto' covers data classes reclassified as data-entity shapes (see
-          // emitFileNodes) — still a Kotlin TYPE, just carrying a more precise
-          // node.type than plain 'class' for downstream entity derivation.
+
+
+
           typesFound: nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'dto').length,
           functionsFound: nodes.filter(n => n.type === 'function' || n.type === 'method').length,
           composeFunctions: composeCount,
@@ -274,9 +274,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing
-  // ---------------------------------------------------------------------------
+
+
+
 
   private parseKotlinFile(relativePath: string, fullPath: string, content: string): KotlinFileInfo {
     const lines = content.split('\n');
@@ -304,7 +304,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const match = line.match(/^package\s+([A-Za-z0-9_.]+)/);
       if (match) return match[1];
       if (line && !line.startsWith('//') && !line.startsWith('@') && !line.startsWith('/*')) {
-        // package must precede first declaration; stop early once real code starts
+
         if (line.startsWith('import')) return '';
       }
     }
@@ -335,7 +335,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const decl = this.matchTypeDeclaration(trimmed);
       if (!decl) continue;
 
-      // `companion object` folds into the enclosing class — skip as a standalone type.
+
       if (decl.kind === 'object' && /\bcompanion\s+object\b/.test(trimmed)) continue;
 
       const annotations = this.collectPrecedingAnnotations(lines, i);
@@ -360,8 +360,8 @@ export class KotlinAnalyzer extends BaseAnalyzer {
   }
 
   private matchTypeDeclaration(trimmed: string): { name: string; kind: KotlinTypeKind } | undefined {
-    // Strip leading modifiers to detect the declaration keyword.
-    // enum class / data class / sealed class / annotation class / abstract class
+
+
     const enumMatch = trimmed.match(/\benum\s+class\s+([A-Za-z_][A-Za-z0-9_]*)/);
     if (enumMatch) return { name: enumMatch[1], kind: 'enum-class' };
 
@@ -389,14 +389,14 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  // Extract supertype names from a `class X(...) : Base(), Iface, ...` declaration.
-  // Spans from the type's first line to the opening `{` (or end of header).
+
+
   private extractSupertypes(lines: string[], startIndex: number, blockEnd: number): string[] {
     let header = '';
     for (let i = startIndex; i < lines.length && i < blockEnd; i++) {
       header += ' ' + lines[i];
       if (lines[i].includes('{')) break;
-      // header without a body can still end at a newline-terminated declaration
+
       if (i > startIndex + 8) break;
     }
     header = header.split('{')[0];
@@ -408,8 +408,8 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return this.parseSupertypeList(supertypeSection);
   }
 
-  // Find the `:` that introduces supertypes (after the class name / primary ctor),
-  // skipping `:` inside the primary-constructor parameter list and generics.
+
+
   private findSupertypeColon(header: string): number {
     let depthParen = 0;
     let depthAngle = 0;
@@ -430,18 +430,18 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     for (const part of parts) {
       const trimmed = part.trim();
       if (!trimmed) continue;
-      // `by` delegation: `Iface by impl` -> Iface; `where` clause guard.
+
       if (/^where\b/.test(trimmed)) continue;
       const nameMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_.]*)/);
       if (!nameMatch) continue;
-      // Take final segment of a qualified name.
+
       const name = nameMatch[1].split('.').pop()!;
       names.push(name);
     }
     return names;
   }
 
-  // Split on a separator at top nesting level (ignores commas inside (), <>).
+
   private splitTopLevel(text: string, sep: string): string[] {
     const out: string[] = [];
     let depthParen = 0;
@@ -463,19 +463,19 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return out;
   }
 
-  // Extract the primary-constructor `val`/`var` properties of a `data class`
-  // declaration — these ARE the class's component/copy() fields, i.e. its
-  // actual data shape (`data class Session(val id: String, val ttl: Int)`).
-  // Best-effort, regex-based like the rest of this file: never fabricates a
-  // field it can't parse — an unparseable param is silently skipped, not
-  // guessed at.
+
+
+
+
+
+
   private extractDataClassFields(lines: string[], startIndex: number): KotlinDataField[] {
-    // Join a generous forward window so a multi-line constructor parameter
-    // list still parses as one balanced-paren string; comments/strings are
-    // stripped first so a stray '(' or ')' inside a string/comment can't
-    // desync the depth count. Track each source line's starting offset in the
-    // joined string so a field's char position can be mapped back to a real
-    // source line (never fabricated: falls back to the decl line if unmapped).
+
+
+
+
+
+
     const windowEnd = Math.min(lines.length, startIndex + 80);
     const lineStartOffsets: number[] = [];
     let joined = '';
@@ -511,7 +511,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     let searchCursor = 0;
     for (const rawPart of this.splitTopLevel(paramsSection, ',')) {
       const partStartInSection = searchCursor;
-      searchCursor += rawPart.length + 1; // +1 for the consumed comma separator
+      searchCursor += rawPart.length + 1;
       const part = rawPart.trim();
       if (!part) continue;
 
@@ -519,16 +519,16 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const withoutAnnotations = part.replace(/@[A-Za-z_][A-Za-z0-9_]*(\([^)]*\))?/g, '').trim();
       if (!withoutAnnotations) continue;
 
-      // Split off a default value (`= expr`) at top nesting level before
-      // matching the declaration, so `= SomeType(...)` in the default can't
-      // be mistaken for the property's own type.
+
+
+
       const declPart = this.splitTopLevel(withoutAnnotations, '=')[0]?.trim();
       if (!declPart) continue;
 
       const declMatch = declPart.match(
         /^(?:private\s+|protected\s+|internal\s+|public\s+|override\s+|crossinline\s+|noinline\s+|vararg\s+)*(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)$/
       );
-      if (!declMatch) continue; // not a val/var property (e.g. a plain ctor param) — skip, never fabricate
+      if (!declMatch) continue;
 
       const nameOffsetInPart = part.indexOf(declMatch[1]);
       const absoluteOffset = openIdx + 1 + partStartInSection + Math.max(0, nameOffsetInPart);
@@ -543,11 +543,11 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return fields;
   }
 
-  // A data class qualifies as a data-entity shape when it carries at least
-  // two component fields (excludes single-property wrappers, e.g. `data class
-  // Id(val value: String)`) and isn't a Compose theming/design-token shape
-  // (ui/theme package, or every field typed as a Compose-only value type like
-  // Color/Dp). Evidence-gated, never name-based.
+
+
+
+
+
   private isEntityShapedDataClass(info: KotlinFileInfo, fields: KotlinDataField[]): boolean {
     if (fields.length < 2) return false;
 
@@ -568,7 +568,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
 
-      // Match `fun name(...)` and `fun Receiver.name(...)`.
+
       const match = trimmed.match(
         /\bfun\b(?:\s*<[^>]*>)?\s+(?:([A-Za-z_][A-Za-z0-9_.]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/
       );
@@ -604,7 +604,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
 
   private collectPrecedingAnnotations(lines: string[], lineIndex: number): string[] {
     const annotations: string[] = [];
-    // Annotations may be on the declaration line itself or on preceding lines.
+
     const ownLine = lines[lineIndex];
     for (const m of ownLine.matchAll(/@([A-Za-z_][A-Za-z0-9_]*)/g)) annotations.push(m[1]);
 
@@ -632,7 +632,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return innermost;
   }
 
-  // Best-effort brace matching from a declaration line.
+
   private findBlockEnd(lines: string[], startIndex: number): number {
     let depth = 0;
     let seenOpen = false;
@@ -647,7 +647,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
           if (seenOpen && depth <= 0) return i + 1;
         }
       }
-      // Expression body / declaration with no block: ends on its own line.
+
       if (!seenOpen && (stripped.includes(';') || (i > startIndex && stripped.trim() === ''))) {
         return i + 1;
       }
@@ -673,9 +673,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  // Strip a trailing `//` line comment while KEEPING string-literal contents
-  // intact (unlike stripStringsAndComments, which also erases quoted text) —
-  // needed here because route strings live inside the quotes we must match.
+
+
+
   private removeTrailingLineComment(line: string): string {
     let inSingle = false;
     let inDouble = false;
@@ -689,18 +689,18 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return line;
   }
 
-  // Compose Navigation destinations: scoped strictly to the body of a
-  // `NavHost(...) { ... }` builder call, so a `composable("route"){}` used as
-  // route registration is captured while an unrelated `@Composable fun` (or a
-  // `composable`-named identifier outside any NavHost) is never mistaken for
-  // one — over-detecting every @Composable would flood entry points with
-  // plain UI functions instead of actual navigable destinations.
+
+
+
+
+
+
   private extractNavHostDestinations(lines: string[]): KotlinNavDestination[] {
     const destinations: KotlinNavDestination[] = [];
     const destRegex = /\b(composable|dialog)\s*\(\s*(?:route\s*=\s*)?"([^"]+)"/;
-    // `navigation(startDestination = "...", route = "...") { ... }` — the
-    // route argument may appear after other named args, so search the whole
-    // call header for a `route = "..."` pair rather than anchoring position 0.
+
+
+
     const navGraphRegex = /\bnavigation\s*\(/;
     const navGraphRouteRegex = /\broute\s*=\s*"([^"]+)"/;
 
@@ -723,9 +723,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
         }
 
         if (navGraphRegex.test(text)) {
-          // The route argument may be on the same line or a following one
-          // within the call's parameter list — scan a small forward window
-          // (nested `navigation(...)` blocks are rare and short in practice).
+
+
+
           const windowEnd = Math.min(blockEnd, j + 6);
           for (let k = j; k < windowEnd; k++) {
             const routeMatch = this.removeTrailingLineComment(lines[k]).match(navGraphRouteRegex);
@@ -733,21 +733,21 @@ export class KotlinAnalyzer extends BaseAnalyzer {
               destinations.push({ route: routeMatch[1], kind: 'navigation', line: j + 1 });
               break;
             }
-            if (lines[k].includes('{')) break; // reached the graph's builder body, stop searching
+            if (lines[k].includes('{')) break;
           }
         }
       }
 
-      // Skip past this NavHost's body so a nested NavHost (rare) inside it
-      // isn't independently rescanned as a second top-level site.
+
+
       i = Math.max(i, blockEnd - 1);
     }
     return destinations;
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private emitFileNodes(
     info: KotlinFileInfo,
@@ -774,16 +774,16 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       })
       .build());
 
-    // Type nodes (class-like).
+
     for (const type of info.types) {
       const typeId = this.typeId(info.relativePath, type.name);
       const dataFields = type.dataFields || [];
-      // A `data class` whose fields are a real DTO shape (>=2 properties, not
-      // a Compose theme/design-token record) is emitted as node.type 'dto' —
-      // the same node-type signal the TypeScript/JS analyzer already uses for
-      // DTO-like classes — so the orchestrator's generic data-entity
-      // derivation (isDtoLikeDataShapeNode) picks it up without any
-      // Kotlin-specific entity logic downstream.
+
+
+
+
+
+
       const isDataEntity = type.kind === 'data-class' && this.isEntityShapedDataClass(info, dataFields);
       const nodeType = isDataEntity ? 'dto' : (type.kind === 'interface' ? 'interface' : 'class');
       const node = this.createNodeBuilder(typeId, type.name, nodeType)
@@ -809,7 +809,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
 
       edges.push(this.createEdge(`${fileId}_contains_${typeId}`, fileId, typeId, 'contains'));
 
-      // Android Activity entry point.
+
       const activityBase = type.supertypes.find(s => ANDROID_ACTIVITY_BASES.has(s));
       if (activityBase) {
         entryPoints.push(this.createEntryPoint(
@@ -825,13 +825,13 @@ export class KotlinAnalyzer extends BaseAnalyzer {
         ));
       }
 
-      // Structural detection of the other Android component families —
-      // supertype-based like Activity above, so these are found even without
-      // (or ahead of) the AndroidManifest.xml pass. Each uses the same
-      // `entry_${typeId}` id / `typeId` source_node as the manifest path
-      // below would use for the same class, so emitManifestEntryPoints'
-      // alreadyEntryPointed dedup naturally collapses a class declared in
-      // BOTH places into a single entry point instead of double-counting it.
+
+
+
+
+
+
+
       const structuralBases: Array<{ bases: Set<string>; type: CASEntryPoint['type']; label: string }> = [
         { bases: ANDROID_APPLICATION_BASES, type: 'lifecycle', label: 'Application' },
         { bases: ANDROID_SERVICE_BASES, type: 'lifecycle', label: 'Service' },
@@ -853,15 +853,15 @@ export class KotlinAnalyzer extends BaseAnalyzer {
           { file: info.relativePath, line: type.lineStart, base, language: 'kotlin' },
           { node_id: typeId, method_name: type.name, file: info.relativePath, line: type.lineStart }
         ));
-        break; // a class extends exactly one of these families
+        break;
       }
 
-      // Data-entity fields: one 'property' node per component field, parented
-      // to the class node — this is the shape buildEntityPropertyIndex/
-      // buildDataEntities walks (node.parent + node.type==='property') to
-      // populate a CASDataEntity's `fields`. Without these, a 'dto'-typed
-      // node with zero matched property nodes contributes no field evidence
-      // and gets filtered out entirely (dataShapeNodeHasFieldEvidence).
+
+
+
+
+
+
       if (isDataEntity) {
         for (const field of dataFields) {
           const propertyId = this.propertyId(info.relativePath, type.name, field.name);
@@ -881,11 +881,11 @@ export class KotlinAnalyzer extends BaseAnalyzer {
                 ...(serializationAnnotations.length > 0 ? { serialization: serializationAnnotations } : {}),
               },
             })
-            // buildDataEntities (orchestrator) reads a property's type off
-            // signature.return_type first (metadata.type / attributes.type
-            // are only consulted by other, ERD-specific call sites) — set it
-            // here so the field's type actually surfaces on the derived
-            // CASDataEntity instead of collapsing to 'unknown'.
+
+
+
+
+
             .withSignature({ return_type: field.type })
             .withParent(typeId)
             .build();
@@ -901,7 +901,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Function / method nodes.
+
     for (const fn of info.functions) {
       const ownerId = fn.ownerType ? this.typeId(info.relativePath, fn.ownerType) : undefined;
       const functionId = this.functionId(info.relativePath, fn.name, fn.lineStart);
@@ -944,7 +944,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
         'contains'
       ));
 
-      // Entry points: main(), Ktor Application.module().
+
       if (fn.name === 'main' && fn.isTopLevel) {
         entryPoints.push(this.createEntryPoint(
           `entry_${functionId}`,
@@ -961,8 +961,8 @@ export class KotlinAnalyzer extends BaseAnalyzer {
         entryPoints.push(this.createEntryPoint(
           `entry_${functionId}`,
           functionId,
-          // App bootstrap, not an HTTP endpoint — 'http' with no trigger made
-          // buildRouteTable synthesize a phantom GET / route.
+
+
           'lifecycle',
           `Ktor module: ${baseName}`,
           'Ktor application module (fun Application.module)',
@@ -974,11 +974,11 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Compose Navigation destinations found inside NavHost(...) builder
-    // blocks (see extractNavHostDestinations). Not owned by any single
-    // type/function — attributed to the file node, the same "no more precise
-    // owner" fallback emitImportEdges/exit points already use for file-level
-    // facts.
+
+
+
+
+
     for (const dest of info.navDestinations) {
       const destId = `navdest_${this.sanitizeId(info.relativePath)}_${this.sanitizeId(dest.route)}_${dest.line}`;
       entryPoints.push(this.createEntryPoint(
@@ -1000,7 +1000,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
-    // Map type name -> node id (repo-wide). Last definition wins on collision.
+
     const typeIdByName = new Map<string, string>();
     for (const info of fileInfos) {
       for (const type of info.types) {
@@ -1036,7 +1036,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     exitPoints: CASExitPoint[]
   ): void {
-    // Resolve imports to repo-defined types when the import's tail matches a known type.
+
     const typeIdByQualified = new Map<string, string>();
     const typeIdByName = new Map<string, string>();
     for (const info of fileInfos) {
@@ -1061,7 +1061,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
             attributes: { importPath: imp.importPath, language: 'kotlin' },
           }));
         } else if (!imp.importPath.startsWith(info.packageName + '.') || !info.packageName) {
-          // External dependency import.
+
           exitPoints.push(this.createExitPoint(
             `exit_${fileId}_${this.sanitizeId(imp.importPath)}`,
             fileId,
@@ -1077,39 +1077,39 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // AndroidManifest.xml component entry points
-  // ---------------------------------------------------------------------------
 
-  /** Normalize a fast-xml-parser child that may be absent, a single object, or
-   *  an array (repeated sibling tags) into an array. */
+
+
+
+
+
   private toArray<T>(value: T | T[] | undefined | null): T[] {
     if (value === undefined || value === null) return [];
     return Array.isArray(value) ? value : [value];
   }
 
-  /** Resolve a manifest `android:name` value (relative ".Foo", bare "Foo", or
-   *  fully-qualified "com.app.Foo") against the manifest's declared package,
-   *  per the standard Android manifest-merger rule. */
+
+
+
   private resolveManifestClassName(rawName: string, manifestPackage: string): string {
     if (rawName.startsWith('.')) return manifestPackage ? `${manifestPackage}${rawName}` : rawName.slice(1);
     if (!rawName.includes('.')) return manifestPackage ? `${manifestPackage}.${rawName}` : rawName;
     return rawName;
   }
 
-  /** Parse every AndroidManifest.xml in the project and emit an entry point
-   *  for each declared <activity>/<service>/<receiver>/<provider> whose
-   *  android:name resolves to a class this analyzer parsed. Never fabricates:
-   *  a component whose name can't be resolved (custom base, ambiguous simple
-   *  name across packages, or genuinely not part of this analysis) is skipped
-   *  with a debug warning, not a phantom entry point. Activities already
-   *  entry-pointed via the ANDROID_ACTIVITY_BASES supertype check (above) are
-   *  not duplicated — the manifest is instead the fallback for components
-   *  whose base class isn't one of the known Activity bases, or that aren't
-   *  Activities at all (Service/Receiver/Provider never get a supertype-based
-   *  entry point, since only Activity subclassing is a reliable structural
-   *  signal for the other three).
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private async emitManifestEntryPoints(
     context: AnalysisContext,
     fileInfos: KotlinFileInfo[],
@@ -1126,15 +1126,15 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       return;
     }
     if (manifestFiles.length === 0) {
-      // Silent zero was the actual production symptom (2026-07-17): a real
-      // Android/Compose repo's AndroidManifest.xml never reached the hosted
-      // snapshot (remote-source.ts had no inclusion rule for it), so this glob
-      // found nothing and returned with no signal at all — the CAS looked
-      // identical to a non-Android Kotlin project. Detect the Android-shaped
-      // case (an Activity-base subclass was parsed, so this IS an Android app)
-      // and surface a warning instead of staying silent, so a missing manifest
-      // is visible in the analysis output rather than only discoverable by
-      // diffing against a local run.
+
+
+
+
+
+
+
+
+
       const looksAndroid = fileInfos.some(info =>
         info.types.some(type => type.supertypes.some(base => ANDROID_ACTIVITY_BASES.has(base)))
       );
@@ -1146,9 +1146,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       return;
     }
 
-    // Qualified-name and simple-name (may be ambiguous across packages)
-    // indexes over every type this analyzer parsed, so a manifest name can be
-    // resolved to the exact class node it describes.
+
+
+
     const byQualifiedName = new Map<string, { info: KotlinFileInfo; type: KotlinType }>();
     const bySimpleName = new Map<string, Array<{ info: KotlinFileInfo; type: KotlinType }>>();
     for (const info of fileInfos) {
@@ -1182,11 +1182,11 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const application = parsed?.manifest?.application;
       if (!application) continue;
 
-      // <application android:name="..."> declares the app's Application
-      // subclass on the <application> ELEMENT ITSELF, not as a child
-      // component — resolve it the same way as the activity/service/receiver/
-      // provider children below, since a plain child-tag loop over
-      // application[componentTag] never sees this attribute.
+
+
+
+
+
       const appName = typeof application === 'object' ? application?.name : undefined;
       if (appName && typeof appName === 'string') {
         const qualified = this.resolveManifestClassName(appName, manifestPackage);
@@ -1265,10 +1265,10 @@ export class KotlinAnalyzer extends BaseAnalyzer {
             if (collected.length > 0) actions = collected;
           }
 
-          // LAUNCHER intent-filter (MAIN action + LAUNCHER category) marks
-          // the app's primary entry Activity — surfaced as metadata so a
-          // consumer can find the launch screen among possibly many
-          // activities without re-parsing the manifest itself.
+
+
+
+
           let isLauncher = false;
           if (componentTag === 'activity') {
             for (const filter of this.toArray(component['intent-filter'])) {
@@ -1287,11 +1287,11 @@ export class KotlinAnalyzer extends BaseAnalyzer {
           }
 
           if (alreadyEntryPointed.has(typeId)) {
-            // A structural (supertype) pass already emitted this class's
-            // entry point — don't double-count it, but the manifest is the
-            // ONLY source for intent-filter data (LAUNCHER / receiver
-            // actions), so merge that signal into the existing entry point
-            // rather than silently dropping it.
+
+
+
+
+
             const existing = entryPoints.find(ep => ep.source_node === typeId);
             if (existing) {
               if (isLauncher) existing.metadata = { ...existing.metadata, is_launcher: true };
@@ -1334,10 +1334,8 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<void> {
-    // Repo-wide set of defined function names (conservative: ignore stdlib).
+
     const definedNames = new Set<string>();
-    // Cross-file index of every function/method, so a top-level caller can reach
-    // a method defined in another file (resolved by receiver type below).
     const allFns: Array<{ fn: KotlinFunction; info: KotlinFileInfo }> = [];
     for (const info of fileInfos) {
       for (const fn of info.functions) { definedNames.add(fn.name); allFns.push({ fn, info }); }
@@ -1353,16 +1351,16 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       } catch {
         continue;
       }
-      // Prefer the AST: it resolves bare same-scope calls inside single-line
-      // bodies (`fun load() { fetch() }`) and obj.method() targets that the
-      // line-regex pass misses/over-skips. Fall back to regex if the grammar is
-      // unavailable or parsing throws (keeps analysis resilient offline/CI).
       let usedAst = false;
       if (astAvailable) {
         try {
           const tree = await parseWasm('kotlin', content);
-          this.emitCallEdgesFromAst(info, tree, content, allFns, definedNames, edgeIds, edges);
-          usedAst = true;
+          try {
+            this.emitCallEdgesFromAst(info, tree, content, allFns, definedNames, edgeIds, edges);
+            usedAst = true;
+          } finally {
+            tree.delete?.();
+          }
         } catch {
           usedAst = false;
         }
@@ -1371,8 +1369,8 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Record a resolved caller→callee call edge (shared by the AST and regex
-   *  passes). Applies the conservative same-file resolution + dedup. */
+
+
   private addCallEdge(
     info: KotlinFileInfo,
     caller: KotlinFunction,
@@ -1385,7 +1383,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     if (callee === caller.name) return;
     if (KOTLIN_CALL_KEYWORDS.has(callee)) return;
     if (!definedNames.has(callee)) return;
-    // Resolve callee within same file (conservative scope).
+
     const target = info.functions.find(fn => fn.name === callee);
     if (!target) return;
     const callerId = this.functionId(info.relativePath, caller.name, caller.lineStart);
@@ -1399,11 +1397,11 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     }));
   }
 
-  /** AST call-edge pass: walk call_expression nodes, resolve the callee (plain
-   *  identifier or the method segment of obj.method()) with its receiver, and
-   *  attribute it to the enclosing function. Receiver-type resolution links
-   *  `a.save()` (a: Account) to Account.save across files, excluding a same-name
-   *  method on another class. */
+
+
+
+
+
   private emitCallEdgesFromAst(
     info: KotlinFileInfo,
     tree: any,
@@ -1444,7 +1442,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     walk(tree.rootNode);
   }
 
-  /** Resolve and record a call edge, receiver-type and cross-file aware. */
+
   private addKotlinCallEdge(
     info: KotlinFileInfo,
     caller: KotlinFunction,
@@ -1464,19 +1462,19 @@ export class KotlinAnalyzer extends BaseAnalyzer {
 
     let target: { fn: KotlinFunction; info: KotlinFileInfo } | undefined;
 
-    // 1) Receiver typed -> resolve to its class, find the method on THAT class.
+
     if (receiver && receiver !== 'this') {
       let varTypes = varTypeCache.get(caller);
       if (!varTypes) { varTypes = this.kotlinVarTypes(content, caller); varTypeCache.set(caller, varTypes); }
       const recvType = varTypes.get(receiver);
       if (recvType) target = allFns.find(x => x.fn.name === callee && x.fn.ownerType === recvType);
     }
-    // 2) Same-file (intra-class bare calls like `fun load(){ fetch() }`).
+
     if (!target) {
       const sameFile = info.functions.find(fn => fn.name === callee);
       if (sameFile) target = { fn: sameFile, info };
     }
-    // 3) Cross-file unambiguous: exactly one function of that name repo-wide.
+
     if (!target) {
       const named = allFns.filter(x => x.fn.name === callee);
       if (named.length === 1) target = named[0];
@@ -1494,9 +1492,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     }));
   }
 
-  /** Map a Kotlin function's local var names to their bare class types, from
-   *  parameters (`name: Type`) and simple local declarations (`val x: Type`,
-   *  `val x = Type(...)`). */
+
+
+
   private kotlinVarTypes(content: string, fn: KotlinFunction): Map<string, string> {
     const map = new Map<string, string>();
     const lines = content.split('\n');
@@ -1515,7 +1513,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return map;
   }
 
-  /** Regex fallback call-edge pass (used when the AST grammar is unavailable). */
+
   private emitCallEdgesFromRegex(
     info: KotlinFileInfo,
     content: string,
@@ -1530,9 +1528,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const caller = this.enclosingFunction(info, i + 1);
       if (!caller) continue;
 
-      // On the declaration line, the `fun NAME(` token is the declaration, not a
-      // call — record its end index so we skip only that token, not the rest of
-      // a single-line body (`fun load() { fetch() }`).
+
+
+
       let declTokenEnd = -1;
       if (i + 1 === caller.lineStart) {
         const decl = /\bfun\s+(?:<[^>]*>\s*)?[A-Za-z_][A-Za-z0-9_]*\s*\(/.exec(stripped);
@@ -1540,7 +1538,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       }
 
       for (const m of stripped.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-        // Skip the declaration token itself (the call paren falls within it).
+
         if (declTokenEnd >= 0 && (m.index ?? 0) < declTokenEnd) continue;
         this.addCallEdge(info, caller, m[1], i, definedNames, edgeIds, edges);
       }
@@ -1557,15 +1555,15 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return innermost;
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   private accessModifier(visibility: string): 'public' | 'private' | 'protected' | undefined {
     if (visibility === 'private') return 'private';
     if (visibility === 'protected') return 'protected';
     if (visibility === 'public') return 'public';
-    return undefined; // 'internal' has no CAS access_modifier mapping
+    return undefined;
   }
 
   private fileId(relativePath: string): string {
@@ -1606,18 +1604,18 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     ];
   }
 
-  /**
-   * Tags every node in a Kotlin test file with `metadata.is_test`,
-   * `category: 'test'`, and a `test-code` tag, mirroring the TS/JS
-   * analyzer's applyTestSourceBoundary and the Go analyzer's
-   * applyTestFileBoundary. Kotlin/JVM's own conventions (JUnit/Kotest,
-   * universal — never a keyword/brand check): files named `*Test.kt` or
-   * `*Tests.kt`, or any file under a Gradle `src/test/kotlin/**` /
-   * `src/androidTest/**` source root. Without this, Kotlin test functions
-   * carried no test-owned marker, so the cross-language test-coverage graph
-   * walk could never start a traversal from this analyzer's own function
-   * nodes.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;

@@ -1529,7 +1529,7 @@ export const LANGUAGE_SPECS: Record<string, LanguageSpec> = {
       return sc?.type === 'string_content' ? sc.text : '';
     },
   },
-  // tree-sitter-comment: each recognized tag (TODO/FIXME/NOTE/HACK/XXX/WARNING/…) is a
+
   comment: {
     grammar: 'comment',
     functionNodeTypes: ['tag'],

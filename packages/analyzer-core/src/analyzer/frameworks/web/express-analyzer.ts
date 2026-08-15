@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { createYieldBudget } from '../../core/event-loop-yield';
-import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
+import { loadSourceFiles, type LoadedSourceFile } from '../../core/source-file-loader';
 
 interface ExpressApplication {
   name: string;
@@ -108,7 +108,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
       const hasExpressDependency = Object.keys(deps).some(dep => dep === 'express');
       if (!hasExpressDependency) return false;
 
-      // Skip Express analysis if NestJS is present - NestJS analyzer should handle it
+
       const hasNestJS = Object.keys(deps).some(dep =>
         dep.includes('@nestjs/core') ||
         dep.includes('@nestjs/common') ||
@@ -116,7 +116,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
       );
 
       if (hasNestJS) {
-        return false; // Defer to NestJS analyzer
+        return false;
       }
 
       const jsFiles = await glob(['**/*.{js,ts}'], {
@@ -132,21 +132,21 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
       for (const file of jsFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        // Match default (`import express from 'express'`), namespace
-        // (`import * as express from 'express'`), and destructured
-        // (`import { Router } from 'express'`) ES import forms, plus CJS
-        // `require('express')`. The namespace form is a very common
-        // TypeScript pattern (esModuleInterop off / older tsconfig) that a
-        // default-import-only regex silently misses, which previously caused
-        // canAnalyze to return false for real Express apps using it.
+
+
+
+
+
+
+
         const importsExpress =
           /^\s*import\s+(?:\*\s+as\s+)?\w+\b.*\bfrom\s+['"]express['"]/m.test(content) ||
           /^\s*import\s*\{[^}]*\}\s*from\s+['"]express['"]/m.test(content) ||
           /^\s*(?:const|let|var)\s+\w+\s*=\s*require\(\s*['"]express['"]\s*\)/m.test(content);
-        // Confirms actual Express usage beyond just importing the module:
-        // calling the default/namespace import as a function (`express()`),
-        // `express.Router()`, or a destructured bare `Router()` call (which
-        // pairs with the `import { Router } from 'express'` form above).
+
+
+
+
         if (importsExpress && /\bexpress\s*\(\s*\)|\bexpress\s*\.\s*Router\s*\(|\bRouter\s*\(\s*\)/.test(content)) {
           return true;
         }
@@ -177,14 +177,18 @@ export class ExpressAnalyzer extends BaseAnalyzer {
         ignore: this.getIgnorePatterns(context),
         nodir: true
       });
+      const [sourceFiles, sourceViews] = await Promise.all([
+        loadSourceFiles(jsFiles, context.projectPath),
+        loadSourceFiles(viewFiles, context.projectPath),
+      ]);
 
-      const application = await this.analyzeApplication(jsFiles, context.projectPath, nodes);
-      const routers = await this.analyzeRouters(jsFiles, context.projectPath, nodes, edges, entryPoints);
-      const middleware = await this.analyzeMiddleware(jsFiles, context.projectPath, nodes, edges);
-      const controllers = await this.analyzeControllers(jsFiles, context.projectPath, nodes, edges);
-      const models = await this.analyzeModels(jsFiles, context.projectPath, nodes, edges, exitPoints);
-      const services = await this.analyzeServices(jsFiles, context.projectPath, nodes, edges);
-      const views = await this.analyzeViews(viewFiles, context.projectPath, nodes, edges);
+      const application = await this.analyzeApplication(sourceFiles, nodes);
+      const routers = await this.analyzeRouters(sourceFiles, nodes, edges, entryPoints);
+      const middleware = await this.analyzeMiddleware(sourceFiles, nodes, edges);
+      const controllers = await this.analyzeControllers(sourceFiles, nodes, edges);
+      const models = await this.analyzeModels(sourceFiles, nodes, edges, exitPoints);
+      const services = await this.analyzeServices(sourceFiles, nodes, edges);
+      const views = await this.analyzeViews(sourceViews, nodes, edges);
 
       this.buildExpressRelationships(application, routers, middleware, controllers, models, services, nodes, edges);
       this.identifyDatabaseConnections(models, exitPoints);
@@ -219,17 +223,15 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeApplication(
-    files: string[],
-    projectPath: string,
+    files: LoadedSourceFile[],
     nodes: CASNode[]
   ): Promise<ExpressApplication | null> {
-    // Budget-yield per file: cached reads resolve in a microtask (no
-    // event-loop hop), so these scans blocked multi-second on a whale repo.
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const { relativePath, fullPath, content } = file;
 
       if (this.looksLikeMainExpressFile(content)) {
         const appVariable = this.extractAppVariable(content);
@@ -242,8 +244,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           const environment = this.extractEnvironment(content);
 
           const application: ExpressApplication = {
-            name: path.basename(file, path.extname(file)),
-            filePath: file,
+            name: path.basename(relativePath, path.extname(relativePath)),
+            filePath: relativePath,
             appVariable,
             port,
             middleware,
@@ -262,7 +264,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           const appNode = this.createNodeBuilder(appId, application.name, 'application')
             .withLevel(1, 'system')
             .withCategory('application', ['framework', 'express'])
-            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: relativePath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Express.js application: ${application.name}`)
             .withDocumentation(documentation)
             .withComments(comments)
@@ -291,33 +293,31 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeRouters(
-    files: string[],
-    projectPath: string,
+    files: LoadedSourceFile[],
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<ExpressRouter[]> {
     const routers: ExpressRouter[] = [];
 
-    // Budget-yield per file: cached reads resolve in a microtask (no
-    // event-loop hop), so these scans blocked multi-second on a whale repo.
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const { relativePath, fullPath, content } = file;
 
       if (this.isRouterFile(content)) {
         try {
-          const routerName = this.extractRouterName(content, file);
-          const prefix = this.extractRouterPrefix(content, file);
+          const routerName = this.extractRouterName(content, relativePath);
+          const prefix = this.extractRouterPrefix(content, relativePath);
           const routes = this.extractRoutes(content);
           const middleware = this.extractRouterMiddleware(content);
           const subRouters = this.extractSubRouters(content);
 
           const router: ExpressRouter = {
             name: routerName,
-            filePath: file,
+            filePath: relativePath,
             prefix,
             routes,
             middleware,
@@ -335,7 +335,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           const routerNode = this.createNodeBuilder(routerId, routerName, 'router')
             .withLevel(2, 'architectural')
             .withCategory('router', ['framework', 'express'])
-            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: relativePath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Express.js router: ${routerName}`)
             .withDocumentation(routerDocumentation)
             .withComments(routerComments)
@@ -360,7 +360,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullPath}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: router.filePath, line: 1, end_line: 1 })
               .withDescription(`Express.js HTTP endpoint: ${route.method.toUpperCase()} ${fullPath}`)
               .withMetadata({
                 framework: 'express',
@@ -383,11 +383,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
               'exposes'
             ));
 
-            // Auth/guard model from the route's + router's middleware chain
-            // (express has no decorators, so middleware names are the signal).
-            // Keep only real middleware identifiers — the route regex sometimes
-            // captures inline handler-signature fragments ("(_req: Request") as
-            // middleware; those are not guards.
+
+
+
+
+
             const allMiddleware = [...new Set([...(router.middleware || []), ...(route.middleware || [])])]
               .map(name => name.trim())
               .filter(name => /^[\w$.]+(\(.*\))?$/.test(name));
@@ -402,8 +402,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
                 method: route.method.toUpperCase(),
                 path: fullPath
               },
-              // The router file is where this route is defined and handled — the
-              // navigable "where do I edit this endpoint" pointer.
+
+
               handler: {
                 node_id: routeId,
                 method_name: route.handler,
@@ -425,7 +425,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
             });
           });
         } catch (error) {
-          console.warn(`Failed to parse Express router ${file}:`, error);
+          console.warn(`Failed to parse Express router ${relativePath}:`, error);
         }
       }
     }
@@ -434,23 +434,21 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeMiddleware(
-    files: string[],
-    projectPath: string,
+    files: LoadedSourceFile[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ExpressMiddleware[]> {
     const middleware: ExpressMiddleware[] = [];
 
-    // Budget-yield per file: cached reads resolve in a microtask (no
-    // event-loop hop), so these scans blocked multi-second on a whale repo.
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const { relativePath, fullPath, content } = file;
 
       if (this.isMiddlewareFile(content)) {
-        const extractedMiddleware = this.extractMiddleware(content, file);
+        const extractedMiddleware = this.extractMiddleware(content, relativePath);
         middleware.push(...extractedMiddleware);
 
         extractedMiddleware.forEach(mw => {
@@ -463,7 +461,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           const middlewareNode = this.createNodeBuilder(middlewareId, mw.name, 'middleware')
             .withLevel(3, 'code')
             .withCategory('middleware', ['framework', 'express'])
-            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: relativePath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Express.js middleware: ${mw.name}`)
             .withDocumentation(middlewareDocumentation)
             .withComments(middlewareComments)
@@ -489,23 +487,21 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeControllers(
-    files: string[],
-    projectPath: string,
+    files: LoadedSourceFile[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ExpressController[]> {
     const controllers: ExpressController[] = [];
 
-    // Budget-yield per file: cached reads resolve in a microtask (no
-    // event-loop hop), so these scans blocked multi-second on a whale repo.
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const { relativePath, fullPath, content } = file;
 
-      if (this.isControllerFile(content, file)) {
-        const extractedControllers = this.extractControllers(content, file);
+      if (this.isControllerFile(content, relativePath)) {
+        const extractedControllers = this.extractControllers(content, relativePath);
         controllers.push(...extractedControllers);
 
         extractedControllers.forEach(controller => {
@@ -518,7 +514,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           const controllerNode = this.createNodeBuilder(controllerId, controller.name, 'controller')
             .withLevel(2, 'architectural')
             .withCategory('controller', ['api', 'rest'])
-            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: relativePath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Express.js controller: ${controller.name}`)
             .withDocumentation(controllerDocumentation)
             .withComments(controllerComments)
@@ -540,7 +536,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
             const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
               .withLevel(4, 'member')
               .withCategory('method', ['function'])
-              .withSource({ file: file, line: 1, end_line: 1 })
+              .withSource({ file: relativePath, line: 1, end_line: 1 })
               .withDescription(`Controller method: ${method.name}`)
               .withParent(controllerId)
               .withMetadata({
@@ -568,24 +564,22 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeModels(
-    files: string[],
-    projectPath: string,
+    files: LoadedSourceFile[],
     nodes: CASNode[],
     edges: CASEdge[],
     exitPoints: any[]
   ): Promise<ExpressModel[]> {
     const models: ExpressModel[] = [];
 
-    // Budget-yield per file: cached reads resolve in a microtask (no
-    // event-loop hop), so these scans blocked multi-second on a whale repo.
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const { relativePath, fullPath, content } = file;
 
-      if (this.isModelFile(content, file)) {
-        const extractedModels = this.extractModels(content, file);
+      if (this.isModelFile(content, relativePath)) {
+        const extractedModels = this.extractModels(content, relativePath);
         models.push(...extractedModels);
 
         extractedModels.forEach(model => {
@@ -598,7 +592,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
             .withLevel(3, 'code')
             .withCategory('model', ['data', 'entity'])
-            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: relativePath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Express.js data model: ${model.name}`)
             .withDocumentation(modelDocumentation)
             .withComments(modelComments)
@@ -635,23 +629,21 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeServices(
-    files: string[],
-    projectPath: string,
+    files: LoadedSourceFile[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ExpressService[]> {
     const services: ExpressService[] = [];
 
-    // Budget-yield per file: cached reads resolve in a microtask (no
-    // event-loop hop), so these scans blocked multi-second on a whale repo.
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const { relativePath, fullPath, content } = file;
 
-      if (this.isServiceFile(content, file)) {
-        const extractedServices = this.extractServices(content, file);
+      if (this.isServiceFile(content, relativePath)) {
+        const extractedServices = this.extractServices(content, relativePath);
         services.push(...extractedServices);
 
         extractedServices.forEach(service => {
@@ -664,7 +656,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           const serviceNode = this.createNodeBuilder(serviceId, service.name, 'service')
             .withLevel(3, 'code')
             .withCategory('service', ['business-logic'])
-            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: relativePath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Express.js service: ${service.name}`)
             .withDocumentation(serviceDocumentation)
             .withComments(serviceComments)
@@ -689,30 +681,28 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeViews(
-    files: string[],
-    projectPath: string,
+    files: LoadedSourceFile[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ExpressView[]> {
     const views: ExpressView[] = [];
 
-    // Budget-yield per file: cached reads resolve in a microtask (no
-    // event-loop hop), so these scans blocked multi-second on a whale repo.
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const { relativePath, content } = file;
 
-      const viewName = path.basename(file, path.extname(file));
-      const engine = path.extname(file).substring(1);
+      const viewName = path.basename(relativePath, path.extname(relativePath));
+      const engine = path.extname(relativePath).substring(1);
       const layout = this.extractViewLayout(content, engine);
       const partials = this.extractViewPartials(content, engine);
       const variables = this.extractViewVariables(content, engine);
 
       const view: ExpressView = {
         name: viewName,
-        filePath: file,
+        filePath: relativePath,
         engine,
         layout,
         partials,
@@ -725,7 +715,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
       const viewNode = this.createNodeBuilder(viewId, viewName, 'view')
         .withLevel(4, 'member')
         .withCategory('view', ['ui', 'template'])
-        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: relativePath, line: 1, end_line: content.split('\n').length })
         .withDescription(`Express view template: ${viewName}`)
         .withMetadata({
           attributes: {
@@ -873,7 +863,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
     if (match) return match[1];
 
-    // Infer from file path
+
     const segments = filePath.split('/');
     if (segments.includes('routes') || segments.includes('routers')) {
       const routeIndex = segments.findIndex(s => s === 'routes' || s === 'routers');
@@ -887,11 +877,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
   private extractRoutes(content: string): ExpressRoute[] {
     const routes: ExpressRoute[] = [];
-    // Match the method + path, then parse the REMAINING args with a balanced
-    // scanner. A single regex cannot do this: middleware and handlers are
-    // arrow/inline functions that contain commas and parentheses, so a
-    // `[^,)]+` arg matcher captures fragments (it used to return the handler as
-    // "res" and silently drop guards like `requireAuth`).
+
+
+
+
+
     const head = /(?:router|app)\.(get|post|put|delete|patch|head|options)\s*\(\s*(['"`])([^'"`]+)\2\s*/g;
 
     let match;
@@ -899,9 +889,9 @@ export class ExpressAnalyzer extends BaseAnalyzer {
       const method = match[1];
       const path = this.normalizeTemplateLiteralRoutePath(match[3]);
       const args = this.parseRemainingCallArgs(content, head.lastIndex);
-      // Last arg is the route handler; everything before it is the middleware
-      // chain. Keep only real identifier guards (e.g. `requireAuth`,
-      // `auth.required`) — not inline `(req, res) => …` handlers.
+
+
+
       const middleware = args
         .slice(0, -1)
         .map(a => a.trim())
@@ -920,20 +910,20 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /**
-   * The path-matching group in `head` accepts backtick-delimited template
-   * literals too (`` router.get(`/oauth/${provider}/callback`, ...) ``), and
-   * `[^'"`]+` happily captures the raw `${provider}` interpolation along with
-   * everything else — so without this, the route's name/path leaked the
-   * literal, unresolved expression text (`GET /oauth/${provider}/callback`)
-   * into the entry point name instead of an honest route pattern. Render
-   * every `${expr}` segment as an Express-style `:expr` path param instead —
-   * the same shape a real parameterized route already uses, and the closest
-   * honest approximation of "this segment is a runtime value" without
-   * fabricating what the expression evaluates to. A bare/complex expression
-   * (e.g. `${a.b}` or `${a + b}`) is sanitized to a single identifier-safe
-   * token so the rendered pattern stays a valid-looking route path.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private normalizeTemplateLiteralRoutePath(path: string): string {
     if (!path.includes('${')) return path;
     return path.replace(/\$\{\s*([^}]*?)\s*\}/g, (_match, expr: string) => {
@@ -942,15 +932,15 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Parse the arguments of a `router.METHOD('path', …)` call starting just after
-   * the path string (i.e. inside the call, depth 1). Splits on top-level commas
-   * while respecting nested parens/brackets/braces and string literals, so arrow
-   * functions and object args stay intact. Returns the args AFTER the path.
-   */
+
+
+
+
+
+
   private parseRemainingCallArgs(content: string, pos: number): string[] {
     const args: string[] = [];
-    let depth = 1; // already inside the route call's '('
+    let depth = 1;
     let cur = '';
     let inStr: string | null = null;
     for (let i = pos; i < content.length; i++) {
@@ -974,12 +964,12 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     return args;
   }
 
-  /** A middleware reference is a bare identifier or member access (`requireAuth`,
-   *  `auth.required`, `passport.authenticate(...)`) — not an inline function. */
+
+
   private isMiddlewareIdentifier(arg: string): boolean {
     if (!arg || /=>/.test(arg)) return false;
     if (/^(async\s+)?function\b/.test(arg)) return false;
-    // identifier, member access, or a guard factory call: name(...) / a.b(...)
+
     return /^[A-Za-z_$][\w$.]*(\s*\([^)]*\))?$/.test(arg);
   }
 
@@ -1688,36 +1678,36 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // CAS v1.4.0 Documentation and Comment extraction methods
+
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
 
-    // Look for Express.js-specific documentation patterns
 
-    // 1. JSDoc comments for route handlers
+
+
     const jsdocMatches = content.matchAll(/\/\*\*([\s\S]*?)\*\//g);
     const jsdocDocs = [];
     for (const match of jsdocMatches) {
       jsdocDocs.push(match[1].trim());
     }
 
-    // 2. Route handler documentation comments
+
     const routeDocMatches = content.matchAll(/\/\/ @route\s+([^\n]+)/g);
     const routeDocs = [];
     for (const match of routeDocMatches) {
       routeDocs.push(match[1].trim());
     }
 
-    // 3. Express middleware documentation
+
     const middlewareDocMatches = content.matchAll(/\/\/ @middleware\s+([^\n]+)/g);
     const middlewareDocs = [];
     for (const match of middlewareDocMatches) {
       middlewareDocs.push(match[1].trim());
     }
 
-    // 4. API documentation comments
+
     const apiDocMatches = content.matchAll(/\/\/ @api\s+([^\n]+)/g);
     const apiDocs = [];
     for (const match of apiDocMatches) {
@@ -1762,7 +1752,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // Single-line comments
+
       if (trimmedLine.startsWith('//')) {
         const commentText = trimmedLine.substring(2).trim();
         if (commentText.length > 0) {
@@ -1788,7 +1778,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Multi-line comments
+
       if (trimmedLine.startsWith('/*') && !trimmedLine.startsWith('/**')) {
         let commentText = '';
         let j = i;
@@ -1827,7 +1817,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
           comments.push(comment);
         }
 
-        i = j - 1; // Skip processed lines
+        i = j - 1;
       }
     }
 
@@ -1844,11 +1834,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
         const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
         const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
 
-        // Extract assignee from patterns like "TODO(username):"
+
         const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
         const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
 
-        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+
         const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
         let priority: CASTodo['priority'] = 'medium';
         if (priorityMatch) {

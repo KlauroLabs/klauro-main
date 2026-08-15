@@ -111,23 +111,23 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  // Java's package-to-directory convention makes samples/examples/fixtures/testdata
-  // common REAL package segments (org.springframework.samples.<app>), not vendored
-  // scaffolding. Route Java's own glob calls through the shared, generic
-  // getPackageDirSafeIgnorePatterns() on BaseAnalyzer rather than the raw
-  // getIgnorePatterns() denylist. See that method's doc comment for the full
-  // rationale; this thin wrapper only exists to keep Java's `{ projectPath }`-only
-  // call sites (outside a full AnalysisContext) working.
+
+
+
+
+
+
+
   private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
     return this.getPackageDirSafeIgnorePatterns(context as AnalysisContext);
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    // Test files are included (not excluded) — they are tagged via
-    // applyTestFileBoundary rather than dropped from the graph entirely.
-    // Previously excluding `**/test/**` and `**/*Test.java` here meant Java
-    // test methods never became nodes at all, so the cross-language
-    // test-coverage graph walk had nothing to traverse from.
+
+
+
+
+
     const files = await glob(['**/*.java'], {
       cwd: projectPath,
       ignore: this.getJavaIgnorePatterns({ projectPath }),
@@ -183,8 +183,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
-      // Test files are included (not excluded) — see getRelevantFiles for
-      // why: they're tagged via applyTestFileBoundary, not dropped.
+
+
       const javaFiles = await glob(['**/*.java'], {
         cwd: context.projectPath,
         ignore: this.getJavaIgnorePatterns(context),
@@ -818,18 +818,18 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return classes;
   }
 
-  /**
-   * Java 16+ records (`record Point(int x, int y) {}`) are a distinct
-   * declaration from `class` and were previously invisible to this analyzer:
-   * extractClasses only matches the literal `class` keyword, so a
-   * record-only file (extremely common for Spring DTOs) produced zero
-   * extracted nodes even though it parses and compiles cleanly. That silent
-   * zero then tripped the "no code elements could be extracted" syntax
-   * heuristic even though the file was never broken. This treats a record's
-   * component list as its fields (the compiler-synthesized accessors) and
-   * reuses the same class pipeline (fields/methods/annotations) for any
-   * explicit body content such as compact constructors or extra methods.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private extractRecords(content: string, filePath: string): JavaClass[] {
     const records: JavaClass[] = [];
     const lines = content.split('\n');
@@ -877,13 +877,13 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return records;
   }
 
-  /**
-   * Depth-tracks a record's parenthesized component list starting at
-   * `lines[startIndex]`, across as many physical lines as needed (component
-   * lists are routinely wrapped by formatters, e.g. `@ConfigurationProperties`
-   * records). Returns the raw text between the record's own `(` and its
-   * matching `)` plus enough position info to keep scanning right after it.
-   */
+
+
+
+
+
+
+
   private collectRecordComponentString(
     lines: string[],
     startIndex: number,
@@ -921,7 +921,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Splits on commas that are not nested inside `()`, `<>`, or `[]`. */
+
   private splitTopLevelByComma(text: string): string[] {
     const parts: string[] = [];
     let depth = 0;
@@ -1034,11 +1034,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
           const returnType = this.extractReturnType(line);
           const parameters = this.extractParameters(line);
           const annotations = this.extractAnnotations(lines, i);
-          // Parse the declared `throws` clause. It may wrap across several lines
-          // (`void f()\n  throws IOException,\n  SQLException {`), so join the
-          // signature from this line up to the body brace `{` or the abstract/
-          // interface terminator `;` before extracting. Stopping at `{`/`;`
-          // ensures we never capture a trailing brace or body content.
+
+
+
+
+
           const signatureText = this.joinSignatureLines(lines, i);
           const throwsMatch = signatureText.match(/throws\s+([^{;]+)/);
           const throwsExceptions = throwsMatch
@@ -1067,19 +1067,19 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return methods;
   }
 
-  /**
-   * Scan a method body for `throw new FooException(...)` statements and return the
-   * exception TYPE names (deduped, in first-seen order). Evidence-gated: bare
-   * re-throws (`throw e;`) yield no recoverable type and are skipped, matching the
-   * TS/JS extractor's contract. `bodyStart`/`bodyEnd` are 1-based inclusive line
-   * numbers (method.lineStart/lineEnd).
-   */
+
+
+
+
+
+
+
   private extractThrownTypes(lines: string[], bodyStart: number, bodyEnd: number): string[] {
     const types = new Set<string>();
     const from = Math.max(0, bodyStart - 1);
     const to = Math.min(lines.length - 1, bodyEnd - 1);
-    // `throw new com.foo.BarException(` or `throw new BarException(` -> capture the
-    // simple (trailing) type name only. Requires `new` so we never lift bare rethrows.
+
+
     const throwNew = /\bthrow\s+new\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*[(<]/g;
     for (let i = from; i <= to; i++) {
       const line = lines[i];
@@ -1094,15 +1094,15 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return Array.from(types);
   }
 
-  /**
-   * Merge the evidence sources for `signature.throws` into a deduped `string[]` of
-   * exception TYPE names, mirroring the TS/JS analyzer's `buildSignatureThrows`:
-   *   1. The declared `throws` clause (`throwsExceptions`).
-   *   2. Javadoc `@throws`/`@exception` tags (via `documentation.throws[].type`).
-   *   3. Actual `throw new Foo(...)` statements found in the method body.
-   * Returns undefined when nothing is recoverable so `signature.throws` stays absent
-   * rather than an empty array (evidence-gated contract).
-   */
+
+
+
+
+
+
+
+
+
   private buildSignatureThrows(
     declared: string[] | undefined,
     documentation: CASDocumentation | undefined,
@@ -1110,7 +1110,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   ): string[] | undefined {
     const types = new Set<string>();
     for (const t of declared || []) {
-      // A declared clause entry may be a generic like `List<E>`; keep the simple tail.
+
       const trimmed = t?.trim();
       if (trimmed) types.add(trimmed);
     }
@@ -1158,15 +1158,15 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private isMethodDeclaration(line: string): boolean {
     const trimmed = line.trim();
 
-    // A statement line is never a method declaration. `throw new Foo(...)`,
-    // `return foo(...)`, and control-flow headers all carry a `(` + `)` and can
-    // otherwise satisfy the `type name(` shape (`new SomeException(`), so reject
-    // any line that opens with a statement/control keyword up front.
+
+
+
+
     if (/^(?:throw|return|if|else|for|while|switch|do|try|catch|finally|synchronized|assert|new|super|this)\b/.test(trimmed)) {
       return false;
     }
 
-    // Must contain a call-shaped `name(...)` on this line (the method name + params).
+
     if (!trimmed.includes('(') || !trimmed.includes(')')) {
       return false;
     }
@@ -1174,17 +1174,17 @@ export class JavaAnalyzer extends BaseAnalyzer {
       return false;
     }
 
-    // Guard against embedded control-flow keywords appearing as whole words
-    // (e.g. `} else if (`), while still allowing identifiers that merely contain
-    // those substrings (e.g. `formatId`, `whileLoopCount`).
+
+
+
     if (/\b(?:if|while|for|switch|catch)\s*\(/.test(trimmed)) {
       return false;
     }
 
-    // A method decl needs a modifier/return-type token in front of `name(`:
-    // `<modifiers/return type> name(`. Constructors have `Name(` preceded by a
-    // modifier; require either an explicit modifier keyword or a `type name(`
-    // (two identifiers) shape so a bare `foo()` call statement is not a decl.
+
+
+
+
     const hasModifier = /\b(?:public|private|protected|static|final|abstract|synchronized|native|default)\b/.test(trimmed);
     const hasVoid = /\bvoid\s+\w+\s*\(/.test(trimmed);
     const hasTypeName = /\b[A-Za-z_$][\w$]*(?:\s*<[^;{()]*>)?(?:\s*\[\s*\])*\s+[A-Za-z_$][\w$]*\s*\(/.test(trimmed);
@@ -1192,21 +1192,21 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return hasModifier || hasVoid || hasTypeName;
   }
 
-  /**
-   * Join a method-signature that may span multiple physical lines into one
-   * string, starting at `startIndex` and stopping once we reach the body opener
-   * `{` or the abstract/interface terminator `;` (inclusive of that char's line
-   * up to the terminator). This lets the caller parse a `throws` clause wrapped
-   * across continuation lines, e.g.:
-   *   void f()
-   *       throws IOException,
-   *       SQLException {
-   * Bounded to a small look-ahead window so a malformed signature can't scan the
-   * whole file.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private joinSignatureLines(lines: string[], startIndex: number, maxLookahead = 8): string {
     let joined = lines[startIndex];
-    // If the first line already terminates the signature, no continuation needed.
+
     if (/[{;]/.test(joined)) {
       const cut = joined.search(/[{;]/);
       return joined.slice(0, cut + 1);
@@ -2062,18 +2062,18 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return match ? match[1].trim() : null;
   }
 
-  /** Map a Java method's local variable names to their bare class types, from
-   *  the method's parameters (`Type name`) and local declarations
-   *  (`Type x = ...`, `var x = new Type(...)`). Used to resolve a method-call
-   *  receiver to the right class so same-name methods on different classes don't
-   *  collide. Java types precede the name (unlike Go). */
+
+
+
+
+
   private buildJavaReceiverTypeMap(content: string, startLine?: number, endLine?: number): Map<string, string> {
     const map = new Map<string, string>();
     if (!content || !startLine) return map;
     const lines = content.split('\n');
     const text = lines.slice(startLine - 1, (endLine && endLine >= startLine) ? endLine : startLine).join('\n');
     const bare = (t: string) => t.replace(/<.*$/, '').replace(/\[\]/g, '').replace(/\.\.\.$/, '').trim().split('.').pop() || t;
-    // Parameters: the `( ... )` of the method signature (before the body).
+
     const header = text.split('{')[0];
     const pm = header.match(/\(([^)]*)\)/);
     if (pm && pm[1].trim()) {
@@ -2086,7 +2086,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
         }
       }
     }
-    // Local declarations: `Type name = ...` / `Type name;` and `var x = new Type(`.
+
     for (const m of text.matchAll(/\b([A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?(?:\[\])?\s+([a-z_]\w*)\s*[=;]/g)) map.set(m[2], bare(m[1]));
     for (const m of text.matchAll(/\bvar\s+(\w+)\s*=\s*new\s+([A-Z][A-Za-z0-9_]*)/g)) map.set(m[1], bare(m[2]));
     return map;
@@ -2108,8 +2108,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
       const content = await fs.readFile(fullPath, 'utf-8');
       const lines = content.split('\n');
       const packageName = this.extractPackage(content) || 'default';
-      // Receiver var -> declared type, per caller method (cached), so `l.save()`
-      // (l: Logger) resolves to Logger.save, not whichever `save` is first.
+
+
       const varTypeCache = new Map<string, Map<string, string>>();
 
       for (let i = 0; i < lines.length; i++) {
@@ -2165,10 +2165,10 @@ export class JavaAnalyzer extends BaseAnalyzer {
                 );
               }
             } else {
-              // Type-aware: resolve the receiver var to its declared type, then
-              // find `methodName` on THAT class (excludes same-name methods on
-              // other classes). Falls back to the class named by the receiver
-              // (e.g. a static `ClassName.method()` call).
+
+
+
+
               let varTypes = varTypeCache.get(callerMethod.id);
               if (!varTypes) {
                 varTypes = this.buildJavaReceiverTypeMap(content, callerMethod.source?.line, callerMethod.source?.end_line);
@@ -2182,9 +2182,9 @@ export class JavaAnalyzer extends BaseAnalyzer {
                   edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
                 );
               }
-              // Unambiguous fallback: exactly ONE method has this name -> use it
-              // (preserves recall where the receiver type can't be resolved;
-              // never guesses when ambiguous, so the decoy stays excluded).
+
+
+
               if (!targetMethod) {
                 const named = methodNodes.filter(n => n.name === methodName);
                 if (named.length === 1) targetMethod = named[0];
@@ -2359,19 +2359,19 @@ export class JavaAnalyzer extends BaseAnalyzer {
     ];
   }
 
-  /**
-   * Tags every node in a Java test file with `metadata.is_test`, `category:
-   * 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
-   * applyTestSourceBoundary and the Go analyzer's applyTestFileBoundary.
-   * Java/JVM's own conventions (JUnit/TestNG, universal — never a
-   * keyword/brand check): files named `*Test.java` or `*Tests.java`, or any
-   * file under a Maven/Gradle src/test/java source root. This method ALSO
-   * exists because Java test files used to be excluded from the glob
-   * entirely (getRelevantFiles / analyze()'s old ignore patterns for the
-   * test directory and *Test.java) — worse than TS/Dart/Go's original gap,
-   * since Java test methods never became nodes at all, not just untagged
-   * ones. Both exclusions were removed; this tagging is what replaces them.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;

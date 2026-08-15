@@ -24,14 +24,14 @@ interface TRPCRouter {
   procedures: TRPCProcedure[];
 }
 
-/**
- * tRPC API-contract analyzer.
- *
- * tRPC routers + procedures ARE the API contract surface: each procedure key is
- * a callable endpoint, its `.input(z....)` schema is the input contract, and the
- * exported `AppRouter` type is what consumer repos import to type their client.
- * That makes this a cross-repo contract analyzer, not just a library detector.
- */
+
+
+
+
+
+
+
+
 export class TRPCAnalyzer extends BaseAnalyzer {
   constructor() {
     super('trpc', 'tRPC API Contract Analyzer', '1.0.0', 'library');
@@ -143,8 +143,8 @@ export class TRPCAnalyzer extends BaseAnalyzer {
       routers = this.parseRouters(content, context.relativePath);
     }
 
-    // Single-file scope: router-merge `composes` edges to routers declared in
-    // other files under-populate here and re-derive on full analysis.
+
+
     this.emitRouterGraph(routers, nodes, edges, entryPoints);
 
     const exports = routers.map(r => r.name);
@@ -199,7 +199,7 @@ export class TRPCAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      // Merged/nested routers -> contract composition edges.
+
       for (const child of router.childRouters) {
         const childRef = routerIndex.get(child);
         const childId = `trpc_router_${this.sanitizeId(child)}`;
@@ -248,7 +248,7 @@ export class TRPCAnalyzer extends BaseAnalyzer {
           'api'
         ));
 
-        // Each procedure is an API contract endpoint + entry point.
+
         entryPoints.push(this.createEntryPoint(
           `entry_${procId}`,
           procId,
@@ -272,7 +272,7 @@ export class TRPCAnalyzer extends BaseAnalyzer {
           { node_id: procId, method_name: proc.name, file: proc.filePath }
         ));
 
-        // Carry the input contract on the entry point.
+
         if (proc.inputSchema) {
           const ep = entryPoints[entryPoints.length - 1];
           ep.input = { type: 'zod', schema: proc.inputSchema, validation: ['zod'] };
@@ -281,11 +281,11 @@ export class TRPCAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `name = createTRPCRouter({...})`, `name = t.router({...})`,
-   * `name = router({...})` blocks. Body is brace-matched so nested objects
-   * (e.g. zod schemas) don't truncate the router.
-   */
+
+
+
+
+
   private parseRouters(content: string, filePath: string): TRPCRouter[] {
     const routers: TRPCRouter[] = [];
     const declRegex = /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(createTRPCRouter|t\.router|router)\s*\(\s*\{/g;
@@ -293,7 +293,7 @@ export class TRPCAnalyzer extends BaseAnalyzer {
     let match: RegExpExecArray | null;
     while ((match = declRegex.exec(content)) !== null) {
       const routerName = match[1];
-      const bodyStart = match.index + match[0].length - 1; // points at '{'
+      const bodyStart = match.index + match[0].length - 1;
       const body = this.extractBraceBlock(content, bodyStart);
       if (body === null) continue;
 
@@ -309,14 +309,14 @@ export class TRPCAnalyzer extends BaseAnalyzer {
     return routers;
   }
 
-  /** Sub-router references: `users: userRouter,` (identifier value, not a procedure chain). */
+
   private extractChildRouters(body: string): string[] {
     const children: string[] = [];
     const childRegex = /(\w+)\s*:\s*(\w+)\s*(?:,|\n|$)/g;
     let m: RegExpExecArray | null;
     while ((m = childRegex.exec(body)) !== null) {
       const value = m[2];
-      // Heuristic: identifier values that look like routers; exclude obvious procedure starters.
+
       if (/router/i.test(value) || /Router$/.test(value)) {
         children.push(value);
       }
@@ -326,14 +326,14 @@ export class TRPCAnalyzer extends BaseAnalyzer {
 
   private extractProcedures(body: string, routerName: string, filePath: string): TRPCProcedure[] {
     const procedures: TRPCProcedure[] = [];
-    // key: <base>...(.input(...))?.(query|mutation|subscription)(
+
     const procRegex = /(\w+)\s*:\s*(publicProcedure|protectedProcedure|t\.procedure|\w*[pP]rocedure)\b/g;
 
     let m: RegExpExecArray | null;
     while ((m = procRegex.exec(body)) !== null) {
       const name = m[1];
       const procedureBase = m[2];
-      // Slice the chain following this procedure base up to the next top-level key.
+
       const chain = this.sliceProcedureChain(body, m.index + m[0].length);
       const kindMatch = chain.match(/\.(query|mutation|subscription)\s*\(/);
       if (!kindMatch) continue;
@@ -350,7 +350,7 @@ export class TRPCAnalyzer extends BaseAnalyzer {
     return procedures;
   }
 
-  /** Capture the `.input(...)` argument (typically a zod expression) for the contract. */
+
   private extractInputSchema(chain: string): string | undefined {
     const idx = chain.search(/\.input\s*\(/);
     if (idx === -1) return undefined;
@@ -360,9 +360,9 @@ export class TRPCAnalyzer extends BaseAnalyzer {
     return arg.trim().replace(/\s+/g, ' ').slice(0, 400);
   }
 
-  /** Grab text from a procedure base until the chain's terminating call closes. */
+
   private sliceProcedureChain(body: string, from: number): string {
-    // Read until we hit a top-level comma/closing that ends this property value.
+
     let depth = 0;
     let i = from;
     for (; i < body.length; i++) {

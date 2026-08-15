@@ -8,34 +8,34 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Jetpack Compose framework analyzer (Kotlin UI).
- *
- * Emits the Compose UI component tree as `renders` edges: `Parent renders Child`
- * between two `@Composable fun` declarations, where the parent's body contains a
- * call to the child composable. Each composable becomes one `component` node with
- * a `prop_count` (declared parameter count).
- *
- * A structural graph sees a `@Composable fun` as an ordinary function and a
- * `UserCard(user)` call as, at best, a same-file call edge. It cannot say
- * "App RENDERS UserList" nor that a composable takes N props. This analyzer
- * models exactly that UI fact, mirroring the JS component-tree analyzers
- * (react/vue/svelte/…) but for Kotlin/Compose.
- *
- * Grounded on the real vendored tree-sitter-kotlin AST:
- *   function_declaration
- *     modifiers → annotation → user_type → type_identifier "Composable"
- *     simple_identifier <fn name>
- *     function_value_parameters → parameter*        (prop_count)
- *     function_body → statements → call_expression
- *                                    child(0) simple_identifier <callee>
- *
- * A call is a `renders` edge ONLY when its callee resolves to another declared
- * `@Composable` function across the analyzed sources (two-pass). Built-in-looking
- * Capitalized calls (`Text`, `Row`, `Column`) and control flow (`for`) are NOT
- * calls to declared composables, so they never produce a render edge — precision
- * is preserved.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const KOTLIN_GLOBS = ['**/*.kt'];
 
@@ -43,11 +43,11 @@ interface ComposableFn {
   name: string;
   relativePath: string;
   fullPath: string;
-  lineStart: number;   // 1-based
-  lineEnd: number;     // 1-based
+  lineStart: number;
+  lineEnd: number;
   propCount: number;
   nodeId: string;
-  /** Callee names invoked in this composable's body (raw, unresolved). */
+
   calls: Array<{ callee: string; line: number }>;
 }
 
@@ -74,8 +74,8 @@ export class ComposeAnalyzer extends BaseAnalyzer {
   }
 
   supportsIncrementalAnalysis(): boolean {
-    // Renders edges are cross-file (a parent may render a child declared in
-    // another file), so a single-file pass cannot resolve the tree reliably.
+
+
     return false;
   }
 
@@ -89,9 +89,9 @@ export class ComposeAnalyzer extends BaseAnalyzer {
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
-    // Compose trees are cross-file; a single-file result can only emit the
-    // component nodes it declares (no renders edges resolved here). Kept for
-    // interface compatibility.
+
+
+
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
@@ -134,7 +134,7 @@ export class ComposeAnalyzer extends BaseAnalyzer {
       kotlinFiles.sort();
       kotlinFiles = this.capAndPrioritizeSourceFiles(kotlinFiles, 'kotlin compose files');
 
-      // Pass 1: collect every declared @Composable function across all files.
+
       const composables: ComposableFn[] = [];
       for (const relativePath of kotlinFiles) {
         const fullPath = path.join(context.projectPath, relativePath);
@@ -148,26 +148,26 @@ export class ComposeAnalyzer extends BaseAnalyzer {
         composables.push(...(await this.parseComposables(relativePath, fullPath, content)));
       }
 
-      // Build the resolution table: composable name → node id.
-      // (Compose functions are UpperCamelCase and unique by convention; on a
-      //  name collision the first declaration wins for resolution.)
+
+
+
       const nameToId = new Map<string, string>();
       for (const fn of composables) {
         if (!nameToId.has(fn.name)) nameToId.set(fn.name, fn.nodeId);
       }
 
-      // Emit one component node per composable.
+
       for (const fn of composables) {
         nodes.push(this.buildComponentNode(fn));
       }
 
-      // Pass 2: resolve calls → renders edges (only to declared composables).
+
       const edgeIds = new Set<string>();
       for (const fn of composables) {
         for (const call of fn.calls) {
           const childId = nameToId.get(call.callee);
-          if (!childId) continue;               // not a declared composable → skip (Text/Row/for)
-          if (childId === fn.nodeId) continue;   // ignore self-recursion
+          if (!childId) continue;
+          if (childId === fn.nodeId) continue;
           const edgeId = `compose_renders_${fn.nodeId}_to_${childId}_${call.line}`;
           if (edgeIds.has(edgeId)) continue;
           edgeIds.add(edgeId);
@@ -184,14 +184,14 @@ export class ComposeAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Entry points: a composable is a user-reachable screen — not merely an
-      // internal building block — when nothing else in the analyzed sources
-      // renders it. That is graph topology, not a name/keyword guess: the
-      // root(s) of the renders forest are exactly the destinations a user can
-      // land on (MainActivity's setContent { Root() }, a NavHost start
-      // destination, or any other composable no sibling calls). Without this,
-      // a pure-Compose UI has zero outward-face evidence for downstream
-      // capability generation to start from.
+
+
+
+
+
+
+
+
       const rendered = new Set<string>();
       for (const fn of composables) {
         for (const call of fn.calls) {
@@ -233,14 +233,14 @@ export class ComposeAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing (tree-sitter-kotlin AST)
-  // ---------------------------------------------------------------------------
 
-  /**
-   * Walk the Kotlin AST for a file and extract every `@Composable fun` with its
-   * declared parameter count and the callee names invoked in its body.
-   */
+
+
+
+
+
+
+
   private async parseComposables(
     relativePath: string,
     fullPath: string,
@@ -279,11 +279,15 @@ export class ComposeAnalyzer extends BaseAnalyzer {
       }
       for (let i = 0; i < n.childCount; i++) walk(n.child(i));
     };
-    walk(tree.rootNode);
-    return out;
+    try {
+      walk(tree.rootNode);
+      return out;
+    } finally {
+      tree.delete?.();
+    }
   }
 
-  /** function_declaration has a @Composable annotation in its `modifiers`. */
+
   private isComposable(fnNode: any): boolean {
     for (let i = 0; i < fnNode.childCount; i++) {
       const child = fnNode.child(i);
@@ -291,8 +295,8 @@ export class ComposeAnalyzer extends BaseAnalyzer {
       for (let j = 0; j < child.childCount; j++) {
         const ann = child.child(j);
         if (ann.type !== 'annotation') continue;
-        // annotation → user_type → type_identifier "Composable"
-        // (walk descendants to tolerate annotation-use-site targets / nesting)
+
+
         let found = false;
         const scan = (n: any): void => {
           if (found) return;
@@ -306,7 +310,7 @@ export class ComposeAnalyzer extends BaseAnalyzer {
     return false;
   }
 
-  /** The function name: the `simple_identifier` direct child of function_declaration. */
+
   private functionName(fnNode: any): string | undefined {
     for (let i = 0; i < fnNode.childCount; i++) {
       const child = fnNode.child(i);
@@ -315,7 +319,7 @@ export class ComposeAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Count of declared parameters (function_value_parameters → parameter*). */
+
   private parameterCount(fnNode: any): number {
     for (let i = 0; i < fnNode.childCount; i++) {
       const child = fnNode.child(i);
@@ -329,12 +333,12 @@ export class ComposeAnalyzer extends BaseAnalyzer {
     return 0;
   }
 
-  /**
-   * All callee names invoked in the function body. The callee is child(0) of a
-   * call_expression: a `simple_identifier` for `Child(...)`. Navigation calls
-   * (`obj.method()`) are intentionally ignored — a rendered child composable is
-   * invoked by bare name, not through a receiver.
-   */
+
+
+
+
+
+
   private bodyCalls(fnNode: any): Array<{ callee: string; line: number }> {
     const calls: Array<{ callee: string; line: number }> = [];
     let body: any;
@@ -344,9 +348,9 @@ export class ComposeAnalyzer extends BaseAnalyzer {
     if (!body) return calls;
 
     const walk = (n: any): void => {
-      // Do not descend into a nested composable-lambda's own function_declaration;
-      // grammar keeps nested lambdas as lambda_literal, not function_declaration,
-      // so this is a defensive guard only.
+
+
+
       if (n.type === 'call_expression') {
         const head = n.child(0);
         if (head && head.type === 'simple_identifier') {
@@ -359,9 +363,9 @@ export class ComposeAnalyzer extends BaseAnalyzer {
     return calls;
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private buildComponentNode(fn: ComposableFn): CASNode {
     return this.createNodeBuilder(fn.nodeId, fn.name, 'component')
@@ -381,9 +385,9 @@ export class ComposeAnalyzer extends BaseAnalyzer {
       .build();
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   private componentId(relativePath: string, name: string, line: number): string {
     return `compose_component_${this.sanitizeId(relativePath)}_${this.sanitizeId(name)}_${line}`;

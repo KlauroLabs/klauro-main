@@ -41,15 +41,15 @@ interface RouteTarget {
   path?: string;
   handler?: string;
   line: number;
-  /**
-   * True when `path` is a file-anchored fallback (e.g. the source file itself for a
-   * Python `@api_view`, or `file#action` for a Rails action) rather than a resolved
-   * URL. The owning framework analyzer (Django/Rails) resolves the real URL→auth
-   * mapping via its urls.py / routes graph, so the auth analyzer must NOT synthesize a
-   * standalone route into the route table from this fallback — that would duplicate the
-   * protected route under a bogus file path. The auth mechanism node/edge is still
-   * emitted so the guard evidence is recorded.
-   */
+
+
+
+
+
+
+
+
+
   pathIsFile?: boolean;
 }
 
@@ -57,10 +57,10 @@ const AUTH_RULES: AuthRule[] = [
   rule('passport', 'Passport strategy', 'auth_strategy', ['npm'], ['passport', '@nestjs/passport', '@nestjs/jwt', 'passport-jwt'], [/^passport$/, /^passport-/, /^@nestjs\/(?:passport|jwt)$/], [
     /\bpassport\.use\s*\(/,
     /\bpassport\.authenticate\s*\(/,
-    // NestJS passport idioms — corpus-depth sweep: benchmarked NestJS APIs
-    // use @UseGuards(AuthGuard(...)) + PassportStrategy subclasses,
-    // never bare passport.use/authenticate; auth ran with ZERO nodes on them.
-    // Import-gated on passport/@nestjs/passport/@nestjs/jwt.
+
+
+
+
     /@UseGuards\s*\(\s*(?:new\s+)?[A-Za-z]*AuthGuard/,
     /\bextends\s+PassportStrategy\s*\(/,
   ]),
@@ -70,17 +70,17 @@ const AUTH_RULES: AuthRule[] = [
   ]),
   rule('auth0', 'Auth0 guard', 'auth_strategy', ['npm'], ['@auth0/nextjs-auth0', '@auth0/auth0-react', 'express-oauth2-jwt-bearer', 'auth0'], [/^@auth0\//, /^express-oauth2-jwt-bearer$/], [
     /\b(withApiAuthRequired|withPageAuthRequired|requiresAuth|auth|claimCheck|jwtCheck)\s*\(/,
-    // React SPA idioms (@auth0/auth0-react) — corpus-depth sweep: 4 real repos
-    // shipped auth0-react and produced ZERO auth nodes because only the
-    // server-SDK call shapes were recognized. Import-gated (/^@auth0\//), so
-    // these names can't fire in unrelated code.
+
+
+
+
     /\buseAuth0\s*\(/,
     /<Auth0Provider\b/,
     /\bwithAuthenticationRequired\s*\(/,
   ]),
   rule('clerk', 'Clerk guard', 'auth_strategy', ['npm'], ['@clerk/nextjs', '@clerk/clerk-sdk-node', '@clerk/express', '@clerk/clerk-react'], [/^@clerk\//], [
     /\b(auth|currentUser|clerkClient|requireAuth|clerkMiddleware)\s*\(/,
-    // React SPA idioms (@clerk/clerk-react) — same corpus-depth gap as auth0.
+
     /<(ClerkProvider|SignedIn|SignedOut|RedirectToSignIn)\b/,
     /\buse(Auth|User|Session|Clerk)\s*\(/,
   ]),
@@ -247,9 +247,9 @@ export class AuthAnalyzer extends BaseAnalyzer {
     const libraries: CASLibrary[] = [];
     const sites: AuthSite[] = [];
 
-    // Budget-yield per file: with the shared file-read cache warm the await
-    // resolves in a microtask (no event-loop hop), so this scan ran as one
-    // multi-second synchronous block on a whale repo. Results unchanged.
+
+
+
     const maybeYield = createYieldBudget();
     for (const file of files) {
       await maybeYield();
@@ -281,12 +281,12 @@ export class AuthAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      // Only synthesize a standalone protected route when the auth site carries a
-      // RESOLVED URL path. When `pathIsFile` is set (Python @api_view / Rails action),
-      // the path is a file-anchored fallback and the owning framework analyzer
-      // (Django/Rails) already emits the real route with its auth guard — synthesizing
-      // here would duplicate the protected route under a bogus file path and pollute the
-      // route table. The auth mechanism node/edge above still records the guard evidence.
+
+
+
+
+
+
       if (site.route && !site.route.pathIsFile) {
         const routeId = `auth_route_${this.sanitizeId(site.file)}_${site.route.line}`;
         if (!nodes.some(node => node.id === routeId)) {
@@ -434,8 +434,8 @@ export class AuthAnalyzer extends BaseAnalyzer {
       if (apiView) {
         const method = apiView[1].match(/['"]([A-Z]+)['"]/)?.[1] || 'GET';
         const handler = this.nextFunctionName(lines, i);
-        // path falls back to the source file: the Django analyzer resolves the real
-        // URL (urls.py) and owns the route+auth mapping. Flag so we don't emit a phantom.
+
+
         for (let j = i; j <= i + 4 && j < lines.length; j++) contexts.set(j + 1, { method, path: file, handler, line: i + 1, pathIsFile: true });
       }
 
@@ -446,8 +446,8 @@ export class AuthAnalyzer extends BaseAnalyzer {
 
       const railsAction = line.match(/^\s*def\s+([a-zA-Z_]\w*)/);
       if (railsAction) {
-        // path is a file-anchored pseudo-route (`file#action`); the Rails analyzer owns
-        // the resolved routes.rb URL→auth mapping. Flag so we don't emit a phantom route.
+
+
         for (let j = i; j <= i + 12 && j < lines.length; j++) contexts.set(j + 1, { path: `${file}#${railsAction[1]}`, handler: railsAction[1], line: i + 1, pathIsFile: true });
       }
     }

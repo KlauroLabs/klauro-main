@@ -7,6 +7,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { detectSyntaxDegradation } from '../core/syntax-degradation';
+import { buildRubySnapshotAnalysis } from './ruby-snapshot-analysis';
 
 interface RubyMethodCall {
   name: string;
@@ -15,7 +16,7 @@ interface RubyMethodCall {
   line: number;
 }
 
-interface RubyMethod {
+export interface RubyMethod {
   name: string;
   visibility: 'public' | 'private' | 'protected';
   isSingleton: boolean;
@@ -58,7 +59,7 @@ interface RubyConstant {
   lineNumber: number;
 }
 
-interface RubyClass {
+export interface RubyClass {
   name: string;
   qualifiedName: string;
   superclass?: string;
@@ -73,7 +74,7 @@ interface RubyClass {
   stateMachines: RubyStateMachine[];
 }
 
-interface RubyModule {
+export interface RubyModule {
   name: string;
   qualifiedName: string;
   filePath: string;
@@ -90,7 +91,7 @@ interface RubyRequire {
   lineNumber: number;
 }
 
-interface RubyFileAnalysis {
+export interface RubyFileAnalysis {
   classes: RubyClass[];
   modules: RubyModule[];
   topLevelMethods: RubyMethod[];
@@ -133,7 +134,7 @@ const MACHINE_TRANSITION_PATTERN = /^transitions?\b[\s(]/;
 const TRANSITION_HOOK_PATTERN = /^(?:before|after|around)_transition\b/;
 const STATES_REF_PATTERN = /\bstates\[:(\w+)\]/g;
 const IVAR_ASSIGNMENT_PATTERN = /@(\w+)\s*(?:\|\|)?=\s*(?:::)?([A-Z]\w*(?:::[A-Z]\w*)*)/;
-// `a = Account.new` / `a = Account.build` — a local var bound to a class instance.
+
 const LOCAL_VAR_ASSIGNMENT_PATTERN = /(?:^|[^\w.@$])([a-z_]\w*)\s*=\s*(?:::)?([A-Z]\w*(?:::[A-Z]\w*)*)\.(?:new|build|create|instance)\b/;
 const RECEIVER_CALL_PATTERN = /(?:^|[^\w.:@])(@?[A-Za-z_]\w*(?:::\w+)*)\.([a-z_]\w*[?!]?)/g;
 const PAREN_CALL_PATTERN = /(?:^|[^\w.:@!$])([a-z_]\w*[?!]?)\(/g;
@@ -244,10 +245,17 @@ export class RubyAnalyzer extends BaseAnalyzer {
     const content = await fs.readFile(context.filePath, 'utf-8');
     const stat = await fs.stat(context.filePath);
     const analysis = this.parseRubySource(content, context.relativePath);
+    const existingNodes = (context.existingAnalysis || []).flatMap(contribution => contribution.nodes || []);
+    const snapshotAnalysis = buildRubySnapshotAnalysis(existingNodes, context.relativePath);
 
     this.emitFileNodes(analysis, context.relativePath, nodes, edges);
-    this.buildInheritanceEdges([analysis], nodes, edges);
-    this.buildCallEdges([analysis], edges);
+    const currentNodeIds = new Set(nodes.map(node => node.id));
+    const resolutionNodes = [
+      ...existingNodes.filter(node => !currentNodeIds.has(node.id) && node.source?.file !== context.relativePath),
+      ...nodes,
+    ];
+    this.buildInheritanceEdges([analysis], resolutionNodes, edges);
+    this.buildCallEdges([analysis, snapshotAnalysis], edges);
     this.applyTestFileBoundary(nodes);
 
     const imports = analysis.requires.map(item => item.target);
@@ -789,7 +797,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
       } else if (/^[A-Z]/.test(receiver)) {
         method.calls.push({ name, receiver, receiverKind: 'constant', line });
       } else if (/^[a-z_]\w*$/.test(receiver)) {
-        // Local-variable receiver (`a.save`) — resolved to its class in buildCallEdges.
+
         method.calls.push({ name, receiver, receiverKind: 'local', line });
       }
     }
@@ -1300,17 +1308,6 @@ export class RubyAnalyzer extends BaseAnalyzer {
     return [...gems];
   }
 
-  /**
-   * Tags every node in a Ruby test file with `metadata.is_test`, `category:
-   * 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
-   * applyTestSourceBoundary and the Go analyzer's applyTestFileBoundary.
-   * Ruby's own conventions (Minitest and RSpec, both universal — never a
-   * keyword/brand check): files under a `test/` directory ending in
-   * `_test.rb` (Minitest), and files under a `spec/` directory ending in
-   * `_spec.rb` (RSpec). Without this, Ruby test methods carried no
-   * test-owned marker, so the cross-language test-coverage graph walk could
-   * never start a traversal from this analyzer's own method nodes.
-   */
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;

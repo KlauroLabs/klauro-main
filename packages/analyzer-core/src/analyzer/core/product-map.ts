@@ -168,8 +168,8 @@ function capabilityRiskLevel(
 function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   const journeys = cas.user_journeys || [];
   const primaryNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyPrimaryEntityNames(journey)]));
-  const entityNameById = new Map((cas.data_entities || []).map(entity => [entity.id, entity.name]));
-  const capabilityOrder = new Map((cas.system_capabilities || []).map((capability, index) => [capability.name, index]));
+  const entityNameById = new Map((cas.entities || []).map(entity => [entity.id, entity.name]));
+  const capabilityOrder = new Map((cas.capabilities || []).map((capability, index) => [capability.name, index]));
   const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
   const testedStems = testedFileStems(cas.test_suites);
   const entryPointFileById = new Map<string, string>();
@@ -181,7 +181,7 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
     if (entryPoint.id && sourceFile) entryPointFileById.set(entryPoint.id, sourceFile);
   }
 
-  const capabilities = (cas.system_capabilities || []).map(capability => {
+  const capabilities = (cas.capabilities || []).map(capability => {
     const entityNames = (capability.related_entities || []).map(reference => entityNameById.get(reference) || reference);
     const linked = linkJourneysToCapability(capability, entityNames, journeys, primaryNamesByJourney);
     const linkedSorted = [...linked].sort(
@@ -272,7 +272,7 @@ function buildData(cas: CASOutput): CASProductMap['data'] {
     }));
 
   return {
-    entities: lineage.length > 0 ? lineage.length : (cas.data_entities || []).length,
+    entities: lineage.length > 0 ? lineage.length : (cas.entities || []).length,
     sensitive,
     exposure_highlights: highlights,
   };

@@ -4,27 +4,27 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Reactive Streams Analyzer — RxJS, Project Reactor (Java Mono/Flux), RxJava,
- * and RxSwift/Combine (Swift @Published/Publisher).
- *
- * Surfaces streams (Subject/Observable/Mono/Flux/Publisher) as state nodes and
- * .subscribe()/.sink() call sites as data-flow sinks, so agents can answer
- * "who subscribes to this stream" (blast-radius for reactive state), mirroring
- * how the state-management analyzers surface stores/actions.
- *
- * Evidence-based: gated on import of rxjs / reactor-core / rxjava / Combine,
- * or (for Swift, which has no package manifest signal in this repo's dependency
- * readers) a file that actually contains @Published / import Combine.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const RXJS_IMPORT = /from\s+['"]rxjs(?:\/[^'"]*)?['"]/;
 const RXJS_SUBJECT = /(?:export\s+)?(?:const|let|private|public|readonly)?\s*([\w$]+)\s*(?::\s*[^=]+)?=\s*new\s+(Subject|BehaviorSubject|ReplaySubject|AsyncSubject)\s*(?:<[^>]*>)?\s*\(/g;
 const RXJS_OBSERVABLE_DECL = /(?:export\s+)?(?:const|let|private|public|readonly)?\s*([\w$]+)\s*(?::\s*Observable<[^>]*>)?\s*=\s*new\s+Observable\s*(?:<[^>]*>)?\s*\(/g;
 const RXJS_PIPE = /([\w$]+)\s*\r?\n?\s*\.pipe\s*\(/g;
-// Matches both `name.subscribe(` (direct) and `).subscribe(` (chained off a
-// preceding `.pipe(...)` call, across newlines) — group 1 is undefined for
-// the latter and is resolved via the nearest preceding `.pipe(` site instead.
+
+
+
 const RXJS_SUBSCRIBE = /(?:([\w$]+)|\))\s*\r?\n?\s*\.subscribe\s*\(/g;
 const RXJS_OPERATORS = /\b(map|filter|switchMap|mergeMap|concatMap|exhaustMap|debounceTime|throttleTime|distinctUntilChanged|takeUntil|catchError|tap|scan|combineLatest|withLatestFrom|shareReplay|retry|retryWhen)\s*\(/g;
 
@@ -54,9 +54,9 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
 
     if (await this.hasJavaDependencyFile(projectPath, /reactor-core|io\.reactivex|rxjava/i)) return true;
 
-    // Swift/Combine and JVM reactor/rxjava have no dependency reader in this repo,
-    // so fall back to scanning a bounded sample of source files for real import
-    // evidence (never bare keyword/vocab matching).
+
+
+
     return this.hasSourceEvidence(projectPath);
   }
 
@@ -123,7 +123,7 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // ---- RxJS ----------------------------------------------------------------
+
 
   private extractRxJs(
     content: string, relativePath: string, sanitizedPath: string,
@@ -159,10 +159,10 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
     RXJS_OPERATORS.lastIndex = 0;
     while ((match = RXJS_OPERATORS.exec(content)) !== null) operatorsUsed.add(match[1]);
 
-    // Track (offset, streamName) for every `<name>.pipe(` / `<name>.subscribe(`
-    // occurrence so a later `.subscribe(` chained off `.pipe(...)` (rather than
-    // directly off the stream identifier, e.g. `stream$.pipe(...).subscribe(...)`)
-    // can still be attributed to the stream it actually reads from.
+
+
+
+
     const pipeSites: Array<{ index: number; name: string }> = [];
     RXJS_PIPE.lastIndex = 0;
     while ((match = RXJS_PIPE.exec(content)) !== null) {
@@ -180,10 +180,10 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
     RXJS_SUBSCRIBE.lastIndex = 0;
     while ((match = RXJS_SUBSCRIBE.exec(content)) !== null) {
       let name = match[1];
-      // Either no identifier was captured (`).subscribe(`, chained off a
-      // preceding `.pipe(...)`) or the captured name isn't a known stream —
-      // in both cases resolve to the nearest preceding `.pipe(` call's stream
-      // so the exit point still attributes to the actual source stream.
+
+
+
+
       if (!name || !streamNames.has(name)) {
         const nearestPipe = [...pipeSites].reverse().find(site => site.index < match!.index && match!.index - site.index < 4000);
         if (nearestPipe) name = nearestPipe.name;
@@ -206,7 +206,7 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Project Reactor (Java/Kotlin Mono/Flux) ------------------------------
+
 
   private extractReactor(
     content: string, relativePath: string, sanitizedPath: string,
@@ -249,7 +249,7 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- RxJava -----------------------------------------------------------
+
 
   private extractRxJava(
     content: string, relativePath: string, sanitizedPath: string,
@@ -288,7 +288,7 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- RxSwift / Combine --------------------------------------------------
+
 
   private extractCombine(
     content: string, relativePath: string, sanitizedPath: string,
@@ -344,7 +344,7 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
     sinkFn(COMBINE_ASSIGN, 'assign');
   }
 
-  // ---- shared helpers -----------------------------------------------------
+
 
   private addStreamNode(
     nodes: CASNode[], edges: CASEdge[], seenNodeIds: Set<string>,
@@ -406,7 +406,7 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // best-effort evidence scan
+
     }
     return false;
   }

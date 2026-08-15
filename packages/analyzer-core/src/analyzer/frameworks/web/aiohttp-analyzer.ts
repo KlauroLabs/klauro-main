@@ -19,15 +19,15 @@ interface AiohttpRoute {
   routeTableName?: string;
 }
 
-/**
- * aiohttp Framework Analyzer.
- *
- * Covers the two real-world route registration idioms:
- *  - imperative: `app.router.add_get('/path', handler)` / `add_post` / `add_route(method, path, handler)`
- *  - declarative: `routes = web.RouteTableDef()` + `@routes.get('/path')` decorated handlers,
- *    later wired in with `app.add_routes(routes)`.
- * `web.Application()` construction is the application-boundary signal.
- */
+
+
+
+
+
+
+
+
+
 export class AiohttpAnalyzer extends BaseAnalyzer {
   constructor() {
     super('aiohttp', 'aiohttp Framework Analyzer', '1.0.0', 'framework');
@@ -261,7 +261,7 @@ export class AiohttpAnalyzer extends BaseAnalyzer {
     return allRoutes;
   }
 
-  /** `app.router.add_get('/path', handler)` / add_post / add_route(method, path, handler) */
+
   private extractImperativeRoutes(content: string): AiohttpRoute[] {
     const routes: AiohttpRoute[] = [];
     const lines = content.split('\n');
@@ -272,7 +272,6 @@ export class AiohttpAnalyzer extends BaseAnalyzer {
       const method = match[1] === 'view' ? 'get' : match[1];
       const pattern = match[2];
       const handlerName = match[3];
-      const line = content.substring(0, match.index).split('\n').length;
       routes.push({
         method,
         pattern,
@@ -299,7 +298,7 @@ export class AiohttpAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** `routes = web.RouteTableDef()` + `@routes.get('/path')` decorated handlers */
+
   private extractRouteTableRoutes(content: string): AiohttpRoute[] {
     const routes: AiohttpRoute[] = [];
     const tableNamePattern = /(\w+)\s*=\s*web\.RouteTableDef\s*\(\s*\)/g;
@@ -378,7 +377,7 @@ export class AiohttpAnalyzer extends BaseAnalyzer {
         if (versionMatch) return versionMatch[1];
       }
     } catch {
-      // Continue
+
     }
     return 'unknown';
   }

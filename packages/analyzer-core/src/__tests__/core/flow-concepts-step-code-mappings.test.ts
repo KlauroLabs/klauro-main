@@ -71,7 +71,7 @@ function buildFixtureCas(): CASOutput {
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];
-  const data_entities: CASDataEntity[] = [
+  const entities: CASDataEntity[] = [
     {
       id: 'entity_order', name: 'Order',
       lifecycle: { created_by: ['n_saveOrder'], read_by: ['n_validateOrder'], updated_by: [], deleted_by: [] },
@@ -81,8 +81,8 @@ function buildFixtureCas(): CASOutput {
   return {
     cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test',
     system: { name: 'test-system' } as any,
-    nodes, edges, entry_points, exit_points, data_lineage, data_entities,
-    system_capabilities: [], analyzer_contributions: [],
+    nodes, edges, entry_points, exit_points, data_lineage, entities,
+    capabilities: [], analyzer_contributions: [],
   } as unknown as CASOutput;
 }
 
@@ -284,8 +284,8 @@ describe('D1 code_mappings — defaults (implements / partially_implements)', ()
     return {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-plain',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points: [], data_lineage: [], data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges, entry_points, exit_points: [], data_lineage: [], entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
   }
 
@@ -341,8 +341,8 @@ describe('D1 code_mappings — many-to-many ACROSS steps (shared node, different
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-shared',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points: [], data_lineage: [], data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges, entry_points, exit_points: [], data_lineage: [], entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
 
     const flows = computeFlowConcepts(cas);
@@ -407,8 +407,8 @@ describe('D1 code_mappings — determinism, ordering, cap, additivity', () => {
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-cap',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points, data_lineage: [], data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges, entry_points, exit_points, data_lineage: [], entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
 
     const f = computeFlowConcepts(cas)[0];

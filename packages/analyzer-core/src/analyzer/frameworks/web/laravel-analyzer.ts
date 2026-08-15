@@ -1666,8 +1666,8 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     const middleware: string[] = [];
     const escapedUri = uri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // Constrain to THIS route's verb: GET /users and POST /users share a URI, so a
-    // URI-only match leaked POST's ->middleware('auth') onto the open GET route.
+
+
     const verb = method ? method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '\\w+';
     const routeBlockPattern = new RegExp(
       `Route::${verb}\\(\\s*['"\`]${escapedUri}['"\`][^;]*->middleware\\(([^)]+)\\)`,
@@ -2007,36 +2007,36 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // CAS v1.4.0 Documentation and Comment extraction methods
+
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
 
-    // Look for Laravel-specific documentation patterns
 
-    // 1. Eloquent model PHPDoc
+
+
     const modelDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\//g);
     const modelDocs = [];
     for (const match of modelDocMatches) {
       modelDocs.push(match[1].trim());
     }
 
-    // 2. Controller method documentation
+
     const controllerDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/\s*public\s+function/g);
     const controllerDocs = [];
     for (const match of controllerDocMatches) {
       controllerDocs.push(match[1].trim());
     }
 
-    // 3. Blade template comments
+
     const bladeCommentMatches = content.matchAll(/{{--\s*([^-]*?)\s*--}}/g);
     const bladeDocs = [];
     for (const match of bladeCommentMatches) {
       bladeDocs.push(match[1].trim());
     }
 
-    // 4. Migration and seeder docs
+
     const migrationDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/\s*(?:public\s+)?function\s+(?:up|down|run)/g);
     const migrationDocs = [];
     for (const match of migrationDocMatches) {
@@ -2078,7 +2078,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // PHP single-line comments
+
       if (trimmedLine.startsWith('//') || trimmedLine.startsWith('#')) {
         const commentText = trimmedLine.substring(trimmedLine.startsWith('//') ? 2 : 1).trim();
         if (commentText.length > 0) {
@@ -2104,7 +2104,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Multi-line comments /* */
+
       if (trimmedLine.includes('/*') && !trimmedLine.includes('/**')) {
         let commentText = '';
         let j = i;
@@ -2143,10 +2143,10 @@ export class LaravelAnalyzer extends BaseAnalyzer {
           comments.push(comment);
         }
 
-        i = j - 1; // Skip processed lines
+        i = j - 1;
       }
 
-      // Blade template comments {{-- --}}
+
       const bladeCommentMatch = line.match(/{{--\s*([^-]*?)\s*--}}/);
       if (bladeCommentMatch) {
         const commentText = bladeCommentMatch[1].trim();
@@ -2187,11 +2187,11 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
         const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
 
-        // Extract assignee from patterns like "TODO(username):"
+
         const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
         const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
 
-        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+
         const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
         let priority: CASTodo['priority'] = 'medium';
         if (priorityMatch) {

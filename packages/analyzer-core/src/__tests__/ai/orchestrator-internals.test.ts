@@ -5,6 +5,9 @@ import { CASDataEntity, CASEdge, CASEntryPoint, CASExitPoint, CASNode, Deployabl
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { emptyFlowGraph } from '../helpers/empty-flow-graph';
+import { validateElementDescription } from '../../ai/element-description-validator';
+import { previousDescriptionNeedsCurrentValidation } from '../../analyzer/core/previous-description-validation';
 
 // These exercise internal heuristics of the orchestrator. They are private by
 // design (not part of the public CAS contract) so the tests reach them via a
@@ -1873,15 +1876,15 @@ describe('architecture and capability inference', () => {
   });
 
   it('rejects AI element descriptions that add unsupported business or compliance claims', async () => {
-    expect(orch.isUsefulElementDescription(
+    expect(validateElementDescription(
       'Driver Management handles driver assignments and improves operational efficiency while ensuring compliant fleet workflows.',
       {
-        id: 'cap_0',
         name: 'Driver Management',
+        kind: 'capability',
         relatedDomains: ['driver', 'fleet'],
         fields: [],
       }
-    )).toBe(false);
+    ).ok).toBe(false);
   });
 
   it('uses page route segments instead of grouping every frontend route under pages', async () => {
@@ -2543,7 +2546,6 @@ describe('architecture and capability inference', () => {
     const edges: CASEdge[] = [];
 
     const risks = orch.buildChangeRisks(nodes, edges, []);
-    const summary = orch.buildChangeRiskSummary(risks);
     const reportingRisk = risks.find((risk: any) => risk.node_id === 'reporting-service');
 
     expect(reportingRisk).toBeDefined();
@@ -2762,7 +2764,34 @@ describe('architecture and capability inference', () => {
 
     expect(orch.validateAIInterpretation(oneSentence, purpose, { frameworks: ['React'], libraries: ['@tanstack/react-query'] }).ok).toBe(true);
     expect(orch.validateGeneratedAIInterpretation(oneSentence, purpose, { frameworks: ['React'], libraries: ['@tanstack/react-query'] }).reason).toBe('too-short-for-ai-paragraph');
-    expect(orch.validateGeneratedAIInterpretation(paragraph, purpose, { frameworks: ['React'], libraries: ['@tanstack/react-query'] }).ok).toBe(true);
+    expect(orch.validateGeneratedAIInterpretation(paragraph, purpose, { artifactType: 'app', frameworks: ['React'], libraries: ['@tanstack/react-query'] }).reason).toBe('implementation-stack-filler');
+  });
+
+  it('rejects generic server and database mechanics from application product narratives', async () => {
+    const purpose = { primary_domain: 'user-management', core_concepts: ['user', 'profile'] };
+    const description = 'The product allows operators to manage user information. Operators can create new user profiles and retrieve existing details. Creating a user preserves the profile and returns a confirmation. The system runs on a server and interacts with a database to store and retrieve user data.';
+
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, {
+      artifactType: 'app',
+      databaseEntities: ['User'],
+      structuralTokens: ['user', 'profile'],
+    }).reason).toBe('generic-implementation-mechanic-filler');
+  });
+
+  it('preserves grounded product prose while removing a trailing implementation sentence', async () => {
+    const purpose = { primary_domain: 'user-management', core_concepts: ['user', 'profile'] };
+    const description = 'The product allows operators to create and retrieve user information. When an operator adds a user, the product preserves the details and returns the created user information. Operators can later retrieve a specific user by its identifier. The system is built using NestJS for the backend and React for the frontend.';
+    const facts = {
+      artifactType: 'app',
+      frameworks: ['NestJS', 'React'],
+      databaseEntities: ['User'],
+      structuralTokens: ['user', 'profile'],
+    };
+
+    const result = orch.acceptAIInterpretationCandidate(description, purpose, facts);
+    expect(result.validation.ok).toBe(true);
+    expect(result.text).not.toMatch(/NestJS|React|backend|frontend/);
+    expect(result.text).toContain('retrieve a specific user');
   });
 
   it('rejects AI overviews that leak the repo name as a capability concept', async () => {
@@ -2822,7 +2851,7 @@ describe('architecture and capability inference', () => {
       [{ type: 'http', count: 45 }],
       databaseEntities,
       [],
-      orch.emptyFlowGraph(),
+      emptyFlowGraph(),
       [],
       [],
       libraryNames,
@@ -2862,7 +2891,7 @@ describe('architecture and capability inference', () => {
     };
     const facts = localOrch.buildAIInterpretationFacts(
       'soon-lens', ['nestjs'], [{ type: 'http', count: 45 }],
-      ['Strategy', 'Portfolio'], [], localOrch.emptyFlowGraph(), [], [],
+      ['Strategy', 'Portfolio'], [], emptyFlowGraph(), [], [],
       ['ccxt', '@triton-one/yellowstone-grpc'],
       { concepts: [], evidence: [] }, [], '',
     );
@@ -3306,6 +3335,16 @@ describe('architecture and capability inference', () => {
     expect(result).toEqual({ ok: false, reason: 'generic-concept-ending' });
   });
 
+  it('rejects AI system descriptions that trail off on one generic concept', async () => {
+    const result = orch.validateAIInterpretation(
+      'Klauro builds a relationship graph from source code for engineers and coding agents. It connects code elements to the behavior they implement. It supports concurrent work and runtime correlation. The platform provides surfaces for reviewing analyzed data.',
+      { primary_domain: 'software-understanding', core_concepts: ['relationship graph', 'source code'] },
+      { frameworks: [], structuralTokens: ['relationship', 'graph', 'source', 'code'] },
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'generic-concept-ending' });
+  });
+
   it('allows generic-looking words when they are part of a grounded multiword concept', async () => {
     const result = orch.validateAIInterpretation(
       'A Solana arbitrage system that checks SPL token balances before submitting buy and sell transactions. It uses @solana/web3.js for Solana network access and focuses its decisions on trade execution and market data.',
@@ -3472,23 +3511,6 @@ describe('domain and security classification robustness (out-of-distribution rep
     metadata: partial.metadata || {},
     subcategories: partial.subcategories,
   } as CASNode);
-
-  it('matches whole identifier tokens only, never substrings of compound identifiers', async () => {
-    expect(orch.matchesSignalPattern(orch.signalTokens('credit_card'), 'card')).toBe(false);
-    expect(orch.matchesSignalPattern(orch.signalTokens('gift_card'), 'card')).toBe(false);
-    expect(orch.matchesSignalPattern(orch.signalTokens('CreditCard'), 'card')).toBe(false);
-    expect(orch.matchesSignalPattern(orch.signalTokens('dashboard'), 'board')).toBe(false);
-    expect(orch.matchesSignalPattern(orch.signalTokens('return_authorization'), 'turn')).toBe(false);
-    expect(orch.matchesSignalPattern(orch.signalTokens('return_authorization'), 'auth')).toBe(false);
-    expect(orch.matchesSignalPattern(orch.signalTokens('ReturnAuthorization'), 'auth')).toBe(false);
-
-    expect(orch.matchesSignalPattern(orch.signalTokens('CardGame'), 'game')).toBe(true);
-    expect(orch.matchesSignalPattern(orch.signalTokens('game_board'), 'board')).toBe(true);
-    expect(orch.matchesSignalPattern(orch.signalTokens('carts'), 'cart')).toBe(true);
-    expect(orch.matchesSignalPattern(orch.signalTokens('CartsController'), 'cart')).toBe(true);
-    expect(orch.matchesSignalPattern(orch.signalTokens('MuscleTestViewModel'), 'viewmodel')).toBe(true);
-    expect(orch.matchesSignalPattern(orch.signalTokens('static-analysis runner'), 'static analysis')).toBe(true);
-  });
 
   it('does not classify commerce vocabulary (credit_card, gift_card, dashboard, return_authorization) as a gaming platform', async () => {
     const nodes: CASNode[] = [
@@ -4834,6 +4856,24 @@ describe('orchestrator resolveNodeTwins (task #27: analyzer twin nodes/entries)'
 
     expect(nodes).toHaveLength(3);
   });
+
+  it('preserves repeated same-named callbacks emitted by one analyzer', () => {
+    const file = node({ id: 'file_menu', name: 'menu.ts', type: 'file', source: { file: 'src/menu.ts', line: 1 } });
+    const callbacks = [12, 24, 36].map((line, index) => node({
+      id: `function_click_${index}`,
+      name: 'click',
+      type: 'function',
+      parent: file.id,
+      source: { file: 'src/menu.ts', line },
+      primaryAnalyzer: 'typescript-javascript',
+      analyzers: ['typescript-javascript'],
+    }));
+    const nodes = [file, ...callbacks];
+
+    orch.resolveNodeTwins(nodes, [], [], []);
+
+    expect(nodes.filter((candidate: CASNode) => candidate.name === 'click')).toHaveLength(3);
+  });
 });
 
 describe('orchestrator dedupeHttpEntryPoints', () => {
@@ -5119,6 +5159,23 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     expect((protocols.fields || []).map((f: any) => f.name)).toEqual(expect.arrayContaining(['Id', 'Name']));
   });
 
+  it('surfaces classes from conventional singular Entity directories', () => {
+    const nodes: CASNode[] = [
+      node({
+        id: 'class_invoice',
+        name: 'Invoice',
+        type: 'class',
+        source: { file: 'src/Entity/Invoice.php', line: 1 },
+        metadata: { attributes: { fields: [{ name: 'id', type: 'int' }, { name: 'amount', type: 'int' }] } },
+      }),
+    ];
+
+    const entities = orch.buildDataEntities(nodes, []);
+
+    expect(entities.map((entity: any) => entity.name)).toContain('Invoice');
+    expect(entities[0].fields.map((field: any) => field.name)).toEqual(['id', 'amount']);
+  });
+
   it('surfaces a plain Go struct in internal/model as a domain data entity with fields (real miniflux gap)', () => {
     // REGRESSION (real miniflux CAS): database_entities was [] despite 339 Go
     // struct nodes, because Go has no class/decorator ORM convention — a
@@ -5163,6 +5220,20 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
   });
 
   describe('persisted-entity requires CITED persistence evidence', () => {
+    it('does not treat a generic analyzer model node as persistence evidence', () => {
+      const nodes: CASNode[] = [node({
+        id: 'model_raw_results', name: 'RawResults', type: 'model',
+        source: { file: 'src/analysis-benchmark.ts', line: 1 },
+        metadata: { attributes: { fields: [{ name: 'duration', type: 'number' }] } },
+      })];
+
+      const entity = orch.buildDataEntities(nodes, []).find((candidate: any) => candidate.name === 'RawResults');
+
+      expect(entity.kind).toBe('domain-shape');
+      expect(entity.kind_source).toBe('shape-inference');
+      expect(entity.kind_evidence).toBeUndefined();
+    });
+
     it('an ORM-decorated class is persisted with a citation; the identical undecorated class is not', () => {
       const orderNodes = (name: string, decorated: boolean): CASNode[] => [
         node({
@@ -5940,7 +6011,7 @@ describe('capability hygiene: code-artifact entity filter (evidence-first)', () 
 
 describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS defects)', () => {
   // These reproduce the three defects that survived on the hosted (AI-on) output
-  // because the AI catalog REPLACES the deterministic system_capabilities and
+  // because the AI catalog REPLACES the deterministic capabilities and
   // bypasses all deterministic post-processing. reconcileCatalogedCapabilities
   // re-applies dedup + the purpose gate and re-injects flagship behavior surfaces.
   const cap = (over: Record<string, unknown>): any => ({
@@ -6079,7 +6150,7 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(out.map((c: any) => c.name)).toContain('Manages Voice interactions');
   });
 
-  it('PURPOSE GATE (R8-B): a deployment-tool product capability with a REAL cli/http anchor is kept, despite an infra-sounding name', async () => {
+  it('PURPOSE GATE (R8-B): a deployment-tool product capability with product evidence is kept, despite an infra-sounding name', async () => {
     const nodes = [
       distNode('dist_release_sh', 'distribution_shell_script'),
       realNode('deploy_cmd'),
@@ -6093,13 +6164,15 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     const cataloged = [
       cap({
         name: 'Deploy and manage binaries', category: 'core',
+        description: 'Deploys product binaries for operators who manage application releases.',
+        related_entities: ['BinaryRelease'],
         operations: [
           { entry_point_id: 'entry_dist_release', entry_point_type: 'cli', action: 'runs' },
           { entry_point_id: 'entry_deploy_cmd', entry_point_type: 'cli', action: 'runs' },
         ],
       }),
     ];
-    const out = orch.reconcileCatalogedCapabilities(cataloged, [], [], entryPoints, nodes);
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], [entity('BinaryRelease', 'persisted-entity')], entryPoints, nodes);
     expect(out.map((c: any) => c.name)).toContain('Deploy and manage binaries');
   });
 
@@ -6164,6 +6237,32 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(names).not.toContain('Manage shell scripts');
     expect(names).not.toContain('Run CI pipeline');
     expect(names).toContain('Manages Voice interactions');
+  });
+
+  it('PURPOSE GATE (R8-B): shell-script machinery is excluded even when ordinary operations anchor it', async () => {
+    const nodes = [realNode('automation_cmd')];
+    const entryPoints = [entryPoint('entry_automation', 'automation_cmd', 'cli')];
+    const cataloged = [
+      cap({
+        name: 'Monitor and manage shell scripts',
+        category: 'supporting',
+        operations: [{ entry_point_id: 'entry_automation', entry_point_type: 'cli', action: 'runs' }],
+      }),
+      cap({ name: 'Execute arbitrage trades', category: 'core', related_entities: ['Trade'] }),
+    ];
+
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], [], entryPoints, nodes);
+
+    expect(out.map((capability: any) => capability.name)).toEqual(['Execute arbitrage trades']);
+  });
+
+  it('never restores a catalog when every capability fails the purpose or audience gates', () => {
+    const cataloged = [
+      cap({ name: 'Monitor and manage shell scripts' }),
+      cap({ name: 'Manage intent solvers', description: 'Executes the main CLI entry point for intent solver commands.' }),
+    ];
+
+    expect(orch.reconcileCatalogedCapabilities(cataloged, [], [])).toEqual([]);
   });
 
   // DESCRIPTION-VS-CAPABILITY CROSS-CHECK (measured live: a C# repo whose
@@ -6253,7 +6352,7 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
 });
 
 // #119 audit follow-up: rollupSystemCapabilityDependencies populates the
-// previously-dead `system_capabilities[].depends_on`/`depended_by` schema
+// previously-dead `capabilities[].depends_on`/`depended_by` schema
 // (CASCapabilityDependency) from the already-computed per-flow
 // `capability_relationships` role signal, replacing the "related_flows[]
 // .role in-degree" proxy the capability/mechanism audit (2026-08-09) used to
@@ -6306,7 +6405,7 @@ describe('rollupSystemCapabilityDependencies (#119: real capability-dependency g
     expect(p.depends_on[0].strength).toBe('common'); // count > 2
   });
 
-  it('never fabricates an edge to a capability id that is not in the real system_capabilities list (dangling/pruned relationship)', () => {
+  it('never fabricates an edge to a capability id that is not in the real capabilities list (dangling/pruned relationship)', () => {
     const capabilities = [cap('P', 'Manage RSS Feeds')];
     const flows = [
       flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'GHOST', role: 'supporting' }]),
@@ -6530,7 +6629,7 @@ describe('terminal-outputs prompt fact is kind-filtered (no raw node names as ou
   // Live defect: descriptions cited UI pages/adapter classes (GraphExplorer,
   // InMemoryMemoryGraphAdapter) as "terminal outputs". The prompt list must
   // come from api-response/persisted-kind entities.
-  const flowGraph = { capabilities: [], flows: [] } as any;
+  const flowGraph = { capability_candidates: [], flows: [] } as any;
 
   const factsWith = (dataEntities: CASDataEntity[]): Record<string, unknown> => {
     orch.activeTerminalSignal = {
@@ -6641,6 +6740,67 @@ describe('stripped-sentence grammar guard and repetition collapse (live mtg/herc
 });
 
 describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', () => {
+  it('groups action-headed registration identifiers by their first product subject', async () => {
+    const names = [
+      'get_agent_context',
+      'list_agent_tasks',
+      'resolve_agent_analysis',
+      'evaluate_agent_readiness',
+      'get_workspace_state',
+      'list_workspace_changes',
+      'save_workspace_graph',
+      'verify_workspace_link',
+    ];
+    const nodes = names.map((name, index) => ({
+      id: `handler_${index}`,
+      name,
+      type: 'registered_tool',
+      source: { file: 'src/registry.ts' },
+    })) as CASNode[];
+    const entries = names.map((name, index) => ({
+      id: `entry_${index}`,
+      source_node: `handler_${index}`,
+      type: 'message',
+      name,
+      trigger: { event: 'tool.call', pattern: name },
+      handler: { node_id: `handler_${index}`, method_name: name, file: 'src/registry.ts' },
+    })) as CASEntryPoint[];
+
+    const capabilities = await orch.buildBehaviorCapabilities(entries, nodes, [], []);
+
+    expect(capabilities.map((capability: any) => capability.related_domains)).toEqual(
+      expect.arrayContaining([['agent'], ['workspace']]),
+    );
+  });
+
+  it('retains two-entry semantic families from a large registry without duplicating them into its parent', async () => {
+    const names = [
+      'get_agent_context', 'evaluate_agent_readiness',
+      'get_runtime_trace', 'correlate_runtime_event',
+      'get_workspace_graph', 'list_workspace_analyses',
+      'analyze_codebase', 'preview_codebase_iteration',
+      'get_cross_repo_links', 'run_cross_codebase_analysis',
+      'fab_claim_work', 'fab_release_work',
+      'get_summary', 'search_nodes',
+    ];
+    const fixtures = names.map((name, index) => mcpToolEntry(name, index));
+
+    const capabilities = await localOrch.buildBehaviorCapabilities(
+      fixtures.map(fixture => fixture.entry),
+      fixtures.map(fixture => fixture.node),
+      [],
+      [],
+    );
+    const domains = capabilities.flatMap((capability: any) => capability.related_domains || []);
+
+    expect(domains).toEqual(expect.arrayContaining(['agent', 'runtime', 'workspace', 'codebase', 'cross', 'fab']));
+    const parent = capabilities.find((capability: any) => capability.name === 'Mcp Tool Surface');
+    const familyOperationIds = new Set(capabilities
+      .filter((capability: any) => capability !== parent)
+      .flatMap((capability: any) => capability.operations.map((operation: any) => operation.entry_point_id)));
+    expect((parent?.operations || []).every((operation: any) => !familyOperationIds.has(operation.entry_point_id))).toBe(true);
+  });
+
   const localOrch = new AnalyzerOrchestrator() as any;
 
   const bNode = (partial: Partial<CASNode>): CASNode => ({
@@ -6706,7 +6866,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     // SURFACES ARE NOT CAPABILITIES: buildBehaviorCapabilities output is
     // never 'core' and criticality is capped at 'medium' — it is routed into
     // the separate behavior_surfaces navigation tier by buildSystemCapabilities,
-    // never system_capabilities/top_capabilities, so it can never outrank or
+    // never capabilities/top_capabilities, so it can never outrank or
     // out-criticality a real domain capability.
     expect(capability.category).toBe('internal');
     expect(capability.criticality).toBe('medium');
@@ -6759,9 +6919,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     // real module cluster.
     expect(capabilities.length).toBeGreaterThanOrEqual(6);
     const labels = capabilities.map((capability: any) => capability.structural_label);
-    for (const area of Object.keys(moduleTools)) {
-      expect(labels.some((label: string) => new RegExp(area, 'i').test(label))).toBe(true);
-    }
+    expect(new Set(labels).size).toBe(labels.length);
     // Every tool must be accounted for under SOME capability's operations —
     // the whole point of the fix is that entry points stop disappearing into
     // one opaque bucket.
@@ -6832,9 +6990,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     // real callee-module cluster, same bound as the multi-file case.
     expect(capabilities.length).toBeGreaterThanOrEqual(6);
     const labels = capabilities.map((capability: any) => capability.structural_label);
-    for (const area of Object.keys(moduleTools)) {
-      expect(labels.some((label: string) => new RegExp(area, 'i').test(label))).toBe(true);
-    }
+    expect(new Set(labels).size).toBe(labels.length);
     const allOperationIds = new Set(capabilities.flatMap((capability: any) =>
       capability.operations.map((operation: any) => operation.entry_point_id)));
     for (const entry of entries) {
@@ -7360,7 +7516,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     }
   });
 
-  it('surfaces behavior capabilities into behavior_surfaces (not system_capabilities) through buildSystemCapabilities end-to-end', async () => {
+  it('surfaces behavior capabilities into behavior_surfaces (not capabilities) through buildSystemCapabilities end-to-end', async () => {
     const toolNames = [
       'get_summary', 'get_call_chain', 'search_nodes', 'semantic_search',
       'analyze_codebase', 'get_route_table', 'get_entry_points', 'get_data_entities',
@@ -7387,6 +7543,269 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
 });
 
 describe('top-down capability evidence (C2)', () => {
+  it('anchors product-language catalog entries to cited structural candidate ids', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Coordinate overlapping work',
+        description: 'Resolves concurrent work claims before collaborators apply conflicting changes.',
+        category: 'core',
+        entities: [],
+        journeys: [],
+        candidate_ids: ['candidate_concurrent_work'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'coordination-platform',
+        enhancedSystemPurpose: { primary_domain: 'work-coordination', core_concepts: ['work'] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [{
+          id: 'candidate_concurrent_work',
+          name: 'Concurrent Work Surface',
+          description: 'Structural registration evidence.',
+          category: 'internal',
+          operations: [{ entry_point_id: 'claim_work', entry_point_type: 'message', action: 'Handle' }],
+          related_entities: [], related_domains: ['work'], criticality: 'medium', criticality_factors: [],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: {
+          concepts: ['work'],
+          evidence: [],
+          productDocSummary: 'Coordinates overlapping work before collaborators apply conflicting changes.',
+        },
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual(['claim_work']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('derives a missing candidate citation from the deterministic operation-family match', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Analyze codebases',
+        description: 'Builds grounded software understanding from codebase structure and behavior.',
+        category: 'core', entities: [], journeys: [],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'software-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['codebase'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'codebase', name: 'Codebase Tool Surface', evidence_kind: 'behavior-surface',
+          evidence_examples: ['analyze_codebase', 'preview_codebase_iteration'],
+          related_entities: [], related_domains: ['codebase'],
+          operations: [
+            { entry_point_id: 'analyze', entry_point_type: 'message', action: 'Analyze' },
+            { entry_point_id: 'preview', entry_point_type: 'message', action: 'Preview' },
+          ],
+          criticality_factors: ["2 message entry points form one cohesive behavior family ('codebase')"],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['codebase'], evidence: [], productDocSummary: 'Builds software understanding from any codebase.' },
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].criticality_factors).toContain('catalog-candidate:codebase');
+      expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual(['analyze', 'preview']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('keeps first-party CAS and Fabric capabilities as separate product outcomes', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        {
+          name: 'Builds a trustworthy CAS relationship graph',
+          description: 'Klauro constructs a comprehensive and accurate graph of software relationships.',
+          category: 'core', entities: [], journeys: [], candidate_ids: ['cas'],
+        },
+        {
+          name: 'Coordinates concurrent work through Fabric',
+          description: 'Prevents overlapping changes while collaborators work on shared software concepts.',
+          category: 'core', entities: [], journeys: [], candidate_ids: ['fabric'],
+        },
+      ],
+    });
+    const surface = (id: string, examples: string[]) => ({
+      id,
+      name: `${id} Mcp Tool Surface`,
+      evidence_kind: 'behavior-surface',
+      evidence_examples: examples,
+      related_entities: [],
+      related_domains: [id],
+      operations: examples.map(example => ({ entry_point_id: example, entry_point_type: 'message', action: 'Handle' })),
+      criticality_factors: [`${examples.length} message entry points form one cohesive behavior family ('${id}')`],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Klauro',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['CAS', 'Fabric'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [
+          surface('cas', ['get_cas_graph', 'query_cas_relationships', 'inspect_cas_nodes']),
+          surface('fabric', ['fab_claim_work', 'fab_check_collision', 'fab_extend', 'fab_release_work']),
+          surface('flow', ['get_flow_graph', 'trace_flow', 'inspect_flow_coverage']),
+        ],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: {
+          concepts: ['CAS', 'Fabric'], evidence: [],
+          productDocSummary: 'Builds a trustworthy CAS relationship graph and coordinates concurrent work through Fabric.',
+          productVocabulary: ['trustworthy', 'cas', 'relationship', 'graph', 'concurrent', 'work', 'fabric'],
+        },
+        budgetMs: 30000,
+      });
+
+      expect(catalog.map((capability: any) => capability.name)).toEqual([
+        'Builds a trustworthy CAS relationship graph',
+        'Coordinates concurrent work through Fabric',
+      ]);
+      expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual([
+        'get_cas_graph',
+        'query_cas_relationships',
+        'inspect_cas_nodes',
+      ]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('rejects product language borrowed from an unrelated family despite global project-text support', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Correlate runtime evidence',
+        description: 'Links runtime evidence to static understanding for engineers.',
+        category: 'core', entities: [], journeys: [], candidate_ids: ['cross'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'software-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['runtime evidence'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'cross', name: 'Cross Repository Tool Surface', evidence_kind: 'behavior-surface',
+          evidence_examples: ['get_cross_repo_links', 'run_cross_codebase_analysis'],
+          related_entities: [], related_domains: ['cross-repo'],
+          operations: [{ entry_point_id: 'cross', entry_point_type: 'message', action: 'Handle' }],
+          criticality_factors: ['5 message entry points'],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['runtime evidence'], evidence: [], productDocSummary: 'Correlates static understanding with runtime evidence.' },
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('uses attached operation vocabulary when applying the capability audience test', () => {
+    const capability = {
+      id: 'greenfield',
+      name: 'Provide greenfield architecture guidance',
+      description: 'Guides agents through greenfield architecture decisions before they create code.',
+      category: 'supporting',
+      operations: [{
+        entry_point_id: 'entry_get_greenfield_architecture_guidance',
+        entry_point_type: 'message',
+        action: 'Guide',
+        path_or_command: 'get_greenfield_architecture_guidance',
+      }],
+      related_entities: [],
+      related_domains: [],
+      criticality_factors: [],
+      name_source: 'ai',
+    };
+
+    expect(orch.reconcileCatalogedCapabilities(
+      [capability],
+      [],
+      [],
+      [],
+      [],
+      { primary_domain: 'software-understanding', core_concepts: [] },
+      ['typescript'],
+      { concepts: [], evidence: [] },
+    ).map((item: any) => item.name)).toEqual(['Provide greenfield architecture guidance']);
+  });
+
+  it('rejects an invented purpose noun appended to a cited behavior family', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Manage workspace environments',
+        description: 'Lets engineers manage workspace environments for ongoing software analysis.',
+        category: 'supporting', entities: [], journeys: [], candidate_ids: ['workspace'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'software-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['analysis'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'workspace', name: 'Workspace Tool Surface', evidence_kind: 'behavior-surface',
+          evidence_examples: ['list_workspaces', 'select_workspace', 'resolve_workspace'],
+          related_entities: [], related_domains: ['workspace'],
+          operations: [{ entry_point_id: 'workspace', entry_point_type: 'message', action: 'Handle' }],
+          criticality_factors: ['3 message entry points'],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['analysis'], evidence: [], productDocSummary: 'Explains software behavior from source code.' },
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('rejects identity plumbing as a capability unless first-party product text makes identity the product', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Manage authentication',
+        description: 'Authenticates users before they access protected software analysis results.',
+        category: 'supporting', entities: [], journeys: [], candidate_ids: ['auth'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'software-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['analysis'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'auth', name: 'Authentication Tool Surface', evidence_kind: 'behavior-surface',
+          evidence_examples: ['login', 'authenticate_user', 'refresh_session'],
+          related_entities: [], related_domains: ['auth'],
+          operations: [{ entry_point_id: 'login', entry_point_type: 'event', action: 'Handle' }],
+          criticality_factors: ['3 event entry points'],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['analysis'], evidence: [], productDocSummary: 'Explains software behavior from source code.' },
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('extracts verbatim product framing from a README (title + opening paragraph)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-readme-'));
     try {
@@ -7394,9 +7813,14 @@ describe('top-down capability evidence (C2)', () => {
         path.join(root, 'README.md'),
         '# Arcane Table\n\n![build](https://img.shields.io/badge/x)\n\nArcane Table is a private web-based Magic: The Gathering Commander platform for real-time multiplayer games.\n\n## Setup\n\n- run npm install\n'
       );
+      fs.writeFileSync(
+        path.join(root, 'VISION.md'),
+        '# Vision\n\nThe product builds a trustworthy relationship graph and coordinates concurrent work through Fabric.\n',
+      );
       const signal = orch.extractProjectTextSignal(root);
       expect(signal.productDocTitle).toBe('Arcane Table');
       expect(signal.productDocSummary).toMatch(/Commander platform/);
+      expect(signal.productVocabulary).toEqual(expect.arrayContaining(['trustworthy', 'relationship', 'concurrent', 'fabric']));
       // Badge line and the "Setup" list must not leak into the product summary.
       expect(signal.productDocSummary).not.toMatch(/shields\.io|npm install/);
     } finally {
@@ -7467,7 +7891,7 @@ describe('top-down capability evidence (C2)', () => {
           { name: 'Change Report Management', related_entities: ['entity_changereport'], operations: mkOps('change', 3) },
           { name: 'Security Context Management', related_entities: ['entity_securitycontext'], operations: mkOps('security', 2) },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(3);
@@ -7502,7 +7926,7 @@ describe('top-down capability evidence (C2)', () => {
         enhancedSystemPurpose: { primary_domain: 'games', core_concepts: [] },
         frameworks: [], userJourneys: [], dataEntities: [],
         candidateCapabilities: [{ name: 'Game session', related_entities: [], operations: [] }],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: withSignal, budgetMs: 30000,
       });
       const withCtx = captured[captured.length - 1].additionalContext;
@@ -7516,7 +7940,7 @@ describe('top-down capability evidence (C2)', () => {
         systemName: 'bare',
         enhancedSystemPurpose: { primary_domain: 'x', core_concepts: [] },
         frameworks: [], userJourneys: [], dataEntities: [],
-        candidateCapabilities: [], externalServices: [], flowGraph: { capabilities: [] },
+        candidateCapabilities: [], externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       const bareCtx = captured[captured.length - 1].additionalContext;
@@ -7592,7 +8016,7 @@ describe('top-down capability evidence (C2)', () => {
             { entry_point_id: 'ep_dispatch_1', entry_point_type: 'http', action: 'Dispatch', path_or_command: '/inspections/dispatch' },
           ] },
         ] as any[],
-        externalServices: [], flowGraph: { capabilities: [] } as any,
+        externalServices: [], flowGraph: { capability_candidates: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
       });
       const names = catalog.map((capability: any) => capability.name);
@@ -7634,7 +8058,7 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
     frameworks: [], userJourneys: [],
     dataEntities,
     candidateCapabilities,
-    externalServices: [], flowGraph: { capabilities: [] } as any,
+    externalServices: [], flowGraph: { capability_candidates: [] } as any,
     projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
   };
 
@@ -7877,69 +8301,6 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
   });
 });
 
-describe('splitLargeBehaviorSurfaceByModule (defect #33 — catalog VARIANCE, single-large-surface fallback split)', () => {
-  const mkEntry = (name: string, file: string, index: number): CASEntryPoint => ({
-    id: `entry_${name}_${index}`,
-    source_node: `node_${name}_${index}`,
-    type: 'message',
-    name,
-    trigger: { event: name },
-    handler: { node_id: `node_${name}_${index}`, method_name: name, file },
-  } as CASEntryPoint);
-
-  const mkSurface = (total: number, opsSource: CASEntryPoint[]): any => ({
-    id: 'cap_mcp_tool_surface',
-    name: 'Mcp Tool Surface',
-    description: `Behavior surface: ${total} mcp tool entry points`,
-    category: 'internal',
-    operations: opsSource.slice(0, 12).map(ep => ({ entry_point_id: ep.id, entry_point_type: 'message', action: 'Process' })),
-    related_entities: [],
-    related_domains: ['mcp_tool'],
-    criticality: 'medium',
-    criticality_factors: [`${total} message entry points form one cohesive behavior surface`],
-  });
-
-  it('splits one merged blob into multiple module-grounded capabilities when handlers span distinct modules (Klauro-self shape: tools/ graph/ analysis/)', () => {
-    const toolsEntries = Array.from({ length: 6 }, (_, i) => mkEntry(`tool_${i}`, 'src/tools/registry.ts', i));
-    const graphEntries = Array.from({ length: 5 }, (_, i) => mkEntry(`graph_${i}`, 'src/graph/api.ts', i));
-    const analysisEntries = Array.from({ length: 4 }, (_, i) => mkEntry(`analysis_${i}`, 'src/analysis/engine.ts', i));
-    const entryPoints = [...toolsEntries, ...graphEntries, ...analysisEntries];
-    const surface = mkSurface(entryPoints.length, entryPoints);
-
-    const result = orch.splitLargeBehaviorSurfaceByModule(surface, entryPoints, []);
-
-    expect(result.length).toBe(3);
-    const names = result.map((r: any) => r.name);
-    expect(names.some((n: string) => /tools/i.test(n))).toBe(true);
-    expect(names.some((n: string) => /graph/i.test(n))).toBe(true);
-    expect(names.some((n: string) => /analysis/i.test(n))).toBe(true);
-    // Each split capability's operations only reference ITS OWN module's
-    // entry points — no cross-module bleed.
-    for (const capability of result) {
-      const ids = capability.operations.map((operation: any) => operation.entry_point_id);
-      const modulesTouched = new Set(ids.map((id: string) => id.replace(/^entry_/, '').split('_')[0]));
-      expect(modulesTouched.size).toBe(1);
-    }
-  });
-
-  it('leaves a genuinely single-module surface unsplit rather than manufacturing groups', () => {
-    const entries = Array.from({ length: 15 }, (_, i) => mkEntry(`tool_${i}`, 'src/tools/registry.ts', i));
-    const surface = mkSurface(entries.length, entries);
-
-    const result = orch.splitLargeBehaviorSurfaceByModule(surface, entries, []);
-
-    expect(result.length).toBe(1);
-    expect(result[0]).toBe(surface); // unchanged reference — no fabricated split
-  });
-
-  it('no-ops (returns the surface unchanged) when raw entry points are unavailable', () => {
-    const entries = Array.from({ length: 6 }, (_, i) => mkEntry(`tool_${i}`, 'src/tools/registry.ts', i));
-    const surface = mkSurface(15, entries);
-    const result = orch.splitLargeBehaviorSurfaceByModule(surface, [], []);
-    expect(result).toEqual([surface]);
-  });
-});
-
 describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung-2: caps:1 + product-name collapse)', () => {
   it('drops a description-less raw candidate-label item instead of shipping it as the sole capability', async () => {
     // Reproduces the live Klauro-self defect: the AI catalog stage returned a
@@ -7965,7 +8326,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         candidateCapabilities: [
           { name: 'run_shell_script_release_sh_docker_read_2_more', related_entities: [], operations: [] },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(0);
@@ -7991,7 +8352,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         frameworks: [], userJourneys: [],
         dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
         candidateCapabilities: [],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(0);
@@ -8034,7 +8395,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         candidateCapabilities: [
           { name: 'Run Shell script: release.sh -> Docker read (+2 more)', related_entities: [], operations: [] },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(0);
@@ -8073,7 +8434,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         candidateCapabilities: [
           { name: 'Run main -> detect_frameworks', related_entities: [], operations: [] },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(0);
@@ -8104,7 +8465,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         candidateCapabilities: [
           { name: 'Run .NET Main entry point', related_entities: [], operations: [] },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(0);
@@ -8153,7 +8514,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
             ],
           },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(1);
@@ -8186,7 +8547,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         candidateCapabilities: [
           { name: 'Run .NET Main entry point', related_entities: [], operations: [{ entry_point_id: 'entry_main', entry_point_type: 'internal', action: 'Run' }] },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(0);
@@ -8224,7 +8585,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
           { name: 'Create attack -> Currency created', related_entities: ['entity_currency'], operations: [] },
           { name: 'Update quest objective -> Quest updated', related_entities: ['entity_quest'], operations: [] },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       const names = catalog.map((c: any) => c.name);
@@ -8254,7 +8615,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         candidateCapabilities: [
           { name: 'Release Management', related_entities: ['entity_releaseconfig'], operations: [] },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(1);
@@ -8305,7 +8666,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
             criticality_factors: ['207 mcp_tool entry points form one cohesive behavior surface'],
           },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(1);
@@ -8358,12 +8719,9 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       } as CASEntryPoint);
     }
     const behaviorSurfaces = await orch.buildBehaviorCapabilities(entries, nodes, [], []);
-    expect(behaviorSurfaces.length).toBe(1);
-    expect(behaviorSurfaces[0].evidence_kind).toBe('behavior-surface');
-    expect(behaviorSurfaces[0].evidence_examples?.length).toBeGreaterThan(0);
-    // The structural placeholder is untouched — still available for
-    // behavior_surfaces display, dedup, merge.
-    expect(behaviorSurfaces[0].name).toBe('Mcp Tool Surface');
+    expect(behaviorSurfaces.length).toBeGreaterThan(1);
+    expect(behaviorSurfaces.every((surface: any) => surface.evidence_kind === 'behavior-surface')).toBe(true);
+    expect(behaviorSurfaces.every((surface: any) => (surface.evidence_examples?.length || 0) > 0)).toBe(true);
 
     const captured: any[] = [];
     const original = (aiService as any).generateComponentDescription;
@@ -8379,31 +8737,48 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         dataEntities: [],
         candidateCapabilities: [],
         behaviorSurfaces,
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       const facts = captured[0]?.additionalContext?.facts;
       const areas: any[] = facts?.candidate_route_areas || [];
       expect(areas.length).toBeGreaterThan(0);
-      const presented = areas[0];
-      // entry_points must be the TRUE count (16), never the capped
-      // operations.length (12) — the exact understatement the fix exists to
-      // avoid.
-      expect(presented.entry_points).toBe(16);
-      // The presented name is real handler vocabulary, not the "Surface"
-      // mechanism-noun placeholder the catalog prompt's own purpose-test
-      // rule tells the model to reject on sight.
-      expect(presented.name).not.toMatch(/\bSurface\b/);
-      expect(presented.name).not.toBe('Mcp Tool Surface');
-      const presentedNames = presented.name.split(', ');
-      for (const example of presentedNames) {
-        expect(names).toContain(example);
+      for (const presented of areas) {
+        const source = behaviorSurfaces.find((surface: any) =>
+          (surface.evidence_examples || []).join(', ') === presented.name);
+        expect(source).toBeDefined();
+        expect(presented.entry_points).toBe(orch.behaviorSurfaceEntryCount(source));
+        expect(presented.name).not.toMatch(/\bSurface\b/);
+        for (const example of presented.name.split(', ')) {
+          expect(names).toContain(example);
+        }
+        expect(JSON.stringify(presented)).not.toMatch(/primary|core|main|central|flagship/i);
       }
-      // Facts only — no adjective/ranking language anywhere in the object.
-      expect(JSON.stringify(presented)).not.toMatch(/primary|core|main|central|flagship/i);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
+  });
+
+  it('builds a large registration surface when every entry belongs to a strong family', async () => {
+    const nodes: CASNode[] = [];
+    const entries: CASEntryPoint[] = [];
+    for (let index = 0; index < 12; index++) {
+      const name = `workspace_operation_${index}`;
+      const nodeId = `handler_${index}`;
+      nodes.push({ id: nodeId, name, type: 'mcp_tool', source: { file: 'src/server.ts' } } as CASNode);
+      entries.push({
+        id: `entry_${index}`,
+        source_node: nodeId,
+        type: 'message',
+        name,
+        trigger: { event: name },
+        handler: { node_id: nodeId, method_name: name, file: 'src/server.ts' },
+      } as CASEntryPoint);
+    }
+
+    const surfaces = await orch.buildBehaviorCapabilities(entries, nodes, [], []);
+
+    expect(surfaces.some((surface: any) => surface.related_domains.includes('workspace'))).toBe(true);
   });
 
   it('excludes a SMALL behavior surface from the ranked window (below the operation-count threshold)', async () => {
@@ -8431,7 +8806,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
             criticality_factors: ['3 command entry points form one cohesive behavior surface'],
           },
         ],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       const facts = captured[0]?.additionalContext?.facts;
@@ -8457,7 +8832,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     expect(orch.behaviorSurfaceEntryCount({ operations: [{ entry_point_id: 'a' }, { entry_point_id: 'b' }], criticality_factors: [] })).toBe(2);
   });
 
-  it('near-empty AI fallback re-derives from the merged LARGE surface instead of shipping zero/one accidental capability', async () => {
+  it('near-empty AI output leaves structural behavior surfaces outside canonical capabilities', async () => {
     const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
     const saved: Record<string, string | undefined> = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
     process.env.OPENAI_API_KEY = 'test-openai-key';
@@ -8490,12 +8865,12 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const systemCapabilities: any[] = []; // no deterministic domain candidates at all
       const userJourneys: any[] = [{ name: 'Analyze a codebase' }];
       await orch.applyAIInterpretation(
-        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+        purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [],
         systemCapabilities, [], [], [], { concepts: [], evidence: [] }, userJourneys,
         undefined, [], [], behaviorSurfaces
       );
-      expect(systemCapabilities.length).toBeGreaterThan(0);
-      expect(systemCapabilities.some((capability: any) => capability.id === 'cap_mcp_tool_surface')).toBe(true);
+      expect(systemCapabilities).toEqual([]);
+      expect(behaviorSurfaces.some((capability: any) => capability.id === 'cap_mcp_tool_surface')).toBe(true);
     } finally {
       spy.mockRestore();
       for (const key of envKeys) {
@@ -8554,7 +8929,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         criticality: 'high', criticality_factors: [],
       }];
       await orch.applyAIInterpretation(
-        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [], capabilities,
+        purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [], capabilities,
         [], [], [], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
         [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
       );
@@ -8574,7 +8949,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
 
   it('bare-noun capability names: repairs a grounded single-noun label, drops an ungrounded noun phrase, and keeps verb-headed labels untouched', async () => {
     // Reproduces the live defect measured on a real analyzed Swift macOS repo
-    // (v1.0.116): 24 of the system_capabilities entries were single/two-word
+    // (v1.0.116): 24 of the capabilities entries were single/two-word
     // module-or-type nouns ("Gateway", "Wizard", "Exec", ...) with no leading
     // purpose verb at all — the AI catalog attached SOME description to each,
     // so the pre-existing raw-echo guard (isRawCandidateLabelName) never
@@ -8593,8 +8968,8 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         { name: 'Exec Approval', description: 'Handles gateway related exec approval processing tasks for the system.', entities: [] },
         // Verb-headed two-word label (verb + object) -> never flagged, kept verbatim.
         { name: 'Detect patterns', entities: ['Pattern'] },
-        // "Manage Sessions" is verb-headed ("manage") -> never flagged, kept verbatim.
-        { name: 'Manage Sessions', entities: ['Session'] },
+        // "Monitor gateways" is verb-headed -> never flagged, kept verbatim.
+        { name: 'Monitor gateways', entities: ['Gateway'] },
       ],
     });
     try {
@@ -8608,23 +8983,20 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
           { id: 'entity_session', name: 'Session' },
         ],
         candidateCapabilities: [],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       const names = catalog.map((capability: any) => capability.name);
-      expect(names).toContain('Manage Gateway');
       expect(names).not.toContain('Gateway');
       expect(names).not.toContain('Exec Approval');
       expect(names).toContain('Detect patterns');
-      expect(names).toContain('Manage Sessions');
-      expect(catalog.find((capability: any) => capability.name === 'Manage Gateway')?.criticality_factors)
-        .toEqual(expect.arrayContaining(['bare-noun-purpose-repaired']));
+      expect(names).toContain('Monitor gateways');
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
   });
 
-  it('isBareNounCapabilityLabel / deriveManagePurposeLabel: unit behavior', () => {
+  it('isBareNounCapabilityLabel identifies names that require authored purpose language', () => {
     // Single bare token -> always flagged, regardless of whether it happens
     // to be verb-shaped ("Connect", "Poll") — a lone word with no object is
     // not a purpose statement.
@@ -8640,11 +9012,9 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     // obvious leading verb (conservative: avoid false positives there).
     expect(orch.isBareNounCapabilityLabel('Data Export Wizard')).toBe(false);
 
-    expect(orch.deriveManagePurposeLabel('Gateway', true)).toBe('Manage Gateway');
-    expect(orch.deriveManagePurposeLabel('Gateway', false)).toBeUndefined();
   });
 
-  it('recordComprehensionSkipped (structure-only path, no AI pass coming): repairs a grounded bare-noun capability name in place', () => {
+  it('recordComprehensionSkipped excludes structural candidates from canonical capabilities', () => {
     const purpose: any = { description_generation: undefined };
     const systemCapabilities: any[] = [
       { id: 'cap_gateway', name: 'Gateway', related_entities: ['entity_gateway'], operations: [], criticality_factors: ['x'] },
@@ -8654,17 +9024,10 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     ];
     orch.recordComprehensionSkipped(purpose, systemCapabilities, [], 'disabled-by-env');
 
-    expect(systemCapabilities.find(c => c.id === 'cap_gateway')?.name).toBe('Manage Gateway');
-    expect(systemCapabilities.find(c => c.id === 'cap_gateway')?.criticality_factors).toEqual(expect.arrayContaining(['bare-noun-purpose-repaired']));
-    // No anchor evidence at all (no related entities, no operations) -> left as-is, never invented a purpose with nothing behind it.
-    expect(systemCapabilities.find(c => c.id === 'cap_exec')?.name).toBe('Exec');
-    // Verb-headed label -> untouched.
-    expect(systemCapabilities.find(c => c.id === 'cap_detect')?.name).toBe('Detect patterns');
-    // Already AI-named -> never touched by the structure-only repair pass.
-    expect(systemCapabilities.find(c => c.id === 'cap_ai_named')?.name).toBe('Wizard');
+    expect(systemCapabilities).toEqual([]);
   });
 
-  it('finalizeSystemCapabilityNames (final-assembly guard): repairs placeholders the AI naming pass never renamed, drops only ungrounded ones', () => {
+  it('finalizeSystemCapabilityNames excludes every non-publishable placeholder', () => {
     // Reproduces the live re-verify defect (v1.0.117, real Swift macOS CAS):
     // the AI naming pass RAN but did not cover/rename every candidate, so
     // terminalGroundedCapabilityName's deliberate bare-subject placeholder
@@ -8688,20 +9051,13 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     ];
     orch.finalizeSystemCapabilityNames(systemCapabilities);
 
-    const byId = (id: string) => systemCapabilities.find((capability: any) => capability.id === id);
-    expect(byId('cap_ai')?.name).toBe('Wizard');
-    expect(byId('cap_gateway')?.name).toBe('Manage Gateway');
-    expect(byId('cap_gateway')?.criticality_factors).toEqual(expect.arrayContaining(['bare-noun-purpose-repaired']));
-    expect(byId('cap_exec')?.name).toBe('Manage Exec Approval');
-    expect(byId('cap_hint')).toBeUndefined();
-    expect(byId('cap_detect')?.name).toBe('Detect patterns');
-    // Idempotent: a second sweep changes nothing.
+    expect(systemCapabilities).toEqual([]);
     const snapshot = JSON.parse(JSON.stringify(systemCapabilities));
     orch.finalizeSystemCapabilityNames(systemCapabilities);
     expect(systemCapabilities).toEqual(snapshot);
   });
 
-  it('end-to-end: a bare-noun placeholder that survives the whole AI phase ships repaired, never verbatim', async () => {
+  it('end-to-end: bare-noun placeholders never enter canonical capabilities', async () => {
     // Simulates the AI-pass-skipped-renaming case end-to-end through
     // applyAIInterpretation: the model engages but returns an empty
     // capabilities list, so the catalog never splices AI-authored names over
@@ -8737,7 +9093,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         { id: 'cap_session', name: 'Session', related_entities: ['entity_session'], operations: [], criticality_factors: ['Backed by 1 data entity node(s)'] },
       ];
       await orch.applyAIInterpretation(
-        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+        purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [],
         systemCapabilities, [], [],
         [
           { id: 'entity_gateway', name: 'Gateway', type: 'entity', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] }, relationships: [] },
@@ -8746,12 +9102,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         { concepts: [], evidence: [] }, [{ name: 'Connect a gateway' }],
         undefined, [], [], [], []
       );
-      expect(systemCapabilities.length).toBeGreaterThan(0);
-      for (const capability of systemCapabilities) {
-        expect(orch.isBareNounCapabilityLabel(String(capability.name || ''))).toBe(false);
-      }
-      const names = systemCapabilities.map((capability: any) => capability.name);
-      expect(names).toEqual(expect.arrayContaining(['Manage Gateway', 'Manage Session']));
+      expect(systemCapabilities).toEqual([]);
     } finally {
       spy.mockRestore();
       for (const key of envKeys) {
@@ -8761,154 +9112,24 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('applyDeterministicCapabilityFallback: repairs a grounded bare-noun deterministic candidate instead of shipping it verbatim', () => {
-    const candidateSnapshot: any[] = [
-      { id: 'cap_gateway', name: 'Gateway', related_entities: ['entity_gateway'], operations: [], criticality_factors: [] },
-      { id: 'cap_wizard', name: 'Wizard', related_entities: [], operations: [], criticality_factors: [] },
-    ];
-    const systemCapabilities: any[] = [];
-    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities);
-
-    const names = systemCapabilities.map((capability: any) => capability.name);
-    expect(names).toContain('Manage Gateway');
-    // "Wizard" has zero related_entities and zero operations — no anchor
-    // evidence to ground a repair — so it is dropped rather than shipped
-    // bare or given an invented purpose.
-    expect(names).not.toContain('Wizard');
-  });
-
-  it('applyDeterministicCapabilityFallback: does not publish a catalog of ungrounded module names', () => {
-    // REGRESSION, measured live 2026-08-11 on a real ML repo: the AI naming pass
-    // authored 0 of 24, and the fallback published 24 candidates named after
-    // Python modules — "Manage Net", "View Infer Web", "Manage Attentions Onnx",
-    // "Manage Common" — replacing 2 good capabilities. The altitude guard that
-    // exists to stop exactly this missed it, because it only recognised
-    // ENTITY-shaped CRUD: these matched no entity, so crudShare computed as 0 and
-    // the catalog was declared outcome-shaped. It caught the better case and waved
-    // through the worse one.
-    //
-    // A name lifted from a filename with no entity and no operation behind it is
-    // further from "an outcome a user gets" than "Manage Song" ever was.
-    const moduleNamed = (name: string) => ({
-      id: `cap_${name.toLowerCase().replace(/\s+/g, '_')}`,
-      name,
-      related_entities: [],
-      operations: [],
-      criticality_factors: [],
-    });
-    const candidateSnapshot: any[] = [
-      // One genuinely grounded candidate, plus a pile of module names.
-      { id: 'cap_song', name: 'Song', related_entities: ['entity_song'], operations: [{ entry_point_id: 'ep_1', action: 'create' }], criticality_factors: [] },
-      moduleNamed('Net'), moduleNamed('Infer Web'), moduleNamed('Gui V1'),
-      moduleNamed('Attentions Onnx'), moduleNamed('Common'), moduleNamed('Get Hubert'),
-    ];
-    const systemCapabilities: any[] = [];
-    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities);
-
-    const names = systemCapabilities.map((capability: any) => capability.name);
-    for (const junk of ['Manage Net', 'View Infer Web', 'Manage Gui V1', 'Manage Attentions Onnx', 'Manage Common']) {
-      expect(names).not.toContain(junk);
-    }
-    // The grounded one survives — degrade in count and confidence, never in shape.
-    expect(names).toContain('Manage Song');
-  });
-
-  it('applyDeterministicCapabilityFallback: keeps a small evidence-ranked set when NOTHING is grounded, never the raw list', () => {
-    // The second hole in the same guard: when no candidate is outcome-shaped, the
-    // `outcomeShaped.length > 0` condition failed and it published everything.
-    // Two rules are in tension and both must hold — "zero is essentially never
-    // correct" forbids emptying the list, and "a capability is an outcome" forbids
-    // publishing two dozen filenames. So: keep the few best-evidenced.
-    const candidateSnapshot: any[] = Array.from({ length: 12 }, (_, index) => ({
-      id: `cap_mod_${index}`,
-      name: `Module ${index}`,
-      related_entities: [],
-      // Give a couple of them operations so the ranking has something real to sort
-      // on — the tie-break must be evidence, never the name.
-      operations: index < 2 ? [{ entry_point_id: `ep_${index}`, action: 'run' }] : [],
-      criticality_factors: [],
-    }));
-    const systemCapabilities: any[] = [];
-    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities);
-
-    expect(systemCapabilities.length).toBeGreaterThan(0);
-    expect(systemCapabilities.length).toBeLessThanOrEqual(3);
-  });
-
-  it('applyDeterministicCapabilityFallback: derives a read-only purpose and humanized entity subject', () => {
-    const candidateSnapshot: any[] = [{
-      id: 'cap_enterpriseorders',
-      name: 'Enterpriseorders',
-      related_entities: ['entity_enterprise_order'],
-      operations: [{
-        entry_point_id: 'entry_order', entry_point_type: 'http', action: 'View',
-        trigger: { method: 'GET', path: '/orders/{id}' },
-      }],
-      criticality_factors: [],
-    }];
-    const systemCapabilities: any[] = [];
-    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities, [{
-      id: 'entity_enterprise_order', name: 'EnterpriseOrder',
-    }]);
-
-    expect(systemCapabilities[0].name).toBe('View Enterprise Order');
-  });
-
-  it('applyDeterministicCapabilityFallback: merges polyglot read surfaces by entity and repairs an unanchored route', () => {
-    const candidates: any[] = [
-      {
-        id: 'cap_enterprise',
-        name: 'Enterprise',
-        related_entities: ['entity_enterpriseorder'],
-        related_domains: ['enterprise'],
-        operations: [
-          { entry_point_id: 'internal_analyze', entry_point_type: 'internal', action: 'Analyze' },
-          { entry_point_id: 'ts_orders', entry_point_type: 'http', action: 'View', trigger: { method: 'GET', path: '/ts/orders/:id' } },
-        ],
-        category: 'core',
-        criticality: 'medium',
-        criticality_factors: [],
-      },
-      {
-        id: 'cap_orders',
-        name: 'Orders Management',
-        related_entities: ['entity_enterpriseorder'],
-        related_domains: ['orders'],
-        operations: [
-          { entry_point_id: 'python_orders', entry_point_type: 'http', action: 'List', trigger: { method: 'GET', path: '/python/orders/{id}' } },
-        ],
-        category: 'supporting',
-        criticality: 'low',
-        criticality_factors: [],
-      },
-      {
-        id: 'cap_enterpriseorders',
-        name: 'Enterpriseorders Workflow',
-        related_entities: [],
-        related_domains: ['enterpriseorders'],
-        operations: [
-          { entry_point_id: 'dotnet_orders', entry_point_type: 'http', action: 'List', path_or_command: '/enterpriseorders/dotnet/orders/{id}', trigger: { method: 'GET', path: '/enterpriseorders/dotnet/orders/{id}' } },
-        ],
-        category: 'supporting',
-        criticality: 'low',
-        criticality_factors: [],
-      },
-    ];
-    const systemCapabilities: any[] = [];
-    orch.applyDeterministicCapabilityFallback(candidates, [], [], [], systemCapabilities, [{
-      id: 'entity_enterpriseorder',
-      name: 'EnterpriseOrder',
-      lifecycle: { created_by: [], read_by: ['ts_orders'], updated_by: [], deleted_by: [] },
-    }]);
-
-    expect(systemCapabilities).toHaveLength(1);
-    expect(systemCapabilities[0].name).toBe('View Enterprise Order');
-    expect(systemCapabilities[0].operations.map((operation: any) => operation.entry_point_id).sort())
-      .toEqual(['dotnet_orders', 'internal_analyze', 'python_orders', 'ts_orders']);
-  });
 });
 
 describe('domain grounding gate: dependency-name salience (live defect — a menu-bar utility labeled "security-scanning-tool" off its dependency list)', () => {
+  it('accepts a domain grounded directly by product documentation when deterministic purpose fields are empty', () => {
+    const verdict = orch.evaluateAIDomainCandidate(
+      'source-analysis',
+      { primary_domain: '', inferred_description: '', core_concepts: [] },
+      [],
+      {
+        concepts: [], evidence: [],
+        productDocTitle: 'Source Analysis Platform',
+        productDocSummary: 'A platform that analyzes source repositories for engineering teams.',
+      },
+    );
+
+    expect(verdict).toMatchObject({ accepted: true, reason: 'accepted' });
+  });
+
   it('evaluateAIDomainCandidate rejects a label grounded ONLY in dependency-name vocabulary', () => {
     const purpose: any = {
       primary_domain: '',
@@ -8939,6 +9160,43 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
     );
     expect(verdict.accepted).toBe(true);
     expect(verdict.reason).not.toBe('dependency-name-only-grounded');
+  });
+
+  it('rejects a mixed product domain polluted by dependency and transport names', () => {
+    const purpose: any = {
+      primary_domain: '',
+      inferred_description: 'Users create and retrieve user information through NestJS, React, and POST operations.',
+      core_concepts: ['user'],
+    };
+    const dependencyVerdict = orch.evaluateAIDomainCandidate(
+      'user-nestjs-react',
+      purpose,
+      ['@nestjs/core', 'react'],
+      { concepts: ['user'], evidence: [] },
+    );
+    expect(dependencyVerdict.reason).toBe('dependency-name-domain-pollution');
+    const mechanismVerdict = orch.evaluateAIDomainCandidate(
+      'user-post-management',
+      purpose,
+      [],
+      { concepts: ['user'], evidence: [] },
+    );
+    expect(mechanismVerdict.reason).toBe('implementation-mechanism-domain');
+  });
+
+  it('rejects upstream authentication mechanics from a non-auth product domain', () => {
+    const verdict = orch.evaluateAIDomainCandidate(
+      'user-auth-guard',
+      {
+        primary_domain: '',
+        inferred_description: 'Operators create and retrieve user information behind an authentication guard.',
+        core_concepts: ['user', 'auth', 'guard'],
+      },
+      [],
+      { concepts: ['user'], evidence: [] },
+    );
+
+    expect(verdict.reason).toBe('nonterminal-supporting-mechanism-domain');
   });
 
   it('evaluateAIDomainCandidate accepts a label grounded in README/manifest text even when unrelated generic-infra dependencies are present', () => {
@@ -8995,7 +9253,7 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
         primary_domain: '', core_concepts: [], inferred_description: '', supporting_workflow_ids: [],
       };
       await orch.applyAIInterpretation(
-        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+        purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [],
         [], [],
         ['relationship-graph-sdk'],
         [], { concepts: [], evidence: [] }, [],
@@ -9038,7 +9296,7 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
         primary_domain: '', core_concepts: [], inferred_description: '', supporting_workflow_ids: [],
       };
       await orch.applyAIInterpretation(
-        purpose, 'menu-companion', [], [], [], [], orch.emptyFlowGraph(), [],
+        purpose, 'menu-companion', [], [], [], [], emptyFlowGraph(), [],
         [], [],
         ['sparkle-auto-updater', 'cocoalumberjack-logger'],
         [],
@@ -9492,23 +9750,6 @@ describe('resolveRootManifestName ecosystem coverage (task: go.mod naming-preced
   });
 });
 
-describe('systemDisplayNameIsBareBasename (caller-supplied displayName that is itself just the folder name)', () => {
-  it('treats an absent displayName as bare', () => {
-    expect(orch.systemDisplayNameIsBareBasename(undefined, '/tmp/proof-of-concept')).toBe(true);
-  });
-
-  it('treats a displayName equal to the projectPath basename as bare (case-insensitive)', () => {
-    expect(orch.systemDisplayNameIsBareBasename('proof-of-concept', '/tmp/proof-of-concept')).toBe(true);
-    expect(orch.systemDisplayNameIsBareBasename('Proof-Of-Concept', '/tmp/proof-of-concept')).toBe(true);
-    expect(orch.systemDisplayNameIsBareBasename('proof-of-concept', '/tmp/proof-of-concept/')).toBe(true);
-  });
-
-  it('treats a displayName that differs from the basename as a deliberate explicit name (not bare)', () => {
-    expect(orch.systemDisplayNameIsBareBasename('Klauro', '/tmp/proof-of-concept')).toBe(false);
-    expect(orch.systemDisplayNameIsBareBasename('My Custom Project Name', '/data/workspaces/prj_abc123')).toBe(false);
-  });
-});
-
 describe('architecture-shape claim gate (live truckspy: "microservices" shipped for a one-backend compose repo)', () => {
   const purpose = { primary_domain: 'fleet-management', core_concepts: ['vehicle', 'driver', 'trip'] };
   const base = 'A fleet management platform that tracks vehicles, drivers, and trips for dispatch operators. It records trip assignments and produces driver activity reports for fleet managers.';
@@ -9848,7 +10089,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
         enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
         frameworks: [], userJourneys: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
         candidateCapabilities: bigPool as any[],
-        externalServices: [], flowGraph: { capabilities: [] } as any,
+        externalServices: [], flowGraph: { capability_candidates: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
       });
       const bigCtx = captured[captured.length - 1].additionalContext;
@@ -9865,14 +10106,14 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
         enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
         frameworks: [], userJourneys: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
         candidateCapabilities: smallPool as any[],
-        externalServices: [], flowGraph: { capabilities: [] } as any,
+        externalServices: [], flowGraph: { capability_candidates: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
       });
       const smallCtx = captured[captured.length - 1].additionalContext;
       expect(smallCtx.facts.candidate_route_areas.length).toBe(10);
       const smallCounts = smallCtx.task.match(/Return (\d+) to (\d+) capabilities/);
-      expect(Number(smallCounts[1])).toBe(3);
-      expect(Number(smallCounts[2])).toBe(5);
+      expect(Number(smallCounts[1])).toBe(4);
+      expect(Number(smallCounts[2])).toBe(10);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -10003,6 +10244,26 @@ describe('enterprise AI semantic guards', () => {
     ).reason).toBe('read-only-capability-claims-mutation');
   });
 
+  it('rejects fallback prose that contradicts resolved capability evidence', () => {
+    const operationTarget = {
+      id: 'cap_runtime', name: 'Correlate runtime evidence', kind: 'capability',
+      operations: ['Correlate message runtime evidence'], relatedEntities: [], relatedDomains: ['runtime'],
+    };
+    const entityTarget = {
+      id: 'cap_records', name: 'Manage findings', kind: 'capability',
+      operations: [], relatedEntities: ['Finding'], relatedDomains: ['findings'],
+    };
+
+    expect(orch.validateElementDescription(
+      'Correlate runtime evidence is a structural capability grouping identified in the codebase; no operations or related data entities have been resolved for it.',
+      operationTarget,
+    ).reason).toBe('contradicts-resolved-operations');
+    expect(orch.validateElementDescription(
+      'Manage findings is a structural capability grouping identified in the codebase; no operations or related data entities have been resolved for it.',
+      entityTarget,
+    ).reason).toBe('contradicts-resolved-entities');
+  });
+
   it('rejects malformed prose and topology claims without Tier-1 deployment proof', () => {
     const purpose = { primary_domain: 'enterprise-orders', core_concepts: ['orders'] };
     expect(orch.validateAIInterpretation(
@@ -10021,6 +10282,20 @@ describe('enterprise AI semantic guards', () => {
     expect(orch.catalogQualityFailure([], 0)).toBeUndefined();
     expect(orch.catalogQualityFailure([], 1)).toBe('empty catalog after reconciliation');
     expect(orch.catalogQualityFailure([{ name: 'View orders' }], 3)).toMatch(/catalog collapse/);
+  });
+
+  it('rejects a catalog that compresses five evidence families into two capabilities', () => {
+    const twoCapabilities = [
+      { name: 'Analyze codebases', description: 'Explains code behavior for engineering decisions.', name_source: 'ai', operations: [{}] },
+      { name: 'Assess proposed changes', description: 'Shows likely change effects before implementation.', name_source: 'ai', operations: [{}] },
+    ];
+    const threeCapabilities = [
+      ...twoCapabilities,
+      { name: 'Coordinate concurrent work', description: 'Prevents overlapping changes from conflicting in shared concepts.', name_source: 'ai', operations: [{}] },
+    ];
+
+    expect(orch.catalogQualityFailure(twoCapabilities, 5)).toMatch(/at least 3/);
+    expect(orch.catalogQualityFailure(threeCapabilities, 5)).toBeUndefined();
   });
 
   it('grounds infrastructure responsibilities above implementation-shaped candidate labels', async () => {
@@ -10051,7 +10326,7 @@ describe('enterprise AI semantic guards', () => {
           operations: [{ entry_point_id: 'entry_deploy', entry_point_type: 'cli', action: 'Execute' }],
         }],
         externalServices: [],
-        flowGraph: { capabilities: [] },
+        flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] },
         budgetMs: 30000,
       });
@@ -10091,7 +10366,7 @@ describe('enterprise AI semantic guards', () => {
           name: 'Shell Deploy', related_entities: [], operations: [],
         }],
         externalServices: [],
-        flowGraph: { capabilities: [] },
+        flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] },
         budgetMs: 30000,
       });
@@ -10132,7 +10407,7 @@ describe('enterprise AI semantic guards', () => {
             trigger: { method: 'GET', path: '/orders/{id}' },
           }],
         }],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
 
@@ -10146,7 +10421,7 @@ describe('enterprise AI semantic guards', () => {
     }
   });
 
-  it('repairs an AI bare-noun resource with the verb proven by linked operations', async () => {
+  it('rejects an AI bare-noun resource instead of inventing purpose language', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
@@ -10170,12 +10445,11 @@ describe('enterprise AI semantic guards', () => {
             trigger: { method: 'GET', path: '/orders/{id}' },
           }],
         }],
-        externalServices: [], flowGraph: { capabilities: [] },
+        externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
 
-      expect(catalog).toHaveLength(1);
-      expect(catalog[0].name).toBe('View Enterprise Order');
+      expect(catalog).toEqual([]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -10306,6 +10580,7 @@ describe('enterprise AI semantic guards', () => {
       distinctiveEntities: ['EnterpriseOrder'],
       productBehaviorPaths: [{ intent: 'Review order', recordsRead: ['EnterpriseOrder'] }],
       allowedFrameworks: ['Express'],
+      externalServices: ['Redis'],
       libraries: ['internal-request-router'],
       entryPoints: [{ handler: 'enterprise_python_handler' }],
       deterministicOverview: 'HTTP handler implementation mechanics',
@@ -10380,7 +10655,8 @@ describe('enterprise AI semantic guards', () => {
     ];
     const [capability] = orch.reconcileCatalogedCapabilities(cataloged, [], entities);
     expect(capability.name).toBe('Process Enterprise Orders');
-    expect(capability.description).toBe('');
+    expect(capability.description).toBe('Process Enterprise Orders across supported product workflows.');
+    expect(capability.description_source).toBe('deterministic');
   });
 
   it('filters route placeholders, framework tokens, and context adjectives from product core concepts', () => {
@@ -10398,6 +10674,7 @@ describe('enterprise AI semantic guards', () => {
       { name: 'List Orders', related_entities: ['order'], operations: [] },
       { name: 'Enterprise Dashboard', category: 'supporting', related_entities: [], operations: [{ entry_point_type: 'page' }] },
       { name: 'Access Enterprise Dashboard', category: 'supporting', related_entities: [], operations: [{ entry_point_type: 'page' }] },
+      { name: 'Workspace Overview', category: 'supporting', related_entities: [], related_domains: ['workspace'], operations: [{ entry_point_type: 'route' }] },
     ];
     expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
   });
@@ -10408,6 +10685,171 @@ describe('enterprise AI semantic guards', () => {
       { name: 'Calculate Enterprise Totals', related_entities: ['entity_enterpriseorder'], operations: [] },
     ];
     expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
+  });
+
+  it('counts route-backed operations as a product family when they touch a domain entity', () => {
+    const candidates = [{
+      name: 'Manage Customer Profiles',
+      category: 'supporting',
+      related_entities: ['entity_customer'],
+      operations: [{ entry_point_type: 'route', action: 'create' }],
+    }];
+    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
+  });
+
+  it('ignores a transport label shared by most candidates when counting product families', () => {
+    const candidates: any[] = ['Agent', 'Workspace', 'Analysis', 'Codebase', 'Cross repository', 'Concurrent work']
+      .map((subject, index) => ({
+        id: `candidate_${index}`,
+        name: `${subject} MCP Tool Surface`,
+        evidence_kind: 'behavior-surface',
+        related_entities: ['entity_shared_context'],
+        related_domains: [subject.toLowerCase().replace(/\s+/g, '-')],
+        operations: [{ entry_point_type: 'message' }],
+      }));
+    candidates.push({
+      id: 'candidate_transport_parent', name: 'MCP Tool Surface', evidence_kind: 'behavior-surface',
+      related_entities: ['entity_shared_context'], related_domains: ['mcp-tool'],
+      operations: [{ entry_point_type: 'message' }],
+    });
+    candidates.push({
+      id: 'candidate_integrations', name: 'External Integration Surface', evidence_kind: 'behavior-surface',
+      related_entities: ['entity_shared_context'], related_domains: ['external'],
+      operations: [{ entry_point_type: 'external' }],
+    });
+
+    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(6);
+  });
+
+  it('removes an aggregate registry parent when multiple semantic child surfaces cover it', () => {
+    const op = (id: string) => ({ entry_point_id: id, entry_point_type: 'message', action: 'Handle' });
+    const surfaces = [
+      { id: 'parent', name: 'Tool Surface', evidence_kind: 'behavior-surface', operations: [op('a'), op('b'), op('c'), op('d')], criticality_factors: ['20 message entry points form one cohesive behavior surface'] },
+      { id: 'agents', name: 'Agent Tool Surface', evidence_kind: 'behavior-surface', operations: [op('a'), op('b')], criticality_factors: ["2 message entry points form one cohesive behavior family ('agent')"] },
+      { id: 'workspaces', name: 'Workspace Tool Surface', evidence_kind: 'behavior-surface', operations: [op('c'), op('d')], criticality_factors: ["2 message entry points form one cohesive behavior family ('workspace')"] },
+    ];
+
+    expect(orch.catalogEvidenceCandidates([], surfaces).map((candidate: any) => candidate.id))
+      .toEqual(['agents', 'workspaces']);
+  });
+
+  it('removes an aggregate registry parent when child examples cover its capped handler window', () => {
+    const surface = (id: string, examples: string[]) => ({
+      id, name: `${id} Tool Surface`, evidence_kind: 'behavior-surface', evidence_examples: examples,
+      operations: examples.map(example => ({ entry_point_id: `${id}-${example}`, entry_point_type: 'message', action: 'Handle' })),
+      criticality_factors: id === 'parent'
+        ? ['20 message entry points form one cohesive behavior surface']
+        : [`${examples.length} message entry points form one cohesive behavior family ('${id}')`],
+    });
+    const surfaces = [
+      surface('parent', ['analyze', 'assess', 'claim', 'release']),
+      surface('analysis', ['analyze', 'assess']),
+      surface('coordination', ['claim', 'release']),
+    ];
+
+    expect(orch.catalogEvidenceCandidates([], surfaces).map((candidate: any) => candidate.id))
+      .toEqual(['analysis', 'coordination']);
+  });
+
+  it('keeps internal program shapes out of an application product catalog', () => {
+    const candidates = [
+      {
+        id: 'internal-sweep', name: 'Manage corpus depth sweeps',
+        related_entities: ['entity_sweep'],
+        operations: [{ entry_point_id: 'internal', entry_point_type: 'internal', action: 'Process' }],
+      },
+      {
+        id: 'orders', name: 'Review orders', related_entities: ['entity_order'],
+        operations: [{ entry_point_id: 'orders-page', entry_point_type: 'page', action: 'View' }],
+      },
+    ];
+    const entities = [
+      { id: 'entity_sweep', name: 'CorpusDepthSweepState', kind: 'domain-shape' },
+      { id: 'entity_order', name: 'Order', kind: 'persisted-entity' },
+    ];
+
+    expect(orch.catalogEvidenceCandidates(candidates, [], entities, 'app').map((candidate: any) => candidate.id))
+      .toEqual(['orders']);
+    expect(orch.catalogEvidenceCandidates(candidates, [], entities, 'library').map((candidate: any) => candidate.id))
+      .toEqual(['internal-sweep', 'orders']);
+  });
+
+  it('keeps legacy UI interaction mechanics out of application product evidence', () => {
+    const candidates = [{
+      id: 'auth-change',
+      name: 'Authentication Change Event Surface',
+      related_entities: [],
+      operations: [
+        { entry_point_id: 'login-page', entry_point_type: 'page', action: 'View' },
+        { entry_point_id: 'password-change', entry_point_type: 'event', action: 'Handle' },
+      ],
+    }];
+
+    expect(orch.catalogEvidenceCandidates(candidates, [], [], 'app')).toEqual([]);
+  });
+
+  it('rejects an unsupported expansion of an abbreviated operation family even when entities are cited', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Handle fabrication workflows',
+        description: 'Coordinates fabrication workflows and tracks their progress for operators.',
+        category: 'supporting',
+        entities: ['CAS'],
+        candidate_ids: ['fab'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'analysis-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-analysis', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_cas', name: 'CAS', kind: 'domain-shape' }],
+        candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'fab', name: 'Fab Tool Surface', evidence_kind: 'behavior-surface',
+          evidence_examples: ['fab_claim_work', 'fab_check_collision', 'fab_release_work'],
+          related_entities: ['entity_cas'],
+          operations: [{ entry_point_id: 'claim', entry_point_type: 'message', action: 'Handle' }],
+          criticality_factors: ['5 message entry points'],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('accepts product-language abstraction when its description bridges to a cited entity', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Maintain customer profiles',
+        description: 'Keeps user names and email details available for supported customer workflows.',
+        category: 'core',
+        entities: ['User'],
+        journeys: [],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'account-service',
+        enhancedSystemPurpose: { primary_domain: 'account-management', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_user', name: 'User', kind: 'persisted-entity' }],
+        candidateCapabilities: [], behaviorSurfaces: [], externalServices: [],
+        flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].related_entities).toEqual(['entity_user']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
   });
 
   it('keeps a supporting page in UI structure without promoting it to a product capability', () => {
@@ -10446,7 +10888,7 @@ describe('enterprise AI semantic guards', () => {
       database_schema: { entities: [{ name: 'EnterpriseOrder' }] },
       external_services: [],
       domain_concepts: [{ id: 'orders', name: 'orders', classification: 'core' }],
-      system_capabilities: [{
+      capabilities: [{
         id: 'view-orders', name: 'View Enterprise Orders', category: 'core',
         description: 'View Enterprise Orders presents EnterpriseOrder details for operators reviewing selected orders.',
         description_source: 'ai',
@@ -10487,7 +10929,7 @@ describe('enterprise AI semantic guards', () => {
         inferred_description: 'The order service retrieves EnterpriseOrder records for operators.',
         ai_input_fingerprint: orch.hashAIInterpretationRefreshFingerprint(facts),
       },
-      system_capabilities: [{
+      capabilities: [{
         id: 'ai-orders', name: 'View Enterprise Order Details', category: 'core',
         description: 'View Enterprise Order Details returns the selected EnterpriseOrder record.',
         description_source: 'ai', related_domains: [], related_entities: ['order'], operations: [],
@@ -10559,7 +11001,7 @@ describe('enterprise AI semantic guards', () => {
       database_schema: { entities: [{ name: 'EnterpriseOrder' }] },
       external_services: [],
       domain_concepts: [{ id: 'orders', name: 'orders', classification: 'core' }],
-      system_capabilities: [{
+      capabilities: [{
         id: 'view-orders', name: 'View Enterprise Orders', category: 'core',
         related_domains: ['enterprise-orders'], related_entities: ['order'], operations: [],
       }],
@@ -10903,7 +11345,7 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
         primary_domain: 'recipe-sharing',
       },
     } as any;
-    expect((orch as any).previousDescriptionNeedsCurrentValidation(staleSecurityClaim)).toBe(true);
+    expect(previousDescriptionNeedsCurrentValidation(staleSecurityClaim)).toBe(true);
 
     // A DIFFERENT domain/type pair the old literal never covered — proves
     // this is a general structural rule, not the one hardcoded phrase.
@@ -10913,7 +11355,7 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
         primary_domain: 'invoice-billing',
       },
     } as any;
-    expect((orch as any).previousDescriptionNeedsCurrentValidation(staleUnrelatedClaim)).toBe(true);
+    expect(previousDescriptionNeedsCurrentValidation(staleUnrelatedClaim)).toBe(true);
 
     // When the current classification DOES corroborate the claimed type
     // (same domain family), it is not flagged stale.
@@ -10923,7 +11365,7 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
         primary_domain: 'zero-trust-network-access',
       },
     } as any;
-    expect((orch as any).previousDescriptionNeedsCurrentValidation(corroboratedClaim)).toBe(false);
+    expect(previousDescriptionNeedsCurrentValidation(corroboratedClaim)).toBe(false);
 
     // No classification populated at all is a different, already-handled
     // case (missing-previous-description / domain-source gates) — not
@@ -10934,7 +11376,7 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
         inferred_description: 'The order service retrieves EnterpriseOrder records for operators.',
       },
     } as any;
-    expect((orch as any).previousDescriptionNeedsCurrentValidation(noClassification)).toBe(false);
+    expect(previousDescriptionNeedsCurrentValidation(noClassification)).toBe(false);
   });
 });
 
@@ -11710,7 +12152,7 @@ describe('TASK #119: candidate-generation inversion (terminal / proximal-termina
 // and a third (product-map.ts's view-time default) each closed one WRITE
 // SITE without closing the invariant itself — this exercises the final
 // enforcement point (enforceCapabilityDescriptionProvenanceInvariant) that
-// runs over the actual `system_capabilities` array at every output-assembly
+// runs over the actual `capabilities` array at every output-assembly
 // exit, not just the derived product-map view.
 // STRENGTHENED 2026-08-11 (live CLI-shape measurement): the invariant used to
 // enforce only the weak direction — strip a `description_source` left dangling
@@ -11791,5 +12233,35 @@ describe('capability description-provenance invariant (choke point)', () => {
 
   it('tolerates an undefined capabilities array (no-op, never throws)', () => {
     expect(() => orch.enforceCapabilityDescriptionProvenanceInvariant(undefined)).not.toThrow();
+  });
+});
+
+describe('derived call graph replacement', () => {
+  it('removes callers and callees that are absent from the rebuilt graph', () => {
+    const node = {
+      id: 'function_a',
+      name: 'a',
+      type: 'function',
+      metadata: { attributes: { incoming_calls: 4, outgoing_calls: 3 } },
+      call_graph: {
+        calls: [{ target_id: 'function_b' }],
+        called_by: [{ source_id: 'function_c' }],
+        total_calls_made: 1,
+        total_calls_received: 1,
+      },
+    } as unknown as CASNode;
+    const graph = {
+      getDirectCallees: () => [],
+      getDirectCallers: () => [],
+    };
+
+    orch.enrichNodeCallGraphs([node], graph, [], []);
+
+    expect(node.call_graph?.calls).toBeUndefined();
+    expect(node.call_graph?.called_by).toBeUndefined();
+    expect(node.call_graph?.total_calls_made).toBe(0);
+    expect(node.call_graph?.total_calls_received).toBe(0);
+    expect(node.metadata?.attributes?.incoming_calls).toBe(0);
+    expect(node.metadata?.attributes?.outgoing_calls).toBe(0);
   });
 });

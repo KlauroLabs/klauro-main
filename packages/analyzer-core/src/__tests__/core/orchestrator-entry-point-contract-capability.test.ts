@@ -61,6 +61,7 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
     };
     mockedComputeFlowConcepts.mockReturnValue([flow]);
 
+    let persistedFlows: FlowConcept[] = [];
     const result: CASEntryPoint[] = orch.deriveEntryPointContractAndCapability([ep], {
       nodes: [],
       edges: [],
@@ -68,9 +69,9 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
       exit_points: [],
       call_chains: [],
       data_lineage: [],
-      system_capabilities: [],
+      capabilities: [],
       behavior_surfaces: [],
-    });
+    }, (flows: FlowConcept[]) => { persistedFlows = flows; });
 
     expect(result).toHaveLength(1);
     expect(result[0].input).toEqual({
@@ -78,6 +79,7 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
       is_positional_only: false,
     });
     expect(result[0].output).toEqual({ type: 'Order', is_named_type: true, is_void: false });
+    expect(persistedFlows).toEqual([flow]);
   });
 
   it('inverts flow.capability_relationships (capability -> flow/role) into capabilities on the entry point', () => {
@@ -115,7 +117,7 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
       exit_points: [],
       call_chains: [],
       data_lineage: [],
-      system_capabilities: capabilities,
+      capabilities: capabilities,
       behavior_surfaces: [],
     });
 
@@ -128,7 +130,7 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
     expect(result[0].capabilities).toHaveLength(2);
   });
 
-  it('persists the inverted M:N edges onto system_capabilities[].related_flows (the deferred half of this wave — previously computed and thrown away, never written back to the CAS)', () => {
+  it('persists the inverted M:N edges onto capabilities[].related_flows (the deferred half of this wave — previously computed and thrown away, never written back to the CAS)', () => {
     const ep = entryPoint('ep_5');
     const flow: FlowConcept = {
       flow_id: 'flow_5',
@@ -168,12 +170,12 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
       exit_points: [],
       call_chains: [],
       data_lineage: [],
-      system_capabilities: capabilities,
+      capabilities: capabilities,
       behavior_surfaces: behaviorSurfaces,
     });
 
     // Mutated in place — these are the SAME objects the orchestrator later
-    // spreads into output.system_capabilities/behavior_surfaces.
+    // spreads into output.capabilities/behavior_surfaces.
     expect(capabilities[0].related_flows).toEqual([
       { flow_id: 'flow_5', role: 'primary', rationale: 'operation ref for ship' },
     ]);
@@ -215,7 +217,7 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
       exit_points: [],
       call_chains: [],
       data_lineage: [],
-      system_capabilities: capabilities,
+      capabilities: capabilities,
       behavior_surfaces: [],
     });
 
@@ -233,7 +235,7 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
       exit_points: [],
       call_chains: [],
       data_lineage: [],
-      system_capabilities: [],
+      capabilities: [],
       behavior_surfaces: [],
     });
 
@@ -255,7 +257,7 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
       exit_points: [],
       call_chains: [],
       data_lineage: [],
-      system_capabilities: [],
+      capabilities: [],
       behavior_surfaces: [],
     });
 

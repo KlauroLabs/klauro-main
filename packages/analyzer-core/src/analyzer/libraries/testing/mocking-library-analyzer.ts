@@ -5,29 +5,29 @@ import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { createYieldBudget } from '../../core/event-loop-yield';
 
-/**
- * Mocking / test-double + fixture-factory library analyzer.
- *
- * The architectural insight: a mock is not a test detail, it is a declaration of
- * a DEPENDENCY SEAM. When a test replaces a collaborator at the boundary, it is
- * naming the exact thing the system-under-test depends on at that seam. Assemble
- * those replacement targets across a suite and you have the set of collaborators
- * the system swaps out under test — its real injection/integration surface.
- *
- * Companion to the test-framework analyzers (JestAnalyzer/CypressAnalyzer own
- * SUITES and CASES; this analyzer owns MOCKS/DOUBLES and FIXTURES/FACTORIES).
- * We emit three node kinds and two seam edges:
- *   - `mock` / `test_double`  node per double, plus a `mocks` edge to the real
- *     module / type / dependency it replaces (the seam target).
- *   - `test_fixture` node per factory/builder, plus a `constructs` edge to the
- *     entity/type it produces.
- *
- * Every rule is gated on the mocking library's real import (or, for Java/Go/C#,
- * its annotation/import statement) — never a bare `mock(` / `fn(` symbol without
- * its import source, mirroring the requiresImportEvidence discipline in
- * architectural-library-analyzer.ts. The whole point is attributing a double to
- * the framework that actually created it, not to any file that says "mock".
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 type MockingLibrary =
   | 'sinon'
@@ -51,29 +51,29 @@ type FixtureLibrary =
   | 'faker'
   | 'factory-bot';
 
-/** A single test double: a stub/spy/mock/fake created by a mocking library. */
+
 interface MockDouble {
   id: string;
-  /** Short display label, e.g. `jest.mock('../api')` or `mock(PaymentGateway)`. */
+
   name: string;
   library: MockingLibrary;
-  /** Fine-grained double kind for the node's subcategories. */
+
   doubleKind: 'stub' | 'spy' | 'mock' | 'module-mock' | 'fake';
-  /** The collaborator this double replaces — a module path, type, or symbol. */
+
   seamTarget?: string;
-  /** How the seam target was named: module import path, type reference, or symbol. */
+
   seamKind?: 'module' | 'type' | 'symbol';
   filePath: string;
   line: number;
   evidence: string;
 }
 
-/** A fixture factory / builder that constructs an entity or type for tests. */
+
 interface FixtureFactory {
   id: string;
   name: string;
   library: FixtureLibrary;
-  /** The entity/type the factory constructs (fishery Factory<User>, DjangoModelFactory Meta.model). */
+
   constructs?: string;
   filePath: string;
   line: number;
@@ -87,13 +87,13 @@ interface DependencyHit {
   packageManager: string;
 }
 
-/**
- * Import/annotation sources that gate each mocking library. A file is only
- * mined for a library's doubles once we see it actually pull that library in.
- * `jest`/`vitest` are the exceptions the ecosystem treats as ambient globals
- * (no import needed), so they are gated on the manifest dependency instead of a
- * per-file import — handled explicitly in importedMockingLibraries().
- */
+
+
+
+
+
+
+
 const MOCK_IMPORTS: Record<MockingLibrary, string[]> = {
   sinon: ['sinon'],
   jest: ['jest', '@jest/globals'],
@@ -252,9 +252,9 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     const doubles: MockDouble[] = [];
     const fixtures: FixtureFactory[] = [];
 
-    // Budget-yield per file: with the shared file-read cache warm the await
-    // resolves in a microtask (no event-loop hop), so this scan ran as one
-    // multi-second synchronous block on a whale repo. Results unchanged.
+
+
+
     const maybeYield = createYieldBudget();
     for (const relativeFile of files) {
       await maybeYield();
@@ -323,14 +323,14 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  /**
-   * The seam nodes the `mocks` edges point at — one per distinct replaced
-   * collaborator, so several doubles of the same collaborator collapse onto one
-   * seam. These were referenced by every seam edge but never emitted, which
-   * left the graph asserting targets that existed in no collection; the
-   * relationship is real, so the row it names has to exist. Located at the
-   * first observation site, which is the only evidence the seam has.
-   */
+
+
+
+
+
+
+
+
   private createSeamNodes(doubles: MockDouble[]): CASNode[] {
     const firstObservation = new Map<string, MockDouble>();
     for (const double of doubles) {
@@ -359,12 +359,12 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  /**
-   * The seam map: one `mocks` edge per double that names a real collaborator.
-   * source = the double node, target = the seam node keyed by the replaced
-   * module/type so multiple doubles of the same collaborator collapse onto one
-   * seam. This is the artifact that reveals the integration surface.
-   */
+
+
+
+
+
+
   private createSeamEdges(doubles: MockDouble[]): CASEdge[] {
     const edges: CASEdge[] = [];
     for (const double of doubles) {
@@ -478,15 +478,15 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     lines.forEach((line, index) => {
       const lineNumber = index + 1;
 
-      // jest.mock('module') / vi.mock('module') — a whole-module replacement.
-      // The single richest seam signal: the argument IS the replaced module path.
+
+
       if (libraries.has('jest') || libraries.has('vitest')) {
         const moduleMock = line.match(/\b(?:jest|vi)\.mock\s*\(\s*['"]([^'"]+)['"]/);
         if (moduleMock) {
           doubles.push(this.double('jest-vitest', 'module-mock', line, filePath, lineNumber,
             libraries.has('vitest') && /\bvi\.mock/.test(line) ? 'vitest' : 'jest', moduleMock[1], 'module'));
         }
-        // jest.spyOn(obj, 'method') / jest.fn() — spies and inline stubs.
+
         const spy = line.match(/\b(?:jest|vi)\.spyOn\s*\(\s*([A-Za-z_$][\w$.]*)\s*,\s*['"]([^'"]+)['"]/);
         if (spy) {
           const lib = /\bvi\.spyOn/.test(line) ? 'vitest' : 'jest';
@@ -494,7 +494,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Sinon: sinon.stub(obj, 'method') / sinon.spy(...) / sinon.mock(...).
+
       if (libraries.has('sinon')) {
         const sinon = line.match(/\bsinon\.(stub|spy|mock|fake)\s*\(\s*([A-Za-z_$][\w$.]*)?(?:\s*,\s*['"]([^'"]+)['"])?/);
         if (sinon) {
@@ -504,7 +504,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // testdouble.js: td.replace('module') / td.object() / td.func().
+
       if (libraries.has('testdouble')) {
         const replace = line.match(/\btd\.replace\s*\(\s*['"]([^'"]+)['"]/);
         if (replace) doubles.push(this.double('testdouble', 'module-mock', line, filePath, lineNumber, 'testdouble', replace[1], 'module'));
@@ -513,8 +513,8 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Python unittest.mock: @patch('pkg.target') / patch('pkg.target') /
-      // MagicMock() / Mock(). The patch string is a dotted seam path.
+
+
       if (libraries.has('unittest-mock')) {
         const patch = line.match(/(?:@)?(?:mock\.)?patch(?:\.object)?\s*\(\s*['"]([^'"]+)['"]/);
         if (patch) doubles.push(this.double('unittest.mock', 'mock', line, filePath, lineNumber, 'unittest-mock', patch[1], 'symbol'));
@@ -523,56 +523,56 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // pytest monkeypatch: monkeypatch.setattr('pkg.target', ...).
+
       if (libraries.has('pytest-monkeypatch')) {
         const setattr = line.match(/\bmonkeypatch\.(setattr|setitem|delattr)\s*\(\s*['"]([^'"]+)['"]/);
         if (setattr) doubles.push(this.double('monkeypatch', 'stub', line, filePath, lineNumber, 'pytest-monkeypatch', setattr[2], 'symbol'));
       }
 
-      // responses / requests-mock: HTTP-boundary doubles keyed by URL.
+
       if (libraries.has('responses')) {
         const resp = line.match(/\b(?:responses\.(?:add|get|post|put|delete)|requests_mock\.\w+)\s*\(\s*[^,'"]*['"]([^'"]+)['"]/);
         if (resp) doubles.push(this.double('responses', 'mock', line, filePath, lineNumber, 'responses', resp[1], 'module'));
       }
 
-      // Mockito: mock(Type.class) / @Mock Type field / when(...)/verify(...).
+
       if (libraries.has('mockito')) {
         const mock = line.match(/\bmock\s*\(\s*([A-Za-z_$][\w$.]*)\.class\s*\)/) || line.match(/@Mock\b[^;]*\b([A-Z][\w$.]*)\s+\w+\s*;/);
         if (mock) doubles.push(this.double('mockito', 'mock', line, filePath, lineNumber, 'mockito', mock[1], 'type'));
         else if (/@(Mock|Spy|InjectMocks)\b/.test(line)) doubles.push(this.double('mockito', 'mock', line, filePath, lineNumber, 'mockito'));
       }
 
-      // EasyMock: createMock(Type.class) / createNiceMock(...).
+
       if (libraries.has('easymock')) {
         const em = line.match(/\bcreate(?:Nice|Strict)?Mock\s*\(\s*([A-Za-z_$][\w$.]*)\.class\s*\)/);
         if (em) doubles.push(this.double('easymock', 'mock', line, filePath, lineNumber, 'easymock', em[1], 'type'));
       }
 
-      // gomock: NewMockXxx(ctrl) generated mocks name the mocked interface.
+
       if (libraries.has('gomock')) {
         const gm = line.match(/\bNewMock([A-Z][\w]*)\s*\(/);
         if (gm) doubles.push(this.double('gomock', 'mock', line, filePath, lineNumber, 'gomock', gm[1], 'type'));
       }
 
-      // testify/mock: new(mocks.Xxx) / &mocks.Xxx{} / m.On("Method", ...).
+
       if (libraries.has('testify-mock')) {
         const tf = line.match(/\bnew\(\s*[A-Za-z_][\w]*\.([A-Z][\w]*)\s*\)/) || line.match(/&\s*[A-Za-z_][\w]*\.([A-Z][\w]*)\{\s*\}/);
         if (tf) doubles.push(this.double('testify', 'mock', line, filePath, lineNumber, 'testify-mock', tf[1], 'type'));
       }
 
-      // Moq (C#): new Mock<Type>() / Mock.Of<Type>().
+
       if (libraries.has('moq')) {
         const moq = line.match(/\b(?:new\s+Mock<|Mock\.Of<)\s*([A-Za-z_][\w.]*)\s*>/);
         if (moq) doubles.push(this.double('moq', 'mock', line, filePath, lineNumber, 'moq', moq[1], 'type'));
       }
 
-      // NSubstitute (C#): Substitute.For<Type>().
+
       if (libraries.has('nsubstitute')) {
         const ns = line.match(/\bSubstitute\.For<\s*([A-Za-z_][\w.]*)\s*>/);
         if (ns) doubles.push(this.double('nsubstitute', 'mock', line, filePath, lineNumber, 'nsubstitute', ns[1], 'type'));
       }
 
-      // RSpec mocks: instance_double('Type') / double('name') / allow(obj).to.
+
       if (libraries.has('rspec-mocks')) {
         const idbl = line.match(/\b(?:instance_double|class_double|object_double)\s*\(\s*['"]?([A-Za-z_][\w:]*)/);
         if (idbl) doubles.push(this.double('rspec', 'mock', line, filePath, lineNumber, 'rspec-mocks', idbl[1], 'type'));
@@ -592,7 +592,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     lines.forEach((line, index) => {
       const lineNumber = index + 1;
 
-      // fishery (TS): Factory.define<User>(...) / const userFactory = Factory.define(...).
+
       if (libraries.has('fishery')) {
         const fish = line.match(/\bFactory\.define<\s*([A-Za-z_$][\w$.]*)\s*[>,]/);
         const assigned = this.findFixtureAssignment(line);
@@ -601,7 +601,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Factory Boy (Py): class UserFactory(factory.Factory): with Meta.model.
+
       if (libraries.has('factory-boy')) {
         const cls = line.match(/^class\s+([A-Za-z_][\w]*)\s*\([^)]*\b(?:factory\.)?(?:Factory|DjangoModelFactory|SQLAlchemyModelFactory)\b[^)]*\)\s*:/);
         if (cls) {
@@ -610,14 +610,14 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // factory_bot (Ruby): factory :user do ... / factory :user, class: 'User'.
+
       if (libraries.has('factory-bot')) {
         const fb = line.match(/\bfactory\s+:([A-Za-z_][\w]*)(?:\s*,\s*class:\s*['"]([^'"]+)['"])?/);
         if (fb) fixtures.push(this.fixture('factory-bot', fb[1], line, filePath, lineNumber, fb[2] || this.rubyConstant(fb[1])));
       }
 
-      // Faker: usage only marks presence; not a factory boundary on its own, so
-      // we record a Faker fixture node only where it seeds a named builder.
+
+
       if (libraries.has('faker')) {
         const seed = this.findFixtureAssignment(line);
         if (seed && /\b(?:faker|Faker)\.[A-Za-z]/.test(line)) {
@@ -703,8 +703,8 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
         found.add(library);
       }
     }
-    // jest/vitest are ambient in their test envs (no import needed), so gate them
-    // on the manifest dependency plus first-party API surface in the file.
+
+
     if (dependencies.some(dep => MOCK_PACKAGES.jest.some(pkg => this.packageMatches(dep.name, pkg))) && /\bjest\.(mock|fn|spyOn)\s*\(/.test(content)) {
       found.add('jest');
     }

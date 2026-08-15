@@ -90,6 +90,16 @@ describe('TreeSitterTSExtractor parse quirks (NUL separator + abstract-as-proper
     expect(sanitized).toContain('static?:');
     expect(sanitized).not.toContain('"static"');
   });
+
+  it('skips parser child slots that resolve to no node', () => {
+    const root = {
+      type: 'program',
+      namedChildCount: 1,
+      namedChild: () => undefined,
+    };
+
+    expect(() => (extractor as any).buildTraversalIndex(root)).not.toThrow();
+  });
 });
 
 /**

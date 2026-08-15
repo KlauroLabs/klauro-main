@@ -140,6 +140,20 @@ describe('ChangeDetector project-scope trigger escalation (#60)', () => {
     expect(allChanged).toEqual(['src/index.ts']);
   });
 
+  it('tracks registered language extensions instead of a partial incremental-only list', async () => {
+    const sourceBefore = 'def value\n  1\nend\n';
+    await fs.outputFile(path.join(root, 'app', 'value.rb'), sourceBefore);
+    initGitRepo(root);
+    const commitHash = commitAll(root, 'initial Ruby source');
+    const previousState = await basePreviousState(root, commitHash, { 'app/value.rb': sourceBefore });
+    await fs.outputFile(path.join(root, 'app', 'value.rb'), 'def value\n  2\nend\n');
+
+    const changeSet = await new ChangeDetector(root).detectChanges(previousState);
+
+    expect(changeSet.requiresFullRebuild).toBe(false);
+    expect(changeSet.modified).toEqual(['app/value.rb']);
+  });
+
   it('escalates when a project-scope trigger file changes ALONGSIDE an ordinary source edit', async () => {
     const indexContentBefore = 'export class Foo { bar(): number { return 1; } }\n';
     await fs.outputFile(path.join(root, 'src', 'index.ts'), indexContentBefore);
@@ -159,5 +173,20 @@ describe('ChangeDetector project-scope trigger escalation (#60)', () => {
     expect(changeSet.requiresFullRebuild).toBe(true);
     expect(changeSet.reason).toContain('project-scope trigger changed');
     expect(changeSet.reason).toContain('Dockerfile');
+  });
+
+  it('rebuilds when saved incremental history is no longer reachable from a clean replacement tree', async () => {
+    const indexContent = 'export class Foo { bar(): number { return 1; } }\n';
+    await fs.outputFile(path.join(root, 'src', 'index.ts'), indexContent);
+    initGitRepo(root);
+    const currentCommit = commitAll(root, 'replacement history');
+    const previousState = await basePreviousState(root, currentCommit, { 'src/index.ts': indexContent });
+    previousState.gitCommitHash = '0000000000000000000000000000000000000001';
+    previousState.lastAnalysisTimestamp = Date.now() + 60_000;
+
+    const changeSet = await new ChangeDetector(root).detectChanges(previousState);
+
+    expect(changeSet.requiresFullRebuild).toBe(true);
+    expect(changeSet.reason).toBe('Previous Git commit is no longer reachable');
   });
 });

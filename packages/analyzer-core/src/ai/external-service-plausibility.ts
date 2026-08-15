@@ -35,77 +35,77 @@ const CODE_TYPE_TOKENS = new Set([
 
 const PASCAL_CASE_MULTIWORD_PATTERN = /^[A-Z][a-z0-9]*(?:[A-Z][a-z0-9]*)+$/;
 
-// Command verbs that indicate a shell command was captured, not a service name
-// (e.g. `dotnet pack "Foo/Foo.csproj" -p:Version=$VER` from a CI script).
+
+
 const COMMAND_VERB_PATTERN = /^(?:\.net|dotnet|npm|npx|pnpm|yarn|bun|cargo|rustup|docker|docker-compose|podman|kubectl|helm|bash|sh|zsh|pwsh|powershell|python[0-9.]*|pip[0-9]*|node|deno|go|mvn|gradle|make|cmake|msbuild|nuget|terraform|ansible|pulumi|aws|az|gcloud|gh|git|curl|wget|scp|rsync|ssh|apt|apt-get|yum|brew|composer|bundle|rake|flutter|swift|xcodebuild|echo|export|cd|cp|mv|rm|mkdir|chmod|tar|zip|unzip)\s+\S/i;
 
-/**
- * True when a candidate label looks like a shell command / CI script fragment
- * (or a piece of one) rather than the name of a real external service.
- * Command-shaped tokens must never become narrative labels — they can survive
- * only as raw evidence/metadata. (hash-shaped-token-leak class)
- */
+
+
+
+
+
+
 export function isCommandShapedLabel(name: string): boolean {
   const value = (name || '').trim();
   if (!value) return false;
-  // Shell metacharacters / quoting never appear in real service names.
+
   if (/[|&;<>`"\\]/.test(value)) return true;
-  // Unexpanded variables: $VER, ${VERSION}, %VERSION%, ${{ github.ref }}
+
   if (/\$\{?[A-Za-z_{]/.test(value) || /%[A-Za-z_][A-Za-z0-9_]*%/.test(value)) return true;
-  // CLI flag tokens: -p:Version=, --output, -o dir
+
   if (/(?:^|\s)--?[A-Za-z]/.test(value)) return true;
-  // Path separator combined with a file extension: Soon.TestingUtilities/Soon.TestingUtilities.csproj
+
   if (/\/[^\s/]*\.[A-Za-z0-9]{1,6}(?:\s|$)/.test(value) && !/:\/\//.test(value)) return true;
-  // Command verb at the start followed by arguments: `dotnet pack …`, `npm publish …`
+
   if (COMMAND_VERB_PATTERN.test(value)) return true;
-  // Command verb joined to a subcommand by - or _: `dotnet-pack`, `npm-publish`.
-  // Deliberately a NARROW verb list (no `go`, `make`, …) so real library/service
-  // labels like `go-redis` are not swept up.
+
+
+
   if (/^(?:dotnet|npm|npx|pnpm|yarn|cargo|docker|docker-compose|podman|kubectl|helm|git|nuget|msbuild|gradle|mvn|pip|terraform|pulumi|ansible|xcodebuild)[-_][a-z][a-z0-9-]*$/i.test(value)) return true;
-  // Overlong multi-word fragments are prose/commands, not names.
+
   const words = value.split(/\s+/);
   if (words.length >= 5) return true;
   if (words.length >= 2 && value.length > 60) return true;
   return false;
 }
 
-// A conservative set of TLDs that real external-service hostnames use. This is
-// not exhaustive — it exists only to distinguish a hostname (auth0.com,
-// api.stripe.com, sentry.io) from a dotted code identifier (this.foo.bar,
-// Repo.Save) or a namespaced type (System.Text). Bare-domain services must be
-// admissible; internal member access must not.
+
+
+
+
+
 const KNOWN_SERVICE_TLDS = new Set([
   'com', 'net', 'org', 'io', 'co', 'ai', 'dev', 'app', 'cloud', 'gov', 'edu',
   'info', 'biz', 'me', 'sh', 'xyz', 'tech', 'run', 'link',
 ]);
 
-/**
- * True when a candidate label is a real hostname (an external service reachable
- * by domain), e.g. `auth0.com`, `api.stripe.com`, `sentry.io`. Requires:
- * dot-separated DNS labels, a recognized TLD, no path, no scheme, no shell
- * characters, no CLI flags — so a file path (`foo/bar.csproj`), a namespaced
- * code identifier (`System.Text`), or a member-access chain (`this.repo.save`)
- * is NOT a hostname. Optional URL scheme (`https://…`) and a leading `www.` /
- * `api.` subdomain are tolerated; a path segment is not.
- */
+
+
+
+
+
+
+
+
+
 export function isHostnameLikeServiceName(name: string): boolean {
   let value = (name || '').trim();
   if (!value) return false;
   if (isCommandShapedLabel(value)) return false;
-  // Tolerate an explicit scheme but reject anything with a path/query/port.
+
   const schemeMatch = value.match(/^([a-z][a-z0-9+.-]*):\/\//i);
   if (schemeMatch) {
     if (!/^https?$/i.test(schemeMatch[1])) return false;
     value = value.slice(schemeMatch[0].length);
   }
-  // A path, query, fragment, port, or whitespace means this is not a bare host.
+
   if (/[\/?#:\s]/.test(value)) return false;
   const labels = value.split('.');
   if (labels.length < 2) return false;
-  // Each DNS label: alphanumeric + hyphen, not starting/ending with a hyphen.
+
   if (!labels.every(label => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label))) return false;
   const tld = labels[labels.length - 1].toLowerCase();
-  // TLD must be alphabetic and recognized (excludes `.csproj`, `.Save`, `.ts`).
+
   if (!/^[a-z]{2,}$/.test(tld)) return false;
   return KNOWN_SERVICE_TLDS.has(tld);
 }

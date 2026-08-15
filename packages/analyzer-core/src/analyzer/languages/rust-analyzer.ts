@@ -1,16 +1,13 @@
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
-  CASDocumentation, CASComment, CASTodo, CASImplementationStatus,
+  CASDocumentation, CASTodo, CASImplementationStatus,
   CASPattern, CASPerspective, CASMethodCall, CASCallChain, FileAnalysisResult
 } from '../../types/cas.types';
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
-import { TreeSitterParser } from '../core/tree-sitter-parser';
-import type { RustASTNode } from '../core/ast-types';
 import * as path from 'path';
-import { EnhancedRustCallGraphExtractor } from '../enhanced-rust-call-graph-extractor';
 
 let detectedRustVersion: string | undefined;
 
@@ -165,6 +162,7 @@ interface RustFunctionCall {
 }
 
 interface RustFunction {
+  nodeId: string;
   name: string;
   moduleName: string;
   filePath: string;
@@ -308,9 +306,6 @@ export class RustAnalyzer extends BaseAnalyzer {
   private projectVersion = '';
   private crateNamesByDir = new Map<string, string>();
   private crateManifestProjectPath = '';
-  private astRunner: TreeSitterParser;
-  private astCache = new Map<string, RustASTNode>();
-  private callGraphExtractor?: EnhancedRustCallGraphExtractor;
 
   constructor() {
     super(
@@ -319,8 +314,6 @@ export class RustAnalyzer extends BaseAnalyzer {
       '1.5.0',
       'language'
     );
-    this.astRunner = new TreeSitterParser();
-    this.callGraphExtractor = undefined; // Will be initialized in analyze method
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -364,12 +357,22 @@ export class RustAnalyzer extends BaseAnalyzer {
     const methodCalls: CASMethodCall[] = [];
     const content = await fs.readFile(context.filePath, 'utf-8');
     const stat = await fs.stat(context.filePath);
-
     await this.detectProjectType(context.projectPath);
     this.createFileNode(context.relativePath, nodes, context);
     const extraction = await this.extractFileElements(context.filePath, nodes, edges, entryPoints, context);
     if (extraction) {
-      this.linkFileElements(extraction, nodes, edges, new Set(edges.map(edge => edge.id)), exitPoints, methodCalls);
+      const currentNodeIds = new Set(nodes.map(node => node.id));
+      const resolutionNodes = [
+        ...nodes,
+        ...(context.existingAnalysis || []).flatMap(contribution => {
+          const ownedContribution = contribution.analyzer_metadata?.analyzer_id === this.analyzerId;
+          return (contribution.nodes || []).filter(node =>
+            !currentNodeIds.has(node.id) &&
+            (ownedContribution || node.primaryAnalyzer === this.analyzerId || node.analyzers?.includes(this.analyzerId))
+          );
+        }),
+      ];
+      this.linkFileElements(extraction, resolutionNodes, edges, new Set(edges.map(edge => edge.id)), exitPoints, methodCalls);
     }
     this.applyTestFileBoundary(nodes);
 
@@ -469,10 +472,6 @@ export class RustAnalyzer extends BaseAnalyzer {
       contribution.call_chains = callChains;
       contribution.analyzer_metadata.framework_specific = detectedFrameworks;
       contribution.analyzer_metadata.framework_specific.actixFramework = detectedFrameworks.actix;
-      (contribution as any).analyzer_contributions = [contribution.analyzer_metadata];
-      (contribution as any).cas_version = '1.8.0';
-      (contribution as any).analysis_timestamp = new Date().toISOString();
-      (contribution as any).analysis_id = `rust:${Date.now()}`;
 
       return contribution;
 
@@ -773,10 +772,9 @@ export class RustAnalyzer extends BaseAnalyzer {
   }
 
   private async parseCargoLock(cargoLockPath: string): Promise<void> {
-    // Basic Cargo.lock parsing - could be extended
+
     try {
-      const content = await fs.readFile(cargoLockPath, 'utf-8');
-      // For now, just check if it exists and is valid
+
     } catch (error) {
       console.warn('Failed to parse Cargo.lock:', error);
     }
@@ -813,7 +811,7 @@ export class RustAnalyzer extends BaseAnalyzer {
             currentPackage[key.trim()] = value;
           }
         } else if (trimmed === '' && inPackage) {
-          // End of package section
+
         }
       }
 
@@ -844,9 +842,9 @@ export class RustAnalyzer extends BaseAnalyzer {
       const impls = await this.extractImpls(content, relativePath, nodes, edges);
       const functions = await this.extractFunctions(content, relativePath, nodes, entryPoints);
       this.extractCliSubcommands(content, relativePath, nodes, entryPoints);
-      // Axum routes are emitted by the dedicated AxumAnalyzer (frameworks/rust),
-      // which also resolves tower-layer auth and nest() prefixes. Keeping it here
-      // too would double-emit (the framework analyzer composes this Rust analyzer).
+
+
+
       const constants = await this.extractConstants(content, relativePath, nodes);
       const statics = await this.extractStatics(content, relativePath, nodes);
       const types = await this.extractTypes(content, relativePath, nodes);
@@ -869,9 +867,9 @@ export class RustAnalyzer extends BaseAnalyzer {
     const { relativePath, structs, enums, traits, impls, functions, constants, statics, types } = extraction;
     this.createRelationships(nodes, edges, edgeIds, structs, enums, traits, impls, functions, constants, statics, types);
     this.createMethodCalls(functions, nodes, methodCalls);
-    // Pass the project-relative path (not fullPath) so exit-point ids are stable
-    // across machines/snapshots. seenExitPointIds dedupes across all files in the
-    // run (cargo workspaces re-emit the same relative path from multiple crates).
+
+
+
     this.createExitPointsFromFunctions(functions, relativePath, exitPoints, nodes);
   }
 
@@ -918,7 +916,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           const importPath = useMatch[1];
           const isPublic = line.includes('pub');
 
-          // Parse imported items (simplified)
+
           const importedItems = importPath.split(',').map(item => item.trim());
 
           const use: RustUse = {
@@ -1025,19 +1023,6 @@ export class RustAnalyzer extends BaseAnalyzer {
               fieldId,
               'has_field'
             ));
-            const dependencyType = this.baseTypeName(field.type);
-            const dependencyNode = nodes.find(node =>
-              node.name === dependencyType &&
-              node.id !== nodeId
-            );
-            if (dependencyNode) {
-              edges.push(this.createEdge(
-                `field_dependency:${nodeId}:${dependencyNode.id}:${field.name}`,
-                nodeId,
-                dependencyNode.id,
-                'depends_on'
-              ));
-            }
           }
 
           i = structEnd;
@@ -1289,7 +1274,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           const enumName = enumMatch[1];
           const isPublic = line.includes('pub');
 
-          // Find enum bounds
+
           let enumEnd = i;
           let braceCount = 0;
           for (let j = i; j < lines.length; j++) {
@@ -1322,7 +1307,7 @@ export class RustAnalyzer extends BaseAnalyzer {
             variantCount: enum_.variants.length
           }));
 
-          i = enumEnd; // Skip to end of enum
+          i = enumEnd;
         }
       }
     }
@@ -1342,7 +1327,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           const traitName = traitMatch[1];
           const isPublic = line.includes('pub');
 
-          // Find trait bounds
+
           let traitEnd = i;
           let braceCount = 0;
           for (let j = i; j < lines.length; j++) {
@@ -1377,7 +1362,7 @@ export class RustAnalyzer extends BaseAnalyzer {
             methodCount: trait.methods.length
           }));
 
-          i = traitEnd; // Skip to end of trait
+          i = traitEnd;
         }
       }
     }
@@ -1399,7 +1384,7 @@ export class RustAnalyzer extends BaseAnalyzer {
         const traitName = traitImplMatch?.[1];
         if (targetType) {
 
-          // Find impl bounds
+
           let implEnd = i;
           let braceCount = 0;
           for (let j = i; j < lines.length; j++) {
@@ -1422,7 +1407,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 
           impls.push(impl);
 
-          // Create node for impl block
+
           const nodeId = `impl:${relativePath}:${targetType}${traitName ? `:${traitName}` : ''}`;
           nodes.push(this.createNode(nodeId, `impl ${targetType}${traitName ? ` for ${traitName}` : ''}`, 'impl', 4, relativePath, i + 1, implEnd + 1, {
             targetType,
@@ -1463,7 +1448,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 	            }
 	          }
 
-          i = implEnd; // Skip to end of impl
+          i = implEnd;
         }
       }
     }
@@ -1471,19 +1456,19 @@ export class RustAnalyzer extends BaseAnalyzer {
     return impls;
   }
 
-  /**
-   * Rust has no filename convention for unit tests — `#[test]`-attributed
-   * functions and their helpers commonly live inside the SAME file as the
-   * production code they test, inside a `#[cfg(test)] mod tests { ... }`
-   * block (the idiomatic, universal Rust convention — never a
-   * keyword/brand check). A function directly attributed `#[test]` /
-   * `#[tokio::test]` / `#[async_std::test]` is already caught by the
-   * per-function `isTest` check below, but helper functions INSIDE that
-   * `mod tests` block (fixtures, builders) carry no attribute of their own
-   * and would otherwise be missed. This scans for `#[cfg(test)]` followed
-   * by a `mod <name> {` and returns each such block's brace-matched line
-   * range so callers can test whether a function falls inside one.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private findCfgTestModuleRanges(lines: string[]): Array<[number, number]> {
     const ranges: Array<[number, number]> = [];
     for (let i = 0; i < lines.length; i++) {
@@ -1554,7 +1539,17 @@ export class RustAnalyzer extends BaseAnalyzer {
 	          const calls = this.extractCallsFromBody(body, fnName, relativePath, bodyStartLine + 1);
 	          const implType = implContext.get(i + 1);
 
+          const isMethod = !!implType;
+          const nodeType = isMethod ? 'method' : 'function';
+          const baseNodeId = isMethod
+            ? `method:${relativePath}:${implType}:${fnName}`
+            : `function:${relativePath}:${fnName}`;
+          let nodeId = baseNodeId;
+          let occurrence = 2;
+          while (nodes.some(node => node.id === nodeId)) nodeId = `${baseNodeId}:${occurrence++}`;
+
 	          const func: RustFunction = {
+            nodeId,
             name: fnName,
             moduleName: relativePath,
             filePath: relativePath,
@@ -1579,12 +1574,6 @@ export class RustAnalyzer extends BaseAnalyzer {
           const hasAsyncCalls = calls.some(c => c.isAsync);
           const internalCallCount = calls.filter(c => !c.isExternal).length;
           const externalCallCount = calls.filter(c => c.isExternal).length;
-
-	          const isMethod = !!implType;
-          const nodeType = isMethod ? 'method' : 'function';
-          const nodeId = isMethod
-            ? `method:${relativePath}:${implType}:${fnName}`
-            : `function:${relativePath}:${fnName}`;
 
           const functionNode = this.createNode(nodeId, fnName, nodeType, 4, relativePath, i + 1, fnEnd + 1, {
             visibility: isPublic ? 'public' : 'private',
@@ -1624,12 +1613,12 @@ export class RustAnalyzer extends BaseAnalyzer {
           const todos = this.extractTodos(body, relativePath, fnName, bodyStartLine + 1, nodeId);
           if (todos.length > 0) functionNode.todos = todos;
           if (isTest) {
-            // `metadata.is_test` (snake_case) is what the cross-language
-            // test-coverage graph walk's isTestOwnedNode() checks — the
-            // camelCase `isTest` above is this analyzer's own long-standing
-            // attribute name and is kept for backward compatibility, but it
-            // was never read by the coverage walk, so #[test] functions
-            // never became traversal roots despite being "detected".
+
+
+
+
+
+
             functionNode.metadata = { ...functionNode.metadata, is_test: true };
             functionNode.category = 'test';
             functionNode.subcategories = [...new Set([...(functionNode.subcategories || []), functionNode.type, 'test-code'])];
@@ -1913,9 +1902,9 @@ export class RustAnalyzer extends BaseAnalyzer {
       while ((match = plainCallPattern.exec(trimmedLine)) !== null) {
         const funcName = match[1];
 
-        // A function/method DECLARATION (`fn save(...)`) is not a call to itself.
-        // Without this guard the signature line yields a phantom self-call that
-        // cross-links every same-name method (e.g. Logger::save -> Account::save).
+
+
+
         if (/\bfn\s+$/.test(trimmedLine.slice(0, match.index))) continue;
 
         const keywords = ['if', 'while', 'for', 'match', 'return', 'Some', 'None', 'Ok', 'Err', 'Box', 'Vec', 'println', 'print', 'eprintln', 'eprint', 'format', 'panic', 'assert', 'debug_assert', 'cfg', 'derive', 'include', 'include_str', 'include_bytes', 'env', 'option_env', 'concat', 'stringify', 'line', 'column', 'file', 'module_path'];
@@ -1964,15 +1953,15 @@ export class RustAnalyzer extends BaseAnalyzer {
            dbFunctions.some(f => lowerFunc.includes(f));
   }
 
-  /**
-   * Extract Axum routes. Unlike actix/rocket (decorator-based), axum declares
-   * routes with the builder API `Router::new().route("/path", get(handler))`,
-   * so they are not attached to a function as an attribute and were invisible.
-   * Scan `.route("path", method(handler))` calls (including chained methods and
-   * `move ||` closures) and emit one HTTP entry point per method, pointing at the
-   * handler function. Local (un-nested) paths — cross-file `.nest()` prefixing is
-   * not resolved, which is noted in metadata.
-   */
+
+
+
+
+
+
+
+
+
   private extractCliSubcommands(content: string, relativePath: string, nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
     if (!this.clapDetected && !this.structoptDetected) return;
 
@@ -2030,16 +2019,16 @@ export class RustAnalyzer extends BaseAnalyzer {
           }
         }
 
-        // A variant reached here always sits inside an enum this loop already
-        // gated on `hasSubcommandDerive`/`hasSubcommandAttr` (see the `if`
-        // above), i.e. the enum carries the clap CLI-entry framing. Such a
-        // variant is a CLI-COMMAND REGISTRATION, not a bare type-system fact,
-        // so it is emitted with the same node type ('cli_command') and id
-        // scheme as the sibling enum/struct-level registration node created
-        // above — never 'enum_variant', which is reserved for plain enum
-        // variants with no clap framing (not reachable through this branch;
-        // kept only as a documented fallback should that framing ever be
-        // widened to cover non-CLI enums).
+
+
+
+
+
+
+
+
+
+
         const isClapRegistration = hasSubcommandDerive || hasSubcommandAttr;
         const variantNodeType = isClapRegistration ? 'cli_command' : 'enum_variant';
 
@@ -2092,8 +2081,8 @@ export class RustAnalyzer extends BaseAnalyzer {
             name: constName,
             moduleName: relativePath,
             filePath: relativePath,
-            type: 'unknown', // Would need more parsing
-            value: 'unknown', // Would need more parsing
+            type: 'unknown',
+            value: 'unknown',
             isPublic,
             lineStart: i + 1,
             lineEnd: i + 1
@@ -2129,7 +2118,7 @@ export class RustAnalyzer extends BaseAnalyzer {
             name: staticName,
             moduleName: relativePath,
             filePath: relativePath,
-            type: 'unknown', // Would need more parsing
+            type: 'unknown',
             isMutable,
             isPublic,
             lineStart: i + 1,
@@ -2166,7 +2155,7 @@ export class RustAnalyzer extends BaseAnalyzer {
             name: typeName,
             moduleName: relativePath,
             filePath: relativePath,
-            targetType: 'unknown', // Would need more parsing
+            targetType: 'unknown',
             generics: [],
             isPublic,
             lineStart: i + 1,
@@ -2234,13 +2223,26 @@ export class RustAnalyzer extends BaseAnalyzer {
     statics: RustStatic[],
     types: RustTypeAlias[]
   ): void {
-    // Create relationships between structs and their implementations
+
     for (const struct of structs) {
+      const structNodeId = `struct:${struct.filePath}:${struct.name}`;
+      for (const field of struct.fields) {
+        const dependencyType = this.baseTypeName(field.type);
+        const dependencyNode = this.selectResolvedNode(
+          nodes.filter(node => node.name === dependencyType && node.id !== structNodeId),
+          struct.filePath
+        );
+        if (!dependencyNode) continue;
+        const edgeId = `field_dependency:${structNodeId}:${dependencyNode.id}:${field.name}`;
+        if (edgeIds.has(edgeId)) continue;
+        edgeIds.add(edgeId);
+        edges.push(this.createEdge(edgeId, structNodeId, dependencyNode.id, 'depends_on'));
+      }
       if (struct.isPublic) {
-        // Create edges for public structs
+
         const structNode = nodes.find(n => n.id === `struct:${struct.filePath}:${struct.name}`);
         if (structNode) {
-          // Add relationships to implementing functions
+
 	          for (const func of functions) {
 	            if (func.isPublic) {
 	              const targetNodeId = this.findRustFunctionNodeId(nodes, func);
@@ -2262,12 +2264,12 @@ export class RustAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Create trait implementation relationships
+
     for (const trait of traits) {
       if (trait.isPublic) {
         const traitNode = nodes.find(n => n.id === `trait:${trait.filePath}:${trait.name}`);
         if (traitNode) {
-          // Find implementations
+
           for (const impl of impls) {
             if (impl.traitName === trait.name) {
               const implNode = nodes.find(n => n.id === `impl:${impl.filePath}:${impl.targetType}${impl.traitName ? `:${impl.traitName}` : ''}`);
@@ -2302,9 +2304,9 @@ export class RustAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // A method node's owning type = the name of its parent struct/enum/trait node.
-    // Used to type-resolve `recv.method()` calls to the ONE method on the
-    // receiver's type, excluding same-name methods on other types (the decoy).
+
+
+
     const nodeIdToImplType = new Map<string, string>();
     for (const node of nodes) {
       if (node.type === 'method' && node.parent) {
@@ -2314,10 +2316,10 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     for (const func of functions) {
-      // Map each in-scope receiver variable to its declared base type, so a
-      // `recv.method()` call resolves to recv's type only: params (`a: &Account`),
-      // typed lets (`let x: T`), struct literals (`let x = T{}`), and
-      // constructors (`let x = T::new()`).
+
+
+
+
       const receiverTypes = new Map<string, string>();
       for (const p of func.parameters || []) {
         if (p.isSelf || !p.type) continue;
@@ -2331,11 +2333,7 @@ export class RustAnalyzer extends BaseAnalyzer {
         for (const m of func.body.matchAll(/\blet\s+(?:mut\s+)?(\w+)\s*=\s*([A-Z]\w*)\s*\{/g)) receiverTypes.set(m[1], m[2]);
         for (const m of func.body.matchAll(/\blet\s+(?:mut\s+)?(\w+)\s*=\s*([A-Z]\w*)::\w+\s*\(/g)) receiverTypes.set(m[1], m[2]);
       }
-      const callerNode = nodes.find(n =>
-        (n.type === 'function' || n.type === 'method') &&
-        n.name === func.name &&
-        n.source?.file?.includes(func.filePath)
-      );
+      const callerNode = nodes.find(node => node.id === func.nodeId);
       if (!callerNode) continue;
 
       const callerNodeId = callerNode.id;
@@ -2378,10 +2376,10 @@ export class RustAnalyzer extends BaseAnalyzer {
         }
 
         let targetNodeIds = functionNodeMap.get(call.targetFunction) || [];
-        // Type-resolve the receiver: `recv.method()` where recv's type is known
-        // links ONLY to that type's method, not every same-name method. If the
-        // receiver type is known and at least one method matches, narrow to it;
-        // otherwise keep the name-based set (never lose a real edge).
+
+
+
+
         if (call.isMethodCall && call.targetModule) {
           const recvType = receiverTypes.get(call.targetModule);
           if (recvType) {
@@ -2467,11 +2465,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     for (const func of functions) {
-      const callerNode = nodes.find(node =>
-        (node.type === 'function' || node.type === 'method') &&
-        node.name === func.name &&
-        node.source?.file?.includes(func.filePath)
-      );
+      const callerNode = nodes.find(node => node.id === func.nodeId);
       if (!callerNode) continue;
 
       for (const call of func.calls) {
@@ -2571,9 +2565,9 @@ export class RustAnalyzer extends BaseAnalyzer {
 
   private createExitPointsFromFunctions(functions: RustFunction[], filePath: string, exitPoints: CASExitPoint[], nodes: CASNode[]): void {
     const seenCalls = new Set<string>();
-    // Guard against emitting the same exit-point id twice within a single run.
-    // On cargo workspaces the same project-relative path is linked from multiple
-    // crates, which previously produced duplicate-id PARTIAL_ANALYSIS errors.
+
+
+
     const existingExitPointIds = new Set(exitPoints.map(ep => ep.id));
     const pushExitPoint = (ep: CASExitPoint): void => {
       if (existingExitPointIds.has(ep.id)) return;
@@ -2729,10 +2723,7 @@ export class RustAnalyzer extends BaseAnalyzer {
   }
 
   private findRustFunctionNodeId(nodes: CASNode[], func: RustFunction): string | undefined {
-    const expectedId = func.implType
-      ? `method:${func.filePath}:${func.implType}:${func.name}`
-      : `function:${func.filePath}:${func.name}`;
-    const exact = nodes.find(node => node.id === expectedId);
+    const exact = nodes.find(node => node.id === func.nodeId);
     if (exact) return exact.id;
 
     return nodes.find(node =>
@@ -2749,7 +2740,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     const stdPatterns = [
       /^(self|super|crate)$/,
-      /^[a-z]$/, // Single lowercase letter (generic)
+      /^[a-z]$/,
       /^(as_|to_|into_|from_|try_|is_|has_|get_|set_)/,
     ];
 
@@ -3129,19 +3120,19 @@ export class RustAnalyzer extends BaseAnalyzer {
     return detectedRustVersion || 'unknown';
   }
 
-  /**
-   * Tags every node in a Cargo `tests/` integration-test file (Rust's own
-   * convention — each file under the crate-root `tests/` directory compiles
-   * as its own test binary, universal to Cargo, never a keyword/brand
-   * check) with `metadata.is_test`, `category: 'test'`, and a `test-code`
-   * tag. This is the file-level complement to the per-function tagging in
-   * extractFunctions (which catches `#[test]`-attributed functions and
-   * `#[cfg(test)] mod tests` blocks, Rust's OTHER test convention — the
-   * in-file one with no filename signal at all). Integration-test files
-   * can contain helper functions with no `#[test]` attribute of their own
-   * (e.g. `tests/common/mod.rs`) that this directory-level pass also
-   * catches.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;

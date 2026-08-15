@@ -30,7 +30,7 @@ export class AIAnalyzer {
 
   async enhanceBlueprint(blueprint: ArchitectureBlueprint): Promise<ArchitectureBlueprint> {
     this.logger.info(`Enhancing blueprint with AI analysis for ${blueprint.components.length} components`);
-    
+
     const enhancedComponents = await this.enhanceComponents(blueprint);
     const enhancedRiskAreas = await this.enhanceRiskAreas(blueprint);
     const aiGeneratedSummary = await this.generateProjectSummary(blueprint);
@@ -48,29 +48,29 @@ export class AIAnalyzer {
 
   async enhanceComponents(blueprint: ArchitectureBlueprint): Promise<ComponentNode[]> {
     const enhancedComponents: ComponentNode[] = [];
-    
-    // Process components in batches to avoid overwhelming the AI APIs
+
+
     const batchSize = 5;
     const batches = this.chunkArray(blueprint.components, batchSize);
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       this.logger.info(`Processing component batch ${i + 1}/${batches.length} (${batch.length} components)`);
-      
+
       const batchPromises = batch.map(component => this.enhanceComponent(component, blueprint));
       const enhancedBatch = await Promise.allSettled(batchPromises);
-      
+
       enhancedBatch.forEach((result, index) => {
         if (result.status === 'fulfilled') {
           enhancedComponents.push(result.value);
         } else {
           this.logger.error(`Failed to enhance component ${batch[index].name}:`, result.reason);
-          // Add the original component if enhancement fails
+
           enhancedComponents.push(batch[index]);
         }
       });
 
-      // Small delay between batches to respect rate limits
+
       if (i < batches.length - 1) {
         await this.delay(1000);
       }
@@ -81,18 +81,18 @@ export class AIAnalyzer {
 
   async enhanceComponent(component: ComponentNode, blueprint: ArchitectureBlueprint): Promise<ComponentNode> {
     try {
-      // Read the component's source code if available
+
       let sourceCode: string | undefined;
-      
+
       try {
-        const fullPath = path.isAbsolute(component.path) 
-          ? component.path 
+        const fullPath = path.isAbsolute(component.path)
+          ? component.path
           : path.join(blueprint.metadata.repositoryPath, component.path);
-        
+
         if (await fs.pathExists(fullPath)) {
           sourceCode = await fs.readFile(fullPath, 'utf-8');
-          
-          // Truncate very large files
+
+
           if (sourceCode.length > 10000) {
             sourceCode = sourceCode.substring(0, 10000) + '\n// ... (truncated for AI analysis)';
           }
@@ -109,16 +109,16 @@ export class AIAnalyzer {
         framework: component.framework
       };
 
-      // Generate AI-powered description
+
       const aiDescription = await aiService.generateComponentDescription(context);
-      
-      // Assess component-level risks
+
+
       const riskAssessment = await aiService.assessComponentRisk(context);
-      
-      // Get architectural recommendations
+
+
       const recommendations = await aiService.generateArchitecturalRecommendations(context);
 
-      // Analyze code if available
+
       let codeAnalysis;
       if (sourceCode) {
         try {
@@ -128,7 +128,7 @@ export class AIAnalyzer {
         }
       }
 
-      // Enhance component metadata with AI insights
+
       const enhancedComponent: ComponentNode = {
         ...component,
         metadata: {
@@ -151,8 +151,8 @@ export class AIAnalyzer {
 
   async enhanceRiskAreas(blueprint: ArchitectureBlueprint): Promise<RiskArea[]> {
     const enhancedRiskAreas: RiskArea[] = [];
-    
-    // Process existing risk areas and add AI insights
+
+
     for (const riskArea of blueprint.riskAreas) {
       try {
         const component = blueprint.components.find(c => c.id === riskArea.componentId);
@@ -169,8 +169,8 @@ export class AIAnalyzer {
         };
 
         const riskAssessment = await aiService.assessComponentRisk(context);
-        
-        // Merge AI insights with existing risk area
+
+
         const enhancedRiskArea: RiskArea = {
           ...riskArea,
           reasons: [...riskArea.reasons, ...riskAssessment.reasons],
@@ -189,7 +189,7 @@ export class AIAnalyzer {
       }
     }
 
-    // Discover new AI-identified risks
+
     const newRisks = await this.discoverAdditionalRisks(blueprint);
     enhancedRiskAreas.push(...newRisks);
 
@@ -198,10 +198,10 @@ export class AIAnalyzer {
 
   async discoverAdditionalRisks(blueprint: ArchitectureBlueprint): Promise<RiskArea[]> {
     const additionalRisks: RiskArea[] = [];
-    
-    // Focus on high-risk components that weren't already flagged
+
+
     const existingRiskComponentIds = new Set(blueprint.riskAreas.map(r => r.componentId));
-    
+
     const highRiskComponents = blueprint.components.filter(component => {
       return !existingRiskComponentIds.has(component.id) && (
         component.metadata.complexity > 7 ||
@@ -211,9 +211,9 @@ export class AIAnalyzer {
       );
     });
 
-    // Analyze a subset of high-risk components
+
     const componentsToAnalyze = highRiskComponents.slice(0, 10);
-    
+
     for (const component of componentsToAnalyze) {
       try {
         const context: AIAnalysisContext = {
@@ -224,8 +224,8 @@ export class AIAnalyzer {
         };
 
         const riskAssessment = await aiService.assessComponentRisk(context);
-        
-        // Only create new risk areas for medium+ risk components
+
+
         if (riskAssessment.riskLevel !== 'low') {
           const riskArea: RiskArea = {
             componentId: component.id,
@@ -253,7 +253,7 @@ export class AIAnalyzer {
 
   async generateProjectSummary(blueprint: ArchitectureBlueprint): Promise<string> {
     try {
-      // Create a high-level context for project summary
+
       const context: AIAnalysisContext = {
         blueprint,
         framework: blueprint.framework,
@@ -325,7 +325,7 @@ export class AIAnalyzer {
 
   private calculateComplexityStats(components: ComponentNode[]): any {
     const complexities = components.map(c => c.metadata.complexity);
-    
+
     return {
       average: complexities.length > 0 ? complexities.reduce((a, b) => a + b, 0) / complexities.length : 0,
       max: Math.max(...complexities),
@@ -338,7 +338,7 @@ export class AIAnalyzer {
     const coverageValues = components
       .map(c => c.metadata.testCoverage)
       .filter(c => c !== undefined) as number[];
-    
+
     if (coverageValues.length === 0) {
       return { average: 0, componentsWithCoverage: 0 };
     }
@@ -352,7 +352,7 @@ export class AIAnalyzer {
 
   private calculateDependencyStats(components: ComponentNode[]): any {
     const dependencyCounts = components.map(c => c.dependencies.length);
-    
+
     return {
       average: dependencyCounts.length > 0 ? dependencyCounts.reduce((a, b) => a + b, 0) / dependencyCounts.length : 0,
       max: Math.max(...dependencyCounts),
@@ -363,7 +363,7 @@ export class AIAnalyzer {
   private generateFallbackSummary(blueprint: ArchitectureBlueprint): string {
     const stats = this.calculateComplexityStats(blueprint.components);
     const testStats = this.calculateTestCoverageStats(blueprint.components);
-    
+
     return `This ${blueprint.framework} project contains ${blueprint.components.length} components ` +
            `with an average complexity of ${stats.average.toFixed(1)}. ` +
            `The system has ${blueprint.entryPoints.length} entry points and ${blueprint.riskAreas.length} identified risk areas. ` +
@@ -396,7 +396,7 @@ export class AIAnalyzer {
   }
 }
 
-// Extend the existing types to include AI insights
+
 declare module '../types' {
   interface ComponentMetadata {
     aiDescription?: string;

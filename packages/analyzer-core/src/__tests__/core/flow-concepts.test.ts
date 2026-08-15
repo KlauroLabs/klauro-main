@@ -10,14 +10,63 @@ import type {
   SystemCapability,
 } from '../../types/cas.types';
 
-/**
- * Fixture: a route -> validate(guard) -> persist(write) -> notify(external)
- * chain, the canonical shape the spec asks to assert against:
- *   handleCreateOrder (route/controller)
- *     -> validateOrder (guard clause: throws when !order.total > 0 style)
- *     -> saveOrder (writes Order entity)
- *     -> notifyWarehouse (calls an external webhook)
- */
+describe('materialized comprehension flows', () => {
+  it('reads canonical flows without rebuilding them from structural graph data', () => {
+    const flow = {
+      flow_id: 'flow::stored',
+      name: 'Review change impact',
+      intent: 'Review change impact',
+      entry_point: 'ep::stored',
+      entities: ['entity::change'],
+      contract: {
+        input: ['proposed change'],
+        logic: 'traces affected behavior',
+        side_effects: { state_changes: [], external_integrations: [] },
+        output: ['impact assessment'],
+        constraints: [],
+      },
+      steps: [{
+        step_id: 'flow::stored::step0',
+        order: 0,
+        name: 'Trace affected behavior',
+        description: 'Connects the proposed change to affected product behavior.',
+        description_source: 'deterministic-label' as const,
+        contract: {
+          input: ['proposed change'],
+          logic: 'traces graph relationships',
+          side_effects: { state_changes: [], external_integrations: [] },
+          output: ['affected behavior'],
+          constraints: [],
+        },
+        functions: [{ function_id: 'node::trace' }],
+        entities: ['entity::change'],
+      }],
+    };
+    const cas = {
+      cas_version: '3.0.0',
+      analysis_timestamp: '2026-01-01T00:00:00.000Z',
+      analysis_id: 'stored-flow',
+      system: { id: 'system', name: 'system', type: 'application', root_path: '.', technologies: { languages: [], frameworks: [] }, quality: {} },
+      nodes: [],
+      edges: [],
+      analyzer_contributions: [],
+      flows: [flow],
+    } as unknown as CASOutput;
+
+    expect(computeFlowConcepts(cas)).toEqual([flow]);
+    expect(computeFlowConcepts(cas, { target: 'Trace affected', maxFlows: 1 })).toEqual([flow]);
+    expect(computeFlowConcepts(cas, { target: 'missing' })).toEqual([]);
+  });
+});
+
+
+
+
+
+
+
+
+
 function node(overrides: Partial<CASNode> & { id: string; name: string; type: string }): CASNode {
   return {
     qualified_name: overrides.name,
@@ -119,7 +168,7 @@ function buildFixtureCas(): CASOutput {
     },
   ];
 
-  const data_entities: CASDataEntity[] = [
+  const entities: CASDataEntity[] = [
     {
       id: 'entity_order',
       name: 'Order',
@@ -130,7 +179,7 @@ function buildFixtureCas(): CASOutput {
     },
   ];
 
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_order_management',
       name: 'Order Management',
@@ -154,8 +203,8 @@ function buildFixtureCas(): CASOutput {
     entry_points,
     exit_points,
     data_lineage,
-    data_entities,
-    system_capabilities,
+    entities,
+    capabilities,
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
@@ -326,7 +375,7 @@ function buildCrossBoundaryFixtureCas(): CASOutput {
     },
   ];
 
-  const data_entities: CASDataEntity[] = [
+  const entities: CASDataEntity[] = [
     {
       id: 'entity_order',
       name: 'Order',
@@ -349,8 +398,8 @@ function buildCrossBoundaryFixtureCas(): CASOutput {
     entry_points,
     exit_points: [],
     data_lineage: [],
-    data_entities,
-    system_capabilities: [],
+    entities,
+    capabilities: [],
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
@@ -410,7 +459,7 @@ function buildCapabilityOnlyRootFixtureCas(): CASOutput {
     },
   ];
 
-  const data_entities: CASDataEntity[] = [
+  const entities: CASDataEntity[] = [
     {
       id: 'entity_billing',
       name: 'Billing',
@@ -423,7 +472,7 @@ function buildCapabilityOnlyRootFixtureCas(): CASOutput {
     },
   ];
 
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_billing_management',
       name: 'Billing Management',
@@ -451,8 +500,8 @@ function buildCapabilityOnlyRootFixtureCas(): CASOutput {
     entry_points: [], // the real-repo gap: NO entry_points at all for this controller method.
     exit_points: [],
     data_lineage: [],
-    data_entities,
-    system_capabilities,
+    entities,
+    capabilities,
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
@@ -701,7 +750,7 @@ function buildRelationshipFixtureCas(): CASOutput {
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_orders', name: 'Order Management', description: 'Create and manage orders', category: 'core',
       operations: [{ entry_point_id: 'ep_create', entry_point_type: 'http', action: 'create' }],
@@ -719,8 +768,8 @@ function buildRelationshipFixtureCas(): CASOutput {
     analysis_id: 'test-capability-relationships',
     system: { name: 'test-system' } as any,
     nodes, edges, entry_points, exit_points, data_lineage,
-    data_entities: [],
-    system_capabilities,
+    entities: [],
+    capabilities,
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
@@ -774,7 +823,7 @@ describe('capability_relationships — M:N with relational roles', () => {
 
   test('no relation at all → field omitted (never []) with an honest gap', () => {
     const bare = buildRelationshipFixtureCas();
-    (bare as any).system_capabilities = [];
+    (bare as any).capabilities = [];
     const bareFlows = computeFlowConcepts(bare);
     for (const f of bareFlows) {
       expect(f.capability_relationships).toBeUndefined();
@@ -809,10 +858,10 @@ describe('normalizeEntityKey — reconciles entity id-form and name-form', () =>
 describe('capability↔flow path (b) — entity overlap survives id/name format gap', () => {
   test('related_entities in ID form ("entity_order") still overlap a flow touching "Order"', () => {
     const cas = buildRelationshipFixtureCas();
-    // Rewrite the fulfillment capability's related_entities to the ID form the
-    // real CAS emits (capability.related_entities are entity IDs; flow.entities
-    // are display names). Pre-fix this NEVER matched and the edge vanished.
-    (cas.system_capabilities as SystemCapability[])[1].related_entities = ['entity_order'];
+
+
+
+    (cas.capabilities as SystemCapability[])[1].related_entities = ['entity_order'];
     const flows = computeFlowConcepts(cas);
     const createFlow = flows.find(f => f.entry_point === 'ep_create')!;
     const supporting = createFlow.capability_relationships!.find(r => r.capability_id === 'cap_fulfillment');
@@ -868,9 +917,9 @@ function buildCronFixtureCas(includeCronJobNode = true): CASOutput {
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];
-  // No capability operation references ep_cron_reportsystem — only entity
-  // overlap can relate this flow to cap_billing.
-  const system_capabilities: SystemCapability[] = [
+
+
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_billing', name: 'Billing', description: 'Invoice billing', category: 'core',
       operations: [{ entry_point_id: 'ep_other', entry_point_type: 'http', action: 'create' }],
@@ -881,7 +930,7 @@ function buildCronFixtureCas(includeCronJobNode = true): CASOutput {
     cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-cron',
     system: { name: 'test-system' } as any,
     nodes, edges, entry_points, exit_points, data_lineage,
-    data_entities: [], system_capabilities, analyzer_contributions: [],
+    entities: [], capabilities, analyzer_contributions: [],
   } as unknown as CASOutput;
 }
 
@@ -949,7 +998,7 @@ function buildDuplicateEntryFixtureCas(): CASOutput {
       metadata: { command_name: 'app:live' } as any,
     },
   ];
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_ops', name: 'Operations', description: 'Liveness checks', category: 'core',
       operations: [{ entry_point_id: 'entry_cli_class_LiveCommand', entry_point_type: 'cli', action: 'Execute' }],
@@ -960,7 +1009,7 @@ function buildDuplicateEntryFixtureCas(): CASOutput {
     cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-dup-entry',
     system: { name: 'test-system' } as any,
     nodes, edges: [], entry_points, exit_points: [], data_lineage: [],
-    data_entities: [], system_capabilities, analyzer_contributions: [],
+    entities: [], capabilities, analyzer_contributions: [],
   } as unknown as CASOutput;
 }
 
@@ -1003,7 +1052,7 @@ function buildInteriorFixtureCas(): CASOutput {
       trigger: { method: 'POST', path: '/child' },
       handler: { node_id: 'n_child', method_name: 'handleChild' } },
   ];
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     { id: 'cap_child', name: 'Child Capability', description: 'child op', category: 'core',
       operations: [{ entry_point_id: 'ep_child', entry_point_type: 'http', action: 'do' }],
       related_entities: [], related_domains: [], criticality: 'medium', criticality_factors: [] },
@@ -1012,7 +1061,7 @@ function buildInteriorFixtureCas(): CASOutput {
     cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(),
     analysis_id: 'test-interior', system: { name: 'test-system' } as any,
     nodes, edges, entry_points, exit_points: [], data_lineage: [],
-    data_entities: [], system_capabilities, analyzer_contributions: [],
+    entities: [], capabilities, analyzer_contributions: [],
   } as unknown as CASOutput;
 }
 
@@ -1036,19 +1085,19 @@ describe('capability↔flow path (a-interior) — anchor entry point realized as
 
   test('a node:-anchored capability operation on the flow path interior-links as supporting (re-validation F3)', () => {
     const cas = buildInteriorFixtureCas();
-    // Point the capability op at a direct `node:` reference rather than a real
-    // entry point. Originally this shape was EXCLUDED from interior matching to
-    // keep bare utility refs from blasting edges — but real hosted CAS showed
-    // capability operations are PREDOMINANTLY node-anchored (the
-    // capability-detection pass resolves operations straight to handler/method
-    // nodes), so the exclusion made the supporting/observability vocabulary
-    // unreachable (39/39 edges 'primary' on a fresh live analysis). A
-    // capability-DECLARED operation anchor is evidence, not a guess —
-    // deriveCapabilityOperationRoots already trusts the same shape to root
-    // whole flows — and a flow passing through that anchor genuinely exercises
-    // the capability: the doctrine's own many-to-many case ("a generic
-    // authorizeRequest() may serve hundreds of steps").
-    (cas.system_capabilities as SystemCapability[])[0].operations = [
+
+
+
+
+
+
+
+
+
+
+
+
+    (cas.capabilities as SystemCapability[])[0].operations = [
       { entry_point_id: 'node:n_child', entry_point_type: 'http', action: 'do' },
     ];
     const f2 = computeFlowConcepts(cas);
@@ -1225,7 +1274,7 @@ function buildPublishConsumeFixtureCas(consumerChannel = 'order.created'): CASOu
     analysis_id: 'test-publish-consume', system: { name: 'test-system' } as any,
     nodes, edges, entry_points, exit_points,
     call_chains,
-    data_lineage: [], data_entities: [], system_capabilities: [],
+    data_lineage: [], entities: [], capabilities: [],
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
@@ -1346,8 +1395,8 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-booking',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points, data_lineage, data_entities: [],
-      system_capabilities: [], analyzer_contributions: [], call_chains,
+      nodes, edges, entry_points, exit_points, data_lineage, entities: [],
+      capabilities: [], analyzer_contributions: [], call_chains,
     } as unknown as CASOutput;
 
     const flow = computeFlowConcepts(cas)[0];
@@ -1384,8 +1433,8 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-merge',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points, data_lineage: [], data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges, entry_points, exit_points, data_lineage: [], entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
 
     const flow = computeFlowConcepts(cas)[0];
@@ -1414,8 +1463,8 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-split',
       system: { name: 'test-system' } as any,
-      nodes, edges: [], entry_points, exit_points, data_lineage: [], data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges: [], entry_points, exit_points, data_lineage: [], entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
 
     const flow = computeFlowConcepts(cas)[0];
@@ -1461,8 +1510,8 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-dispatch',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points, data_lineage: [], data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges, entry_points, exit_points, data_lineage: [], entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
 
     const flow = computeFlowConcepts(cas)[0];
@@ -1490,8 +1539,8 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-process-named',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points: [], data_lineage, data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges, entry_points, exit_points: [], data_lineage, entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
 
     const flow = computeFlowConcepts(cas)[0];
@@ -1514,8 +1563,8 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const cas = {
       cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-fallback',
       system: { name: 'test-system' } as any,
-      nodes, edges, entry_points, exit_points: [], data_lineage: [], data_entities: [],
-      system_capabilities: [], analyzer_contributions: [],
+      nodes, edges, entry_points, exit_points: [], data_lineage: [], entities: [],
+      capabilities: [], analyzer_contributions: [],
     } as unknown as CASOutput;
 
     const flow = computeFlowConcepts(cas)[0];

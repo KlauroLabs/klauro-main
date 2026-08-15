@@ -40,7 +40,7 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob([
+    const candidates = await glob([
       '**/*.sh',
       '**/*.bash',
       '**/*.zsh',
@@ -63,6 +63,11 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
       nodir: true,
       absolute: false,
     });
+    const relevant: string[] = [];
+    for (const candidate of candidates) {
+      if (await this.analyzeArtifact(projectPath, candidate)) relevant.push(candidate);
+    }
+    return relevant;
   }
 
   async analyze(context: AnalysisContext) {
@@ -147,21 +152,21 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
   }
 }
 
-/** Extensions of real compiled/programming-language source files that are
- *  NEVER themselves an installer/release-script/manifest distribution
- *  artifact, even when their PATH happens to contain "installer"/"release"/
- *  "manifest" (e.g. bin/installer/bin/uninstaller.rs — Rust source for an
- *  installer's GUI, not the installer artifact itself; a repo's
- *  release-notes-generator.py; a src/manifest/loader.go parser). The loose
- *  name-pattern glob (**\/*installer*, **\/*release*, **\/*manifest*) exists
- *  to catch scripts with unpredictable names, but a `.rs`/`.go`/`.py`/etc.
- *  file is source code that gets COMPILED, not an artifact a packaging step
- *  ships or runs directly — treating it as installer evidence produces
- *  garbage binary_names (AST identifier fragments extracted by
- *  binaryNamesFromText, which was only ever designed to scan shell/ini/nsi
- *  text). Kept deliberately narrow (source-only, general-purpose languages)
- *  so genuine script languages (.sh/.ps1/.bat/... — already gated by their
- *  own dedicated branches above) and extension-less scripts are unaffected. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const NON_ARTIFACT_SOURCE_EXTENSIONS = new Set([
   'rs', 'go', 'py', 'rb', 'java', 'kt', 'kts', 'scala', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hxx',
   'cs', 'swift', 'm', 'mm', 'php', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'dart', 'ex', 'exs',
@@ -223,10 +228,10 @@ function parseServiceUnit(file: string, content: string): ParsedDistributionArti
 }
 
 function parseInstaller(file: string, content: string): ParsedDistributionArtifact {
-  // Capture must start with a letter OR a template-var sigil ('$', as in
-  // "${APPNAMEANDVERSION}" — resolved/dropped later by resolveTemplateVar) —
-  // never punctuation/operator leftovers. See parseScript's rawName comment
-  // for the "=" assignment-scrape defect this class of guard fixes.
+
+
+
+
   const rawName = firstRegex(content, /^\s*Name\s+"([A-Za-z$][^"]*)"/m)
     || firstRegex(content, /VIAddVersionKey\s+"ProductName"\s+"([A-Za-z$][^"]*)"/i);
   const productName = (rawName && resolveTemplateVar(rawName, content))
@@ -244,33 +249,33 @@ function parseInstaller(file: string, content: string): ParsedDistributionArtifa
   };
 }
 
-/** NSI/WiX-specific binary-name extraction, principled to each format's real
- *  file-shipping directives rather than a generic whole-file word scan.
- *  binaryNamesFromText()'s catch-all token regex was designed for short
- *  `Exec=`/`ExecStart=` command-line VALUES (desktop-entry/service-unit), not
- *  a full installer script — run across an entire .nsi file it also captures
- *  every NSIS preprocessor keyword, macro name, and `!include`d header
- *  (SetCompressor, VIAddVersionKey, MUI2.nsh, PROJECT_ROOT, ...) as if each
- *  were a shipped binary. NSIS ships files via `File "path\to\thing.exe"` (or
- *  a bare `File "thing"` referencing a build-output artifact) and names its
- *  own output via `OutFile "Name.exe"`; WiX/MSI-style installers name binary
- *  components via `<File Source="...">`/`Name="....exe"`. Extracting from
- *  those specific directives instead of the whole document yields the real
- *  shipped binaries (measured on a multi-binary installer: client.exe, a daemon .exe, an installer .exe) with none of
- *  the scripting-language noise. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function installerBinaryNamesFromText(text: string): string[] {
   const names = new Set<string>();
-  // NSIS: File "...\name.exe" / File "name" (ships a build-output artifact).
+
   for (const match of text.matchAll(/^\s*File\s+(?:\/\S+\s+)*"([^"]+)"/gim)) {
     const value = cleanBinaryName(match[1].split(/[\\/]/).pop() || match[1]);
     if (value) names.add(value);
   }
-  // NSIS: OutFile "Name.exe" (the installer's own output binary).
+
   for (const match of text.matchAll(/^\s*OutFile\s+"([^"]+)"/gim)) {
     const value = cleanBinaryName(match[1]);
     if (value) names.add(value);
   }
-  // WiX: <File ... Source="...\name.exe" ...> or Name="name.exe".
+
   for (const match of text.matchAll(/<File\b[^>]*\b(?:Source|Name)="([^"]+)"/gi)) {
     const value = cleanBinaryName(match[1].split(/[\\/]/).pop() || match[1]);
     if (value) names.add(value);
@@ -280,19 +285,19 @@ function installerBinaryNamesFromText(text: string): string[] {
 
 function parseScript(file: string, content: string, kind: DistributionArtifactKind): ParsedDistributionArtifact | undefined {
   if (!looksLikeDistributionScript(content) && !/install|installer|release|manifest|deploy/i.test(file)) return undefined;
-  // Capture groups are anchored to start with a LETTER or a template-var
-  // sigil ('$', for `APP_NAME="${VAR}"`-style indirection resolved below by
-  // resolveTemplateVar) — never `[^"'\n]+` alone. Real-repo defect (2026-07
-  // hosted reanalysis, Rust multi-binary workspace): a script containing an
-  // unquoted comparison like `APP_NAME=="windows"` matched `APP_NAME[:=]`
-  // against the assignment-shaped first `=` of `==`, then the old
-  // unanchored `[^"'\n]+` capture greedily consumed the leftover `=` up to
-  // the next quote — yielding a productName of literally "=" (trimmed),
-  // which then became a standalone installer deployable identity. Requiring
-  // the first captured character to be a letter/`$` rejects that fragment
-  // (and any other assignment/operator-shaped leftover) outright, so the
-  // "no rawName" path falls through to productNameFromFile(file) instead of
-  // leaking punctuation as a name.
+
+
+
+
+
+
+
+
+
+
+
+
+
   const rawName = firstRegex(content, /APP_NAME[:=]\s*["']?([A-Za-z$][^"'\n]*)["']?/)
     || firstRegex(content, /ProductName["']?\s*[,=]\s*["']([A-Za-z$][^"']*)["']/i);
   const productName = (rawName && resolveTemplateVar(rawName, content))
@@ -394,10 +399,10 @@ function scriptPlatforms(file: string, content: string): string[] {
 
 function productNameFromFile(file: string): string | undefined {
   const base = path.basename(file).replace(/\.(nsi|wxs|sh|bash|zsh|ps1|bat|cmd)$/i, '');
-  // Strip installer/setup/build/etc. only as whole word-boundary tokens
-  // (prefix/suffix/standalone segment), never mid-word — an unanchored
-  // version of this regex turned "Uninstall.bat" into "Un" by matching
-  // "install" inside "Uninstall".
+
+
+
+
   const clean = base
     .split(/[-_\s]+/)
     .filter(token => token.length > 0 && !/^(installer|install|uninstall|uninstaller|setup|release|manifest|build|deploy)$/i.test(token))
@@ -406,36 +411,36 @@ function productNameFromFile(file: string): string | undefined {
   return clean || undefined;
 }
 
-/** A real product-name capture is never this long; a value past this length
- *  is an extraction artifact (e.g. an unquoted/unterminated line swallowed to
- *  EOF, see MAX_TEMPLATE_VALUE_LENGTH's call site) and is rejected outright
- *  rather than fed through the per-$VAR resolution below. */
+
+
+
+
 const MAX_TEMPLATE_VALUE_LENGTH = 500;
 
-/** Resolve `${VAR}` and bare `$VAR` NSIS/shell-style template references —
- *  whether the ENTIRE captured value is a template reference (`"${APPNAMEANDVERSION}"`)
- *  or a bare `$VAR` sits INSIDE a larger captured string (`"Acme $BINARY_NAME"`,
- *  a product-name capture with an unresolved shell variable mid-string that the
- *  old `^\$\{...\}$`-only match let straight through since the `$` isn't at the
- *  start) — against `!define VAR value` (or `set VAR=value` / `VAR=value`)
- *  directives found in the same file/script. Every `${VAR}`/`$VAR` occurrence in
- *  `value` must resolve; if even one does not, the whole value is REJECTED
- *  (undefined) rather than partially substituted or leaked verbatim — a
- *  half-resolved "Acme $BINARY_NAME" string is exactly the kind of
- *  template-var-shaped identity this guards against.
- *
- *  PERFORMANCE (regex-hang-hunt, 2026-07): this used to look up each $VAR
- *  occurrence via a fresh whole-`content` regex scan (resolveVarDefinition
- *  building a `new RegExp` per call). That is O(occurrences-in-value x
- *  content-length) — fine for a short product-name string, but `value` here
- *  is only as short as the capture regex upstream makes it, and an unquoted/
- *  unterminated line can swallow the rest of a long file into one `value`
- *  with thousands of distinct $VAR references. Against a real multi-hundred-
- *  KB script that is hours of single-threaded, log-silent regex churn on the
- *  analysis worker. Fixed two ways: (1) reject oversized values outright
- *  (they were never a real product name anyway), (2) resolve every var
- *  through ONE linear pass over `content` (buildVarDefinitions) instead of a
- *  rescan per occurrence, so cost is O(content-length + occurrences). */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function resolveTemplateVar(value: string, content: string): string | undefined {
   if (!/\$[A-Za-z_{]/.test(value)) return value;
   if (value.length > MAX_TEMPLATE_VALUE_LENGTH) return undefined;
@@ -455,13 +460,13 @@ function resolveTemplateVar(value: string, content: string): string | undefined 
   return trimmed || undefined;
 }
 
-/** Collect every `!define VAR value` (NSIS) and `[set] VAR=value` (shell)
- *  directive in `content` in one linear pass, keyed by variable name. Replaces
- *  the old per-$VAR dynamic-regex whole-file rescan (see resolveTemplateVar's
- *  PERFORMANCE note) — this runs once per productName resolution regardless
- *  of how many distinct $VAR references it contains. `!define` directives are
- *  applied AFTER the assignment pass so they win ties, matching the original
- *  `!define || set/assign` priority when both forms define the same name. */
+
+
+
+
+
+
+
 function buildVarDefinitions(content: string): Map<string, string> {
   const defs = new Map<string, string>();
   for (const m of content.matchAll(/^\s*(?:set\s+)?([A-Za-z0-9_]+)\s*=\s*"?([^"\n\r]+?)"?\s*$/gim)) {
@@ -473,9 +478,9 @@ function buildVarDefinitions(content: string): Map<string, string> {
   return defs;
 }
 
-/** True if `value` still contains unresolved `${...}` or bare `$VAR` template
- *  text — a shell/NSIS variable reference that never got substituted with a
- *  real value and must never leak into a deployable identity or binary name. */
+
+
+
 function isUnresolvedTemplateText(value: string): boolean {
   return /\$\{[A-Za-z0-9_]+\}|\$[A-Za-z_][A-Za-z0-9_]*/.test(value);
 }
@@ -490,9 +495,9 @@ function cleanBinaryName(value: string): string {
     .replace(/\.exe$/i, '')
     .replace(/^.*[\\/]/, '')
     .trim();
-  // Unresolved NSIS/shell template text (e.g. "${APPNAMEANDVERSION}") is not
-  // a real binary name — drop it rather than partially stripping the braces
-  // and leaking the raw variable name.
+
+
+
   return isUnresolvedTemplateText(cleaned) ? '' : cleaned;
 }
 

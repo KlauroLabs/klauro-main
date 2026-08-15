@@ -93,7 +93,6 @@ export class EnhancedCallGraphExtractor {
     imports: new Map()
   };
   private scopeStack: ScopeInfo[] = [];
-  private contextStack: Partial<CallContext>[] = [];
   private currentClassName: string | undefined = undefined;
 
   constructor(private projectPath: string) {}
@@ -107,13 +106,13 @@ export class EnhancedCallGraphExtractor {
     this.callGraph.clear();
     this.scopeStack = [this.currentScope];
 
-    // First pass: Extract imports and global scope
+
     this.extractImports(ast);
 
-    // Second pass: Extract all functions
+
     this.extractFunctions(ast);
 
-    // Third pass: Resolve call targets
+
     this.resolveCallTargets();
 
     return {
@@ -161,35 +160,30 @@ export class EnhancedCallGraphExtractor {
       this.currentClassName = node.id.name;
     }
 
-    // First extract HTTP endpoints, library calls, dependency injection, and abstract calls
-    const httpEndpoints = this.extractHTTPEndpoints(node);
-    const libraryCalls = this.extractLibraryCalls(node, this.createDefaultContext(''));
-    const injections = this.extractDependencyInjection(node);
-    const abstractCalls = this.extractAbstractMethodCalls(node, this.createDefaultContext(''));
 
-    // Add all enhanced calls to the current function being processed
-    const allEnhancedCalls = [...httpEndpoints, ...libraryCalls, ...injections, ...abstractCalls];
 
-    // Continue with original function extraction
-    // Extract function declarations
+
+
+
+
     if (node.type === 'FunctionDeclaration' && node.id) {
       this.extractFunctionNode(node, 'function', node.id.name, parent);
     }
 
-    // Extract function expressions
+
     if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
       let name = 'anonymous';
       let type: ExtractedFunction['type'] = node.type === 'ArrowFunctionExpression' ? 'arrow' : 'function';
 
-      // Try to get name from variable declaration
+
       if (parent?.type === 'VariableDeclarator' && parent.id?.type === 'Identifier') {
         name = parent.id.name;
       }
-      // Try to get name from property assignment
+
       else if (parent?.type === 'Property' && parent.key?.type === 'Identifier') {
         name = parent.key.name;
       }
-      // Try to get name from assignment expression
+
       else if (parent?.type === 'AssignmentExpression' && parent.left?.type === 'Identifier') {
         name = parent.left.name;
       }
@@ -197,7 +191,7 @@ export class EnhancedCallGraphExtractor {
       this.extractFunctionNode(node, type, name, parent);
     }
 
-    // Extract class methods
+
     if (node.type === 'MethodDefinition') {
       const methodName = node.key?.type === 'Identifier' ? node.key.name : 'method';
       let type: ExtractedFunction['type'] = 'method';
@@ -209,7 +203,7 @@ export class EnhancedCallGraphExtractor {
       this.extractFunctionNode(node.value, type, methodName, parent, this.currentClassName);
     }
 
-    // Extract class properties that are functions
+
     if (node.type === 'PropertyDefinition' &&
         (node.value?.type === 'ArrowFunctionExpression' ||
          node.value?.type === 'FunctionExpression')) {
@@ -217,7 +211,7 @@ export class EnhancedCallGraphExtractor {
       this.extractFunctionNode(node.value, 'arrow', propertyName, parent, this.currentClassName);
     }
 
-    // Recursively traverse
+
     for (const key in node) {
       if (key !== 'parent' && node[key]) {
         if (Array.isArray(node[key])) {
@@ -244,7 +238,7 @@ export class EnhancedCallGraphExtractor {
   ): void {
     const functionId = this.generateFunctionId(name, className);
 
-    // Push new scope
+
     const newScope: ScopeInfo = {
       type: 'function',
       parent: functionId,
@@ -253,20 +247,20 @@ export class EnhancedCallGraphExtractor {
     };
     this.scopeStack.push(newScope);
 
-    // Extract parameters
+
     const parameters = this.extractParameters(node.params || []);
 
-    // Extract calls within this function
+
     const calls = this.extractCalls(node.body || node, functionId);
 
-    // Add enhanced calls for this specific function
+
     if (node.type === 'MethodDefinition') {
       const httpEndpoints = this.extractHTTPEndpoints(node);
-      const injections = this.extractDependencyInjection(parent); // parent should be ClassDeclaration
+      const injections = this.extractDependencyInjection(parent);
       calls.push(...httpEndpoints, ...injections);
     }
 
-    // Calculate complexity
+
     const complexity = this.calculateComplexity(node);
 
     const extractedFunction: ExtractedFunction = {
@@ -292,10 +286,10 @@ export class EnhancedCallGraphExtractor {
 
     this.functions.set(functionId, extractedFunction);
 
-    // Pop scope
+
     this.scopeStack.pop();
 
-    // Update call graph
+
     for (const call of calls) {
       if (!this.callGraph.has(functionId)) {
         this.callGraph.set(functionId, new Set());
@@ -324,7 +318,7 @@ export class EnhancedCallGraphExtractor {
   }
 
   private traverseForCalls(node: any, calls: ExtractedCall[], context: CallContext, parent: any = null): void {
-    // Update context based on node type
+
     const updatedContext = { ...context };
 
     if (node.type === 'IfStatement' || node.type === 'ConditionalExpression') {
@@ -346,20 +340,20 @@ export class EnhancedCallGraphExtractor {
       }
     }
 
-    // Extract call expressions
+
     if (node.type === 'CallExpression') {
       const call = this.extractCallExpression(node, updatedContext);
       if (call) {
         calls.push(call);
       }
 
-      // Also check for library calls and abstract method calls
+
       const libraryCalls = this.extractLibraryCalls(node, updatedContext);
       const abstractCalls = this.extractAbstractMethodCalls(node, updatedContext);
       calls.push(...libraryCalls, ...abstractCalls);
     }
 
-    // Handle new expressions (constructor calls)
+
     if (node.type === 'NewExpression') {
       const call = this.extractNewExpression(node, updatedContext);
       if (call) {
@@ -367,7 +361,7 @@ export class EnhancedCallGraphExtractor {
       }
     }
 
-    // Handle dynamic imports
+
     if (node.type === 'ImportExpression') {
       calls.push({
         target: 'import',
@@ -383,19 +377,19 @@ export class EnhancedCallGraphExtractor {
       });
     }
 
-    // Cross-file references to imported CONSTANTS / INTERFACE PROPERTIES that are
-    // never called (e.g. `TIER_RATE_LIMITS[tier]`, `limits.endpoints`). The call-graph
-    // extraction above only ever fires for CallExpression/NewExpression callees, so a
-    // plain read of an imported const/object is otherwise invisible to get_callers —
-    // this is the #1 flagship gap from the 2026-07-04 impact benchmark. We record a
-    // 'reference' pseudo-call (not a 'calls' edge) so get_callers can surface it without
-    // fabricating a call relationship that never happened.
+
+
+
+
+
+
+
     const referenceCall = this.extractIdentifierReference(node, parent, updatedContext);
     if (referenceCall) {
       calls.push(referenceCall);
     }
 
-    // Recursively traverse
+
     for (const key in node) {
       if (key !== 'parent' && node[key]) {
         if (Array.isArray(node[key])) {
@@ -415,12 +409,12 @@ export class EnhancedCallGraphExtractor {
     let target = 'unknown';
     let targetType: ExtractedCall['targetType'] = 'unknown';
 
-    // Direct function call
+
     if (node.callee?.type === 'Identifier') {
       target = node.callee.name;
       targetType = 'function';
     }
-    // Method call
+
     else if (node.callee?.type === 'MemberExpression') {
       if (node.callee.property?.type === 'Identifier') {
         const methodName = node.callee.property.name;
@@ -434,13 +428,13 @@ export class EnhancedCallGraphExtractor {
         }
       }
     }
-    // Super call
+
     else if (node.callee?.type === 'Super') {
       target = 'super';
       targetType = 'constructor';
     }
 
-    // Check if it's a promise-related call
+
     const isInPromise = target.includes('then') || target.includes('catch') ||
                        target.includes('finally') || context.isInPromise;
 
@@ -458,61 +452,61 @@ export class EnhancedCallGraphExtractor {
     };
   }
 
-  // AST parent/key positions where an Identifier is a BINDING (declaration/pattern) or a
-  // non-value slot, not a value READ. Excluding these keeps extractIdentifierReference from
-  // reporting a variable's own declaration, a function's parameter name, an object key, an
-  // import specifier, or a type annotation as if it were a "reference" to that name.
+
+
+
+
   private static readonly IDENTIFIER_BINDING_PARENTS = new Set([
-    'VariableDeclarator', // `const X = ...` — `id` is a binding, `init` is a read (handled: we key off parentKey below)
-    'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression', // function/param names
+    'VariableDeclarator',
+    'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression',
     'ClassDeclaration', 'ClassExpression',
     'ImportSpecifier', 'ImportDefaultSpecifier', 'ImportNamespaceSpecifier',
     'ExportSpecifier',
     'TSInterfaceDeclaration', 'TSTypeAliasDeclaration', 'TSEnumDeclaration', 'TSEnumMember',
     'MethodDefinition', 'TSAbstractMethodDefinition',
-    'Property', // object literal / destructuring key (not the value)
+    'Property',
     'PropertyDefinition', 'TSAbstractPropertyDefinition',
-    'TSTypeReference', 'TSTypeAnnotation', 'TSQualifiedName', // type-position identifiers, not runtime reads
+    'TSTypeReference', 'TSTypeAnnotation', 'TSQualifiedName',
     'LabeledStatement', 'BreakStatement', 'ContinueStatement',
   ]);
 
-  /**
-   * Detects a plain read of an imported binding (const/interface/type/enum/class) that is
-   * NOT already captured by extractCallExpression/extractNewExpression — e.g.
-   * `TIER_RATE_LIMITS[tier]`, `return limits.endpoints`, `x: RateLimits`. These are real
-   * cross-file dependencies (the consumer breaks if the export's shape changes) but were
-   * previously invisible to the call graph because nothing walks bare Identifier reads.
-   * Deliberately conservative: only fires for names present in this file's import map, so a
-   * local variable that happens to share a name with an import elsewhere is never confused
-   * for a cross-file reference (no fabricated edges).
-   */
+
+
+
+
+
+
+
+
+
+
   private extractIdentifierReference(node: any, parent: any, context: CallContext): ExtractedCall | null {
     if (node.type !== 'Identifier') return null;
     const name = node.name;
     if (!name) return null;
 
     const imported = this.currentScope.imports.get(name);
-    if (!imported) return null; // not an imported name — nothing to resolve cross-file
+    if (!imported) return null;
 
     if (!parent) return null;
 
-    // Skip the callee of a call/new expression — extractCallExpression/extractNewExpression
-    // already record that as a 'calls' edge; recording it again as a 'reference' would be
-    // redundant (and could double-count in get_callers).
+
+
+
     if ((parent.type === 'CallExpression' || parent.type === 'NewExpression') && parent.callee === node) {
       return null;
     }
-    // Skip the object of a MemberExpression used as a call target: `Foo.bar()` — `Foo` here
-    // is still a plain read in general (e.g. `Foo.CONST`), so only skip when the whole
-    // MemberExpression is itself the callee of a call (already handled as a method call).
-    // Note: without parent-of-parent tracking we can't inspect the grandparent here, so this
-    // case is handled by the CallExpression branch above already stripping the direct callee;
-    // `Foo` as the object of `Foo.bar()` is NOT the callee itself (the MemberExpression is),
-    // so it still reaches this point — that's fine and intentional: `Foo` really is read.
+
+
+
+
+
+
+
 
     if (EnhancedCallGraphExtractor.IDENTIFIER_BINDING_PARENTS.has(parent.type)) {
-      // `const X = ...`: `id` is the binding (skip), `init` is a read (allow) — both share
-      // parent.type === 'VariableDeclarator', so disambiguate by which key holds this node.
+
+
       if (!(parent.type === 'VariableDeclarator' && parent.init === node)) {
         return null;
       }
@@ -529,8 +523,8 @@ export class EnhancedCallGraphExtractor {
       isInLoop: context.loopDepth > 0,
       callExpression: name,
       context,
-      // Marks this ExtractedCall as a non-call reference for downstream edge typing —
-      // see integrateEnhancedCallGraphDataIndexed's 'reference' handling.
+
+
       resolvedTarget: { functionName: name, isExternal: false, isBuiltin: false }
     } as ExtractedCall & { referenceKind: 'identifier' };
   }
@@ -666,8 +660,8 @@ export class EnhancedCallGraphExtractor {
   }
 
   private resolveCallTargets(): void {
-    // This would resolve imported functions, external modules, etc.
-    // For now, we'll mark unresolved targets
+
+
     for (const func of this.functions.values()) {
       for (const call of func.calls) {
         call.resolvedTarget = this.resolveTarget(call.target, func.scope);
@@ -676,10 +670,10 @@ export class EnhancedCallGraphExtractor {
   }
 
   private resolveTarget(target: string, scope: ScopeInfo): ResolvedTarget {
-    // `this.method()` / `self.method()` is a call to a method on the SAME class —
-    // resolve it to the local method instead of treating it as external. Without
-    // this, every intra-class call (the bulk of the call graph in class-heavy
-    // code) is dropped, so get_callees/get_method_calls come back empty.
+
+
+
+
     if (target.startsWith('this.') || target.startsWith('self.')) {
       const methodName = target.slice(target.indexOf('.') + 1);
       const localMethod = this.functions.get(methodName) ||
@@ -689,7 +683,7 @@ export class EnhancedCallGraphExtractor {
         return { file: localMethod.file, functionName: localMethod.name, isExternal: false, isBuiltin: false };
       }
     }
-    // Check if it's an imported function
+
     const importName = target.split('.')[0];
     if (scope.imports.has(importName)) {
       const importInfo = scope.imports.get(importName)!;
@@ -701,7 +695,7 @@ export class EnhancedCallGraphExtractor {
       };
     }
 
-    // Check if it's a local function
+
     const localFunc = this.functions.get(target) ||
                      this.functions.get(`${this.currentFile}::${target}`);
     if (localFunc) {
@@ -713,7 +707,7 @@ export class EnhancedCallGraphExtractor {
       };
     }
 
-    // Check if it's a built-in
+
     const builtins = ['console', 'Math', 'Date', 'Array', 'Object', 'String', 'Number', 'Boolean', 'Promise'];
     const isBuiltin = builtins.some(b => target.startsWith(b));
 
@@ -749,12 +743,12 @@ export class EnhancedCallGraphExtractor {
   }
 
   private isExported(node: any, parent: any): boolean {
-    // Check for export keyword
+
     if (parent?.type === 'ExportNamedDeclaration' || parent?.type === 'ExportDefaultDeclaration') {
       return true;
     }
 
-    // Check for module.exports or exports assignment
+
     if (parent?.type === 'AssignmentExpression') {
       const left = parent.left;
       if (left?.type === 'MemberExpression') {
@@ -771,7 +765,7 @@ export class EnhancedCallGraphExtractor {
   }
 
   private getCallExpressionString(node: any): string {
-    // Simplified - in production, you'd want to reconstruct the actual expression
+
     if (node.callee?.type === 'Identifier') {
       return `${node.callee.name}()`;
     } else if (node.callee?.type === 'MemberExpression') {
@@ -790,7 +784,7 @@ export class EnhancedCallGraphExtractor {
     return result;
   }
 
-  // Build complete call chains
+
   buildCallChains(): Array<{
     id: string;
     type: 'entry-to-exit' | 'circular' | 'recursive' | 'dead-end' | 'hot-path';
@@ -814,28 +808,28 @@ export class EnhancedCallGraphExtractor {
     const entryPoints: string[] = [];
 
     for (const [funcId, func] of this.functions) {
-      // Exported functions are entry points
+
       if (func.isExported) {
         entryPoints.push(funcId);
       }
 
-      // Main/index functions are entry points
+
       if (func.name === 'main' || func.name === 'index' || func.name === 'start') {
         entryPoints.push(funcId);
       }
 
-      // Event handlers are entry points
+
       if (func.name.startsWith('on') || func.name.startsWith('handle')) {
         entryPoints.push(funcId);
       }
 
-      // Route handlers are entry points
+
       if (func.file.includes('routes') || func.file.includes('controllers')) {
         entryPoints.push(funcId);
       }
     }
 
-    // If no entry points found, consider all exported functions
+
     if (entryPoints.length === 0) {
       for (const [funcId, func] of this.functions) {
         if (func.isExported) {
@@ -854,7 +848,7 @@ export class EnhancedCallGraphExtractor {
     chains: any[],
     depth: number
   ): void {
-    // Check for circular dependency
+
     if (path.includes(funcId)) {
       chains.push({
         id: `circular_${funcId}_${Date.now()}`,
@@ -866,7 +860,7 @@ export class EnhancedCallGraphExtractor {
       return;
     }
 
-    // Check max depth
+
     if (depth > 50) {
       chains.push({
         id: `deep_${funcId}_${Date.now()}`,
@@ -884,7 +878,7 @@ export class EnhancedCallGraphExtractor {
     const targets = this.callGraph.get(funcId) || [];
 
     if (Array.isArray(targets) ? targets.length === 0 : targets.size === 0) {
-      // Dead end - no further calls
+
       chains.push({
         id: `deadend_${funcId}_${Date.now()}`,
         type: 'dead-end',
@@ -899,7 +893,7 @@ export class EnhancedCallGraphExtractor {
     }
   }
 
-  // Enhanced methods for comprehensive call graph tracking
+
 
   extractHTTPEndpoints(node: any): ExtractedCall[] {
     const httpEndpoints: ExtractedCall[] = [];
@@ -973,7 +967,7 @@ export class EnhancedCallGraphExtractor {
     if (node.type === 'ClassDeclaration' && node.id) {
       const className = node.id.name;
 
-      // Constructor injection
+
       const constructor = node.body?.body?.find((member: any) =>
         member.type === 'MethodDefinition' && member.kind === 'constructor'
       );
@@ -1001,7 +995,7 @@ export class EnhancedCallGraphExtractor {
         });
       }
 
-      // Property injection
+
       if (node.body?.body) {
         node.body.body.forEach((member: any) => {
           if (member.type === 'PropertyDefinition' &&
@@ -1038,7 +1032,7 @@ export class EnhancedCallGraphExtractor {
       const objectName = this.getObjectName(node.callee.object);
       const methodName = node.callee.property?.name;
 
-      // Common abstract method patterns
+
       const abstractMethods = ['canAnalyze', 'analyze', 'shouldUse', 'detect', 'process'];
 
       if (methodName && abstractMethods.includes(methodName)) {
@@ -1126,7 +1120,7 @@ export class EnhancedCallGraphExtractor {
     };
   }
 
-  // Create CAS format outputs
+
   toCASNodes(): CASNode[] {
     const nodes: CASNode[] = [];
 
@@ -1206,7 +1200,7 @@ export class EnhancedCallGraphExtractor {
     const entryPoints: CASEntryPoint[] = [];
 
     for (const [funcId, func] of this.functions) {
-      // HTTP endpoints
+
       for (const call of func.calls) {
         if (call.httpMethod && call.httpPath) {
           entryPoints.push({
@@ -1226,7 +1220,7 @@ export class EnhancedCallGraphExtractor {
         }
       }
 
-      // Exported functions
+
       if (func.isExported) {
         entryPoints.push({
           id: `export_${funcId}`,
@@ -1275,8 +1269,8 @@ export class EnhancedCallGraphExtractor {
   }
 
   private resolveTargetToFunctionId(target: string): string | null {
-    // Strip a `this.`/`self.` receiver so an intra-class call resolves to the
-    // method's own function id (prefer the one in the current file on collision).
+
+
     const bare = (target.startsWith('this.') || target.startsWith('self.'))
       ? target.slice(target.indexOf('.') + 1)
       : target;

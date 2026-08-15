@@ -148,14 +148,8 @@ function structuralView(output: CASOutput) {
   return {
     nodes: output.nodes,
     edges: output.edges,
-    entry_points: output.entry_points,
+    entry_points: (output.entry_points || []).map(({ capabilities: _capabilities, ...entryPoint }) => entryPoint),
     exit_points: output.exit_points,
-    capabilities: (output.system_capabilities || []).map(capability => ({
-      id: capability.id,
-      category: capability.category,
-      criticality: capability.criticality,
-      operations: capability.operations,
-    })),
   };
 }
 
@@ -202,12 +196,12 @@ describe('deterministic/AI boundary', () => {
     expect(disabledRun.enhanced_system_purpose?.domain_source).not.toBe('deterministic');
     expect(disabledRun.enhanced_system_purpose?.description_generation?.status).toBe('ai_skipped');
     expect(disabledRun.enhanced_system_purpose?.description_generation?.reason).toBe('disabled-by-env');
-    for (const capability of disabledRun.system_capabilities || []) {
+    for (const capability of disabledRun.capabilities || []) {
       expect(capability.description_source).not.toBe('deterministic');
       expect(capability.description_generation?.status).not.toBe('deterministic_initial');
       expect(capability.description_generation?.status).not.toBe('deterministic_kept');
     }
-    for (const entity of disabledRun.data_entities || []) {
+    for (const entity of disabledRun.entities || []) {
       expect(entity.description_source).not.toBe('deterministic');
     }
   });
@@ -252,6 +246,18 @@ describe('deterministic/AI boundary', () => {
     resetAICooldownState();
     describeSpy.mockReset();
     describeSpy.mockImplementation(async (opts: any) => {
+      const facts = opts?.additionalContext?.facts;
+      if (Array.isArray(facts?.candidate_route_areas)) {
+        return JSON.stringify({
+          capabilities: [{
+            name: 'Track customer orders',
+            description: 'Lets users create customer orders, retrieve an order by its identifier, and review recorded orders.',
+            category: 'core',
+            entities: ['Order'],
+            journeys: [],
+          }],
+        });
+      }
       const items = opts?.additionalContext?.items;
       if (Array.isArray(items) && items.some((item: any) => item?.kind === 'capability')) {
         return JSON.stringify({
@@ -263,7 +269,7 @@ describe('deterministic/AI boundary', () => {
       }
       return JSON.stringify({
         system_description:
-          'This service is an Express HTTP API for order tracking that records customer orders in an in-memory order store. It exposes endpoints to create a new order, fetch one order by id, and list all stored orders as JSON.',
+          'This order-tracking product maintains customer orders and their recorded totals. It lets users create a new order, retrieve a specific order by its identifier, and review the complete order list. When a user creates an order, the product records its customer identifier and total and returns the resulting order. Users can then use the assigned identifier to find the same order later.',
         domain: 'customer-order-tracking',
         descriptions: [],
       });
@@ -278,7 +284,7 @@ describe('deterministic/AI boundary', () => {
     if (enabledRun.enhanced_system_purpose?.domain_source === 'ai') {
       expect(enabledRun.enhanced_system_purpose?.primary_domain).toBe('customer-order-tracking');
     }
-    for (const capability of enabledRun.system_capabilities || []) {
+    for (const capability of enabledRun.capabilities || []) {
       expect(capability.description_source).not.toBe('deterministic');
       expect(capability.description_generation?.status).not.toBe('deterministic_initial');
       expect(capability.description_generation?.status).not.toBe('deterministic_kept');
@@ -343,7 +349,7 @@ describe('deterministic/AI boundary', () => {
       delete process.env.KLAURO_SEMANTIC_DATASET_DIR;
     }
 
-    const dataEntities = enabledRun.data_entities || [];
+    const dataEntities = enabledRun.entities || [];
     expect(dataEntities.length).toBeGreaterThan(0);
     for (const entity of dataEntities) {
       expect(entity.description_source).toBeUndefined();

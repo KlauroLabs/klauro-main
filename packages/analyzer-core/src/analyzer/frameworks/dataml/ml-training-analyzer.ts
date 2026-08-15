@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/** A `class Foo(nn.Module):` / `class Foo(torch.nn.Module):` model definition. */
+
 interface MLModel {
   className: string;
   file: string;
@@ -16,8 +16,8 @@ interface MLModel {
   framework: 'pytorch' | 'keras' | 'tensorflow';
 }
 
-/** A training entry point: a `def train(...)`/`def fit(...)` function, or a
- * top-level `model.fit(...)` / manual PyTorch training-loop call site. */
+
+
 interface TrainingEntry {
   name: string;
   file: string;
@@ -27,7 +27,7 @@ interface TrainingEntry {
   modelRef?: string;
 }
 
-/** `DataLoader(...)`, `tf.data.Dataset...`, or a `Dataset` subclass — the training input. */
+
 interface DatasetRef {
   name: string;
   file: string;
@@ -157,11 +157,11 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
 
         for (const entry of trainingEntries) {
           const entryNodeId = `mltrain_${this.sanitizeId(entry.name)}_${this.sanitizeId(file)}_${entry.line}`;
-          // Resolve the model this entry trains up front (not just when
-          // building the `trains` edge below) so the capability-generation
-          // pass in orchestrator.ts can key/name a training capability on the
-          // actual model ("Train Resnet") instead of collapsing every
-          // training entry in the repo onto one generic bucket.
+
+
+
+
+
           const resolvedModelClass = entry.modelRef ||
             (modelNodeIdByClass.size === 1 ? [...modelNodeIdByClass.keys()][0] : undefined);
 
@@ -186,12 +186,12 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
             { node_id: entryNodeId, method_name: entry.name, file: entry.file, line: entry.line }
           ));
 
-          // Edge: training entry -> model it trains, when we can resolve a model
-          // reference on the same call (e.g. `model.fit(...)` or a model instantiated
-          // from a known class in the same file).
+
+
+
           if (entry.modelRef) {
             const resolvedModelId = modelNodeIdByClass.get(entry.modelRef) ||
-              [...modelNodeIdByClass.values()][0]; // best-effort: single-model file fallback
+              [...modelNodeIdByClass.values()][0];
             if (resolvedModelId) {
               edges.push(this.createEdge(
                 `${entryNodeId}_trains_${resolvedModelId}`,
@@ -277,8 +277,8 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < lines.length; i++) {
       const defMatch = lines[i].match(TRAIN_DEF_PATTERN);
       if (defMatch) {
-        // Confirm this function body actually looks like a training routine
-        // (contains a fit/backward/step call) rather than an unrelated `main`.
+
+
         const defIndent = lines[i].match(/^\s*/)?.[0].length ?? 0;
         let bodyText = '';
         for (let k = i + 1; k < lines.length; k++) {

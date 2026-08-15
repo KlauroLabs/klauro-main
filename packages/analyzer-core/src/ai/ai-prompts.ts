@@ -1,5 +1,4 @@
 import { AIAnalysisContext } from './ai-service';
-import { ComponentNode, ArchitectureBlueprint } from '../types';
 
 export interface PromptTemplate {
   systemPrompt: string;
@@ -124,7 +123,7 @@ Analyze for:
 - Testing and documentation quality`
   };
 
-  // Generate description prompt
+
   generateDescriptionPrompt(context: AIAnalysisContext): string {
     const { component, blueprint, code, language, framework, additionalContext } = context;
 
@@ -205,7 +204,7 @@ Component Details:
     return prompt;
   }
 
-  // Generate risk assessment prompt
+
   generateRiskAssessmentPrompt(context: AIAnalysisContext): string {
     const { component, blueprint, code, language, framework } = context;
 
@@ -272,7 +271,7 @@ Provide your assessment in the required JSON format with specific, actionable in
     return prompt;
   }
 
-  // Generate recommendations prompt
+
   generateRecommendationsPrompt(context: AIAnalysisContext): string {
     const { component, blueprint, code, language, framework } = context;
 
@@ -339,7 +338,7 @@ Provide specific implementation guidance and expected outcomes for each recommen
     return prompt;
   }
 
-  // Generate code analysis prompt
+
   generateCodeAnalysisPrompt(context: AIAnalysisContext): string {
     const { code, language, framework, component } = context;
 
@@ -404,56 +403,41 @@ Provide your analysis in the required JSON format with specific line numbers whe
     return prompt;
   }
 
-  // Utility method to truncate code for context length limits
-  private truncateCode(code: string, maxLength: number = 4000): string {
-    if (code.length <= maxLength) {
-      return code;
-    }
 
-    // Try to truncate at a reasonable boundary (end of line)
-    const truncated = code.substring(0, maxLength);
-    const lastNewline = truncated.lastIndexOf('\n');
-    
-    if (lastNewline > maxLength * 0.8) {
-      return code.substring(0, lastNewline) + '\n// ... (truncated)';
-    }
-    
-    return truncated + '... (truncated)';
-  }
 
-  // Estimate token count for a prompt (rough approximation)
+
   estimateTokenCount(text: string): number {
-    // Rough approximation: 1 token ≈ 4 characters
+
     return Math.ceil(text.length / 4);
   }
 
-  // Optimize prompt for token limits
+
   optimizePromptForTokens(prompt: string, maxTokens: number): string {
     const estimatedTokens = this.estimateTokenCount(prompt);
-    
+
     if (estimatedTokens <= maxTokens) {
       return prompt;
     }
 
-    // Calculate how much we need to reduce
+
     const targetLength = Math.floor(prompt.length * (maxTokens / estimatedTokens) * 0.9);
-    
-    // Find code blocks and truncate them first
+
+
     const codeBlockRegex = /```[\s\S]*?```/g;
     const codeBlocks = prompt.match(codeBlockRegex);
-    
+
     if (codeBlocks && codeBlocks.length > 0) {
       let optimizedPrompt = prompt;
-      
+
       for (const block of codeBlocks) {
         if (optimizedPrompt.length > targetLength) {
           const lines = block.split('\n');
           const language = lines[0].replace('```', '');
           const codeLines = lines.slice(1, -1);
-          
-          // Keep first and last few lines, truncate middle
+
+
           const keepLines = Math.floor((targetLength - optimizedPrompt.length + block.length) / 50);
-          
+
           if (keepLines < codeLines.length && keepLines > 4) {
             const start = codeLines.slice(0, keepLines / 2);
             const end = codeLines.slice(-(keepLines / 2));
@@ -462,15 +446,15 @@ Provide your analysis in the required JSON format with specific line numbers whe
           }
         }
       }
-      
+
       return optimizedPrompt;
     }
-    
-    // If no code blocks, truncate the entire prompt
+
+
     return prompt.substring(0, targetLength) + '... (truncated for token limits)';
   }
 
-  // Get appropriate system prompt for analysis type
+
   getSystemPrompt(analysisType: 'description' | 'risk' | 'recommendations' | 'code'): string {
     switch (analysisType) {
       case 'description':
@@ -486,13 +470,12 @@ Provide your analysis in the required JSON format with specific line numbers whe
     }
   }
 
-  // Generate a context-aware prompt based on available information
+
   generateContextAwarePrompt(context: AIAnalysisContext, analysisType: string): string {
     const hasCode = Boolean(context.code);
     const hasComponent = Boolean(context.component);
-    const hasBlueprint = Boolean(context.blueprint);
 
-    // Prioritize information sources based on analysis type
+
     switch (analysisType) {
       case 'description':
         if (hasComponent) {
@@ -515,7 +498,7 @@ Provide your analysis in the required JSON format with specific line numbers whe
         break;
     }
 
-    // Fallback to basic prompt
+
     return `Please analyze the provided information and generate insights about this software component.`;
   }
 }

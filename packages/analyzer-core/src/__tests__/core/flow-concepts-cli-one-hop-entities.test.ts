@@ -124,7 +124,7 @@ function buildCliOneHopCas(): CASOutput {
       risk_analysis: { risk_level: 'low', risk_factors: [] },
     },
   ];
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_eld', name: 'ELD FMCSA Transfer', category: 'core', criticality: 'high',
       related_entities: ['FMCSADataTransfer'],
@@ -134,7 +134,7 @@ function buildCliOneHopCas(): CASOutput {
 
   return {
     analysis_id: 'test-cli-one-hop',
-    nodes, edges, entry_points, exit_points, data_lineage, call_chains, system_capabilities,
+    nodes, edges, entry_points, exit_points, data_lineage, call_chains, capabilities,
   } as unknown as CASOutput;
 }
 

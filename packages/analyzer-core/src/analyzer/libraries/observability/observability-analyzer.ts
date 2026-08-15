@@ -319,9 +319,9 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     const hits: InstrumentationHit[] = [];
     const applicableFiles = files.filter(file => ruleDef.fileExtensions.some(ext => file.endsWith(`.${ext}`)));
 
-    // Budget-yield per file: with the shared file-read cache warm the await
-    // resolves in a microtask (no event-loop hop), so this scan ran as one
-    // multi-second synchronous block on a whale repo. Results unchanged.
+
+
+
     const maybeYield = createYieldBudget();
     for (const relativeFile of applicableFiles) {
       await maybeYield();
@@ -455,8 +455,8 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     for (const line of content.split(/\r?\n/)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);
       const requireMatch = line.match(/\brequire\(['"]([^'"]+)['"]\)/);
-      // Multi-line named imports put the source on its own `} from '...'` line
-      // (the norm in real SPAs/RN apps), which the line-based import match misses.
+
+
       const fromMatch = line.match(/^\s*\}?\s*from\s+['"]([^'"]+)['"]/);
       const pythonMatch = line.match(/^\s*(?:from\s+([a-zA-Z0-9_.]+)\s+import|import\s+([a-zA-Z0-9_.]+))/);
       const value = importMatch?.[1] || requireMatch?.[1] || fromMatch?.[1] || pythonMatch?.[1] || pythonMatch?.[2];

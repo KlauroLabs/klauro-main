@@ -153,7 +153,7 @@ describe('communication-seams classifier', () => {
     exit_points: [apiExit('fn_charge', 'apps/checkout/payment.service.ts'), queueExit('fn_enqueue', 'apps/checkout/email.service.ts')],
     entry_points: [queueConsumer('fn_process', 'apps/reporting/email.worker.ts')],
     data_lineage: [sharedEntity(), selfOwnedEntity()],
-    data_entities: [],
+    entities: [],
     deployable_evidence: deployables,
   });
 
@@ -204,12 +204,13 @@ describe('communication-seams classifier', () => {
       exit_points: [apiExit('fn_charge', 'apps/checkout/src/pay/payment.service.ts')],
       entry_points: [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: routeDeployables,
     });
     const sync = r.seams.find(s => s.modality === 'sync')!;
     expect(sync.source).not.toBe('POST /pay/charge');
     expect(sync.source).toBe('apps/checkout'); // clean module root, not the route label
+    expect(r.deployable_inventory).toBeUndefined();
   });
 
   it('excludes an in-library operator call (rxjs `map`/`takeUntilDestroyed`) from seams entirely', () => {
@@ -221,7 +222,7 @@ describe('communication-seams classifier', () => {
       ],
       entry_points: [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: [],
     });
     expect(r.seams).toHaveLength(0);
@@ -234,7 +235,7 @@ describe('communication-seams classifier', () => {
       exit_points: [soapExit('fn_soap', 'apps/billing/src/wex-client.php')],
       entry_points: [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: [],
     });
     const sync = r.seams.filter(s => s.modality === 'sync');
@@ -253,7 +254,7 @@ describe('communication-seams classifier', () => {
       nodes: [node('fn_onSave', 'hoggan.windows.presentation/MainWindow.xaml.cs'), node('fn_process', 'apps/reporting/email.worker.ts')],
       exit_points: [],
       entry_points: [uiClick, queueConsumer('fn_process', 'apps/reporting/email.worker.ts')],
-      data_lineage: [], data_entities: [], deployable_evidence: [],
+      data_lineage: [], entities: [], deployable_evidence: [],
     });
     const messaging = r.seams.filter(s => s.kind === 'messaging');
     // Only the real message-queue consumer becomes a messaging seam; the UI Click handler does not.
@@ -268,7 +269,7 @@ describe('communication-seams classifier', () => {
       exit_points: [serialPortExit('fn_connect', 'hoggan.DeviceConnection/Zach/Comport.cs', 'Open')],
       entry_points: [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: [],
     });
     expect(r.seams).toHaveLength(1);
@@ -286,7 +287,7 @@ describe('communication-seams classifier', () => {
       exit_points: [serialPortExit('fn_send', 'hoggan.DeviceConnection/Zach/Comport.cs', 'WriteAsync', true)],
       entry_points: [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: [],
     });
     expect(r.seams).toHaveLength(1);
@@ -313,7 +314,7 @@ describe('communication-seams classifier', () => {
       exit_points: [nonDeviceExit],
       entry_points: [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: [],
     });
     expect(r.seams).toHaveLength(0);
@@ -351,7 +352,7 @@ describe('mergeSeams (passive-seam extension fold)', () => {
       exit_points: [apiExit('fn_charge', 'apps/checkout/pay.ts')],
       entry_points: [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: [],
     });
   }

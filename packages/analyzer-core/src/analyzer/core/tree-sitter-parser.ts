@@ -4,9 +4,9 @@ import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './er
 
 let ParserClass: any = null;
 let grammars: Record<string, any> = {};
-// See tree-sitter-ts-extractor.ts's loadFailure for why this is cached and
-// rethrown identically rather than retried per call: a native addon load
-// failure is deterministic and process-wide, not a per-file event.
+
+
+
 let loadFailure: NativeAddonUnavailableError | null = null;
 
 function loadParser(): any {
@@ -110,10 +110,16 @@ function getFieldText(node: any, fieldName: string): string | undefined {
   return child?.text;
 }
 
-/** PHP tree-sitter node types that make an ancestor a conditional branch
- *  construct (docs/SEMANTIC-MODEL.md 'branch' step-graph edge ground):
- *  if/elseif/else bodies+conditions, switch/case, match arms, and inline
- *  ternary. Verified against tree-sitter-php's node-types.json. */
+export function normalizeCSharpInvocationTarget(value: string | undefined): string | undefined {
+  const target = value?.trim();
+  if (!target || target.length > 256) return undefined;
+  return /^(?:global::)?[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*$/.test(target) ? target : undefined;
+}
+
+
+
+
+
 const PHP_CONDITIONAL_NODE_TYPES = new Set([
   'if_statement',
   'else_clause',
@@ -126,10 +132,10 @@ const PHP_CONDITIONAL_NODE_TYPES = new Set([
   'conditional_expression'
 ]);
 
-/** True when `node` (a call expression) has a conditional-construct ancestor
- *  within its own enclosing function/method — evidence-first ground for the
- *  `isConditional` flag on a PHP call. Stops at the enclosing function
- *  boundary so a call is never attributed to an outer function's branch. */
+
+
+
+
 function isPhpCallConditional(node: any): boolean {
   let cur = node.parent;
   while (cur) {
@@ -201,7 +207,7 @@ export class TreeSitterParser {
               const name = func.childForFieldName('name');
               if (name) {
                 invocations.push({
-                  target: expr?.text,
+                  target: normalizeCSharpInvocationTarget(expr?.text),
                   method: name.text,
                   line: inv.startPosition.row + 1
                 });
@@ -379,8 +385,8 @@ export class TreeSitterParser {
         } else if (expr.type === 'member_call_expression') {
           const name = expr.childForFieldName('name');
           if (name) {
-            // Capture the RECEIVER (`$a` in `$a->save()`) so the analyzer can
-            // type-resolve it to the receiver's class — not the containing class.
+
+
             const object = expr.childForFieldName('object');
             const receiver = object?.text?.replace(/^\$/, '');
             calls.push({

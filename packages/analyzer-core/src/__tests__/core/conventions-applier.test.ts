@@ -1,5 +1,5 @@
 import { applyConventions } from '../../analyzer/core/conventions-applier';
-import type { CASNode, CASEdge, CASDecorator } from '../../types/cas.types';
+import type { CASNode, CASDecorator } from '../../types/cas.types';
 
 function fn(overrides: Partial<CASNode> & { id: string; name: string }): CASNode {
   return {
@@ -23,7 +23,7 @@ describe('applyConventions', () => {
   test('no conventions declared returns empty result', () => {
     const result = applyConventions(undefined, [], []);
     expect(result.entry_points).toEqual([]);
-    expect(result.data_entities).toEqual([]);
+    expect(result.entities).toEqual([]);
     expect(result.matches).toEqual([]);
   });
 
@@ -105,7 +105,7 @@ describe('applyConventions', () => {
         nodes,
         [],
       );
-      expect(result.data_entities.map(e => e.name).sort()).toEqual(['CustomerAggregate', 'OrderAggregate']);
+      expect(result.entities.map(e => e.name).sort()).toEqual(['CustomerAggregate', 'OrderAggregate']);
       expect(result.matches[0].matched).toBe(true);
       expect(result.matches[0].matched_node_ids.sort()).toEqual(['cls_1', 'cls_2']);
     });
@@ -113,7 +113,7 @@ describe('applyConventions', () => {
     test('no matching class emits nothing and reports why', () => {
       const nodes: CASNode[] = [cls({ id: 'cls_1', name: 'PlainHelper' })];
       const result = applyConventions({ entities: [{ name_suffix: 'Aggregate' }] }, nodes, []);
-      expect(result.data_entities).toHaveLength(0);
+      expect(result.entities).toHaveLength(0);
       expect(result.matches[0].matched).toBe(false);
     });
   });

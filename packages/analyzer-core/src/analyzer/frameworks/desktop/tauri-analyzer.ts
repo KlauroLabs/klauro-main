@@ -7,13 +7,13 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * A single `#[tauri::command]` — the real Tauri entry point (invoked from the
- * frontend via `invoke('cmd')`). The Rust function name IS the command name unless
- * renamed via `#[tauri::command(rename_all = "...")]` or an explicit alias in
- * `generate_handler!`, so this analyzer resolves against the function name and
- * lets the `generate_handler!` registration confirm which commands are actually wired.
- */
+
+
+
+
+
+
+
 interface TauriCommand {
   name: string;
   isAsync: boolean;
@@ -21,17 +21,17 @@ interface TauriCommand {
   line: number;
 }
 
-/** A `tauri::generate_handler![cmd_a, cmd_b, ...]` registration call — the list of
- *  commands actually exposed to the frontend (a `#[tauri::command]` fn that's never
- *  listed here is dead/unreachable from JS, evidence-worth surfacing but not faked). */
+
+
+
 interface HandlerRegistration {
   commands: string[];
   file: string;
   line: number;
 }
 
-/** A frontend `invoke('cmd', {...})` call site — the renderer-side origin of a
- *  Tauri command flow, resolved to the Rust command by name. */
+
+
 interface InvokeCall {
   command: string;
   file: string;
@@ -72,8 +72,8 @@ export class TauriAnalyzer extends BaseAnalyzer {
         const content = await fs.readFile(file, 'utf-8');
         if (/#\[tauri::command\]/.test(content)) return true;
       }
-      // No Rust source found locally (e.g. Cargo.toml only) but the JS side clearly
-      // depends on the Tauri API — still real evidence of a Tauri desktop app.
+
+
       return hasTauriApiDep;
     } catch {
       return false;
@@ -126,7 +126,7 @@ export class TauriAnalyzer extends BaseAnalyzer {
           const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
           version = deps['@tauri-apps/api'] || deps.tauri || 'unknown';
         }
-      } catch { /* best effort */ }
+      } catch {   }
 
       const registeredNames = new Set<string>(allRegistrations.flatMap(r => r.commands));
 
@@ -193,8 +193,8 @@ export class TauriAnalyzer extends BaseAnalyzer {
         } as CASEntryPoint);
       });
 
-      // generate_handler![...] registration nodes — the wiring fact that confirms
-      // (or, by omission, disproves) a command is actually reachable from JS.
+
+
       allRegistrations.forEach((reg, index) => {
         const regId = `tauri_generate_handler_${index}`;
         const regNode = this.createNodeBuilder(regId, 'tauri::generate_handler![...]', 'tauri_registration')
@@ -213,7 +213,7 @@ export class TauriAnalyzer extends BaseAnalyzer {
         }
       });
 
-      // Frontend invoke() call sites resolved to their Rust command by name.
+
       allInvokes.forEach((call, index) => {
         const callId = `tauri_invoke_${this.sanitizeId(call.command)}_${index}`;
         const callNode = this.createNodeBuilder(callId, `invoke('${call.command}')`, 'tauri_invoke')
@@ -268,11 +268,11 @@ export class TauriAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Extract every `#[tauri::command]` — with an optional `async` modifier — and the
-   * `fn name(...)` immediately following the attribute (skipping any other
-   * attributes in between, e.g. `#[specta::specta]` stacked above/below it).
-   */
+
+
+
+
+
   private extractTauriCommands(content: string, file: string): TauriCommand[] {
     const commands: TauriCommand[] = [];
     const attrPattern = /#\[tauri::command(?:\([^)]*\))?\]/g;
@@ -287,11 +287,11 @@ export class TauriAnalyzer extends BaseAnalyzer {
     return commands;
   }
 
-  /**
-   * Extract every `tauri::generate_handler![cmd_a, cmd_b, ...]` (or the bare
-   * `generate_handler![...]` form after `use tauri::generate_handler`) invocation,
-   * capturing the list of command identifiers it registers.
-   */
+
+
+
+
+
   private extractHandlerRegistrations(content: string, file: string): HandlerRegistration[] {
     const registrations: HandlerRegistration[] = [];
     const pattern = /(?:tauri::)?generate_handler!\s*\[([\s\S]*?)\]/g;
@@ -307,9 +307,9 @@ export class TauriAnalyzer extends BaseAnalyzer {
     return registrations;
   }
 
-  /** Extract every frontend `invoke('command', {...})` call — from
-   *  `@tauri-apps/api/core` (v2) or `@tauri-apps/api/tauri` (v1); the import path
-   *  doesn't change the call shape, so a single bare-identifier match covers both. */
+
+
+
   private extractInvokeCalls(content: string, file: string): InvokeCall[] {
     const invokes: InvokeCall[] = [];
     const pattern = /\binvoke\s*\(\s*(['"`])([^'"`]+)\1/g;

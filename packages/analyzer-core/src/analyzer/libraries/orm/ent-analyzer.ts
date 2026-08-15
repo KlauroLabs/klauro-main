@@ -24,29 +24,29 @@ interface EntSchema {
   line: number;
 }
 
-/**
- * ent analyzer (Go, entgo.io).
- *
- * ent schemas are Go structs embedding `ent.Schema` with `Fields()`/`Edges()`
- * methods returning builder-style declarations, e.g.:
- *
- *   type User struct { ent.Schema }
- *   func (User) Fields() []ent.Field {
- *     return []ent.Field{ field.String("name") }
- *   }
- *   func (User) Edges() []ent.Edge {
- *     return []ent.Edge{ edge.To("posts", Post.Type) }
- *   }
- *
- * `edge.To(name, Target.Type)` is a forward (has-many-ish, ownership) edge;
- * `edge.From(name, Target.Type, InverseEdgeName)` is the inverse side. Both
- * carry `.Unique()` to mark 1:1 vs 1:N. Since ent doesn't distinguish
- * has-many from belongs-to as separate builder names (direction comes from
- * To/From + Unique), cardinality is inferred: `To` without `.Unique()` is
- * `OneToMany`, `To().Unique()` is `OneToOne`, `From` without `.Unique()` is
- * `ManyToOne` (inverse of a to-edge on the other schema), `From().Unique()` is
- * `OneToOne`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class EntAnalyzer extends BaseAnalyzer {
   constructor() {
     super('ent', 'ent Analyzer', '1.0.0', 'library');
@@ -76,7 +76,7 @@ export class EntAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -256,11 +256,11 @@ export class EntAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `type User struct { ent.Schema }`, then the sibling
-   * `func (User) Fields() []ent.Field { return []ent.Field{ field.String("name"), ... } }`
-   * and `func (User) Edges() []ent.Edge { return []ent.Edge{ edge.To("posts", Post.Type), ... } }`.
-   */
+
+
+
+
+
   private parseSchema(content: string, filePath: string): EntSchema | undefined {
     const structMatch = /type\s+(\w+)\s+struct\s*\{\s*ent\.Schema\s*\}/.exec(content);
     if (!structMatch) return undefined;
@@ -292,7 +292,6 @@ export class EntAnalyzer extends BaseAnalyzer {
         const edgeRegex = /edge\.(To|From)\s*\(\s*"(\w+)"\s*,\s*(\w+)\.Type([^)]*)\)/g;
         let edgeMatch: RegExpExecArray | null;
         while ((edgeMatch = edgeRegex.exec(body)) !== null) {
-          const trailer = edgeMatch[4] || '';
           edgeDefs.push({
             kind: edgeMatch[1] === 'To' ? 'to' : 'from',
             name: edgeMatch[2],
@@ -306,7 +305,7 @@ export class EntAnalyzer extends BaseAnalyzer {
     return { entityName, fields, edges: edgeDefs, filePath, line };
   }
 
-  /** Look at the next ~120 chars after an edge builder call for a chained `.Unique()`. */
+
   private chainAfter(body: string, index: number): string {
     return body.slice(index, index + 120);
   }

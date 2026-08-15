@@ -4,23 +4,23 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Unreal Engine (C++) game-engine framework analyzer.
- *
- * Mirrors the Unity analyzer's premise for a different engine/language pair:
- * `AActor`/`UObject`/`APawn`/`ACharacter` subclasses declare `BeginPlay()` and
- * `Tick(float DeltaTime)` overrides that the engine invokes on
- * actor-spawn/per-frame — the engine is the caller, so these are the real
- * flow roots for an Unreal codebase and are emitted as `lifecycle` entry
- * points. `UFUNCTION()`-marked methods (bound to Blueprint/RPC/input) and
- * `UPROPERTY()`-marked fields (the Blueprint/editor-exposed configuration
- * surface, analogous to Unity's `[SerializeField]`) are captured as class
- * metadata.
- *
- * Real dependency gate: a `.uproject` file, or `#include "CoreMinimal.h"` /
- * a `GENERATED_BODY()` macro use, or a `Source/*.Build.cs` module file —
- * never inferred from folder names alone.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const UNREAL_LIFECYCLE_METHODS = [
   'BeginPlay', 'EndPlay', 'Tick', 'PostInitializeComponents', 'BeginDestroy', 'Destroyed',
@@ -30,10 +30,6 @@ const UNREAL_LIFECYCLE_METHODS = [
 
 const UNREAL_BASE_TYPES = ['AActor', 'APawn', 'ACharacter', 'AController', 'UObject', 'UActorComponent'];
 
-interface UnrealClass {
-  name: string;
-  baseType: string;
-}
 
 export class UnrealAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -96,13 +92,13 @@ export class UnrealAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Finds `class ANAME_API AFoo : public AActor` (or UActor/APawn/etc.)
-   * declarations and, within the class body, textually-present lifecycle
-   * overrides — never fabricated. Unreal headers commonly declare the method
-   * (`virtual void BeginPlay() override;`) while the .cpp defines the body
-   * (`void AFoo::BeginPlay() { ... }`); both forms are matched per-file.
-   */
+
+
+
+
+
+
+
   private extractUnrealClasses(
     content: string,
     relativePath: string,
@@ -112,7 +108,7 @@ export class UnrealAnalyzer extends BaseAnalyzer {
   ): void {
     const lineForIndex = this.buildLineIndex(content);
 
-    // Header-style class declaration: `class API_MACRO AClassName : public ABaseType`
+
     const classPattern = /\bclass\s+(?:[A-Z][A-Z0-9_]*_API\s+)?([A-UW-Za-z_]\w*)\s*:\s*public\s+([A-Za-z_]\w*)/g;
     let match: RegExpExecArray | null;
     const declaredClasses = new Map<string, { baseType: string; line: number }>();
@@ -141,9 +137,9 @@ export class UnrealAnalyzer extends BaseAnalyzer {
         })
         .build());
 
-      // Definitions can live in this same file (single-file actors) or in a
-      // paired .cpp; scan this file's content for either declared-inline
-      // bodies or `ClassName::Method(...)` out-of-line definitions.
+
+
+
       for (const hookName of UNREAL_LIFECYCLE_METHODS) {
         const inlinePattern = new RegExp(
           `\\bvirtual\\s+void\\s+${hookName}\\s*\\([^)]*\\)\\s*(?:const\\s*)?override\\s*\\{`

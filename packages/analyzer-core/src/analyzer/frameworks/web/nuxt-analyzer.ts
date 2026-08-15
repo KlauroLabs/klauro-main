@@ -10,8 +10,8 @@ import { cachedGlob as glob } from '../../core/glob-cache';
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']);
 const NUXT_CONFIG_FILES = ['nuxt.config.ts', 'nuxt.config.js', 'nuxt.config.mjs'];
 
-// Directory kinds Nuxt assigns special meaning to, used both by the full and
-// incremental code paths so file -> node attribution stays identical.
+
+
 type NuxtFileKind =
   | 'page'
   | 'server-api'
@@ -22,18 +22,18 @@ type NuxtFileKind =
   | 'middleware'
   | 'plugin';
 
-/**
- * Nuxt (Vue meta-framework) analyzer.
- *
- * Extracts Nuxt's convention-over-configuration semantics with line/regex
- * heuristics (no AST): file-based pages routing, Nitro server routes/api,
- * auto-imported components & composables, layouts, route middleware and plugins.
- *
- * Mirrors the framework-analyzer contract and the Next.js file-based routing
- * reference. Supports single-file incremental analysis because it attributes
- * file-level nodes (pages, endpoints, components, ...) and must not force a full
- * rebuild on every touched file.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class NuxtAnalyzer extends BaseAnalyzer {
   constructor() {
     super('nuxt', 'Nuxt Framework Analyzer', '1.0.0', 'framework');
@@ -171,9 +171,9 @@ export class NuxtAnalyzer extends BaseAnalyzer {
     return contribution;
   }
 
-  // ---------------------------------------------------------------------------
-  // File discovery & classification
-  // ---------------------------------------------------------------------------
+
+
+
 
   private async findNuxtFiles(projectPath: string, context: AnalysisContext): Promise<string[]> {
     const ignorePatterns = [
@@ -214,9 +214,9 @@ export class NuxtAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  // ---------------------------------------------------------------------------
-  // Node / entry-point emission (shared by full + incremental paths)
-  // ---------------------------------------------------------------------------
+
+
+
 
   private emitFileNode(
     kind: NuxtFileKind,
@@ -366,20 +366,20 @@ export class NuxtAnalyzer extends BaseAnalyzer {
     }));
   }
 
-  // ---------------------------------------------------------------------------
-  // Route derivation
-  // ---------------------------------------------------------------------------
 
-  /** pages/users/[id].vue -> /users/:id ; pages/index.vue -> / ; [...slug] -> /:slug* */
+
+
+
+
   private derivePageRoute(relativePath: string): string {
     const match = relativePath.replace(/\\/g, '/').match(/(?:^|\/)pages\/(.+)\.vue$/);
     let route = match ? match[1] : '';
 
     route = route
-      .replace(/\[\.\.\.([^\]]+)\]/g, ':$1*')   // catch-all [...slug] -> :slug*
-      .replace(/\[([^\]]+)\]/g, ':$1');         // dynamic [id] -> :id
+      .replace(/\[\.\.\.([^\]]+)\]/g, ':$1*')
+      .replace(/\[([^\]]+)\]/g, ':$1');
 
-    // index segments collapse to their parent path
+
     route = route.replace(/(^|\/)index$/, '');
 
     let result = `/${route}`.replace(/\/+/g, '/');
@@ -387,11 +387,11 @@ export class NuxtAnalyzer extends BaseAnalyzer {
     return result || '/';
   }
 
-  /**
-   * server/api/health.get.ts -> { /api/health, GET }
-   * server/api/users/[id].ts -> { /api/users/:id, ALL (or from defineEventHandler) }
-   * server/routes/sitemap.xml.ts -> { /sitemap.xml, GET/ALL }
-   */
+
+
+
+
+
   private deriveServerRoute(
     relativePath: string,
     content: string,
@@ -405,7 +405,7 @@ export class NuxtAnalyzer extends BaseAnalyzer {
     let routeBody = baseMatch ? baseMatch[1] : '';
     let method = 'ALL';
 
-    // Method suffix: foo.get / foo.post / foo.delete ...
+
     const suffixMatch = routeBody.match(/\.(get|post|put|delete|patch|head|options)$/i);
     if (suffixMatch) {
       method = suffixMatch[1].toUpperCase();
@@ -422,7 +422,7 @@ export class NuxtAnalyzer extends BaseAnalyzer {
     if (routePath.length > 1 && routePath.endsWith('/')) routePath = routePath.slice(0, -1);
     if (routePath === '') routePath = '/';
 
-    // If no filename suffix, try to read the method off defineEventHandler usage.
+
     if (method === 'ALL') {
       const evMethod = this.detectHandlerMethod(content);
       if (evMethod) method = evMethod;
@@ -432,7 +432,7 @@ export class NuxtAnalyzer extends BaseAnalyzer {
   }
 
   private detectHandlerMethod(content: string): string | null {
-    // getMethod(event) === 'POST' / readBody only on writes, or explicit router method.
+
     const eqMatch = content.match(/getMethod\s*\(\s*\w+\s*\)\s*===?\s*['"`](\w+)['"`]/);
     if (eqMatch && HTTP_METHODS.has(eqMatch[1].toUpperCase())) return eqMatch[1].toUpperCase();
     if (/\breadBody\s*\(/.test(content) || /\breadValidatedBody\s*\(/.test(content)) return 'POST';
@@ -440,7 +440,7 @@ export class NuxtAnalyzer extends BaseAnalyzer {
   }
 
   private deriveComponentName(relativePath: string): string {
-    // Nuxt builds the auto-import name from the path under components/ (PascalCased, dir-prefixed).
+
     const match = relativePath.replace(/\\/g, '/').match(/(?:^|\/)components\/(.+)\.vue$/);
     const rel = match ? match[1] : path.basename(relativePath, '.vue');
     const segments = rel.split('/');
@@ -461,7 +461,7 @@ export class NuxtAnalyzer extends BaseAnalyzer {
       let m: RegExpExecArray | null;
       while ((m = re.exec(content)) !== null) names.add(m[1]);
     }
-    // Default export composable named after the file (composables/useAuth.ts -> useAuth).
+
     const base = path.basename(relativePath).replace(/\.(ts|js|mjs)$/, '');
     if (/^use[A-Z]\w*/.test(base) && /export\s+default/.test(content)) names.add(base);
     if (names.size === 0 && /^use[A-Z]\w*/.test(base)) names.add(base);
@@ -497,9 +497,9 @@ export class NuxtAnalyzer extends BaseAnalyzer {
     return modules;
   }
 
-  // ---------------------------------------------------------------------------
-  // Capabilities, levels, perspectives
-  // ---------------------------------------------------------------------------
+
+
+
 
   protected getCapabilities(): string[] {
     return ['nuxt-pages', 'nuxt-server-routes', 'nuxt-components', 'nuxt-composables'];

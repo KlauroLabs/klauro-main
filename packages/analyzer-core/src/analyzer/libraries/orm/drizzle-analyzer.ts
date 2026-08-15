@@ -15,9 +15,9 @@ interface DrizzleColumn {
 }
 
 interface DrizzleTable {
-  /** JS export variable name, e.g. `users` */
+
   varName: string;
-  /** SQL table name, e.g. `users` */
+
   tableName: string;
   dialect: string;
   columns: DrizzleColumn[];
@@ -32,18 +32,18 @@ interface DrizzleRelation {
   kind: 'one' | 'many';
 }
 
-/**
- * Drizzle ORM analyzer.
- *
- * Extracts table definitions (`pgTable`/`mysqlTable`/`sqliteTable`) as data-entity
- * nodes with field nodes per column, plus relation edges from `relations(...)`
- * declarations and `.references(() => other.id)` foreign keys.
- *
- * Node conventions mirror PrismaAnalyzer: entity nodes are type `'entity'`, level 3,
- * id `entity_drizzle_<name>`, with embedded `fields[]` metadata. Field nodes use type
- * `'field'`, level 4, joined to their entity by `has_field` edges. Relation edges are
- * type `'references'`, category `'database'`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class DrizzleAnalyzer extends BaseAnalyzer {
   constructor() {
     super('drizzle', 'Drizzle ORM Analyzer', '1.0.0', 'library');
@@ -77,7 +77,7 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -167,8 +167,8 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
       relations.push(...this.parseRelations(content));
     }
 
-    // Single-file scope: references/relations targeting tables defined in other
-    // files under-populate here and re-derive on full analysis.
+
+
     this.emitTableGraph(tables, relations, nodes, edges);
 
     const exports = tables.map(t => t.varName);
@@ -193,7 +193,7 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
-    // Map JS var name -> table for resolving references/relations.
+
     const tableByVar = new Map<string, DrizzleTable>();
     for (const table of tables) {
       tableByVar.set(table.varName, table);
@@ -233,7 +233,7 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
       );
       nodes.push(node);
 
-      // Field nodes + has_field edges.
+
       for (const col of table.columns) {
         const fieldNodeId = `field_drizzle_${table.varName.toLowerCase()}_${col.name.toLowerCase()}`;
         nodes.push(this.createNode(
@@ -265,7 +265,7 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
           { attributes: { field: col.name, type: col.type } }
         ));
 
-        // Foreign-key relation via .references(() => other.id)
+
         if (col.referencesTable && tableByVar.has(col.referencesTable)) {
           const targetTable = tableByVar.get(col.referencesTable)!;
           edges.push(this.createEdge(
@@ -287,7 +287,7 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Explicit relations() declarations.
+
     for (const rel of relations) {
       const from = tableByVar.get(rel.fromVar);
       const to = tableByVar.get(rel.toVar);
@@ -302,8 +302,8 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
         'database',
         {
           attributes: {
-            // Drizzle `one(target)` is the belongs-to side (N:1) — it pairs with a
-            // `many()` on the other table; only `many()` is the 1:N side.
+
+
             relationType: rel.kind === 'many' ? 'OneToMany' : 'ManyToOne',
             field: rel.field,
             targetEntity: to.tableName,
@@ -314,9 +314,9 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `export const users = pgTable('users', { ... })` definitions.
-   */
+
+
+
   private parseTables(content: string, filePath: string): DrizzleTable[] {
     const tables: DrizzleTable[] = [];
     const tableRegex = /(?:export\s+)?const\s+(\w+)\s*=\s*(pgTable|mysqlTable|sqliteTable)\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\{/g;
@@ -327,7 +327,7 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
       const helper = match[2];
       const tableName = match[3];
       const dialect = helper === 'pgTable' ? 'postgres' : helper === 'mysqlTable' ? 'mysql' : 'sqlite';
-      const bodyStart = tableRegex.lastIndex - 1; // points at the opening `{`
+      const bodyStart = tableRegex.lastIndex - 1;
       const body = this.extractBalanced(content, bodyStart);
       if (body === null) {
         continue;
@@ -346,15 +346,15 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
     return tables;
   }
 
-  /**
-   * Parse columns inside a table body, e.g.
-   *   id: serial('id').primaryKey(),
-   *   email: text('email').notNull().unique(),
-   *   authorId: integer('author_id').references(() => users.id),
-   */
+
+
+
+
+
+
   private parseColumns(body: string): DrizzleColumn[] {
     const columns: DrizzleColumn[] = [];
-    // Match `name: builder('col', ...)<chained calls>` up to a comma at depth 0-ish.
+
     const colRegex = /(\w+)\s*:\s*(\w+)\s*\(\s*(?:['"`]([^'"`]+)['"`])?[^,;]*?(?:,[\s\S]*?)?\)((?:\s*\.\w+\([^)]*\))*)/g;
 
     let match: RegExpExecArray | null;
@@ -364,7 +364,7 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
       const columnName = match[3] || name;
       const chain = match[4] || '';
 
-      // Skip non-column helpers (indexes, composite pk, etc.)
+
       if (['primaryKey', 'foreignKey', 'index', 'uniqueIndex', 'unique', 'relations'].includes(builder)) {
         continue;
       }
@@ -389,9 +389,9 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
     return columns;
   }
 
-  /**
-   * Parse `relations(users, ({ one, many }) => ({ posts: many(posts), ... }))`.
-   */
+
+
+
   private parseRelations(content: string): DrizzleRelation[] {
     const relations: DrizzleRelation[] = [];
     const relRegex = /relations\s*\(\s*(\w+)\s*,\s*\(\s*\{[^}]*\}\s*\)\s*=>\s*\(\s*\{/g;
@@ -419,10 +419,10 @@ export class DrizzleAnalyzer extends BaseAnalyzer {
     return relations;
   }
 
-  /**
-   * Given an index pointing at an opening `{`, return the substring inside the
-   * matching closing `}` (exclusive), or null if unbalanced.
-   */
+
+
+
+
   private extractBalanced(content: string, openIndex: number): string | null {
     if (content[openIndex] !== '{') {
       return null;

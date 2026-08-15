@@ -8,29 +8,29 @@ import {
   CASPrincipleViolation,
 } from '../../types/cas.types';
 
-/**
- * Architectural consistency detector: deterministic structural facts about
- * where the codebase is NOT cohesive — the same concern handled by two
- * different structural patterns in different places, and engineering-
- * principle breaks (layering skips, split-ownership writes, coupling
- * hotspots). This is NOT a keyword categorizer: every finding is grounded in
- * concrete node/file evidence pulled from the existing paradigm-conformance
- * deviations and pattern-instance data already computed elsewhere in CAS,
- * plus a local per-scope layering pass and a side-effect-weighted coupling
- * scan computed directly from nodes/edges/exit_points (all facts already
- * produced upstream — no new analyzer pass). Severity/labels stay
- * deterministic here; AI interpretation (why it matters, how to align) is
- * layered on at the query/tool boundary, never fabricated structure.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface ArchitecturalConflictsInput {
   nodes: CASNode[];
   edges: CASEdge[];
   paradigmConformance: CASParadigmConformance[];
   patterns: CASPattern[];
-  /** Optional: external-interaction facts, reused (not recomputed) to weight
-   *  coupling severity by side effects. Absent on older call sites — the
-   *  coupling scan degrades gracefully to fan-in-only in that case. */
+
+
+
   exitPoints?: CASExitPoint[];
 }
 
@@ -52,27 +52,22 @@ function nodeFile(node: CASNode | undefined): string | undefined {
   return node?.source?.file;
 }
 
-function moduleOf(file: string): string {
-  const segments = file.split('/').filter(Boolean);
-  segments.pop();
-  return segments.join('/');
-}
 
-/**
- * Per-scope (per-module/package/app) layering-norm inference. This is
- * independent of `paradigmConformance`, which infers a single REPO-WIDE norm
- * and abstains entirely (zero deviations) when no global norm reaches the
- * 70%-adoption threshold — exactly the failure mode on a monorepo where
- * different apps legitimately use different (each internally consistent)
- * layering styles. Instead of one global norm, this groups entry-layer nodes
- * (controllers/handlers/resolvers/gateways) by their top-level deployable
- * scope (first 1-2 path segments, e.g. `apps/mcp-server`,
- * `packages/analyzer-core`) and asks: within THIS scope, does a dominant
- * shape exist (entry -> service -> repo vs. entry -> repo directly)? If a
- * scope has its own dominant convention, a file that breaks it inside that
- * SAME scope is a real deviation — even if a sibling scope uses a totally
- * different (also internally consistent) style. No global norm is required.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const ENTRY_LAYER_TYPE = /(^|[_\s])(controller|gateway|resolver|handler|api_route|endpoint)([_\s]|$)/;
 const SERVICE_LAYER_TYPE = /(^|[_\s])(service|use_case|usecase|interactor|application_service|workflow)([_\s]|$)/;
 const REPOSITORY_LAYER_TYPE = /(^|[_\s])(repository|repo|dao|data_mapper)([_\s]|$)/;
@@ -96,9 +91,9 @@ function isRepositoryLayer(node: CASNode): boolean {
   return REPOSITORY_LAYER_TYPE.test(node.type) || REPOSITORY_LAYER_NAME.test(node.name);
 }
 
-/** Top-level deployable scope: package.json/app root heuristic via first two
- *  path segments (e.g. `apps/mcp-server`, `packages/analyzer-core`), falling
- *  back to the first segment for shallower trees. */
+
+
+
 function deployableScopeOf(file: string): string {
   const segments = file.split('/').filter(Boolean);
   if (segments.length === 0) return '';
@@ -122,21 +117,21 @@ function profileEntryNodesByScope(
   exitPoints: CASExitPoint[]
 ): ScopeEntryProfile[] {
   const nodesById = new Map(nodes.map(n => [n.id, n]));
-  // Some analyzers resolve a repository call as a database EXIT POINT sourced
-  // from the calling method (e.g. `this.repo.delete(id)` -> exit_db_*)
-  // instead of a method->method call edge into the repository class. Direct
-  // database access from an entry-layer method is exactly the same
-  // "skips-the-service-layer" signal as calling a repository node, so treat
-  // both as equivalent evidence of a direct-repository-style call.
+
+
+
+
+
+
   const dbExitSourcesByMethod = new Set(exitPoints.filter(e => e.type === 'database').map(e => e.source_node));
 
-  // Call edges resolve at the METHOD level (method -> method), not class ->
-  // class — so layer classification has to happen on the owning class,
-  // resolved via containment edges (class -contains-> method), the same
-  // pattern paradigm-conformance.ts uses for its own entry/service/repo
-  // profiling. ownerByChild maps a method/member node id to its containing
-  // class id so a call from/to a method can be attributed to that class's
-  // layer (controller/service/repository).
+
+
+
+
+
+
+
   const callTargetsBySource = new Map<string, string[]>();
   const containedBySource = new Map<string, string[]>();
   const ownerByChild = new Map<string, string>();
@@ -192,9 +187,9 @@ function profileEntryNodesByScope(
         }
       }
     }
-    // Only comparable when the entry node actually reaches data-access code
-    // one way or the other; entries with no service/repo calls at all say
-    // nothing about layering style and would just dilute the scope's norm.
+
+
+
     if (!callsServiceLayer && !callsRepositoryDirectly) continue;
 
     profiles.push({ node, scope, callsServiceLayer, callsRepositoryDirectly, repoTargetFiles });
@@ -225,16 +220,16 @@ function conflictsFromPerScopeLayering(
     const directCount = scopeProfiles.filter(p => p.callsRepositoryDirectly && !p.callsServiceLayer).length;
     const total = scopeProfiles.length;
 
-    // The scope's own local norm is whichever shape dominates >= threshold —
-    // could be layered (the "good" convention) OR direct (a scope that
-    // deliberately skips a service layer everywhere, which is then itself
-    // consistent and must NOT be flagged). Only the minority inside a scope
-    // that clearly has a norm is a deviation.
+
+
+
+
+
     const layeredShare = layeredCount / total;
     const directShare = directCount / total;
     const dominantIsLayered = layeredShare >= SCOPE_NORM_THRESHOLD;
     const dominantIsDirect = directShare >= SCOPE_NORM_THRESHOLD;
-    if (!dominantIsLayered && !dominantIsDirect) continue; // no local norm either — stay silent
+    if (!dominantIsLayered && !dominantIsDirect) continue;
 
     const deviants = dominantIsLayered
       ? scopeProfiles.filter(p => p.callsRepositoryDirectly)
@@ -276,16 +271,16 @@ function conflictsFromPerScopeLayering(
   return conflicts;
 }
 
-/**
- * (a) Pattern-conflict/overlap from paradigm deviations: a paradigm with a
- * norm (adoption_rate >= threshold already enforced upstream) that also has
- * deviations IS a competing-pattern signal — the norm is one structural
- * pattern (e.g. handler -> service -> repo), the deviations are a second,
- * competing pattern (handler -> repo) applied to the same concern in
- * different places. We surface this as a conflict, grouping deviations by
- * paradigm so an agent sees "the norm" vs "the competing shape" with file
- * evidence on both sides.
- */
+
+
+
+
+
+
+
+
+
+
 function conflictsFromParadigmDeviations(
   paradigmConformance: CASParadigmConformance[]
 ): CASArchitecturalConflict[] {
@@ -329,14 +324,14 @@ function conflictsFromParadigmDeviations(
   return conflicts;
 }
 
-/**
- * (a) Pattern-overlap from design-pattern variations: when a single detected
- * pattern (e.g. "Repository") has multiple named implementation variations
- * each covering a meaningful share of instances, that is two structural
- * styles doing the same job in different places — surfaced only when no
- * variation dominates (the minority share is large enough to be a real
- * second style, not stray noise).
- */
+
+
+
+
+
+
+
+
 function conflictsFromPatternVariations(
   patterns: CASPattern[],
   nodesById: Map<string, CASNode>
@@ -378,12 +373,12 @@ function conflictsFromPatternVariations(
   return conflicts;
 }
 
-/**
- * (b) Engineering-principle signals: layering violations already surfaced as
- * paradigm deviations of kind layer-skipping-call/direct-data-access, plus
- * single-owner/responsibility breaks from parallel-implementation deviations,
- * plus a deterministic coupling-hotspot scan (fan-in/fan-out outliers).
- */
+
+
+
+
+
+
 function principleViolationsFromDeviations(
   paradigmConformance: CASParadigmConformance[]
 ): CASPrincipleViolation[] {
@@ -421,19 +416,19 @@ const COUPLING_WRITE_EDGES = new Set(['writes', 'creates', 'updates', 'deletes',
 const COUPLING_FAN_IN_THRESHOLD = 25;
 const COUPLING_MIN_NODES_FOR_SIGNAL = 30;
 
-/**
- * Side-effect signal for a node, built entirely from facts already computed
- * upstream (outgoing write-edges + exit-point sourcing + call-graph leaf
- * metadata) — no new analyzer pass. A node counts as stateful/side-effecting
- * if it: (a) is the source of a WRITE_EDGE (mutates shared/persisted state),
- * or (b) is the source_node of an exit point (touches a database, external
- * API, file, queue, cache, webhook, or SDK), or (c) its own metadata marks it
- * as non-leaf with outgoing calls into either of the above transitively one
- * hop out. Anything else — a node with zero outgoing writes, zero exit
- * points, and (per its own attributes) zero outgoing calls — is treated as
- * pure/stateless: wide fan-in on such a node is a reuse WIN, not a coupling
- * risk, and must not be flagged the same as a stateful mutator.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function hasSideEffects(
   nodeId: string,
   writeSources: Set<string>,
@@ -446,31 +441,31 @@ function hasSideEffects(
   const attrs = node?.metadata?.attributes as Record<string, unknown> | undefined;
   if (attrs) {
     if (attrs.is_leaf === true && (attrs.outgoing_calls === 0 || attrs.outgoing_calls === undefined)) {
-      return false; // explicitly a leaf with no outgoing calls: cannot reach state
+      return false;
     }
   }
-  // No leaf/outgoing-call metadata to lean on and no direct write/exit
-  // evidence — conservatively treat as unknown-but-not-provably-pure, since
-  // understating a real mutator's severity is worse than a rare
-  // false-positive on an ambiguous node. Direct write/exit evidence already
-  // covers the vast majority of real mutators, so this branch is the
-  // minority case.
+
+
+
+
+
+
   return (node?.implementation?.modifies?.length ?? 0) > 0;
 }
 
-/**
- * Deterministic coupling hotspot scan: nodes whose fan-in (distinct callers)
- * is a statistical outlier (>= COUPLING_FAN_IN_THRESHOLD and >= 3x the mean)
- * are flagged as high-coupling — every downstream change to that node has a
- * wide, hard-to-review blast radius. This is a structural fact (edge counts),
- * not a keyword judgment. Severity is then weighted by side effects: a
- * high-fan-in PURE/stateless helper (e.g. an id generator or sanitizer with
- * no writes, no exit points) is wide reuse of a stable utility, not a
- * coupling risk — it is downgraded to 'info' or dropped entirely. A
- * high-fan-in node that DOES mutate shared state or hit an external system
- * keeps or raises its severity, since every one of its many callers now
- * shares that blast radius.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function couplingHotspots(
   nodes: CASNode[],
   edges: CASEdge[],
@@ -506,9 +501,9 @@ function couplingHotspots(
 
     const stateful = hasSideEffects(targetId, writeSources, exitSources, nodesById);
     if (!stateful) {
-      // Pure/stateless high-fan-in helper: wide reuse of a stable utility is
-      // healthy, not a violation. Drop it rather than warn — it would just
-      // be noise an agent has to learn to ignore.
+
+
+
       continue;
     }
 
@@ -518,10 +513,10 @@ function couplingHotspots(
       file: nodeFile(node) || '',
       node_id: targetId,
       detail: `${node.name} has ${callers.size} distinct callers (mean fan-in across the graph is ${mean.toFixed(1)}) and mutates state or hits an external system — a high-coupling hotspot where changes have wide, side-effecting blast radius`,
-      // Stateful high-fan-in nodes keep the fan-in-based severity band
-      // (warning at >=6x mean, info otherwise); the fix here is precision —
-      // pure nodes no longer share this band at all, not escalating stateful
-      // ones past the existing thresholds.
+
+
+
+
       severity: callers.size >= mean * 6 ? 'warning' : 'info',
     });
   }
@@ -535,10 +530,10 @@ export function buildArchitecturalConflicts(input: ArchitecturalConflictsInput):
 } {
   const nodesById = new Map(input.nodes.map(n => [n.id, n]));
 
-  // De-dupe: if the repo-wide paradigm pass already found a global layering
-  // norm+deviations for a scope, don't also emit a per-scope conflict for
-  // the exact same concern — the per-scope pass exists to cover the case the
-  // global pass ABSTAINS on (no global norm), not to double-report.
+
+
+
+
   const scopesAlreadyCoveredGlobally = new Set(
     input.paradigmConformance
       .filter(p => p.paradigm === 'entry-service-repository-layering' && p.deviations.length > 0)

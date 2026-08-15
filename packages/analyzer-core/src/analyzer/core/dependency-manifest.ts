@@ -1,25 +1,25 @@
-/**
- * Full declared-dependency manifest extraction (Camp-B structural FACT).
- *
- * Repo-AGNOSTIC. For ANY repository, recursively finds every dependency manifest
- * (package.json / requirements*.txt / Cargo.toml / go.mod / pyproject.toml) under
- * the project root and extracts the COMPLETE list of declared dependency names.
- *
- * This exists because the framework/library detectors only surface the subset of
- * dependencies they recognize (nestjs, mikro-orm, ...), which silently drops the
- * DEFINING dependencies of a system — e.g. a repo that depends on `ccxt`/`web3`
- * has those names nowhere in the analysis, so the AI comprehension pass writes
- * from thin air. The manifest is the ground truth of what a system pulls in.
- *
- * ABSOLUTE RULES honored here:
- *  - FACTS ONLY. We emit raw dependency names + which manifest declared them +
- *    the scope + declared version. We NEVER interpret what a dependency MEANS,
- *    never categorize by keyword, never brand-match. Interpretation ("this reads
- *    as a crypto-exchange system because it depends on ccxt/web3") is the AI
- *    comprehension pass's job downstream — it reads these facts as grounding.
- *  - Deterministic: same source tree -> byte-identical manifest (sorted names,
- *    sorted manifests, sorted scopes), so this is a valid Camp-B fact.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
@@ -43,10 +43,10 @@ interface DepAccumulator {
   declaredIn: Set<string>;
 }
 
-/**
- * Walk the project tree (bounded depth) collecting manifest file paths. Skips
- * dependency/build/vcs directories and any dot-directory (worktrees, caches).
- */
+
+
+
+
 function collectManifestFiles(projectPath: string, maxDepth = 8): string[] {
   const found: string[] = [];
   const stack: Array<{ dir: string; depth: number }> = [{ dir: projectPath, depth: 0 }];
@@ -74,7 +74,7 @@ function collectManifestFiles(projectPath: string, maxDepth = 8): string[] {
   return found;
 }
 
-/** Which ecosystem a manifest filename belongs to (null = not a manifest). */
+
 function manifestEcosystem(basename: string): Ecosystem | null {
   const lower = basename.toLowerCase();
   if (lower === 'package.json') return 'npm';
@@ -129,16 +129,16 @@ function parsePackageJson(text: string, rel: string, map: Map<string, DepAccumul
   }
 }
 
-/**
- * requirements.txt: one dependency per non-comment line. We take the package
- * name up to the first version specifier / extras / env marker. Lines that are
- * flags (-r, -e, --hash) or URLs are skipped — we want declared package names.
- */
+
+
+
+
+
 function parseRequirementsTxt(text: string, rel: string, map: Map<string, DepAccumulator>): void {
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#') || line.startsWith('-')) continue;
-    if (/^[a-z]+:\/\//i.test(line)) continue; // URL/VCS line
+    if (/^[a-z]+:\/\//i.test(line)) continue;
     const match = line.match(/^([A-Za-z0-9._-]+)/);
     if (!match) continue;
     const name = match[1];
@@ -150,11 +150,11 @@ function parseRequirementsTxt(text: string, rel: string, map: Map<string, DepAcc
   }
 }
 
-/**
- * Cargo.toml: read [dependencies] / [dev-dependencies] / [build-dependencies]
- * (and target-scoped variants) tables. Line-based TOML parse — sufficient to
- * pull declared crate names + inline version, without a TOML dependency.
- */
+
+
+
+
+
 function parseCargoToml(text: string, rel: string, map: Map<string, DepAccumulator>): void {
   let scope: Scope | null = null;
   for (const rawLine of text.split(/\r?\n/)) {
@@ -170,7 +170,7 @@ function parseCargoToml(text: string, rel: string, map: Map<string, DepAccumulat
       continue;
     }
     if (scope === null) continue;
-    // `name = "1.0"` or `name = { version = "1.0", ... }`
+
     const depMatch = line.match(/^([A-Za-z0-9_-]+)\s*=/);
     if (!depMatch) continue;
     const name = depMatch[1];
@@ -182,10 +182,10 @@ function parseCargoToml(text: string, rel: string, map: Map<string, DepAccumulat
   }
 }
 
-/**
- * go.mod: `require` lines / `require (...)` blocks. The module path (first
- * token) is the dependency name; the version follows.
- */
+
+
+
+
 function parseGoMod(text: string, rel: string, map: Map<string, DepAccumulator>): void {
   let inBlock = false;
   for (const rawLine of text.split(/\r?\n/)) {
@@ -200,7 +200,7 @@ function parseGoMod(text: string, rel: string, map: Map<string, DepAccumulator>)
     const match = line.match(/^([^\s]+)\s+([^\s]+)/);
     if (!match) continue;
     const name = match[1];
-    if (!name.includes('.') && !name.includes('/')) continue; // not a module path
+    if (!name.includes('.') && !name.includes('/')) continue;
     const acc = ensureDep(map, name, 'go');
     acc.scopes.add(line.includes('// indirect') ? 'build' : 'runtime');
     acc.declaredIn.add(rel);
@@ -293,11 +293,11 @@ function parsePubspec(text: string, rel: string, map: Map<string, DepAccumulator
   }
 }
 
-/**
- * pyproject.toml: PEP 621 `[project] dependencies = [...]` and
- * `[project.optional-dependencies]`, plus poetry `[tool.poetry.dependencies]`.
- * Line-based extraction of declared names.
- */
+
+
+
+
+
 function parsePyprojectToml(text: string, rel: string, map: Map<string, DepAccumulator>): void {
   const lines = text.split(/\r?\n/);
   let section: 'pep621' | 'pep621-optional' | 'poetry' | 'poetry-dev' | null = null;
@@ -323,10 +323,10 @@ function parsePyprojectToml(text: string, rel: string, map: Map<string, DepAccum
       addPep508Names(line, rel, map, 'runtime');
       if (line.includes(']')) inArray = false;
     } else if (section === 'pep621-optional') {
-      // entries like `test = ["pytest>=7", ...]`
+
       addPep508Names(line, rel, map, 'optional');
     } else if (section === 'poetry' || section === 'poetry-dev') {
-      // `name = "^1.0"` — skip python itself
+
       const depMatch = line.match(/^([A-Za-z0-9._-]+)\s*=/);
       if (!depMatch) continue;
       const name = depMatch[1];
@@ -340,7 +340,7 @@ function parsePyprojectToml(text: string, rel: string, map: Map<string, DepAccum
   }
 }
 
-/** Extract PEP 508 requirement names from a line that may contain quoted specs. */
+
 function addPep508Names(line: string, rel: string, map: Map<string, DepAccumulator>, scope: Scope): void {
   const quoted = line.match(/"([^"]+)"|'([^']+)'/g) || [];
   for (const raw of quoted) {
@@ -356,10 +356,10 @@ function addPep508Names(line: string, rel: string, map: Map<string, DepAccumulat
   }
 }
 
-/**
- * Build the full dependency-manifest fact for a project. Returns undefined when
- * no manifest files exist (so the field is simply absent, not an empty shell).
- */
+
+
+
+
 export function buildDependencyManifest(projectPath: string): CASDependencyManifest | undefined {
   const manifestFiles = collectManifestFiles(projectPath);
   if (manifestFiles.length === 0) return undefined;
@@ -374,7 +374,7 @@ export function buildDependencyManifest(projectPath: string): CASDependencyManif
     let text: string;
     try {
       const stat = fs.statSync(file);
-      if (stat.size > 5 * 1024 * 1024) continue; // skip absurdly large manifests
+      if (stat.size > 5 * 1024 * 1024) continue;
       text = fs.readFileSync(file, 'utf8');
     } catch {
       continue;

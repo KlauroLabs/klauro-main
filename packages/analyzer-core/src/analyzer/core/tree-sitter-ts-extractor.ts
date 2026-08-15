@@ -16,7 +16,7 @@ let ParserClass: any = null;
 let tsGrammar: any = null;
 let tsxGrammar: any = null;
 let jsGrammar: any = null;
-// NativeAddonUnavailableError doc comment for why this must never be
+
 let loadFailure: NativeAddonUnavailableError | null = null;
 
 function loadParser(): any {
@@ -466,6 +466,7 @@ export class TreeSitterTSExtractor {
       if (clause) {
         for (let i = 0, n = clause.namedChildCount; i < n; i++) {
           const child = clause.namedChild(i);
+          if (!child) continue;
           if (child.type === 'identifier') {
             specifiers.push({ name: child.text, isDefault: true });
           } else if (child.type === 'namespace_import') {
@@ -657,13 +658,15 @@ export class TreeSitterTSExtractor {
     const stack: any[] = [body];
     while (stack.length > 0) {
       const node = stack.pop()!;
+      if (!node) continue;
       if (node !== body && nestedFnTypes.has(node.type)) continue;
       if (node.type === 'throw_statement') {
         const typeName = this.throwTypeName(node);
         if (typeName) types.add(typeName);
       }
       for (let i = node.namedChildCount - 1; i >= 0; i--) {
-        stack.push(node.namedChild(i));
+        const child = node.namedChild(i);
+        if (child) stack.push(child);
       }
     }
 
@@ -856,7 +859,7 @@ export class TreeSitterTSExtractor {
               continue;
             }
 
-            // `arg[2]` must not silently shift onto `arg[3]`).
+
             const evaluated = this.evaluateLiteralNode(argNode);
             if (evaluated) args.push({ name: String(positional), value: evaluated.value, type: evaluated.type });
             positional++;
@@ -932,6 +935,7 @@ export class TreeSitterTSExtractor {
       const stack = [body];
       while (stack.length > 0) {
         const current = stack.pop()!;
+        if (!current) continue;
         const t = current.type;
         if (t === 'call_expression') {
           callNodes.push({
@@ -957,7 +961,8 @@ export class TreeSitterTSExtractor {
           });
         }
         for (let i = current.namedChildCount - 1; i >= 0; i--) {
-          stack.push(current.namedChild(i));
+          const child = current.namedChild(i);
+          if (child) stack.push(child);
         }
       }
     }
@@ -1111,7 +1116,7 @@ export class TreeSitterTSExtractor {
     if (!calleeNode || calleeNode.type !== 'identifier') return [];
     if (!this.imports.has(calleeNode.text)) return [];
 
-    // invocation (`@Controller()`) is NEVER walked by extractCall (extractCalls only
+
     const line = calleeNode.startPosition.row + 1;
     const dedupeKey = `${calleeNode.text}:${line}`;
     if (seenAtLine.has(dedupeKey)) return [];
@@ -1338,6 +1343,7 @@ export class TreeSitterTSExtractor {
     const stack = [body];
     while (stack.length > 0) {
       const node = stack.pop()!;
+      if (!node) continue;
       if (complexityNodes.has(node.type)) {
         if (node.type === 'binary_expression') {
           const op = node.childForFieldName('operator')?.text;
@@ -1349,7 +1355,8 @@ export class TreeSitterTSExtractor {
         }
       }
       for (let i = node.namedChildCount - 1; i >= 0; i--) {
-        stack.push(node.namedChild(i));
+        const child = node.namedChild(i);
+        if (child) stack.push(child);
       }
     }
 
@@ -1726,6 +1733,7 @@ export class TreeSitterTSExtractor {
     while (stack.length > 0) {
       const frame = stack.pop()!;
       const node = frame.node;
+      if (!node) continue;
       const type = node.type;
 
       if (type === 'import_statement') traversal.imports.push(node);
@@ -1867,8 +1875,10 @@ export class TreeSitterTSExtractor {
       };
 
       for (let i = node.namedChildCount - 1; i >= 0; i--) {
+        const child = node.namedChild(i);
+        if (!child) continue;
         stack.push({
-          node: node.namedChild(i),
+          node: child,
           parent: node,
           grandparent: frame.parent,
           parentType: type,
@@ -1898,7 +1908,7 @@ export class TreeSitterTSExtractor {
     if (node.text.startsWith('async')) return true;
     for (let i = 0, n = node.childCount; i < n; i++) {
       const child = node.child(i);
-      if (child.type === 'async') return true;
+      if (child?.type === 'async') return true;
     }
     return false;
   }
@@ -1924,44 +1934,27 @@ export class TreeSitterTSExtractor {
   }
 
   private collectByType(node: any, type: string): any[] {
-    const results: any[] = [];
-    const stack = [node];
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      if (current.type === type) {
-        results.push(current);
-      }
-      for (let i = current.namedChildCount - 1; i >= 0; i--) {
-        stack.push(current.namedChild(i));
-      }
-    }
-    return results;
+    return [...this.walkNamedNodes(node)].filter(current => current.type === type);
   }
 
   private collectByTypes(node: any, types: Set<string>): any[] {
-    const results: any[] = [];
-    const stack = [node];
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      if (types.has(current.type)) {
-        results.push(current);
-      }
-      for (let i = current.namedChildCount - 1; i >= 0; i--) {
-        stack.push(current.namedChild(i));
-      }
-    }
-    return results;
+    return [...this.walkNamedNodes(node)].filter(current => types.has(current.type));
   }
 
   private findFirst(node: any, type: string): any | null {
-    const stack = [node];
+    for (const current of this.walkNamedNodes(node)) if (current.type === type) return current;
+    return null;
+  }
+
+  private *walkNamedNodes(node: any): Generator<any> {
+    const stack = node ? [node] : [];
     while (stack.length > 0) {
       const current = stack.pop()!;
-      if (current.type === type) return current;
+      yield current;
       for (let i = current.namedChildCount - 1; i >= 0; i--) {
-        stack.push(current.namedChild(i));
+        const child = current.namedChild(i);
+        if (child) stack.push(child);
       }
     }
-    return null;
   }
 }

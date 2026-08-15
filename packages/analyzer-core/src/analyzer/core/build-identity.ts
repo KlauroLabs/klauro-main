@@ -9,18 +9,18 @@ declare const __KLAURO_VERSION__: string | undefined;
 export interface BuildIdentity {
   version: string;
   base_version: string;
-  /** The sha that REPRODUCES the running code. When a deploy shipped an
-   *  uncommitted tree this is the snapshot commit deploy.sh recorded for it,
-   *  never the (misleading) HEAD the tree merely sat on top of. */
+
+
+
   git_sha: string;
   build_time?: string;
   channel: 'bundle' | 'dev';
-  /** True when the deployed tree had uncommitted changes. `git_sha` still
-   *  resolves to real code (the snapshot), but that commit is not on any
-   *  branch and was never reviewed. */
+
+
+
   dirty?: boolean;
-  /** HEAD of the deploying checkout when `dirty` is set — the committed
-   *  ancestor the snapshot was taken against. */
+
+
   head_sha?: string;
 }
 
@@ -33,34 +33,34 @@ function bundledValue(value: string | undefined): string | undefined {
 }
 
 function resolveDevBaseVersion(): string {
-  // In a dev checkout this file lives at packages/analyzer-core/src/analyzer/core,
-  // so the served package manifest is apps/mcp-server/package.json at the repo root.
+
+
   const manifestPath = path.resolve(__dirname, '..', '..', '..', '..', '..', 'apps', 'mcp-server', 'package.json');
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     if (typeof manifest.version === 'string' && manifest.version.length > 0) return manifest.version;
   } catch {
-    // fall through to the static fallback
+
   }
   return FALLBACK_BASE_VERSION;
 }
 
-/**
- * Deploy-time stamp for a deployed-but-unbundled ("dev channel") process —
- * `infrastructure/vps/deploy.sh` writes this next to apps/mcp-server/
- * package.json (see resolveDevBaseVersion's manifestPath) right after
- * rsyncing source and BEFORE `docker compose build`, since the prod
- * Dockerfile runs the source directly via `tsx` rather than the esbuild
- * bundle that would otherwise embed __KLAURO_GIT_SHA__/__KLAURO_BUILD_TIME__.
- */
+
+
+
+
+
+
+
+
 export interface DevBuildStamp {
   git_sha?: string;
   build_time?: string;
-  /** Set by deploy.sh when --allow-dirty shipped an uncommitted tree. */
+
   dirty?: boolean;
-  /** Sha of the snapshot commit deploy.sh wrote for that uncommitted tree, so
-   *  the deployed bytes remain reproducible (`git checkout <snapshot_sha>`)
-   *  even though nothing was landed on a branch. */
+
+
+
   snapshot_sha?: string;
 }
 
@@ -68,37 +68,37 @@ function resolveBuildStampPath(): string {
   return path.resolve(__dirname, '..', '..', '..', '..', '..', 'apps', 'mcp-server', '.klauro-build-stamp.json');
 }
 
-/** Exported for direct unit-testing against a fixture path — never called with an untrusted path in production. */
+
 export function readDevBuildStamp(stampPath: string): DevBuildStamp | null {
   try {
     const raw = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
     if (raw && typeof raw === 'object') return raw as DevBuildStamp;
   } catch {
-    // absent/unreadable (a real dev checkout with no deploy stamp, or a
-    // torn/partial write) — fall through to the git-derived path below.
+
+
   }
   return null;
 }
 
-/**
- * PRODUCTION BUG (v1.0.126 fresh self-analysis): the deployed api container
- * runs raw TS via `tsx src/index.ts`, never the esbuild bundle — see
- * apps/api/Dockerfile's CMD and infrastructure/vps/deploy.sh's own comment
- * ("the api container runs raw TS via tsx"). That deploy path ALSO
- * `rsync --exclude .git`s the source tree to the VPS (deploy.sh's "Syncing
- * source" step), so this function's `git rev-parse` always ran with no
- * `.git` directory in reach on prod and silently fell back to 'unknown' —
- * hence every hosted build reporting "1.0.126-dev+unknown" instead of a real
- * commit. Fix: prefer deploy.sh's stamped git_sha (written straight from the
- * clean, guaranteed-git-checkout HOST tree that IS what got shipped) before
- * ever falling back to a local git invocation — a genuine dev checkout with
- * .git still resolves correctly since it has no stamp file and hits the
- * fallback exactly as before.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function resolveDevGitSha(stamp: DevBuildStamp | null): string {
-  // A dirty deploy's HEAD does NOT reproduce the shipped bytes — the snapshot
-  // commit does. Prefer it, so a prod analysis is always traceable to code
-  // that actually exists in the object store.
+
+
+
   if (stamp?.dirty && stamp.snapshot_sha && /^[0-9a-f]{7,40}$/.test(stamp.snapshot_sha)) return stamp.snapshot_sha;
   if (stamp?.git_sha && /^[0-9a-f]{7,40}$/.test(stamp.git_sha)) return stamp.git_sha;
   const result = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], {
@@ -145,7 +145,7 @@ export function getBuildIdentity(): BuildIdentity {
   return cached;
 }
 
-/** Test-only: clear the module-level identity cache so tests can re-derive against a fresh stamp/env. */
+
 export function resetBuildIdentityCacheForTests(): void {
   cached = undefined;
 }
@@ -161,45 +161,45 @@ export function formatBuildIdentity(): string {
   return `${identity.version} (dev checkout, git ${identity.git_sha})`;
 }
 
-// --- Running-vs-installed staleness detection ------------------------------
-//
-// The customer bug this exists for: `klauro update` overwrites the globally
-// installed package (npm install -g <tarball>) IN PLACE, on disk, while an
-// already-running MCP server process keeps executing the module it loaded
-// into memory at startup (Node does not hot-reload). getBuildIdentity() above
-// is cached for the lifetime of the process — it reports the RUNNING build.
-// This section re-reads the installed package.json from disk on every
-// (throttled) check, so a `klauro update` that lands after the server started
-// is detectable without requiring a restart to observe it.
-//
-// "Installed" is resolved relative to __dirname at call time, not the cached
-// build identity: in the shipped bundle, this module is esbuild-bundled into
-// dist/server.cjs, so __dirname at runtime is the real, current dist/
-// directory of whatever is installed on disk right now — a fresh fs.readFileSync
-// of dist/../package.json therefore reflects any update that happened after
-// this process booted, exactly like `klauro update`'s `npm install -g --force`
-// leaves it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface StalenessCheck {
-  /** The running process's own build identity (frozen at startup). */
+
   running_version: string;
-  /** package.json version found on disk right now, next to this running module (null if unresolvable — e.g. dev checkout with no installed package.json sibling). */
+
   installed_version: string | null;
-  /** true when installed_version differs from the running build's base_version — i.e. `klauro update` landed after this process started and a restart would pick up new code. */
+
   running_stale: boolean;
-  /** hosted latest.json version, when reachable. */
+
   latest_version: string | null;
-  /** true when installed_version (or running, if installed is unknown) is behind latest_version. */
+
   update_available: boolean;
   note: string | null;
 }
 
 function resolveInstalledVersion(): string | null {
-  // Walk up from this module's real on-disk directory (see comment above) to
-  // find the nearest package.json — one or two levels up covers both the
-  // bundled layout (dist/server.cjs -> ../package.json) and a dev checkout
-  // (packages/analyzer-core/src/analyzer/core -> no installed manifest here,
-  // handled by the caller via base_version fallback instead).
+
+
+
+
+
   const candidates = [
     path.resolve(__dirname, '..', 'package.json'),
     path.resolve(__dirname, '..', '..', 'package.json'),
@@ -212,27 +212,27 @@ function resolveInstalledVersion(): string | null {
         return manifest.version;
       }
     } catch {
-      // try the next candidate
+
     }
   }
   return null;
 }
 
 let cachedStaleness: { at: number; result: StalenessCheck } | undefined;
-const STALENESS_CHECK_TTL_MS = 10 * 60 * 1000; // throttle to ~once per 10min (SPEC ask); cheap disk read, but no reason to hammer it per tool call.
+const STALENESS_CHECK_TTL_MS = 10 * 60 * 1000;
 
-/**
- * Compare the RUNNING build against the INSTALLED-on-disk package and the
- * hosted latest.json. Throttled to STALENESS_CHECK_TTL_MS — cheap (one
- * fs.readFileSync + one fetch) but no reason to redo it on every tool call.
- * Never throws: a failed/unreachable manifest degrades to null fields rather
- * than breaking the caller.
- *
- * Test-only overrides (`__test`): production call sites never pass these —
- * they let unit tests simulate "running old / installed new" and "up to
- * date" without needing a real dist/ layout or a second installed package.json
- * on disk.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export async function checkServerStaleness(options: {
   serverUrl?: string;
   forceRefresh?: boolean;
@@ -244,10 +244,10 @@ export async function checkServerStaleness(options: {
   }
 
   const identity = getBuildIdentity();
-  // In tests, __test.runningBaseVersion stands in for BOTH the displayed
-  // running_version and the base_version used for the stale comparison — real
-  // callers never set this, so identity.version/base_version (frozen at
-  // process startup) are used untouched.
+
+
+
+
   const runningBaseVersion = options.__test?.runningBaseVersion ?? identity.base_version;
   const runningVersion = options.__test?.runningBaseVersion ?? identity.version;
   const installedVersion = options.__test ? (options.__test.installedVersion ?? null) : resolveInstalledVersion();
@@ -288,7 +288,7 @@ export async function checkServerStaleness(options: {
   return result;
 }
 
-/** Test-only: clear the throttle cache so tests don't leak state across cases. */
+
 export function resetStalenessCacheForTests(): void {
   cachedStaleness = undefined;
 }

@@ -1,28 +1,28 @@
 import type { CASNode, CASEdge, CASEntryPoint, CASDataEntity, CASDecorator } from '../../types/cas.types';
 
-/**
- * Applies DECLARED custom-architecture conventions (.klaurorc `conventions:`)
- * to already-extracted CAS nodes/edges — the human/agent-in-the-loop half of
- * "analyze ANY codebase": auto-detection infers patterns; this lets a
- * customer/agent DECLARE the genuinely bespoke ones, in Klauro's own
- * node/edge vocabulary, so they plug into the SAME emission built-in
- * analyzers use (route_table, entry_points, data_entities, edges, flows) —
- * no parallel model.
- *
- * EVIDENCE-GATED: a declared convention that matches nothing in the real
- * extracted nodes emits nothing. Declarations are ADDITIVE to
- * auto-detection, never a replacement, and never fabricate a match.
- *
- * Deliberately NOT AI — deterministic pattern/regex matching against nodes
- * already produced by the language/framework analyzers, per the Klauro
- * cardinal rule (deterministic facts first).
- */
 
-// Mirrors apps/mcp-server/src/klauro-config.ts's KlauroConventions shape.
-// Duplicated (not imported) because analyzer-core must not depend on
-// apps/mcp-server (dependency direction: mcp-server -> analyzer-core).
-// Keep in sync; a mismatch only means potential fields go unused, not a
-// hard failure — every field here is optional at the point of use.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export type ConventionRouteConvention =
   | {
@@ -80,11 +80,11 @@ export interface KlauroConventionsInput {
 
 export interface ConventionsApplyResult {
   entry_points: CASEntryPoint[];
-  data_entities: CASDataEntity[];
+  entities: CASDataEntity[];
   edges: CASEdge[];
-  /** Node ids tagged with a declared role (metadata.attributes.declared_role). */
+
   role_tags: Array<{ node_id: string; role: string }>;
-  /** Audit trail: what matched, what did not, so declarations are verifiable not fabricated. */
+
   matches: ConventionMatchReport[];
 }
 
@@ -104,16 +104,16 @@ function toRegex(pattern: string): RegExp | undefined {
   }
 }
 
-/** Minimal glob-to-regex: `**`, `*`, single-segment matching — matches Klauro's own source glob semantics. */
+
 function globToRegex(glob: string): RegExp {
   let out = '';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
     const next = glob[i + 1];
     const afterNext = glob[i + 2];
-    // "**/ " matches zero or more path segments (including none), so
-    // "src/jobs/**/*.ts" matches "src/jobs/import.ts" directly, not just
-    // "src/jobs/sub/import.ts" — standard glob semantics.
+
+
+
     if (c === '*' && next === '*' && afterNext === '/') { out += '(?:.*/)?'; i += 2; }
     else if (c === '*' && next === '*') { out += '.*'; i++; }
     else if (c === '*') out += '[^/]*';
@@ -144,27 +144,27 @@ function nextId(prefix: string): string {
   return `${prefix}_declared_${seq}`;
 }
 
-/**
- * Apply all declared conventions against the extracted node/edge set,
- * returning ADDITIVE entry_points/data_entities/edges/role tags plus a full
- * match report. Callers merge the result into the CAS output alongside (not
- * instead of) auto-detected facts.
- */
+
+
+
+
+
+
 export function applyConventions(
   conventions: KlauroConventionsInput | undefined,
   nodes: CASNode[],
   edges: CASEdge[],
   decorators: CASDecorator[] = [],
 ): ConventionsApplyResult {
-  // Determinism: the id counter is module-level; without this reset a warm
-  // re-analysis in a long-lived process would mint different ids for the same
-  // input (same defect class as the comment_NNN counters — ids must be
-  // byte-stable run-to-run). The sibling passes (consistency-model,
-  // communication-seams, infra-topology-linker) already reset at entry.
+
+
+
+
+
   seq = 0;
   const result: ConventionsApplyResult = {
     entry_points: [],
-    data_entities: [],
+    entities: [],
     edges: [],
     role_tags: [],
     matches: [],
@@ -181,13 +181,13 @@ export function applyConventions(
   return result;
 }
 
-/**
- * Bare decorator names a node carries (metadata.attributes.decorators, e.g.
- * `["Endpoint"]`) — this is ALL the language analyzers capture for an
- * unrecognized/custom decorator; no argument text. `node.metadata.annotations`
- * does not exist on the real CASNode shape (confirmed against real analyzer
- * output during fixture validation) — do not reintroduce it.
- */
+
+
+
+
+
+
+
 function nodeDecoratorNames(node: CASNode): string[] {
   const attrs = node.metadata?.attributes as any;
   const raw = attrs?.decorators;
@@ -195,13 +195,13 @@ function nodeDecoratorNames(node: CASNode): string[] {
   return raw.map((d: any) => (typeof d === 'string' ? d : d?.name)).filter(Boolean);
 }
 
-/**
- * Richer per-decorator evidence when the framework-aware decorator pass
- * (buildAllDecorators in orchestrator.ts) resolved arguments — only
- * populated for decorators it recognizes as a known framework shape;
- * otherwise `parameters`/`routing_info` are absent and we fall back to
- * name-only matching (nodeDecoratorNames), never fabricating args.
- */
+
+
+
+
+
+
+
 function decoratorsForNode(node: CASNode, decorators: CASDecorator[], decoratorName: string): CASDecorator[] {
   return decorators.filter(d => d.target_node === node.id && d.decorator_info.name === decoratorName);
 }
@@ -253,9 +253,9 @@ function applyRouteConventions(
         result.matches.push({ convention_kind: 'route', convention_summary: summary, matched_node_ids: [], matched: false, reason: `No function/method node calls "${route.call}"` });
         continue;
       }
-      // Call-site argument resolution needs raw source text; without a
-      // dedicated call-site AST capture we can only confirm the call exists
-      // (evidence) — we do not fabricate path/method values we cannot see.
+
+
+
       result.matches.push({
         convention_kind: 'route',
         convention_summary: summary,
@@ -272,12 +272,12 @@ function pickDecoratorArg(
   selector: number | string | undefined,
 ): string | undefined {
   if (selector === undefined || args.length === 0) return undefined;
-  // A numeric selector names the decorator's TRUE positional index at the call site, which
-  // the extractor records in `.name` ('0','1',...). It is NOT an array slot: a non-literal
-  // argument that could not be statically evaluated is omitted from `args`, leaving a gap
-  // (e.g. `@Endpoint(ROUTE_CONST, 'GET')` yields only `[{name:'1',value:'GET'}]`). Matching
-  // on `.name` keeps `path_arg: 0` correctly UNRESOLVED there rather than sliding onto the
-  // method — so we stay evidence-gated and never fabricate a path from the wrong argument.
+
+
+
+
+
+
   if (typeof selector === 'number') {
     const byIndex = args.find(a => a.name === String(selector));
     return byIndex && byIndex.value !== undefined ? String(byIndex.value) : undefined;
@@ -375,7 +375,7 @@ function applyEntityConventions(
 
     const matchedIds: string[] = [];
     for (const node of candidates) {
-      result.data_entities.push({
+      result.entities.push({
         id: nextId('data_entity'),
         name: node.name,
         schema_source: node.source?.file,
@@ -403,9 +403,9 @@ function applyDiBindingConventions(
       result.matches.push({ convention_kind: 'di_binding', convention_summary: summary, matched_node_ids: [], matched: false, reason: `No node calls "${binding.call}"` });
       continue;
     }
-    // Same limitation as call-based routes: without call-site argument
-    // capture we can confirm the call exists but cannot safely resolve
-    // token/impl identifiers without risking a fabricated edge.
+
+
+
     result.matches.push({
       convention_kind: 'di_binding',
       convention_summary: summary,
@@ -461,19 +461,19 @@ function applyFlowConventions(
       result.matches.push({ convention_kind: 'flow', convention_summary: summary, matched_node_ids: [], matched: false, reason: `Could not resolve first declared step "${firstStep}" to a real function/method node` });
       continue;
     }
-    // Verify every declared step resolves to a real node — evidence-gated:
-    // an unresolvable step degrades the match report but we still root a
-    // flow at the resolvable prefix rather than emitting nothing, since the
-    // entry point + real call graph is what get_flow_concepts actually walks.
+
+
+
+
     const resolvedSteps = flow.steps.map(step => ({ step, node: resolveStepReference(step, nodes) }));
     const unresolved = resolvedSteps.filter(s => !s.node).map(s => s.step);
 
-    // Materialize the declared flow as a real entry point rooted at the
-    // first step. get_flow_concepts traces forward through the EXISTING call
-    // graph from any entry point — reusing that computation instead of
-    // building a parallel flow model. The declared name/step order is
-    // recorded in metadata so a caller can confirm it against the traced
-    // steps in get_flow_concepts's own output.
+
+
+
+
+
+
     result.entry_points.push({
       id: nextId('entry_point'),
       source_node: stepNode.id,
@@ -496,7 +496,7 @@ function applyFlowConventions(
   }
 }
 
-/** Resolve a "Class.method" or bare "function" reference to a real node. */
+
 function resolveStepReference(ref: string, nodes: CASNode[]): CASNode | undefined {
   const [maybeClass, maybeMethod] = ref.includes('.') ? ref.split('.') : [undefined, ref];
   if (maybeClass && maybeMethod) {

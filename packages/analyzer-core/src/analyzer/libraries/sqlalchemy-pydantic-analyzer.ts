@@ -10,12 +10,12 @@ interface SAField {
   isPrimary: boolean;
   isNullable: boolean;
   isUnique: boolean;
-  foreignKey?: string; // e.g. "users.id"
+  foreignKey?: string;
 }
 
 interface SARelationship {
   name: string;
-  target: string; // referenced model class name
+  target: string;
 }
 
 interface SAModel {
@@ -31,7 +31,7 @@ interface PydField {
   name: string;
   type: string;
   hasDefault: boolean;
-  nestedModel?: string; // referenced pydantic model name if any
+  nestedModel?: string;
 }
 
 interface PydModel {
@@ -47,22 +47,21 @@ const SA_DETECT = [
   'declarative_base',
   'DeclarativeBase',
 ];
-const PYD_DETECT = ['from pydantic', 'import pydantic', 'BaseModel'];
 
-/**
- * Analyzes SQLAlchemy ORM models (DB entities) and Pydantic models (API/DTO schemas).
- *
- * SQLAlchemy models -> 'entity' nodes (mirrors PrismaAnalyzer field/relation conventions).
- * Pydantic models   -> 'dto' nodes tagged 'pydantic-model' (cross-repo API contracts).
- * Best-effort edges link an entity to its matching Pydantic schema by name.
- */
+
+
+
+
+
+
+
 export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
   constructor() {
     super('sqlalchemy-pydantic', 'SQLAlchemy/Pydantic Analyzer', '1.0.0', 'library');
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
-    // 1. Dependency manifests
+
     const manifests = ['requirements.txt', 'pyproject.toml', 'Pipfile', 'setup.py'];
     for (const manifest of manifests) {
       const manifestPath = path.join(projectPath, manifest);
@@ -74,7 +73,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // 2. Import / base-class signatures in .py files
+
     let pythonFiles: string[] = [];
     try {
       pythonFiles = await glob(['**/*.py'], {
@@ -132,7 +131,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       }
       const relativePath = path.relative(context.projectPath, file);
 
-      // Skip files that clearly contain neither
+
       if (
         !content.includes('sqlalchemy') &&
         !content.includes('SQLAlchemy') &&
@@ -202,15 +201,15 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
 
     let saModels: SAModel[] = [];
     let pydModels: PydModel[] = [];
-    // Only files mentioning relevant tokens carry models (matches analyze() guard).
+
     if (this.fileMayContainModels(content)) {
       const classified = this.classifyModels(content, context.relativePath);
       saModels = classified.entities;
       pydModels = classified.dtos;
     }
 
-    // Single-file scope: cross-file FK/relationship/schema_of edges that point at
-    // models defined in other files re-derive on full analysis.
+
+
     this.emitModelNodes(saModels, pydModels, nodes, edges);
 
     const exports = [...saModels.map((m) => m.name), ...pydModels.map((m) => m.name)];
@@ -229,7 +228,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     );
   }
 
-  /** Cheap content guard mirroring the per-file skip in analyze(). */
+
   private fileMayContainModels(content: string): boolean {
     return (
       content.includes('sqlalchemy') ||
@@ -242,13 +241,13 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     );
   }
 
-  /**
-   * Emit entity/DTO nodes and their edges for a set of models. Cross-file
-   * relations (FK targets, relationship() targets, entity<->schema name match)
-   * resolve only against models present in `saModels`/`pydModels`; on the
-   * single-file incremental path some of these will be under-populated and are
-   * recomputed on full analysis.
-   */
+
+
+
+
+
+
+
   private emitModelNodes(
     saModels: SAModel[],
     pydModels: PydModel[],
@@ -261,10 +260,10 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       if (m.tableName) saByTable.set(m.tableName, m);
     }
 
-    // FK-direction map: model -> the set of models it holds a ForeignKey to. The
-    // FK-holding side of a relationship is the "many" side, so this lets a bare
-    // `relationship('Post')` (no Mapped[list]/uselist) resolve to 1:N vs N:1
-    // instead of defaulting to 1:1.
+
+
+
+
     const fkTargets = new Map<string, Set<string>>();
     for (const m of saModels) {
       const targets = new Set<string>();
@@ -276,7 +275,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       fkTargets.set(m.name, targets);
     }
 
-    // SQLAlchemy entity nodes + relation edges
+
     for (const model of saModels) {
       const nodeId = `entity_sqlalchemy_${model.name.toLowerCase()}`;
       const fields = model.fields.map((f) => ({
@@ -301,12 +300,12 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
         })
       );
 
-      // relationship() edges
+
       for (const rel of model.relationships) {
         if (saNames.has(rel.target)) {
-          // Cardinality from FK direction: if THIS model holds the FK to the
-          // target it is the many side (N:1); if the TARGET holds a FK back it is
-          // the one side (1:N). Fall back to the generic 'relationship' marker.
+
+
+
           const iHoldFk = fkTargets.get(model.name)?.has(rel.target);
           const targetHoldsFk = fkTargets.get(rel.target)?.has(model.name);
           const relationType = iHoldFk ? 'ManyToOne' : targetHoldsFk ? 'OneToMany' : 'relationship';
@@ -330,7 +329,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // ForeignKey edges (target table -> model)
+
       for (const f of model.fields) {
         if (!f.foreignKey) continue;
         const targetTable = f.foreignKey.split('.')[0];
@@ -358,7 +357,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Pydantic DTO nodes + nested-model edges
+
     const pydNames = new Set(pydModels.map((m) => m.name));
     for (const model of pydModels) {
       const nodeId = `dto_pydantic_${model.name.toLowerCase()}`;
@@ -397,13 +396,13 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Best-effort: link SQLAlchemy entity <-> matching Pydantic schema by name.
+
     for (const sa of saModels) {
       const entityId = `entity_sqlalchemy_${sa.name.toLowerCase()}`;
       const base = sa.name.toLowerCase();
       for (const pyd of pydModels) {
         const pn = pyd.name.toLowerCase();
-        // Match User/UserSchema/UserCreate/UserRead/UserUpdate/UserBase/UserInDB...
+
         if (pn === base || pn.startsWith(base)) {
           edges.push(
             this.createEdge(
@@ -422,22 +421,22 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Unified classification ---------------------------------------------
 
-  /**
-   * Walk every class in a file and classify it as a SQLAlchemy/SQLModel DB
-   * entity (table) or a Pydantic/SQLModel DTO schema.
-   *
-   * - Classic SQLAlchemy: extends Base/DeclarativeBase/db.Model with
-   *   __tablename__ or Column/mapped_column -> entity.
-   * - SQLModel: `class X(..., table=True)` -> entity (table name inferred from
-   *   class name); `class X(SQLModel)` (no table=True) -> DTO schema.
-   * - Pydantic: extends BaseModel -> DTO schema.
-   *
-   * Base resolution is shallow: a class is also treated like its known
-   * parent classes within the same file (e.g. UserCreate(UserBase) where
-   * UserBase(SQLModel)).
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private classifyModels(
     content: string,
     filePath: string
@@ -447,7 +446,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     const lines = content.split('\n');
     const classRegex = /^class\s+(\w+)\s*\(([^)]*)\)\s*:/;
 
-    // First pass: collect class name + raw bases for shallow ancestry.
+
     const classBases = new Map<string, string[]>();
     for (const line of lines) {
       const m = classRegex.exec(line);
@@ -487,13 +486,13 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       const hasTablename = /__tablename__\s*=/.test(body);
       const hasColumn = /\bColumn\s*\(|\bmapped_column\s*\(/.test(body);
 
-      // --- DB entity (table) ---
+
       if ((looksLikeClassicSA && (hasTablename || hasColumn)) || (isSQLModel && hasTableArg)) {
         const tableMatch = /__tablename__\s*=\s*['"]([^'"]+)['"]/.exec(body);
         const tableName = tableMatch
           ? tableMatch[1]
           : isSQLModel && hasTableArg
-            ? className.toLowerCase() // SQLModel infers table from class name
+            ? className.toLowerCase()
             : undefined;
 
         entities.push({
@@ -507,7 +506,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // --- Pydantic / SQLModel DTO schema ---
+
       if (/\bBaseModel\b/.test(rawBases) || isSQLModel) {
         dtos.push({
           name: className,
@@ -525,12 +524,12 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     const fields: SAField[] = [];
     const seen = new Set<string>();
 
-    // Classic style:  id = Column(Integer, primary_key=True)
+
     const colRegex = /^[ \t]*(\w+)\s*=\s*Column\s*\(([\s\S]*?)\)\s*$/gm;
-    // 2.0 style:      id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
     const mappedRegex = /^[ \t]*(\w+)\s*:\s*Mapped\[([^\]]+)\]\s*(?:=\s*mapped_column\s*\(([\s\S]*?)\))?/gm;
-    // SQLModel style:  id: uuid.UUID = Field(primary_key=True)  | email: str = Field(unique=True)
-    //                  owner_id: uuid.UUID = Field(foreign_key="user.id")
+
+
     const sqlmodelRegex = /^[ \t]*(\w+)\s*:\s*([^\n=]+?)\s*=\s*Field\s*\(([\s\S]*?)\)\s*$/gm;
 
     let mc: RegExpExecArray | null;
@@ -545,7 +544,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     while ((sc = sqlmodelRegex.exec(body)) !== null) {
       const name = sc[1];
       if (seen.has(name)) continue;
-      // foreign_key="user.id" uses snake_case in SQLModel; normalize into args.
+
       const annType = (sc[2] || '').trim();
       let args = sc[3] || '';
       const fkSnake = /foreign_key\s*=\s*['"]([^'"]+)['"]/.exec(args);
@@ -572,7 +571,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     const fkMatch = /ForeignKey\s*\(\s*['"]([^'"]+)['"]/.exec(args);
     const nullable =
       /nullable\s*=\s*True/.test(args) ||
-      // `| None` / Optional[...] annotation implies nullable unless explicitly False
+
       ((/\|\s*None\b/.test(type) || /Optional\[/.test(type)) && !/nullable\s*=\s*False/.test(args));
     return {
       name,
@@ -586,10 +585,10 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
 
   private parseSARelationships(body: string): SARelationship[] {
     const rels: SARelationship[] = [];
-    // SQLAlchemy:  posts = relationship('Post', back_populates='author')
-    //              posts: Mapped[list['Post']] = relationship(back_populates='author')
-    // SQLModel:    items: list[Item] = Relationship(back_populates='owner')
-    //              owner: User | None = Relationship(back_populates='items')
+
+
+
+
     const relRegex = /^[ \t]*(\w+)\s*(:[^=\n]+)?=\s*[Rr]elationship\s*\(([\s\S]*?)\)/gm;
     let m: RegExpExecArray | null;
     while ((m = relRegex.exec(body)) !== null) {
@@ -597,10 +596,10 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
       const annotation = m[2] || '';
       const args = m[3] || '';
       let target: string | undefined;
-      // 1. string target inside relationship('Post', ...)
+
       const strTarget = /['"]([A-Z]\w+)['"]/.exec(args);
       if (strTarget) target = strTarget[1];
-      // 2. from the type annotation (Mapped[list['Post']], list[Item], User | None)
+
       if (!target && annotation) {
         const annTokens = annotation.match(/[A-Z]\w+/g) || [];
         const skip = new Set(['Mapped', 'Optional', 'List', 'Set', 'Tuple', 'None', 'Relationship']);
@@ -611,17 +610,17 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     return rels;
   }
 
-  // ---- Pydantic field parsing ---------------------------------------------
+
 
   private parsePydFields(body: string): PydField[] {
     const fields: PydField[] = [];
-    // name: str | age: int = 0 | items: list[Item] | tags: List[str] = []
+
     const fieldRegex = /^[ \t]*(\w+)\s*:\s*([^=\n]+?)\s*(=\s*(.+))?$/gm;
     let m: RegExpExecArray | null;
     while ((m = fieldRegex.exec(body)) !== null) {
       const name = m[1];
       const rawType = m[2].trim();
-      // Skip method defs / config / dunder
+
       if (name.startsWith('__') || name === 'model_config' || name === 'Config') continue;
       if (/^def\b|^class\b|^return\b/.test(rawType)) continue;
       const hasDefault = !!m[3];
@@ -632,7 +631,7 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
   }
 
   private extractNestedModel(type: string): string | undefined {
-    // list[Item] / List[Item] / Optional[Item] / Item -> capitalized non-builtin
+
     const builtins = new Set([
       'str', 'int', 'float', 'bool', 'bytes', 'list', 'List', 'dict', 'Dict',
       'set', 'Set', 'tuple', 'Tuple', 'Optional', 'Any', 'datetime', 'date',
@@ -646,9 +645,9 @@ export class SQLAlchemyPydanticAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  // ---- shared -------------------------------------------------------------
 
-  /** Collect the indented body of a class beginning at `startLine` (the `class` line). */
+
+
   private collectClassBody(lines: string[], startLine: number): string {
     const out: string[] = [];
     const classIndent = lines[startLine].match(/^[ \t]*/)?.[0].length ?? 0;

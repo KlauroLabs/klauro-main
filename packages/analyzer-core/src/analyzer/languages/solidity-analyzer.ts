@@ -20,11 +20,11 @@ interface SolFunction {
   lineEnd: number;
   bodyCalls: Array<{ name: string; line: number }>;
   externalCalls: Array<{ member: string; line: number }>;
-  /** Member calls `expr.method(...)` — resolved against `using LIB for T`
-   *  library functions AND contract-instance receivers (`a.save()` where
-   *  `a` is an `Account`) in emitCallEdges. */
+
+
+
   memberCalls: Array<{ receiver: string; name: string; line: number }>;
-  /** Local/param variable -> contract type, for receiver-type resolution. */
+
   receiverTypes: Record<string, string>;
 }
 
@@ -49,8 +49,8 @@ interface SolContract {
   functions: SolFunction[];
   events: SolEvent[];
   stateVars: SolStateVar[];
-  /** Library names brought in via `using LIB for T` — used to resolve member
-   *  calls (`x.method()`) to the library's function. */
+
+
   usingLibs: string[];
 }
 
@@ -69,8 +69,7 @@ interface SolFileInfo {
   lineCount: number;
 }
 
-const SOL_EXTENSIONS = ['.sol'];
-// Solidity keywords that must never be treated as a called function.
+
 const SOL_KEYWORDS = new Set([
   'if', 'else', 'for', 'while', 'do', 'return', 'returns', 'require', 'assert',
   'revert', 'emit', 'new', 'delete', 'using', 'is', 'memory', 'storage', 'calldata',
@@ -80,7 +79,7 @@ const SOL_KEYWORDS = new Set([
   'address', 'uint', 'int', 'bool', 'string', 'bytes', 'true', 'false', 'this', 'super',
   'wei', 'gwei', 'ether', 'seconds', 'minutes', 'hours', 'days', 'weeks', 'type',
 ]);
-// Member calls on an address/contract that leave this contract (exit points).
+
 const EXTERNAL_CALL_MEMBERS = new Set(['call', 'delegatecall', 'staticcall', 'transfer', 'send']);
 
 export class SolidityAnalyzer extends BaseAnalyzer {
@@ -217,32 +216,32 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return files;
   }
 
-  /**
-   * Foundry/Hardhat's own Solidity test conventions: Foundry's `forge test`
-   * default naming is `*.t.sol`, and both toolchains conventionally keep
-   * Solidity test contracts under a `test/`/`tests/` directory — never a
-   * shared cross-language filename heuristic (Hardhat's OWN unit tests are
-   * usually JS/TS, out of scope for this analyzer entirely).
-   */
+
+
+
+
+
+
+
   private isSolidityTestFile(relativePath: string): boolean {
     const lower = relativePath.toLowerCase();
     return /\.t\.sol$/.test(lower) || /(^|\/)tests?\/.*\.sol$/.test(lower);
   }
 
-  /**
-   * Tags every node belonging to a Foundry/Hardhat Solidity test file with
-   * `metadata.is_test`, `category: 'test'`, and a `test-code` tag, mirroring
-   * go-analyzer.ts's applyTestFileBoundary. Without this, Solidity test
-   * functions (which DO carry `calls`/instance-call edges into production
-   * contracts via emitCallEdges) carried no test-owned marker of any kind,
-   * so the cross-language coverage-graph walk (test-framework-analyzer.ts's
-   * isTestOwnedNode / graphNodesForSuite) could never start a traversal from
-   * this analyzer's own function nodes — only from TestFrameworkAnalyzer's
-   * synthetic suite/case nodes, which carry no `calls` edges of their own.
-   * See also the 'foundry' FrameworkRule added to test-framework-analyzer.ts,
-   * needed for the SAME reason XCTest needed one for Swift: without it no
-   * suite/case is ever discovered for Solidity at all.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private applyTestFileBoundary(fileNodes: CASNode[]): void {
     for (const node of fileNodes) {
       node.metadata = { ...node.metadata, is_test: true };
@@ -252,7 +251,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Parsing -------------------------------------------------------------
+
 
   private parseSolidityFile(relativePath: string, fullPath: string, content: string): SolFileInfo {
     const lines = content.split('\n');
@@ -271,7 +270,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
       const pragmaMatch = code.match(/pragma\s+([^;]+);/);
       if (pragmaMatch) pragmas.push(pragmaMatch[1].trim());
 
-      // import "..."; or import {X} from "..."; or import X from "...";
+
       const importMatch = code.match(/^\s*import\s+(?:\{[^}]*\}\s*from\s*|[A-Za-z0-9_]+\s*from\s*)?["']([^"']+)["']/);
       if (importMatch) imports.push({ rawPath: importMatch[1], lineNumber: i + 1 });
     }
@@ -318,7 +317,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return contracts;
   }
 
-  // `using LIB for T;` / `using LIB for T global;` -> ['LIB']
+
   private extractUsingLibs(body: string[]): string[] {
     const libs = new Set<string>();
     for (const line of body) {
@@ -328,13 +327,13 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return [...libs];
   }
 
-  // `is A, B(args), C` -> [A, B, C]
+
   private extractBases(headerRest: string): string[] {
     const isMatch = headerRest.match(/\bis\b(.*)$/);
     if (!isMatch) return [];
     const list = isMatch[1];
     const bases: string[] = [];
-    // Split on commas at depth 0 (ignore constructor-arg parens).
+
     let depth = 0;
     let current = '';
     for (const ch of list) {
@@ -351,7 +350,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
 
   private extractFunctions(body: string[], lineOffset: number): SolFunction[] {
     const functions: SolFunction[] = [];
-    // function name(...) ... ; or { ... }
+
     const fnRe = /^\s*(function\s+([A-Za-z_]\w*)|constructor|fallback\s*\(|receive\s*\(|modifier\s+([A-Za-z_]\w*))/;
 
     for (let i = 1; i < body.length; i++) {
@@ -368,7 +367,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
       else if (/^\s*receive/.test(line)) { kind = 'receive'; name = 'receive'; }
       else continue;
 
-      // Collect the full signature (may span lines) up to `{` or `;`.
+
       let sigEnd = i;
       let signature = line;
       while (sigEnd < body.length && !/[{;]/.test(body[sigEnd])) {
@@ -452,11 +451,11 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return found;
   }
 
-  /** Member calls `expr.method(...)` — the candidates for `using LIB for T`
-   *  resolution. Excludes the low-level external-call builtins (handled
-   *  separately as exit points). Resolution to a library happens in
-   *  emitCallEdges, gated on the contract's `using` directives, so this stays
-   *  conservative (a bare member name alone never creates an edge). */
+
+
+
+
+
   private extractMemberCalls(bodyLines: string[], absStart: number): Array<{ receiver: string; name: string; line: number }> {
     const found: Array<{ receiver: string; name: string; line: number }> = [];
     for (let i = 0; i < bodyLines.length; i++) {
@@ -472,8 +471,8 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return found;
   }
 
-  /** Map param/local variables to their contract type for receiver resolution:
-   *  signature params (`Account a`) and contract-typed locals (`Account a = …`). */
+
+
   private extractSolReceiverTypes(signature: string, bodyLines: string[]): Record<string, string> {
     const types: Record<string, string> = {};
     const paramMatch = signature.match(/\(([^)]*)\)/);
@@ -505,7 +504,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     const typeRe = /^\s*((?:mapping\s*\([^;]*\)|address|bool|string|bytes\d*|bytes|u?int\d*|[A-Z]\w*)(?:\s*\[[^\]]*\])?)\s+((?:public|private|internal|constant|immutable|override)\s+)*([A-Za-z_]\w*)\s*(?:=|;)/;
     for (let i = 1; i < body.length; i++) {
       const absLine = lineOffset + i + 1;
-      // Skip lines inside function bodies (those are locals, not state).
+
       if (fnRanges.some(([s, e]) => absLine > s && absLine <= e)) continue;
       const line = body[i];
       if (/^\s*(function|modifier|constructor|event|struct|enum|error|using|fallback|receive)\b/.test(line)) continue;
@@ -522,7 +521,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return vars;
   }
 
-  // ---- Node / edge emission ------------------------------------------------
+
 
   private emitFileNodes(
     info: SolFileInfo,
@@ -592,7 +591,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
         'contains'
       ));
 
-      // State variables as field nodes.
+
       for (const sv of contract.stateVars) {
         const fieldId = `field_${contractId}_${this.sanitizeId(sv.name)}`;
         nodes.push(this.createNode(
@@ -602,7 +601,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
         edges.push(this.createEdge(`${contractId}_has_field_${fieldId}`, contractId, fieldId, 'has_field'));
       }
 
-      // Event nodes.
+
       for (const ev of contract.events) {
         const eventId = `event_${contractId}_${this.sanitizeId(ev.name)}`;
         nodes.push(this.createNode(
@@ -612,7 +611,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
         edges.push(this.createEdge(`${contractId}_declares_${eventId}`, contractId, eventId, 'declares'));
       }
 
-      // Function / constructor / modifier nodes.
+
       for (const fn of contract.functions) {
         const fnId = this.functionId(contractId, fn.name, fn.lineStart);
         const isEntry = fn.visibility === 'public' || fn.visibility === 'external' ||
@@ -670,7 +669,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
           ));
         }
 
-        // External calls -> exit points.
+
         for (const ext of fn.externalCalls) {
           const exitId = `exit_${fnId}_${ext.member}_${ext.line}`;
           exitPoints.push(this.createExitPoint(
@@ -690,7 +689,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
 
   private emitInheritanceEdges(fileInfos: SolFileInfo[], edges: CASEdge[]): void {
     const edgeIds = new Set(edges.map(e => e.id));
-    // Map base contract name -> its node id (first definition wins; cross-file resolution).
+
     const byName = new Map<string, string>();
     for (const info of fileInfos) {
       for (const c of info.contracts) {
@@ -717,9 +716,9 @@ export class SolidityAnalyzer extends BaseAnalyzer {
 
   private emitCallEdges(fileInfos: SolFileInfo[], edges: CASEdge[]): void {
     const edgeIds = new Set(edges.map(e => e.id));
-    // Index every contract by name (across files) so a bare call can resolve to
-    // a function inherited from a base contract (`contract Vault is Ownable`),
-    // not just one declared in the same contract.
+
+
+
     const contractByName = new Map<string, { info: SolFileInfo; contract: SolContract }>();
     for (const info of fileInfos) {
       for (const contract of info.contracts) contractByName.set(contract.name, { info, contract });
@@ -733,11 +732,11 @@ export class SolidityAnalyzer extends BaseAnalyzer {
           const callerId = this.functionId(contractId, caller.name, caller.lineStart);
           const seenTargets = new Set<string>();
           for (const call of caller.bodyCalls) {
-            // Resolve within this contract first, then up the inheritance chain.
+
             const resolved = this.resolveFunctionInChain(contractByName, contract, info, call.name, new Set());
             if (!resolved) continue;
             const target = resolved.fn;
-            // Skip self-recursion / the declaration line itself.
+
             if (resolved.contract.name === contract.name && target.lineStart === caller.lineStart) continue;
             const targetContractId = this.contractId(resolved.info.relativePath, resolved.contract.name);
             const targetId = this.functionId(targetContractId, target.name, target.lineStart);
@@ -753,13 +752,13 @@ export class SolidityAnalyzer extends BaseAnalyzer {
             ));
           }
 
-          // `using LIB for T` member calls: `x.method()` resolves to LIB.method
-          // only when the contract declares `using LIB for ...` and LIB (a
-          // library) defines `method`. Gating on the directive keeps this from
-          // linking arbitrary `.foo()` member accesses (no false positives).
+
+
+
+
           for (const call of caller.memberCalls) {
-            // Contract-instance receiver: `a.save()` where `a` is typed `Account`
-            // resolves to Account.save only (excludes same-name methods elsewhere).
+
+
             const recvType = call.receiver === 'this' ? contract.name : caller.receiverTypes[call.receiver];
             if (recvType) {
               const targetEntry = contractByName.get(recvType);
@@ -797,7 +796,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
                 edgeId, callerId, targetId, 'calls', 'behavior',
                 { line: call.line, callType: 'library', language: 'solidity' }
               ));
-              break; // first matching using-for library wins
+              break;
             }
           }
         }
@@ -805,9 +804,9 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Resolve a called function name within a contract, then transitively through
-   *  its base contracts (depth-first, cycle-guarded). Returns the defining
-   *  contract + its file so the edge can target the inherited declaration. */
+
+
+
   private resolveFunctionInChain(
     contractByName: Map<string, { info: SolFileInfo; contract: SolContract }>,
     contract: SolContract,
@@ -857,7 +856,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
   }
 
   private resolveImportPath(rawPath: string, sourceDir: string, projectPath: string): string | undefined {
-    // Only resolve relative imports within the repo; node_modules / remappings are skipped.
+
     if (!rawPath.startsWith('.') && !rawPath.startsWith('/')) return undefined;
     const abs = path.isAbsolute(rawPath) ? rawPath : path.resolve(sourceDir, rawPath);
     const rel = path.relative(projectPath, abs);
@@ -865,7 +864,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return rel;
   }
 
-  // ---- Helpers -------------------------------------------------------------
+
 
   private findBlockEnd(lines: string[], startIndex: number): number {
     let depth = 0;
@@ -887,7 +886,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     return -1;
   }
 
-  // Strip // line comments and /* */ block comments (preserve line count).
+
   private stripComments(content: string): string {
     let result = '';
     let inLine = false, inBlock = false, inStr = false, strCh = '';
@@ -977,9 +976,9 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     type: CASComment['type'], style: CASComment['style'], text: string, filePath: string, line: number
   ): CASComment {
     return {
-      // Stable order-independent id: extractCommentsFromFile emits at most one
-      // comment per source line, so file+line identifies the comment regardless
-      // of file visit order (ids derive from facts, not run-order counters).
+
+
+
       id: `comment_${filePath}_${line}`,
       type,
       style,

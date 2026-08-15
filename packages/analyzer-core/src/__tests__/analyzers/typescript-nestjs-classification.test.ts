@@ -1,22 +1,44 @@
+jest.unmock('fs');
+jest.unmock('fs-extra');
+jest.unmock('glob');
+
 import { parse } from '@typescript-eslint/typescript-estree';
+import * as fs from 'fs-extra';
+import * as os from 'os';
+import * as path from 'path';
 import { TypeScriptJavaScriptAnalyzer } from '../../analyzer/languages/typescript-javascript-analyzer';
 import { NestJSAnalyzer } from '../../analyzer/frameworks/web/nestjs-analyzer';
-import { TreeSitterTSExtractor } from '../../analyzer/core/tree-sitter-ts-extractor';
 
 describe('TypeScript and NestJS class classification', () => {
-  it('classifies DTO-like classes as DTOs even inside controller paths', () => {
-    const analyzer = new TypeScriptJavaScriptAnalyzer() as any;
+  let projectPath: string;
 
-    const dtoType = analyzer.determineClassType(
-      {
-        name: 'MFAEnrollmentDto',
-        decorators: [{ name: 'ApiProperty' }],
-        implements: [],
-      },
+  beforeEach(async () => {
+    projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-ts-classification-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(projectPath, { recursive: true, force: true });
+  });
+
+  async function analyzeFile(relativePath: string, source: string) {
+    const filePath = path.join(projectPath, relativePath);
+    await fs.ensureDir(path.dirname(filePath));
+    await fs.writeFile(filePath, source);
+    return new TypeScriptJavaScriptAnalyzer().analyze({ projectPath } as any);
+  }
+
+  it('classifies DTO-like classes as DTOs even inside controller paths', async () => {
+    const contribution = await analyzeFile(
       'src/auth/controllers/mfa-enrollment.dto.ts',
+      [
+        'export class MFAEnrollmentDto {',
+        '  @ApiProperty()',
+        '  token!: string;',
+        '}',
+      ].join('\n'),
     );
 
-    expect(dtoType).toBe('dto');
+    expect(contribution.nodes?.find(node => node.name === 'MFAEnrollmentDto')?.type).toBe('dto');
   });
 
   it('extracts DTO-like TypeScript interfaces and type aliases as data shapes with fields', async () => {
@@ -32,18 +54,14 @@ describe('TypeScript and NestJS class classification', () => {
       '  balanceCents: number;',
       '};',
     ].join('\n');
-    const extractor = new TreeSitterTSExtractor();
-    const extraction = extractor.extractFromSource(source, 'src/types/invoice-dto.ts');
-    const analyzer = new TypeScriptJavaScriptAnalyzer() as any;
-    const invoice = extraction.classes.find((item: any) => item.name === 'InvoiceDto');
-    const wallet = extraction.classes.find((item: any) => item.name === 'WalletResponse');
+    const contribution = await analyzeFile('src/types/invoice-dto.ts', source);
+    const invoice = contribution.nodes?.find(node => node.name === 'InvoiceDto');
+    const wallet = contribution.nodes?.find(node => node.name === 'WalletResponse');
+    const properties = contribution.nodes?.filter(node => node.type === 'property').map(node => node.name).sort();
 
-    expect(invoice).toEqual(expect.objectContaining({ kind: 'interface' }));
-    expect(wallet).toEqual(expect.objectContaining({ kind: 'type' }));
-    expect(invoice!.properties.map((item: any) => item.name).sort()).toEqual(['id', 'status', 'totalCents']);
-    expect(wallet!.properties.map((item: any) => item.name).sort()).toEqual(['balanceCents', 'id']);
-    expect(analyzer.determineClassTypeFromExtraction(invoice, 'src/types/invoice-dto.ts')).toBe('dto');
-    expect(analyzer.determineClassTypeFromExtraction(wallet, 'src/types/invoice-dto.ts')).toBe('dto');
+    expect(invoice?.type).toBe('dto');
+    expect(wallet?.type).toBe('dto');
+    expect(properties).toEqual(['balanceCents', 'id', 'id', 'status', 'totalCents']);
   });
 
   it('only treats controller-file classes as controllers when the class itself is controller-like', () => {

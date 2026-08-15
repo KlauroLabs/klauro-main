@@ -270,7 +270,7 @@ export class AnalysisRunLog {
     try {
       appendRecord(record);
     } catch {
-      // Run logging must never break or fail an analysis.
+
     }
   }
 }
@@ -284,7 +284,7 @@ export function readRecentRunRecords(limit = DEFAULT_MAX_RUNS): AnalysisRunRecor
     try {
       records.push(JSON.parse(line));
     } catch {
-      // Skip lines corrupted by interrupted writes.
+
     }
   }
   return records.slice(Math.max(0, records.length - limit * 2));

@@ -4,27 +4,27 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Unity (C#) game-engine framework analyzer.
- *
- * Unity codebases are not request/response systems — the engine itself is the
- * caller. A `MonoBehaviour` subclass's lifecycle methods (`Awake`, `OnEnable`,
- * `Start`, `Update`, `FixedUpdate`, `LateUpdate`, `OnDisable`, `OnDestroy`) and
- * its physics/collision callbacks (`OnCollisionEnter`, `OnTriggerEnter`, etc.)
- * are invoked BY the engine on its per-frame/physics tick and object lifecycle
- * — never by application code. For this codebase type, THOSE methods are the
- * real flow roots, so they are emitted as `lifecycle` entry points resolved to
- * the concrete method (never fabricated — only methods textually present on a
- * class that inherits `MonoBehaviour` are considered).
- *
- * `[SerializeField]` fields are Unity's inspector-exposed configuration
- * surface (the editor equivalent of environment/config injection) and are
- * captured as class metadata rather than entry points.
- *
- * Real dependency gate: a `using UnityEngine;` import, or a `.unity`/`.meta`
- * scene/asset file, or `ProjectSettings/ProjectVersion.txt` — never inferred
- * from folder names alone.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const UNITY_LIFECYCLE_METHODS = [
   'Awake', 'OnEnable', 'Start', 'FixedUpdate', 'Update', 'LateUpdate',
@@ -42,14 +42,6 @@ const UNITY_PHYSICS_CALLBACKS = [
 
 const UNITY_ALL_HOOKS = [...UNITY_LIFECYCLE_METHODS, ...UNITY_PHYSICS_CALLBACKS];
 
-interface UnityClass {
-  name: string;
-  baseType: string;
-  lineStart: number;
-  bodyStart: number;
-  bodyEnd: number;
-  serializeFields: string[];
-}
 
 export class UnityAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -116,12 +108,12 @@ export class UnityAnalyzer extends BaseAnalyzer {
     return markers.length > 0;
   }
 
-  /**
-   * Finds `class X : MonoBehaviour` (or `: Something, MonoBehaviour` in any
-   * position of the base list) declarations and, within each class body,
-   * every lifecycle/physics-callback method that is textually defined —
-   * never fabricated for methods the class doesn't actually declare.
-   */
+
+
+
+
+
+
   private extractMonoBehaviours(
     content: string,
     relativePath: string,

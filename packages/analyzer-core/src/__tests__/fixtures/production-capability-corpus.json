@@ -57,7 +57,7 @@
    "password",
    "classname"
   ],
-  "data_entities": [
+  "entities": [
    "Quantity"
   ],
   "capabilities": [
@@ -182,7 +182,7 @@
    "password",
    "details"
   ],
-  "data_entities": [
+  "entities": [
    "Account",
    "AssetPair",
    "CancellationFeedback",
@@ -376,7 +376,7 @@
    "model",
    "flow"
   ],
-  "data_entities": [
+  "entities": [
    "ErdNode",
    "ErdEdge",
    "ErdLayout",
@@ -528,7 +528,7 @@
    "regime",
    "volume"
   ],
-  "data_entities": [
+  "entities": [
    "Macd",
    "MovingAverage",
    "MovingAverages",
@@ -775,7 +775,7 @@
    "worker",
    "balances"
   ],
-  "data_entities": [
+  "entities": [
    "AdapterHealth",
    "AppClient",
    "AutomationAudit",
@@ -991,7 +991,7 @@
    "initiative",
    "operating"
   ],
-  "data_entities": [
+  "entities": [
    "AiToolset",
    "BosContentItem",
    "BosState",
@@ -1238,7 +1238,7 @@
    "holder",
    "market"
   ],
-  "data_entities": [
+  "entities": [
    "Coin",
    "ExchangeRate",
    "Balance",
@@ -1472,7 +1472,7 @@
    "principal",
    "scheduler"
   ],
-  "data_entities": [],
+  "entities": [],
   "capabilities": [
    {
     "name": "Manages cloud infrastructure",
@@ -1575,7 +1575,7 @@
    "infra",
    "max"
   ],
-  "data_entities": [
+  "entities": [
    "SessionEntry",
    "ResolvedMemorySearchConfig",
    "RunEmbeddedPiAgent",
@@ -1764,7 +1764,7 @@
    "schema",
    "cas"
   ],
-  "data_entities": [
+  "entities": [
    "AnalysisResult",
    "AnalysisRun",
    "CallChain",
@@ -1940,7 +1940,7 @@
    "chat",
    "edit"
   ],
-  "data_entities": [
+  "entities": [
    "AccountOwner",
    "ActiveStorageAttachments",
    "ActiveStorageBlobs",
@@ -2102,7 +2102,7 @@
    "identity",
    "url"
   ],
-  "data_entities": [],
+  "entities": [],
   "capabilities": [
    {
     "name": "Manages Cloud Security",
@@ -2250,7 +2250,7 @@
    "normalize",
    "store"
   ],
-  "data_entities": [
+  "entities": [
    "TalkDirective",
    "ElevenLabs",
    "GatewayEndpoint",
@@ -2424,7 +2424,7 @@
    "card",
    "intake"
   ],
-  "data_entities": [
+  "entities": [
    "KlauroCAS",
    "ProjectBrainPacket",
    "WorkingMemorySession",
@@ -2660,7 +2660,7 @@
    "url",
    "ipc"
   ],
-  "data_entities": [
+  "entities": [
    "Agent",
    "GatewaySessionEntry",
    "SkillStatus",
@@ -3039,7 +3039,7 @@
    "awareness",
    "symbol"
   ],
-  "data_entities": [
+  "entities": [
    "Props",
    "IAssetDetail",
    "TSoonTheme",
@@ -3275,7 +3275,7 @@
    "myotest",
    "tree"
   ],
-  "data_entities": [
+  "entities": [
    "HomeMenuItem",
    "Item",
    "CopyReportsTo",
@@ -3453,7 +3453,7 @@
    "species",
    "price"
   ],
-  "data_entities": [
+  "entities": [
    "Settings",
    "ArcMagnitude",
    "ArcPhase",
@@ -3637,7 +3637,7 @@
    "dbd",
    "hrxportal"
   ],
-  "data_entities": [
+  "entities": [
    "Category",
    "Company",
    "CreditMemo",
@@ -3857,7 +3857,7 @@
    "policies",
    "token"
   ],
-  "data_entities": [
+  "entities": [
    "NotificationModel",
    "DeviceIdentity",
    "Identity",
@@ -4085,7 +4085,7 @@
    "webhook",
    "itunes"
   ],
-  "data_entities": [
+  "entities": [
    "APIKey",
    "APIKeyCreationRequest",
    "Category",
@@ -4271,7 +4271,7 @@
    "analysis",
    "strong"
   ],
-  "data_entities": [
+  "entities": [
    "ProductMap",
    "WorkspaceAnalysis",
    "Conceptual",
@@ -4487,7 +4487,7 @@
    "user",
    "inspection"
   ],
-  "data_entities": [
+  "entities": [
    "AdminFunction",
    "AllowedConnectionCapability",
    "ApiToken",
@@ -4705,7 +4705,7 @@
    "accordion",
    "border"
   ],
-  "data_entities": [
+  "entities": [
    "Owner",
    "Pet",
    "PetType",
@@ -4838,7 +4838,7 @@
    "reduction",
    "scenario"
   ],
-  "data_entities": [
+  "entities": [
    "Parsed",
    "Scenario",
    "LiveAgentArm",

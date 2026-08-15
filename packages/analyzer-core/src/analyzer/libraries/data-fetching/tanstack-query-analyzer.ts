@@ -1,5 +1,5 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../../types/cas.types';
+import { CASNode, CASEdge, CASContribution, CASExitPoint } from '../../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
@@ -9,7 +9,6 @@ const USE_INFINITE_QUERY = /(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*useInfinit
 const USE_MUTATION = /(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*useMutation\s*(?:<[^>]*>)?\s*\(\s*\{/g;
 const QUERY_KEY = /queryKey\s*:\s*\[([^\]]+)\]/;
 const QUERY_FN_FETCH = /queryFn\s*:\s*(?:async\s*)?\([^)]*\)\s*=>\s*(?:\{[\s\S]*?)?(?:fetch|axios|api|http)\s*(?:\.|\.?\()\s*[`'"](\/[^`'"]*)[`'"]/;
-const QUERY_FN_CALL = /queryFn\s*:\s*(\w+)/;
 const STALE_TIME = /staleTime\s*:\s*(\d+(?:\s*\*\s*\d+)*)/;
 const GC_TIME = /(?:gcTime|cacheTime)\s*:\s*(\d+(?:\s*\*\s*\d+)*)/;
 const RETRY = /retry\s*:\s*(\w+|\d+)/;
@@ -17,7 +16,6 @@ const REFETCH_ON_WINDOW = /refetchOnWindowFocus\s*:\s*(\w+)/;
 const INVALIDATE_QUERIES = /invalidateQueries\s*\(\s*(?:\{[^}]*queryKey\s*:\s*\[([^\]]+)\]|(?:\[([^\]]+)\]))/g;
 const MUTATION_FN_FETCH = /mutationFn\s*:\s*(?:async\s*)?\([^)]*\)\s*=>\s*(?:\{[\s\S]*?)?(?:fetch|axios|api|http)\s*(?:\.|\.?\()\s*[`'"](\/[^`'"]*)[`'"]/;
 const MUTATION_FN_METHOD = /mutationFn\s*:[\s\S]*?(?:method|\.)(post|put|patch|delete)/i;
-const PREFETCH = /(?:prefetchQuery|prefetchInfiniteQuery)\s*\(\s*\{/g;
 
 export class TanStackQueryAnalyzer extends BaseAnalyzer {
   constructor() {

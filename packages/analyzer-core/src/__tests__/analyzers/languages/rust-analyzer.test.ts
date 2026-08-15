@@ -1,16 +1,12 @@
 import { RustAnalyzer } from '../../../analyzer/languages/rust-analyzer';
-import { AnalysisContext } from '../../../analyzer/core/base-analyzer';
+import { AnalysisContext, FileAnalysisContext } from '../../../analyzer/core/base-analyzer';
 import { 
   setupMockFileSystem, 
   cleanupMocks, 
   createMockRustFile,
   createMockCargoToml,
   createTestContext,
-  extractRustDocContent,
-  analyzeStructFromCode,
-  analyzeFunctionFromCode,
   expectCASNode,
-  expectCASEdge,
   expectCASCompliance
 } from '../../utils/test-helpers';
 
@@ -507,12 +503,11 @@ describe('RustAnalyzer', () => {
       // Check for enhanced features
       expect(result.nodes).toBeDefined();
       expect(result.edges).toBeDefined();
-      expect(result.analyzer_contributions).toBeDefined();
+      expect(result.analyzer_metadata).toBeDefined();
 
-      // Check for required fields
-      expect(result.cas_version).toBeDefined();
-      expect(result.analysis_timestamp).toBeDefined();
-      expect(result.analysis_id).toBeDefined();
+      expect(result.analyzer_metadata.analyzer_id).toBe('rust');
+      expect(result.analyzer_metadata.version).toBeDefined();
+      expect(result.analyzer_metadata.contribution_type).toBe('language');
     });
   });
 
@@ -790,5 +785,105 @@ describe('Pattern detection with reclassified structs', () => {
       Array.isArray(p.instances) && p.instances.includes(serviceNode.id)
     );
     expect(servicePattern).toBeDefined();
+  });
+});
+
+describe('RustAnalyzer incremental cross-file resolution', () => {
+  afterEach(() => {
+    cleanupMocks();
+  });
+
+  test('resolves edited-file calls against the existing analysis snapshot', async () => {
+    setupMockFileSystem([
+      createMockRustFile('src/current.rs', `
+        pub struct Current {
+            helper: Helper,
+        }
+
+        pub fn current() {
+            helper();
+        }
+      `),
+    ], createMockCargoToml());
+    jest.spyOn(require('fs-extra'), 'stat').mockResolvedValue({ mtimeMs: 1 } as any);
+    const context: FileAnalysisContext = {
+      projectPath: '/test',
+      filePath: '/test/src/current.rs',
+      relativePath: 'src/current.rs',
+      contentHash: 'current',
+      existingAnalysis: [{
+        nodes: [{
+          id: 'function:src/helper.rs:helper',
+          name: 'helper',
+          type: 'function',
+          source: { file: 'src/helper.rs', line: 1 },
+        } as any, {
+          id: 'struct:src/helper.rs:Helper',
+          name: 'Helper',
+          type: 'struct',
+          source: { file: 'src/helper.rs', line: 2 },
+        } as any],
+        edges: [],
+        entry_points: [],
+        exit_points: [],
+        analyzer_metadata: {
+          analyzer_id: 'rust',
+          analyzer_name: 'Rust Analyzer',
+          version: '1.0.0',
+          contribution_type: 'language',
+          nodes_contributed: 2,
+          edges_contributed: 0,
+          contributed_entry_points: 0,
+          contributed_exit_points: 0,
+        },
+      }],
+    };
+
+    const result = await new RustAnalyzer().analyzeFileSingle(context);
+
+    expect(result.nodes.some(node => node.id === 'function:src/helper.rs:helper')).toBe(false);
+    expect(result.nodes.some(node => node.id === 'struct:src/helper.rs:Helper')).toBe(false);
+    expect(result.edges.some(edge =>
+      edge.source === 'function:src/current.rs:current' &&
+      edge.target === 'function:src/helper.rs:helper' &&
+      edge.type === 'calls'
+    )).toBe(true);
+    expect(result.edges.some(edge =>
+      edge.source === 'struct:src/current.rs:Current' &&
+      edge.target === 'struct:src/helper.rs:Helper' &&
+      edge.type === 'depends_on'
+    )).toBe(true);
+  });
+
+  test('assigns stable distinct ids to repeated declarations', async () => {
+    setupMockFileSystem([
+      createMockRustFile('src/error.rs', `
+        pub enum ScanError { Failed }
+        pub struct NetworkError;
+        pub struct ParseError;
+
+        impl From<NetworkError> for ScanError {
+            fn from(value: NetworkError) -> Self { ScanError::Failed }
+        }
+
+        impl From<ParseError> for ScanError {
+            fn from(value: ParseError) -> Self { ScanError::Failed }
+        }
+      `),
+    ], createMockCargoToml());
+
+    const result = await new RustAnalyzer().analyze(createTestContext()) as any;
+    const declarations = result.nodes.filter((node: any) =>
+      node.name === 'from' && node.source?.file === 'src/error.rs'
+    );
+
+    expect(declarations.map((node: any) => node.id)).toEqual([
+      'method:src/error.rs:From:from',
+      'method:src/error.rs:From:from:2',
+    ]);
+    expect(declarations.map((node: any) => node.signature.parameters[0].type)).toEqual([
+      'NetworkError',
+      'ParseError',
+    ]);
   });
 });

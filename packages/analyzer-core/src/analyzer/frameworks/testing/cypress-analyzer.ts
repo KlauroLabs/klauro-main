@@ -80,8 +80,8 @@ interface CypressFixture {
   used: string[];
 }
 
-/** Repo-relative location of the Cypress fixtures dir, used both to build the
- *  absolute glob root and to re-anchor globbed fixture paths for source.file. */
+
+
 const RELATIVE_FIXTURES_DIR = path.join('cypress', 'fixtures');
 
 export class CypressAnalyzer extends BaseAnalyzer {
@@ -202,9 +202,9 @@ export class CypressAnalyzer extends BaseAnalyzer {
         const fullPath = path.join(projectPath, configFile);
         if (await fs.pathExists(fullPath)) {
           configPath = fullPath;
-          // configPath stays absolute because it also seeds the node id, and
-          // re-seeding would renumber existing nodes; source.file takes the
-          // repo-relative name instead.
+
+
+
           relativeConfigFile = configFile;
           configContent = await fs.readFile(fullPath, 'utf-8');
           break;
@@ -301,8 +301,8 @@ export class CypressAnalyzer extends BaseAnalyzer {
             nodes.push(specNode);
 
             spec.describes.forEach(describe => {
-              // repo-relative `file`, matching the parent specId seed above:
-              // describe/test nodes must not carry the sandbox's absolute path.
+
+
               this.analyzeDescribe(describe, specId, file, nodes, edges, entryPoints);
             });
 
@@ -567,8 +567,8 @@ export class CypressAnalyzer extends BaseAnalyzer {
 
       for (const file of fixtureFiles) {
         const fullPath = path.join(fixturesPath, file);
-        // `file` is relative to fixturesPath (the glob cwd), so re-anchor it on
-        // the project root before storing it — source.file is repo-relative.
+
+
         const relativeFile = path.join(RELATIVE_FIXTURES_DIR, file);
         const content = await fs.readFile(fullPath, 'utf-8');
 

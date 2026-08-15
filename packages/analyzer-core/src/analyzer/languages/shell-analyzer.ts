@@ -31,19 +31,18 @@ interface ShellFileInfo {
   lineCount: number;
 }
 
-const SHELL_EXTENSIONS = ['.sh', '.bash', '.zsh', '.ksh'];
 const SHEBANG_SHELLS = /^#!\s*(?:\/usr\/bin\/env\s+)?\/?(?:\S*\/)?(sh|bash|zsh|ksh|dash|ash)\b/;
 const ENTRYPOINT_NAMES = new Set([
   'main.sh', 'run.sh', 'entrypoint.sh', 'install.sh', 'setup.sh',
   'deploy.sh', 'bootstrap.sh',
 ]);
-// External commands that represent calls leaving the process (exit points).
+
 const EXTERNAL_EXIT_COMMANDS = new Set([
   'curl', 'wget', 'ssh', 'scp', 'rsync', 'docker', 'kubectl', 'helm',
   'aws', 'gcloud', 'az', 'terraform', 'ansible', 'git', 'npm', 'yarn',
   'pip', 'psql', 'mysql', 'redis-cli', 'http',
 ]);
-// Common shell builtins / keywords that must never be treated as user functions/calls.
+
 const SHELL_KEYWORDS = new Set([
   'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done',
   'case', 'esac', 'in', 'function', 'select', 'time', 'return', 'break',
@@ -52,7 +51,7 @@ const SHELL_KEYWORDS = new Set([
   'test', 'true', 'false', 'cd', 'pwd', 'trap', 'wait', 'kill',
 ]);
 
-// Cap on how many extensionless files we read first lines from when sniffing shebangs.
+
 const MAX_SHEBANG_SNIFF = 400;
 
 export class ShellAnalyzer extends BaseAnalyzer {
@@ -93,7 +92,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
     const stat = await fs.stat(context.filePath);
 
     const info = this.parseShellFile(context.relativePath, context.filePath, content);
-    // Single-file analysis can only resolve calls/sources within this one file.
+
     const definedFunctionNames = new Set(info.functions.map(fn => fn.name));
     const fileById = new Map<string, ShellFileInfo>([[info.relativePath, info]]);
 
@@ -142,7 +141,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
         fileInfos.push(this.parseShellFile(relativePath, fullPath, content));
       }
 
-      // Resolve calls against the full set of defined function names across the repo.
+
       const definedFunctionNames = new Set<string>();
       const fileById = new Map<string, ShellFileInfo>();
       for (const info of fileInfos) {
@@ -194,7 +193,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
       return extFiles;
     }
 
-    // Sniff extensionless files for a shell shebang.
+
     const allFiles = await glob(['**/*'], {
       cwd: projectPath,
       ignore,
@@ -219,7 +218,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
           if (stopEarly) break;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -266,8 +265,8 @@ export class ShellAnalyzer extends BaseAnalyzer {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
 
-      // Form 1: name() { ... }   (optional `function` keyword)
-      // Form 2: function name { ... } / function name() { ... }
+
+
       let name: string | undefined;
       const posix = trimmed.match(/^(?:function\s+)?([A-Za-z_][A-Za-z0-9_:.-]*)\s*\(\s*\)\s*\{?/);
       const keyword = trimmed.match(/^function\s+([A-Za-z_][A-Za-z0-9_:.-]*)\s*\{?/);
@@ -290,7 +289,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
     return functions;
   }
 
-  // Best-effort brace matching to find the end of a function body.
+
   private findFunctionEnd(lines: string[], startIndex: number): number {
     let depth = 0;
     let seenOpen = false;
@@ -328,7 +327,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
-      // `source path` or `. path`
+
       const match = trimmed.match(/^(?:source|\.)\s+(["']?)([^"'\s;&|]+)\1/);
       if (match) {
         sources.push({ rawPath: match[2], lineNumber: i + 1 });
@@ -389,7 +388,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
       .withTodos(fileTodos.length > 0 ? fileTodos : undefined)
       .build());
 
-    // Function nodes
+
     for (const fn of info.functions) {
       const functionId = this.functionId(info.relativePath, fn.name, fn.lineStart);
       const fnComments = fileComments.filter(c =>
@@ -421,7 +420,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // External command exit points
+
     for (const ext of info.externalCommands) {
       const sourceNode = this.enclosingNodeId(info, ext.lineNumber, fileId);
       const exitId = `exit_${fileId}_${this.sanitizeId(ext.command)}_${ext.lineNumber}`;
@@ -437,7 +436,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // Entry point: executable OR shebang OR entrypoint-named
+
     const isEntrypointName = ENTRYPOINT_NAMES.has(baseName);
     const isExecutable = this.isExecutable(info.fullPath);
     if (info.hasShebang || isExecutable || isEntrypointName) {
@@ -484,13 +483,13 @@ export class ShellAnalyzer extends BaseAnalyzer {
         const caller = this.enclosingFunction(info, i + 1);
         if (!caller) continue;
 
-        // Find bareword command invocations on this line.
+
         const tokens = stripped.matchAll(/(?:^|[;&|(){}\s])([A-Za-z_][A-Za-z0-9_:.-]*)\b/g);
         for (const token of tokens) {
           const word = token[1];
           if (word === caller.name) continue;
           if (SHELL_KEYWORDS.has(word)) continue;
-          // Only link to functions defined within the same file (resolvable scope).
+
           const target = info.functions.find(fn => fn.name === word);
           if (!target) continue;
 
@@ -548,10 +547,10 @@ export class ShellAnalyzer extends BaseAnalyzer {
   }
 
   private resolveSourcePath(rawPath: string, sourceDir: string, projectPath: string): string | undefined {
-    // Drop variable-only paths we can't resolve statically.
+
     if (rawPath.includes('$') && !rawPath.includes('/')) return undefined;
     let candidate = rawPath;
-    // Strip common dynamic prefixes like "$(dirname "$0")/" to a relative tail.
+
     const slashIndex = candidate.lastIndexOf('/');
     if (candidate.includes('$') && slashIndex !== -1) {
       candidate = candidate.slice(slashIndex + 1);
@@ -561,7 +560,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
       : path.resolve(sourceDir, candidate);
     let rel = path.relative(projectPath, abs);
     if (rel.startsWith('..')) {
-      // Fall back to basename match within the repo.
+
       rel = path.basename(candidate);
       return rel || undefined;
     }
@@ -609,7 +608,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
     let commentSeq = 0;
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
-      // Skip the shebang line itself.
+
       if (i === 0 && lines[i].startsWith('#!')) continue;
       const hashIndex = this.commentIndex(lines[i]);
       if (hashIndex === -1) continue;
@@ -629,7 +628,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
     return comments;
   }
 
-  // Index of the comment '#' that is not inside a string and not part of a shebang.
+
   private commentIndex(line: string): number {
     let inSingle = false;
     let inDouble = false;
@@ -638,7 +637,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
       if (ch === "'" && !inDouble) inSingle = !inSingle;
       else if (ch === '"' && !inSingle) inDouble = !inDouble;
       else if (ch === '#' && !inSingle && !inDouble) {
-        // Require start-of-token (preceded by whitespace or start) to avoid ${#var} etc.
+
         if (i === 0 || /\s/.test(line[i - 1])) return i;
       }
     }

@@ -31,23 +31,23 @@ type MessagingSystem =
 
 type ChannelKind = 'topic' | 'queue' | 'channel' | 'subject' | 'exchange' | 'stream' | 'event';
 
-/**
- * Routing shape of a channel — the ROUTING SEMANTICS that decide the dataflow
- * fan-out. A fanout exchange / Redis pub-sub / SNS topic is a 1->N BROADCAST
- * seam; a work queue / Kafka consumer-group / Redis stream group is a 1->1
- * (competing-consumers) seam. `fanout: true` is the load-bearing signal that
- * downstream (seam-modality) uses to distinguish a broadcast from a queue.
- */
+
+
+
+
+
+
+
 interface RoutingShape {
-  /** Exchange/dispatch discipline. */
+
   type: 'direct' | 'topic' | 'fanout' | 'headers' | 'pubsub' | 'stream' | 'queue-group' | 'consumer-group' | 'event';
-  /** Routing keys / binding patterns / subjects observed for this channel. */
+
   keys?: string[];
-  /** True when a publish reaches ALL bound consumers (broadcast, 1->N). */
+
   fanout?: boolean;
-  /** Kafka consumer group / NATS queue group / Redis stream group — competing consumers share the load (1->1 per message). */
+
   group?: string;
-  /** Whether the subject/binding uses wildcards (topic/pattern routing). */
+
   wildcard?: boolean;
 }
 
@@ -133,7 +133,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         const content = await fs.readFile(file, 'utf-8');
         if (importRe.test(content)) return true;
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -157,9 +157,9 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
 
     const markerRe = /(kafkajs|node-rdkafka|amqplib|from\s+['"]nats['"]|require\(['"]nats['"]\)|ioredis|from\s+['"]redis['"]|require\(['"]redis['"]\)|bullmq|bee-queue|@aws-sdk\/client-sqs|@aws-sdk\/client-sns|confluent_kafka|from\s+kafka\b|import\s+pika\b|from\s+celery\b|@KafkaListener|KafkaTemplate|@RabbitListener|RabbitTemplate|Sidekiq::Worker|perform_async|github\.com\/segmentio\/kafka-go|github\.com\/nats-io\/nats\.go)/;
-    // Budget-yield per file: with the shared file-read cache warm the await
-    // resolves in a microtask (no event-loop hop), so this scan ran as one
-    // multi-second synchronous block on a whale repo. Results unchanged.
+
+
+
     const maybeYield = createYieldBudget();
     const relevant: string[] = [];
     for (const file of files) {
@@ -304,9 +304,9 @@ export class MessagingAnalyzer extends BaseAnalyzer {
 
     if (hasImport('kafkajs')) {
       const kafkaGroup = this.extractKafkaGroupId(content);
-      // Anchor on the `.send(` / `.sendBatch(` call — a bare `topic:` property
-      // also appears inside `consumer.subscribe({ topic })`, so matching topic:
-      // anywhere fabricated a spurious `produces <topic>` for every consumed topic.
+
+
+
       this.extractObjectSendProducers(content, filePath, 'kafkajs', 'topic', /\.send(?:Batch)?\s*\(\s*\{[\s\S]{0,240}?topic\s*:\s*(['"`])([^'"`]+)\1/g, 'send', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
       this.extractTopicConsumers(content, filePath, 'kafkajs', 'topic', /\.subscribe\s*\(\s*\{[\s\S]{0,240}?topic\s*:\s*(['"`])([^'"`]+)\1/g, /eachMessage\s*:\s*(?:async\s*)?\(?\s*([^,\n)=]+)/g, nodes, entryPoints, ensureChannelNode, addEdge, lineOf, kafkaGroup ? { type: 'consumer-group', fanout: false, group: kafkaGroup } : undefined);
     }
@@ -316,9 +316,9 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       this.extractCallWithStringConsumer(content, filePath, 'node-rdkafka', 'topic', /\.subscribe\s*\(\s*\[\s*(['"`])([^'"`]+)\1/g, 'rdkafka consumer', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
 
-    // amqp-connection-manager wraps amqplib and exposes the identical channel API
-    // (assertExchange/bindQueue/publish/sendToQueue/consume), typically inside a
-    // `createChannel({ setup })` callback. Same channel surface → same extraction.
+
+
+
     if (hasImport('amqplib') || hasImport('amqp-connection-manager')) {
       const rabbitSystem = hasImport('amqplib') ? 'amqplib' : 'amqp-connection-manager';
       this.extractRabbitExchanges(content, filePath, rabbitSystem, nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf, {
@@ -330,9 +330,9 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       this.extractCallWithStringConsumer(content, filePath, rabbitSystem, 'queue', /\.consume\s*\(\s*(['"`])([^'"`]+)\1/g, 'RabbitMQ consumer', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
 
-    // NestJS microservices: @MessagePattern/@EventPattern decorate consumer handlers
-    // (entry points); ClientProxy `.emit(pattern, ...)` / `.send(pattern, ...)` are
-    // producers. Patterns may be string literals or `{ cmd: 'x' }` object shapes.
+
+
+
     if (hasImport('@nestjs/microservices') || /@(?:Message|Event)Pattern\s*\(/.test(content)) {
       this.extractNestMicroserviceHandlers(content, filePath, nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
       this.extractNestClientProducers(content, filePath, nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
@@ -344,16 +344,16 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
 
     if (hasImport('ioredis') || hasImport('redis') || hasImport('@redis/client')) {
-      // Pub/sub (broadcast) — publish/subscribe/psubscribe.
+
       this.extractCallWithStringProducer(content, filePath, 'redis-pubsub', 'channel', /\.publish\s*\(\s*(['"`])([^'"`]+)\1/g, 'publish', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
       this.extractCallWithStringConsumer(content, filePath, 'redis-pubsub', 'channel', /\.(?:p?subscribe)\s*\(\s*(['"`])([^'"`]+)\1/g, 'Redis subscriber', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
-      // Streams (durable queue / consumer-groups) — xadd producer, xreadgroup consumer.
+
       this.extractCallWithStringProducer(content, filePath, 'redis-streams', 'stream', /\.xadd\s*\(\s*(['"`])([^'"`]+)\1/g, 'xadd', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
       this.extractRedisStreamGroups(content, filePath, nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
 
-    // In-process Node EventEmitter (.on/.emit) — not broker-based, but an
-    // event-driven seam. Broadcast: every listener for an event name sees the emit.
+
+
     this.extractEventEmitter(content, filePath, nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf);
 
     if (hasImport('bullmq')) {
@@ -396,7 +396,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
 
     if (hasImport('pika')) {
-      // exchange_declare(exchange='x', exchange_type='fanout') -> exchange type.
+
       const pikaExchangeTypes = new Map<string, RoutingShape['type']>();
       const declRe = /\.exchange_declare\s*\([\s\S]{0,300}?exchange\s*=\s*(['"`])([^'"`]+)\1[\s\S]{0,200}?exchange_type\s*=\s*(['"`])([^'"`]+)\3/g;
       let declMatch: RegExpExecArray | null;
@@ -406,7 +406,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         pikaExchangeTypes.set(declMatch[2], type);
         ensureChannelNode('pika', declMatch[2], 'exchange', filePath, lineOf(declMatch.index), { type, fanout: type === 'fanout', wildcard: type === 'topic' });
       }
-      // basic_publish(exchange='x', routing_key='k') -> producer with exchange routing.
+
       const pubRe = /\.basic_publish\s*\([\s\S]{0,400}?exchange\s*=\s*(['"`])([^'"`]+)\1(?:[\s\S]{0,200}?routing_key\s*=\s*(['"`])([^'"`]*)\3)?/g;
       let pubMatch: RegExpExecArray | null;
       while ((pubMatch = pubRe.exec(content)) !== null) {
@@ -710,15 +710,15 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Extract the pattern token from a NestJS `@MessagePattern`/`@EventPattern`
-   * argument. Supports the string form (`'cmd'`) and the object form
-   * (`{ cmd: 'sum' }` / `{ role: 'user', cmd: 'get' }`). Returns a stable label.
-   */
+
+
+
+
+
   private extractNestPatternToken(arg: string): string | undefined {
     const strLit = /^\s*(['"`])([^'"`]+)\1/.exec(arg);
     if (strLit) return strLit[2];
-    // Object form: join key:value string-literal pairs (e.g. "role=user,cmd=get").
+
     const pairRe = /([A-Za-z_$][\w$]*)\s*:\s*(['"`])([^'"`]+)\2/g;
     const pairs: string[] = [];
     let m: RegExpExecArray | null;
@@ -726,11 +726,11 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     return pairs.length ? pairs.join(',') : undefined;
   }
 
-  /**
-   * NestJS microservice consumers: `@MessagePattern(pattern)` (request/response)
-   * and `@EventPattern(pattern)` (fire-and-forget) decorate the handler method
-   * that follows. Each is a message entry point keyed on the pattern token.
-   */
+
+
+
+
+
   private extractNestMicroserviceHandlers(
     content: string,
     filePath: string,
@@ -743,11 +743,11 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     const decoratorRe = /@(MessagePattern|EventPattern)\s*\(([\s\S]{0,200}?)\)/g;
     let match: RegExpExecArray | null;
     while ((match = decoratorRe.exec(content)) !== null) {
-      const kindTag = match[1]; // MessagePattern | EventPattern
+      const kindTag = match[1];
       const token = this.extractNestPatternToken(match[2]);
       if (!token) continue;
       const channelKind: ChannelKind = kindTag === 'EventPattern' ? 'event' : 'queue';
-      // The handler method name follows the decorator (skip other decorators).
+
       const after = content.slice(match.index + match[0].length, match.index + match[0].length + 400);
       const handlerMatch = /(?:@[\w.]+\s*(?:\([^)]*\))?\s*)*(?:public\s+|private\s+|protected\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(/.exec(after);
       this.addConsumer({
@@ -762,11 +762,11 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * NestJS ClientProxy producers: `client.send(pattern, payload)` (request/
-   * response) and `client.emit(pattern, payload)` (fire-and-forget event). The
-   * pattern arg may be a string literal or `{ cmd: '...' }` object.
-   */
+
+
+
+
+
   private extractNestClientProducers(
     content: string,
     filePath: string,
@@ -776,13 +776,13 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
     lineOf: (index: number) => number
   ): void {
-    // Require a payload arg after the pattern (`,`): ClientProxy is always
-    // `.send(pattern, payload)` / `.emit(pattern, payload)`, which excludes the
-    // common single-arg lookalikes (`res.send('ok')`, EventEmitter `.emit(evt)`).
+
+
+
     const callRe = /\.(send|emit)\s*\(\s*((['"`])[^'"`]+\3|\{[\s\S]{0,200}?\})\s*,/g;
     let match: RegExpExecArray | null;
     while ((match = callRe.exec(content)) !== null) {
-      const action = match[1]; // send | emit
+      const action = match[1];
       const token = this.extractNestPatternToken(match[2]);
       if (!token) continue;
       const channelKind: ChannelKind = action === 'emit' ? 'event' : 'queue';
@@ -799,21 +799,6 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private extractKeywordStringProducer(
-    content: string,
-    filePath: string,
-    system: MessagingSystem,
-    channelKind: ChannelKind,
-    callRe: RegExp,
-    action: string,
-    nodes: CASNode[],
-    exitPoints: CASExitPoint[],
-    ensureChannelNode: ChannelEnsurer,
-    addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
-    lineOf: (index: number) => number
-  ): void {
-    this.extractCallWithStringProducer(content, filePath, system, channelKind, callRe, action, nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
-  }
 
   private extractKeywordStringConsumer(
     content: string,
@@ -902,12 +887,12 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       if (!queueName) continue;
       this.addProducer({ system, channel: queueName, channelKind: 'queue', filePath, line: lineOf(match.index), name: `${match[1]}.add`, action: 'add', payloadType: match[3] }, nodes, exitPoints, ensureChannelNode, addEdge);
     }
-    // NOTE: a `new Queue(name)` + `.add()` is the PRODUCER side only. The
-    // consumer for a BullMQ queue is a `new Worker(name, ...)` (see
-    // extractNewWorkerConsumers) or a `queue.process(...)` handler — declaring a
-    // queue and enqueuing to it does NOT make this process a consumer. Emitting a
-    // consumes-edge here fabricated a spurious `consumes <queue>` for every
-    // produced-only queue.
+
+
+
+
+
+
   }
 
   private extractNewWorkerConsumers(
@@ -1085,7 +1070,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
 
     try {
@@ -1098,7 +1083,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
 
     try {
@@ -1110,7 +1095,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
 
     try {
@@ -1124,7 +1109,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
 
     try {
@@ -1138,7 +1123,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
 
     try {
@@ -1154,7 +1139,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         if (content.includes('spring-rabbit') || content.includes('spring-boot-starter-amqp')) names.add('spring-rabbit');
       }
     } catch {
-      // ignore
+
     }
 
     return names;
@@ -1165,12 +1150,12 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     return m?.[2];
   }
 
-  /**
-   * RabbitMQ exchanges (amqplib/pika/spring-rabbit): capture the exchange TYPE
-   * (direct/topic/fanout/headers) from assertExchange/exchange_declare, the
-   * bindings from bindQueue, and mark a fanout exchange as a 1->N broadcast
-   * seam. This is what makes a fanout visibly a broadcast rather than a queue.
-   */
+
+
+
+
+
+
   private extractRabbitExchanges(
     content: string,
     filePath: string,
@@ -1183,7 +1168,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     lineOf: (index: number) => number,
     res: { assertExchange: RegExp; bindQueue: RegExp; publish: RegExp }
   ): void {
-    // 1. Exchange declarations -> exchange channel node with its type.
+
     const exchangeTypes = new Map<string, RoutingShape['type']>();
     let match: RegExpExecArray | null;
     res.assertExchange.lastIndex = 0;
@@ -1201,7 +1186,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // 2. Bindings -> routing keys accumulate on the exchange channel.
+
     res.bindQueue.lastIndex = 0;
     while ((match = res.bindQueue.exec(content)) !== null) {
       const exchange = match[4];
@@ -1216,7 +1201,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // 3. publish(exchange, routingKey, ...) -> producer with the exchange's routing shape.
+
     res.publish.lastIndex = 0;
     while ((match = res.publish.exec(content)) !== null) {
       const exchange = match[2];
@@ -1231,11 +1216,11 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       this.addProducer({ system, channel: exchange, channelKind: 'exchange', filePath, line: lineOf(match.index), name: `${system}.publish`, action: 'publish', routing }, nodes, exitPoints, ensureChannelNode, addEdge);
     }
 
-    // 4. Dynamic exchange name: `assertExchange(someVar, 'fanout')` /
-    //    `assertExchange(`${ctx}.${msg}`, 'fanout')`. The name can't be resolved
-    //    statically, but the ROUTING TYPE (and thus the broadcast seam) is the
-    //    load-bearing fact — capture it under a routing-derived channel so a
-    //    dynamically-named fanout is still visibly a 1->N broadcast.
+
+
+
+
+
     const dynamicRe = /\.assertExchange\s*\(\s*(?!['"`])([^,]+?)\s*,\s*(['"`])(fanout|topic|direct|headers)\2/g;
     let dyn: RegExpExecArray | null;
     while ((dyn = dynamicRe.exec(content)) !== null) {
@@ -1243,16 +1228,16 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       const nameExpr = dyn[1].trim().slice(0, 40);
       const channelName = `<dynamic:${nameExpr}>`;
       const routing: RoutingShape = { type, fanout: type === 'fanout', wildcard: type === 'topic' };
-      // Producer publish over the same dynamic exchange (best-effort pairing).
+
       this.addProducer({ system, channel: channelName, channelKind: 'exchange', filePath, line: lineOf(dyn.index), name: `${system} ${type} exchange`, action: 'assertExchange', routing }, nodes, exitPoints, ensureChannelNode, addEdge);
     }
   }
 
-  /**
-   * NATS subscribers: a `.subscribe(subject, { queue: 'group' })` uses a QUEUE
-   * GROUP (competing consumers, 1->1), while a plain subscribe is broadcast to
-   * every subscriber (1->N). Subject wildcards (`*` / `>`) mark pattern routing.
-   */
+
+
+
+
+
   private extractNatsSubscribers(
     content: string,
     filePath: string,
@@ -1277,10 +1262,10 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Redis Streams consumer groups (XREADGROUP) — competing consumers over a
-   * durable stream (1->1 per message), the queue counterpart to broadcast pub/sub.
-   */
+
+
+
+
   private extractRedisStreamGroups(
     content: string,
     filePath: string,
@@ -1290,7 +1275,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
     lineOf: (index: number) => number
   ): void {
-    // xreadgroup('GROUP', groupName, consumer, 'COUNT', n, 'STREAMS', streamKey, id)
+
     const groupRe = /\.xreadgroup\s*\(\s*(['"`])GROUP\1\s*,\s*(['"`])([^'"`]+)\2[\s\S]{0,160}?(['"`])STREAMS\4\s*,\s*(['"`])([^'"`]+)\5/gi;
     let match: RegExpExecArray | null;
     while ((match = groupRe.exec(content)) !== null) {
@@ -1300,14 +1285,14 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * In-process Node EventEmitter: pair `.emit('evt', ...)` producers with
-   * `.on('evt', handler)` / `.once('evt', ...)` / `.addListener('evt', ...)`
-   * listeners over a shared synthetic event channel. Every listener for an
-   * event name sees each emit, so the event channel is a broadcast (1->N) seam.
-   * Framework buses (NestJS @OnEvent, etc.) are handled by their framework
-   * analyzers; this covers the plain-Node case they don't reach.
-   */
+
+
+
+
+
+
+
+
   private extractEventEmitter(
     content: string,
     filePath: string,
@@ -1318,8 +1303,8 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
     lineOf: (index: number) => number
   ): void {
-    // Only engage when the file actually deals with an EventEmitter, to avoid
-    // matching unrelated `.on(`/`.emit(` (DOM, socket libs handled elsewhere).
+
+
     if (!/EventEmitter|extends\s+EventEmitter|new\s+EventEmitter/.test(content)) return;
 
     const routing: RoutingShape = { type: 'event', fanout: true };
@@ -1328,7 +1313,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     let match: RegExpExecArray | null;
     while ((match = listenerRe.exec(content)) !== null) {
       const event = match[2];
-      // Skip lifecycle/stream noise that isn't a domain event.
+
       if (/^(error|close|end|data|finish|drain|open|connect|disconnect|message|newListener|removeListener)$/.test(event)) continue;
       this.addConsumer({ system: 'event-emitter', channel: event, channelKind: 'event', filePath, line: lineOf(match.index), name: `on(${event})`, handlerName: match[3]?.trim(), routing }, nodes, entryPoints, ensureChannelNode, addEdge);
     }
@@ -1341,11 +1326,11 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Merge a newly-observed routing shape into an existing channel node. Later
-   * observations refine earlier ones (an explicit assertExchange('fanout')
-   * upgrades a default), and keys/wildcard accumulate across bindings.
-   */
+
+
+
+
+
   private mergeRoutingIntoChannel(node: CASNode | undefined, routing: RoutingShape): void {
     if (!node) return;
     const meta = node.metadata as any;
@@ -1355,7 +1340,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       meta.fanout = routing.fanout === true;
       return;
     }
-    // An explicit exchange type / discipline wins over a defaulted one.
+
     if (routing.type && routing.type !== existing.type) existing.type = routing.type;
     if (routing.fanout !== undefined) existing.fanout = existing.fanout || routing.fanout;
     if (routing.wildcard !== undefined) existing.wildcard = existing.wildcard || routing.wildcard;
@@ -1366,11 +1351,11 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     meta.fanout = existing.fanout === true;
   }
 
-  /**
-   * Routing shape when a call site did not carry explicit exchange/group
-   * evidence. Distinguishes broadcast (pub/sub channels, SNS topics) from
-   * competing-consumer queues so a plain publish is still classified.
-   */
+
+
+
+
+
   private defaultRouting(system: MessagingSystem, kind: ChannelKind, name: string): RoutingShape | undefined {
     const wildcard = /[*#>]|\.\*|\.>/.test(name);
     switch (system) {
@@ -1384,8 +1369,8 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         return { type: 'queue-group', fanout: false };
       case 'nats':
       case 'go-nats':
-        // NATS core subjects are broadcast unless a queue group is present
-        // (queue-group case is emitted explicitly with routing).
+
+
         return { type: wildcard ? 'topic' : 'direct', fanout: true, wildcard };
       case 'event-emitter':
         return { type: 'event', fanout: true };
@@ -1394,19 +1379,19 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       case 'spring-kafka':
       case 'go-kafka':
       case 'node-rdkafka':
-        // Kafka delivery within a consumer group is competing-consumer (1->1);
-        // group is attached explicitly when a groupId is found.
+
+
         return { type: 'consumer-group', fanout: false };
       case 'amqplib':
       case 'amqp-connection-manager':
       case 'pika':
       case 'spring-rabbit':
-        // A queue (sendToQueue) is a work queue; an exchange publish gets its
-        // real type from assertExchange (emitted explicitly).
+
+
         return kind === 'exchange' ? { type: 'topic', fanout: false } : { type: 'queue-group', fanout: false };
       case 'nestjs-microservice':
-        // @MessagePattern is request/response (competing-consumer, 1->1);
-        // @EventPattern / client.emit is fire-and-forget broadcast (1->N).
+
+
         return kind === 'event' ? { type: 'event', fanout: true } : { type: 'queue-group', fanout: false };
       default:
         return undefined;

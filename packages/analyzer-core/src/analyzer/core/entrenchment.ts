@@ -1,9 +1,6 @@
 import type {
   CASOutput,
   CASNode,
-  CASEdge,
-  CASEntryPoint,
-  CASExitPoint,
   CASEntityLineage,
   CASEntityLineageAccessor,
   CASChangeRisk,
@@ -12,69 +9,69 @@ import type {
 import type { CommunicationSeamsResult } from './communication-seams';
 import { CONTRACT_MODEL_NAME } from './flow-concepts';
 
-/**
- * ENTRENCHMENT — how deeply woven-in / hard-to-change-or-remove a unit is,
- * computed at EVERY level (function/node -> file -> module -> repo). High
- * entrenchment = changing it ripples widely (a load-bearing wall); low = a
- * safe leaf you can rewrite or delete in isolation.
- *
- * The concept a change-risk score does NOT capture: change-risk asks "is this
- * dangerous to touch given tests/churn". Entrenchment asks the orthogonal
- * structural question "how much of the system LEANS ON this" — a well-tested,
- * never-churned file can still be bedrock because 200 things depend on it, and
- * that is exactly what an agent needs to know before an "understand-before-edit".
- *
- * DERIVED, NEVER RE-DETECTED. This is an additive, deterministic, non-AI pass
- * over the already-assembled CASOutput, mirroring conventions-applier.ts /
- * infra-topology-linker.ts / communication-seams.ts (pure, non-blocking,
- * evidence-carrying). It reuses signals other passes already produced:
- *
- *   STRUCTURAL
- *     - fan_in           : # direct callers/dependents (call_graph.called_by /
- *                          reverse edges).
- *     - blast_radius     : transitive dependent count (change_risks downstream
- *                          impact when present, else BFS over reverse edges).
- *     - centrality       : share of the graph that can reach this node.
- *     - flow_participation: # flows/capabilities/journeys the unit sits in.
- *
- *   ICELOT-FACET ENTRENCHMENT (the novel part — how widely each contract facet
- *   is depended upon; see flow-concepts.ts CONTRACT_MODEL_NAME):
- *     - Output   : consumed by N callers (an output nothing reads isn't load-bearing).
- *     - State-changes read by OTHER modules/deployables — shared-state coupling
- *       via PASSIVE seams. THE one nobody measures: if this unit writes an entity
- *       that a different component reads, changing the write shape silently breaks
- *       a peer that never calls it. Read straight off communication_seams passive
- *       seams + data_lineage cross-component writer/reader ownership.
- *     - Constraints : an invariant/guard others depend on (this unit enforces a
- *       rule that gates callers/entities).
- *     - Integrations: others route through this unit's outbound calls.
- *     - Logic    : callers that depend on this unit's computed behavior.
- *
- *   CROSS-BOUNDARY
- *     - contract consumed across repos / across deployables -> higher entrenchment.
- *
- *   RUNTIME (when present)
- *     - telemetry traffic: a hot path is load-bearing (per-node request volume).
- *
- * Every signal is EVIDENCE-GATED: a true leaf (no callers, no shared state, in no
- * flow, no traffic) scores low and is labelled `leaf`. Nothing is fabricated; a
- * unit with no dependents cannot be inflated to bedrock.
- */
 
-/** Which contract-model facets this pass computes dependency-weight for. Kept in
- *  lockstep with flow-concepts.ts's UNDERSTANDING_CONTRACT_FACETS via the shared
- *  CONTRACT_MODEL_NAME constant (see below) — entrenchment is the "how widely is
- *  each facet depended on" companion to the "what is each facet" contract. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export const ENTRENCHMENT_CONTRACT_MODEL = CONTRACT_MODEL_NAME;
 
-/** A clean 6-tier scale, low -> high woven-in-ness. */
+
 export type EntrenchmentLevel =
-  | 'leaf'         // nothing depends on it — safe to change/remove in isolation
-  | 'peripheral'   // a couple of dependents, no shared state, no traffic
-  | 'connected'    // several dependents or in a flow — changes have local ripple
-  | 'load-bearing' // many dependents / shared-state / hot path — wide ripple
-  | 'foundational' // deep blast radius + cross-cutting facet dependence
-  | 'bedrock';     // the system leans on it — cross-boundary + high centrality
+  | 'leaf'
+  | 'peripheral'
+  | 'connected'
+  | 'load-bearing'
+  | 'foundational'
+  | 'bedrock';
 
 const LEVEL_ORDER: EntrenchmentLevel[] = [
   'leaf',
@@ -85,28 +82,28 @@ const LEVEL_ORDER: EntrenchmentLevel[] = [
   'bedrock',
 ];
 
-/** Per-facet dependency weight (0..1) — how widely this unit's contract facet is
- *  relied upon. Absent facets are simply 0; never fabricated. */
+
+
 export interface FacetEntrenchment {
-  /** Output consumed by callers (fan-in on this unit's returns). */
+
   output: number;
-  /** State-changes this unit writes that OTHER components read (passive/shared-state). */
+
   state_changes: number;
-  /** Invariants/guards this unit enforces that others depend on. */
+
   constraints: number;
-  /** Outbound integrations others route through this unit to reach. */
+
   integrations: number;
-  /** Callers depending on this unit's computed logic/behavior. */
+
   logic: number;
 }
 
-/** The full entrenchment record stored on a node. */
+
 export interface NodeEntrenchment {
   node_id: string;
-  /** 0..1 combined weight. */
+
   score: number;
   level: EntrenchmentLevel;
-  /** Component-decomposed sub-scores (each 0..1) so the score is explainable. */
+
   signals: {
     fan_in: number;
     blast_radius: number;
@@ -116,21 +113,21 @@ export interface NodeEntrenchment {
     cross_boundary: number;
     runtime: number;
   };
-  /** Raw counts behind the signals, for verifiable evidence lines. */
+
   raw: {
     direct_dependents: number;
     transitive_dependents: number;
     flows: number;
-    /** distinct OTHER components that read state this unit writes. */
+
     shared_state_readers: number;
-    /** distinct entities whose write shape this unit owns and a peer reads. */
+
     shared_state_entities: string[];
     cross_repo: boolean;
     cross_deployable_readers: number;
     request_count?: number;
   };
-  /** Short human-legible evidence list, e.g.
-   *  ["47 dependents", "writes Client read by 4 modules", "in 3 flows", "1.9k req/day"]. */
+
+
   evidence: string[];
 }
 
@@ -138,7 +135,7 @@ export interface FileEntrenchment {
   file: string;
   score: number;
   level: EntrenchmentLevel;
-  /** # nodes in the file, and how many are load-bearing+. */
+
   node_count: number;
   bedrock_nodes: number;
   top_node?: string;
@@ -153,13 +150,13 @@ export interface ModuleEntrenchment {
 
 export interface EntrenchmentSummary {
   contract_model: string;
-  /** Repo-level distribution across the tier scale. */
+
   distribution: Record<EntrenchmentLevel, number>;
-  /** Repo entrenchment = weighted blend of the distribution (0..1). */
+
   repo_score: number;
   repo_level: EntrenchmentLevel;
-  /** The bedrock set: the highest-entrenchment nodes (load-bearing and above),
-   *  ranked — "change these and the system ripples". */
+
+
   bedrock: Array<{
     node_id: string;
     name: string;
@@ -168,21 +165,21 @@ export interface EntrenchmentSummary {
     level: EntrenchmentLevel;
     evidence: string[];
   }>;
-  /** File- and module-level rollups. */
+
   files: FileEntrenchment[];
   modules: ModuleEntrenchment[];
   counts: { nodes_scored: number; files: number; modules: number };
 }
 
 export interface EntrenchmentResult {
-  /** Per-node entrenchment keyed by node id (only nodes with a real score). */
+
   nodes: Record<string, NodeEntrenchment>;
   summary: EntrenchmentSummary;
 }
 
-/** Node types that are real "units" whose entrenchment is meaningful. We skip
- *  pure leaf attributes/params/imports — they inflate the distribution and are
- *  never edit targets on their own. */
+
+
+
 const UNIT_NODE_TYPES = new Set([
   'function', 'method', 'controller', 'handler', 'route', 'resolver', 'gateway',
   'service', 'usecase', 'repository', 'dao', 'class', 'module', 'file',
@@ -192,22 +189,22 @@ const UNIT_NODE_TYPES = new Set([
 
 function isUnitNode(node: CASNode): boolean {
   if (UNIT_NODE_TYPES.has(node.type)) return true;
-  // A node with a call graph (callers/callees) is a real unit regardless of its
-  // exact type label.
+
+
   const cg = node.call_graph;
   return Boolean(cg && ((cg.called_by?.length || 0) > 0 || (cg.calls?.length || 0) > 0));
 }
 
-/** Squash a raw count to 0..1 with a soft saturation — the first dependents
- *  matter most, and a unit with 200 vs 400 dependents is "very entrenched"
- *  either way. `k` sets the count at which we reach ~0.5. */
+
+
+
 function saturate(count: number, k: number): number {
   if (count <= 0) return 0;
   return count / (count + k);
 }
 
-/** Two-segment (or deployable) component key for a file — the same ownership
- *  notion communication-seams uses, so shared-state readers group by component. */
+
+
 function componentForFile(
   file: string | undefined,
   deployableRoots: Array<{ root: string; name: string }>,
@@ -236,7 +233,7 @@ function componentForFile(
   return parts[0] || 'root';
 }
 
-/** Two-segment module key for file rollup. */
+
 function moduleForFile(file: string): string {
   const f = file.replace(/\\/g, '/').replace(/^\/+/, '');
   const parts = f.split('/');
@@ -252,11 +249,11 @@ function formatCount(n: number): string {
   return String(n);
 }
 
-/**
- * Compute entrenchment for every unit node, plus file/module/repo rollups.
- * Pure and additive: takes a read-only slice of the CASOutput and returns the
- * result; the caller stamps `entrenchment` onto nodes and stores the summary.
- */
+
+
+
+
+
 export function computeEntrenchment(
   output: { nodes: CASNode[] } & Partial<
     Pick<
@@ -304,11 +301,11 @@ export function computeEntrenchment(
   const nodeFile = new Map<string, string>();
   for (const n of nodes) if (n.source?.file) nodeFile.set(n.id, n.source.file);
 
-  // ---- STRUCTURAL: fan-in + reverse-dependent graph -----------------------
-  // Reverse adjacency (dependent -> unit) from BOTH the call_graph.called_by
-  // facts and the graph edges (CALLS/USES/DEPENDS_ON/RENDERS...). We union so a
-  // node with edge-only or called_by-only evidence is still covered.
-  const dependents = new Map<string, Set<string>>(); // unit id -> set of dependent ids
+
+
+
+
+  const dependents = new Map<string, Set<string>>();
   const addDependent = (unit: string, dep: string) => {
     if (!unit || !dep || unit === dep) return;
     let set = dependents.get(unit);
@@ -327,13 +324,13 @@ export function computeEntrenchment(
   for (const e of output.edges || []) {
     const type = String(e.type || '').toUpperCase();
     if (!DEPENDENCY_EDGE_TYPES.has(type)) continue;
-    // source depends on target -> target has source as a dependent.
+
     if (byId.has(e.source) && byId.has(e.target)) addDependent(e.target, e.source);
   }
 
-  // Transitive dependents (blast radius) via reverse BFS, bounded so a giant
-  // graph never blows up. change_risks provides an authoritative count when
-  // present; we prefer it and fall back to the BFS.
+
+
+
   const changeRiskById = new Map<string, CASChangeRisk>();
   for (const cr of output.change_risks || []) changeRiskById.set(cr.node_id, cr);
 
@@ -347,7 +344,7 @@ export function computeEntrenchment(
       const n =
         (cr.downstream_impact.transitive_callers?.length || 0) +
         (cr.downstream_impact.direct_callers?.length || 0);
-      // dedupe direct vs transitive by using the larger, they overlap in some producers
+
       const count = Math.max(
         cr.downstream_impact.transitive_callers?.length || 0,
         (cr.downstream_impact.direct_callers?.length || 0),
@@ -366,22 +363,22 @@ export function computeEntrenchment(
         if (!seen.has(dep)) { seen.add(dep); queue.push(dep); }
       }
     }
-    const count = seen.size - 1; // exclude self
+    const count = seen.size - 1;
     transitiveCache.set(unit, count);
     return count;
   }
 
-  // Centrality proxy: share of ALL unit nodes that can (transitively) reach this
-  // node = transitive dependents / total units. Cheap, monotone, and it is
-  // exactly "how much of the system leans on this".
+
+
+
   const totalUnits = nodes.filter(isUnitNode).length || 1;
 
-  // ---- FLOW PARTICIPATION -------------------------------------------------
-  // A node's flow participation = the number of DISTINCT execution flows it sits
-  // in. Sourced from the call graph's chains (each is one entry->exit flow) and
-  // user journeys (each a named end-to-end flow). A node on many flows is a
-  // junction the system routes through — entrenched.
-  const flowMembership = new Map<string, Set<string>>(); // node id -> flow ids it appears in
+
+
+
+
+
+  const flowMembership = new Map<string, Set<string>>();
   const joinFlow = (nodeId: string | undefined, flowId: string) => {
     if (!nodeId) return;
     let set = flowMembership.get(nodeId);
@@ -400,16 +397,16 @@ export function computeEntrenchment(
   const flowCount = new Map<string, number>();
   for (const [id, set] of flowMembership) flowCount.set(id, set.size);
 
-  // ---- ICELOT FACET: state-changes read across components (passive seams) --
-  // From communication_seams passive seams + data_lineage cross-component
-  // writer/reader ownership. For each entity a unit writes that a DIFFERENT
-  // component reads, that's a shared-state dependency on this unit's write shape.
+
+
+
+
   const seams: CommunicationSeamsResult | undefined = output.communication_seams;
-  // The set of entities that are ACTUALLY shared-state seams (a distinct writer
-  // component AND reader component both touch them) — sourced straight from the
-  // communication_seams passive-seam classification so entrenchment agrees with
-  // the seam pass, never re-detecting. When the seams pass ran, we gate on this;
-  // when it did not (older store), we fall back to the raw lineage below.
+
+
+
+
+
   const passiveEntities = new Set<string>();
   for (const s of seams?.seams || []) {
     if (s.modality === 'passive' && s.shared_resource) passiveEntities.add(s.shared_resource);
@@ -417,14 +414,14 @@ export function computeEntrenchment(
   const gateOnSeams = Boolean(seams && seams.seams.length > 0);
 
   const lineage: CASEntityLineage[] = output.data_lineage || [];
-  // For each unit that WRITES an entity, count distinct OTHER components reading it.
+
   const sharedStateReaders = new Map<string, { readers: Set<string>; entities: Set<string>; crossDeployable: Set<string> }>();
   const deployableNames = new Set(deployableRoots.map(d => d.name));
   for (const entity of lineage) {
-    // Gate on the seam pass's verdict: only entities it classified as a passive
-    // (shared-state) seam count as cross-component coupling. This keeps the novel
-    // state-changes facet consistent with communication_seams rather than a
-    // second, independently-derived shared-state notion.
+
+
+
+
     if (gateOnSeams && !passiveEntities.has(entity.entity_name)) continue;
     const readerComponents = new Set<string>();
     for (const r of entity.readers || []) {
@@ -435,7 +432,7 @@ export function computeEntrenchment(
       const writerId = (w as CASEntityLineageAccessor).node_id;
       if (!writerId) continue;
       const writerComponent = componentForFile((w as CASEntityLineageAccessor).file, deployableRoots);
-      // OTHER components that read what this writer writes.
+
       const others = new Set<string>();
       for (const rc of readerComponents) if (rc !== writerComponent) others.add(rc);
       if (others.size === 0) continue;
@@ -449,21 +446,21 @@ export function computeEntrenchment(
     }
   }
 
-  // ---- ICELOT FACET: integrations (outbound calls others route through) ---
-  // A unit that owns exit points is an integration seam; entrenchment on that
-  // facet = how many callers reach the integration THROUGH this unit (its fan-in).
+
+
+
   const exitOwners = new Set<string>();
   for (const ex of output.exit_points || []) if (ex.source_node) exitOwners.add(ex.source_node);
 
-  // ---- ICELOT FACET: constraints (guards/invariants others depend on) -----
-  // A unit that guards an entry point (auth/validation) enforces a constraint
-  // that its callers rely on. entry_points carry handler/guard node ids.
+
+
+
   const constraintOwners = new Map<string, number>();
   for (const ep of output.entry_points || []) {
-    // An entry point whose handler enforces auth/guards is a unit its callers
-    // rely on to uphold that constraint — count the guards it carries as the
-    // strength of the constraint others depend on. The handler node is the
-    // constraint owner (source_node falls back to it).
+
+
+
+
     const guardCount =
       (ep.security?.guards?.length || 0) + (ep.security?.authenticated ? 1 : 0);
     if (guardCount === 0) continue;
@@ -472,14 +469,14 @@ export function computeEntrenchment(
     constraintOwners.set(ownerId, (constraintOwners.get(ownerId) || 0) + guardCount);
   }
 
-  // ---- CROSS-BOUNDARY: contracts consumed across repos ---------------------
+
   const crossRepoNodes = new Set<string>();
   for (const link of [...(output.repository_links || []), ...(output.cross_repository_links || [])]) {
     for (const nid of link.source_repository?.node_ids || []) crossRepoNodes.add(String(nid));
     for (const nid of link.target_repository?.node_ids || []) crossRepoNodes.add(String(nid));
   }
 
-  // ---- RUNTIME: per-node request volume ------------------------------------
+
   const runtimeByNode = new Map<string, number>();
   for (const m of output.runtimeMetrics || []) {
     const id = m.node_id || m.static_id;
@@ -488,18 +485,18 @@ export function computeEntrenchment(
     }
   }
 
-  // ---- CENTRALITY as a scale-free PERCENTILE -------------------------------
-  // Raw "transitive dependents / total units" collapses to ~0 on a big repo, so
-  // a genuinely central unit reads the same as a leaf. Instead, centrality is
-  // the node's PERCENTILE rank of blast radius across all units: "this unit is
-  // in the top X% of the codebase by reach" — scale-free and monotone, so the
-  // most-depended-on units score near 1 regardless of repo size.
+
+
+
+
+
+
   const unitNodes = nodes.filter(isUnitNode);
   const blastValues: number[] = unitNodes.map(n => transitiveDependentCount(n.id));
   const sortedBlast = [...blastValues].sort((a, b) => a - b);
   const percentileOf = (value: number): number => {
     if (sortedBlast.length === 0 || value <= 0) return 0;
-    // fraction of units with a STRICTLY smaller blast radius (rank percentile).
+
     let lo = 0, hi = sortedBlast.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
@@ -508,7 +505,7 @@ export function computeEntrenchment(
     return lo / sortedBlast.length;
   };
 
-  // ---- COMBINE per node ----------------------------------------------------
+
   const nodeResults: Record<string, NodeEntrenchment> = {};
   for (const node of nodes) {
     if (!isUnitNode(node)) continue;
@@ -524,19 +521,19 @@ export function computeEntrenchment(
     const isCrossRepo = crossRepoNodes.has(id);
     const reqCount = runtimeByNode.get(id);
 
-    // --- component signals (each 0..1) ---
-    // Saturation constants are calibrated so the FIRST few dependents move the
-    // needle and genuinely system-wide units (dozens of direct dependents, big
-    // blast radius, many flows) approach 1 — the load-bearing walls should be
-    // able to reach the top tiers on structure alone.
+
+
+
+
+
     const fanInSig = saturate(directDeps, 4);
     const blastSig = saturate(transitiveDeps, 12);
     const centralitySig = percentileOf(transitiveDeps);
     const flowSig = saturate(flows, 3);
 
-    // ICELOT facet weights — how widely each contract facet is depended upon.
-    const outputSig = saturate(directDeps, 6); // output consumed by callers
-    const stateSig = saturate(sharedReaderCount, 2); // shared-state readers (the novel one)
+
+    const outputSig = saturate(directDeps, 6);
+    const stateSig = saturate(sharedReaderCount, 2);
     const constraintSig = saturate(constraintOwners.get(id) || 0, 2);
     const integrationSig = exitOwners.has(id) ? saturate(directDeps + 1, 6) : 0;
     const logicSig = saturate(directDeps, 8);
@@ -554,23 +551,23 @@ export function computeEntrenchment(
     );
     const runtimeSig = reqCount ? saturate(reqCount, 500) : 0;
 
-    // Weighted blend. Structural fan-in/blast/centrality dominate (that IS
-    // entrenchment — how much of the system leans on this), the shared-state
-    // facet is up-weighted because it is the coupling nobody else measures, and
-    // cross-boundary + runtime add load-bearing evidence. Weights sum to 1.
+
+
+
+
     const score = clamp01(
       fanInSig * 0.27 +
       blastSig * 0.24 +
       centralitySig * 0.13 +
       flowSig * 0.11 +
-      stateSig * 0.11 +          // shared-state coupling (novel, up-weighted)
+      stateSig * 0.11 +
       constraintSig * 0.02 +
       integrationSig * 0.02 +
       crossBoundarySig * 0.06 +
       runtimeSig * 0.04,
     );
 
-    // Evidence — only lines with real facts behind them.
+
     const evidence: string[] = [];
     if (directDeps > 0) evidence.push(`${formatCount(directDeps)} dependent${directDeps === 1 ? '' : 's'}`);
     if (transitiveDeps > directDeps) evidence.push(`${formatCount(transitiveDeps)} in blast radius`);
@@ -624,17 +621,17 @@ export function computeEntrenchment(
   return { nodes: nodeResults, summary };
 }
 
-/** Map a 0..1 score + a few hard gates to a tier. The gates ensure the label
- *  never OVER-states: bedrock requires either cross-repo consumption or genuinely
- *  system-wide centrality, so a merely-popular local helper stays load-bearing. */
+
+
+
 function scoreToLevel(
   score: number,
   ctx: { isCrossRepo: boolean; transitiveDeps: number; sharedReaderCount: number; totalUnits: number },
 ): EntrenchmentLevel {
-  // "System-wide" = a blast radius large in absolute terms (hundreds of units
-  // transitively depend on it) OR a meaningful fraction of a small repo. This is
-  // the gate that separates a merely-popular local helper (foundational) from a
-  // true bedrock unit the whole system leans on.
+
+
+
+
   const systemWide = ctx.transitiveDeps >= Math.min(150, Math.max(20, ctx.totalUnits * 0.02));
   if (score >= 0.75 && (ctx.isCrossRepo || systemWide)) return 'bedrock';
   if (score >= 0.6) return 'foundational';
@@ -653,16 +650,16 @@ function buildSummary(
   const distribution = emptyDistribution();
   for (const n of all) distribution[n.level]++;
 
-  // Repo score = mean of node scores weighted toward the top (the bedrock set is
-  // what defines whether a repo is "highly entrenched"), computed as a blend of
-  // the average and the 90th-percentile score.
+
+
+
   const scores = all.map(n => n.score).sort((a, b) => a - b);
   const avg = scores.length ? scores.reduce((s, v) => s + v, 0) / scores.length : 0;
   const p90 = scores.length ? scores[Math.floor(scores.length * 0.9)] : 0;
   const repoScore = round(avg * 0.5 + p90 * 0.5);
   const repoLevel = scoreToLevel(repoScore, { isCrossRepo: false, transitiveDeps: 0, sharedReaderCount: 0, totalUnits: 1 });
 
-  // Bedrock set: load-bearing and above, ranked by score desc.
+
   const bedrock = all
     .filter(n => LEVEL_ORDER.indexOf(n.level) >= LEVEL_ORDER.indexOf('load-bearing'))
     .sort((a, b) => b.score - a.score)
@@ -679,7 +676,7 @@ function buildSummary(
       };
     });
 
-  // File rollup: file = f(its nodes) = max-with-density blend.
+
   const byFile = new Map<string, NodeEntrenchment[]>();
   for (const n of all) {
     const f = nodeFile.get(n.node_id);
@@ -689,8 +686,8 @@ function buildSummary(
   const files: FileEntrenchment[] = Array.from(byFile.entries()).map(([file, ns]) => {
     const top = ns.reduce((a, b) => (b.score > a.score ? b : a));
     const avgF = ns.reduce((s, v) => s + v.score, 0) / ns.length;
-    // File entrenchment = its most-entrenched node, lifted a little by density of
-    // other entrenched nodes (a file full of load-bearing units is itself bedrock).
+
+
     const fscore = round(Math.min(1, top.score * 0.7 + avgF * 0.3 + Math.min(0.1, (ns.filter(x => x.score >= 0.4).length - 1) * 0.02)));
     return {
       file,
@@ -702,7 +699,7 @@ function buildSummary(
     };
   }).sort((a, b) => b.score - a.score);
 
-  // Module rollup: module = f(its files).
+
   const byModule = new Map<string, FileEntrenchment[]>();
   for (const f of files) {
     const m = moduleForFile(f.file);

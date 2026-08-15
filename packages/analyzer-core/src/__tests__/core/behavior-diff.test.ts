@@ -200,12 +200,12 @@ describe('diffBehavior', () => {
 
   it('flags a new capability overlapping an existing one as possibly duplicated', () => {
     const before = cas({
-      system_capabilities: [
+      capabilities: [
         capability({ id: 'cap_invoicing', name: 'Invoice Billing', entities: ['Invoice', 'Customer'] }),
       ],
     });
     const after = cas({
-      system_capabilities: [
+      capabilities: [
         capability({ id: 'cap_invoicing', name: 'Invoice Billing', entities: ['Invoice', 'Customer'] }),
         capability({ id: 'cap_invoice_export', name: 'Invoice Export', entities: ['Invoice'] }),
       ],
@@ -265,7 +265,7 @@ describe('diffBehavior', () => {
   it('returns an empty diff for identical analyses', () => {
     const build = () => cas({
       user_journeys: guardedBase.map(j => ({ ...j })),
-      system_capabilities: [
+      capabilities: [
         capability({ id: 'cap_invoicing', name: 'Invoice Billing', entities: ['Invoice'] }),
       ],
       data_lineage: [

@@ -13,25 +13,25 @@ interface MongooseField {
 }
 
 interface MongooseSchema {
-  /** JS variable name the schema was assigned to, e.g. `UserSchema` */
+
   varName: string;
   fields: MongooseField[];
   filePath: string;
   line: number;
 }
 
-/**
- * Mongoose analyzer.
- *
- * Extracts `new Schema({ ... })` definitions as data-entity nodes (named by their
- * `mongoose.model('Name', Schema)` registration when present, else the schema var),
- * with field nodes per path and relation edges from `ref: 'Other'` references.
- *
- * Node conventions mirror PrismaAnalyzer: entity nodes are type `'entity'`, level 3,
- * id `entity_mongoose_<name>`, with embedded `fields[]` metadata. Field nodes are type
- * `'field'`, level 4, joined to their entity by `has_field` edges. Relation edges are
- * type `'references'`, category `'database'`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class MongooseAnalyzer extends BaseAnalyzer {
   constructor() {
     super('mongoose', 'Mongoose Analyzer', '1.0.0', 'library');
@@ -65,7 +65,7 @@ export class MongooseAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -85,7 +85,7 @@ export class MongooseAnalyzer extends BaseAnalyzer {
     });
 
     const schemas: MongooseSchema[] = [];
-    // Map schema var name -> registered model name (mongoose.model('User', UserSchema))
+
     const modelNameByVar = new Map<string, string>();
 
     for (const file of sourceFiles) {
@@ -156,8 +156,8 @@ export class MongooseAnalyzer extends BaseAnalyzer {
       this.parseModelRegistrations(content, modelNameByVar);
     }
 
-    // Single-file scope: ref relations to schemas/models registered in other
-    // files resolve only by name here and re-derive on full analysis.
+
+
     this.emitSchemaGraph(schemas, modelNameByVar, nodes, edges);
 
     const exports = schemas.map(s => s.varName);
@@ -182,13 +182,13 @@ export class MongooseAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
-    // Resolve display name for each schema var (model name preferred).
+
     const entityNameByVar = new Map<string, string>();
     for (const schema of schemas) {
       const modelName = modelNameByVar.get(schema.varName);
       entityNameByVar.set(schema.varName, modelName || this.stripSchemaSuffix(schema.varName));
     }
-    // Allow refs to resolve by model name -> back to a var-based id.
+
     const varByEntityName = new Map<string, string>();
     for (const [varName, entityName] of entityNameByVar) {
       varByEntityName.set(entityName.toLowerCase(), varName);
@@ -256,7 +256,7 @@ export class MongooseAnalyzer extends BaseAnalyzer {
           { attributes: { field: f.name, type: f.type } }
         ));
 
-        // ref relation -> resolve target entity by model name.
+
         if (f.ref) {
           const targetVar = varByEntityName.get(f.ref.toLowerCase());
           const targetId = targetVar
@@ -282,9 +282,9 @@ export class MongooseAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `const UserSchema = new Schema({ ... })`.
-   */
+
+
+
   private parseSchemas(content: string, filePath: string): MongooseSchema[] {
     const schemas: MongooseSchema[] = [];
     const schemaRegex = /(?:export\s+)?const\s+(\w+)\s*=\s*new\s+(?:mongoose\.)?Schema\s*(?:<[^>]*>)?\s*\(\s*\{/g;
@@ -292,7 +292,7 @@ export class MongooseAnalyzer extends BaseAnalyzer {
     let match: RegExpExecArray | null;
     while ((match = schemaRegex.exec(content)) !== null) {
       const varName = match[1];
-      const bodyStart = schemaRegex.lastIndex - 1; // opening `{`
+      const bodyStart = schemaRegex.lastIndex - 1;
       const body = this.extractBalanced(content, bodyStart);
       if (body === null) {
         continue;
@@ -309,15 +309,15 @@ export class MongooseAnalyzer extends BaseAnalyzer {
     return schemas;
   }
 
-  /**
-   * Parse the schema definition object body into fields.
-   * Handles shorthand (`email: String`), option-objects
-   * (`email: { type: String, required: true }`), and arrays/refs
-   * (`posts: [{ type: Schema.Types.ObjectId, ref: 'Post' }]`).
-   */
+
+
+
+
+
+
   private parseFields(body: string): MongooseField[] {
     const fields: MongooseField[] = [];
-    // Split top-level entries by walking depth so nested objects/arrays stay intact.
+
     const entries = this.splitTopLevel(body);
 
     for (const entry of entries) {
@@ -337,7 +337,7 @@ export class MongooseAnalyzer extends BaseAnalyzer {
       if (typeMatch) {
         type = this.simplifyType(typeMatch[1]);
       } else {
-        // shorthand: `email: String` or `tags: [String]`
+
         const shorthand = /^\[?\s*([\w.]+)/.exec(value);
         if (shorthand) {
           type = this.simplifyType(shorthand[1]);
@@ -358,9 +358,9 @@ export class MongooseAnalyzer extends BaseAnalyzer {
     return fields;
   }
 
-  /**
-   * Parse `mongoose.model('User', UserSchema)` / `model<T>('User', UserSchema)`.
-   */
+
+
+
   private parseModelRegistrations(content: string, out: Map<string, string>): void {
     const modelRegex = /(?:mongoose\.)?model\s*(?:<[^>]*>)?\s*\(\s*['"`](\w+)['"`]\s*,\s*(\w+)/g;
     let match: RegExpExecArray | null;
@@ -380,10 +380,10 @@ export class MongooseAnalyzer extends BaseAnalyzer {
     return varName.replace(/Schema$/, '') || varName;
   }
 
-  /**
-   * Split an object-body string into top-level `key: value` entries, respecting
-   * nested `{}`/`[]` and ignoring commas inside them.
-   */
+
+
+
+
   private splitTopLevel(body: string): string[] {
     const entries: string[] = [];
     let depth = 0;

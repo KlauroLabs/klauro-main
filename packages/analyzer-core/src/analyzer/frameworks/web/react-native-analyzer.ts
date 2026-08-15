@@ -5,23 +5,23 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * React Native / Expo framework analyzer.
- *
- * React Native screens are React components, but rendered with native
- * primitives (View/Text/ScrollView/FlatList) instead of DOM elements, and the
- * app's structure is expressed through three additional, mobile-specific
- * surfaces that the web React analyzer does not model:
- *
- *  - Expo Router file-based routes under app/**\/*.tsx (like Next.js pages).
- *  - React Navigation navigators (Stack/Tab/Drawer) plus their registered
- *    <Stack.Screen name component /> and imperative navigation.navigate('X')
- *    calls — this is the app's screen flow, the highest-value signal.
- *  - Native capability surface: imports of expo-* modules and react-native
- *    NativeModules, i.e. which device features the app touches.
- */
 
-// React Native core primitive components that mark a function as a screen/view.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const RN_PRIMITIVES = [
   'View', 'Text', 'ScrollView', 'FlatList', 'SectionList', 'SafeAreaView',
   'TouchableOpacity', 'TouchableHighlight', 'Pressable', 'Image', 'TextInput',
@@ -39,24 +39,24 @@ const NAVIGATOR_FACTORIES = [
 
 interface RNComponent {
   name: string;
-  filePath: string; // relative
+  filePath: string;
   type: 'functional' | 'class';
-  isScreen: boolean; // renders RN primitives or located under screens/
+  isScreen: boolean;
   primitivesUsed: string[];
   rendersComponents: string[];
 }
 
 interface ExpoRoute {
-  routePath: string; // e.g. /, /profile/:id
-  filePath: string; // relative
+  routePath: string;
+  filePath: string;
   kind: 'route' | 'layout';
   dynamicParams: string[];
   groups: string[];
 }
 
 interface NavigatorRegistration {
-  navigatorVar: string | null; // e.g. Stack
-  navigatorKind: string; // stack | tab | drawer | native-stack | ...
+  navigatorVar: string | null;
+  navigatorKind: string;
   screenName: string;
   componentName: string | null;
   filePath: string;
@@ -70,9 +70,9 @@ interface NavigateCall {
 }
 
 interface NativeCapability {
-  module: string; // e.g. expo-camera or NativeModules.X
+  module: string;
   filePath: string;
-  feature: string; // camera, location, ...
+  feature: string;
 }
 
 export class ReactNativeAnalyzer extends BaseAnalyzer {
@@ -91,11 +91,11 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Expo app config presence is a strong RN signal even without package.json deps resolved.
+
       const configFiles = ['app.json', 'app.config.js', 'app.config.ts', 'app.config.json'];
       for (const cfg of configFiles) {
         if (await fs.pathExists(path.join(projectPath, cfg))) {
-          // app.json is also used by other tooling; require an `expo` key OR a react-native import.
+
           if (cfg === 'app.json') {
             const parsed = await fs.readJson(path.join(projectPath, cfg)).catch(() => null);
             if (parsed && (parsed.expo || parsed.name)) {
@@ -164,8 +164,8 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     }
     const stat = await fs.stat(context.filePath);
 
-    // Per-file extraction. Expo routes are derived purely from the file path,
-    // so a single file is enough to attribute its own route/layout/screens.
+
+
     const components = this.extractComponents(content, file);
     this.emitComponents(components, context.projectPath, nodes, edges);
 
@@ -274,9 +274,9 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     return ['rn-screens', 'expo-router', 'rn-navigation', 'expo-native-modules'];
   }
 
-  // ---------------------------------------------------------------------------
-  // Component / screen detection
-  // ---------------------------------------------------------------------------
+
+
+
 
   private extractComponents(content: string, file: string): RNComponent[] {
     const components: RNComponent[] = [];
@@ -288,7 +288,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     const considerComponent = (name: string, bodyStart: number, bodyEnd: number) => {
       if (!name || !/^[A-Z]/.test(name) || seen.has(name)) return;
       const body = content.substring(bodyStart, bodyEnd);
-      // Must be a component: returns JSX.
+
       if (!(body.includes('return') && (body.includes('<') || body.includes('createElement')))) return;
 
       const primitivesUsed = RN_PRIMITIVES.filter(p =>
@@ -296,8 +296,8 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       );
       const rendersComponents = this.extractRenderedComponentNames(body);
       const isScreen = primitivesUsed.length > 0 || underScreensDir || looksLikeScreenName(name);
-      // Only count as an RN component if the file uses RN, is under screens/, or
-      // the function actually renders RN primitives. Avoids grabbing plain TS.
+
+
       if (!importsRn && !underScreensDir && primitivesUsed.length === 0) return;
 
       seen.add(name);
@@ -311,7 +311,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       });
     };
 
-    // function Foo() {...}
+
     const fnDecl = /function\s+([A-Z]\w*)\s*\([^)]*\)\s*(?::[^={]+)?\{/g;
     let m: RegExpExecArray | null;
     while ((m = fnDecl.exec(content)) !== null) {
@@ -319,7 +319,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       considerComponent(m[1], bodyStart, this.matchingBraceEnd(content, m.index + m[0].length - 1));
     }
 
-    // const Foo = (...) => {...}  OR  const Foo: React.FC = (...) => {...}
+
     const arrowDecl = /(?:const|let|var)\s+([A-Z]\w*)\s*(?::[^=]+)?=\s*(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>\s*[({]/g;
     while ((m = arrowDecl.exec(content)) !== null) {
       const after = content.substring(m.index + m[0].length - 1);
@@ -330,7 +330,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       considerComponent(m[1], bodyStart, bodyEnd);
     }
 
-    // class Foo extends React.Component / Component
+
     const classDecl = /class\s+([A-Z]\w*)\s+extends\s+(?:React\.)?(?:Pure)?Component\b/g;
     while ((m = classDecl.exec(content)) !== null) {
       const name = m[1];
@@ -357,7 +357,6 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       idByName.set(c.name, this.generateId(c.isScreen ? 'rn_screen' : 'rn_component', c.filePath, c.name));
     }
     for (const c of components) {
-      const fullPath = path.join(projectPath, c.filePath);
       const id = this.generateId(c.isScreen ? 'rn_screen' : 'rn_component', c.filePath, c.name);
       const type = c.isScreen ? 'rn-screen' : (c.type === 'class' ? 'class_component' : 'functional_component');
       const node = this.createNodeBuilder(id, c.name, type)
@@ -381,10 +380,10 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       nodes.push(node);
     }
 
-    // Component tree: a component's rendered children (rendersComponents) that
-    // resolve to a known component get a `renders` edge — the Camp-C composition
-    // fact (import/structural indexers see only the import). RN primitives
-    // (View/Text/…) aren't components, so they naturally drop out of the map.
+
+
+
+
     for (const c of components) {
       const parentId = idByName.get(c.name);
       if (!parentId) continue;
@@ -400,23 +399,23 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Expo Router (file-based routing)
-  // ---------------------------------------------------------------------------
+
+
+
 
   private deriveExpoRoute(file: string): ExpoRoute | null {
     const normalized = file.replace(/\\/g, '/');
-    // Match an `app/` dir anywhere (monorepo-safe) followed by the route file.
+
     const match = normalized.match(/(?:^|\/)app\/(.*)$/);
     if (!match) return null;
-    const rel = match[1]; // e.g. (tabs)/profile/[id].tsx, index.tsx, _layout.tsx
+    const rel = match[1];
     if (!/\.(tsx|jsx|ts|js)$/.test(rel)) return null;
 
     const segments = rel.split('/');
     const fileSeg = segments[segments.length - 1];
     const base = fileSeg.replace(/\.(tsx|jsx|ts|js)$/, '');
     const isLayout = base === '_layout';
-    // +html, +not-found etc. and api route handlers are still routes; skip private dirs.
+
     const dynamicParams: string[] = [];
     const groups: string[] = [];
 
@@ -425,7 +424,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     for (const seg of allSegs) {
       if (!seg) continue;
       const groupMatch = seg.match(/^\((.+)\)$/);
-      if (groupMatch) { groups.push(groupMatch[1]); continue; } // route groups don't appear in URL
+      if (groupMatch) { groups.push(groupMatch[1]); continue; }
       const catchAll = seg.match(/^\[\.\.\.(.+)\]$/);
       if (catchAll) { dynamicParams.push(catchAll[1]); routeSegments.push('*'); continue; }
       const dyn = seg.match(/^\[(.+)\]$/);
@@ -445,7 +444,6 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
   }
 
   private emitExpoRoute(route: ExpoRoute, projectPath: string, nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
-    const fullPath = path.join(projectPath, route.filePath);
     if (route.kind === 'layout') {
       const id = this.generateId('expo_layout', route.filePath, route.routePath || 'root');
       nodes.push(this.createNodeBuilder(id, `Layout ${route.routePath || '/'}`, 'layout')
@@ -489,14 +487,14 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  // ---------------------------------------------------------------------------
-  // React Navigation
-  // ---------------------------------------------------------------------------
+
+
+
 
   private extractNavigatorRegistrations(content: string, file: string): NavigatorRegistration[] {
     const regs: NavigatorRegistration[] = [];
 
-    // Map navigator variable -> kind from `const Stack = createStackNavigator()`.
+
     const navigatorVars = new Map<string, string>();
     const factoryPattern = new RegExp(
       `(?:const|let|var)\\s+(\\w+)\\s*=\\s*(${NAVIGATOR_FACTORIES.join('|')})\\s*\\(`,
@@ -507,7 +505,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       navigatorVars.set(fm[1], this.navigatorKind(fm[2]));
     }
 
-    // <Stack.Screen name="Home" component={HomeScreen} /> (attributes any order)
+
     const screenTag = /<(\w+)\.Screen\b([^>]*?)\/?>/g;
     let sm: RegExpExecArray | null;
     while ((sm = screenTag.exec(content)) !== null) {
@@ -528,8 +526,8 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Static config style: Stack.Navigator screens={{ Home: HomeScreen }} or
-    // createXNavigator({ Home: { screen: HomeScreen } }) — best-effort.
+
+
     const objScreen = /(\w+)\s*:\s*\{\s*screen\s*:\s*(\w+)/g;
     if (navigatorVars.size > 0) {
       let om: RegExpExecArray | null;
@@ -553,7 +551,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
   private extractNavigateCalls(content: string, file: string): NavigateCall[] {
     const calls: NavigateCall[] = [];
     const seen = new Set<string>();
-    // navigation.navigate('Home'), navigation.push('Detail'), navigation.replace('X')
+
     const navPattern = /(?:navigation|nav|props\.navigation)\s*\.\s*(?:navigate|push|replace)\s*\(\s*['"]([^'"]+)['"]/g;
     let m: RegExpExecArray | null;
     while ((m = navPattern.exec(content)) !== null) {
@@ -562,7 +560,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       seen.add(key);
       calls.push({ targetScreen: m[1], filePath: file, line: content.substring(0, m.index).split('\n').length });
     }
-    // Expo Router: router.push('/profile') / router.navigate('/x')
+
     const routerPattern = /router\s*\.\s*(?:push|replace|navigate)\s*\(\s*['"]([^'"]+)['"]/g;
     while ((m = routerPattern.exec(content)) !== null) {
       const key = `${m[1]}@${m.index}`;
@@ -581,12 +579,11 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     exitPoints: CASExitPoint[]
   ): void {
-    // Index of screen-name -> registration node id, so navigate() edges can
-    // target the registered screen.
+
+
     const screenNodeByName = new Map<string, string>();
 
     for (const reg of registrations) {
-      const fullPath = path.join(projectPath, reg.filePath);
       const id = this.generateId('nav_screen', reg.filePath, `${reg.navigatorKind}_${reg.screenName}`);
       screenNodeByName.set(reg.screenName, id);
       nodes.push(this.createNodeBuilder(id, reg.screenName, 'navigation-screen')
@@ -606,12 +603,12 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
         })
         .build());
 
-      // Edge: registered screen -> the component it renders (if resolvable in this run).
+
       if (reg.componentName) {
         const screenComponentId = this.generateId('rn_screen', reg.filePath, reg.componentName);
         const componentId = this.generateId('rn_component', reg.filePath, reg.componentName);
-        // Prefer linking to a screen-typed node, fall back to component id; both
-        // ids are deterministic so the graph stitches them if those nodes exist.
+
+
         edges.push(this.createEdge(
           this.generateEdgeId(id, screenComponentId, 'renders'),
           id, screenComponentId, 'renders', 'navigation',
@@ -620,10 +617,9 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // navigate('X') -> screen X. Source is a per-file navigation node.
+
     const seenEdge = new Set<string>();
     for (const call of navigateCalls) {
-      const fullPath = path.join(projectPath, call.filePath);
       const sourceId = this.ensureNavigationSourceNode(call.filePath, nodes);
       const targetId = screenNodeByName.get(call.targetScreen);
 
@@ -637,8 +633,8 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
           ));
         }
       } else {
-        // Unresolved (e.g. Expo Router path or screen registered elsewhere):
-        // record as a navigation exit point so the flow is still visible.
+
+
         const exitId = `exit_rn_nav_${this.sanitizeId(call.filePath)}_${this.sanitizeId(call.targetScreen)}`;
         if (!seenEdge.has(exitId)) {
           seenEdge.add(exitId);
@@ -674,15 +670,15 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     return 'stack';
   }
 
-  // ---------------------------------------------------------------------------
-  // Native modules / Expo APIs
-  // ---------------------------------------------------------------------------
+
+
+
 
   private extractNativeCapabilities(content: string, file: string): NativeCapability[] {
     const caps: NativeCapability[] = [];
     const seen = new Set<string>();
 
-    // expo-* module imports (expo-camera, expo-location, etc.)
+
     const expoImport = /from\s+['"](expo-[\w-]+)['"]/g;
     let m: RegExpExecArray | null;
     while ((m = expoImport.exec(content)) !== null) {
@@ -691,10 +687,10 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       caps.push({ module: m[1], filePath: file, feature: m[1].replace(/^expo-/, '') });
     }
 
-    // expo named API surfaces: import { Camera } from 'expo-camera' already covered;
-    // also `import * as Location from 'expo-location'` covered by the same regex.
 
-    // NativeModules.X usage
+
+
+
     const nativeModule = /NativeModules\.(\w+)/g;
     while ((m = nativeModule.exec(content)) !== null) {
       const mod = `NativeModules.${m[1]}`;
@@ -708,7 +704,6 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
 
   private emitNativeCapabilities(caps: NativeCapability[], projectPath: string, nodes: CASNode[]): void {
     for (const cap of caps) {
-      const fullPath = path.join(projectPath, cap.filePath);
       const id = this.generateId('rn_native_capability', cap.filePath, cap.module);
       nodes.push(this.createNodeBuilder(id, cap.module, 'native-capability')
         .withLevel(3, 'code')
@@ -721,9 +716,9 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Perspectives
-  // ---------------------------------------------------------------------------
+
+
+
 
   private createPerspectives(perspectives: CASPerspective[]): void {
     perspectives.push({
@@ -789,9 +784,9 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   private async readTextFileIfExists(filePath: string): Promise<string | null> {
     try {
@@ -829,7 +824,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     return exports;
   }
 
-  /** Returns index just past the matching `}` for the `{` at or after startIdx. */
+
   private matchingBraceEnd(content: string, startIdx: number): number {
     let i = content.indexOf('{', startIdx);
     if (i === -1) return content.length;
@@ -842,7 +837,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     return content.length;
   }
 
-  /** Returns index just past the matching `)` for the `(` at or after startIdx. */
+
   private matchingParenEnd(content: string, startIdx: number): number {
     let i = content.indexOf('(', startIdx);
     if (i === -1) return Math.min(content.length, startIdx + 2000);

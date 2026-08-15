@@ -2,19 +2,17 @@ import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
   CASCategories, CASPerspective, CASDocumentation, CASComment,
-  CASTodo, CASImplementationStatus, CASCallGraph, FileAnalysisResult
+  CASTodo, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError, isNativeAddonUnavailableError } from '../core/errors';
-import { EnhancedCallGraphExtractor, ExtractedFunction } from '../enhanced-call-graph-extractor';
+import { ExtractedFunction } from '../enhanced-call-graph-extractor';
 import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass, TSDecoratorDetail, UNRESOLVED_RECEIVER } from '../core/tree-sitter-ts-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { TSESTree } from '@typescript-eslint/typescript-estree';
-import { cachedEstreeParse as parse } from '../core/estree-parse-cache';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
 import { dropEdgesReferencingRemovedEndpoints } from '../core/graph-referential-integrity';
-import * as crypto from 'crypto';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import {
@@ -22,79 +20,10 @@ import {
   writeTreeSitterExtractionCache,
 } from '../core/tree-sitter-ts-extraction-cache';
 
-const BUILTIN_NOT_EXIT_POINTS = new Set([
-  'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
-  'Date', 'RegExp', 'Promise', 'Buffer', 'console', 'process',
-  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'Map', 'Set',
-  'WeakMap', 'WeakSet', 'Symbol', 'Proxy', 'Reflect', 'Intl',
-  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURI',
-  'decodeURI', 'encodeURIComponent', 'decodeURIComponent', 'setTimeout',
-  'setInterval', 'clearTimeout', 'clearInterval', 'setImmediate',
-  'clearImmediate', 'queueMicrotask', 'atob', 'btoa', 'fetch',
-  'require', 'module', 'exports', '__dirname', '__filename'
-]);
-
 interface ParsedAST {
   ast: TSESTree.Program;
   content: string;
   filePath: string;
-}
-
-interface FunctionInfo {
-  name: string;
-  type: 'function' | 'method' | 'arrow' | 'async' | 'constructor';
-  parameters: Array<{ name: string; type?: string; optional: boolean; description?: string }>;
-  returnType?: string;
-  lineStart: number;
-  lineEnd: number;
-  isExported: boolean;
-  isAsync: boolean;
-  isGenerator?: boolean;
-  documentation?: CASDocumentation;
-  comments?: CASComment[];
-  todos?: CASTodo[];
-  implementationStatus?: CASImplementationStatus;
-  callGraph?: CASCallGraph;
-  decorators?: Array<{ name: string; arguments?: any[] }>;
-}
-
-interface ClassInfo {
-  name: string;
-  extends?: string;
-  implements: string[];
-  methods: FunctionInfo[];
-  properties: Array<{
-    name: string;
-    type?: string;
-    isStatic: boolean;
-    isPrivate: boolean;
-    documentation?: CASDocumentation;
-    decorators?: Array<{ name: string; arguments?: any[] }>;
-    lineStart: number;
-    lineEnd: number;
-  }>;
-  lineStart: number;
-  lineEnd: number;
-  isExported: boolean;
-  isAbstract: boolean;
-  documentation?: CASDocumentation;
-  decorators?: Array<{ name: string; arguments?: any[] }>;
-  comments?: CASComment[];
-}
-
-interface ImportInfo {
-  source: string;
-  specifiers: Array<{ name: string; imported?: string }>;
-  line: number;
-}
-
-interface VariableInfo {
-  name: string;
-  type?: string;
-  value?: any;
-  kind: 'const' | 'let' | 'var';
-  line: number;
-  isExported: boolean;
 }
 
 const PARALLEL_BATCH_SIZE = 100;
@@ -103,28 +32,15 @@ const MAX_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
 export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
   private isTypeScriptProject = false;
-  private callGraphExtractor!: EnhancedCallGraphExtractor;
   private tsExtractor = new TreeSitterTSExtractor();
   private importSourceMap = new Map<string, string>();
-  /** local import name -> original exported name, for `import { Account as Acct }`
-   *  so a receiver typed `Acct` resolves to the class `Account`. */
+
   private importAliasMap = new Map<string, string>();
-  /**
-   * Per-consumer-file import index: consumerFile -> (localName -> resolvedModuleFile).
-   * Unlike the global {@link importSourceMap} (last-writer-wins, name-only), this
-   * preserves *which module each specific file imported a name from*, so
-   * cross-file reference resolution can disambiguate same-named declarations by
-   * their import SOURCE instead of arbitrary insertion order. resolvedModuleFile
-   * is a project-relative path (matching CASNode.source.file) for local imports,
-   * or the raw bare specifier for package imports. Built in buildNodeIndexes.
-   */
+
   private importsByConsumerFile = new Map<string, Map<string, string>>();
-  /** Project root captured at analyze() start, so buildNodeIndexes can resolve
-   *  import specifiers to project-relative module files. */
+
   private currentProjectPath = '';
-  /** `isCollection` records that the DECLARED annotation named an in-memory
-   *  collection (`RowModel[]`), which the stored base type name no longer shows —
-   *  the distinction between a store handle and a list of already-loaded rows. */
+
   private classFieldTypes = new Map<string, { typeName: string; library?: string; source?: 'ctor' | 'field'; isCollection?: boolean }>();
   private repositoryPropertyTypes = new Map<string, string>();
   private prismaModelNames = new Map<string, string>();
@@ -157,10 +73,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
   }
 
-  supportsIncrementalAnalysis(): boolean {
-    return true;
-  }
-
+  supportsIncrementalAnalysis(): boolean { return true; }
+  incrementalContributionScope(): 'project' { return 'project'; }
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
       cwd: projectPath,
@@ -171,7 +85,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
-    const { filePath, relativePath, projectPath } = context;
+    const { filePath, relativePath } = context;
     const content = await fs.readFile(filePath, 'utf-8');
     const contentHash = context.contentHash || this.computeContentHash(content);
     const stat = await fs.stat(filePath);
@@ -217,14 +131,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         exitPoints,
         relativePath
       );
+      this.enrichNodesWithCallData(nodes, edges);
       this.applyTestSourceBoundary(nodes, entryPoints, exitPoints, edges);
+      this.tagNodesWithPerspectives(nodes, edges);
 
     } catch (error) {
-      // A native-addon load failure is process-wide, not specific to this
-      // file — swallowing it here would silently return an empty (but
-      // structurally valid) result for every incrementally-analyzed file for
-      // the rest of the process's life. Rethrow so the caller sees a real
-      // failure instead of a quiet empty diff.
+
       if (isNativeAddonUnavailableError(error)) throw error;
       console.warn(`Failed to analyze ${relativePath} incrementally:`, error);
     }
@@ -241,60 +153,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       imports,
       exports
     );
-  }
-
-  private extractImportsForSingleFile(
-    ast: TSESTree.Program,
-    filePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    exitPoints: CASExitPoint[],
-    imports: string[],
-    projectPath: string
-  ): void {
-    ast.body.forEach((node, index) => {
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'ImportDeclaration' && node.source.type === 'Literal') {
-        const importSource = node.source.value as string;
-        const importId = `import_${filePath}_${index}`;
-
-        const specifiers = this.getImportSpecifiers(node);
-        specifiers.forEach((spec: { name: string; imported: string }) => {
-          this.importSourceMap.set(spec.name, importSource);
-          if (spec.imported && spec.imported !== spec.name &&
-              spec.imported !== 'default' && spec.imported !== '*') {
-            this.importAliasMap.set(spec.name, spec.imported);
-          }
-        });
-
-        nodes.push(this.createNode(
-          importId,
-          `import ${importSource}`,
-          'import',
-          3,
-          filePath,
-          node.loc?.start.line,
-          node.loc?.end.line,
-          { source: importSource, specifiers }
-        ));
-
-        const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-        edges.push(this.createEdge(
-          `${fileId}_to_${importId}`,
-          fileId,
-          importId,
-          'imports'
-        ));
-
-        if (importSource.startsWith('.') || importSource.startsWith('/')) {
-          const resolvedPath = this.resolveImportPath(importSource, filePath, projectPath);
-          if (resolvedPath) {
-            imports.push(resolvedPath);
-          }
-        }
-      }
-    });
   }
 
   private resolveImportPath(importSource: string, currentFile: string, projectPath: string): string | null {
@@ -327,59 +185,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return relativePath;
   }
 
-  private extractExportsForSingleFile(
-    ast: TSESTree.Program,
-    filePath: string,
-    exports: string[]
-  ): void {
-    ast.body.forEach((node) => {
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'ExportNamedDeclaration') {
-        if (node.declaration) {
-          if (node.declaration.type === 'FunctionDeclaration' && node.declaration.id) {
-            exports.push(node.declaration.id.name);
-          } else if (node.declaration.type === 'ClassDeclaration' && node.declaration.id) {
-            exports.push(node.declaration.id.name);
-          } else if (node.declaration.type === 'VariableDeclaration') {
-            node.declaration.declarations.forEach((decl: any) => {
-              if (decl.id?.type === 'Identifier') {
-                exports.push(decl.id.name);
-              }
-            });
-          } else if (node.declaration.type === 'TSInterfaceDeclaration' && (node.declaration as any).id) {
-            exports.push((node.declaration as any).id.name);
-          } else if (node.declaration.type === 'TSTypeAliasDeclaration' && (node.declaration as any).id) {
-            exports.push((node.declaration as any).id.name);
-          } else if (node.declaration.type === 'TSEnumDeclaration' && (node.declaration as any).id) {
-            exports.push((node.declaration as any).id.name);
-          }
-        }
-        if (node.specifiers) {
-          node.specifiers.forEach((spec: any) => {
-            if (spec.exported?.name) {
-              exports.push(spec.exported.name);
-            } else if (spec.local?.name) {
-              exports.push(spec.local.name);
-            }
-          });
-        }
-      } else if (node.type === 'ExportDefaultDeclaration') {
-        if (node.declaration?.type === 'Identifier') {
-          exports.push(node.declaration.name);
-        } else if (node.declaration?.type === 'FunctionDeclaration' && node.declaration.id) {
-          exports.push(node.declaration.id.name);
-        } else if (node.declaration?.type === 'ClassDeclaration' && node.declaration.id) {
-          exports.push(node.declaration.id.name);
-        } else {
-          exports.push('default');
-        }
-      } else if (node.type === 'ExportAllDeclaration') {
-        exports.push('*');
-      }
-    });
-  }
-
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -401,8 +206,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     try {
       const tsTimings: Record<string, number> = {};
       let tsStart = Date.now();
-
-      this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
       const sourceFiles = this.capAndPrioritizeSourceFiles((await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
@@ -435,9 +238,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       tsStart = Date.now();
       this.resetProcessTimings();
-      // Budget-yield in the whale-scaling post-parse passes below: on a 2.7k-file
-      // repo the phase1/phase2/call-graph stretch was a measured >2s contiguous
-      // event-loop stall at the end of this analyzer. Order/results unchanged.
+
       const maybeYieldTail = createYieldBudget();
       const deferredCallGraphData: Array<{ extractedFunctions: any[]; relativePath: string }> = [];
       for (const { relativePath, fullPath, content, extraction } of preloadedFiles) {
@@ -456,9 +257,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.callTargetResolutionCache.clear();
       tsTimings['buildIndexes'] = Date.now() - tsStart;
 
-      // Build the import-alias map (local name -> original export) from the
-      // emitted import nodes, so typed-receiver resolution can map `x: Acct`
-      // (import { Account as Acct }) back to the class Account.
       for (const n of nodes) {
         if (n.type !== 'import') continue;
         const specs = (n.metadata as any)?.specifiers;
@@ -497,7 +295,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       tsTimings['categorize'] = Date.now() - tsStart;
 
       if (process.env.KLAURO_DEBUG_TS_ANALYZER_TIMINGS === '1') {
-        console.error(`[Klauro] TypeScript/JavaScript analyzer completed for ${context.projectPath}:`, JSON.stringify({
+        console.log(`[Klauro] TypeScript/JavaScript analyzer completed for ${context.projectPath}:`, JSON.stringify({
           ...tsTimings,
           ...this.getProcessTimings(),
           filesAnalyzed: sourceFiles.length,
@@ -537,13 +335,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < sourceFiles.length; i += PARALLEL_BATCH_SIZE) {
       const batch = sourceFiles.slice(i, i + PARALLEL_BATCH_SIZE);
 
-      // I/O (stat + read) stays concurrent, but the synchronous tree-sitter
-      // extraction is pulled OUT of the concurrent map into the sequential
-      // loop below so it can yield the event loop every few files. When reads
-      // resolve from the analyzer file-read cache there is no real I/O between
-      // parses, so without the explicit yield a whole batch parses in ONE
-      // macrotask (measured ~2.9s block on a 204-file repo) and every pending
-      // HTTP request — including /health — stalls for the duration.
       const loadedBatch = await Promise.all(
         batch.map(async (file) => {
           const fullPath = path.join(projectPath, file);
@@ -605,23 +396,14 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const extraction = extractions[i];
       if (!extraction) continue;
       if (extraction instanceof Error) {
-        // A worker thread crosses postMessage as a plain string, losing the
-        // NativeAddonUnavailableError class identity — isNativeAddonUnavailableError
-        // recognizes the embedded marker instead. This is the ONLY point in the
-        // worker path where that failure would otherwise be downgraded to a
-        // silently-continuing per-file warning (extractTreeSitterFilesSequentially's
-        // own rethrow only covers the non-worker path).
+
         if (isNativeAddonUnavailableError(extraction)) throw extraction;
         this.addAnalysisWarning(`${loaded.relativePath} could not be parsed: ${extraction.message}`);
         continue;
       }
       if (extraction.hasSyntaxErrors) {
         const locations = extraction.syntaxErrorLocations || [];
-        // Split into KNOWN parser limitations (valid source our grammar
-        // can't yet handle — never phrase these as the user's code being
-        // broken) vs. everything else (genuinely unrecognized constructs,
-        // worded as a possibility, not a verdict, since a single tree-sitter
-        // ERROR node is not proof the source itself is invalid).
+
         const known = locations.filter(l => l.knownLimitation);
         const unknown = locations.filter(l => !l.knownLimitation);
         if (known.length > 0) {
@@ -655,13 +437,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       try {
         extracted.push(this.tsExtractor.extractFromSource(file.content, file.fullPath));
       } catch (error) {
-        // A native-addon load failure means every remaining file in this
-        // batch (and every other TS/JS file in the analysis) will fail
-        // identically. Converting it into a per-file Error here — like a
-        // genuine one-off parse failure — would let the caller quietly
-        // downgrade it to a per-file warning and report a structurally valid
-        // zero-node result. Rethrow so it propagates as a hard analyzer
-        // failure instead.
+
         if (isNativeAddonUnavailableError(error)) throw error;
         extracted.push(error instanceof Error ? error : new Error(String(error)));
       }
@@ -732,129 +508,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  private async preloadFilesInParallel(
-    sourceFiles: string[],
-    projectPath: string
-  ): Promise<Array<{ relativePath: string; fullPath: string; content: string; ast: TSESTree.Program }>> {
-    const results: Array<{ relativePath: string; fullPath: string; content: string; ast: TSESTree.Program }> = [];
-
-    for (let i = 0; i < sourceFiles.length; i += PARALLEL_BATCH_SIZE) {
-      const batch = sourceFiles.slice(i, i + PARALLEL_BATCH_SIZE);
-
-      // Same event-loop-yield restructure as preloadFilesWithTreeSitter:
-      // concurrent I/O, then sequential synchronous estree parsing with a
-      // yield every few files so the in-process HTTP server stays responsive.
-      const loadedBatch = await Promise.all(
-        batch.map(async (file) => {
-          const fullPath = path.join(projectPath, file);
-          try {
-            const stat = await fs.stat(fullPath);
-            if (!stat.isFile()) return null;
-            const content = await fs.readFile(fullPath, 'utf-8');
-            return { relativePath: file, fullPath, content };
-          } catch (error) {
-            console.warn(`Failed to parse ${file}:`, error);
-            return null;
-          }
-        })
-      );
-
-      const maybeYield = createYieldBudget();
-      for (const loaded of loadedBatch) {
-        if (loaded === null) continue;
-        try {
-          const jsx = this.shouldParseJsx(loaded.relativePath, loaded.content);
-          const ast = parse(loaded.content, {
-            loc: true,
-            range: false,
-            jsx,
-            comment: true,
-            tokens: false,
-            useJSXTextNode: jsx,
-            ecmaFeatures: { jsx },
-            sourceType: 'module'
-          });
-          results.push({ ...loaded, ast });
-        } catch (error) {
-          console.warn(`Failed to parse ${loaded.relativePath}:`, error);
-        }
-        await maybeYield();
-      }
-      await yieldToEventLoop();
-    }
-
-    return results;
-  }
-
   private processTimings: Record<string, number> = {};
-
-  private processPreloadedFilePhase1(
-    relativePath: string,
-    fullPath: string,
-    content: string,
-    ast: TSESTree.Program,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[]
-  ): any[] {
-    try {
-      this.astCache.set(relativePath, { ast, content, filePath: fullPath });
-
-      const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const lines = content.split('\n');
-      const fileComments = this.extractCommentsFromFile(content, relativePath);
-      const fileTodos = this.extractTodosFromComments(fileComments, relativePath);
-
-      nodes.push(this.createNode(
-        fileId,
-        path.basename(relativePath),
-        'file',
-        1,
-        relativePath,
-        1,
-        lines.length,
-        {
-          relativePath,
-          extension: path.extname(relativePath),
-          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
-          commentCount: fileComments.length,
-          todoCount: fileTodos.length,
-          comments: fileComments.length > 0 ? fileComments : undefined,
-          todos: fileTodos.length > 0 ? fileTodos : undefined
-        }
-      ));
-
-      let t = Date.now();
-      this.extractImports(ast, relativePath, nodes, edges, exitPoints);
-      this.processTimings['extractImports'] = (this.processTimings['extractImports'] || 0) + (Date.now() - t);
-
-      t = Date.now();
-      this.extractFunctions(ast, relativePath, nodes, edges, entryPoints, content, lines);
-      this.processTimings['extractFunctions'] = (this.processTimings['extractFunctions'] || 0) + (Date.now() - t);
-
-      t = Date.now();
-      this.extractClasses(ast, relativePath, nodes, edges, content, lines);
-      this.processTimings['extractClasses'] = (this.processTimings['extractClasses'] || 0) + (Date.now() - t);
-
-      t = Date.now();
-      this.extractVariables(ast, relativePath, nodes, edges, content);
-      this.processTimings['extractVariables'] = (this.processTimings['extractVariables'] || 0) + (Date.now() - t);
-
-      t = Date.now();
-      this.extractExports(ast, relativePath, entryPoints);
-      this.processTimings['extractExports'] = (this.processTimings['extractExports'] || 0) + (Date.now() - t);
-
-      t = Date.now();
-      const { functions: extractedFunctions } = this.callGraphExtractor.extractFromAST(ast, fullPath);
-      this.processTimings['extractFromAST'] = (this.processTimings['extractFromAST'] || 0) + (Date.now() - t);
-
-      return extractedFunctions;
-    } catch (error) {
-      console.warn(`Failed to process ${relativePath}:`, error);
-      return [];
-    }
-  }
 
   private processTreeSitterExtraction(
     relativePath: string,
@@ -870,10 +524,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const lineCount = this.sourceLineCount(content);
 
-      // TODO/FIXME markers: scan file content directly. Tree-sitter comment
-      // extraction is sparse (misses most line comments), so deriving todos only
-      // from extraction.comments lost nearly all of them. A direct line scan is
-      // robust and language-agnostic for the common comment styles.
       const fileTodos: CASTodo[] = [];
       const TODO_RE = /(?:\/\/+|\/\*+|^\s*\*|#|<!--)\s*(TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b\s*:?\s*(.*?)(?:\s*\*\/|\s*-->)?\s*$/i;
       if (/\b(?:TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b/i.test(content)) {
@@ -883,8 +533,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           if (!m) continue;
           const todoType = m[1].toUpperCase() as CASTodo['type'];
           fileTodos.push({
-            // Stable order-independent id: the line scan emits at most one todo
-            // per source line, so file+line identifies it.
+
             id: `todo_${relativePath}_${i + 1}`,
             type: todoType,
             text: (m[2] || '').trim() || lines[i].trim(),
@@ -893,11 +542,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           });
         }
       }
-      // Comments in the canonical CASComment shape (text/location/purpose), not the
-      // ad-hoc {content,line,file} shape the readers don't understand.
+
       const fileComments: CASComment[] = extraction.comments.map((c, ci) => ({
-        // Stable order-independent id: ci is the comment's position within this
-        // file's (deterministic) extraction order — a file+position fact.
+
         id: `comment_${relativePath}_${ci + 1}`,
         type: (c.type === 'block' ? 'block' : c.type === 'jsdoc' ? 'docstring' : 'single-line') as CASComment['type'],
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
@@ -906,8 +553,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         location: { file: relativePath, line: c.line },
       }));
 
-      // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
-      // where get_comments / get_todos / the todos summary read them.
       const fileNode = this.createNode(
         fileId,
         path.basename(relativePath),
@@ -961,10 +606,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const lines = content.split('\n');
 
-      // TODO/FIXME markers: scan file content directly. Tree-sitter comment
-      // extraction is sparse (misses most line comments), so deriving todos only
-      // from extraction.comments lost nearly all of them. A direct line scan is
-      // robust and language-agnostic for the common comment styles.
       const fileTodos: CASTodo[] = [];
       const TODO_RE = /(?:\/\/+|\/\*+|^\s*\*|#|<!--)\s*(TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b\s*:?\s*(.*?)(?:\s*\*\/|\s*-->)?\s*$/i;
       for (let i = 0; i < lines.length; i++) {
@@ -972,8 +613,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         if (!m) continue;
         const todoType = m[1].toUpperCase() as CASTodo['type'];
         fileTodos.push({
-          // Stable order-independent id: the line scan emits at most one todo
-          // per source line, so file+line identifies it.
+
           id: `todo_${relativePath}_${i + 1}`,
           type: todoType,
           text: (m[2] || '').trim() || lines[i].trim(),
@@ -981,11 +621,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           location: { file: relativePath, line: i + 1 },
         });
       }
-      // Comments in the canonical CASComment shape (text/location/purpose), not the
-      // ad-hoc {content,line,file} shape the readers don't understand.
+
       const fileComments: CASComment[] = extraction.comments.map((c, ci) => ({
-        // Stable order-independent id: ci is the comment's position within this
-        // file's (deterministic) extraction order — a file+position fact.
+
         id: `comment_${relativePath}_${ci + 1}`,
         type: (c.type === 'block' ? 'block' : c.type === 'jsdoc' ? 'docstring' : 'single-line') as CASComment['type'],
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
@@ -994,8 +632,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         location: { file: relativePath, line: c.line },
       }));
 
-      // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
-      // where get_comments / get_todos / the todos summary read them.
       const fileNode = this.createNode(
         fileId,
         path.basename(relativePath),
@@ -1093,82 +729,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     localNodes: CASNode[],
     resolutionNodes: CASNode[],
     edges: CASEdge[],
-    _entryPoints: CASEntryPoint[],
-    _exitPoints: CASExitPoint[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
     filePath: string
   ): void {
-    for (const func of extractedFunctions) {
-      for (const call of func.calls) {
-        if (call.targetType === 'method' || call.targetType === 'function') {
-          const sourceNodeId = this.findFunctionNodeId(localNodes, func.name, func.className, filePath);
-          const targetNodeId = this.findTargetNodeId(resolutionNodes, call.target);
-
-          if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
-            edges.push({
-              id: `call_${sourceNodeId}_${targetNodeId}_${call.line}`,
-              source: sourceNodeId,
-              target: targetNodeId,
-              type: 'calls',
-              metadata: {
-                attributes: {
-                  call_type: call.targetType,
-                  is_async: call.isAsync,
-                  is_conditional: call.isConditional,
-                  is_in_loop: call.isInLoop,
-                  line: call.line
-                }
-              }
-            });
-          }
-        }
-      }
-    }
-  }
-
-  private findFunctionNodeId(nodes: CASNode[], funcName: string, className: string | undefined, filePath: string): string | undefined {
-    for (const node of nodes) {
-      if (className) {
-        if (node.type === 'method' && node.name === funcName && node.parent?.includes(className)) {
-          return node.id;
-        }
-      } else {
-        if (node.type === 'function' && node.name === funcName && node.source?.file === filePath) {
-          return node.id;
-        }
-      }
-    }
-    return undefined;
-  }
-
-  private findTargetNodeId(nodes: CASNode[], target: string): string | undefined {
-    const parts = target.split('.');
-    const methodName = parts.pop();
-    if (!methodName) return undefined;
-
-    for (const node of nodes) {
-      if (node.name === methodName && (node.type === 'function' || node.type === 'method')) {
-        return node.id;
-      }
-    }
-    return undefined;
-  }
-
-  private commentToTodo(comment: { type: string; text: string; line: number }, filePath: string): CASTodo {
-    const match = comment.text.match(/\b(TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b:?\s*(.*)/i);
-    const todoType = (match?.[1]?.toUpperCase() || 'TODO') as CASTodo['type'];
-    const text = match?.[2] || comment.text;
-
-    return {
-      // Stable order-independent id derived from file+line facts.
-      id: `todo_${filePath}_${comment.line}`,
-      type: todoType,
-      text: text.trim(),
-      priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
-      location: {
-        file: filePath,
-        line: comment.line
-      }
-    };
+    this.buildNodeIndexes(resolutionNodes);
+    this.callEdgeIds = new Set(edges.map(edge => edge.id));
+    this.exitPointIds = new Set(exitPoints.map(exitPoint => exitPoint.id));
+    this.callTargetResolutionCache.clear();
+    this.integrateEnhancedCallGraphDataIndexed(
+      extractedFunctions,
+      localNodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      filePath
+    );
   }
 
   private processTreeSitterImports(
@@ -1211,16 +787,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Merge the two evidence sources for `signature.throws` into a deduped `string[]`
-   * of error TYPE names:
-   *   1. JSDoc `@throws {FooError}` / `@exception` — surfaced via `documentation.throws[].type`
-   *      (reusing the already-parsed JSDoc; we do NOT re-parse).
-   *   2. Actual `throw new Foo()` / `throw Foo()` statements lifted by the tree-sitter
-   *      extractor into `func.throws`.
-   * Returns undefined when neither source yields a type, so `signature.throws` stays
-   * absent rather than an empty array (matches the evidence-gated contract).
-   */
   private buildSignatureThrows(
     extracted: string[] | undefined,
     documentation?: CASDocumentation
@@ -1258,8 +824,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     ];
 
     standaloneFunctions.forEach((func, index) => {
-      // Anonymous callback carriers (e.g. module-scope route handlers) exist only
-      // to attribute their outbound calls; they get no graph node of their own.
+
       if ((func as any).isAnonymousCallback) return;
 
       const funcId = `function_${filePath}_${func.name}_${index}`;
@@ -1341,16 +906,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           return param.type!;
         });
 
-      // Field-style DI (Angular/modern-TS pattern with no constructor at all):
-      // `private svc: FooService;` (typed field, base-class-injected or set
-      // elsewhere) and `private readonly svc = inject(FooService);` (Angular's
-      // `inject()` function, which tree-sitter sees only as a plain call
-      // expression — there is no type annotation to read, so the injected
-      // type name is recovered from the call argument itself). Constructor
-      // evidence always wins when both exist for the same field name (skip via
-      // `has`), and this is tagged `source: 'field'` so ambiguous resolution
-      // (see resolveDiFieldCall) applies the stricter no-constructor-evidence
-      // policy instead of the constructor-injection fan-out.
       cls.properties.forEach(prop => {
         const key = `${cls.name}.${prop.name}`;
         if (this.classFieldTypes.has(key)) return;
@@ -1363,9 +918,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         if (!typeName) return;
         const library = this.getLibraryForType(typeName);
         this.classFieldTypes.set(key, { typeName, library, source: 'field', isCollection: this.isInMemoryCollectionType(rawType) });
-        // The RAW annotation decides store-handle-ness, not the base name: the
-        // base name of `RowModel[]` is `RowModel`, which reads as a store handle
-        // while the field is an array of already-loaded rows.
+
         if (!this.isInMemoryCollectionType(rawType) && this.isRepositoryLikeType(typeName)) {
           this.repositoryPropertyTypes.set(prop.name, typeName);
         }
@@ -1500,11 +1053,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         {
           type: variable.type,
           kind: variable.kind,
-          // Contract field name is `is_exported` (CASNode), the same key the
-          // function/class paths above emit and the only one consumers read
-          // (orchestrator export_type + buildLibraryPublicApiEntryPoints).
-          // This path emitted camelCase `isExported`, which nothing read, so
-          // exported top-level consts were invisible as public API.
+
           is_exported: variable.isExported,
           value: variable.value?.substring(0, 100)
         }
@@ -1531,16 +1080,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * The extractor's structured decorator args (`decoratorArgs`) narrowed to only the
-   * decorators that actually carried statically-evaluable arguments, for stashing on
-   * `metadata.attributes.decoratorArgs`. Kept SEPARATE from `attributes.decorators`
-   * (the bare-name string list every existing consumer reads) — this is purely
-   * additive plumbing so buildAllDecorators can lift real args into
-   * CASDecorator.parameters for custom/unrecognized decorators, not just framework
-   * ones. Returns undefined when nothing carried args, so the attribute stays absent
-   * on the common (no-argument) case rather than adding empty noise to every node.
-   */
   private decoratorArgsAttribute(decoratorArgs?: TSDecoratorDetail[]): TSDecoratorDetail[] | undefined {
     const withArgs = (decoratorArgs || []).filter(d => d.args.length > 0);
     return withArgs.length > 0 ? withArgs : undefined;
@@ -1610,14 +1149,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Record which module each consumer file imported each local name from, so
-   * cross-file reference resolution can prefer the declaration in the imported
-   * module over an arbitrary same-named declaration elsewhere. Reuses the same
-   * {@link resolveImportPath} machinery the analyzer already uses to resolve
-   * import specifiers to project-relative files, keeping this source-aware map in
-   * lockstep with how declaration nodes are keyed (CASNode.source.file).
-   */
   private indexImportNode(node: CASNode): void {
     const consumerFile = node.source?.file;
     if (!consumerFile) return;
@@ -1626,10 +1157,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const specifiers = meta?.specifiers;
     if (!importSource || !Array.isArray(specifiers) || specifiers.length === 0) return;
 
-    // Resolve relative/absolute imports to a project-relative module file so it
-    // can be matched against candidate declarations' source.file. Bare package
-    // specifiers stay as-is (they never match a local declaration file, so they
-    // simply won't bias resolution — the unambiguous/sorted path still applies).
     let resolvedModule = importSource;
     if (importSource.startsWith('.') || importSource.startsWith('/')) {
       const absConsumer = path.isAbsolute(consumerFile)
@@ -1649,23 +1176,14 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Deterministically pick one node from same-named candidates, preferring the
-   * declaration that lives in the module the consumer imported the name FROM.
-   * Import-source-aware first (evidence: the import edge already names the
-   * module); then a stable tiebreak over sorted candidates (never insertion
-   * order), so the result is byte-identical run-to-run.
-   */
   private selectDeclarationCandidate(
     candidates: CASNode[],
     targetName: string,
     sourceFile?: string
   ): CASNode {
-    // Common path: exactly one declaration — no ambiguity, no cost.
+
     if (candidates.length === 1) return candidates[0];
 
-    // Import-source-aware disambiguation: if the consumer imported this name from
-    // a specific module, prefer the candidate declared in that module's file.
     if (sourceFile) {
       const resolvedModule = this.importsByConsumerFile.get(sourceFile)?.get(targetName);
       if (resolvedModule) {
@@ -1676,13 +1194,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Still ambiguous: deterministic stable selection over SORTED candidates,
-    // never candidates[0] on unsorted insertion order.
     return [...candidates].sort(this.compareNodesStable)[0];
   }
 
-  /** Stable total order for tie-breaking candidate declarations: by source file,
-   *  then line, then node id — all deterministic, insertion-order-independent. */
   private compareNodesStable = (a: CASNode, b: CASNode): number => {
     const fileA = a.source?.file ?? '';
     const fileB = b.source?.file ?? '';
@@ -1722,19 +1236,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       lower.includes('knex');
   }
 
-  /**
-   * A declared type naming an IN-MEMORY collection of values rather than a
-   * handle that can reach a store: `Thing[]`, `readonly Thing[]`,
-   * `Array<Thing>`, `Set<Thing>`, `Record<string, Thing>`.
-   *
-   * Why this is load-bearing: the repository-like test matches the substring
-   * `model`, and the base-type helper strips `[]` before that test runs, so a
-   * plain `RowModel[]` field registered as a repository handle. Every
-   * `Array.prototype` call on it then read as store access — the measured
-   * `Array.find()`-as-database-write shape. A collection of rows already IN
-   * memory is the OPPOSITE of evidence for a round trip to a store: the rows
-   * are here precisely because something already fetched them.
-   */
   private isInMemoryCollectionType(rawType?: string): boolean {
     if (!rawType) return false;
     const type = rawType.trim();
@@ -1744,15 +1245,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private findNodeIdByNameIndexed(targetName: string, sourceFile?: string, sourceClassName?: string): string | undefined {
-    // A `this.method()` call resolves to a method on the CALLER's own class, so it
-    // cannot be cached by target name alone (the same "this.x" means different
-    // methods in different classes). Cache only receiver-free / cross-object names.
-    //
-    // A bare name with MULTIPLE same-named declarations is also caller-relative:
-    // resolution now depends on which module the caller's file imported it from
-    // (import-source-aware disambiguation), so the same name can resolve to
-    // different nodes in different files. Key those by sourceFile too, otherwise
-    // the first caller's answer would be wrongly reused for every other file.
+
     const isThisCall = targetName.startsWith('this.') || targetName.startsWith('self.');
     const isAmbiguousBareName = !isThisCall && (this.nodesByName.get(targetName)?.length ?? 0) > 1;
     const cacheKey = (isThisCall || isAmbiguousBareName)
@@ -1767,14 +1260,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private findNodeIdByNameIndexedUncached(targetName: string, sourceFile?: string, sourceClassName?: string): string | undefined {
-    // A call through an unnamed receiver resolves to nothing by NAME. Bailing out
-    // here rather than letting the marker fall through keeps it away from the
-    // substring-matching fallback near the end of this method, which compares the
-    // receiver against class names and must never be handed a placeholder.
+
     if (this.hasUnresolvedReceiver(targetName)) return undefined;
-    // Direct `this.method()` / `self.method()` — a call to a sibling method on the
-    // caller's own class. This is the bulk of intra-class calls; without it the
-    // call graph (and get_callees/get_method_calls) is almost empty for methods.
+
     const thisMethodMatch = /^(?:this|self)\.([A-Za-z_$][\w$]*)$/.exec(targetName);
     if (thisMethodMatch) {
       const methodName = thisMethodMatch[1];
@@ -1820,10 +1308,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     const directMatch = this.nodesByName.get(targetName);
     if (directMatch && directMatch.length > 0) {
-      // Import-source-aware + deterministic: when the same name is declared in
-      // multiple modules, prefer the declaration in the module the consumer
-      // imported it FROM; otherwise pick deterministically over sorted
-      // candidates. Single-declaration common path returns immediately.
+
       return this.selectDeclarationCandidate(directMatch, targetName, sourceFile).id;
     }
 
@@ -1886,12 +1371,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Resolve a `receiver.method` call directly to the target method's node id
-   *  when the receiver is a typed parameter of the enclosing function. Type-aware
-   *  and alias-aware (`x: Acct` with `import { Account as Acct }` -> Account.save),
-   *  so it excludes same-name methods on other classes. Returns undefined (never
-   *  throws) for anything it can't confidently resolve, so callers fall back to
-   *  the existing name-based resolution. */
   private resolveTypedReceiverCall(target: string, func: any): string | undefined {
     if (!target || typeof target !== 'string') return undefined;
     const dot = target.indexOf('.');
@@ -1916,11 +1395,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Namespace/generic-stripped base name of a TS type expression written in source
-   *  (e.g. `Store<AppState>` -> `Store`, `Foo.Bar` -> `Bar`, `Foo | undefined` -> `Foo`),
-   *  or undefined when nothing identifier-like remains. Mirrors the PHP analyzer's
-   *  `phpBaseTypeName` — same purpose (turn a raw declared/inferred type into the bare
-   *  class name the node-lookup tables are keyed by), TS syntax instead of PHP's. */
   private tsBaseTypeName(raw?: string): string | undefined {
     if (!raw) return undefined;
     let t = raw.trim().replace(/^\?/, '').split('|')[0].trim();
@@ -1932,27 +1406,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return /^[A-Za-z_$][\w$]*$/.test(t) ? t : undefined;
   }
 
-  /** Resolve `this.<field>.<method>()` / `self.<field>.<method>()` — the NestJS/Angular
-   *  DI pattern, whether the field comes from constructor injection
-   *  (`constructor(private readonly svc: FooService) {}`), a typed class field with no
-   *  constructor (`private svc: FooService;`), or Angular's field-style `inject()`
-   *  (`private readonly svc = inject(FooService);`) — then `this.svc.doThing()` —
-   *  directly to the target method's node id.
-   *
-   *  Evidence/type-gated: only fires when `<field>` is a recorded dependency of the
-   *  CALLER's own class (`classFieldTypes`, populated in `processTreeSitterClasses`
-   *  from constructor parameter types OR typed/inject() fields) and the declared type
-   *  resolves (via `importAliasMap` for renamed imports) to a real class-like node that
-   *  declares `<method>`. Ambiguous (multiple distinct classes sharing `<type>`'s name):
-   *    - constructor-injected fields (`source: 'ctor'`) resolve to ALL matching real
-   *      methods rather than guessing one — the established, tested fan-out policy.
-   *    - field/`inject()`-style fields (`source: 'field'`) carry no constructor
-   *      evidence, so ambiguity is only resolved when the caller's file imports the
-   *      type from one specific module (`importsByConsumerFile`, the same import-source
-   *      evidence `selectDeclarationCandidate` uses for cross-file references); with no
-   *      disambiguating import this ABSTAINS (no edge) instead of fanning out.
-   *  Unknown type or no matching method returns undefined (never fabricates an edge) so
-   *  callers fall back to the existing name-based resolution. */
   private resolveDiFieldCall(target: string, func: any, sourceFile?: string): string[] | undefined {
     if (!target || typeof target !== 'string') return undefined;
     const parts = target.split('.');
@@ -1969,7 +1422,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const m = /^([A-Za-z_$][\w$]*)/.exec(String(fieldInfo.typeName).trim());
     if (!m) return undefined;
     const className = this.importAliasMap.get(m[1]) || m[1];
-    if (className === sourceClassName) return undefined; // avoid accidental self-loops
+    if (className === sourceClassName) return undefined;
 
     const classNodes = this.nodesByName.get(className);
     if (!classNodes) return undefined;
@@ -1979,9 +1432,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     if (candidateClassNodes.length > 1 && fieldInfo.source === 'field') {
       const resolvedModule = sourceFile ? this.importsByConsumerFile.get(sourceFile)?.get(m[1]) : undefined;
-      if (!resolvedModule) return undefined; // no disambiguating evidence -> abstain
+      if (!resolvedModule) return undefined;
       const narrowed = candidateClassNodes.filter(n => n.source?.file === resolvedModule);
-      if (narrowed.length !== 1) return undefined; // still 0 or ambiguous -> abstain
+      if (narrowed.length !== 1) return undefined;
       candidateClassNodes = narrowed;
     }
 
@@ -1993,19 +1446,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return resolvedMethodIds.length > 0 ? resolvedMethodIds : undefined;
   }
 
-  /**
-   * Outbound calls (fetch/axios) inside an ANONYMOUS arrow/function-expression
-   * callback — e.g. an Express route handler
-   * `app.get('/orders', async (req, res) => { await fetch('/tasks') })` — are not
-   * attributed to any extracted named function (the call belongs to a synthetic
-   * `anonymous` scope), so `resolveSourceNodeIdIndexed` returns undefined and the
-   * api exit point would be dropped. A server that is also an API client would
-   * then report zero outbound calls, breaking cross-repo consumer->producer
-   * fusion. Attribute such calls to their enclosing container (the file/module
-   * node) so the `type:'api'` exit point is still emitted with its endpoint.
-   * Returns undefined for anything but unattributed anonymous callbacks, so
-   * named-function resolution is unaffected.
-   */
   private resolveAnonymousContainerNodeIdIndexed(
     filePath: string,
     func: ExtractedFunction
@@ -2065,16 +1505,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
       this.addConstructedEntityPersistEdges(edges, sourceNodeId, func);
       func.calls.forEach((call: any) => {
-        // Type-aware receiver resolution: `x.save()` with `x: Acct`
-        // (import { Account as Acct }) resolves directly to Account.save — precise,
-        // alias-aware, and not subject to the substring heuristic below.
+
         const typedTargetId = this.resolveTypedReceiverCall(call.target, func);
-        // DI-injected field resolution: `this.svc.doThing()` where `svc` is a
-        // constructor-injected dependency of the caller's own class (NestJS/Angular
-        // pattern) resolves directly to the real target method(s) — see
-        // resolveDiFieldCall for the evidence/type-gating rule. Only consulted when
-        // typedTargetId didn't already resolve it (typedTargetId never fires for
-        // `this.`/`self.` receivers, so there is no overlap in practice).
+
         const diTargetIds = typedTargetId ? undefined : this.resolveDiFieldCall(call.target, func, filePath);
         if (call.httpMethod && call.httpPath) {
           if (sourceNodeId) {
@@ -2137,13 +1570,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'method' || call.targetType === 'function') {
-          // DI-field resolution is evidence-based (constructor-declared type), so it
-          // takes priority over the name-based fuzzy fallback (findNodeIdByNameIndexed),
-          // which can guess the wrong class when a property name merely resembles one.
-          // When the field is a recognized injected dependency (diTargetIds is defined),
-          // skip the fuzzy fallback entirely: unambiguous (exactly one match) resolves
-          // here; ambiguous (2+ matches) is handled by the dedicated branch below, which
-          // fans out to every real match instead of letting the fuzzy fallback guess one.
+
           const unambiguousDiTargetId = diTargetIds && diTargetIds.length === 1 ? diTargetIds[0] : undefined;
           const targetNodeId = typedTargetId || unambiguousDiTargetId ||
             (diTargetIds ? undefined : this.findNodeIdByNameIndexed(call.target, filePath, func.className));
@@ -2241,9 +1668,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
               });
             }
           } else if (!targetNodeId && (sourceNodeId || this.resolveAnonymousContainerNodeIdIndexed(filePath, func)) && this.isApiCall(call.target, call.callExpression)) {
-            // Fall back to the enclosing module node for outbound api calls made
-            // directly inside anonymous route-handler callbacks, which carry no
-            // named function node of their own (see resolveAnonymousContainerNodeIdIndexed).
+
             const apiSourceNodeId = sourceNodeId || this.resolveAnonymousContainerNodeIdIndexed(filePath, func)!;
             const apiInfo = this.parseApiCall(call.target, call.callExpression);
             if (apiInfo) {
@@ -2295,13 +1720,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             this.addEntityAccessEdge(edges, sourceNodeId, call, func);
           }
         } else if (call.targetType === 'property' && call.argumentCount === 0 && !call.httpMethod) {
-          // Plain read of an imported const/interface/type/class that is never called
-          // (extractIdentifierReference in enhanced-call-graph-extractor.ts) — e.g.
-          // `TIER_RATE_LIMITS[tier]`, `limits.endpoints`. Resolve to the real declaration
-          // node (variable, interface, property, class, ...) and record a 'references' edge
-          // distinct from 'calls' so get_callers surfaces it without claiming a call that
-          // never happened. Evidence-based: if the name doesn't resolve to a real node, no
-          // edge is emitted (never fabricated).
+
           const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
             this.addCallEdge(edges, {
@@ -2376,429 +1795,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     this.processTimings = {};
   }
 
-  private async analyzeFile(
-    fullPath: string,
-    relativePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: any[],
-    exitPoints: any[],
-    context: AnalysisContext
-  ): Promise<void> {
-    try {
-      const content = await fs.readFile(fullPath, 'utf-8');
-      const ast = parse(content, {
-        loc: true,
-        range: true,
-        jsx: true,
-        comment: true,
-        tokens: true,
-        useJSXTextNode: true,
-        ecmaFeatures: { jsx: true },
-        sourceType: 'module'
-      });
-
-      this.astCache.set(relativePath, { ast, content, filePath: fullPath });
-
-      const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const lines = content.split('\n');
-      const fileComments = this.extractCommentsFromFile(content, fullPath);
-      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
-
-      nodes.push(this.createNode(
-        fileId,
-        path.basename(relativePath),
-        'file',
-        1,
-        fullPath,
-        1,
-        lines.length,
-        {
-          relativePath,
-          extension: path.extname(relativePath),
-          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
-          commentCount: fileComments.length,
-          todoCount: fileTodos.length,
-          comments: fileComments.length > 0 ? fileComments : undefined,
-          todos: fileTodos.length > 0 ? fileTodos : undefined
-        }
-      ));
-
-      this.extractImports(ast, relativePath, nodes, edges, exitPoints);
-      this.extractFunctions(ast, relativePath, nodes, edges, entryPoints, content, lines);
-      this.extractClasses(ast, relativePath, nodes, edges, content, lines);
-      this.extractVariables(ast, relativePath, nodes, edges, content);
-      this.extractExports(ast, relativePath, entryPoints);
-
-      // Use enhanced call graph extractor for comprehensive analysis
-      const { functions: extractedFunctions } = this.callGraphExtractor.extractFromAST(ast, fullPath);
-      this.integrateEnhancedCallGraphData(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
-
-    } catch (error) {
-      console.warn(`Failed to analyze ${relativePath}:`, error);
-    }
-  }
-
-  private extractImports(
-    ast: TSESTree.Program,
-    filePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    exitPoints: any[]
-  ): void {
-    ast.body.forEach((node, index) => {
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'ImportDeclaration' && node.source.type === 'Literal') {
-        const importSource = node.source.value as string;
-        const importId = `import_${filePath}_${index}`;
-
-        const specifiers = this.getImportSpecifiers(node);
-        specifiers.forEach((spec: { name: string; imported: string }) => {
-          this.importSourceMap.set(spec.name, importSource);
-          if (spec.imported && spec.imported !== spec.name &&
-              spec.imported !== 'default' && spec.imported !== '*') {
-            this.importAliasMap.set(spec.name, spec.imported);
-          }
-        });
-
-        nodes.push(this.createNode(
-          importId,
-          `import ${importSource}`,
-          'import',
-          3,
-          filePath,
-          node.loc?.start.line,
-          node.loc?.end.line,
-          { source: importSource, specifiers }
-        ));
-
-        const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-        edges.push(this.createEdge(
-          `${fileId}_to_${importId}`,
-          fileId,
-          importId,
-          'imports'
-        ));
-
-      }
-    });
-  }
-
-  private extractFunctions(
-    ast: TSESTree.Program,
-    filePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: any[],
-    content: string,
-    lines: string[]
-  ): void {
-    const functions = this.findFunctionsInAST(ast, content, lines, filePath);
-    const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-    functions.forEach((func, index) => {
-      const funcId = `function_${filePath}_${func.name}_${index}`;
-
-      const node = this.createNodeBuilder(
-        funcId,
-        func.name,
-        'function'
-      )
-        .withLevel(2, 'Class/Interface')
-        .withCategory('functions', ['standalone'])
-        .withSource({ file: filePath, line: func.lineStart, end_line: func.lineEnd })
-        .withMetadata({
-          is_exported: func.isExported,
-          is_async: func.isAsync,
-          is_generated: func.isGenerator,
-          attributes: {
-            functionType: func.type,
-            hasDocumentation: !!func.documentation,
-            todoCount: func.todos?.length || 0
-          }
-        })
-        .withSignature({
-          parameters: func.parameters,
-          return_type: func.returnType
-        })
-        .withDocumentation(func.documentation)
-        .withComments(func.comments)
-        .withTodos(func.todos)
-        .withImplementationStatus(func.implementationStatus)
-        .build();
-
-      nodes.push(node);
-
-      edges.push(this.createEdge(
-        `${fileId}_contains_${funcId}`,
-        fileId,
-        funcId,
-        'contains'
-      ));
-
-    });
-  }
-
-  private extractClasses(
-    ast: TSESTree.Program,
-    filePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    content: string,
-    lines: string[]
-  ): void {
-    const classes = this.findClassesInAST(ast, content, lines, filePath);
-    const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-    classes.forEach((cls, index) => {
-      const classId = `class_${filePath}_${cls.name}_${index}`;
-
-      const classType = this.determineClassType(cls, filePath);
-      const subcategories = this.determineClassSubcategories(cls, filePath);
-
-      const classNode = this.createNodeBuilder(
-        classId,
-        cls.name,
-        classType
-      )
-        .withLevel(2, 'Class/Interface')
-        .withCategory('structures', subcategories)
-        .withSource({ file: filePath, line: cls.lineStart, end_line: cls.lineEnd })
-        .withMetadata({
-          is_exported: cls.isExported,
-          is_abstract: cls.isAbstract,
-          attributes: {
-            extends: cls.extends,
-            implements: cls.implements,
-            methodCount: cls.methods.length,
-            propertyCount: cls.properties.length,
-            hasDocumentation: !!cls.documentation,
-            decorators: cls.decorators?.map(d => d.name)
-          }
-        })
-        .withDocumentation(cls.documentation)
-        .withComments(cls.comments)
-        .build();
-
-      nodes.push(classNode);
-
-      edges.push(this.createEdge(
-        `${fileId}_contains_${classId}`,
-        fileId,
-        classId,
-        'contains'
-      ));
-
-      cls.methods.forEach((method, methodIndex) => {
-        const methodId = `method_${classId}_${method.name}_${methodIndex}`;
-
-        const methodNode = this.createNodeBuilder(
-          methodId,
-          method.name,
-          'method'
-        )
-          .withLevel(3, 'Method/Function')
-          .withCategory('methods', ['class-methods'])
-          .withSource({ file: filePath, line: method.lineStart, end_line: method.lineEnd })
-          .withMetadata({
-            is_async: method.isAsync,
-            is_generated: method.isGenerator,
-            attributes: {
-              methodType: method.type,
-              hasDocumentation: !!method.documentation,
-              todoCount: method.todos?.length || 0
-            }
-          })
-          .withSignature({
-            parameters: method.parameters,
-            return_type: method.returnType
-          })
-          .withParent(classId)
-          .withDocumentation(method.documentation)
-          .withComments(method.comments)
-          .withTodos(method.todos)
-          .withImplementationStatus(method.implementationStatus)
-          .build();
-
-        nodes.push(methodNode);
-
-        edges.push(this.createEdge(
-          `${classId}_contains_${methodId}`,
-          classId,
-          methodId,
-          'contains'
-        ));
-      });
-
-      cls.properties.forEach((prop, propIndex) => {
-        const propertyId = `property_${classId}_${prop.name}_${propIndex}`;
-
-        const decoratorNames = prop.decorators?.map(d => d.name) || [];
-        const annotations = prop.decorators?.map(d => {
-          if (d.arguments && d.arguments.length > 0) {
-            return `@${d.name}(${JSON.stringify(d.arguments[0])})`;
-          }
-          return `@${d.name}()`;
-        }) || [];
-
-        const propertyNode = this.createNodeBuilder(
-          propertyId,
-          prop.name,
-          'property'
-        )
-          .withLevel(4, 'Variable/Property')
-          .withCategory('data', ['class-properties'])
-          .withSource({ file: filePath, line: prop.lineStart, end_line: prop.lineEnd })
-          .withMetadata({
-            annotations: annotations.length > 0 ? annotations : undefined,
-            attributes: {
-              propertyType: prop.type,
-              isStatic: prop.isStatic,
-              isPrivate: prop.isPrivate,
-              hasDocumentation: !!prop.documentation,
-              decorators: decoratorNames.length > 0 ? decoratorNames : undefined
-            }
-          })
-          .withSignature({
-            return_type: prop.type
-          })
-          .withParent(classId)
-          .withDocumentation(prop.documentation)
-          .build();
-
-        nodes.push(propertyNode);
-
-        edges.push(this.createEdge(
-          `${classId}_contains_${propertyId}`,
-          classId,
-          propertyId,
-          'contains'
-        ));
-      });
-    });
-  }
-
-  private determineClassType(cls: ClassInfo, filePath: string): string {
-    const decoratorNames = cls.decorators?.map(d => d.name.toLowerCase()) || [];
-    const className = cls.name.toLowerCase();
-    const filePathLower = filePath.toLowerCase();
-
-    if (decoratorNames.includes('entity')) return 'entity';
-    if (decoratorNames.includes('controller')) return 'controller';
-    if (decoratorNames.includes('injectable')) {
-      if (className.includes('service')) return 'service';
-      if (className.includes('repository')) return 'repository';
-      if (className.includes('guard')) return 'guard';
-      if (className.includes('middleware')) return 'middleware';
-      if (className.includes('interceptor')) return 'interceptor';
-      if (className.includes('filter')) return 'filter';
-      if (className.includes('pipe')) return 'pipe';
-      return 'provider';
-    }
-    if (decoratorNames.includes('module')) return 'module';
-
-    if (this.isDtoLikeClass(cls.name, filePath)) return 'dto';
-    if (filePathLower.includes('/entities/') || filePathLower.includes('/entity/')) return 'entity';
-    if (filePathLower.includes('/guards/') || filePathLower.includes('/guard/')) return 'guard';
-    if (filePathLower.includes('/services/') || filePathLower.includes('/service/')) return 'service';
-    if (filePathLower.includes('/repositories/') || filePathLower.includes('/repository/')) return 'repository';
-    if (filePathLower.includes('/controllers/') || filePathLower.includes('/controller/')) return 'controller';
-    if (filePathLower.includes('/middleware/')) return 'middleware';
-
-    if (cls.implements?.some(i => i.toLowerCase().includes('canactivate'))) return 'guard';
-    if (cls.extends?.toLowerCase().includes('repository')) return 'repository';
-
-    if (className.endsWith('service')) return 'service';
-    if (className.endsWith('repository')) return 'repository';
-    if (className.endsWith('controller')) return 'controller';
-    if (className.endsWith('guard')) return 'guard';
-    if (className.endsWith('entity')) return 'entity';
-    if (className.endsWith('middleware')) return 'middleware';
-    if (className.endsWith('dto')) return 'dto';
-    if (className.endsWith('model')) return 'model';
-
-    return 'class';
-  }
-
   private isDtoLikeClass(className: string, filePath: string): boolean {
     const normalizedName = className.toLowerCase();
     const normalizedPath = filePath.toLowerCase();
     return /(dto|input|output|request|response|payload|params|query|body|schema)$/.test(normalizedName) ||
       /(^|[/._-])(dto|dtos|inputs|outputs|requests|responses|schemas)([/._-]|$)/.test(normalizedPath) ||
       /\.(dto|input|output|request|response|schema)\./.test(normalizedPath);
-  }
-
-  private determineClassSubcategories(cls: ClassInfo, filePath: string): string[] {
-    const subcategories: string[] = ['classes'];
-    const classType = this.determineClassType(cls, filePath);
-    const decoratorNames = cls.decorators?.map(d => d.name.toLowerCase()) || [];
-    const className = cls.name.toLowerCase();
-
-    if (classType !== 'class') {
-      subcategories.push(classType);
-    }
-
-    if (decoratorNames.includes('entity') || classType === 'entity') {
-      subcategories.push('entity');
-    }
-    if (decoratorNames.includes('injectable') || classType === 'service' || classType === 'provider') {
-      subcategories.push('injectable');
-    }
-    if (classType === 'guard' || cls.implements?.some(i => i.toLowerCase().includes('canactivate'))) {
-      subcategories.push('guard');
-      subcategories.push('security');
-    }
-    if (classType === 'controller') {
-      subcategories.push('entry-point');
-    }
-    if (classType === 'repository') {
-      subcategories.push('data-access');
-    }
-
-    const sensitivePatterns = ['auth', 'password', 'token', 'credential', 'secret', 'security'];
-    if (sensitivePatterns.some(p => className.includes(p))) {
-      subcategories.push('security-sensitive');
-    }
-
-    return [...new Set(subcategories)];
-  }
-
-  private extractVariables(ast: TSESTree.Program, filePath: string, nodes: CASNode[], edges: CASEdge[], content: string): void {
-    const variables = this.findVariablesInAST(ast, content);
-    const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-    variables.forEach((variable, index) => {
-      const variableId = `variable_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}_${variable.name.replace(/[^a-zA-Z0-9]/g, '_')}_${index}`;
-
-      nodes.push(this.createNodeBuilder(
-        variableId,
-        variable.name,
-        'variable'
-      )
-        .withLevel(4, 'Variable/Property')
-        .withCategory('data', ['variables'])
-        .withSource({ file: filePath, line: variable.line })
-        .withMetadata({
-          is_exported: variable.isExported,
-          attributes: {
-            variableType: variable.type,
-            kind: variable.kind,
-            value: variable.value
-          }
-        })
-        .build());
-
-      edges.push(this.createEdge(
-        `${fileId}_contains_${variableId}`,
-        fileId,
-        variableId,
-        'contains'
-      ));
-    });
-  }
-
-  private extractExports(_ast: TSESTree.Program, _filePath: string, _entryPoints: any[]): void {
   }
 
   private extractLibraries(packageJson: any, libraries: any[]): void {
@@ -2815,290 +1817,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           isProduction: !!packageJson.dependencies?.[name]
         }
       });
-    });
-  }
-
-  private findFunctionsInAST(ast: TSESTree.Program, content: string, lines: string[], filePath: string): FunctionInfo[] {
-    const functions: FunctionInfo[] = [];
-    const visited = new WeakSet();
-
-    const walk = (node: any, parent?: any) => {
-      if (!node || typeof node !== 'object') return;
-      if (visited.has(node)) return;
-      visited.add(node);
-
-
-      if (node.type === 'FunctionDeclaration' && node.id) {
-        const jsdoc = this.extractJSDoc(node, content, lines);
-        const comments = this.extractNodeComments(node, content, lines, filePath);
-        const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
-        const status = this.detectImplementationStatus(node, content);
-
-        functions.push({
-          name: node.id.name,
-          type: node.async ? 'async' : node.generator ? 'function' : 'function',
-          parameters: this.extractParameters(node.params, jsdoc),
-          returnType: this.extractReturnType(node.returnType, jsdoc),
-          lineStart: node.loc?.start.line || 0,
-          lineEnd: node.loc?.end.line || 0,
-          isExported: parent?.type === 'ExportNamedDeclaration' || parent?.type === 'ExportDefaultDeclaration',
-          isAsync: node.async || false,
-          isGenerator: node.generator || false,
-          documentation: jsdoc,
-          comments: comments.length > 0 ? comments : undefined,
-          todos: todos.length > 0 ? todos : undefined,
-          implementationStatus: status,
-          decorators: this.extractDecorators(node)
-        });
-      }
-
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'VariableDeclaration') {
-        node.declarations.forEach((decl: any) => {
-          if (decl.init?.type === 'ArrowFunctionExpression' && decl.id?.name) {
-            const jsdoc = this.extractJSDoc(node, content, lines);
-            const comments = this.extractNodeComments(decl.init, content, lines, filePath);
-            const todos = this.extractTodosFromComments(comments, decl.init.loc?.start.line?.toString() || '');
-            const status = this.detectImplementationStatus(decl.init, content);
-
-            functions.push({
-              name: decl.id.name,
-              type: 'arrow',
-              parameters: this.extractParameters(decl.init.params, jsdoc),
-              returnType: this.extractReturnType(decl.init.returnType, jsdoc),
-              lineStart: decl.init.loc?.start.line || 0,
-              lineEnd: decl.init.loc?.end.line || 0,
-              isExported: parent?.type === 'ExportNamedDeclaration',
-              isAsync: decl.init.async || false,
-              isGenerator: false,
-              documentation: jsdoc,
-              comments: comments.length > 0 ? comments : undefined,
-              todos: todos.length > 0 ? todos : undefined,
-              implementationStatus: status
-            });
-          }
-        });
-      }
-
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'MethodDefinition') {
-        const jsdoc = this.extractJSDoc(node, content, lines);
-        const comments = this.extractNodeComments(node, content, lines, filePath);
-        const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
-        const status = this.detectImplementationStatus(node.value, content);
-
-        functions.push({
-          name: node.key.name || 'method',
-          type: node.kind === 'constructor' ? 'constructor' : 'method',
-          parameters: this.extractParameters(node.value.params, jsdoc),
-          returnType: this.extractReturnType(node.value.returnType, jsdoc),
-          lineStart: node.loc?.start.line || 0,
-          lineEnd: node.loc?.end.line || 0,
-          isExported: false,
-          isAsync: node.value.async || false,
-          isGenerator: node.value.generator || false,
-          documentation: jsdoc,
-          comments: comments.length > 0 ? comments : undefined,
-          todos: todos.length > 0 ? todos : undefined,
-          implementationStatus: status,
-          decorators: this.extractDecorators(node)
-        });
-      }
-
-      if (!node || typeof node !== 'object') return;
-
-      // Object-literal methods: shorthand `{ add(a, b) {} }` and
-      // function-valued properties `{ cb: function(){} }` / `{ cb: () => {} }`.
-      // Plain data properties (e.g. `{ x: 5 }`) are intentionally excluded.
-      if (
-        node.type === 'Property' &&
-        !node.computed &&
-        (node.value?.type === 'FunctionExpression' || node.value?.type === 'ArrowFunctionExpression')
-      ) {
-        const keyName = node.key?.name || node.key?.value;
-        if (keyName) {
-          const jsdoc = this.extractJSDoc(node, content, lines);
-          const comments = this.extractNodeComments(node, content, lines, filePath);
-          const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
-          const status = this.detectImplementationStatus(node.value, content);
-
-          functions.push({
-            name: keyName,
-            type: node.value.type === 'ArrowFunctionExpression' ? 'arrow' : 'method',
-            parameters: this.extractParameters(node.value.params, jsdoc),
-            returnType: this.extractReturnType(node.value.returnType, jsdoc),
-            lineStart: node.loc?.start.line || 0,
-            lineEnd: node.loc?.end.line || 0,
-            isExported: false,
-            isAsync: node.value.async || false,
-            isGenerator: node.value.generator || false,
-            documentation: jsdoc,
-            comments: comments.length > 0 ? comments : undefined,
-            todos: todos.length > 0 ? todos : undefined,
-            implementationStatus: status
-          });
-        }
-      }
-
-      for (const key in node) {
-        if (key === 'parent') continue;
-
-        if (Array.isArray(node[key])) {
-          node[key].forEach((child: any) => walk(child, node));
-        } else if (typeof node[key] === 'object') {
-          walk(node[key], node);
-        }
-      }
-    };
-
-    walk(ast, null);
-    return functions;
-  }
-
-  private findClassesInAST(ast: TSESTree.Program, content: string, lines: string[], filePath: string): ClassInfo[] {
-    const classes: ClassInfo[] = [];
-    const visited = new WeakSet();
-
-    const walk = (node: any, parent?: any) => {
-      if (!node || typeof node !== 'object') return;
-      if (visited.has(node)) return;
-      visited.add(node);
-
-
-      if (node.type === 'ClassDeclaration' && node.id) {
-        const classJsdoc = this.extractJSDoc(node, content, lines);
-        const classComments = this.extractNodeComments(node, content, lines, filePath);
-
-        const methods = node.body.body
-          .filter((member: any) => member.type === 'MethodDefinition')
-          .map((method: any) => {
-            const methodJsdoc = this.extractJSDoc(method, content, lines);
-            const methodComments = this.extractNodeComments(method, content, lines, filePath);
-            const methodTodos = this.extractTodosFromComments(methodComments, method.loc?.start.line?.toString() || '');
-            const methodStatus = this.detectImplementationStatus(method.value, content);
-
-            return {
-              name: method.key.name || 'method',
-              type: method.kind === 'constructor' ? 'constructor' as const : 'method' as const,
-              parameters: this.extractParameters(method.value.params, methodJsdoc),
-              returnType: this.extractReturnType(method.value.returnType, methodJsdoc),
-              lineStart: method.loc?.start.line || 0,
-              lineEnd: method.loc?.end.line || 0,
-              isExported: false,
-              isAsync: method.value.async || false,
-              isGenerator: method.value.generator || false,
-              documentation: methodJsdoc,
-              comments: methodComments.length > 0 ? methodComments : undefined,
-              todos: methodTodos.length > 0 ? methodTodos : undefined,
-              implementationStatus: methodStatus,
-              decorators: this.extractDecorators(method)
-            };
-          });
-
-        const properties = node.body.body
-          .filter((member: any) => member.type === 'PropertyDefinition')
-          .map((prop: any) => {
-            const propJsdoc = this.extractJSDoc(prop, content, lines);
-            return {
-              name: prop.key.name || 'property',
-              type: this.extractTypeFromAnnotation(prop.typeAnnotation),
-              isStatic: prop.static || false,
-              isPrivate: prop.accessibility === 'private',
-              documentation: propJsdoc,
-              decorators: this.extractDecorators(prop),
-              lineStart: prop.loc?.start.line || 0,
-              lineEnd: prop.loc?.end.line || 0
-            };
-          });
-
-        classes.push({
-          name: node.id.name,
-          extends: node.superClass?.name,
-          implements: node.implements?.map((impl: any) => impl.expression?.name || 'unknown') || [],
-          methods,
-          properties,
-          lineStart: node.loc?.start.line || 0,
-          lineEnd: node.loc?.end.line || 0,
-          isExported: parent?.type === 'ExportNamedDeclaration' || parent?.type === 'ExportDefaultDeclaration',
-          isAbstract: node.abstract || false,
-          documentation: classJsdoc,
-          decorators: this.extractDecorators(node),
-          comments: classComments.length > 0 ? classComments : undefined
-        });
-      }
-
-      for (const key in node) {
-        if (key === 'parent') continue;
-
-        if (Array.isArray(node[key])) {
-          node[key].forEach((child: any) => walk(child, node));
-        } else if (typeof node[key] === 'object') {
-          walk(node[key], node);
-        }
-      }
-    };
-
-    walk(ast, null);
-    return classes;
-  }
-
-  private findVariablesInAST(ast: TSESTree.Program, content: string): VariableInfo[] {
-    const variables: VariableInfo[] = [];
-    const visited = new WeakSet();
-
-    const walk = (node: any, parent?: any) => {
-      if (!node || typeof node !== 'object') return;
-      if (visited.has(node)) return;
-      visited.add(node);
-
-
-      if (node.type === 'VariableDeclaration') {
-        node.declarations.forEach((declaration: any) => {
-          if (declaration.id && declaration.id.name &&
-              declaration.init?.type !== 'ArrowFunctionExpression' &&
-              declaration.init?.type !== 'FunctionExpression') {
-            variables.push({
-              name: declaration.id.name,
-              type: this.extractTypeFromAnnotation(declaration.id.typeAnnotation),
-              value: this.extractLiteralValue(declaration.init),
-              kind: node.kind,
-              line: node.loc?.start.line || 0,
-              isExported: parent?.type === 'ExportNamedDeclaration'
-            });
-          }
-        });
-      }
-
-      for (const key in node) {
-        if (key === 'parent') continue;
-
-        if (Array.isArray(node[key])) {
-          node[key].forEach((child: any) => walk(child, node));
-        } else if (typeof node[key] === 'object') {
-          walk(node[key], node);
-        }
-      }
-    };
-
-    walk(ast, null);
-    return variables;
-  }
-
-  private getImportSpecifiers(node: TSESTree.ImportDeclaration): any[] {
-    return node.specifiers.map(spec => {
-      if (spec.type === 'ImportDefaultSpecifier') {
-        return { name: spec.local.name, imported: 'default' };
-      } else if (spec.type === 'ImportSpecifier') {
-        return {
-          name: spec.local.name,
-          imported: spec.imported.type === 'Identifier' ? spec.imported.name : spec.local.name
-        };
-      } else if (spec.type === 'ImportNamespaceSpecifier') {
-        return { name: spec.local.name, imported: '*' };
-      }
-      return { name: 'unknown', imported: 'unknown' };
     });
   }
 
@@ -3147,209 +1865,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return found?.id;
   }
 
-  private integrateEnhancedCallGraphData(
-    extractedFunctions: any[],
-    nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[],
-    filePath: string
-  ): void {
-    extractedFunctions.forEach(func => {
-      // HTTP endpoints from decorators
-      func.calls.forEach((call: any) => {
-        if (call.httpMethod && call.httpPath) {
-          const sourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          if (sourceNodeId) {
-            entryPoints.push({
-              id: `http_${func.name}_${call.httpMethod}`,
-              source_node: sourceNodeId,
-              type: 'http',
-              name: `${call.httpMethod} ${call.httpPath}`,
-              trigger: {
-                method: call.httpMethod,
-                path: call.httpPath
-              },
-              metadata: {
-                decorators: call.decorators,
-                framework: 'nestjs'
-              }
-            });
-          }
-        }
-
-
-        // Abstract method calls
-        if (call.targetType === 'abstract') {
-          const sourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          const targetNodeId = this.findNodeIdByName(call.target, nodes, func.className);
-
-          if (sourceNodeId && targetNodeId) {
-            edges.push({
-              id: `abstract_call_${sourceNodeId}_${targetNodeId}`,
-              source: sourceNodeId,
-              target: targetNodeId,
-              type: 'calls',
-              metadata: {
-                attributes: {
-                  call_type: 'abstract',
-                  is_async: call.isAsync,
-                  line: call.line,
-                  method_name: call.target.split('.').pop()
-                }
-              }
-            });
-          }
-        }
-
-        // Dependency injection calls
-        if (call.injectionType) {
-          const sourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          const targetNodeId = this.findNodeIdByName(call.target, nodes, func.className);
-
-          if (sourceNodeId && targetNodeId) {
-            edges.push({
-              id: `injection_${sourceNodeId}_${targetNodeId}`,
-              source: sourceNodeId,
-              target: targetNodeId,
-              type: 'calls',
-              metadata: {
-                attributes: {
-                  call_type: 'injection',
-                  injection_type: call.injectionType,
-                  line: call.line
-                }
-              }
-            });
-          }
-        }
-
-        // Regular method/function calls
-        if (call.targetType === 'method' || call.targetType === 'function') {
-          const sourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          const targetNodeId = this.findNodeIdByName(call.target, nodes, func.className);
-
-          if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
-            edges.push({
-              id: `call_${sourceNodeId}_${targetNodeId}`,
-              source: sourceNodeId,
-              target: targetNodeId,
-              type: 'calls',
-              metadata: {
-                attributes: {
-                  call_type: call.targetType,
-                  is_async: call.isAsync,
-                  is_conditional: call.isConditional,
-                  is_in_loop: call.isInLoop,
-                  line: call.line
-                }
-              }
-            });
-          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target, func.className)) {
-            const repoInfo = this.parseRepositoryCall(call.target);
-            if (repoInfo) {
-              const library = this.getLibraryForType('EntityRepository')
-                || this.getLibraryForType('Repository')
-                || this.getLibraryForType('PrismaClient')
-                || this.getLibraryForType('Model');
-              exitPoints.push({
-                id: `exit_db_${func.name}_${repoInfo.method}_${call.line}`,
-                source_node: sourceNodeId,
-                type: 'database',
-                name: `${repoInfo.repository}.${repoInfo.method}`,
-                target: {
-                  service_id: 'database',
-                  resource: repoInfo.repository
-                },
-                operation: {
-                  action: repoInfo.method,
-                  async: call.isAsync
-                },
-                metadata: {
-                  repository: repoInfo.repository,
-                  method: repoInfo.method,
-                  line: call.line,
-                  call_expression: call.callExpression,
-                  library
-                }
-              });
-            }
-          } else if (sourceNodeId && !targetNodeId && this.isApiCall(call.target, call.callExpression)) {
-            const apiInfo = this.parseApiCall(call.target, call.callExpression);
-            if (apiInfo) {
-              exitPoints.push({
-                id: `exit_api_${func.name}_${apiInfo.method}_${call.line}`,
-                source_node: sourceNodeId,
-                type: 'api',
-                name: `${apiInfo.method.toUpperCase()} ${apiInfo.endpoint || 'external'}`,
-                target: {
-                  service_id: 'external_api',
-                  endpoint: apiInfo.endpoint
-                },
-                operation: {
-                  method: apiInfo.method.toUpperCase(),
-                  action: apiInfo.method,
-                  async: call.isAsync
-                },
-                metadata: {
-                  line: call.line,
-                  call_expression: call.callExpression,
-                  endpoint: apiInfo.endpoint
-                }
-              });
-            }
-          }
-        }
-      });
-    });
-  }
-
-  /**
-   * Gate repository/ORM exit-point routing on evidence that the RECEIVER is actually
-   * a repository/ORM handle, not just on the method name. Method names like `findAll`,
-   * `persist`, `assign`, `populate`, `flush` are extremely common on plain service
-   * classes (e.g. `OrganizationsService.findAll()`) — treating them as unconditional
-   * ORM markers (the old `ormSpecificMethods` behavior) fabricated DB exit points on
-   * services that never touch a database. Evidence sources, in order:
-   *   1. `classFieldTypes` (`ClassName.field` -> declared constructor-param type) when
-   *      `className` (the CALLER's own class) is known — the most precise signal,
-   *      since it's scoped to the exact class rather than a bare property name.
-   *   2. `repositoryPropertyTypes` (property name -> type), a global fallback already
-   *      populated only for constructor params whose type matched `isRepositoryLikeType`
-   *      (Repository/EntityManager/PrismaClient/Model/Knex/etc.) — used when `className`
-   *      isn't available at the call site (e.g. the un-indexed legacy path/no this.-receiver).
-   *   3. Name-based heuristics (`isRepositoryLikeCaller` / `isModelLikeCaller`) as a last
-   *      resort for receivers with no recorded type at all (e.g. `this.repo.find()` where
-   *      `repo` was never seen as a typed constructor param) — still gated, just weaker
-   *      evidence, and only reachable when no type evidence contradicts it.
-   * A bare method-name match with an UNKNOWN or clearly-non-repository receiver (a plain
-   * service field, a local array `arr.find()`) must NOT be routed to a DB exit point.
-   */
-  /**
-   * A `database` exit requires evidence on BOTH axes: the OPERATION has to be a
-   * persistence operation, and the RECEIVER has to be a store handle. Absence
-   * on either axis means unknown, never a store.
-   *
-   * The operation axis used to be skipped entirely whenever a declared receiver
-   * type was on file, which is how plain collection calls became store access:
-   * with any field named `entities` typed as a repository anywhere in the
-   * project, a completely unrelated `entities.map(...)` over a `string[]` local
-   * in another file was emitted as a `database` exit. Measured on a real
-   * repository, `.map()` and `.slice()` on locals were shipping as database
-   * exits, so every count keyed on terminus kind — the data-access picture,
-   * the "data touched" facet, state-change side effects, and any criticality
-   * score that reads database access — was inflated by in-memory list work.
-   *
-   * The operation vocabulary is the definition of what a persistence call IS
-   * (an ORM/repository/query verb), not a list of collection methods to
-   * exclude: a method absent from it is simply unproven, whatever its name.
-   */
   private isRepositoryCall(target: string, className?: string): boolean {
     if (!target.includes('.')) return false;
-    // AXIS 0 — IS THERE A RECEIVER AT ALL. `foo().find(...)` has a receiver we
-    // could not name, and absence of evidence is unknown, not a store. Checked
-    // before the operation axis so no receiver-shaped reasoning below ever runs
-    // on a marker.
+
     if (this.hasUnresolvedReceiver(target)) return false;
     const parts = target.split('.');
     const methodName = (parts.pop() || '').toLowerCase();
@@ -3357,49 +1875,26 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const originalCallerName = parts.join('.').replace('this.', '');
     const callerName = originalCallerName.toLowerCase();
 
-    // AXIS 1 — OPERATION EVIDENCE. Checked first and for every receiver, so no
-    // amount of receiver evidence can turn a non-persistence call into a store
-    // access. `.map`/`.slice`/`.reduce`/`.some` are not here because nothing
-    // proves they reach a store — the same reason any other unproven method is
-    // not here.
     if (!TypeScriptJavaScriptAnalyzer.PERSISTENCE_OPERATIONS.has(methodName)) return false;
 
-    // AXIS 2 — RECEIVER EVIDENCE. The caller's own class recording this field's
-    // declared type is the strongest form, and it cuts both ways: a KNOWN type
-    // that is not a store handle (`someService: OrganizationsService`) is
-    // positive evidence AGAINST, even for an unambiguous ORM verb.
     const lastProperty = originalCallerName.split('.').pop() || originalCallerName;
     const declaredField = className ? this.classFieldTypes.get(`${className}.${lastProperty}`) : undefined;
     if (declaredField?.typeName) {
-      // A field declared as a collection of rows is not a handle, however
-      // store-like its element type reads.
+
       if (declaredField.isCollection) return false;
       return this.isRepositoryLikeType(declaredField.typeName);
     }
 
-    // The project-wide table is keyed by BARE PROPERTY NAME, so it describes
-    // "some class somewhere declares a field of this name with a store type" —
-    // which is only about THIS receiver when the receiver is genuinely a field
-    // of the calling object. For a bare local or parameter the receiver is
-    // unresolved, and an unresolved receiver is unknown, not a store.
     if (isThisQualified) {
       const injectedFieldType = this.repositoryPropertyTypes.get(lastProperty);
       if (injectedFieldType) return this.isRepositoryLikeType(injectedFieldType);
     }
 
-    // No declared type for this receiver (untyped param, plain local variable,
-    // or a property this analyzer never saw declared) — fall back to name-based
-    // evidence that the receiver itself looks like a repository/model handle
-    // (`this.repo`, `this.userRepository`, `const userRepo = new UserRepository(...)`,
-    // `UserModel.find()`), never the method name alone.
     return this.isRepositoryLikeCaller(callerName) || this.isModelLikeCaller(originalCallerName);
   }
 
-  /** ORM / repository / query-builder operations — the vocabulary that PROVES a
-   *  call is persistence. Receiver evidence alone never qualifies a call; one of
-   *  these has to be the operation being performed. */
   private static readonly PERSISTENCE_OPERATIONS = new Set([
-    // Driver/ORM-specific verbs: unambiguous on their own.
+
     'findoneorfail', 'findall', 'findandcount',
     'persistandflush', 'removeandflush', 'nativeupdate', 'nativedelete',
     'getreference', 'populate', 'assign', 'flush', 'upsert', 'persist',
@@ -3408,46 +1903,18 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     'findbyid', 'findbyidandupdate', 'findbyidanddelete', 'findbyidandremove',
     'findoneandupdate', 'findoneanddelete', 'findoneandremove',
     'updateone', 'deleteone', 'insertmany',
-    // Driver / query-builder execution verbs. A prepared statement, an executed
-    // query, or a transaction boundary on a store handle is persistence just as
-    // much as an ORM finder — measured on a second real codebase, where a
-    // SQLite handle's `prepare`/`exec` calls are the ENTIRE data-access surface
-    // and requiring only ORM finder vocabulary would have erased it.
+
     'prepare', 'exec', 'execute', 'query', 'raw', 'pragma',
     'transaction', 'begintransaction', 'commit', 'rollback',
     'createquerybuilder', 'getrepository', 'getentitymanager',
     'select', 'insertinto', 'deletefrom', 'truncate',
     'connect', 'disconnect', 'close', 'destroy',
-    // Verbs an in-memory collection also uses (`find`, `create`), which is why
-    // receiver evidence is still required alongside them.
+
     'find', 'findone', 'create', 'save', 'insert',
     'update', 'delete', 'remove', 'count'
-    // Deliberately ABSENT despite being real driver verbs on some clients:
-    // `get`, `all`, `run`, `end`. They are the most heavily overloaded names in
-    // the language (`Map.get`, `Promise.all`, `res.end`), and a capitalized
-    // built-in receiver satisfies the model-handle test by not resolving to any
-    // local declaration — so including them would classify `Promise.all(...)`
-    // as store access. Their absence costs a driver call; their presence would
-    // manufacture data access out of ordinary control flow.
+
   ]);
 
-  /**
-   * A capitalized receiver used as a static store handle (`UserModel.find()`,
-   * `Order.findOne()`) — the ActiveRecord/Mongoose shape where the class itself
-   * is the query surface.
-   *
-   * Capitalization alone was the whole test, which made every module-level
-   * constant a store handle: `const LENSES = [...]; LENSES.find(...)` was
-   * emitted as a database exit, and so was `DEPLOYABLE_PERSPECTIVES.find(...)`
-   * — array lookups over literal config. Two receiver facts now have to hold,
-   * both about what the receiver IS rather than which method was called:
-   *   - it is not written in the universal constant convention (ALL_CAPS /
-   *     SCREAMING_SNAKE), which never names a class; and
-   *   - it does not resolve to a VALUE declaration in this repository. A name
-   *     declared here as a variable is a value, whatever its casing — a store
-   *     handle resolves to a class/entity or to nothing local at all (imported
-   *     from the ORM).
-   */
   private isModelLikeCaller(callerName: string): boolean {
     const lastPart = callerName.split('.').pop() || '';
     if (!/^[A-Z][A-Za-z0-9_]*$/.test(lastPart)) return false;
@@ -3461,17 +1928,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  /** Node types that declare a VALUE rather than a callable/queryable surface.
-   *  A receiver resolving only to these cannot be a store handle. */
   private static readonly VALUE_DECLARATION_TYPES = new Set([
     'variable', 'constant', 'property', 'parameter', 'field', 'enum'
   ]);
 
   private isRepositoryLikeCaller(callerName: string): boolean {
-    // MikroORM's `wrap(entity).assign(...)` / `wrap(entity).toObject()` helper —
-    // the receiver is a call expression, not a field, but `wrap(` is an unambiguous
-    // ORM marker (real import from `@mikro-orm/core`), so treat it as strong
-    // evidence rather than requiring a field name to match.
+
     if (/^wrap\(/.test(callerName)) return true;
 
     const parts = callerName.split('.');
@@ -3485,31 +1947,18 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     for (const part of parts) {
       if (exactMatchPatterns.has(part)) return true;
       if (substringPatterns.some(pattern => part.includes(pattern))) return true;
-      // Compound identifiers ending in the short repository abbreviation
-      // (`userRepo`, `orgRepo`, `componentRepo`, `const userRepo = new UserRepository(...)`)
-      // are a very common naming convention the substring check above misses because it
-      // looks for the full word "repository", not the "repo" abbreviation. Only match as
-      // a suffix (not "repossession"), and explicitly exclude "forRepo"/"ForRepo" — a
-      // distinct, attested English-phrase pattern (`appsForRepo`, `existingForRepo`
-      // meaning "apps for [this] repo", i.e. a filtered ARRAY, not a repository handle)
-      // that would otherwise false-positive on plain Array.prototype.find/filter calls.
+
       if (/repo$/.test(part) && part !== 'repo' && !/forrepo$/.test(part)) return true;
     }
     return false;
   }
 
-  /** True when the call's receiver is the unresolved-receiver marker rather than
-   *  a name — i.e. the receiver is a computed value (`foo().m()`, `arr[0].m()`).
-   *  Such a call carries no receiver evidence, so it can be neither a store nor
-   *  an API exit: those classifications rest on knowing WHAT is being called. */
   private hasUnresolvedReceiver(target: string): boolean {
     return target.startsWith(`${UNRESOLVED_RECEIVER}.`);
   }
 
   private isApiCall(target: string, callExpression: string): boolean {
-    // An unnamed receiver is not an HTTP client. Without this, `getClient().get('/users')`
-    // would reach the URL-shaped-argument branch below and be published as an
-    // outbound API exit whose target service is a marker.
+
     if (this.hasUnresolvedReceiver(target)) return false;
     const lowerTarget = target.toLowerCase();
     const lowerExpression = callExpression.toLowerCase();
@@ -3526,11 +1975,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (httpMethods.includes(method) && httpClientPatterns.some(p => caller.includes(p))) {
         return true;
       }
-      // Wrapped HTTP clients (LensClient.get, client.post) don't carry an
-      // http/api/axios marker in the caller name, but a URL-path-shaped first
-      // string argument is stronger evidence than the variable name. Route
-      // registrars (router.get('/x', handler)) share this shape and must not
-      // count as outbound API calls.
+
       const routeRegistrarCallers = new Set(['router', 'app', 'server', 'express', 'fastify', 'koa']);
       if (httpMethods.includes(method) && !routeRegistrarCallers.has(caller)) {
         const endpoint = this.extractEndpointFromExpression(callExpression);
@@ -3554,16 +1999,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     if (target.includes('.')) {
       const parts = target.split('.');
       const method = parts.pop() || '';
-      // A generic `.request(verb, url, ...)` call (Angular HttpClient /
-      // axios-style config object aside, this is the positional-args form)
-      // carries the REAL HTTP verb as its FIRST string argument — the URL is
-      // the SECOND. Treating "the first quoted string in the expression" as
-      // the endpoint (the fetch/get/post/etc branch below) mislabels the verb
-      // itself as the target: `this.http.request('LINK', url)` became
-      // exit-point name "REQUEST LINK" (method=REQUEST, endpoint=LINK)
-      // instead of "LINK <url>". Pull every string literal and, for this one
-      // method name, assign the first two positionally (verb, endpoint)
-      // instead of taking only the first as the endpoint.
+
       if (method.toLowerCase() === 'request') {
         const literals = this.extractStringLiteralsFromExpression(callExpression);
         if (literals.length >= 2) return { method: literals[0], endpoint: literals[1] };
@@ -3586,10 +2022,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Every quoted/template string literal appearing in a call expression, in
-   *  source order — used where argument POSITION carries meaning (e.g. a
-   *  generic `.request(verb, url)` call) and a single "first match" isn't
-   *  enough to tell the verb apart from the endpoint. */
   private extractStringLiteralsFromExpression(callExpression: string): string[] {
     const literals: string[] = [];
     const re = /['"`]([^'"`]*)['"`]/g;
@@ -3643,80 +2075,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
 
     return undefined;
-  }
-
-  private findNodeIdByName(targetName: string, nodes: CASNode[], className?: string): string | undefined {
-    if (this.isRepositoryCall(targetName, className)) {
-      const parts = targetName.split('.');
-      if (parts.length >= 3 && parts[0] === 'this') {
-        const repositoryProperty = parts[1];
-        const methodName = parts.slice(2).join('.');
-
-        const repositoryClassName = this.getRepositoryClassNameFromProperty(repositoryProperty);
-        if (repositoryClassName) {
-          const targetNode = nodes.find(n =>
-            n.type === 'method' &&
-            n.name === methodName &&
-            n.parent && nodes.find(p => p.id === n.parent && p.name === repositoryClassName && this.isClassLikeNode(p))
-          );
-          if (targetNode) return targetNode.id;
-        }
-      }
-      return undefined;
-    }
-
-    let targetNode = nodes.find(n => n.name === targetName);
-    if (targetNode) return targetNode.id;
-
-    if (!targetName.includes('.')) {
-      targetNode = nodes.find(n => n.name === targetName && (n.type === 'function' || n.type === 'method'));
-      return targetNode?.id;
-    }
-
-    const parts = targetName.split('.');
-    const methodName = parts.pop();
-    if (!methodName) return undefined;
-
-    if (parts[0] === 'this' && parts.length >= 2) {
-      const propertyName = parts[1];
-      const expectedClassName = this.propertyNameToClassName(propertyName);
-
-      targetNode = nodes.find(n => {
-        if (n.name !== methodName || n.type !== 'method') return false;
-
-        const parentClass = nodes.find(p => p.id === n.parent && this.isClassLikeNode(p));
-        if (!parentClass) return false;
-
-        return parentClass.name.toLowerCase() === expectedClassName.toLowerCase() ||
-               parentClass.name.toLowerCase().includes(propertyName.toLowerCase());
-      });
-
-      if (targetNode) return targetNode.id;
-
-      const classNode = nodes.find(n =>
-        this.isClassLikeNode(n) &&
-        (n.name.toLowerCase() === expectedClassName.toLowerCase() ||
-         n.name.toLowerCase().includes(propertyName.toLowerCase()))
-      );
-      if (classNode) {
-        targetNode = nodes.find(n =>
-          n.name === methodName &&
-          n.type === 'method' &&
-          n.parent === classNode.id
-        );
-        if (targetNode) return targetNode.id;
-      }
-    }
-
-    const objectName = parts.join('.');
-    targetNode = nodes.find(n => {
-      if (n.name !== methodName || n.type !== 'method') return false;
-      const parentClass = nodes.find(p => p.id === n.parent && this.isClassLikeNode(p));
-      if (!parentClass) return false;
-      return parentClass.name.toLowerCase().includes(objectName.toLowerCase().replace('this.', ''));
-    });
-
-    return targetNode?.id;
   }
 
   private propertyNameToClassName(propertyName: string): string {
@@ -3811,7 +2169,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         modelPattern.lastIndex = 0;
       }
     } catch {
-      // Prisma schema parsing is best-effort; entity access falls back to class-based resolution.
+
     }
   }
 
@@ -3948,42 +2306,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private resolveSourceNodeId(
-    filePath: string,
-    func: ExtractedFunction,
-    nodes: CASNode[]
-  ): string | undefined {
-    if (func.className) {
-      const classId = `class_${filePath}_${func.className}_0`;
-      const methodNode = nodes.find(n =>
-        n.name === func.name &&
-        n.type === 'method' &&
-        n.parent === classId
-      );
-      if (methodNode) return methodNode.id;
-
-      const classNode = nodes.find(n => n.id === classId);
-      if (classNode) {
-        const anyMethodInClass = nodes.find(n =>
-          n.type === 'method' &&
-          n.parent === classId &&
-          n.name === func.name
-        );
-        if (anyMethodInClass) return anyMethodInClass.id;
-      }
-
-      return undefined;
-    }
-    const funcNode = nodes.find(n =>
-      n.name === func.name &&
-      n.type === 'function' &&
-      n.id.startsWith(`function_${filePath}`)
-    );
-    if (funcNode) return funcNode.id;
-
-    return undefined;
-  }
-
   private validateCallGraph(nodes: CASNode[], edges: CASEdge[]): void {
     const nodeIds = new Set(nodes.map(n => n.id));
 
@@ -4051,17 +2373,16 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private enrichNodesWithCallData(nodes: CASNode[], edges: CASEdge[]): void {
-    // Enrich nodes with call statistics
+
     const callCounts = new Map<string, { incoming: number; outgoing: number }>();
 
     edges.forEach(edge => {
       if (edge.type === 'calls') {
-        // Outgoing calls
+
         const sourceStats = callCounts.get(edge.source) || { incoming: 0, outgoing: 0 };
         sourceStats.outgoing++;
         callCounts.set(edge.source, sourceStats);
 
-        // Incoming calls
         const targetStats = callCounts.get(edge.target) || { incoming: 0, outgoing: 0 };
         targetStats.incoming++;
         callCounts.set(edge.target, targetStats);
@@ -4080,499 +2401,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         node.metadata.attributes.is_entry = stats.incoming === 0;
       }
     });
-  }
-
-  private extractConstructorDependencyEdges(
-    ast: TSESTree.Program,
-    filePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[]
-  ): void {
-    const visited = new WeakSet();
-
-    const walk = (node: any) => {
-      if (!node || typeof node !== 'object') return;
-
-      if (visited.has(node)) return;
-      visited.add(node);
-
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'ClassDeclaration' && node.id) {
-        const className = node.id.name;
-        const classId = `class_${filePath}_${className}_0`;
-        const classNode = nodes.find(n => n.id === classId);
-
-        if (!classNode) return;
-
-        const constructor = node.body?.body?.find((member: any) =>
-          member.type === 'MethodDefinition' && member.kind === 'constructor'
-        );
-
-        if (constructor?.value?.params) {
-          constructor.value.params.forEach((param: any, index: number) => {
-            const paramName = param.type === 'TSParameterProperty'
-              ? param.parameter?.name
-              : param.name;
-            const typeAnnotation = param.type === 'TSParameterProperty'
-              ? param.parameter?.typeAnnotation?.typeAnnotation
-              : param.typeAnnotation?.typeAnnotation;
-
-            if (typeAnnotation) {
-              const depType = this.extractTypeNameFromAnnotation(typeAnnotation);
-              if (depType && paramName) {
-                const library = this.getLibraryForType(depType);
-                this.classFieldTypes.set(`${className}.${paramName}`, {
-                  typeName: depType,
-                  library
-                });
-
-                if (depType.includes('Repository')) {
-                  const paramNameStr = typeof paramName === 'string' ? paramName : paramName.name;
-                  if (paramNameStr) {
-                    this.repositoryPropertyTypes.set(paramNameStr, depType);
-                  }
-                }
-              }
-            }
-
-            if (param.typeAnnotation?.typeAnnotation) {
-              const depType = this.extractTypeNameFromAnnotation(param.typeAnnotation.typeAnnotation);
-              if (depType) {
-                // First try to find by exact match with various types
-                let depNode = nodes.find(n =>
-                  n.name === depType &&
-                  (n.type === 'class' || n.type === 'service' || n.type === 'repository' ||
-                   n.type === 'controller' || n.type === 'guard' || n.type === 'middleware')
-                );
-
-                // If not found, try to find any class with that name
-                if (!depNode) {
-                  depNode = nodes.find(n => n.name === depType && n.type === 'class');
-                }
-
-                // Also look for interfaces that might be implemented by a service
-                if (!depNode && depType.endsWith('Service')) {
-                  depNode = nodes.find(n =>
-                    n.name === depType.replace('Service', 'ServiceImpl') ||
-                    n.name === depType.replace('Service', 'ServiceImplementation')
-                  );
-                }
-
-                if (depNode) {
-                  const edgeId = `${classId}_depends_on_${depNode.id}_injection_${index}`;
-                  if (!edges.find(e => e.id === edgeId)) {
-                    edges.push(this.createEdge(
-                      edgeId,
-                      classId,
-                      depNode.id,
-                      'depends_on',
-                      'dependency',
-                      {
-                        injection_type: 'constructor',
-                        from_constructor: true,
-                        parameter_index: index,
-                        parameter_name: param.name || `param${index}`,
-                        injected_type: depType
-                      }
-                    ));
-                  }
-                }
-              }
-            }
-          });
-        }
-
-        // Also look for property-based injection (e.g., @Inject decorators)
-        if (node.body?.body) {
-          node.body.body.forEach((member: any) => {
-            if (member.type === 'PropertyDefinition' && member.typeAnnotation?.typeAnnotation) {
-              const propType = this.extractTypeNameFromAnnotation(member.typeAnnotation.typeAnnotation);
-              const propName = member.key?.name;
-              if (propType && propName) {
-                const library = this.getLibraryForType(propType);
-                this.classFieldTypes.set(`${className}.${propName}`, {
-                  typeName: propType,
-                  library
-                });
-              }
-              if (propType) {
-                const depNode = nodes.find(n =>
-                  n.name === propType &&
-                  (n.type === 'class' || n.type === 'service' || n.type === 'repository')
-                );
-
-                if (depNode && member.decorators?.some((d: any) => d.expression?.callee?.name === 'Inject')) {
-                  const edgeId = `${classId}_depends_on_${depNode.id}_prop_injection`;
-                  if (!edges.find(e => e.id === edgeId)) {
-                    edges.push(this.createEdge(
-                      edgeId,
-                      classId,
-                      depNode.id,
-                      'depends_on',
-                      'dependency',
-                      {
-                        injection_type: 'property',
-                        property_name: member.key?.name,
-                        injected_type: propType
-                      }
-                    ));
-                  }
-                }
-              }
-            }
-          });
-        }
-      }
-
-      for (const key in node) {
-        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
-
-        if (Array.isArray(node[key])) {
-          node[key].forEach(walk);
-        } else if (typeof node[key] === 'object') {
-          walk(node[key]);
-        }
-      }
-    };
-
-    walk(ast);
-  }
-
-  private extractAllCallExpressions(
-    ast: TSESTree.Program,
-    filePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[]
-  ): void {
-
-    interface CallContext {
-      containingClass?: string;
-      containingMethod?: string;
-      containingFunction?: string;
-      containingNode?: CASNode;
-    }
-
-    const findNodeForContext = (ctx: CallContext): CASNode | undefined => {
-      if (ctx.containingMethod && ctx.containingClass) {
-        return nodes.find(n =>
-          n.name === ctx.containingMethod &&
-          n.type === 'method' &&
-          edges.some(e => e.type === 'has_method' && e.target === n.id && e.source.includes(ctx.containingClass || ''))
-        );
-      }
-      if (ctx.containingFunction) {
-        return nodes.find(n =>
-          n.name === ctx.containingFunction &&
-          n.type === 'function'
-        );
-      }
-      return undefined;
-    };
-
-    const extractCallInfo = (node: any, containingClass?: string): {target?: string, method?: string, isLibrary?: boolean, callType?: string, library?: string} => {
-      if (node.callee.type === 'MemberExpression') {
-        const getObjectName = (obj: any): string | null => {
-          if (obj.type === 'Identifier') return obj.name;
-          if (obj.type === 'ThisExpression') return 'this';
-          if (obj.type === 'MemberExpression') {
-            const baseObj = getObjectName(obj.object);
-            if (baseObj) return `${baseObj}.${obj.property?.name || 'unknown'}`;
-          }
-          if (obj.type === 'CallExpression') return 'call_result';
-          return null;
-        };
-
-        const objectName = getObjectName(node.callee.object);
-        const methodName = node.callee.property?.name || 'unknown';
-
-        const commonLibraries = ['fs', 'path', 'http', 'https', 'crypto', 'os', 'util', 'stream',
-                               'console', 'process', 'Buffer', 'Promise', 'Array', 'Object',
-                               'String', 'Number', 'Math', 'Date', 'JSON', 'RegExp'];
-
-        let isLibrary = commonLibraries.some(lib => objectName?.startsWith(lib));
-        let library: string | undefined;
-
-        if (objectName?.startsWith('this.') && containingClass) {
-          const fieldName = objectName.replace('this.', '').split('.')[0];
-          const fieldKey = `${containingClass}.${fieldName}`;
-          const fieldInfo = this.classFieldTypes.get(fieldKey);
-          if (fieldInfo?.library) {
-            isLibrary = true;
-            library = fieldInfo.library;
-          }
-        }
-
-        return {
-          target: objectName || undefined,
-          method: methodName,
-          isLibrary,
-          library,
-          callType: objectName === 'this' ? 'internal' : isLibrary ? 'library' : 'external'
-        };
-      } else if (node.callee.type === 'Identifier') {
-        return {
-          method: node.callee.name,
-          callType: 'function'
-        };
-      } else if (node.callee.type === 'CallExpression') {
-        return {
-          method: 'dynamic_call',
-          callType: 'dynamic'
-        };
-      }
-      return {};
-    };
-
-    const visited = new WeakSet();
-
-    const walk = (node: any, context: CallContext = {}): void => {
-      if (!node || typeof node !== 'object') return;
-      if (visited.has(node)) return;
-      visited.add(node);
-
-      let currentContext = {...context};
-
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'ClassDeclaration' && node.id) {
-        currentContext.containingClass = node.id.name;
-        currentContext.containingMethod = undefined;
-        currentContext.containingFunction = undefined;
-      } else if (node.type === 'MethodDefinition' && node.key?.name) {
-        currentContext.containingMethod = node.key.name;
-        currentContext.containingFunction = undefined;
-        currentContext.containingNode = findNodeForContext(currentContext);
-
-        if (node.decorators && currentContext.containingNode) {
-          node.decorators.forEach((decorator: any) => {
-            if (decorator.expression?.type === 'CallExpression' &&
-                decorator.expression.callee?.type === 'Identifier') {
-              const decoratorName = decorator.expression.callee.name;
-              const httpMethods = ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Options', 'Head'];
-
-              if (httpMethods.includes(decoratorName)) {
-                const routePath = decorator.expression.arguments?.[0]?.value || '/';
-                entryPoints.push({
-                  id: `entry_http_${currentContext.containingNode!.id}`,
-                  source_node: currentContext.containingNode!.id,
-                  type: 'http',
-                  name: `HTTP ${decoratorName.toUpperCase()} ${routePath}`,
-                  trigger: {
-                    method: decoratorName.toUpperCase(),
-                    path: routePath
-                  },
-                  metadata: {
-                    decorator: decoratorName,
-                    framework: 'nestjs'
-                  }
-                } as CASEntryPoint);
-
-                if (!currentContext.containingNode!.metadata) {
-                  currentContext.containingNode!.metadata = {};
-                }
-                if (!currentContext.containingNode!.metadata.attributes) {
-                  currentContext.containingNode!.metadata.attributes = {};
-                }
-                currentContext.containingNode!.metadata.attributes.httpEndpoint = true;
-                currentContext.containingNode!.metadata.attributes.httpMethod = decoratorName.toUpperCase();
-                currentContext.containingNode!.metadata.attributes.httpPath = routePath;
-              }
-            }
-          });
-        }
-      } else if (node.type === 'FunctionDeclaration' && node.id) {
-        currentContext.containingFunction = node.id.name;
-        currentContext.containingClass = undefined;
-        currentContext.containingMethod = undefined;
-        currentContext.containingNode = findNodeForContext(currentContext);
-      } else if (node.type === 'ArrowFunctionExpression' || node.type === 'FunctionExpression') {
-        if (node.parent?.type === 'VariableDeclarator' && node.parent.id?.type === 'Identifier') {
-          currentContext.containingFunction = node.parent.id.name;
-          currentContext.containingClass = undefined;
-          currentContext.containingMethod = undefined;
-          currentContext.containingNode = findNodeForContext(currentContext);
-        }
-      }
-
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'CallExpression') {
-        const callInfo = extractCallInfo(node, currentContext.containingClass);
-        const callerNode = currentContext.containingNode;
-
-        if (callerNode && callInfo.method && callInfo.target) {
-          if (callInfo.isLibrary && !BUILTIN_NOT_EXIT_POINTS.has(callInfo.target)) {
-            const exitPointId = `exit_${callerNode.id}_to_${callInfo.target}_${callInfo.method}`;
-            exitPoints.push({
-              id: exitPointId,
-              source_node: callerNode.id,
-              type: 'sdk',
-              name: `Call to ${callInfo.target}.${callInfo.method}`,
-              target: {
-                sdk: callInfo.target,
-                endpoint: callInfo.method
-              },
-              operation: {
-                action: callInfo.method,
-                async: node.parent?.type === 'AwaitExpression'
-              },
-              metadata: {
-                line: node.loc?.start.line,
-                library: callInfo.library
-              }
-            } as CASExitPoint);
-
-            const edgeId = `${callerNode.id}_calls_external_${callInfo.target}_${callInfo.method}`;
-            if (!edges.find(e => e.id === edgeId)) {
-              edges.push(this.createEdge(
-                edgeId,
-                callerNode.id,
-                exitPointId,
-                'calls',
-                'behavior',
-                {
-                  call_type: 'library_call',
-                  library: callInfo.library || callInfo.target,
-                  method: callInfo.method,
-                  is_async: node.parent?.type === 'AwaitExpression',
-                  line: node.loc?.start.line
-                }
-              ));
-            }
-          } else if (!callInfo.isLibrary) {
-            let targetNode: CASNode | undefined;
-
-            if (callInfo.callType === 'internal' && callInfo.method) {
-              targetNode = nodes.find(n =>
-                n.name === callInfo.method &&
-                n.type === 'method' &&
-                n.parent === callerNode.parent
-              );
-            } else if (callInfo.callType === 'external' && callInfo.target && callInfo.method) {
-              const possibleTargets = nodes.filter(n =>
-                n.name === callInfo.method &&
-                (n.type === 'method' || n.type === 'function')
-              );
-
-              if (possibleTargets.length === 1) {
-                targetNode = possibleTargets[0];
-              } else if (possibleTargets.length > 1 && currentContext.containingClass) {
-                const injectedDeps = edges.filter(e =>
-                  e.source.includes(currentContext.containingClass!) &&
-                  e.type === 'calls' &&
-                  e.metadata?.attributes?.call_type === 'injection'
-                );
-
-                for (const dep of injectedDeps) {
-                  const depClass = nodes.find(n => n.id === dep.target);
-                  if (depClass) {
-                    targetNode = possibleTargets.find(n => n.parent === depClass.id);
-                    if (targetNode) break;
-                  }
-                }
-              }
-            } else if (callInfo.callType === 'function' && callInfo.method) {
-              targetNode = nodes.find(n =>
-                n.name === callInfo.method &&
-                n.type === 'function'
-              );
-            }
-
-            if (targetNode && targetNode.id !== callerNode.id) {
-              const edgeId = `${callerNode.id}_calls_${targetNode.id}`;
-              if (!edges.find(e => e.id === edgeId)) {
-                edges.push(this.createEdge(
-                  edgeId,
-                  callerNode.id,
-                  targetNode.id,
-                  'calls',
-                  'behavior',
-                  {
-                    call_type: callInfo.callType || 'unknown',
-                    is_async: node.parent?.type === 'AwaitExpression',
-                    is_callback: node.parent?.type === 'CallExpression',
-                    line: node.loc?.start.line,
-                    target_object: callInfo.target,
-                    target_method: callInfo.method
-                  }
-                ));
-              }
-            }
-          }
-        }
-      }
-
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'NewExpression' && node.callee?.type === 'Identifier') {
-        const callerNode = currentContext.containingNode;
-        const className = node.callee.name;
-
-        if (callerNode) {
-          const targetClass = nodes.find(n => n.name === className && n.type === 'class');
-          if (targetClass) {
-            const constructor = nodes.find(n =>
-              n.name === 'constructor' &&
-              n.type === 'method' &&
-              n.parent === targetClass.id
-            );
-
-            const targetId = constructor?.id || targetClass.id;
-            const edgeId = `${callerNode.id}_instantiates_${targetId}`;
-
-            if (!edges.find(e => e.id === edgeId)) {
-              edges.push(this.createEdge(
-                edgeId,
-                callerNode.id,
-                targetId,
-                'calls',
-                'behavior',
-                {
-                  call_type: 'constructor',
-                  class_name: className,
-                  line: node.loc?.start.line
-                }
-              ));
-            }
-          }
-        }
-      }
-
-      for (const key in node) {
-        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
-
-        if (Array.isArray(node[key])) {
-          node[key].forEach((child: any) => {
-            if (child && typeof child === 'object') {
-              child.parent = node;
-              walk(child, currentContext);
-            }
-          });
-        } else if (typeof node[key] === 'object' && node[key]) {
-          node[key].parent = node;
-          walk(node[key], currentContext);
-        }
-      }
-    };
-
-    walk(ast);
-  }
-
-
-  private extractTypeNameFromAnnotation(typeNode: any): string | null {
-    if (!typeNode) return null;
-    if (typeNode.type === 'TSTypeReference' && typeNode.typeName) {
-      if (typeNode.typeName.type === 'Identifier') {
-        return typeNode.typeName.name;
-      }
-    }
-    if (typeNode.type === 'Identifier') {
-      return typeNode.name;
-    }
-    return null;
   }
 
   private buildCategories(): Partial<CASCategories> {
@@ -4640,17 +2468,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     );
   }
 
-  /**
-   * Test code stays in the graph as nodes (tagged `test-code`) but contributes
-   * no entry or exit points: a `vi.fn()` in a spec is not a product surface.
-   *
-   * `edges` is not optional. Removing an entry/exit point without dropping the
-   * `calls` edges that reference it is how the analyzer shipped a graph whose
-   * edges named ids present in no collection — measured at 17,656 `calls` edges
-   * on one real repository, the overwhelming majority of them test-file call
-   * sites (`expect`, `fireEvent`, `vi.spyOn`) whose exit point this boundary
-   * had discarded while the edge to it survived.
-   */
   private applyTestSourceBoundary(
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
@@ -4670,8 +2487,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const removedEndpointIds = new Set<string>();
     this.removeItemsOwnedByTestNodes(entryPoints, testNodeIds, removedEndpointIds);
     this.removeItemsOwnedByTestNodes(exitPoints, testNodeIds, removedEndpointIds);
-    // The discarded point has no successor to point at — the call it stood for
-    // is test scaffolding, not a product edge — so the reference is dropped.
+
     dropEdgesReferencingRemovedEndpoints(edges, removedEndpointIds);
   }
 
@@ -4806,34 +2622,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private extractJSDoc(node: any, content: string, lines: string[]): CASDocumentation | undefined {
-    if (!node.loc) return undefined;
-
-    const startLine = node.loc.start.line;
-    if (startLine <= 1) return undefined;
-
-    const previousLine = lines[startLine - 2];
-    if (!previousLine) return undefined;
-
-    const trimmed = previousLine.trim();
-    if (!trimmed.endsWith('*/')) return undefined;
-
-    let jsdocStart = -1;
-    for (let i = startLine - 2; i >= 0; i--) {
-      if (lines[i].includes('/**')) {
-        jsdocStart = i;
-        break;
-      }
-    }
-
-    if (jsdocStart === -1) return undefined;
-
-    const jsdocLines = lines.slice(jsdocStart, startLine - 1);
-    const rawDoc = jsdocLines.join('\n');
-
-    return this.parseJSDoc(rawDoc, jsdocStart + 1, startLine - 1);
-  }
-
   private parseJSDoc(raw: string, startLine: number, endLine: number): CASDocumentation {
     const doc: CASDocumentation = {
       type: 'jsdoc',
@@ -4925,302 +2713,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return doc;
   }
 
-  private extractNodeComments(node: any, content: string, lines: string[], filePath: string): CASComment[] {
-    const comments: CASComment[] = [];
-    if (!node.loc) return comments;
-
-    const startLine = node.loc.start.line;
-    const endLine = node.loc.end.line;
-
-    for (let i = startLine; i <= endLine && i <= lines.length; i++) {
-      const line = lines[i - 1];
-      if (!line) continue;
-
-      const singleLineMatch = line.match(/\/\/(.*)$/);
-      if (singleLineMatch) {
-        const text = singleLineMatch[1].trim();
-        const purpose = this.classifyCommentPurpose(text);
-        comments.push({
-          // Stable order-independent id: at most one single-line comment per
-          // source line, so file+line+kind identifies it regardless of the
-          // order files (or nodes) are visited in.
-          id: `comment_${filePath}_${i}_single`,
-          type: 'single-line',
-          style: '//',
-          text,
-          purpose,
-          location: {
-            file: node.loc.source || '',
-            line: i,
-            relative_to: 'inline'
-          },
-          markers: this.extractCommentMarkers(text)
-        });
-      }
-
-      const blockMatch = line.match(/\/\*([^*]|\*(?!\/))*\*\//);
-      if (blockMatch) {
-        const text = blockMatch[0].replace(/^\/\*\s*/, '').replace(/\s*\*\/$/, '').trim();
-        if (!text.includes('/**')) {
-          const purpose = this.classifyCommentPurpose(text);
-          comments.push({
-            id: `comment_${filePath}_${i}_block`,
-            type: 'block',
-            style: '/* */',
-            text,
-            purpose,
-            location: {
-              file: node.loc.source || '',
-              line: i,
-              relative_to: 'inline'
-            },
-            markers: this.extractCommentMarkers(text)
-          });
-        }
-      }
-    }
-
-    return comments;
-  }
-
-  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
-    const comments: CASComment[] = [];
-    const lines = content.split('\n');
-
-    lines.forEach((line, index) => {
-      const singleLineMatch = line.match(/\/\/(.*)$/);
-      if (singleLineMatch) {
-        const text = singleLineMatch[1].trim();
-        const purpose = this.classifyCommentPurpose(text);
-        comments.push({
-          // Stable order-independent id: one comment per source line here, so
-          // file+line identifies it regardless of file visit order.
-          id: `comment_${filePath}_${index + 1}`,
-          type: 'single-line',
-          style: '//',
-          text,
-          purpose,
-          location: {
-            file: filePath,
-            line: index + 1,
-            relative_to: 'above'
-          },
-          markers: this.extractCommentMarkers(text)
-        });
-      }
-    });
-
-    return comments;
-  }
-
-  private extractCommentMarkers(text: string): any {
-    return {
-      is_todo: /\b(TODO|TO DO)\b/i.test(text),
-      is_fixme: /\bFIXME\b/i.test(text),
-      is_hack: /\bHACK\b/i.test(text),
-      is_warning: /\b(WARNING|WARN)\b/i.test(text),
-      is_note: /\bNOTE\b/i.test(text),
-      is_question: /\?/.test(text) && text.length < 100,
-      is_important: /\b(IMPORTANT|CRITICAL)\b/i.test(text)
-    };
-  }
-
-  private classifyCommentPurpose(text: string): CASComment['purpose'] {
-    if (/\b(TODO|FIXME|HACK)\b/i.test(text)) return 'todo';
-    if (/\b(WARNING|WARN|DANGER)\b/i.test(text)) return 'warning';
-    if (/\bNOTE\b/i.test(text)) return 'note';
-    if (/\bHACK\b/i.test(text)) return 'hack';
-    if (/^\s*\/\/.+\s*$/.test(text) && text.includes('//')) return 'disabled-code';
-    if (text.length < 50 && /explains?|because|since|why/i.test(text)) return 'clarification';
-    return 'explanation';
-  }
-
-  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
-    const todos: CASTodo[] = [];
-    // Stable order-independent ids: seq follows the (deterministic, per-file)
-    // comment order of this call, so ids derive from file+position, not the
-    // cross-file visit order a run-global counter would capture.
-    let todoSeq = 0;
-
-    comments.forEach(comment => {
-      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
-        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
-        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
-
-        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
-        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
-
-        const priority = comment.markers?.is_important ? 'high' :
-                        comment.markers?.is_fixme ? 'medium' : 'low';
-
-        todos.push({
-          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
-          type,
-          text: comment.text,
-          priority,
-          assignee,
-          location: {
-            file: comment.location.file,
-            line: comment.location.line,
-            node_id: context
-          },
-          classification: {
-            category: type === 'FIXME' ? 'bug' :
-                     type === 'OPTIMIZE' ? 'performance' :
-                     type === 'REFACTOR' ? 'refactor' : 'feature',
-            technical_debt: true,
-            blocking: priority === 'high'
-          }
-        });
-      }
-    });
-
-    return todos;
-  }
-
-  private detectImplementationStatus(node: any, content: string): CASImplementationStatus | undefined {
-    if (!node || !node.body) return undefined;
-
-    const bodyStr = content.substring(node.body.range?.[0] || 0, node.body.range?.[1] || 0);
-
-    const statementCount = (bodyStr.match(/;/g) || []).length;
-    const hasSubstantialCode = statementCount > 3 || bodyStr.length > 100;
-    const simpleReturnPattern = /return\s+(null|undefined|false|0|''|""|\[\]|\{\})\s*;?\s*$/m;
-    const isOnlySimpleReturn = simpleReturnPattern.test(bodyStr) && !hasSubstantialCode;
-
-    const indicators = {
-      has_todo_markers: /\b(TODO|FIXME|HACK)\b/i.test(bodyStr),
-      has_not_implemented_exceptions: /throw\s+.*(NotImplemented|Unsupported|TODO)/i.test(bodyStr),
-      has_stub_returns: isOnlySimpleReturn,
-      has_placeholder_code: /console\.(log|warn|error)\s*\(['"].*TODO/i.test(bodyStr),
-      has_hardcoded_values: /const\s+\w+\s*=\s*['"]PLACEHOLDER|TEMP|TODO/i.test(bodyStr),
-      has_commented_out_code: /\/\/.*\w+\s*\(|^\/\*[\s\S]*?\*\//m.test(bodyStr)
-    };
-
-    const isEmptyBody = bodyStr.trim().match(/^\{\s*\}$/);
-    const params = node.params || node.value?.params || [];
-    const hasParameterProperties = params.some((p: any) =>
-      p.type === 'TSParameterProperty' ||
-      p.accessibility ||
-      p.readonly
-    );
-
-    const hasImplementation = (bodyStr.trim().length > 10 && !isEmptyBody) ||
-                              hasParameterProperties;
-
-    let status: CASImplementationStatus['status'] = 'complete';
-    if (!hasImplementation && !hasParameterProperties) {
-      status = 'stub';
-    } else if (indicators.has_not_implemented_exceptions) {
-      status = 'not-implemented';
-    } else if (indicators.has_todo_markers || indicators.has_stub_returns) {
-      status = 'partial';
-    }
-
-    const deprecatedMatch = bodyStr.match(/@deprecated/i);
-    if (deprecatedMatch) {
-      status = 'deprecated';
-    }
-
-    const experimentalMatch = bodyStr.match(/@experimental|@beta/i);
-    if (experimentalMatch) {
-      status = 'experimental';
-    }
-
-    return {
-      status,
-      indicators,
-      completeness: status === 'complete' ? { estimated_percentage: 100 } :
-                   status === 'partial' ? { estimated_percentage: 50 } :
-                   status === 'stub' ? { estimated_percentage: 10 } :
-                   { estimated_percentage: 0 }
-    };
-  }
-
-  private extractParameters(params: any[], jsdoc?: CASDocumentation): any[] {
-    return params.map((param: any) => {
-      const name = param.name || param.left?.name || 'param';
-      const jsdocParam = jsdoc?.parameters?.find(p => p.name === name);
-
-      return {
-        name,
-        type: this.extractTypeFromAnnotation(param.typeAnnotation) || jsdocParam?.type,
-        optional: param.optional || !!param.left,
-        description: jsdocParam?.description,
-        default_value: param.right ? this.extractLiteralValue(param.right) : undefined
-      };
-    });
-  }
-
-  private extractReturnType(returnTypeNode: any, jsdoc?: CASDocumentation): string | undefined {
-    const annotationType = this.extractTypeFromAnnotation(returnTypeNode);
-    return annotationType || jsdoc?.returns?.type;
-  }
-
-  private extractTypeFromAnnotation(typeNode: any): string | undefined {
-    if (!typeNode) return undefined;
-    if (typeNode.typeAnnotation) {
-      typeNode = typeNode.typeAnnotation;
-    }
-
-    switch (typeNode.type) {
-      case 'TSStringKeyword': return 'string';
-      case 'TSNumberKeyword': return 'number';
-      case 'TSBooleanKeyword': return 'boolean';
-      case 'TSAnyKeyword': return 'any';
-      case 'TSVoidKeyword': return 'void';
-      case 'TSNullKeyword': return 'null';
-      case 'TSUndefinedKeyword': return 'undefined';
-      case 'TSArrayType':
-        const elementType = this.extractTypeFromAnnotation(typeNode.elementType);
-        return elementType ? `${elementType}[]` : 'Array';
-      case 'TSTypeReference':
-        if (typeNode.typeName?.type === 'Identifier') {
-          return typeNode.typeName.name;
-        }
-        break;
-    }
-    return undefined;
-  }
-
-  private extractLiteralValue(node: any): any {
-    if (!node) return undefined;
-
-    switch (node.type) {
-      case 'Literal': return node.value;
-      case 'TemplateLiteral': return node.quasis.map((q: any) => q.value.raw).join('');
-      case 'Identifier': return node.name;
-      case 'ArrayExpression': return '[]';
-      case 'ObjectExpression': return '{}';
-      case 'ArrowFunctionExpression':
-        if (node.body?.type === 'Identifier') {
-          return `() => ${node.body.name}`;
-        }
-        if (node.body?.type === 'MemberExpression' && node.body.object?.type === 'Identifier') {
-          return `() => ${node.body.object.name}.${node.body.property?.name || 'unknown'}`;
-        }
-        return '() => ...';
-      default: return undefined;
-    }
-  }
-
-  private extractDecorators(node: any): Array<{ name: string; arguments?: any[] }> | undefined {
-    if (!node.decorators || node.decorators.length === 0) return undefined;
-
-    return node.decorators.map((decorator: any) => {
-      if (decorator.expression?.type === 'CallExpression') {
-        const name = decorator.expression.callee?.name || 'unknown';
-        const args = decorator.expression.arguments?.map((arg: any) =>
-          this.extractLiteralValue(arg)
-        );
-        return { name, arguments: args };
-      } else if (decorator.expression?.type === 'Identifier') {
-        return { name: decorator.expression.name };
-      }
-      return { name: 'unknown' };
-    });
-  }
-
   private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
     nodes.forEach(node => {
       if (!node || typeof node !== 'object') return;
@@ -5310,14 +2802,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private shouldParseJsx(filePath: string, content?: string): boolean {
-    if (/\.(jsx|tsx)$/i.test(filePath)) return true;
-    if (/\.[cm]?js$/i.test(filePath) && content) {
-      return /<[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:\s|>|\/)/.test(content) ||
-        /<[a-z][A-Za-z0-9:-]*(?:\s|>|\/)/.test(content);
-    }
-    return false;
-  }
 }
 export function treeSitterWorkerExecArgv(execArgv: string[]): string[] {
   return execArgv.filter(argument =>

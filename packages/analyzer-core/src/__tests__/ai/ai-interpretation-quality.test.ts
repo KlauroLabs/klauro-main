@@ -3,6 +3,7 @@ import { aiService } from '../../ai/ai-service';
 import { aiConfig } from '../../config/ai.config';
 import { validateElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isPlausibleExternalServiceName, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
+import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 
 // These exercise internal heuristics of the orchestrator. They are private by
 // design (not part of the public CAS contract) so the tests reach them via a
@@ -26,6 +27,22 @@ describe('shared element description validator', () => {
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('generic-structural-phrase');
+  });
+
+  it('accepts runtime behavior when runtime semantics belong to the capability', () => {
+    const result = validateElementDescription(
+      'Runtime Correlation connects static analysis with runtime behavior so operators can compare inferred paths with observed execution.',
+      { name: 'Runtime Correlation', kind: 'capability', relatedDomains: ['runtime evidence', 'static analysis'] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('still rejects runtime behavior as filler when the subject has no runtime semantics', () => {
+    const result = validateElementDescription(
+      'Session Authentication connects session records with runtime behavior across different system components.',
+      subject,
+    );
+    expect(result).toEqual({ ok: false, reason: 'generic-structural-phrase' });
   });
 
   it('rejects structural house-style operation lists', () => {
@@ -226,6 +243,22 @@ describe('shared element description validator', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('rejects direct-verb prose that only restates a capability name', () => {
+    const result = validateElementDescription(
+      'Manages and tracks concurrent work activities within the codebase.',
+      { name: 'Coordinates concurrent work through Fabric', kind: 'capability' },
+    );
+    expect(result).toEqual({ ok: false, reason: 'generic-name-restatement' });
+  });
+
+  it('rejects first-person analysis labels in published product prose', () => {
+    const result = validateElementDescription(
+      'This capability analyzes and previews codebases so users can plan software projects.',
+      { name: 'Analyzes and previews codebases', kind: 'capability' },
+    );
+    expect(result.reason).toBe('internal-analysis-vocabulary');
+  });
+
   it('rejects descriptions that never reference the target subject', () => {
     const result = validateElementDescription(
       'This area maintains records and relationships used by the rest of the product so workflows stay consistent over time.',
@@ -233,6 +266,14 @@ describe('shared element description validator', () => {
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('target-not-grounded');
+  });
+
+  it('accepts a capability description grounded by its explicit related entity', () => {
+    const result = validateElementDescription(
+      'Operators create and retrieve user records needed to maintain accurate user information.',
+      { name: 'Manage users', kind: 'capability', relatedEntities: ['User'] },
+    );
+    expect(result.ok).toBe(true);
   });
 
   it('rejects ungrounded marketing language but allows subject-grounded matches', () => {
@@ -396,7 +437,7 @@ describe('external service plausibility filter', () => {
         [],
         [],
         ['socket', 'Packet', 'BufferPool', 'zerac', 'Stripe'],
-        orch.emptyFlowGraph(),
+        emptyFlowGraph(),
         [],
         [],
         [],
@@ -462,7 +503,7 @@ describe('AI interpretation budgets for hosted providers', () => {
     };
 
     try {
-      await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), []);
+      await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], emptyFlowGraph(), []);
     } finally {
       spy.mockRestore();
       if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
@@ -532,7 +573,7 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
       .mockResolvedValueOnce(goodAnswer);
     const purpose = freshPurpose();
 
-    await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), []);
+    await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], emptyFlowGraph(), []);
 
     // 1 initial + 2 repair re-prompts.
     expect(spy).toHaveBeenCalledTimes(3);
@@ -554,7 +595,7 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(badAnswer);
     const purpose = freshPurpose();
 
-    await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), []);
+    await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], emptyFlowGraph(), []);
 
     expect(spy).toHaveBeenCalledTimes(5);
     expect(purpose.description_generation.status).toBe('ai_rejected');
@@ -612,6 +653,16 @@ describe('graph-evidence leak check applies uniformly (no self exemption)', () =
     );
 
     expect(result).toEqual({ ok: false, reason: 'analysis-product-filler' });
+  });
+
+  it('rejects vague tool inventories from the product narrative', () => {
+    const result = orch.validateGeneratedAIInterpretation(
+      'Klauro analyzes codebases into relationship graphs for people and AI agents. It presents behavior-level comprehension and architecture context before software changes. Teams can compare static structure with runtime evidence while collaborating on overlapping concepts. The platform operates as a monorepo and is integrated with tools like Clap and JSON for specific tasks.',
+      purpose,
+      { structuralTokens: ['codebase', 'analysis', 'agent', 'runtime', 'collaboration'], deployableCount: 3 },
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'implementation-stack-filler' });
   });
 });
 

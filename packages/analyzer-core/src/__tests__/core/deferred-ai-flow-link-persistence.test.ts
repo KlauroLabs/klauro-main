@@ -82,8 +82,8 @@ function buildCas(): {
     exit_points: exitPoints,
     call_chains: [],
     data_lineage: [],
-    data_entities: [],
-    system_capabilities: systemCapabilities,
+    entities: [],
+    capabilities: systemCapabilities,
     behavior_surfaces: [],
     analyzer_contributions: [],
   } as unknown as CASOutput;
@@ -98,7 +98,7 @@ function derive(cas: CASOutput, entryPoints: CASEntryPoint[]): CASEntryPoint[] {
     exit_points: cas.exit_points,
     call_chains: cas.call_chains,
     data_lineage: cas.data_lineage,
-    system_capabilities: cas.system_capabilities,
+    capabilities: cas.capabilities,
     behavior_surfaces: cas.behavior_surfaces,
   });
 }

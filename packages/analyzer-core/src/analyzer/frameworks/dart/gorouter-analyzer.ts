@@ -5,52 +5,52 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * GoRouter (Flutter) framework analyzer.
- *
- * GoRouter declares navigation as a route tree on the router instance:
- *
- *   final router = GoRouter(
- *     redirect: (context, state) { if (!loggedIn) return '/login'; return null; },
- *     routes: [
- *       GoRoute(path: '/', builder: ...),
- *       GoRoute(path: '/users/:id', builder: ..., routes: [
- *         GoRoute(path: 'edit', builder: ...),          // -> /users/:id/edit
- *       ]),
- *       ShellRoute(builder: ..., routes: [
- *         GoRoute(path: '/dashboard', builder: ...),
- *       ]),
- *     ],
- *   );
- *
- * Nested GoRoutes inherit the parent path prefix. A child whose `path` begins with
- * '/' is absolute; otherwise it is appended to the parent's resolved path. GoRouter
- * is GET-style navigation (no HTTP verbs), so every GoRoute is emitted as method
- * 'GET' with its fully resolved path.
- *
- * Auth: GoRouter guards with a top-level `redirect:` callback. When such a redirect
- * references auth/login (e.g. returns '/login' for unauthenticated users), the
- * routes it governs are protected. We mark routes auth:true only when the router has
- * a redirect that classifies as an auth guard AND the route itself is not the public
- * login/auth target. This is best-effort and honest: with no detectable auth-redirect
- * every route is auth:false.
- *
- * AST grounding (real tree-sitter-dart): a constructor call `Foo(args)` appears as
- * two adjacent named siblings: `identifier "Foo"` then `selector > argument_part >
- * arguments`. Named args are `named_argument(label(identifier "name"), <value>)`.
- * String literals keep their surrounding quotes and have no named children. List
- * values are `list_literal` whose children are the flattened identifier/selector
- * pairs of each constructor element.
- */
 
-/** Constructor names that contribute a path segment (a real GoRoute). */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const ROUTE_CTORS = new Set(['GoRoute']);
-/** Container route constructors that hold nested routes but contribute no path. */
+
 const SHELL_CTORS = new Set(['ShellRoute', 'StatefulShellRoute', 'StatefulShellBranch']);
 
 interface RouteCtx {
-  parentPath: string; // resolved parent path (no trailing slash, '' at root)
-  authed: boolean;    // governed by an auth redirect
+  parentPath: string;
+  authed: boolean;
 }
 
 export class GoRouterAnalyzer extends BaseAnalyzer {
@@ -117,18 +117,19 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse one Dart source and emit a GET http entry point per GoRoute. We locate
-   * each `GoRouter(...)` constructor, decide whether its `redirect:` is an auth
-   * guard, then descend its `routes:` list recursively, resolving nested path
-   * prefixes.
-   */
+
+
+
+
+
+
   private async extractRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): Promise<void> {
     const tree = await parseWasm('dart', content);
     const root = tree.rootNode;
+    try {
     const seen = new Set<string>();
 
-    // Find each GoRouter(...) constructor (identifier "GoRouter" + sibling selector).
+
     const routers: Array<{ args: any; authed: boolean }> = [];
     const visit = (node: any): void => {
       if (node.type === 'identifier' && node.text === 'GoRouter') {
@@ -143,8 +144,8 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     visit(root);
 
     if (routers.length === 0) {
-      // No GoRouter wrapper found (routes declared standalone). Walk any top-level
-      // GoRoute trees as a best-effort fallback with no auth context.
+
+
       const topRoutes = this.collectCtorElements(root, new Set(['GoRoute', ...SHELL_CTORS]));
       for (const el of topRoutes) {
         this.descendRoute(el, { parentPath: '', authed: false }, relativePath, entryPoints, seen);
@@ -159,13 +160,16 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
         this.descendRoute(el, { parentPath: '', authed: router.authed }, relativePath, entryPoints, seen);
       }
     }
+    } finally {
+      tree.delete?.();
+    }
   }
 
-  /**
-   * Recursively process one route-tree element. A GoRoute contributes a path
-   * segment and (if it has a builder/handler) emits a route; a ShellRoute-family
-   * container contributes nothing to the path but passes children through.
-   */
+
+
+
+
+
   private descendRoute(
     el: { ctor: string; selector: any },
     ctx: RouteCtx,
@@ -177,14 +181,14 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     if (ROUTE_CTORS.has(el.ctor)) {
       const rawPath = this.stringArg(sel, 'path');
       const resolvedPath = this.resolvePath(ctx.parentPath, rawPath ?? '');
-      // A redirect that guards unauthenticated users sends them to /login, so the
-      // login/auth route itself stays public even under an authed router.
+
+
       const isAuthTarget = /(^|\/)(login|signin|sign-in|auth|register|signup)(\/|$)/i.test(resolvedPath);
       const authed = ctx.authed && !isAuthTarget;
 
-      // Emit only when this GoRoute actually renders something (builder /
-      // pageBuilder / redirect). Pure pass-through GoRoutes (only nested routes)
-      // contribute their prefix but no endpoint of their own.
+
+
+
       const handler = this.routeHandlerName(sel);
       if (handler) {
         const dedupe = `GET:${resolvedPath}`;
@@ -198,7 +202,7 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Descend nested routes under the resolved path.
+
       const nested = this.namedArgValue(sel, 'routes');
       if (nested && nested.type === 'list_literal') {
         for (const child of this.listElements(nested)) {
@@ -206,14 +210,14 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
         }
       }
     } else if (SHELL_CTORS.has(el.ctor)) {
-      // Shell containers keep the parent prefix and auth, passing children through.
+
       const nested = this.namedArgValue(sel, 'routes');
       if (nested && nested.type === 'list_literal') {
         for (const child of this.listElements(nested)) {
           this.descendRoute(child, ctx, relativePath, entryPoints, seen);
         }
       }
-      // StatefulShellRoute uses `branches:` of StatefulShellBranch(routes:).
+
       const branches = this.namedArgValue(sel, 'branches');
       if (branches && branches.type === 'list_literal') {
         for (const child of this.listElements(branches)) {
@@ -223,14 +227,14 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Resolve a child `path` against its parent's resolved path. */
+
   private resolvePath(parentPath: string, rawPath: string): string {
     const child = rawPath.trim();
     if (child.startsWith('/')) {
-      // Absolute path. Normalize duplicate slashes; keep root '/'.
+
       return this.normalize(child);
     }
-    // Relative child appended to parent.
+
     const base = parentPath === '' ? '' : parentPath;
     const joined = base.replace(/\/$/, '') + '/' + child;
     return this.normalize(joined.startsWith('/') ? joined : '/' + joined);
@@ -270,10 +274,10 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     );
   }
 
-  // ---- AST helpers (grounded on tree-sitter-dart) -------------------------------
 
-  /** Find every `<Ctor>(...)` element directly produced in the tree (identifier +
-   *  sibling selector pairs). Used for the no-router fallback. */
+
+
+
   private collectCtorElements(root: any, ctors: Set<string>): Array<{ ctor: string; selector: any }> {
     const out: Array<{ ctor: string; selector: any }> = [];
     const visit = (node: any): void => {
@@ -287,8 +291,8 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     return out;
   }
 
-  /** Elements of a `list_literal` of constructor calls: pair each `identifier`
-   *  with its following `selector` sibling. */
+
+
   private listElements(list: any): Array<{ ctor: string; selector: any }> {
     const out: Array<{ ctor: string; selector: any }> = [];
     for (let i = 0; i < list.namedChildCount; i++) {
@@ -301,14 +305,14 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     return out;
   }
 
-  /** The `arguments` node inside a `selector > argument_part > arguments`. */
+
   private argumentsNode(selector: any): any {
     const argPart = this.childOfType(selector, 'argument_part');
     if (!argPart) return undefined;
     return this.childOfType(argPart, 'arguments');
   }
 
-  /** Value node of a named argument by name (e.g. 'path', 'routes', 'redirect'). */
+
   private namedArgValue(selector: any, name: string): any {
     const args = this.argumentsNode(selector);
     if (!args) return undefined;
@@ -316,7 +320,7 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
       const arg = args.namedChild(i);
       if (arg.type !== 'named_argument') continue;
       if (this.argLabelName(arg) === name) {
-        // Value is the last named child after the label.
+
         for (let j = arg.namedChildCount - 1; j >= 0; j--) {
           const v = arg.namedChild(j);
           if (v.type !== 'label') return v;
@@ -326,7 +330,7 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** The name carried by a named_argument's `label` (its identifier child). */
+
   private argLabelName(arg: any): string | undefined {
     const label = this.childOfType(arg, 'label');
     if (!label) return undefined;
@@ -335,15 +339,15 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     return this.nodeText(label).replace(/:$/, '').trim();
   }
 
-  /** Clean string value of a named string-literal argument (quotes stripped). */
+
   private stringArg(selector: any, name: string): string | undefined {
     const val = this.namedArgValue(selector, name);
     if (!val || val.type !== 'string_literal') return undefined;
     return this.stripQuotes(this.nodeText(val));
   }
 
-  /** Handler name for a route: prefer the widget produced by `builder:`/`pageBuilder:`,
-   *  else a `redirect:` (pure-redirect route). Returns undefined when neither exists. */
+
+
   private routeHandlerName(selector: any): string | undefined {
     for (const key of ['builder', 'pageBuilder']) {
       const val = this.namedArgValue(selector, key);
@@ -356,13 +360,13 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** First constructor/identifier invoked inside a builder body (the rendered widget). */
+
   private firstConstructorName(node: any): string | undefined {
     let found: string | undefined;
     const visit = (n: any): void => {
       if (found) return;
-      // `const Foo()` / `new Foo()` -> const_object_expression/new_expression with a
-      // `type_identifier` naming the widget.
+
+
       if (n.type === 'const_object_expression' || n.type === 'new_expression') {
         const ti = this.childOfType(n, 'type_identifier');
         if (ti) {
@@ -370,7 +374,7 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
           return;
         }
       }
-      // A plain `Foo(...)` shows as identifier followed by a selector sibling.
+
       if (n.type === 'identifier') {
         const sib = n.nextNamedSibling;
         if (sib && sib.type === 'selector' && /^[A-Z]/.test(n.text)) {
@@ -384,7 +388,7 @@ export class GoRouterAnalyzer extends BaseAnalyzer {
     return found;
   }
 
-  /** True if the GoRouter's `redirect:` references auth/login (an auth guard). */
+
   private routerHasAuthRedirect(selector: any): boolean {
     const redirect = this.namedArgValue(selector, 'redirect');
     if (!redirect) return false;

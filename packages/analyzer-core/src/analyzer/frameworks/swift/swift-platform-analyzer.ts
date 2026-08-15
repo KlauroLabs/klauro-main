@@ -6,29 +6,29 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Swift platform/UI-framework analyzer.
- *
- * A structural Swift parse sees `import SwiftUI` as an ordinary import
- * statement and a `Package.swift` manifest as an opaque build file — neither
- * says anything about WHICH Apple UI framework the app is built on nor which
- * platforms it targets. That evidence lives in two places only:
- *
- *   1. Source imports: `import SwiftUI` / `import AppKit` / `import UIKit`
- *      name the concrete UI framework in use (SwiftUI is cross-platform;
- *      AppKit is macOS-only; UIKit is iOS/iPadOS/tvOS-only — the combination
- *      is the platform signal).
- *   2. `Package.swift`'s `platforms: [...]` array declares the deployment
- *      targets (`.macOS(...)`, `.iOS(...)`, ...) and its `dependencies: [...]`
- *      array declares the SwiftPM package dependencies by URL.
- *
- * This analyzer extracts both as evidence-gated facts — never guessed from a
- * repo name or file path — so the architecture classifier (desktop vs.
- * mobile) and the technology inventory (system.frameworks) have real signal
- * for Swift/SwiftPM projects. It emits no graph nodes/edges (there is no
- * call-graph fact to model here, only presence facts), mirroring other
- * detection-only framework analyzers in this tree.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const SWIFT_GLOB = ['**/*.swift'];
 const IMPORT_SWIFTUI = /^\s*import\s+SwiftUI\b/m;
@@ -96,10 +96,10 @@ export class SwiftPlatformAnalyzer extends BaseAnalyzer {
     if (swiftui) frameworksDetected.swiftui = true;
     if (appkit) frameworksDetected.appkit = true;
     if (uikit) frameworksDetected.uikit = true;
-    // Platform evidence from the manifest's declared deployment targets — only
-    // set when Package.swift actually declares a `platforms:` array; a repo
-    // with neither key present contributes no platform fact rather than a
-    // fabricated false.
+
+
+
+
     if (macos) frameworksDetected['apple-platform-macos'] = true;
     if (ios) frameworksDetected['apple-platform-ios'] = true;
 
@@ -132,12 +132,12 @@ export class SwiftPlatformAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * `.package(url: "https://host/org/Name.git", ...)` (and the name-first
-   * form `.package(name: "X", url: "...", ...)`) — extracted generically
-   * from the manifest text; the dependency identifier is the URL's final
-   * path segment (`.git` stripped), never a hardcoded/guessed product name.
-   */
+
+
+
+
+
+
   private extractPackageDependencies(pkgContent: string, libraries: CASLibrary[]): void {
     const depRegex = /\.package\s*\(\s*(?:name\s*:\s*"[^"]*"\s*,\s*)?url\s*:\s*"([^"]+)"/g;
     const seen = new Set<string>();

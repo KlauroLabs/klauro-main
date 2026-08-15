@@ -6,7 +6,7 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
 
-// C# scalar/value types that should be treated as fields, not relations.
+
 const SCALAR_TYPES = new Set([
   'int', 'long', 'short', 'byte', 'bool', 'string', 'char', 'float', 'double',
   'decimal', 'datetime', 'datetimeoffset', 'timespan', 'guid', 'object', 'uint',
@@ -29,8 +29,8 @@ interface EFField {
 
 interface EFNavigation {
   name: string;
-  targetType: string;     // entity type referenced
-  isCollection: boolean;  // List<T> / ICollection<T> -> one-to-many
+  targetType: string;
+  isCollection: boolean;
   isForeignKey: boolean;
   line: number;
 }
@@ -51,7 +51,7 @@ interface EFDbSet {
 interface EFFluentRelation {
   fromEntity: string;
   toEntity: string;
-  kind: string; // HasMany/WithOne, HasOne/WithMany etc.
+  kind: string;
 }
 
 interface EFContext {
@@ -74,7 +74,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      // 1. Microsoft.EntityFrameworkCore referenced in any .csproj
+
       const csprojs = await glob('**/*.csproj', {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -84,7 +84,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
         const content = await fs.readFile(path.join(projectPath, rel), 'utf-8').catch(() => '');
         if (/Microsoft\.EntityFrameworkCore/i.test(content)) return true;
       }
-      // 2. Any class extending DbContext
+
       const csFiles = await glob('**/*.cs', {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -123,7 +123,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
     const stat = await fs.stat(context.filePath);
 
     const parsed = this.parseFile(context.relativePath, content);
-    // Single-file: DbSet entity types resolve against entities defined in this file only.
+
     const entityNames = new Set(parsed.entities.map(e => e.name));
     this.emitFile(parsed, entityNames, nodes, edges);
 
@@ -170,7 +170,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
       allEntities.push(...parsed.entities);
     }
 
-    // Resolve relations against the full entity set across the repo.
+
     const entityNames = new Set(allEntities.map(e => e.name));
     this.emitFile({ contexts: allContexts, entities: allEntities }, entityNames, nodes, edges);
 
@@ -186,7 +186,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // --- shared emit helper ------------------------------------------------------------
+
 
   private emitFile(
     parsed: EFFileResult,
@@ -196,7 +196,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
   ): void {
     const entityNodeId = (name: string) => `efcore_entity_${this.sanitizeId(name)}`;
 
-    // DbContext nodes
+
     for (const ctx of parsed.contexts) {
       const ctxId = `efcore_context_${this.sanitizeId(ctx.name)}`;
       nodes.push(this.createNode(
@@ -216,7 +216,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      // context -> entity (exposes) edges via DbSet<T>
+
       for (const set of ctx.dbSets) {
         if (entityNames.has(set.entityType)) {
           edges.push(this.createEdge(
@@ -230,7 +230,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Fluent API relations from OnModelCreating
+
       for (const rel of ctx.fluentRelations) {
         if (entityNames.has(rel.fromEntity) && entityNames.has(rel.toEntity)) {
           edges.push(this.createEdge(
@@ -245,7 +245,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Entity nodes
+
     for (const entity of parsed.entities) {
       const fields = entity.fields.map(f => ({
         name: f.name,
@@ -272,7 +272,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      // Navigation-property relations
+
       for (const nav of entity.navigations) {
         if (entityNames.has(nav.targetType)) {
           edges.push(this.createEdge(
@@ -296,7 +296,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // --- parsing -----------------------------------------------------------------------
+
 
   private parseFile(relativePath: string, content: string): EFFileResult {
     const contexts: EFContext[] = [];
@@ -314,7 +314,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
         });
       } else {
         const { fields, navigations } = this.parseEntityMembers(cls.body);
-        // Treat as an entity only if it has at least one property.
+
         if (fields.length > 0 || navigations.length > 0) {
           entities.push({
             name: cls.name,
@@ -337,7 +337,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
     while ((match = classRegex.exec(content)) !== null) {
       const name = match[1];
       const bases = (match[2] || '').trim();
-      const bodyStart = classRegex.lastIndex; // position just after '{'
+      const bodyStart = classRegex.lastIndex;
       const body = this.extractBalancedBody(content, bodyStart - 1);
       const line = content.slice(0, match.index).split('\n').length;
       results.push({ name, bases, body, line });
@@ -345,7 +345,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  // Given index of an opening '{', return the substring up to the matching '}'.
+
   private extractBalancedBody(content: string, openBraceIdx: number): string {
     let depth = 0;
     for (let i = openBraceIdx; i < content.length; i++) {
@@ -373,22 +373,22 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
 
   private parseFluentRelations(body: string): EFFluentRelation[] {
     const relations: EFFluentRelation[] = [];
-    // modelBuilder.Entity<User>().HasMany(u => u.Orders).WithOne(o => o.User)
+
     const chainRe = /Entity<\s*(\w+)\s*>\s*\(\)\s*((?:\.\w+\([^;]*?\))+)\s*;/g;
     let m: RegExpExecArray | null;
     while ((m = chainRe.exec(body)) !== null) {
       const fromEntity = m[1];
       const chain = m[2];
-      // Pull navigation lambdas like u => u.Orders to discover target via property type is hard;
-      // instead capture HasMany/HasOne target entity through WithOne/WithMany lambda param types is unavailable.
-      // We record the relation kinds; target entity resolution falls back to lambda member names.
+
+
+
       const kindMatch = chain.match(/\b(HasMany|HasOne)\b/);
       const withMatch = chain.match(/\b(WithOne|WithMany)\b/);
       const kind = `${kindMatch ? kindMatch[1] : ''}${withMatch ? '/' + withMatch[1] : ''}`;
-      // Try to resolve target entity from the navigation member: .HasMany(x => x.Orders)
+
       const navMember = chain.match(/Has(?:Many|One)\(\s*\w+\s*=>\s*\w+\.(\w+)/);
       if (navMember) {
-        // Best-effort: singularize collection member to entity name (Orders -> Order).
+
         const member = navMember[1];
         const target = member.endsWith('s') ? member.slice(0, -1) : member;
         relations.push({ fromEntity, toEntity: target, kind: kind || 'Fluent' });
@@ -451,7 +451,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
 
       const baseType = rawType.replace('?', '').trim();
       if (!this.isScalar(baseType) && /^[A-Z]\w*$/.test(baseType) && !baseType.includes('<')) {
-        // reference navigation property (public User User { get; set; })
+
         navigations.push({
           name: propName,
           targetType: baseType,

@@ -42,23 +42,23 @@ const GENERIC_LEAF_DIRS = new Set([
   'schemas', 'schema', 'db', 'database', 'domain', 'data', 'lib', 'src', 'app'
 ]);
 
-// Tier 2 GAP FIX (§6.4 / STOCK-TAKE-TIERS.md "Architecture-paradigm detection
-// is naming-convention-based and biased toward layered-OOP idiom"): layer
-// membership below was ENTRY_LAYER_TYPE/ENTRY_LAYER_NAME/REPOSITORY_LAYER_*
-// regexes only — a `Controller`/`Repository` suffix convention native to
-// Java/C#/TS MVC codebases, invisible to idiomatic Go (`net/http` handlers
-// named `handleCreateOrder`), Rust, or Elixir. The structural fallbacks below
-// use vocabulary that is already closed and framework-agnostic:
-//  - WEB_ENTRY_POINT_TYPES: the same ENTRY_POINT_TYPES the determineSystemType
-//    fix (§12.4 / real defect) already uses to recognize a framework-less Go
-//    HTTP server — an entry point's handler node IS an entry-layer node
-//    regardless of what it's named.
-//  - a node emitting its OWN 'database'-type exit point IS a repository-shaped
-//    node structurally (it performs data access directly), independent of a
-//    Repository/DAO name suffix.
-// Both fallbacks are ADDITIVE (`||` alongside the existing regex checks) —
-// they widen the comparable pool, they never narrow or override it, so a
-// codebase that already matches the naming convention behaves identically.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const WEB_ENTRY_POINT_TYPES = new Set(['http', 'websocket', 'route', 'api', 'graphql', 'webhook']);
 
 function nodeFile(node: CASNode | undefined): string | undefined {
@@ -80,8 +80,8 @@ function isRepositoryLayer(node: CASNode, dbExitsBySource?: Map<string, CASExitP
     Boolean(dbExitsBySource?.has(node.id));
 }
 
-/** Every entry point's handler/source node, for entry points of a web-shaped
- *  type (§ above) — the framework-agnostic entry-layer membership signal. */
+
+
 function collectStructuralEntryNodeIds(entryPoints: CASEntryPoint[]): Set<string> {
   const ids = new Set<string>();
   for (const entry of entryPoints) {

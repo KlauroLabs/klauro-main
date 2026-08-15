@@ -4,27 +4,27 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Arduino framework analyzer — the Arduino core's `setup()`/`loop()`
- * lifecycle, plus FreeRTOS tasks commonly layered on top on ESP32/Arduino-RTOS
- * boards.
- *
- * The Arduino core's `main.cpp` (bundled with the toolchain, not in the
- * user's sketch) calls the user-defined `void setup()` exactly once at boot,
- * then calls `void loop()` repeatedly forever — the sketch never defines
- * `main()` itself. So for an Arduino sketch, `setup` and `loop` ARE the flow
- * roots the same way a bare `main()` super-loop is for embedded C; they are
- * emitted as `lifecycle` entry points.
- *
- * `xTaskCreate(taskFn, ...)` (and the ESP-IDF variant `xTaskCreatePinnedToCore`)
- * hands a function pointer to the FreeRTOS scheduler, which invokes it as an
- * independent concurrent task — never called directly by application code —
- * so each resolved `taskFn` is emitted as a `task` entry point.
- *
- * Real dependency gate: a `.ino` sketch file, or `#include <Arduino.h>` in a
- * `.cpp`/`.h`, or `#include <freertos/FreeRTOS.h>` for the task-scheduler
- * signal — never inferred from folder names alone.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export class ArduinoAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -127,8 +127,8 @@ export class ArduinoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** `xTaskCreate(taskFn, "name", stack, params, priority, &handle)` — resolves
-   *  the task function pointer argument to its own definition in this file. */
+
+
   private extractRtosTasks(
     content: string,
     relativePath: string,

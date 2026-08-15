@@ -959,9 +959,9 @@ export class CiPipelineAnalyzer extends BaseAnalyzer {
           'sdk',
           `${step.name} deploys to ${targetName}`,
           `CI step deploys to ${targetName}.`,
-          // sdk carries the label consumers may surface (deploy target name).
-          // Never the step name: step names are command fragments and must not
-          // become external-service labels (hash-shaped-token-leak class).
+
+
+
           { service_id: targetName, resource: targetName, sdk: targetName },
           { action: 'deploy', async: true },
           { provider: pipeline.provider, file: step.file, line: step.line, command: step.command, action: step.action }

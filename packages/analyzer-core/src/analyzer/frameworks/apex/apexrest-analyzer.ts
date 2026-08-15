@@ -5,50 +5,50 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Salesforce Apex REST framework analyzer.
- *
- * Apex exposes custom REST endpoints by annotating a class with
- * `@RestResource(urlMapping='/users/*')` and its static methods with one of the
- * HTTP-verb annotations:
- *
- *   @RestResource(urlMapping='/users/*')
- *   global with sharing class UserResource {
- *       @HttpGet    global static User    doGet()      { ... }   // GET    /users
- *       @HttpPost   global static void    doPost(...)  { ... }   // POST   /users
- *       @HttpPut    global static void    doPut(...)   { ... }   // PUT    /users
- *       @HttpPatch  global static void    doPatch(...) { ... }   // PATCH  /users
- *       @HttpDelete global static void    doDelete()   { ... }   // DELETE /users
- *   }
- *
- * The route PATH is the class's `urlMapping` with a trailing `/*` wildcard stripped
- * (`/users/*` -> `/users`). Apex routes the *whole* sub-path under that base to the
- * one class; the individual record id comes from `RestContext.request.requestURI`
- * at runtime, NOT from a declared path param, so the declared route path is just the
- * base urlMapping. Multiple verbs on the same class correctly map to the same path
- * (it is a REST *resource*).
- *
- * Auth: Apex REST requires an authenticated Salesforce session (OAuth/session id)
- * enforced by the platform, plus the calling user's profile/permission-set access to
- * the class. That guard is implicit and out-of-band — it is NOT expressed in the
- * source. We therefore emit `authenticated:false` honestly unless an explicit
- * per-method in-source guard is present, and document the platform auth in metadata.
- *
- * Node types grounded on the real vendored tree-sitter-apex grammar:
- *   class_declaration
- *     modifiers
- *       annotation              identifier="RestResource"
- *         annotation_argument_list
- *           annotation_key_value  identifier="urlMapping" string_literal="'/users/*'"
- *     identifier                "UserResource"
- *     class_body
- *       method_declaration
- *         modifiers
- *           annotation          identifier="HttpGet" | "HttpPost" | ...
- *         identifier            "doGet"   (the handler method name)
- */
 
-/** @Http<Verb> annotation identifier -> HTTP method. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const HTTP_VERB_ANNOTATIONS: Record<string, string> = {
   HttpGet: 'GET',
   HttpPost: 'POST',
@@ -115,12 +115,12 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse one Apex source and emit an http entry point per annotated verb method on
-   * each `@RestResource` class. Single document-order walk: find class_declarations
-   * carrying a `@RestResource(urlMapping=...)`, read the urlMapping-derived base path,
-   * then emit a route for each method_declaration carrying an `@Http<Verb>`.
-   */
+
+
+
+
+
+
   private async extractRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): Promise<void> {
     const tree = await parseWasm('apex', content);
     const root = tree.rootNode;
@@ -135,7 +135,11 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
         visit(node.namedChild(i));
       }
     };
-    visit(root);
+    try {
+      visit(root);
+    } finally {
+      tree.delete?.();
+    }
   }
 
   private handleClass(
@@ -182,10 +186,10 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Strip a trailing `/*` wildcard from an Apex urlMapping and normalize slashes.
-   * `'/users/*'` -> `/users`, `'/accounts'` -> `/accounts`, `'/'` -> `/`.
-   */
+
+
+
+
   private normalizeUrlMapping(urlMapping: string): string {
     let p = urlMapping.trim();
     p = p.replace(/\/\*+$/, '');
@@ -209,8 +213,8 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
         `${route.method} ${route.path}`,
         `Apex REST endpoint handled by ${route.handler}`,
         { method: route.method, path: route.path },
-        // Apex platform session/OAuth + profile access is implicit & out-of-band, not
-        // expressed in source. Honest default: not an in-source per-method guard.
+
+
         { authenticated: false },
         {
           framework: 'apex-rest',
@@ -224,7 +228,7 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
     );
   }
 
-  // ---- AST helpers (grounded on tree-sitter-apex) -------------------------------
+
 
   private nodeText(node: any): string {
     return node?.text ?? '';
@@ -239,7 +243,7 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Find an `annotation` child of `modifiers` whose identifier matches `name`. */
+
   private findAnnotation(modifiers: any, name: string): any {
     for (let i = 0; i < modifiers.namedChildCount; i++) {
       const c = modifiers.namedChild(i);
@@ -250,11 +254,11 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /**
-   * Read the `urlMapping='...'` value from a `@RestResource(...)` annotation.
-   * annotation > annotation_argument_list > annotation_key_value(identifier,string_literal).
-   * Returns the unquoted string, or null when absent.
-   */
+
+
+
+
+
   private readUrlMapping(annotation: any): string | null {
     const argList = this.childOfType(annotation, 'annotation_argument_list');
     if (!argList) return null;
@@ -270,7 +274,7 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  /** Scan a method's `modifiers` for an `@Http<Verb>` annotation -> HTTP method. */
+
   private httpMethodFromMethodAnnotations(modifiers: any): string | undefined {
     for (let i = 0; i < modifiers.namedChildCount; i++) {
       const c = modifiers.namedChild(i);
@@ -283,13 +287,13 @@ export class ApexRestAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** The method name: the `identifier` child of a method_declaration. */
+
   private methodName(method: any): string | undefined {
     const id = this.childOfType(method, 'identifier');
     return id ? this.nodeText(id).trim() : undefined;
   }
 
-  /** Strip surrounding single or double quotes from an Apex string literal. */
+
   private unquote(text: string): string {
     return text.replace(/^['"]|['"]$/g, '');
   }

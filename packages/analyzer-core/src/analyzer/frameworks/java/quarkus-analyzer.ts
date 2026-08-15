@@ -7,22 +7,22 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Quarkus framework analyzer (Java, "supersonic subatomic Java").
- *
- * Sits on top of the Java language analyzer but extracts the Quarkus / Jakarta
- * conventions the generic analyzer cannot see:
- *   - JAX-RS resources: `@Path("/x")` classes + `@GET/@POST/...` methods → routes.
- *   - CDI beans: `@ApplicationScoped/@Singleton/@RequestScoped` + `@Inject`.
- *   - Panache entities: `extends PanacheEntity(Base)` / `@Entity` → data entities,
- *     `PanacheRepository<T>` → repositories.
- *   - `@Scheduled` → scheduled-job entry points.
- *   - SmallRye reactive messaging: `@Incoming/@Outgoing` → messaging nodes.
- *
- * Extraction is annotation/line-based over `.java` files (no Java AST available).
- * Per-file extraction is factored into {@link parseJavaFile} + {@link emitFileContribution}
- * so both full `analyze()` and incremental `analyzeFileSingle()` share one code path.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const JAVA_GLOBS = ['**/*.java'];
 const BUILD_GLOBS = [
@@ -91,7 +91,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      // 1. Build-file dependency signal (io.quarkus / quarkus-*).
+
       const buildFiles = await glob(BUILD_GLOBS, {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -102,7 +102,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
         if (/io\.quarkus|quarkus-/.test(content)) return true;
       }
 
-      // 2. application.properties with quarkus.* keys.
+
       for (const propRel of ['src/main/resources/application.properties', 'application.properties']) {
         const propPath = path.join(projectPath, propRel);
         if (await fs.pathExists(propPath)) {
@@ -111,7 +111,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // 3. Source-level signal: io.quarkus imports or JAX-RS imports.
+
       const javaFiles = await glob(JAVA_GLOBS, {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -199,15 +199,15 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
         } catch {
           continue;
         }
-        // Skip files with no Quarkus/JAX-RS/CDI signal to keep the contribution focused.
+
         if (!/@Path\b|@(?:GET|POST|PUT|DELETE|PATCH)\b|@(?:ApplicationScoped|Singleton|RequestScoped|Dependent)\b|@Inject\b|PanacheEntity|PanacheRepository|@Entity\b|@Scheduled\b|@Incoming\b|@Outgoing\b|io\.quarkus/.test(content)) {
           continue;
         }
         fileInfos.push(this.parseJavaFile(relativePath, fullPath, content));
       }
 
-      // Resolve injected CDI bean types to their real (per-file-slug) node ids so
-      // cross-file `@Inject` edges don't dangle.
+
+
       const injectableIdByName = new Map<string, string>();
       for (const info of fileInfos) {
         const slug = this.sanitizeId(info.relativePath);
@@ -251,9 +251,9 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing
-  // ---------------------------------------------------------------------------
+
+
+
 
   private parseJavaFile(relativePath: string, fullPath: string, content: string): QuarkusFileInfo {
     const lines = content.split('\n');
@@ -280,27 +280,27 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return m ? m[1] : null;
   }
 
-  /** Class-level `@Path("/x")` (the base path for all routes in the resource). */
+
   private extractClassPath(content: string): string {
-    // Find @Path that precedes a class declaration (not a method).
+
     const classPathMatch = content.match(/@Path\s*\(\s*"([^"]*)"\s*\)\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:public\s+)?(?:abstract\s+)?class\b/);
     return classPathMatch ? this.normalizeSegment(classPathMatch[1]) : '';
   }
 
-  /**
-   * JAX-RS routes: a `@GET/@POST/...` method, optionally with its own `@Path`
-   * sub-path, resolved against the class-level base path.
-   */
+
+
+
+
   private extractRoutes(lines: string[], classPath: string, content: string): QuarkusRoute[] {
     const routes: QuarkusRoute[] = [];
-    // Permission annotations gate access -> authenticated.
+
     for (let i = 0; i < lines.length; i++) {
       const httpMatch = lines[i].match(/@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b/);
       if (!httpMatch) continue;
       const httpAnn = httpMatch[1];
       if (!JAXRS_HTTP_ANNOTATIONS.has(httpAnn)) continue;
 
-      // Scan the annotation block + method signature in a small forward window.
+
       let subPath = '';
       let produces: string | undefined;
       let consumes: string | undefined;
@@ -316,7 +316,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
         const consMatch = line.match(/@Consumes\s*\(\s*([^)]*)\)/);
         if (consMatch) consumes = this.cleanMediaType(consMatch[1]);
         if (/@(RolesAllowed|Authenticated|PermitAll\s*\(\s*false)/.test(line)) authenticated = true;
-        // Method signature: `public Response getX(...)` etc.
+
         const sig = line.match(/\b(?:public|protected|private)?\s*[\w<>\[\],.?\s]+?\s+(\w+)\s*\(/);
         if (sig && !line.includes('@') && !line.trim().startsWith('//')) {
           handlerName = sig[1];
@@ -338,7 +338,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** CDI beans: a scope annotation on the class + `@Inject` field/constructor deps. */
+
   private extractBeans(lines: string[], content: string): QuarkusBean[] {
     const beans: QuarkusBean[] = [];
     const className = this.extractClassName(content);
@@ -362,7 +362,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return beans;
   }
 
-  /** `@Inject Foo foo;` fields plus constructor-injected types. */
+
   private extractInjects(content: string): string[] {
     const injects: string[] = [];
     const fieldPattern = /@Inject[\s\S]{0,80}?(?:[\w.]+\s+)?(\w+)\s+\w+\s*;/g;
@@ -373,7 +373,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return Array.from(new Set(injects));
   }
 
-  /** Panache / JPA entities and Panache repositories. */
+
   private extractEntities(lines: string[], className: string | null, content: string): QuarkusEntity[] {
     const entities: QuarkusEntity[] = [];
     if (!className) return entities;
@@ -412,7 +412,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
 
   private extractEntityFields(content: string): Array<{ name: string; type: string }> {
     const fields: Array<{ name: string; type: string }> = [];
-    // Panache uses public fields; JPA often private. Capture both.
+
     const pattern = /(?:public|private|protected)\s+(?!class\b|static\s+final\b)([\w<>\[\],.]+)\s+(\w+)\s*;/g;
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(content)) !== null) {
@@ -421,7 +421,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return fields;
   }
 
-  /** `@Scheduled(cron = "...")` / `@Scheduled(every = "10s")` → scheduled jobs. */
+
   private extractScheduled(lines: string[]): QuarkusScheduled[] {
     const jobs: QuarkusScheduled[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -440,7 +440,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return jobs;
   }
 
-  /** SmallRye reactive messaging: `@Incoming("ch")` / `@Outgoing("ch")`. */
+
   private extractMessaging(lines: string[]): QuarkusMessaging[] {
     const msgs: QuarkusMessaging[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -456,14 +456,14 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return msgs;
   }
 
-  /** Pull the method identifier (the word immediately before the parameter `(`). */
+
   private extractMethodName(block: string): string | undefined {
-    // Strip annotations so e.g. `@Scheduled(every="10s")` parens are ignored.
+
     const cleaned = block.replace(/@\w+\s*\([^)]*\)/g, ' ').replace(/@\w+/g, ' ');
     const m = cleaned.match(/\b([A-Za-z_]\w*)\s*\(/);
     if (!m) return undefined;
     const name = m[1];
-    // Guard against matching a control keyword or a type cast.
+
     if (['if', 'for', 'while', 'switch', 'catch', 'return', 'new'].includes(name)) return undefined;
     return name;
   }
@@ -486,9 +486,9 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     return raw.replace(/MediaType\./g, '').replace(/["'{}]/g, '').trim();
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private emitFileContribution(
     info: QuarkusFileInfo,
@@ -500,7 +500,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
   ): void {
     const fileSlug = this.sanitizeId(info.relativePath);
 
-    // Resource (JAX-RS controller) node groups its routes.
+
     let resourceId: string | null = null;
     if (info.isResource && info.className) {
       resourceId = `quarkus_resource_${fileSlug}_${this.sanitizeId(info.className)}`;
@@ -517,7 +517,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
         .build());
     }
 
-    // Routes + entry points.
+
     info.routes.forEach((route, index) => {
       const routeId = `quarkus_route_${fileSlug}_${route.method}_${this.sanitizeId(route.path)}_${index}`;
       const label = `${route.method} ${route.path}`;
@@ -567,7 +567,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
       ));
     });
 
-    // CDI beans + injection edges.
+
     for (const bean of info.beans) {
       const beanId = `quarkus_bean_${fileSlug}_${this.sanitizeId(bean.name)}`;
       nodes.push(this.createNodeBuilder(beanId, bean.name, 'bean')
@@ -594,7 +594,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Panache / JPA entities + repositories.
+
     for (const entity of info.entities) {
       if (entity.kind === 'panache-repository') {
         const repoId = `quarkus_repository_${fileSlug}_${this.sanitizeId(entity.name)}`;
@@ -649,7 +649,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // Scheduled jobs → entry points.
+
     info.scheduled.forEach((job, index) => {
       const jobId = `quarkus_scheduled_${fileSlug}_${this.sanitizeId(job.handlerName)}_${index}`;
       const schedule = job.cron || (job.every ? `every ${job.every}` : 'scheduled');
@@ -678,7 +678,7 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
       ));
     });
 
-    // Reactive messaging channels.
+
     info.messaging.forEach((msg, index) => {
       const msgId = `quarkus_messaging_${fileSlug}_${msg.direction}_${this.sanitizeId(msg.channel)}_${index}`;
       nodes.push(this.createNodeBuilder(msgId, `@${msg.direction === 'incoming' ? 'Incoming' : 'Outgoing'}("${msg.channel}")`, 'message')
@@ -720,9 +720,9 @@ export class QuarkusAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   protected getLevelName(level: number): string {
     switch (level) {

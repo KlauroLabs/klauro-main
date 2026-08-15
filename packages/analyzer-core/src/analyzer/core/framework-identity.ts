@@ -1,23 +1,23 @@
-// Tier 2 GAP FIX — §6.2 of docs/analysis-scope/SPECIFICATION.md ("Framework
-// identity and version"): `system.technologies.frameworks` is a bare name
-// list with no version and no purpose classification. This module derives
-// the missing fields (version, role) for each already-detected framework
-// name, ADDITIVELY — `frameworks` itself is untouched.
-//
-// Tier discipline: this reads ONLY Tier 1 facts already present on the CAS
-// before this point in assembly — node.metadata.framework (stamped by the
-// framework analyzer itself), CASEntryPoint/CASExitPoint (closed-vocabulary
-// `type`, ENTRY_POINT_TYPES / EXIT_POINT_TYPES), CASDecorator.semantic_meaning
-// (closed-vocabulary `category`), and CASDeclaredDependency (raw manifest
-// facts). No comprehension/AI output is read.
-//
-// Role derivation is structural, not a per-framework-name lookup: a
-// framework's role is inferred from the KIND of entry/exit points and
-// decorator categories its own contribution produced, using vocabularies
-// that already exist and are already closed (ENTRY_POINT_TYPES /
-// EXIT_POINT_TYPES / CASDecorator semantic category). This is the same
-// class of evidence the persisted-entity gate and the determineSystemType
-// fix use — never a brand/domain word list.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import {
   CASNode,
@@ -39,11 +39,11 @@ function normalizeFrameworkName(value: unknown): string {
   return String(value ?? '').trim().replace(/\s*analyzer$/i, '').replace(/^enhanced\s+/i, '').trim().toLowerCase();
 }
 
-/** Loose match between a detected framework display name and a manifest
- *  package name — handles scoped/prefixed packages (`@nestjs/core` for
- *  `nestjs`, `spring-boot-starter-web` for `spring-boot`) without a
- *  per-framework lookup table: strip non-alphanumerics from both sides and
- *  check substring containment either direction. */
+
+
+
+
+
 function packageNameMatchesFramework(packageName: string, frameworkName: string): boolean {
   const a = packageName.toLowerCase().replace(/[^a-z0-9]/g, '');
   const b = frameworkName.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -53,8 +53,8 @@ function packageNameMatchesFramework(packageName: string, frameworkName: string)
 
 function findVersion(frameworkName: string, dependencyManifest?: CASDependencyManifest): { version?: string; ecosystem?: CASDeclaredDependency['ecosystem'] } {
   if (!dependencyManifest) return {};
-  // Prefer an exact (normalized) match before a loose substring one, so
-  // "react" doesn't accidentally bind to "react-dom" when both are declared.
+
+
   const exact = dependencyManifest.dependencies.find(dep => packageNameMatchesFramework(dep.name, frameworkName) &&
     dep.name.toLowerCase().replace(/[^a-z0-9]/g, '') === frameworkName.toLowerCase().replace(/[^a-z0-9]/g, ''));
   const loose = exact || dependencyManifest.dependencies.find(dep => packageNameMatchesFramework(dep.name, frameworkName));
@@ -68,10 +68,10 @@ export interface FrameworkRoleSignal {
   evidence: string;
 }
 
-/** Pure structural role derivation for one framework, given the entry/exit
- *  point types and decorator categories its own nodes produced. Exported
- *  separately so it can be unit-tested against synthetic evidence without
- *  building a full CAS. */
+
+
+
+
 export function deriveFrameworkRole(
   frameworkName: string,
   entryTypes: string[],
@@ -95,9 +95,9 @@ export function deriveFrameworkRole(
 
   if ([...entrySet].some(t => WEB_ENTRY_TYPES.has(t))) return cite('web');
   if (entrySet.has('test')) return cite('test');
-  // A DI decorator category is only distinguishing when the framework did
-  // NOT already resolve to 'web' above (a web framework with a DI container,
-  // e.g. NestJS, is still fundamentally web-role from an entry-point view).
+
+
+
   if (decoratorSet.has('injection')) return cite('di');
   if ([...entrySet].some(t => BUILD_ENTRY_TYPES.has(t))) return cite('build');
   if ([...entrySet].some(t => QUEUE_ENTRY_TYPES.has(t)) || [...exitSet].some(t => QUEUE_EXIT_TYPES.has(t))) return cite('queue');
@@ -116,8 +116,8 @@ export function deriveFrameworkIdentities(
 ): CASFrameworkIdentity[] {
   if (frameworkNames.length === 0) return [];
 
-  // node id -> normalized framework name, from the same field the
-  // comprehension gate (framework-comprehension.ts) already reads.
+
+
   const frameworkByNodeId = new Map<string, string>();
   for (const node of nodes) {
     const framework = normalizeFrameworkName((node as any).metadata?.framework);

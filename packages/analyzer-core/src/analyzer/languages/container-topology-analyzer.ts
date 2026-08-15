@@ -4,16 +4,16 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as yaml from 'js-yaml';
-import { isHashOrIdShapedToken, isIdentifierShapedRepoBasename, UNNAMED_SERVICE_PLACEHOLDER } from '../core/deployable-evidence/util';
+import { isIdentifierShapedRepoBasename, UNNAMED_SERVICE_PLACEHOLDER } from '../core/deployable-evidence/util';
 
 interface ComposeService {
   name: string;
   image?: string;
   build?: string;
-  /** The object-form `build.dockerfile` path, when present — reliably
-   *  repo-relative (unlike `build.context`, which real compose files
-   *  sometimes point at an absolute deploy-time path outside the analyzed
-   *  tree, e.g. a VPS rsync destination). See composeBuildContext below. */
+
+
+
+
   dockerfile?: string;
   ports: Array<{ host?: string; container: string }>;
   dependsOn: string[];
@@ -36,13 +36,13 @@ interface KubernetesDocument {
   serviceNames: string[];
   env: Record<string, string>;
   ingressBackends: Array<{ host?: string; path?: string; service: string; port?: string }>;
-  /** CronJob-only: `spec.schedule`, the cron expression — the deterministic
-   *  ground for classifying a linked command entry point as `scheduled`
-   *  (journey-builder.ts CRON_COMMAND_ENTRY_TYPES). */
+
+
+
   schedule?: string;
-  /** Workload container `command` + `args`, concatenated into one evidence
-   *  string (e.g. `bin/console app:cron:process`) — the deterministic ground
-   *  for linking a CronJob to the console-command entry point it runs. */
+
+
+
   command?: string;
 }
 
@@ -157,10 +157,10 @@ export class DockerfileAnalyzer extends ContainerTopologyAnalyzer {
         subcategories: ['container-topology', 'dockerfile'],
       }),
     ];
-    // A Dockerfile EXPOSE is DEPLOYMENT topology (the image's port), not an
-    // inbound application entry point. The ports are preserved on the node's
-    // exposed_ports metadata for deployable/runtime detection. Application entry
-    // points come from code analyzers (routes, CLI, event handlers).
+
+
+
+
     const entryPoints: CASEntryPoint[] = [];
     return { nodes, entryPoints };
   }
@@ -231,15 +231,15 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
-    // ANY service declared in this same compose file — built or pulled-image
-    // — already gets its own representation: an own-built service is app
-    // topology (edges only, no exit point); a pulled-image service already
-    // emits its OWN direct "External service <name>" exit point below (from
-    // the exposed-ports loop). A depends_on/env reference pointing at either
-    // would just duplicate that existing signal under a second, differently
-    // shaped label ("Compose dependency X -> Y") — noise, not new evidence.
-    // Only a reference to a name this file never declares as a service (no
-    // other evidence of it at all) is worth its own exit point.
+
+
+
+
+
+
+
+
+
     const allServiceNames = new Set(services.map(s => s.name));
 
     for (const service of services) {
@@ -259,14 +259,14 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
         subcategories: ['container-topology', 'docker-compose', 'runtime-service'],
       }));
 
-      // Compose port exposures are DEPLOYMENT topology, not inbound application
-      // entry points (the ports are preserved on the node metadata above). The
-      // app's real entry points come from code analyzers (routes/CLI/handlers).
-      // Image-only services (postgres, redis, ethereum-node, bitcoin-node, …) are
-      // EXTERNAL dependencies the app connects to — record them as external
-      // services so the dependency is visible. Counting any of these as entry
-      // points was corrupting journeys/flows/capabilities ("Bitcoin Node:8332"
-      // and "Soon Lens:8545" became primary workflows).
+
+
+
+
+
+
+
+
       const isOwnBuiltService = Boolean(service.build);
       if (!isOwnBuiltService) {
         const exposedPorts = service.ports.length ? service.ports : [{ container: '' }];
@@ -302,10 +302,10 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
           'runtime',
           { topology_surface: 'docker-compose', dependency_kind: 'compose-service' }
         ));
-        // Only emit the exit point when the dependency does NOT name another
-        // service declared in this same file — that target already has its
-        // own representation (own-topology edge, or its own direct external-
-        // service exit point below), so this would just be a duplicate.
+
+
+
+
         if (!allServiceNames.has(dependency)) {
           exitPoints.push(this.createExitPoint(
             `exit_compose_dep_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}_${this.sanitizeId(dependency)}`,
@@ -327,9 +327,9 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
       for (const [key, value] of Object.entries(service.environment)) {
         const targetService = inferServiceReference(key, value);
         if (!targetService) continue;
-        // Same duplicate-signal guard as the depends_on loop above: an env
-        // var pointing at a service already declared in this file is
-        // already represented elsewhere, not new evidence.
+
+
+
         if (allServiceNames.has(targetService)) continue;
         exitPoints.push(this.createExitPoint(
           `exit_compose_env_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}_${this.sanitizeId(key)}`,
@@ -363,7 +363,7 @@ export class KubernetesManifestAnalyzer extends ContainerTopologyAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return this.readFiles(projectPath, [
+    const candidates = await this.readFiles(projectPath, [
       'k8s/**/*.{yml,yaml}',
       'kubernetes/**/*.{yml,yaml}',
       'deploy/**/*.{yml,yaml}',
@@ -373,6 +373,21 @@ export class KubernetesManifestAnalyzer extends ContainerTopologyAnalyzer {
       'charts/**/*.{yml,yaml}',
       '**/*.{yml,yaml}',
     ]);
+    const manifests: string[] = [];
+    for (let offset = 0; offset < candidates.length; offset += 32) {
+      const batch = candidates.slice(offset, offset + 32);
+      const matches = await Promise.all(batch.map(async relativeFile => {
+        try {
+          const content = await fs.readFile(path.join(projectPath, relativeFile), 'utf8');
+          if (!/^\s*apiVersion\s*:/m.test(content) || !/^\s*kind\s*:/m.test(content)) return undefined;
+          return parseKubernetesDocuments(content).length > 0 ? relativeFile : undefined;
+        } catch {
+          return undefined;
+        }
+      }));
+      manifests.push(...matches.filter((value): value is string => Boolean(value)));
+    }
+    return manifests;
   }
 
   async analyze(context: AnalysisContext) {
@@ -661,25 +676,25 @@ function parseComposeServicesFromYaml(content: string): ComposeService[] {
 
 function composeBuildContext(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
-  // Object-form `build:` (context/dockerfile/args) still means "this
-  // compose file builds the service" even when `context` is omitted — compose
-  // defaults an omitted context to the compose file's own directory. Losing
-  // the object here (falling through to undefined) made `Boolean(service.build)`
-  // false and misclassified an own-built service as a pulled/external image
-  // (e.g. `build: { dockerfile: docker/php.Dockerfile }` with no `context`).
+
+
+
+
+
+
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return stringValue((value as any).context) || '.';
   }
   return undefined;
 }
 
-/** The object-form `build.dockerfile` path, when present. Unlike `context`
- *  (which real compose files sometimes point at an absolute deploy-time path
- *  outside the analyzed tree — e.g. `context: /opt/klauro/source` on a
- *  production host, meaningless relative to the repo this analyzer is
- *  walking), `dockerfile` is always a plain repo-relative path to the actual
- *  Dockerfile compose builds, and root_path resolution below prefers it for
- *  exactly that reason. */
+
+
+
+
+
+
+
 function composeBuildDockerfile(value: unknown): string | undefined {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return stringValue((value as any).dockerfile);
@@ -755,9 +770,9 @@ function parseKubernetesDocuments(content: string): KubernetesDocument[] {
       env: collectKubernetesEnv(lines),
       ingressBackends: [],
       schedule: kind === 'CronJob' ? firstMatch(lines, /^\s*schedule:\s*["']?([^"'#\n]+?)["']?\s*(?:#.*)?$/) : undefined,
-      // command/args are left unextracted on this malformed-YAML fallback
-      // path — a bare `- item` line regex is too ambiguous with ports/env
-      // list entries to trust as command evidence (no fabrication).
+
+
+
       command: undefined,
     });
     offset += lines.length;
@@ -808,10 +823,10 @@ function parseKubernetesDocumentsFromYaml(content: string): KubernetesDocument[]
   return resources;
 }
 
-/** `command` + `args` of every container, concatenated into one evidence
- *  string (e.g. `bin/console app:cron:process --env=prod`) — the ground
- *  truth for linking a workload's container invocation to the console
- *  command / entry point it runs. Absent when neither is set. */
+
+
+
+
 function extractContainerCommand(containers: Record<string, any>[]): string | undefined {
   const parts: string[] = [];
   for (const container of containers) {
@@ -1032,44 +1047,44 @@ function escapeRegExp(value: string): string {
 }
 
 function inferServiceName(projectPath: string, relativeFile: string, command?: string): string {
-  // Production analyze snapshots the source to an on-disk dir named after the
-  // analysisId HASH, so path.basename(projectPath) can be hash-shaped rather
-  // than a real service name. Prefer it when it's a legitimate name; when
-  // it's hash/id-shaped, fall back to the Dockerfile's own containing
-  // directory name (still real, just less specific), and only as a last
-  // resort to a stable non-hash placeholder — never emit the hash.
+
+
+
+
+
+
   const projectBase = path.basename(projectPath);
   const dockerfileDir = path.basename(path.dirname(relativeFile));
   let base: string;
-  // ORDER = evidence strength, and it must not be "whatever is cheapest to read".
-  //
-  // Measured 2026-08-10, reproduced in isolation: a production snapshot dir named
-  // `prj_<id>` was ACCEPTED here as a legitimate name, because this function
-  // tested `isHashOrIdShapedToken` (narrow: hex/UUID/no-vowel blobs) while
-  // `safeDeployableName` downstream rejects with `isIdentifierShapedRepoBasename`
-  // (broad: also `prj_`/`wsp_`-prefixed storage ids). Two functions disagreeing
-  // about what an id looks like meant the storage id won rank 1, the real
-  // evidence below was never consulted, and the downstream guard then replaced
-  // the id with `unnamed-service` — publishing a nameless primary ship unit on a
-  // 92,582-node repo while its own CMD named the app.
-  //
-  // Fixed two ways, both repo-agnostic:
-  //  - ONE id-shape test (the broad one) everywhere, so no name can pass one
-  //    check and fail the next;
-  //  - the author's own DECLARATION (the run command) outranks a directory
-  //    basename, because a directory name is an accident of how we stored the
-  //    source while ENTRYPOINT/CMD is something the author wrote deliberately.
-  //
-  // REFINED 2026-08-11, measured: `CMD ["node", "server.js"]` in a directory
-  // whose name WAS the product's own name shipped the alias `server`, losing the
-  // repo's real identity. The rank above is right about
-  // WHY the declaration usually wins — the author wrote it — but wrong to treat
-  // every declared token as equally identifying. `server`, `main`, `app`,
-  // `index` name the CONVENTION for where a program starts, not which program
-  // it is; they would be the alias for a huge fraction of all repos, which is
-  // the definition of a name that identifies nothing. A real directory name
-  // beats a conventional entry stem, and the stem is still kept as a secondary
-  // alias so topology joins that match on it keep working.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const declared = serviceNameFromCommand(command);
   const declaredIdentifies = declared && !isConventionalEntryStem(declared);
   if (declaredIdentifies) {
@@ -1079,44 +1094,44 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
   } else if (projectBase && !isIdentifierShapedRepoBasename(projectBase)) {
     base = projectBase;
   } else if (declared) {
-    // Every real directory name available is a storage id, so a conventional
-    // entry stem — weak as it is — is still better evidence than a placeholder:
-    // it at least came from something the author wrote.
+
+
+
     base = declared;
   } else {
-    // Nothing the author declared is usable: no run command names a specific
-    // binary, the Dockerfile sits at the root, and the only directory available
-    // is the storage id. Stay honest rather than inventing something — the
-    // caller's `safeDeployableName` publishes this placeholder, and the
-    // deployable payload carries the boundary evidence that explains it.
+
+
+
+
+
     base = UNNAMED_SERVICE_PLACEHOLDER;
   }
   return base.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
 }
 
-/**
- * The ship unit's name as its own ENTRYPOINT/CMD declares it.
- *
- * Takes the first token that names something specific to THIS image, skipping
- * interpreters and shells (which name the runtime, not the service) and flags.
- * `["node", "gateway-app.mjs", "serve"]` yields `gateway-app`;
- * `["/usr/local/bin/cleanup-smoke"]` yields `cleanup-smoke`.
- * Returns undefined rather than guessing when nothing specific is present, so
- * the caller's placeholder still applies and no invented name ever ships.
- */
-/**
- * Does this token name WHERE a program starts rather than WHICH program it is?
- *
- * `server`, `main`, `app`, `index` are the conventional entry-file stems of most
- * ecosystems. As a ship-unit alias they identify nothing — they would be the
- * name of an enormous share of all repos — so they must not outrank a real
- * directory name (see inferServiceName).
- *
- * spec-purity:vocab-ok — a closed ECOSYSTEM fact (conventional program-entry
- * filenames), in the same family as the GENERIC_RUNTIMES and TASK_RUNNERS
- * stoplists below. It only DEMOTES weak output; it never assigns a category and
- * cannot decide what a repo is or does.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function isConventionalEntryStem(token: string): boolean {
   const CONVENTIONAL_ENTRY_STEMS = new Set([
     'server', 'serve', 'main', 'app', 'application', 'index', 'start', 'run',
@@ -1126,16 +1141,16 @@ function isConventionalEntryStem(token: string): boolean {
   return CONVENTIONAL_ENTRY_STEMS.has(token.trim().toLowerCase());
 }
 
-/**
- * Every alias this image can legitimately be joined on, PREFERRED FIRST.
- *
- * `service_aliases[0]` becomes the ship unit's published name (see
- * deployable-evidence/providers/container.ts), while the infra-topology linker
- * matches on any entry. Those two jobs pull in opposite directions — naming
- * wants the most identifying token, joining wants every token anyone might
- * reference — so this returns the ranked name first and keeps the rest instead
- * of discarding real evidence to satisfy the ranking.
- */
+
+
+
+
+
+
+
+
+
+
 function inferServiceAliases(projectPath: string, relativeFile: string, command?: string): string[] {
   const normalize = (value: string): string => value.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
   const preferred = inferServiceName(projectPath, relativeFile, command);
@@ -1151,35 +1166,35 @@ function inferServiceAliases(projectPath: string, relativeFile: string, command?
 
 function serviceNameFromCommand(command?: string): string | undefined {
   if (!command) return undefined;
-  // Tolerates both exec-form JSON (["node","app.js"]) and shell form.
+
   const tokens = command
     .replace(/[[\]",]/g, ' ')
     .split(/\s+/)
     .filter(Boolean)
     .filter(token => !token.startsWith('-'));
-  // A TASK RUNNER's arguments are script/target names, not binaries: `npm start`
-  // declares the script "start", `rake deploy` the task "deploy". Taking the
-  // next token there produced the ship-unit name "start" — junk, and worse than
-  // the directory name it displaced. So when argv[0] is a task runner, this
-  // command declares NO binary and we must fall through to the next rank.
-  //
-  // spec-purity:vocab-ok — closed ECOSYSTEM fact (task runners), not a
-  // business/domain bag; it only suppresses bad output and can never categorise
-  // a repo.
+
+
+
+
+
+
+
+
+
   const TASK_RUNNERS = new Set([
     'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx', 'deno',
     'make', 'rake', 'mix', 'poetry', 'uv', 'pipenv', 'hatch', 'tox',
     'gradle', 'gradlew', 'mvn', 'sbt', 'cargo', 'composer', 'bundle', 'go',
   ]);
-  // Runtimes/shells name the interpreter, not the deployable.
-  //
-  // spec-purity:vocab-ok — this is a closed ECOSYSTEM fact (the set of language
-  // runtimes, package managers and init shims that can appear as argv[0]), not a
-  // business/domain keyword bag, and it REJECTS bad output rather than assigning
-  // a category. Nothing here decides what a repo is or does; it only prevents
-  // naming a ship unit "node" or "sh". The cardinal rule bans hardcoded
-  // brand/domain categorizers — a stoplist over another ecosystem's own
-  // vocabulary is the opposite: it keeps that vocabulary OUT of our output.
+
+
+
+
+
+
+
+
+
   const GENERIC_RUNTIMES = new Set([
     'sh', 'bash', 'zsh', 'ash', 'dash', 'env', 'exec',
     'node', 'nodejs', 'npm', 'npx', 'pnpm', 'yarn', 'bun', 'deno',

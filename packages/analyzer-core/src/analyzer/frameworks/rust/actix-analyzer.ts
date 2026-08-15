@@ -5,31 +5,31 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Actix-web framework analyzer
- * Enhances Rust analysis with Actix-specific patterns and metadata
- */
+
+
+
+
 export class ActixAnalyzer extends BaseAnalyzer {
   private rustAnalyzer: RustAnalyzer;
-  
+
   constructor() {
     super('actix-web', 'Actix-web Framework Analyzer', '1.0.0', 'framework');
     this.rustAnalyzer = new RustAnalyzer();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
-    // Check if this is a Rust project that uses Actix-web
+
     const hasCargoToml = await this.fileExists(path.join(projectPath, 'Cargo.toml'));
     if (!hasCargoToml) return false;
 
     try {
       const cargoContent = await this.readFileContent(path.join(projectPath, 'Cargo.toml'));
-      const hasActixDep = cargoContent.includes('actix-web') || 
+      const hasActixDep = cargoContent.includes('actix-web') ||
                              cargoContent.includes('actix_web') ||
                              cargoContent.includes('actix');
       if (!hasActixDep) return false;
 
-      // Check for Actix-specific patterns in source files
+
       const rustFiles = await this.findRustFiles(projectPath);
       for (const file of rustFiles) {
         const content = await this.readFileContent(file);
@@ -45,7 +45,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
-    // Get existing analysis from Rust analyzer
+
     const rustContribution = await this.rustAnalyzer.analyze(context);
     const nodes = [...(rustContribution.nodes || [])];
     const edges = [...(rustContribution.edges || [])];
@@ -75,7 +75,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
   protected getCapabilities(): string[] {
     return [
       'route-extraction',
-      'middleware-detection', 
+      'middleware-detection',
       'service-patterns',
       'dependency-injection',
       'state-management'
@@ -92,19 +92,19 @@ export class ActixAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Enhance nodes with Actix-specific metadata
-   */
+
+
+
   private async enhanceNodesWithActixInfo(nodes: any[], projectPath: string): Promise<void> {
     const rustFiles = await this.findRustFiles(projectPath);
-    
+
     for (const file of rustFiles) {
       const content = await this.readFileContent(file);
       const actixPatterns = this.extractActixPatterns(content, file);
-      
+
       actixPatterns.forEach(pattern => {
-        const node = nodes.find(n => n.source?.file === file && 
-                                       n.source?.line >= pattern.line && 
+        const node = nodes.find(n => n.source?.file === file &&
+                                       n.source?.line >= pattern.line &&
                                        n.source?.line <= pattern.line + 10);
         if (node) {
           this.enhanceNodeWithActixMetadata(node, pattern);
@@ -113,15 +113,15 @@ export class ActixAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Extract Actix-specific patterns from source code
-   */
+
+
+
   private extractActixPatterns(content: string, filePath: string): any[] {
     const patterns: any[] = [];
     const lines = content.split('\n');
 
     lines.forEach((line, index) => {
-      // Route decorators
+
       const routeMatch = line.match(/#\[get\("([^"]+)"\)\]|#\[post\("([^"]+)"\)\]|#\[put\("([^"]+)"\)\]|#\[delete\("([^"]+)"\)\]|#\[patch\("([^"]+)"\)/i);
       if (routeMatch) {
         patterns.push({
@@ -132,7 +132,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // Route with parameters
+
       const paramRouteMatch = line.match(/#\[get\("([^"]+\/\{[^}]+\})"\)\]|#\[post\("([^"]+\/\{[^}]+\})"\)/i);
       if (paramRouteMatch) {
         patterns.push({
@@ -144,7 +144,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // Middleware decorators
+
       const middlewareMatch = line.match(/#\[middleware\("([^"]+)"\)/i);
       if (middlewareMatch) {
         patterns.push({
@@ -154,7 +154,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // Service markers
+
       const serviceMatch = line.match(/#\[derive\(Service\)\]|impl\s+(\w+)Service|impl\s+Service\s+for\s+(\w+)/);
       if (serviceMatch) {
         patterns.push({
@@ -164,7 +164,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // State management
+
       const stateMatch = line.match(/#\[derive\(.+State\.\)|Web::Data<(\w+)>|App::new\(\)\.data\(\w+\)/);
       if (stateMatch) {
         patterns.push({
@@ -178,24 +178,24 @@ export class ActixAnalyzer extends BaseAnalyzer {
     return patterns;
   }
 
-  /**
-   * Extract route parameters from path
-   */
+
+
+
   private extractRouteParameters(path: string): string[] {
     const paramRegex = /\{([^}]+)\}/g;
     const parameters: string[] = [];
     let match;
-    
+
     while ((match = paramRegex.exec(path)) !== null) {
       parameters.push(match[1]);
     }
-    
+
     return parameters;
   }
 
-  /**
-   * Enhance node with Actix metadata
-   */
+
+
+
   private enhanceNodeWithActixMetadata(node: any, pattern: any): void {
     if (!node.metadata) node.metadata = {};
     if (!node.metadata.actix) node.metadata.actix = {};
@@ -239,24 +239,24 @@ export class ActixAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Create Actix route entry points
-   */
+
+
+
   private async createActixRoutes(nodes: any[], edges: any[], entryPoints: any[], projectPath: string): Promise<void> {
     const routeNodes = nodes.filter(n => n.tags?.includes('actix-route'));
-    
+
     routeNodes.forEach(routeNode => {
       if (!routeNode.metadata?.actix?.route) return;
 
       const route = routeNode.metadata.actix.route;
-      
-      // Create entry point
+
+
       const entryPoint = {
         id: `entry_actix_route_${routeNode.id}`,
         type: 'http',
         name: `${route.method} ${route.path}`,
         description: `Actix-web ${route.method} handler for ${route.path}`,
-        
+
         trigger: {
           method: route.method,
           path: route.path,
@@ -267,21 +267,21 @@ export class ActixAnalyzer extends BaseAnalyzer {
             location: 'path'
           }))
         },
-        
+
         handler: {
           node_id: routeNode.id,
           method_name: routeNode.name,
           file: routeNode.source?.file || '',
           line: routeNode.source?.line || 0
         },
-        
+
         security: {
-          authenticated: false, // Default, would be enhanced with auth detection
+          authenticated: false,
           guards: [],
           roles: [],
           permissions: []
         },
-        
+
         metadata: {
           framework: 'actix-web',
           route_parameters: route.parameters || []
@@ -292,80 +292,80 @@ export class ActixAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Detect and create Actix middleware
-   */
+
+
+
   private async createActixMiddlewares(nodes: any[], edges: any[], projectPath: string): Promise<void> {
     const middlewareNodes = nodes.filter(n => n.tags?.includes('actix-middleware'));
-    
+
     middlewareNodes.forEach(middlewareNode => {
-      // Create relationships between middleware and other nodes
-      // This would be enhanced with actual middleware chain analysis
+
+
     });
   }
 
-  /**
-   * Detect and create Actix services
-   */
+
+
+
   private async createActixServices(nodes: any[], edges: any[], projectPath: string): Promise<void> {
     const serviceNodes = nodes.filter(n => n.tags?.includes('actix-service'));
-    
+
     serviceNodes.forEach(serviceNode => {
-      // Mark as injectable services
+
       if (!serviceNode.metadata) serviceNode.metadata = {};
       serviceNode.metadata.injectable = true;
-      serviceNode.metadata.scope = 'singleton'; // Default scope
+      serviceNode.metadata.scope = 'singleton';
     });
   }
 
-  /**
-   * Count Actix middleware nodes
-   */
+
+
+
   private countActixMiddlewares(nodes: any[]): number {
     return nodes.filter(n => n.tags?.includes('actix-middleware')).length;
   }
 
-  /**
-   * Count Actix service nodes
-   */
+
+
+
   private countActixServices(nodes: any[]): number {
     return nodes.filter(n => n.tags?.includes('actix-service')).length;
   }
 
-  /**
-   * Detect high-level Actix patterns
-   */
+
+
+
   private detectActixPatterns(nodes: any[], edges: any[]): string[] {
     const patterns: string[] = [];
-    
-    // Detect REST API pattern
+
+
     const routeNodes = nodes.filter(n => n.tags?.includes('actix-route'));
     if (routeNodes.length > 0) {
       patterns.push('REST API');
     }
-    
-    // Detect middleware usage
+
+
     const middlewareNodes = nodes.filter(n => n.tags?.includes('actix-middleware'));
     if (middlewareNodes.length > 0) {
       patterns.push('Request Pipeline');
     }
-    
-    // Detect service layer
+
+
     const serviceNodes = nodes.filter(n => n.tags?.includes('actix-service'));
     if (serviceNodes.length > 0) {
       patterns.push('Service Layer');
     }
-    
-    // Detect state management
+
+
     const stateNodes = nodes.filter(n => n.tags?.includes('actix-state'));
     if (stateNodes.length > 0) {
       patterns.push('State Management');
     }
-    
+
     return patterns;
   }
 
-  // Utility methods
+
   private hasActixPatterns(content: string): boolean {
     const actixPatterns = [
       /actix_web::/,
@@ -378,7 +378,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
       /web::/,
       /HttpResponse::/,
       /web::Data</];
-    
+
     return actixPatterns.some(pattern => pattern.test(content));
   }
 

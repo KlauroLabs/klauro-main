@@ -4,25 +4,25 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Linux kernel module framework analyzer — driver entry points.
- *
- * A loadable kernel module has no `main()`. `module_init(fn)` registers `fn`
- * to be called by the kernel when the module is inserted (`insmod`/`modprobe`)
- * and `module_exit(fn)` registers the teardown called on removal (`rmmod`) —
- * both invoked by the kernel's module loader, not application code. A
- * character/block device driver additionally registers a `struct
- * file_operations` table (`.open`, `.read`, `.write`, `.release`,
- * `.unlocked_ioctl`, `.mmap`, ...); each populated field is a callback the
- * VFS/kernel invokes when userspace performs the corresponding syscall on the
- * device node — never called directly. All of these are flow roots for a
- * kernel-module codebase and are emitted as `driver` entry points resolved to
- * the real registered function.
- *
- * Real dependency gate: `#include <linux/module.h>` (or `<linux/kernel.h>`
- * alongside a `MODULE_LICENSE(...)` macro), plus a `Kbuild`/`Makefile`
- * referencing `obj-m` — never inferred from folder names alone.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const FOPS_FIELDS = [
   'open', 'release', 'read', 'write', 'llseek', 'mmap',
@@ -85,7 +85,7 @@ export class LinuxKernelModuleAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** `module_init(fn)` / `module_exit(fn)` register the insmod/rmmod hooks. */
+
   private extractModuleInitExit(
     content: string,
     relativePath: string,
@@ -129,11 +129,11 @@ export class LinuxKernelModuleAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * `static struct file_operations fops = { .open = dev_open, .read = dev_read, ... }`
-   * — each populated field is a callback the VFS invokes on the matching
-   * syscall against the device node.
-   */
+
+
+
+
+
   private extractFileOperations(
     content: string,
     relativePath: string,

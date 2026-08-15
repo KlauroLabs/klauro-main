@@ -4,7 +4,7 @@ export { AxumAnalyzer } from './axum-analyzer';
 export { WarpAnalyzer } from './warp-analyzer';
 export { TonicAnalyzer } from './tonic-analyzer';
 
-// Framework registry for automatic detection
+
 export const RUST_FRAMEWORKS = [
   'actix-analyzer',
   'rocket-analyzer',
@@ -28,7 +28,7 @@ export const FRAMEWORK_DETECTORS = [
   },
   {
     id: 'rocket',
-    analyzerClass: 'RocketAnalyzer', 
+    analyzerClass: 'RocketAnalyzer',
     dependencies: ['rocket', 'rocket_dyn_templates', 'rocket_sync'],
     patterns: [
       /rocket::/,

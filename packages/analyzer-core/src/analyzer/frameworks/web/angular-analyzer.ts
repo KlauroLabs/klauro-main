@@ -1,7 +1,7 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
-  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASPerspective
+  CASPerspective
 } from "../../../types/cas.types";
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
@@ -37,11 +37,11 @@ interface AngularComponent {
   imports: string[];
   exports: string[];
   standalone: boolean;
-  /** Custom-element selectors used inside this component's inline template. */
+
   childSelectors: string[];
-  /** Constructor-injected collaborator types (Angular DI). */
+
   dependencies: string[];
-  /** `(event)="handler(...)"` bindings in this component's inline template. */
+
   eventHandlers: Array<{ event: string; handlerName?: string }>;
 }
 
@@ -126,7 +126,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const packageJson = await fs.readJson(packageJsonPath);
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
-      // First check if this is a NestJS project - if so, skip Angular analysis
+
       const isNestJS = Object.keys(deps).some(dep =>
         dep === '@nestjs/core' ||
         dep === '@nestjs/common' ||
@@ -134,19 +134,19 @@ export class AngularAnalyzer extends BaseAnalyzer {
       );
 
       if (isNestJS) {
-        return false; // Don't analyze NestJS projects with Angular analyzer
+        return false;
       }
 
-      // Check for explicit Angular dependencies
+
       if (Object.keys(deps).some(dep => dep.startsWith('@angular/') || dep === 'angular')) {
         return true;
       }
 
-      // Check for Angular configuration files
+
       const angularConfigExists = await fs.pathExists(path.join(projectPath, 'angular.json'));
       if (angularConfigExists) return true;
 
-      // As a last resort, check file contents but be more specific about Angular imports
+
       const tsFiles = await glob(['**/*.ts'], {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -155,7 +155,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
       for (const file of tsFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        // More specific checks for Angular - look for @angular/ imports and Angular-specific decorators
+
         if (content.includes('@angular/') ||
             (content.includes('@Component') && content.includes('@angular/core')) ||
             (content.includes('@NgModule') && content.includes('@angular/core'))) {
@@ -322,7 +322,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): Promise<AngularComponent[]> {
     const components: AngularComponent[] = [];
-    // selector -> component node id, to resolve template child tags to components.
+
     const selectorToId = new Map<string, string>();
     const componentIdByName = new Map<string, string>();
 
@@ -364,11 +364,11 @@ export class AngularAnalyzer extends BaseAnalyzer {
               .build();
             nodes.push(componentNode);
 
-            // Event bindings are real flow roots for a frontend app — a user
-            // event triggers a component method, the same way an HTTP route
-            // triggers a controller. Emit an `event` entry point per binding;
-            // resolve a `triggers` edge + a lightweight method node only when
-            // the binding calls a bare method name (evidence-based).
+
+
+
+
+
             const emittedHandlerMethods = new Set<string>();
             component.eventHandlers.forEach((handler, index) => {
               const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${index}`);
@@ -418,8 +418,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Post-pass: parent renders child — resolve each template's child selectors
-    // to the component that declares that selector, emit a `renders` edge.
+
+
     for (const component of components) {
       const parentId = componentIdByName.get(component.name);
       if (!parentId) continue;
@@ -439,12 +439,12 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return components;
   }
 
-  /**
-   * Angular DI graph: a component/service's constructor params are the
-   * collaborators its injector supplies. Emit a `depends_on` edge tagged
-   * dependency_type:injection per resolved collaborator — the Camp-C fact
-   * structural indexers can't see (they read imports/usages, not injection).
-   */
+
+
+
+
+
+
   private buildInjectionEdges(
     components: AngularComponent[],
     services: AngularService[],
@@ -858,25 +858,25 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ));
       }
 
-      // A route is a real, navigable entry point whenever it renders SOMETHING
-      // at `displayPath` — either directly (`component`/`loadComponent`) or by
-      // handing off to a lazily-loaded feature module (`loadChildren`). The
-      // route-node above (line ~794) is emitted for every resolved route
-      // unconditionally, but this gate used to require `route.component`
-      // alone, which `loadChildren`-based lazy feature-module routes never
-      // set (see angular-route-resolver.ts: `component` only comes from
-      // `component:`/`loadComponent:`, never `loadChildren:`). Real Angular
-      // SPAs lean heavily on `loadChildren` for feature-module lazy loading,
-      // so that single-field gate silently dropped the majority of a large
-      // app's routes from entry_points while the graph still had them as
-      // angular_route nodes (measured on a real SPA: 158 angular_route nodes,
-      // only 17 counted as entry points — an 89% gap between what the
-      // analyzer found and what it reported). A bare `redirectTo`-only route
-      // (no component, no loadChildren) is intentionally still excluded: it
-      // renders nothing of its own, it only aliases to another route that is
-      // itself already counted. The wildcard `**` catch-all and any route
-      // whose path could not be resolved remain excluded for the same reason
-      // as before — neither names a specific, reliable navigable path.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
       const rendersSomething = Boolean(route.component || route.loadChildrenFile);
       if (rendersSomething && route.pathResolved && route.segment !== '**') {
         const isLazyModuleRoute = !route.component && Boolean(route.loadChildrenFile);
@@ -1060,13 +1060,13 @@ export class AngularAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /**
-   * Angular event bindings (`(click)="handler()"`, `(click)="handler($event)"`) in
-   * the component's inline template. These are the frontend analog of a route:
-   * a user event that triggers a method call. A bare `methodName(...)` call
-   * resolves `handlerName`; anything else (a full expression) is still captured
-   * as an event without a fabricated handler target.
-   */
+
+
+
+
+
+
+
   private extractTemplateEventHandlers(content: string): Array<{ event: string; handlerName?: string }> {
     const tplMatch = content.match(/template:\s*([`'"])([\s\S]*?)\1/);
     if (!tplMatch) return [];
@@ -1083,12 +1083,12 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return handlers;
   }
 
-  /**
-   * Custom-element tags used inside the component's inline template are its
-   * rendered children. We resolve each tag back to the component whose
-   * `selector` matches, building the component tree (the Camp-C fact embeddings
-   * and structural indexers can't produce — they see imports, not renders).
-   */
+
+
+
+
+
+
   private extractChildSelectors(content: string): string[] {
     const tplMatch = content.match(/template:\s*([`'"])([\s\S]*?)\1/);
     if (!tplMatch) return [];
@@ -1857,15 +1857,15 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
   }
 
-  /**
-   * The single app-wide `exit_angular_api` ('various' endpoint) placeholder is
-   * only useful when per-call extraction (extractPerCallApiExits) found
-   * nothing to report — e.g. a non-HttpClient app that still imports
-   * `@angular/common/http` for types only. Once real per-call exits exist,
-   * the placeholder is redundant noise that would otherwise dilute
-   * route-matching (deriveCapabilityRelationships in flow-concepts.ts) with
-   * an endpoint that can never match a real capability operation's path.
-   */
+
+
+
+
+
+
+
+
+
   private identifyAPIConnections(
     services: AngularService[],
     components: AngularComponent[],
@@ -1905,27 +1905,27 @@ export class AngularAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * PER-CALL API EXTRACTION (paper-cuts precedent: typescript-javascript-
-   * analyzer.ts's isApiCall/parseApiCall/extractStringLiteralsFromExpression
-   * solve the identical "which call is a real outbound HTTP call, and what's
-   * its (verb, endpoint)" problem for the generic TS/JS pass — this mirrors
-   * that heuristic for Angular's HttpClient convention specifically).
-   *
-   * The single synthetic `exit_angular_api` exit point (endpoint:'various')
-   * meant every route/component flow in a benchmarked Angular UI carried ZERO evidence of
-   * WHICH backend route it calls, so deriveCapabilityRelationships
-   * (flow-concepts.ts) could never route-match a UI flow to a capability
-   * operation. This scans every Angular service/component file for real
-   * `.get/.post/.put/.patch/.delete/.request(...)` calls on an HttpClient-
-   * shaped receiver and emits one CASExitPoint PER CALL, keyed to the
-   * enclosing method's node (so a flow traced through that method carries
-   * the real (method, path) as path-node evidence).
-   *
-   * Returns true when at least one real per-call exit was extracted — the
-   * caller (identifyAPIConnections) uses this to decide whether the old
-   * app-wide 'various' placeholder is now redundant noise to drop.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private async extractPerCallApiExits(
     projectPath: string,
     services: AngularService[],
@@ -1953,10 +1953,10 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ownerId: serviceId,
         ownerName: service.name,
         methodIdFor,
-        // Every method extractMethods() finds on a service IS node-ified in
-        // analyzeServices (one node per entry in service.methods), so the
-        // method-name -> node-id mapping above always resolves to a real
-        // node — no on-the-fly node creation needed for services.
+
+
+
+
         createMissingMethodNode: false,
         nodes,
         edges
@@ -1982,11 +1982,11 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ownerId: componentId,
         ownerName: component.name,
         methodIdFor,
-        // Unlike services, a component only has node-ified methods for
-        // template event handlers (analyzeComponents) — an arbitrary method
-        // making an HttpClient call (e.g. ngOnInit) has no existing node, so
-        // create one lazily here, exactly mirroring the node shape
-        // analyzeServices already builds per method.
+
+
+
+
+
         createMissingMethodNode: true,
         nodes,
         edges
@@ -1998,16 +1998,15 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return found;
   }
 
-  /** Simple HTTP verbs this pass recognizes as real outbound calls. */
-  private static readonly HTTP_VERB_TOKENS = ['get', 'post', 'put', 'patch', 'delete', 'request'];
 
-  /**
-   * Shared per-call extraction for one owner (service or component) file.
-   * Scans the WHOLE file content for HttpClient-shaped calls (receiver
-   * naming heuristic — see isHttpClientReceiver), resolves each call's
-   * (method, endpoint), attributes it to the enclosing method's node, and
-   * returns one deduped CASExitPoint per distinct (method, path) per node.
-   */
+
+
+
+
+
+
+
+
   private extractHttpCallsForOwner(args: {
     content: string;
     relativeFile: string;
@@ -2024,13 +2023,13 @@ export class AngularAnalyzer extends BaseAnalyzer {
     const classFields = this.extractClassFieldLiterals(content);
     const methodBodies = this.extractMethodBodies(content);
 
-    // node id -> Set of "METHOD|endpoint-or-unresolved-marker" already emitted,
-    // so a component calling the same (method, path) twice from one node
-    // collapses to a single exit point (spec: "dedupe identical (method,path)
-    // per node").
+
+
+
+
     const seenPerNode = new Map<string, Set<string>>();
-    // methodName -> node id already created on the fly, so two calls in the
-    // same not-yet-node-ified method share one lazily-created node.
+
+
     const lazyMethodNodeIds = new Map<string, string>();
 
     const callRe = /(\w+)\.(get|post|put|patch|delete|request)\s*\(/gi;
@@ -2050,10 +2049,10 @@ export class AngularAnalyzer extends BaseAnalyzer {
       let httpMethod: string;
       let urlArg: string | undefined;
       if (verbToken === 'request') {
-        // Positional-args generic `.request(verb, url, ...)` form (Angular
-        // HttpClient): the REAL HTTP verb is the first (string-literal) arg,
-        // the url is the second — see typescript-javascript-analyzer.ts's
-        // parseApiCall for the identical precedent on the generic TS/JS pass.
+
+
+
+
         const verbLiteral = this.classifyStringLiteral(args_[0]);
         httpMethod = verbLiteral !== undefined ? verbLiteral.toUpperCase() : 'REQUEST';
         urlArg = args_[1];
@@ -2066,9 +2065,9 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ? this.classifyUrlArg(urlArg, classFields)
         : { unresolved: true as const };
 
-      // Enclosing method (source order — methodBodies is emitted in file
-      // order and bodies never overlap after the lastIndex jump in
-      // extractMethodBodies, so the first containing range found is correct).
+
+
+
       const enclosing = methodBodies.find(m => match!.index >= m.start && match!.index < m.end);
       const methodName = enclosing?.name;
 
@@ -2157,18 +2156,18 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return exits;
   }
 
-  /**
-   * HttpClient-shaped receiver heuristic (mirrors typescript-javascript-
-   * analyzer.ts's isApiCall httpClientPatterns list for consistency across
-   * analyzers). A receiver whose name itself carries 'http' is trusted
-   * outright (Angular's own convention: `private readonly http = inject
-   * (HttpClient)` / `constructor(private http: HttpClient)`, inherited
-   * across subclasses that never redeclare the field in their own file, so
-   * a TYPE-based check alone would miss most real calls). A weaker generic
-   * name ('api'/'client'/'request') additionally requires a URL-shaped first
-   * argument, to avoid false-positiving on an unrelated `.get(key)` (e.g. a
-   * Map/cache lookup) that happens to share a method name.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private isHttpClientReceiver(receiver: string, verbToken: string, firstArgRaw: string | undefined): boolean {
     const httpClientPatterns = ['axios', 'api', 'http', 'apiclient', 'httpclient', 'request'];
     const caller = receiver.toLowerCase();
@@ -2178,36 +2177,36 @@ export class AngularAnalyzer extends BaseAnalyzer {
     if (!firstArgRaw) return false;
     const stripped = firstArgRaw.trim().replace(/^[`'"]|[`'"]$/g, '');
     if (/^(https?:\/\/|\/[A-Za-z0-9_\-.:[\]{}$])/.test(stripped)) return true;
-    return verbToken === 'request'; // (verb, url) positional form — url is arg[1], arg[0] is the verb literal.
+    return verbToken === 'request';
   }
 
-  /** True string-literal value ('x'/"x") — used for the .request(verb, ...) positional form. */
+
   private classifyStringLiteral(arg: string | undefined): string | undefined {
     if (!arg) return undefined;
     const m = arg.trim().match(/^(['"])((?:[^\\]|\\.)*)\1$/);
     return m ? m[2] : undefined;
   }
 
-  /**
-   * Classifies a call's URL argument:
-   *  - a plain string literal -> resolved endpoint, as-is.
-   *  - a template literal whose leading text is literal (`/api/x/${id}`) ->
-   *    resolved endpoint with each `${expr}` interpolation normalized to a
-   *    `:paramName` path-param segment (route-match-ready).
-   *  - a template literal that OPENS on an interpolation (`${base}/fuel/
-   *    cards`) -> the base identifier IS a real base-URL-constant reference
-   *    even when we can't see its literal value (it may live in a different
-   *    file, e.g. `environment.apiBaseUrl` or an inherited base class field)
-   *    — resolved as the TAIL path alone (`/fuel/cards`) with `baseRef` set
-   *    to the identifier, so the flow-concepts route-match rule can still
-   *    suffix-match it against a capability operation's full route. When the
-   *    identifier DOES resolve to a known class-field string literal
-   *    (extractClassFieldLiterals — same-file `readonly pathPrefixWeb =
-   *    '/api/web/partner'` convention), the literal is prepended instead,
-   *    producing the FULL absolute path.
-   *  - anything else (a bare variable, string concatenation, a template with
-   *    no static tail evidence at all) -> unresolved. NEVER fabricated.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private classifyUrlArg(
     arg: string,
     classFields: Map<string, string>
@@ -2234,8 +2233,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
       if (segments.length === 0) return { unresolved: false, endpoint: inner };
 
       if (segments[0].expr === undefined) {
-        // Leading literal text: the path itself is known; interpolations
-        // become path-param placeholders.
+
+
         let endpoint = '';
         for (const seg of segments) {
           endpoint += seg.text !== undefined ? seg.text : `:${this.paramNameFromExpr(seg.expr!)}`;
@@ -2243,9 +2242,9 @@ export class AngularAnalyzer extends BaseAnalyzer {
         return { unresolved: false, endpoint };
       }
 
-      // Template OPENS on an interpolation. Build the TAIL (everything after
-      // the first `${...}`) regardless of whether the base resolves — that
-      // tail came from real literal source text at the call site.
+
+
+
       const baseIdent = segments[0].expr.replace(/^this\.\s*/, '').trim();
       let tail = '';
       for (let i = 1; i < segments.length; i++) {
@@ -2257,7 +2256,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
       if (baseLiteral !== undefined) {
         return { unresolved: false, endpoint: baseLiteral + tail, baseRef: baseIdent, baseResolved: true };
       }
-      if (!tail) return { unresolved: true }; // no static tail at all — genuinely opaque, never fabricated.
+      if (!tail) return { unresolved: true };
       const normalizedTail = tail.startsWith('/') ? tail : `/${tail}`;
       return { unresolved: false, endpoint: normalizedTail, baseRef: baseIdent, baseResolved: false };
     }
@@ -2270,13 +2269,13 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return /^[A-Za-z_$][\w$]*$/.test(cleaned) ? cleaned : 'param';
   }
 
-  /**
-   * Class-level `readonly foo = '/literal/path';` string-field assignments —
-   * the base-URL-constant convention (`private readonly pathPrefixWeb =
-   * '/api/web/partner';`) that a template-literal call like
-   * `` `${this.pathPrefixWeb}/companies` `` needs resolved to produce a real
-   * endpoint instead of being dropped as unresolvable.
-   */
+
+
+
+
+
+
+
   private extractClassFieldLiterals(content: string): Map<string, string> {
     const fields = new Map<string, string>();
     const fieldPattern = /(?:private|protected|public)?\s*(?:static\s+)?(?:readonly\s+)?(\w+)\s*(?::\s*[\w<>[\],\s]+)?\s*=\s*(['"`])([^'"`]*)\2\s*;/g;
@@ -2289,15 +2288,15 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return fields;
   }
 
-  /**
-   * Method-body ranges via brace-depth matching (same technique as
-   * frontend-state-analyzer.ts's extractBraceBlock) — needed (not just the
-   * name/signature extractMethods() already gives elsewhere) so a call found
-   * anywhere in the file can be attributed to its ENCLOSING method by
-   * character-offset containment. `methodPattern.lastIndex` jumps past each
-   * found body so a nested function expression inside a method isn't
-   * mis-detected as a second top-level method.
-   */
+
+
+
+
+
+
+
+
+
   private extractMethodBodies(content: string): Array<{ name: string; start: number; end: number }> {
     const results: Array<{ name: string; start: number; end: number }> = [];
     const methodPattern = /(?:(?:private|protected|public)\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]+?)?\s*\{/g;
@@ -2305,7 +2304,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
     while ((match = methodPattern.exec(content)) !== null) {
       const name = match[1];
       if (['constructor', 'class', 'if', 'for', 'while', 'switch', 'catch'].includes(name)) continue;
-      const braceStart = match.index + match[0].length; // just past the opening '{'
+      const braceStart = match.index + match[0].length;
       const braceEnd = this.findMatchingClose(content, braceStart - 1, '{', '}');
       const end = braceEnd === -1 ? content.length : braceEnd;
       results.push({ name, start: braceStart, end });
@@ -2314,12 +2313,12 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  /**
-   * Index of the character matching `content[openIndex]` (which must be
-   * `openCh`), tracking nesting depth and skipping over string/template
-   * literal contents so a `(`/`{` inside a quoted string never perturbs the
-   * count. Returns -1 if unterminated.
-   */
+
+
+
+
+
+
   private findMatchingClose(content: string, openIndex: number, openCh: string, closeCh: string): number {
     let depth = 0;
     let inStr: string | null = null;
@@ -2340,12 +2339,12 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return -1;
   }
 
-  /**
-   * Splits a call's raw argument text on TOP-LEVEL commas only — nesting
-   * inside `()[]{}` or a quoted/template string never counts as a
-   * separator. Used to pull the URL argument (and, for `.request(verb,
-   * url)`, both positional args) out of an arbitrary-arity call.
-   */
+
+
+
+
+
+
   private splitTopLevelArgs(argsRaw: string): string[] {
     const args: string[] = [];
     let depth = 0;
@@ -2556,284 +2555,10 @@ export class AngularAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
-    const comments: CASComment[] = [];
-    let commentSeq = 0;
-    const lines = content.split('\n');
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
 
-      const singleLineMatch = line.match(/\/\/(.*)$/);
-      if (singleLineMatch) {
-        const text = singleLineMatch[1].trim();
-        const purpose = this.classifyCommentPurpose(text);
-        comments.push({
-          id: `comment_${filePath}_${++commentSeq}`,
-          type: 'single-line',
-          style: '//',
-          text,
-          purpose,
-          location: {
-            file: filePath,
-            line: i + 1,
-            relative_to: 'inline'
-          },
-          markers: this.extractCommentMarkers(text)
-        });
-      }
 
-      if (line.includes('/*')) {
-        let multiLineText = '';
-        let endLine = i;
-        let foundEnd = false;
 
-        for (let j = i; j < lines.length; j++) {
-          const currentLine = lines[j];
-          if (j === i) {
-            const startMatch = currentLine.match(/\/\*(.*)/);
-            if (startMatch) {
-              multiLineText = startMatch[1];
-              if (currentLine.includes('*/')) {
-                multiLineText = multiLineText.replace(/\*\/.*$/, '').trim();
-                foundEnd = true;
-                endLine = j;
-              }
-            }
-          } else {
-            if (currentLine.includes('*/')) {
-              multiLineText += '\n' + currentLine.replace(/\*\/.*$/, '').replace(/^\s*\*/, '').trim();
-              foundEnd = true;
-              endLine = j;
-              break;
-            } else {
-              multiLineText += '\n' + currentLine.replace(/^\s*\*/, '').trim();
-            }
-          }
-        }
 
-        if (foundEnd) {
-          const purpose = this.classifyCommentPurpose(multiLineText);
-          comments.push({
-            id: `comment_${filePath}_${++commentSeq}`,
-            type: 'multi-line',
-            style: '/* */',
-            text: multiLineText.trim(),
-            purpose,
-            location: {
-              file: filePath,
-              line: i + 1,
-              end_line: endLine + 1,
-              relative_to: 'above'
-            },
-            markers: this.extractCommentMarkers(multiLineText)
-          });
-          i = endLine;
-        }
-      }
-    }
 
-    return comments;
-  }
-
-  private classifyCommentPurpose(text: string): CASComment['purpose'] {
-    const lowerText = text.toLowerCase();
-
-    if (/\b(todo|fixme|hack|warning|note|xxx|optimize|refactor)\b/.test(lowerText)) {
-      return 'todo';
-    }
-    if (/\b(warning|warn|caution|danger|important)\b/.test(lowerText)) {
-      return 'warning';
-    }
-    if (/\b(note|info|tip|hint)\b/.test(lowerText)) {
-      return 'note';
-    }
-    if (/\b(hack|temp|temporary|quick|dirty)\b/.test(lowerText)) {
-      return 'hack';
-    }
-
-    return 'explanation';
-  }
-
-  private extractCommentMarkers(text: string): CASComment['markers'] {
-    const markers: CASComment['markers'] = {};
-    const lowerText = text.toLowerCase();
-
-    markers.is_todo = /\btodo\b/.test(lowerText);
-    markers.is_fixme = /\bfixme\b/.test(lowerText);
-    markers.is_hack = /\bhack\b/.test(lowerText);
-    markers.is_warning = /\b(warning|warn)\b/.test(lowerText);
-    markers.is_note = /\b(note|info)\b/.test(lowerText);
-    markers.is_important = /\b(important|critical|urgent)\b/.test(lowerText);
-    markers.is_deprecated = /\b(deprecated|obsolete)\b/.test(lowerText);
-
-    return markers;
-  }
-
-  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
-    const todos: CASTodo[] = [];
-    let todoSeq = 0;
-
-    comments.forEach(comment => {
-      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
-        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
-        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
-
-        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
-        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
-
-        const priority = comment.markers?.is_important ? 'high' :
-                        comment.markers?.is_fixme ? 'medium' : 'low';
-
-        const category = this.categorizeTodo(comment.text);
-
-        todos.push({
-          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
-          type,
-          text: comment.text,
-          priority,
-          assignee,
-          category,
-          location: {
-            file: comment.location.file,
-            line: comment.location.line,
-            context
-          },
-          metadata: {
-            source: 'comment',
-            comment_type: comment.type
-          }
-        });
-      }
-    });
-
-    return todos;
-  }
-
-  private categorizeTodo(text: string): CASTodo['category'] {
-    const lowerText = text.toLowerCase();
-
-    if (/\b(fix|bug|error|issue|broken)\b/.test(lowerText)) return 'bug';
-    if (/\b(feature|add|implement|new)\b/.test(lowerText)) return 'feature';
-    if (/\b(refactor|clean|improve|restructure)\b/.test(lowerText)) return 'refactor';
-    if (/\b(performance|optimize|speed|slow)\b/.test(lowerText)) return 'performance';
-    if (/\b(security|secure|auth|permission)\b/.test(lowerText)) return 'security';
-
-    return 'general';
-  }
-
-  private extractDocumentationFromJSDoc(content: string, startLine: number): CASDocumentation | undefined {
-    const lines = content.split('\n');
-    let documentation = '';
-    let hasDoc = false;
-
-    for (let i = startLine - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (line.startsWith('/**') || line.includes('/**')) {
-        let docText = line.replace(/\/\*\*/, '').replace(/\*\/.*/, '').replace(/^\s*\*/, '').trim();
-        if (docText) {
-          documentation = docText + (documentation ? '\n' + documentation : '');
-          hasDoc = true;
-        }
-
-        if (line.includes('*/')) break;
-
-        for (let j = i + 1; j < lines.length; j++) {
-          const docLine = lines[j].trim();
-          if (docLine.includes('*/')) {
-            const finalDoc = docLine.replace(/\*\/.*/, '').replace(/^\s*\*/, '').trim();
-            if (finalDoc) {
-              documentation = documentation + '\n' + finalDoc;
-            }
-            break;
-          } else if (docLine.startsWith('*')) {
-            const lineDoc = docLine.replace(/^\s*\*/, '').trim();
-            if (lineDoc) {
-              documentation = documentation + '\n' + lineDoc;
-              hasDoc = true;
-            }
-          }
-        }
-        break;
-      } else if (!line.startsWith('//') && line !== '') {
-        break;
-      }
-    }
-
-    if (hasDoc) {
-      const docs: CASDocumentation = {
-        type: 'jsdoc',
-        raw: documentation,
-        location: { start_line: startLine - documentation.split('\n').length, end_line: startLine }
-      };
-
-      docs.summary = documentation.split('.')[0] + (documentation.includes('.') ? '.' : '');
-      docs.description = documentation;
-
-      const paramMatches = documentation.match(/@param\s+\{([^}]+)\}\s+(\w+)\s+(.*)/g);
-      if (paramMatches) {
-        docs.parameters = paramMatches.map(match => {
-          const parts = match.match(/@param\s+\{([^}]+)\}\s+(\w+)\s+(.*)/);
-          return {
-            name: parts?.[2] || '',
-            type: parts?.[1] || '',
-            description: parts?.[3] || ''
-          };
-        });
-      }
-
-      const returnMatch = documentation.match(/@returns?\s+\{([^}]+)\}\s+(.*)/);
-      if (returnMatch) {
-        docs.return_info = {
-          type: returnMatch[1],
-          description: returnMatch[2]
-        };
-      }
-
-      const exampleMatch = documentation.match(/@example\s*(.*?)(?=@|$)/s);
-      if (exampleMatch) {
-        docs.examples = [{ code: exampleMatch[1].trim(), language: 'typescript' }];
-      }
-
-      return docs;
-    }
-
-    return undefined;
-  }
-
-  private detectImplementationStatus(component: any, content: string): CASImplementationStatus {
-    const lowerContent = content.toLowerCase();
-
-    const indicators = {
-      has_todo_markers: lowerContent.includes('todo') || lowerContent.includes('fixme'),
-      has_not_implemented_exceptions: lowerContent.includes('notimplementederror') || lowerContent.includes('throw new error'),
-      has_stub_returns: lowerContent.includes('return null') || lowerContent.includes('return undefined'),
-      has_placeholder_code: lowerContent.includes('placeholder') || lowerContent.includes('// TODO'),
-      has_hardcoded_values: lowerContent.includes("'localhost'") || lowerContent.includes('"localhost"'),
-      has_commented_out_code: lowerContent.includes('//') && lowerContent.includes('function'),
-      has_placeholder_template: lowerContent.includes('<p>') && lowerContent.includes('works!'),
-      has_empty_methods: lowerContent.includes('{}') || lowerContent.includes('{ }'),
-      has_console_logs: lowerContent.includes('console.log'),
-      has_mock_data: lowerContent.includes('mock') || lowerContent.includes('dummy'),
-      has_deprecated_markers: lowerContent.includes('@deprecated')
-    };
-
-    let status: CASImplementationStatus['status'] = 'complete';
-    if (indicators.has_deprecated_markers) {
-      status = 'deprecated';
-    } else if (indicators.has_placeholder_template || indicators.has_empty_methods) {
-      status = 'stub';
-    } else if (indicators.has_todo_markers || indicators.has_mock_data || indicators.has_console_logs) {
-      status = 'partial';
-    }
-
-    return {
-      status,
-      indicators,
-      completeness: status === 'complete' ? { estimated_percentage: 100 } :
-                   status === 'partial' ? { estimated_percentage: 60 } :
-                   status === 'stub' ? { estimated_percentage: 10 } :
-                   { estimated_percentage: 0 }
-    };
-  }
 }

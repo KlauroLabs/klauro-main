@@ -9,7 +9,7 @@ describe('AI description evidence boundary', () => {
       [{ type: 'http', count: 12 }, { type: 'cli', count: 3 }, { type: 'test', count: 40 }],
       ['EnterpriseOrder'],
       [],
-      { capabilities: [], dependencies: [], topology: {}, primary_flow: {}, layers: [], system_insights: {} },
+      { capability_candidates: [], dependencies: [], topology: {}, primary_flow: {}, layers: [], system_insights: {} },
       [{ id: 'orders', name: 'Orders', classification: 'core', frequency: 4 }],
       [{ id: 'orders', name: 'Manage Orders', description: 'Owns EnterpriseOrder decisions.' }],
       []
@@ -28,7 +28,7 @@ describe('AI description evidence boundary', () => {
       [{ type: 'http', count: 1 }],
       ['EnterpriseOrder'],
       [],
-      { capabilities: [], dependencies: [], topology: {}, primary_flow: {}, layers: [], system_insights: {} },
+      { capability_candidates: [], dependencies: [], topology: {}, primary_flow: {}, layers: [], system_insights: {} },
       [{ id: 'orders', name: 'Orders', classification: 'core', frequency: 4 }],
       [{ id: 'orders', name: 'Manage Orders', description: 'Owns EnterpriseOrder decisions.' }],
       [],
@@ -75,7 +75,7 @@ describe('AI description evidence boundary', () => {
       [{ type: 'http', count: 1 }],
       ['EnterpriseOrder'],
       [],
-      { capabilities: [], dependencies: [], topology: {}, primary_flow: {}, layers: [], system_insights: {} },
+      { capability_candidates: [], dependencies: [], topology: {}, primary_flow: {}, layers: [], system_insights: {} },
       [{ id: 'orders', name: 'Orders', classification: 'core', frequency: 4 }],
       [{
         id: 'orders', name: 'View Orders', description: 'Returns EnterpriseOrder details.',

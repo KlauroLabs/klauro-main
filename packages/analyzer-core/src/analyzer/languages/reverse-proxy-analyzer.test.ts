@@ -55,6 +55,33 @@ test('CaddyAnalyzer extracts reverse_proxy routes and their upstream targets', a
   }
 });
 
+test('CaddyAnalyzer resolves dynamic DNS upstream blocks', async () => {
+  const dir = tempDir('caddy-dynamic-test');
+  try {
+    fs.writeFileSync(path.join(dir, 'Caddyfile'), [
+      'mcp.example.com {',
+      '  reverse_proxy {',
+      '    dynamic a {',
+      '      name api',
+      '      port 8787',
+      '      resolvers 127.0.0.11',
+      '    }',
+      '  }',
+      '}',
+    ].join('\n'));
+
+    const result = await new CaddyAnalyzer().analyze({ projectPath: dir } as any);
+    const route = result.nodes.find(node => node.type === 'proxy_route');
+
+    assert.ok(route);
+    assert.equal(route.metadata?.proxied_service, 'api');
+    assert.deepEqual(route.metadata?.ports, ['8787']);
+    assert.ok(result.exit_points?.some(exit => exit.target?.service_id === 'api'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('NginxAnalyzer resolves proxy_pass to declared upstream pools', async () => {
   const dir = tempDir('nginx-test');
   try {
@@ -246,15 +273,40 @@ test('infra linker joins a proxy route to a deployable by upstream port (public 
       entry_points: [],
       exit_points: [],
       external_services: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: deployables,
     });
 
     const exposes = links.edges.filter(e => e.type === 'EXPOSES' && (e.metadata as any)?.attributes?.via === 'reverse-proxy');
     assert.ok(exposes.length >= 1, 'expected the proxy route to EXPOSES the api deployable');
-    assert.equal(exposes[0].target, 'code_api_server');
+    assert.equal(exposes[0].target, 'deployable:api');
+    assert.ok(links.nodes.some(node => node.id === 'deployable:api'));
     assert.equal((exposes[0].metadata as any).attributes.join_key, 'port:8787');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('infra linker uses a stable synthetic anchor for container deployables', () => {
+  const links = linkInfraTopology({
+    nodes: [
+      {
+        id: 'docker_api',
+        name: 'api',
+        type: 'container_image_definition',
+        metadata: { topology_surface: 'dockerfile', attributes: { name: 'api' } },
+      } as CASNode,
+      { id: 'code_z', name: 'z', type: 'module', level: 1, source: { file: 'apps/api/z.ts' } } as CASNode,
+      { id: 'code_a', name: 'a', type: 'module', level: 1, source: { file: 'apps/api/a.ts' } } as CASNode,
+    ],
+    entry_points: [],
+    exit_points: [],
+    external_services: [],
+    entities: [],
+    deployable_evidence: [{ name: 'api', root_path: 'apps/api', kind: 'container' } as DeployableEvidence],
+  });
+
+  const deployment = links.edges.find(edge => edge.type === 'DEPLOYS');
+  assert.equal(deployment?.target, 'deployable:api');
+  assert.ok(links.nodes.some(node => node.id === 'deployable:api'));
 });

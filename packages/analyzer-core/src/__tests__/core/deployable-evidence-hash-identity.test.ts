@@ -90,6 +90,31 @@ describe('package-manifest provider: hash-shaped workspace basename never leaks 
   });
 });
 
+describe('package-manifest provider: nested package boundaries', () => {
+  let projectPath: string;
+
+  afterEach(() => {
+    if (projectPath) fs.removeSync(projectPath);
+  });
+
+  test('discovers nested npm, Cargo, and Go packages while excluding dependency directories', () => {
+    projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-package-boundaries-'));
+    fs.outputJsonSync(path.join(projectPath, 'package.json'), { name: 'workspace', private: true });
+    fs.outputJsonSync(path.join(projectPath, 'packages', 'web', 'package.json'), { name: '@workspace/web', version: '1.0.0' });
+    fs.outputFileSync(path.join(projectPath, 'crates', 'engine', 'Cargo.toml'), '[package]\nname = "engine"\nversion = "0.1.0"\n\n[dependencies]\n');
+    fs.outputFileSync(path.join(projectPath, 'services', 'worker', 'go.mod'), 'module example.com/worker\n\ngo 1.24\n');
+    fs.outputJsonSync(path.join(projectPath, 'node_modules', 'ignored', 'package.json'), { name: 'ignored' });
+
+    const evidence = packageManifestProvider.collect(contextFor(projectPath));
+    expect(evidence.map(item => [item.root_path, item.name])).toEqual([
+      ['crates/engine', 'engine'],
+      ['.', 'workspace'],
+      ['packages/web', '@workspace/web'],
+      ['services/worker', 'example.com/worker']
+    ]);
+  });
+});
+
 describe('displayName threading: real project identity survives a hash-named workspace dir', () => {
   let projectPath: string;
 

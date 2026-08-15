@@ -8,10 +8,10 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * A single Sinatra route: `get '/path' do ... end` (or `get '/path' do |x| ... end`,
- * or the one-liner `get('/path') { ... }` block form).
- */
+
+
+
+
 interface SinatraRoute {
   method: string;
   path: string;
@@ -94,7 +94,7 @@ export class SinatraAnalyzer extends BaseAnalyzer {
           const lockMatch = lockContent.match(/^\s{4}sinatra\s+\(([^)]+)\)/m);
           if (lockMatch) version = lockMatch[1];
         }
-      } catch { /* best effort */ }
+      } catch {   }
 
       const appId = 'app_sinatra';
       const appNode = this.createNodeBuilder(appId, 'Sinatra Application', 'application')
@@ -165,21 +165,21 @@ export class SinatraAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Extract every `get/post/put/patch/delete/options/head '/path' do ... end`
-   * (and the block-form one-liner `get('/path') { ... }`) route in a file,
-   * honoring `namespace '/prefix' do ... end` blocks (Sinatra::Namespace) which
-   * prefix every route nested inside them.
-   */
+
+
+
+
+
+
   extractRoutes(content: string, file: string): SinatraRoute[] {
     const routes: SinatraRoute[] = [];
     const lines = content.split('\n');
 
-    // Track a stack of (kind, prefix) for `do...end` blocks so `namespace` prefixes
-    // apply to nested routes and pop correctly when their block closes. We only
-    // push a frame for constructs we recognize (namespace / route-with-do); other
-    // `do`/`end` pairs (e.g. `helpers do`) are tracked too so the stack stays balanced,
-    // but they carry no prefix change.
+
+
+
+
+
     const stack: Array<{ prefix: string }> = [{ prefix: '' }];
     let pendingBeforeGuards: string[] = [];
 
@@ -204,10 +204,10 @@ export class SinatraAnalyzer extends BaseAnalyzer {
 
       const beforeMatch = trimmed.match(beforeFilterPattern);
       if (beforeMatch) {
-        // A `before do ... protected! ... end` block: scan ahead for an auth helper
-        // call inside it and treat every subsequent route in this scope as guarded.
-        // Simpler, honest approximation: record the guard name if present in the
-        // immediate block body (best-effort single-line lookahead loop below).
+
+
+
+
         let j = i + 1;
         let depth = 1;
         while (j < lines.length && depth > 0) {
@@ -231,21 +231,21 @@ export class SinatraAnalyzer extends BaseAnalyzer {
         const prefix = stack[stack.length - 1].prefix;
         const fullPath = this.joinPaths(prefix, routePath);
 
-        // Guards: an inline `protected!`/`authorize!` on the SAME line as the route
-        // header (rare), plus any accumulated `before do ... end` guard helpers.
+
+
         const inlineGuards = (trimmed.match(/\b(protected!|authorize!|authenticate!)\b/g) || []);
         const guards = [...new Set([...pendingBeforeGuards, ...inlineGuards])];
 
         routes.push({ method, path: fullPath, file, line: i + 1, guards });
 
         if (opener === 'do') stack.push({ prefix });
-        // `{ ... }` one-liners don't open a multi-line block we need to track.
+
         continue;
       }
 
       if (/\bdo\b\s*$/.test(trimmed) && !routeMatch) {
-        // Some other block (helpers do, configure do, etc.) — push a neutral frame
-        // so `end` balances the stack without corrupting the active prefix.
+
+
         stack.push({ prefix: stack[stack.length - 1].prefix });
         continue;
       }

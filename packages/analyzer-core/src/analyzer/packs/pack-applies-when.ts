@@ -1,9 +1,9 @@
-/**
- * Evaluates a pack's `applies_when` gate against a project: dependency /
- * file-glob / import-regex evidence. A pack with NO matching evidence applies
- * to NOTHING — packs never run speculatively against every repo, matching
- * the evidence-gated posture of the rest of Klauro's analyzers (canAnalyze()).
- */
+
+
+
+
+
+
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
@@ -21,9 +21,9 @@ export async function evaluateAppliesWhen(
 ): Promise<AppliesWhenEvidence> {
   const hasAnyGate = !!(appliesWhen.dependency?.length || appliesWhen.file?.length || appliesWhen.import?.length);
   if (!hasAnyGate) {
-    // No gate declared at all — pack author's choice; apply unconditionally
-    // (still only matches nodes its queries actually find — evidence-gated
-    // at the rule level even when the pack-level gate is absent).
+
+
+
     return { applies: true, reason: 'no applies_when gate declared' };
   }
 
@@ -66,7 +66,7 @@ async function readManifestDependencyNames(projectPath: string): Promise<Set<str
       for (const name of Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })) names.add(name);
     }
   } catch {
-    // Missing/unreadable manifest — treat as no dependency evidence.
+
   }
   return names;
 }

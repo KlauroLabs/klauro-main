@@ -1,16 +1,16 @@
-/**
- * Cheap syntax-health heuristics for the regex-based language analyzers.
- *
- * The tree-sitter backed TypeScript/JavaScript analyzer reports
- * hasSyntaxErrors from the parser itself. The regex-based analyzers
- * (Python, Java, Ruby, Dart, PHP) have no parser, so broken syntax used to
- * degrade extraction silently. These checks do not parse: they look for
- * gross structural damage (heavily unbalanced delimiters after stripping
- * comments and strings) and for non-trivial files whose declaration
- * keywords produced zero extracted code elements. Matches feed
- * analyzer_metadata.warnings, which the orchestrator propagates to
- * analysis_errors as PARTIAL_ANALYSIS.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export type RegexAnalyzedLanguage = 'python' | 'java' | 'ruby' | 'dart' | 'php';
 
@@ -31,13 +31,13 @@ const DECLARATION_PATTERNS: Record<RegexAnalyzedLanguage, RegExp> = {
   php: /\b(?:function|class|interface|trait|enum)\s+\w/,
 };
 
-// PHP treats `#` as a line comment, but `#[` starts an attribute
-// (`#[ORM\Column(...)]`), a balanced, often multi-line construct introduced
-// in PHP 8. Matching `#[...]` as a line comment truncates the attribute at
-// the first newline, discarding its closing `)`/`]` and making the file look
-// delimiter-imbalanced even though it parses cleanly. Exclude `#[` from the
-// PHP line-comment match so attributes are left in place for the delimiter
-// count (their internal strings are already stripped beforehand).
+
+
+
+
+
+
+
 const LINE_COMMENT_PATTERNS: Record<RegexAnalyzedLanguage, RegExp> = {
   python: /#[^\n]*/g,
   java: /\/\/[^\n]*/g,
@@ -86,12 +86,12 @@ function isNonTrivial(content: string): boolean {
   return false;
 }
 
-/**
- * Returns a warning message when the file looks syntactically damaged enough
- * that regex extraction is likely partial, or undefined when the file looks
- * healthy. Thresholds are deliberately conservative: a stray brace in a
- * string edge case must not flag an entire healthy repository.
- */
+
+
+
+
+
+
 export function detectSyntaxDegradation(check: SyntaxDegradationCheck): string | undefined {
   const { relativePath, content, language, extractedNodeCount } = check;
   if (content.trim().length === 0) return undefined;

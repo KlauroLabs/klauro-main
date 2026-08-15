@@ -96,7 +96,7 @@ export function computeGraphAffectedFileClosure(input: {
     dependents.add(dependentFile);
   }
 
-  const directChanges = new Set([...input.changedFiles].map(normalizeProjectPath));
+  const directChanges = new Set([...input.changedFiles].map(normalizeSourceFile).filter(Boolean));
   const visited = new Set(directChanges);
   const affected = new Set<string>();
   const queue = [...directChanges];
@@ -193,7 +193,6 @@ export function filesRequiringIncrementalAnalysis(changeSet: ChangeSet): string[
   return [...new Set([
     ...changeSet.added,
     ...changeSet.modified,
-    ...(changeSet.affectedFiles || []),
   ].map(normalizeProjectPath))]
     .filter(filePath => !deleted.has(filePath))
     .sort();
@@ -240,7 +239,8 @@ export function remapIncrementalNodeReferences(input: {
     if (currentById.has(oldNode.id)) {
       const parentWasRemoved = Boolean(oldNode.parent) && !currentById.has(oldNode.parent!);
       if (!parentWasRemoved) continue;
-      const replacementCandidates = (currentByRelaxedIdentity.get(relaxedIdentity(oldNode)) || [])
+      if (!ownerName(oldNode, previousById)) continue;
+      const replacementCandidates = (currentByStrictIdentity.get(strictIdentity(oldNode, previousById)) || [])
         .filter(candidate => candidate.id !== oldNode.id);
       if (replacementCandidates.length === 1) redirect.set(oldNode.id, replacementCandidates[0].id);
       continue;

@@ -1,16 +1,16 @@
-/**
- * Generic tree-sitter LANGUAGE analyzer — the breadth engine, wired into the real
- * orchestrator pipeline (not just benchmarks).
- *
- * Any grammar that has a `LanguageSpec` and a vendored tree-sitter grammar gets
- * structural coverage — file, function, class, import nodes + contains/imports/calls
- * edges — the moment its extension is registered, with NO bespoke analyzer. The deep
- * analyzers (typescript, python, go, rust, c/cpp, swift, …) keep ownership of their
- * languages; this is the FALLBACK for everything else (zig, haskell, lua, ocaml,
- * erlang, clojure, julia, nim, fortran, …). Breadth parity; the deterministic layer
- * (capabilities/domains/call-chains) then runs on the graph it produces, so "deep"
- * is universal once a graph exists.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
@@ -22,13 +22,13 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Map of file extension (with leading dot, lowercase) -> grammar id, for every
- * registered language that (a) has a tree-sitter LanguageSpec and (b) is NOT owned
- * by a deep analyzer. Built lazily from the single source of truth (the registry +
- * the spec table), so adding a grammar/spec or a deep analyzer needs no edit here.
- * Lazy so the `LanguageAnalyzers` live binding is resolved (circular import safe).
- */
+
+
+
+
+
+
+
 let extToGrammar: Map<string, string> | null = null;
 function extensionToGrammar(): Map<string, string> {
   if (extToGrammar) return extToGrammar;
@@ -36,8 +36,8 @@ function extensionToGrammar(): Map<string, string> {
   const map = new Map<string, string>();
   for (const entry of LANGUAGE_REGISTRY) {
     const grammar = entry.id;
-    if (deepLangIds.has(grammar)) continue;          // deep analyzer owns it
-    if (!LANGUAGE_SPECS[grammar]) continue;          // no breadth spec -> can't walk it
+    if (deepLangIds.has(grammar)) continue;
+    if (!LANGUAGE_SPECS[grammar]) continue;
     for (const ext of entry.extensions) {
       map.set(`.${ext.toLowerCase()}`, grammar);
     }
@@ -46,19 +46,19 @@ function extensionToGrammar(): Map<string, string> {
   return map;
 }
 
-// Grammar ids (from LANGUAGE_REGISTRY) that are JVM-family languages not owned by a
-// deep analyzer. JVM languages lay source out by reversed-domain package directory
-// (org/example/samples/Widget.groovy), so a directory literally named
-// samples/examples/fixtures/testdata is commonly a REAL package segment, not vendored
-// scaffolding — same reasoning as JavaAnalyzer/KotlinAnalyzer (see BaseAnalyzer.
-// getPackageDirSafeIgnorePatterns's doc comment). Kotlin never reaches this walker
-// (it has its own deep analyzer). Scala USED TO be nominally routed to JavaAnalyzer
-// in LanguageAnalyzers (languages/index.ts), which made extensionToGrammar() treat
-// it as deep-owned and skip it — but JavaAnalyzer only ever globbed *.java, so scala
-// source produced zero nodes anywhere (fixed: scala is no longer deep-mapped, so it
-// now reaches this walker for real). Only JVM-family grammars' globs get the safe
-// ignore set; every other breadth grammar (zig, haskell, lua, ...) keeps the full
-// denylist unfiltered — a JS repo's samples/ directory must stay excluded.
+
+
+
+
+
+
+
+
+
+
+
+
+
 const JVM_FAMILY_GRAMMAR_IDS = new Set(['scala', 'groovy']);
 
 interface BreadthFile {
@@ -74,7 +74,7 @@ interface FuncDecl {
   relativePath: string;
 }
 
-// Hard ceiling on files walked per analysis (the walker parses each file).
+
 const MAX_BREADTH_FILES = 4000;
 
 export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
@@ -102,9 +102,9 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
     files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
     files = this.capAndPrioritizeBreadthFiles(files);
 
-    // Pass 1: emit file/function/class/import nodes + structural edges; collect
-    // every function declaration so calls can resolve to a target node (pass 2).
-    const declaredFunctions = new Map<string, FuncDecl[]>(); // name -> decls (repo-wide)
+
+
+    const declaredFunctions = new Map<string, FuncDecl[]>();
     const perFile: Array<{ file: BreadthFile; funcs: FuncDecl[]; calls: { callee: string; line: number }[] }> = [];
     const languagesSeen = new Set<string>();
 
@@ -161,21 +161,21 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
         declaredFunctions.set(fn.name, list);
       }
 
-      // The emitted node TYPE honors the spec's classNodeLabel: markup/style
-      // grammars (css rule_sets, html elements) are "class-like" for coverage
-      // but are NOT semantic classes — labeling them 'class' let ONE bundled
-      // stylesheet outnumber a repo's real classes 40:1 (a benchmarked Spring Boot repo's stylesheet: 2543
-      // selector "classes" vs 62 Java files) and skew every type==='class'
-      // consumer. Nodes stay in the graph; only the label is honest.
+
+
+
+
+
+
       const spec = LANGUAGE_SPECS[file.grammar];
       const classLabel = spec?.classNodeLabel || 'class';
       if (spec?.aggregateClassNodes && extract.classes.length > 0) {
-        // One node per file instead of one per match: the label being honest
-        // (style_rule vs class) didn't fix the CARDINALITY problem — a single
-        // bundled stylesheet was still contributing thousands of graph nodes for
-        // zero downstream benefit (no consumer reads type==='style_rule'). The
-        // count is exact (rule_count), never truncated; sample_selectors is an
-        // explicitly-labeled preview, not the full enumeration.
+
+
+
+
+
+
         const SAMPLE_SIZE = 20;
         const id = this.declId('class', file.relativePath, '(aggregate)', 1);
         const node = this.createNodeBuilder(id, file.relativePath.split('/').pop() || file.relativePath, classLabel)
@@ -230,10 +230,10 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
       perFile.push({ file, funcs, calls: extract.calls });
     }
 
-    // Pass 2: resolve calls to a target function node. Attribute each call to the
-    // nearest preceding function declaration in the same file (no end-lines from the
-    // walker), and link to a defined function of that name — same-file first, else a
-    // unique repo-wide match. Unresolved calls are dropped (no phantom nodes).
+
+
+
+
     const edgeIds = new Set(edges.map(e => e.id));
     for (const { file, funcs, calls } of perFile) {
       const byStart = [...funcs].sort((a, b) => a.line - b.line);
@@ -274,8 +274,8 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
     const sameFile = candidates.filter(c => c.relativePath === relativePath);
     if (sameFile.length === 1) return sameFile[0];
     if (sameFile.length > 1) return sameFile[0];
-    if (candidates.length === 1) return candidates[0]; // unambiguous repo-wide match
-    return undefined; // ambiguous cross-file name — don't guess
+    if (candidates.length === 1) return candidates[0];
+    return undefined;
   }
 
   private enclosingFunction(byStart: FuncDecl[], line: number): FuncDecl | undefined {
@@ -316,8 +316,8 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
       return false;
     };
 
-    // JVM-family extensions (scala, groovy, ...) glob against the package-dir-safe
-    // denylist; everything else keeps the full denylist unfiltered.
+
+
     if (await collect(jvmExts, this.getPackageDirSafeIgnorePatterns(context))) return out;
     if (await collect(otherExts, this.getIgnorePatterns(context))) return out;
     return out;

@@ -14,13 +14,13 @@ import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { SCAFFOLD_GLOBS } from '../core/scaffold-paths';
 
-// Shared helpers for the IaC (Ansible/Pulumi/Helm) analyzers. Terraform and
-// Kubernetes/Docker manifests already have dedicated analyzers
-// (terraform-analyzer.ts, container-topology-analyzer.ts) — this file covers
-// the remaining IaC surfaces named in the mission: Ansible playbooks/roles,
-// Pulumi programs (TS/Python/Go resource declarations), and Helm charts
-// (chart metadata + templates + values, layered on top of the Kubernetes
-// manifest shapes already understood by KubernetesManifestAnalyzer).
+
+
+
+
+
+
+
 
 abstract class IacAnalyzer extends BaseAnalyzer {
   supportsIncrementalAnalysis(): boolean {
@@ -37,14 +37,14 @@ abstract class IacAnalyzer extends BaseAnalyzer {
   }
 
   protected getIgnorePatterns(_context: { projectPath: string }): string[] {
-    // This override previously omitted fixtures/testdata/cas-tests/__tests__
-    // entirely, so HelmAnalyzer (an IacAnalyzer subclass) walked
-    // apps/mcp-server/fixtures/deployable-detection/helm-service/templates/**
-    // as if it were the analyzed repo's own Kubernetes topology, minting a
-    // real "Helm Service (orders-service) :80" entry point + "helm install
-    // orders-service" deployable + capability from Klauro's own test
-    // fixture. SCAFFOLD_GLOBS (scaffold-paths.ts) is the shared exclusion
-    // list every collector must honor.
+
+
+
+
+
+
+
+
     return [
       '**/node_modules/**',
       '**/.git/**',
@@ -91,11 +91,11 @@ abstract class IacAnalyzer extends BaseAnalyzer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Ansible: playbooks (list of plays with hosts/roles/tasks) and role
-// directories (roles/<name>/tasks/main.yml, handlers/main.yml). Tasks become
-// nodes under their play/role; role inclusion becomes a dependency edge.
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 interface AnsibleTask {
   name: string;
@@ -436,11 +436,11 @@ export class AnsibleAnalyzer extends IacAnalyzer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Pulumi: programs declare resources via `new <Provider>.<Resource>(...)` in
-// TS/JS, `<provider>.<Resource>(...)` in Python, or `<provider>.New<Resource>`
-// in Go. Pulumi.yaml identifies the project/stack.
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 interface PulumiResourceDecl {
   variable: string;
@@ -661,7 +661,7 @@ export class PulumiAnalyzer extends IacAnalyzer {
       return results;
     }
 
-    // TypeScript / JavaScript
+
     const pattern = /^\s*(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+([a-zA-Z0-9]+\.[A-Za-z0-9_.]+)\s*\(\s*["']([^"']+)["']/;
     lines.forEach((line, index) => {
       const match = pattern.exec(line);
@@ -694,13 +694,13 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// ---------------------------------------------------------------------------
-// Helm: Chart.yaml (chart identity + dependencies), values.yaml (default
-// config surface), and templates/*.yaml (Kubernetes manifests using Helm
-// templating `{{ .Values.x }}` / `{{ .Chart.Name }}`). Templates are parsed
-// with the same lightweight technique as KubernetesManifestAnalyzer, treating
-// `{{ ... }}` tokens as opaque scalars rather than failing to parse.
-// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
 
 interface HelmTemplateResource {
   kind: string;
@@ -754,9 +754,9 @@ export class HelmAnalyzer extends IacAnalyzer {
       const result = await this.analyzeChart(context.projectPath, context.relativePath);
       return this.fileResult(context, result.nodes, result.edges, result.entryPoints, result.exitPoints);
     }
-    // Template/values files are analyzed as part of their chart in analyze();
-    // for incremental single-file mode, re-run the owning chart's analysis
-    // scoped to just this file's contribution (template resources only).
+
+
+
     if (/templates\/.*\.ya?ml$/.test(context.relativePath)) {
       const chartRoot = context.relativePath.split('/templates/')[0];
       const chartFile = `${chartRoot}/Chart.yaml`;
@@ -863,11 +863,11 @@ export class HelmAnalyzer extends IacAnalyzer {
       });
     }
 
-    // Common Helm naming overrides (`nameOverride` / `fullnameOverride` in
-    // values.yaml) — when a template resource's `metadata.name` is an
-    // unrendered `{{ ... }}` expression, these give a real, stable identifier
-    // to fall back to instead of the raw template token (see
-    // resolveTemplateName / the render-or-fallback doctrine below).
+
+
+
+
+
     let nameOverride: string | undefined;
     let fullnameOverride: string | undefined;
     if (await fs.pathExists(path.join(projectPath, valuesFile))) {
@@ -876,8 +876,8 @@ export class HelmAnalyzer extends IacAnalyzer {
         nameOverride = /^nameOverride:\s*["']?([^"'\n#]+?)["']?\s*(?:#.*)?$/m.exec(valuesContent)?.[1]?.trim() || undefined;
         fullnameOverride = /^fullnameOverride:\s*["']?([^"'\n#]+?)["']?\s*(?:#.*)?$/m.exec(valuesContent)?.[1]?.trim() || undefined;
       } catch {
-        // unreadable values.yaml — no overrides available, fallback naming
-        // still works from chartName + kind alone.
+
+
       }
     }
     const chartBaseName = fullnameOverride || nameOverride || chartName;
@@ -930,10 +930,10 @@ export class HelmAnalyzer extends IacAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
 
-    // Helm CronJob-via-values evidence (see findHelmCronJobsValuesKey): when
-    // this template ranges over a `.Values.<key>` list to emit CronJob docs,
-    // resolve the real per-job schedule/command from values.yaml instead of
-    // the single ambiguous templated resource extractTemplateResources sees.
+
+
+
+
     const cronJobsValuesKey = findHelmCronJobsValuesKey(content);
     const helmValuesCronJobs = cronJobsValuesKey && valuesContent
       ? parseHelmValuesListJobs(valuesContent, cronJobsValuesKey)
@@ -941,10 +941,10 @@ export class HelmAnalyzer extends IacAnalyzer {
 
     for (const resource of resources) {
       if (resource.kind === 'CronJob' && helmValuesCronJobs.length > 0) {
-        // Emit ONE node per values.yaml job entry (real, distinct identities)
-        // instead of a single node for the templated resource — the source
-        // template only appears once in text, but Helm's range renders N
-        // CronJobs, one per values entry.
+
+
+
+
         for (const job of helmValuesCronJobs) {
           const jobLabel = job.name || 'cron-job';
           const jobNodeId = generateNodeId('helm_template_resource', templateFile, `CronJob:${jobLabel}:${resource.line}`);
@@ -988,13 +988,13 @@ export class HelmAnalyzer extends IacAnalyzer {
         }
         continue;
       }
-      // Render-or-fallback: an un-rendered `{{ ... }}` Helm template
-      // expression is never a usable name (the "hash-shaped-tokens-leak-
-      // into-labels" class, Helm variant — see SPEC-DEPLOYABLE-DETECTION.md
-      // §defect log). When the declared name can't be resolved statically,
-      // derive a stable one from the chart's base name (fullnameOverride /
-      // nameOverride / chart name) + resource kind instead of shipping the
-      // raw token.
+
+
+
+
+
+
+
       const resolvedName = resolveTemplateResourceName(resource.nameExpr, resource.kind, chartBaseName);
       const nodeId = generateNodeId('helm_template_resource', templateFile, `${resource.kind}:${resource.nameExpr}:${resource.line}`);
       nodes.push({
@@ -1100,18 +1100,18 @@ function cleanScalar(value: string): string {
   return value.trim().replace(/^["']|["']$/g, '').replace(/\s*#.*$/, '').trim();
 }
 
-/** True when a Helm `metadata.name` value is an unrendered Go-template
- *  expression (`{{ include "chart.fullname" . }}`, `{{ $val.name }}`, ...)
- *  rather than a literal string. */
+
+
+
 function isUnrenderedTemplateExpression(nameExpr: string): boolean {
   return nameExpr.includes('{{') || nameExpr.includes('}}');
 }
 
-/** Render-or-fallback naming for a Helm template resource. Never returns a
- *  raw `{{ ... }}` token: when the declared name is a template expression we
- *  can't statically evaluate, derive a stable name from the chart's base
- *  name (fullnameOverride / nameOverride / chart name, passed in as
- *  `chartBaseName`) plus the resource kind, e.g. `backend-deployment`. */
+
+
+
+
+
 function resolveTemplateResourceName(nameExpr: string, kind: string, chartBaseName: string): string {
   if (!isUnrenderedTemplateExpression(nameExpr)) return nameExpr;
   const base = chartBaseName.trim() || 'chart';
@@ -1125,31 +1125,31 @@ interface HelmValuesCronJob {
   enabled: boolean;
 }
 
-/**
- * Helm's `{{- range $key, $val := .Values.<key> }} ... kind: CronJob ...`
- * pattern (a benchmarked repo's infra/backend/templates/cron-jobs.yaml is the live
- * example) renders schedule/command from a values.yaml LIST, not literal
- * template text — extractTemplateResources sees the un-rendered `{{ }}`
- * expressions and can't recover them. This finds the `.Values.<key>` name
- * the CronJob template ranges over (co-occurring with `kind: CronJob` in the
- * same file), so the caller can resolve the real per-job schedule/command
- * from values.yaml instead of a single ambiguous templated node.
- */
+
+
+
+
+
+
+
+
+
+
 function findHelmCronJobsValuesKey(templateContent: string): string | undefined {
   if (!/kind:\s*CronJob/.test(templateContent)) return undefined;
   const match = templateContent.match(/range\s+\$\w+\s*,\s*\$\w+\s*:=\s*\.Values\.(\w+)/);
   return match?.[1];
 }
 
-/**
- * Parses a top-level `values.yaml` list under `key:` into individual job
- * records — evidence-first: only `name`/`schedule`/`command`/`enabled`
- * fields actually present as literal scalars are captured (no fabrication
- * for templated or absent fields). `command` supports the inline-array form
- * (`command: [ "bin/console", "app:cron" ]`); a block-list form is not
- * parsed (rare for this key in practice) and simply yields no command for
- * that entry, which then contributes no scheduling evidence downstream.
- */
+
+
+
+
+
+
+
+
+
 function parseHelmValuesListJobs(valuesContent: string, key: string): HelmValuesCronJob[] {
   const lines = valuesContent.split(/\r?\n/);
   const startIdx = lines.findIndex(line => new RegExp(`^${key}:\\s*(?:#.*)?$`).test(line));
@@ -1159,7 +1159,7 @@ function parseHelmValuesListJobs(valuesContent: string, key: string): HelmValues
   for (let i = startIdx + 1; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim() === '' || /^\s*#/.test(line)) continue;
-    if (/^\S/.test(line)) break; // next top-level key
+    if (/^\S/.test(line)) break;
     block.push(line);
   }
 

@@ -4,26 +4,26 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Embedded C framework analyzer — bare-metal firmware, no OS.
- *
- * For a hosted program, `main()` is one entry point among many discovered by
- * the language analyzer. For bare-metal embedded C, `main()` almost always
- * contains a "super-loop" (`while (1) { ... }` / `for (;;) { ... }`) that IS
- * the program's entire runtime — everything the firmware does happens either
- * inline in that loop or via an interrupt firing asynchronously on top of it.
- * ISRs (`ISR(VECTOR_NAME)` — the avr-libc macro — `__attribute__((interrupt))`
- * functions, and CMSIS-style `void EXTI0_IRQHandler(void)` /
- * `void TIMx_IRQHandler(void)` handlers) are invoked directly by the hardware
- * NMI/interrupt controller, not by any call in the source — so `main`'s
- * super-loop and every ISR are each their own flow root and are emitted as
- * `lifecycle` (the super-loop) and `interrupt` (each ISR) entry points.
- *
- * Real dependency gate: `#include <avr/io.h>` / `#include <avr/interrupt.h>`
- * (AVR/Arduino-core toolchains), a CMSIS `#include "stm32...hal.h"` /
- * `#include "core_cm*.h"`, or a linker script (`*.ld`) alongside a `while(1)`
- * main loop — never inferred from folder names alone.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const ISR_MACRO_PATTERN = /\bISR\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/g;
 const ATTR_INTERRUPT_PATTERN = /(?:void|int)\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*__attribute__\s*\(\s*\(\s*interrupt(?:\s*\([^)]*\))?\s*\)\s*\)/g;
@@ -101,7 +101,7 @@ export class EmbeddedCAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** `main()` containing `while(1)`/`for(;;)` is the firmware's whole runtime. */
+
   private extractSuperLoop(
     content: string,
     relativePath: string,
@@ -141,7 +141,7 @@ export class EmbeddedCAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  /** ISR(...) macro, __attribute__((interrupt)) functions, and CMSIS IRQHandlers. */
+
   private extractISRs(
     content: string,
     relativePath: string,

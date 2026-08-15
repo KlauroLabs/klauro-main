@@ -4,20 +4,23 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Frontend State Analyzer — MobX, Recoil, Jotai, Valtio, Pinia (Vue), and
- * NgRx (Angular). Complements ReduxAnalyzer / ZustandAnalyzer (already own
- * their own libraries) by covering the rest of the frontend-state field.
- *
- * Surfaces stores/atoms/proxies as state nodes and their action/reducer/effect
- * surface as edges, plus dispatch/select call sites as exit points, so agents
- * can answer "what mutates this state" (blast-radius for state mutation).
- *
- * Evidence-based: every extractor is gated on the file importing the relevant
- * package (mobx, recoil, jotai, valtio, pinia, @ngrx/*) — never on bare
- * keyword/vocab matching, since terms like `atom`, `store`, `select`, and
- * `action` collide across these libraries and with unrelated code.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const MOBX_IMPORT = /from\s+['"]mobx(?:-react(?:-lite)?)?['"]/;
 const MOBX_OBSERVABLE_CLASS_DECORATOR = /@observable\s+(\w+)/g;
@@ -45,9 +48,9 @@ const VALTIO_SUBSCRIBE = /subscribe\s*\(\s*(\w+)\s*,/g;
 
 const PINIA_IMPORT = /from\s+['"]pinia['"]/;
 const PINIA_DEFINE_STORE = /(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*defineStore\s*\(\s*['"]([^'"]+)['"]/g;
-// Matches only method-shorthand definitions (`name(args) {`), anchored so it
-// cannot match nested call expressions like `this.items.push(item)` inside a
-// method body — only a definition is followed by a `{` block, a call isn't.
+
+
+
 const PINIA_METHOD_NAME = /(?:^\s*|[{,]\s*)(\w+)\s*\([^)]*\)\s*\{/g;
 
 const NGRX_IMPORT = /from\s+['"]@ngrx\/(store|effects)['"]/;
@@ -150,7 +153,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // ---- MobX ---------------------------------------------------------------
+
 
   private extractMobx(
     content: string, relativePath: string, sanitizedPath: string,
@@ -161,8 +164,8 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     let match: RegExpExecArray | null;
     while ((match = MOBX_STORE_CLASS.exec(content)) !== null) storeNames.push(match[1]);
 
-    // Fallback: a class using makeObservable/makeAutoObservable without a *Store
-    // naming convention still counts as a MobX store, so scan class bodies.
+
+
     if (storeNames.length === 0 && (MOBX_MAKE_AUTO_OBSERVABLE.test(content) || /makeObservable\s*\(/.test(content))) {
       const classMatch = /class\s+(\w+)\b/.exec(content);
       if (classMatch) storeNames.push(classMatch[1]);
@@ -195,12 +198,12 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
       if (name) computedProps.add(name);
     }
 
-    // makeAutoObservable(this) infers observables/actions/computed from the
-    // class body itself (that's the point of "auto") rather than requiring
-    // decorators or an explicit annotations map, so when it's present, walk
-    // the class body directly: plain field initializers become observables,
-    // non-getter methods become actions, and `get x()` becomes computed —
-    // unless already found via an explicit decorator/annotation above.
+
+
+
+
+
+
     if (MOBX_MAKE_AUTO_OBSERVABLE.test(content)) {
       const classBody = this.extractBraceBlock(content, /class\s+\w+[^{]*\{/);
       if (classBody) {
@@ -253,7 +256,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Recoil ---------------------------------------------------------------
+
 
   private extractRecoil(
     content: string, relativePath: string, sanitizedPath: string,
@@ -285,7 +288,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     this.addMutationSinks(content, RECOIL_USE_RECOIL_STATE, atomNames, sanitizedPath, relativePath, fileNodeId, nodes, exitPoints, 'recoil', 'useRecoilState');
   }
 
-  // ---- Jotai ---------------------------------------------------------------
+
 
   private extractJotai(
     content: string, relativePath: string, sanitizedPath: string,
@@ -308,7 +311,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     this.addMutationSinks(content, JOTAI_USE_SET_ATOM, atomNames, sanitizedPath, relativePath, fileNodeId, nodes, exitPoints, 'jotai', 'useSetAtom');
   }
 
-  // ---- Valtio ---------------------------------------------------------------
+
 
   private extractValtio(
     content: string, relativePath: string, sanitizedPath: string,
@@ -333,7 +336,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     while ((match = VALTIO_SNAPSHOT.exec(content)) !== null) {
       const name = match[1];
       if (!proxyNames.has(name)) continue;
-      // snapshot() is a read, not a mutation sink; recorded as a structural edge only.
+
       if (fileNodeId) {
         edges.push(this.createEdge(
           `edge_valtio_snapshot_${sanitizedPath}_${name}_${match.index}`,
@@ -343,7 +346,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Pinia (Vue) -----------------------------------------------------------
+
 
   private extractPinia(
     content: string, relativePath: string, sanitizedPath: string,
@@ -390,14 +393,14 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Slices the `{ ... }` body immediately following an opening-brace pattern
-   * (e.g. `actions: {`), tracking brace depth so a nested method body's own
-   * closing brace doesn't truncate the block early — a plain non-greedy regex
-   * (`\{([\s\S]*?)\}`) stops at the FIRST `}`, which for `actions: { foo() {
-   * ... } }` is the inner method's closer, not the block's. Returns the
-   * content between the outer braces, exclusive.
-   */
+
+
+
+
+
+
+
+
   private extractBraceBlock(source: string, openPattern: RegExp): string | undefined {
     const openMatch = openPattern.exec(source);
     if (!openMatch) return undefined;
@@ -429,7 +432,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     return Array.from(fields);
   }
 
-  // ---- NgRx (Angular) --------------------------------------------------------
+
 
   private extractNgrx(
     content: string, relativePath: string, sanitizedPath: string,
@@ -534,16 +537,16 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     selectSinks(NGRX_STORE_DISPATCH, 'dispatch');
   }
 
-  // ---- XState ------------------------------------------------------------
-  //
-  // The architecture-defining-library analyzer (architectural-library-analyzer.ts)
-  // already flags bare XState usage patterns (machine/transition/interpreter
-  // regex hits) as generic library-usage nodes for convention guidance. This
-  // extractor is complementary, not a duplicate: it builds the actual state
-  // machine as a first-class node — states, events, and the send()/subscribe()
-  // mutation and subscription surface — so agents can answer "what transitions
-  // this machine" / "who subscribes to its state changes", the same blast-radius
-  // question the mission asks for other frontend-state stores.
+
+
+
+
+
+
+
+
+
+
 
   private extractXState(
     content: string, relativePath: string, sanitizedPath: string,
@@ -602,10 +605,10 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
 
     if (machineNames.size === 0) return;
 
-    // useMachine(machineRef) binds a local `send` (or `[, send]`) to a known
-    // machine — every later send(...) or actorVar.send(...) call is then a
-    // mutation sink for that machine's transition surface.
-    const sendBindings = new Map<string, string>(); // send-var name -> machine name
+
+
+
+    const sendBindings = new Map<string, string>();
     XSTATE_USE_MACHINE.lastIndex = 0;
     while ((match = XSTATE_USE_MACHINE.exec(content)) !== null) {
       const sendVar = match[1] || match[2];
@@ -649,7 +652,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- shared helpers ---------------------------------------------------------
+
 
   private addSimpleStateNode(
     nodes: CASNode[], edges: CASEdge[], seenNodeIds: Set<string>,

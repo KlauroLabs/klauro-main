@@ -193,11 +193,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    // Test files are included here (excludeTests=false) — they are tagged
-    // via applyTestFileBoundary rather than dropped, so test methods remain
-    // visible to the cross-language test-coverage graph walk. See
-    // applyTestFileBoundary's doc comment for the customer-visible defect
-    // this fixes.
+
+
+
+
+
     const files = await glob(['**/*.cs'], {
       cwd: projectPath,
       ignore: this.getCSharpIgnorePatterns({ projectPath }, false),
@@ -307,8 +307,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
-      // excludeTests=false: test files are analyzed and tagged (via
-      // applyTestFileBoundary) rather than dropped from the graph entirely.
+
+
       const csharpFiles = await glob(['**/*.cs'], {
         cwd: context.projectPath,
         ignore: this.getCSharpIgnorePatterns(context, false),
@@ -1691,13 +1691,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       if (fileNode) edges.push(this.createEdge(`${fileNode.id}_contains_${nodeId}`, fileNode.id, nodeId, 'contains'));
     }
 
-    // NAME MUST IDENTIFY *WHICH* PROGRAM. A multi-project .NET solution has one
-    // Main per project, and a constant name made them indistinguishable in the
-    // product: a measured 10k-node WPF solution shipped 5 `cli` entry points
-    // that all read ".NET Main entry point" (5 records, 1 unique name), so the
-    // UI, flows and capabilities could not tell the service host from the
-    // desktop shell. Qualify with the owning project directory — real path
-    // evidence, never a fabricated label.
+
+
+
+
+
+
+
     const programScope = path.basename(path.dirname(relativeFile)) || path.basename(relativeFile);
     const programLabel = hasTopLevelHost ? '.NET host startup' : '.NET Main entry point';
 
@@ -2159,9 +2159,9 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
-    // excludeTests=false: call edges FROM test methods into production code
-    // must be built, or the cross-language test-coverage graph walk has no
-    // edges to traverse even after test nodes are tagged.
+
+
+
     const csharpFiles = await glob(['**/*.cs'], {
       cwd: projectPath,
       ignore: this.getCSharpIgnorePatterns({ projectPath }, false),
@@ -2369,12 +2369,12 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /**
-   * Map each in-scope local/parameter variable to its declared C# type within a
-   * method's line range, so a `recv.Method()` call resolves to recv's type only
-   * (excluding same-name methods on other classes — the decoy). Sources:
-   * parameters (`Account a`), `var x = new T()`, and `T x = …`.
-   */
+
+
+
+
+
+
   private buildCSharpReceiverTypes(lines: string[], startLine: number, endLine: number): Map<string, string> {
     const m = new Map<string, string>();
     const lo = Math.max(0, startLine - 1);
@@ -2382,11 +2382,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     const baseType = (t: string) => t.replace(/<.*$/, '').split('.').pop()!.trim();
     for (let i = lo; i < hi; i++) {
       const ln = lines[i];
-      // parameters: `(Type name`, `, Type name`, with optional ref/out/in/params
+
       for (const pm of ln.matchAll(/[(,]\s*(?:ref\s+|out\s+|in\s+|params\s+)?([A-Z][A-Za-z0-9_]*(?:<[^>)]+>)?)\s+([a-z_]\w*)\s*[,)]/g)) {
         m.set(pm[2], baseType(pm[1]));
       }
-      // `var x = new T(` and `T x = new T(` / `T x = ` (declared type wins)
+
       for (const vm of ln.matchAll(/\bvar\s+(\w+)\s*=\s*new\s+([A-Z]\w*)/g)) m.set(vm[1], vm[2]);
       for (const vm of ln.matchAll(/\b([A-Z][A-Za-z0-9_]*(?:<[^>)]+>)?)\s+(\w+)\s*=\s*new\s+/g)) m.set(vm[2], baseType(vm[1]));
     }
@@ -2418,7 +2418,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       classByMethodId
     } = localIndex;
     const methodsInFile = methodsInFileByPath.get(file) || [];
-    // Lazily-built per-caller-method receiver variable -> declared type map.
+
     const receiverTypesByMethod = new Map<string, Map<string, string>>();
 
     const callerForLine = (line: number) => methodsInFile.find(n =>
@@ -2551,10 +2551,10 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                 targetMethod = (methodsByClassId.get(targetClass.id) || []).find(n => n.metadata?.attributes?.isConstructor);
               }
             } else {
-              // Receiver-type resolution: if `objectOrClass` is a local/param whose
-              // declared type we know, resolve to THAT type's method only (excludes
-              // same-name decoys). Else if it names a class, treat as a static call.
-              // Else fall back to name resolution (never lose a real edge).
+
+
+
+
               const recvMap = receiverTypesByMethod.get(callerMethod.id)
                 || (receiverTypesByMethod.set(callerMethod.id,
                     this.buildCSharpReceiverTypes(lines, callerMethod.source?.line ?? 1, callerMethod.source?.end_line ?? lines.length)),
@@ -2691,11 +2691,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       'Math', 'Array', 'List', 'Dictionary', 'HashSet', 'Queue', 'Stack',
       'File', 'Directory', 'Path', 'Stream', 'StreamReader', 'StreamWriter',
       'Task', 'HttpClient', 'WebRequest', 'JsonSerializer',
-      // Device / hardware I/O BCL types — a bare `SerialPort` receiver (e.g.
-      // `SerialPort.GetPortNames()`, `new SerialPort(...)`) is a real external
-      // call to System.IO.Ports, but bare has no dotted prefix so the generic
-      // rules below miss it. Recognizing it lets an exit point be emitted, which
-      // the communication-seam layer then classifies as a device_io seam.
+
+
+
+
+
       'SerialPort'
     ];
 
@@ -3051,18 +3051,18 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     ];
   }
 
-  /**
-   * Tags every node in a C# test file with `metadata.is_test`, `category:
-   * 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
-   * applyTestSourceBoundary and the Go analyzer's applyTestFileBoundary.
-   * .NET's own conventions (xUnit/NUnit/MSTest, all universal — never a
-   * keyword/brand check): files named `*Test.cs` or `*Tests.cs`, or any
-   * file under a `Tests/` or `.Tests` project directory (the standard
-   * `MyProject.Tests` sibling-project layout). Without this, C# test
-   * methods carried no test-owned marker, so the cross-language
-   * test-coverage graph walk could never start a traversal from this
-   * analyzer's own method nodes.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;

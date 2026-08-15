@@ -16,18 +16,18 @@ interface DapperQuerySite {
 const WRITE_KEYWORDS = /^\s*(insert|update|delete)\b/i;
 const TABLE_KEYWORDS = /\b(?:from|into|update|join)\s+\[?(\w+)\]?/i;
 
-/**
- * Dapper analyzer (C#).
- *
- * Dapper is a raw-SQL micro-ORM extension over `IDbConnection` — there is no
- * entity/model declaration, only extension-method call sites:
- * `conn.Query<User>("SELECT ...")`, `conn.QueryFirstOrDefault<User>(...)`,
- * `conn.Execute("INSERT ...")`, `conn.QueryAsync<User>(...)`. This mirrors
- * sqlx: the whole contribution is `database` exit points per call site with
- * the mapped result type (when generic), the target table parsed out of the
- * embedded SQL, and read/write direction — enough for get_data_lineage to see
- * Dapper access sites even without a schema model to anchor on.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class DapperAnalyzer extends BaseAnalyzer {
   constructor() {
     super('dapper', 'Dapper Analyzer', '1.0.0', 'library');
@@ -47,7 +47,7 @@ export class DapperAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -65,7 +65,7 @@ export class DapperAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -193,11 +193,11 @@ export class DapperAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Parse `conn.Query<User>("SELECT * FROM Users WHERE Id = @Id", ...)`,
-   * `conn.QueryFirstOrDefault<User>(...)`, `conn.Execute("INSERT INTO ...")`,
-   * and their `Async` variants.
-   */
+
+
+
+
+
   private parseQuerySites(content: string, filePath: string): DapperQuerySite[] {
     const sites: DapperQuerySite[] = [];
     const callRegex = /\.(Query(?:First|FirstOrDefault|Single|SingleOrDefault)?(?:Async)?|Execute(?:ScalarAsync|Async)?)\s*(?:<(\w+)>)?\s*\(\s*(?:@)?"((?:[^"\\]|\\.)*)"/g;

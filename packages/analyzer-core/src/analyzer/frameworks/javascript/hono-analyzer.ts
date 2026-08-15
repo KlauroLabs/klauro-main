@@ -10,17 +10,17 @@ import { cachedGlob as glob } from '../../core/glob-cache';
 
 const HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch', 'options', 'all'];
 
-// Built-in Hono middleware factories that are interesting to surface.
+
 const BUILTIN_MIDDLEWARE = new Set([
   'cors', 'logger', 'jwt', 'basicAuth', 'bearerAuth', 'secureHeaders', 'csrf',
   'etag', 'compress', 'cache', 'timing', 'prettyJSON', 'requestId', 'trimTrailingSlash',
   'ipRestriction', 'bodyLimit', 'timeout',
 ]);
 
-// Auth middleware names — high value, tagged as auth boundaries.
+
 const AUTH_MIDDLEWARE = new Set(['jwt', 'basicAuth', 'bearerAuth']);
 
-// Runtime adapters → deployment target.
+
 const RUNTIME_ADAPTERS: Array<{ match: RegExp; runtime: string }> = [
   { match: /hono\/cloudflare-workers/, runtime: 'cloudflare-workers' },
   { match: /hono\/cloudflare-pages/, runtime: 'cloudflare-pages' },
@@ -40,21 +40,21 @@ interface HonoApp {
 }
 
 interface HonoRoute {
-  method: string;        // lowercase, e.g. 'get'; 'all' for app.all
-  routePath: string;     // path as written in source
-  filePath: string;      // source file the route was declared in
+  method: string;
+  routePath: string;
+  filePath: string;
   appVariable: string;
-  handler?: string;      // best-effort handler reference
-  middleware: string[];  // inline middleware identifiers on the route
-  validated: boolean;    // zValidator/validator present on route
+  handler?: string;
+  middleware: string[];
+  validated: boolean;
   line: number;
 }
 
 interface HonoMiddleware {
-  name: string;          // middleware identifier / factory
+  name: string;
   appVariable: string;
-  routePath: string;     // '*' or path that the middleware is mounted on
-  global: boolean;       // app.use('*', ...) or app.use(mw)
+  routePath: string;
+  global: boolean;
   builtin: boolean;
   auth: boolean;
   filePath: string;
@@ -62,8 +62,8 @@ interface HonoMiddleware {
 }
 
 interface HonoMount {
-  prefix: string;        // app.route('/prefix', sub)
-  subApp: string;        // sub-app variable name
+  prefix: string;
+  subApp: string;
   appVariable: string;
   filePath: string;
   line: number;
@@ -90,7 +90,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Fallback: an import from 'hono' in source.
+
       const jsFiles = await glob(['**/*.{js,ts,mjs,cjs}'], {
         cwd: projectPath,
         ignore: [
@@ -151,14 +151,14 @@ export class HonoAnalyzer extends BaseAnalyzer {
         this.extractMounts(content, file, appVars, mounts);
       }
 
-      // Build a prefix map for mounted sub-apps so nested routes resolve under
-      // their parent prefix (like express nested routers).
+
+
       const prefixBySubApp = new Map<string, string>();
       for (const mount of mounts) {
         prefixBySubApp.set(mount.subApp, mount.prefix);
       }
 
-      // Application nodes.
+
       const appNodeIdByVar = new Map<string, string>();
       for (const app of apps) {
         const appId = `hono_app_${this.sanitizeId(app.filePath)}_${this.sanitizeId(app.variable)}`;
@@ -181,7 +181,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
         nodes.push(appNode);
       }
 
-      // Route nodes + entry points.
+
       routes.forEach((route, index) => {
         const prefix = prefixBySubApp.get(route.appVariable) || '';
         const fullPath = this.joinPath(prefix, route.routePath);
@@ -219,7 +219,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
           .build();
         nodes.push(routeNode);
 
-        // app → exposes → route
+
         const appNodeId = appNodeIdByVar.get(`${route.filePath}::${route.appVariable}`);
         if (appNodeId) {
           edges.push(this.createEdge(
@@ -230,7 +230,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
           ));
         }
 
-        // entry → handler edge (route node is both entry source and handler anchor)
+
         entryPoints.push(this.createEntryPoint(
           `entry_${routeId}`,
           routeId,
@@ -259,7 +259,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
         ));
       });
 
-      // Middleware nodes.
+
       middleware.forEach((mw, index) => {
         const baseName = this.stripCall(mw.name);
         const mwId = `hono_middleware_${this.sanitizeId(mw.appVariable)}_${this.sanitizeId(baseName)}_${index}`;
@@ -300,7 +300,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
         }
       });
 
-      // Mount nodes (app.route('/prefix', subApp)) → composition.
+
       mounts.forEach((mount, index) => {
         const mountId = `hono_mount_${this.sanitizeId(mount.appVariable)}_${this.sanitizeId(mount.prefix)}_${index}`;
         const mountNode = this.createNodeBuilder(mountId, `${mount.prefix} → ${mount.subApp}`, 'route_mount')
@@ -359,7 +359,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // const app = new Hono(); / new Hono<Env>() / new OpenAPIHono()
+
   private extractApps(content: string, filePath: string): HonoApp[] {
     const apps: HonoApp[] = [];
     const pattern = /(?:const|let|var)\s+(\w+)\s*=\s*new\s+(?:OpenAPI)?Hono\s*(?:<[^>]*>)?\s*\(/g;
@@ -370,16 +370,16 @@ export class HonoAnalyzer extends BaseAnalyzer {
     return apps;
   }
 
-  // app.get('/path', ...handlers) including chained app.get().post()
+
   private extractRoutes(
     content: string,
     filePath: string,
     appVars: Set<string>,
     routes: HonoRoute[]
   ): void {
-    // Match: <appVar>.<method>( '<path>' , <rest until matched-ish close>)
-    // We capture the method-call chain start; chained calls (.get().post())
-    // are caught because each .method( occurrence matches independently.
+
+
+
     const pattern = /(\w+)\s*\.\s*(get|post|put|delete|patch|options|all)\s*\(\s*(['"`])([^'"`]*)\3([^\n]*)/g;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(content)) !== null) {
@@ -388,11 +388,11 @@ export class HonoAnalyzer extends BaseAnalyzer {
       const routePath = match[4];
       const rest = match[5] || '';
 
-      // Only count when bound to a known app/sub-app, OR a chained call where the
-      // receiver is itself a route method (chaining like app.get(...).post(...)).
+
+
       const isKnownApp = appVars.has(appVar);
-      // chained: receiver is a closing of a previous .method(...) — detect by ')'
-      const isChained = appVar === undefined; // (always defined; chaining handled below)
+
+      const isChained = appVar === undefined;
       if (!isKnownApp && !this.isChainedReceiver(content, match.index)) {
         if (!isChained) continue;
       }
@@ -417,25 +417,25 @@ export class HonoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // Detect whether the receiver of a .method( call is a chained route call,
-  // i.e. preceded by ')' which closes a previous .get/.post(...) on an app.
+
+
   private isChainedReceiver(content: string, methodIndex: number): boolean {
-    // Look back over whitespace for a ')' immediately before the matched token.
+
     let i = methodIndex - 1;
     while (i >= 0 && /\s/.test(content[i])) i--;
     return i >= 0 && content[i] === ')';
   }
 
-  // Walk backwards from a chained .method() to find the originating app variable.
+
   private resolveChainAppVar(content: string, methodIndex: number, appVars: Set<string>): string | undefined {
-    // Scan back to the start of the statement (previous ';' or newline-with-no-dot)
+
     const head = content.slice(Math.max(0, methodIndex - 400), methodIndex);
     const m = /(\w+)\s*\.\s*(?:get|post|put|delete|patch|options|all)\s*\(/.exec(head);
     if (m && appVars.has(m[1])) return m[1];
     return undefined;
   }
 
-  // app.use('*', mw) / app.use(path, mw) / app.use(mw)
+
   private extractMiddleware(
     content: string,
     filePath: string,
@@ -454,7 +454,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
       let routePath = '*';
       let mwArgs = args;
 
-      // First arg may be a path string literal.
+
       const first = args[0]?.trim();
       if (first && /^['"`]/.test(first)) {
         routePath = first.replace(/['"`]/g, '');
@@ -481,7 +481,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // app.route('/prefix', subApp)
+
   private extractMounts(
     content: string,
     filePath: string,
@@ -502,7 +502,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
 
   private extractInlineMiddleware(rest: string): string[] {
     const out: string[] = [];
-    // Built-in middleware factory calls present in the handler argument list.
+
     const callPattern = /\b(\w+)\s*\(/g;
     let m: RegExpExecArray | null;
     while ((m = callPattern.exec(rest)) !== null) {
@@ -516,8 +516,8 @@ export class HonoAnalyzer extends BaseAnalyzer {
   }
 
   private extractHandlerRef(rest: string): string | undefined {
-    // Last bare identifier argument is the most likely handler reference,
-    // e.g. app.post('/users', handler). Inline arrow handlers → 'inline'.
+
+
     if (/=>/.test(rest) || /\bfunction\b/.test(rest)) return 'inline';
     const idMatch = /,\s*(\w+)\s*\)?\s*;?\s*$/.exec(rest);
     return idMatch ? idMatch[1] : undefined;
@@ -548,7 +548,7 @@ export class HonoAnalyzer extends BaseAnalyzer {
     return joined.replace(/\/{2,}/g, '/') || '/';
   }
 
-  // Split a top-level argument list on commas, respecting nested parens/brackets.
+
   private splitArgs(raw: string): string[] {
     const args: string[] = [];
     let depth = 0;

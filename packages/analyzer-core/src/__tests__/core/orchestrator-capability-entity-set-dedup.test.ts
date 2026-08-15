@@ -104,4 +104,25 @@ describe('orchestrator: dedupeSystemCapabilitiesByEntitySet — equal-size ident
     expect(byId.get('capability_a')!.related_entities).toEqual(['entity_callchain', 'entity_patterndetection']);
     expect(byId.get('capability_b')!.related_entities).toEqual(['entity_workspaceaccess', 'entity_user']);
   });
+
+  it('preserves distinct product outcomes when their operation sets overlap', () => {
+    const sharedOperations = [op('get_context'), op('inspect_graph')];
+    const graph = capability({
+      id: 'capability_build_graph',
+      name: 'Build a trustworthy relationship graph',
+      operations: sharedOperations,
+    });
+    const comprehension = capability({
+      id: 'capability_comprehension',
+      name: 'Provide behavior-level comprehension',
+      operations: [sharedOperations[0]],
+    });
+
+    const result: SystemCapability[] = orch.dedupeSystemCapabilitiesByEntitySet([graph, comprehension]);
+
+    expect(result.map(item => item.id)).toEqual([
+      'capability_build_graph',
+      'capability_comprehension',
+    ]);
+  });
 });

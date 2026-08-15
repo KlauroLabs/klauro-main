@@ -4,33 +4,33 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
-/**
- * C/C++ (CMake + plain Makefile) evidence provider.
- *
- * SHIP-UNIT NOTE (native ecosystems): unlike server ecosystems (Node/Go/JVM)
- * where a Dockerfile/compose/k8s manifest is usually the ship declaration and
- * a bare executable is only a Tier-2 "runnable" candidate, for native C/C++
- * builds the BUILD TARGET itself IS the ship unit — the built binary is
- * copied out of the build tree and distributed directly (installers, system
- * packages, container COPY of a single binary, CI release artifacts) without
- * necessarily going through a repo-level Dockerfile that this provider could
- * observe. There is no separate "ship declaration" file to point at; the
- * `add_executable`/Makefile-link-target/freestanding-main() declaration
- * itself is the ship declaration. We therefore emit this as TIER 1 'bin'
- * evidence (reusing the existing 'bin' kind — cas.types.ts has no
- * native-specific kind, and 'bin' already carries the right semantics), so
- * the shared resolver's shipped-gate (apps/mcp-server/src/cross-codebase-
- * analysis.ts applyShippedGate — "RUNNABLE is not SHIPPED", demotes Tier-2/3
- * runnables with no Tier-1 sibling referencing them once >1 runnable exists
- * in the repo) does not wrongly collapse a legitimate multi-binary CMake
- * project (e.g. `server` + `tool` both add_executable, no Dockerfile
- * anywhere) down to zero deployables. `add_library` targets remain tier 3
- * 'package' evidence only — they roll up as shared code, never their own
- * deployable, matching how Cargo library crates / npm shared packages behave
- * elsewhere in this provider set. Plain-Makefile compiler-link targets and
- * freestanding `main()` (below) get the same Tier-1 treatment for the same
- * reason — see collectMakeAndPackageIdentity / collectFreestandingMain.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 interface CMakeTarget {
   kind: 'executable' | 'library';
@@ -39,16 +39,16 @@ interface CMakeTarget {
 
 function parseCMakeTargets(content: string): CMakeTarget[] {
   const out: CMakeTarget[] = [];
-  // add_executable(name ...) — first arg is the target name. Skip
-  // add_executable(name ALIAS other) which defines no new binary.
+
+
   for (const match of content.matchAll(/\badd_executable\s*\(\s*([A-Za-z0-9_.:-]+)\s+([^)]*)\)/gis)) {
     const name = match[1];
     const rest = match[2] || '';
     if (/^\s*ALIAS\b/i.test(rest)) continue;
     out.push({ kind: 'executable', name });
   }
-  // add_library(name ... ) — skip ALIAS/INTERFACE-only aliasing forms that
-  // don't produce a distinct build artifact of their own.
+
+
   for (const match of content.matchAll(/\badd_library\s*\(\s*([A-Za-z0-9_.:-]+)\s+([^)]*)\)/gis)) {
     const name = match[1];
     const rest = match[2] || '';
@@ -101,9 +101,9 @@ function collectCMake(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   return out;
 }
 
-/** Plain Makefiles: heuristic executable-target detection (a top-level rule
- *  name that isn't a conventional phony/utility target and whose recipe
- *  invokes a C/C++ compiler), plus conanfile/vcpkg.json as tier-3 identity. */
+
+
+
 function collectMakeAndPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -134,10 +134,10 @@ function collectMakeAndPackageIdentity(ctx: EvidenceCollectionContext): Deployab
     }
     const rootPath = path.dirname(makefile);
     const seen = new Set<string>();
-    // Match top-level target rules: `name: deps` or `name:` at line start
-    // (not indented, i.e. not a recipe line), whose recipe block invokes a
-    // C/C++ compiler (cc/gcc/g++/clang/clang++) — the strongest signal that
-    // the target links an executable rather than just running a phony step.
+
+
+
+
     const ruleRegex = /^([A-Za-z0-9_.\/-]+)\s*:(?!=)([^\n]*)\n((?:\t[^\n]*\n?)*)/gm;
     for (const match of content.matchAll(ruleRegex)) {
       const name = match[1];
@@ -158,8 +158,8 @@ function collectMakeAndPackageIdentity(ctx: EvidenceCollectionContext): Deployab
     }
   }
 
-  // Tier-3 package identity: CMakeLists.txt itself (project() name), conanfile,
-  // vcpkg.json, or a bare top-level Makefile with no other identity signal.
+
+
   let cmakeLists: string[] = [];
   try {
     cmakeLists = safeGlobSync('**/CMakeLists.txt', { cwd: projectPath, ignore: IGNORE_GLOBS, nodir: true, absolute: false });
@@ -208,26 +208,26 @@ function collectMakeAndPackageIdentity(ctx: EvidenceCollectionContext): Deployab
         evidence: [`vcpkg.json name: ${json.name || '(unnamed)'}`],
       });
     } catch {
-      // unreadable manifest contributes nothing
+
     }
   }
 
   return out;
 }
 
-/** Freestanding `int main(...)` in a .c/.cpp/.cc/.cxx file with no CMake/Make
- *  target already covering it — a weak but real runnable signal for a bare
- *  C/C++ source tree with no build system file at all. */
+
+
+
 function collectFreestandingMain(ctx: EvidenceCollectionContext, already: DeployableEvidence[]): DeployableEvidence[] {
   const { projectPath } = ctx;
   const out: DeployableEvidence[] = [];
-  // A dir is "covered" if a CMake/Make BIN target's root_path is an ancestor
-  // of (or equal to) it — e.g. a CMakeLists.txt at apps/server covers
-  // apps/server/src/server.cpp. Prevents double-reporting the same binary as
-  // both a named build target AND a "no build system detected" freestanding
-  // main() when the source lives in a src/ subdirectory of its target root.
-  // Only 'bin' roots count (not tier-3 package/project-identity roots, which
-  // would otherwise wrongly blanket-cover every subdirectory under '.').
+
+
+
+
+
+
+
   const coveredRoots = already.filter(e => e.kind === 'bin').map(e => e.root_path);
   const isCovered = (dir: string): boolean => coveredRoots.some(root => dir === root || dir.startsWith(`${root}/`));
 

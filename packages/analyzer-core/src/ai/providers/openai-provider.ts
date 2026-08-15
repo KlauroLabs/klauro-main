@@ -3,7 +3,7 @@ import { AIProvider, AIAnalysisContext, AIRiskAssessment, AIRecommendation, AICo
 import { AIConfig } from '../../config/ai.config';
 import { prompts } from '../ai-prompts';
 import * as winston from 'winston';
-import pRetry from 'p-retry';
+import pRetry, { AbortError } from 'p-retry';
 
 function resolveOllamaBaseURL(openAIBaseURL?: string): string | undefined {
   const explicit = process.env.OLLAMA_BASE_URL;
@@ -36,7 +36,7 @@ export class OpenAIProvider implements AIProvider {
     this.config = config;
     this.ollamaBaseURL = resolveOllamaBaseURL(config.openai.baseURL);
     this.name = this.resolveProviderName();
-    
+
     if (!config.openai.apiKey) {
       throw new Error('OpenAI API key is required');
     }
@@ -108,7 +108,7 @@ export class OpenAIProvider implements AIProvider {
     const responseFormat = context.additionalContext?.responseFormat === 'json' || context.additionalContext?.response_format === 'json'
       ? 'json'
       : 'text';
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: this.config.openai.temperature,
@@ -118,6 +118,11 @@ export class OpenAIProvider implements AIProvider {
         systemPrompt: prompts.systemPrompts.description,
         responseFormat,
         model: typeof context.additionalContext?.model === 'string' ? context.additionalContext.model : undefined,
+        signal: context.signal,
+        timeoutMs: Number(context.additionalContext?.requestTimeoutMs) || undefined,
+        retries: Number.isFinite(Number(context.additionalContext?.requestRetries))
+          ? Math.max(0, Number(context.additionalContext?.requestRetries))
+          : undefined,
       });
 
       return this.extractContent(response);
@@ -129,7 +134,7 @@ export class OpenAIProvider implements AIProvider {
 
   async assessRisk(context: AIAnalysisContext): Promise<AIRiskAssessment> {
     const prompt = prompts.generateRiskAssessmentPrompt(context);
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.2,
@@ -148,7 +153,7 @@ export class OpenAIProvider implements AIProvider {
 
   async generateRecommendations(context: AIAnalysisContext): Promise<AIRecommendation[]> {
     const prompt = prompts.generateRecommendationsPrompt(context);
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.4,
@@ -171,7 +176,7 @@ export class OpenAIProvider implements AIProvider {
     }
 
     const prompt = prompts.generateCodeAnalysisPrompt(context);
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.2,
@@ -189,13 +194,16 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private async makeRequest(
-    prompt: string, 
+    prompt: string,
     options: {
       temperature?: number;
       maxTokens?: number;
       systemPrompt?: string;
       responseFormat?: 'text' | 'json';
       model?: string;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      retries?: number;
     } = {}
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
     const {
@@ -203,7 +211,10 @@ export class OpenAIProvider implements AIProvider {
       maxTokens = this.config.openai.maxTokens,
       systemPrompt,
       responseFormat = 'text',
-      model
+      model,
+      signal,
+      timeoutMs,
+      retries
     } = options;
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
@@ -220,10 +231,10 @@ export class OpenAIProvider implements AIProvider {
       content: prompt
     });
 
-    // Per-call model override: structured-extraction calls (capability catalog /
-    // workspace merge) can point at a faster, more reliable model than the prose
-    // model via options.model, since shared 70B inference latency is highly
-    // variable and those calls are on the analysis critical path.
+
+
+
+
     const requestParams: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
       model: model || this.config.openai.model,
       messages,
@@ -243,13 +254,24 @@ export class OpenAIProvider implements AIProvider {
       async () => {
         this.logger.debug(`Making OpenAI request with model ${this.config.openai.model}`);
         const start = Date.now();
-        
-        const response = await this.client.chat.completions.create(requestParams);
-        
+
+        if (signal?.aborted) throw new AbortError(signal.reason instanceof Error ? signal.reason : new Error('AI request aborted'));
+        let response: OpenAI.Chat.Completions.ChatCompletion;
+        try {
+          const requestOptions = {
+            ...(signal ? { signal } : {}),
+            ...(timeoutMs ? { timeout: Math.floor(timeoutMs) } : {}),
+          };
+          response = await this.client.chat.completions.create(requestParams, requestOptions);
+        } catch (error) {
+          if (signal?.aborted) throw new AbortError(signal.reason instanceof Error ? signal.reason : new Error('AI request aborted'));
+          throw error;
+        }
+
         const duration = Date.now() - start;
         this.logger.debug(`OpenAI request completed in ${duration}ms`);
-        
-        // Log token usage for cost tracking
+
+
         if (response.usage) {
           this.logger.info('Token usage:', {
             promptTokens: response.usage.prompt_tokens,
@@ -261,7 +283,7 @@ export class OpenAIProvider implements AIProvider {
         return response;
       },
       {
-        retries: Math.max(0, Number(process.env.KLAURO_OLLAMA_MAX_RETRIES ?? this.config.openai.maxRetries)),
+        retries: retries ?? Math.max(0, Number(process.env.KLAURO_OLLAMA_MAX_RETRIES ?? this.config.openai.maxRetries)),
         onFailedAttempt: (error) => {
           this.logger.warn(`OpenAI request attempt ${error.attemptNumber} failed:`, error.message);
         },
@@ -373,7 +395,7 @@ export class OpenAIProvider implements AIProvider {
   private parseRiskAssessment(content: string): AIRiskAssessment {
     try {
       const parsed = JSON.parse(content);
-      
+
       return {
         riskLevel: parsed.riskLevel || 'low',
         confidence: parsed.confidence || 0.5,
@@ -383,8 +405,8 @@ export class OpenAIProvider implements AIProvider {
       };
     } catch (error) {
       this.logger.warn('Failed to parse risk assessment JSON, using fallback');
-      
-      // Fallback parsing - extract key information from text
+
+
       return {
         riskLevel: this.extractRiskLevel(content),
         confidence: 0.6,
@@ -398,7 +420,7 @@ export class OpenAIProvider implements AIProvider {
   private parseRecommendations(content: string): AIRecommendation[] {
     try {
       const parsed = JSON.parse(content);
-      
+
       if (!Array.isArray(parsed.recommendations)) {
         return [];
       }
@@ -416,11 +438,11 @@ export class OpenAIProvider implements AIProvider {
       }));
     } catch (error) {
       this.logger.warn('Failed to parse recommendations JSON, using fallback');
-      
-      // Fallback: extract basic recommendations from text
+
+
       const lines = content.split('\n').filter(line => line.trim());
       const recommendations: AIRecommendation[] = [];
-      
+
       for (const line of lines) {
         if (line.match(/^\d+\.|\-|\*/)) {
           recommendations.push({
@@ -436,7 +458,7 @@ export class OpenAIProvider implements AIProvider {
           });
         }
       }
-      
+
       return recommendations;
     }
   }
@@ -444,7 +466,7 @@ export class OpenAIProvider implements AIProvider {
   private parseCodeAnalysis(content: string): AICodeAnalysis {
     try {
       const parsed = JSON.parse(content);
-      
+
       return {
         summary: parsed.summary || 'Code analysis completed',
         complexity: {
@@ -460,7 +482,7 @@ export class OpenAIProvider implements AIProvider {
       };
     } catch (error) {
       this.logger.warn('Failed to parse code analysis JSON, using fallback');
-      
+
       return {
         summary: 'Basic analysis completed - JSON parsing failed',
         complexity: {
@@ -479,7 +501,7 @@ export class OpenAIProvider implements AIProvider {
 
   private extractRiskLevel(content: string): 'low' | 'medium' | 'high' | 'critical' {
     const lowerContent = content.toLowerCase();
-    
+
     if (lowerContent.includes('critical') || lowerContent.includes('severe')) {
       return 'critical';
     } else if (lowerContent.includes('high')) {
@@ -487,14 +509,14 @@ export class OpenAIProvider implements AIProvider {
     } else if (lowerContent.includes('medium') || lowerContent.includes('moderate')) {
       return 'medium';
     }
-    
+
     return 'low';
   }
 
   private extractList(content: string, keyword: string): string[] {
     const lines = content.split('\n');
     const items: string[] = [];
-    
+
     for (const line of lines) {
       if (line.toLowerCase().includes(keyword)) {
         const cleaned = line.replace(/^\d+\.|\-|\*/, '').trim();
@@ -503,7 +525,7 @@ export class OpenAIProvider implements AIProvider {
         }
       }
     }
-    
+
     return items;
   }
 }

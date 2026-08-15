@@ -1,21 +1,21 @@
-/**
- * Louvain community detection on the call graph — structural parity with
- * codebase-memory-mcp's "Louvain community detection (discovers functional
- * modules by clustering call edges)".
- *
- * Deterministic: nodes are processed in a fixed order, so the same graph always
- * yields the same communities (no Math.random). This is the local-moving phase of
- * Louvain (one level), which is what's needed to surface functional modules —
- * tightly-connected groups of functions/classes — from the CALLS edges Klauro
- * already produces. Klauro then layers domain/intent meaning on top (the part a
- * pure clustering tool has no concept of).
- */
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface Community {
   id: number;
-  /** Node ids in this community, sorted. */
+
   members: string[];
-  /** Internal edge weight (cohesion signal). */
+
   internal_edges: number;
 }
 
@@ -24,16 +24,16 @@ export interface CommunityEdge {
   target: string;
 }
 
-/**
- * Cluster nodes into communities by greedily maximizing modularity over the
- * undirected projection of the call graph. Returns communities sorted by size
- * (largest first); singletons with no edges are dropped.
- */
+
+
+
+
+
 export function detectCommunities(nodeIds: string[], edges: CommunityEdge[]): Community[] {
   const nodeSet = new Set(nodeIds);
   const adj = new Map<string, Map<string, number>>();
   const degree = new Map<string, number>();
-  let m2 = 0; // 2 * total edge weight
+  let m2 = 0;
 
   const add = (a: string, b: string) => {
     if (!adj.has(a)) adj.set(a, new Map());
@@ -47,7 +47,7 @@ export function detectCommunities(nodeIds: string[], edges: CommunityEdge[]): Co
     add(e.target, e.source);
     m2 += 2;
   }
-  // No edges → no meaningful communities.
+
   if (m2 === 0) return [];
 
   const ordered = [...nodeIds].sort();
@@ -69,7 +69,7 @@ export function detectCommunities(nodeIds: string[], edges: CommunityEdge[]): Co
       const ci = comm.get(id)!;
       commDegree.set(ci, (commDegree.get(ci) || 0) - ki);
 
-      // Edge weight from this node into each neighbouring community.
+
       const neigh = new Map<number, number>();
       for (const [nb, w] of adj.get(id) || []) {
         const c = comm.get(nb)!;
@@ -77,8 +77,8 @@ export function detectCommunities(nodeIds: string[], edges: CommunityEdge[]): Co
       }
 
       let bestC = ci;
-      let bestGain = 0; // staying put (after removal) is the baseline
-      // Deterministic tie-break: lowest community id wins.
+      let bestGain = 0;
+
       for (const c of [...neigh.keys()].sort((a, b) => a - b)) {
         const wic = neigh.get(c)!;
         const gain = wic - ((commDegree.get(c) || 0) * ki) / m2;
@@ -93,7 +93,7 @@ export function detectCommunities(nodeIds: string[], edges: CommunityEdge[]): Co
     }
   }
 
-  // Collect and compute cohesion.
+
   const byComm = new Map<number, string[]>();
   for (const id of ordered) {
     const c = comm.get(id)!;
@@ -114,6 +114,6 @@ export function detectCommunities(nodeIds: string[], edges: CommunityEdge[]): Co
   }
   result.sort((a, b) => b.members.length - a.members.length || a.members[0].localeCompare(b.members[0]));
   result.forEach((c, i) => (c.id = i));
-  // Drop trivial isolated singletons (no internal edges and size 1).
+
   return result.filter(c => c.members.length > 1 || c.internal_edges > 0);
 }

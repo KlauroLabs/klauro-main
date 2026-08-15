@@ -1,13 +1,13 @@
 import type { CASGuardKind } from '../../types/cas.types';
 
-/**
- * Classifies what a guard/middleware actually protects against, from its
- * name. "guarded (ThrottlerGuard)" is rate limiting, not authentication; a
- * security claim built on conflating the two would overstate protection.
- * Order matters: rate-limiting and authorization vocabularies are checked
- * before the broad authentication vocabulary because names like
- * "AuthorizationGuard" contain "auth".
- */
+
+
+
+
+
+
+
+
 export function classifyGuardKind(guardName: string | undefined): CASGuardKind {
   const name = String(guardName || '').toLowerCase();
   if (!name) return 'unknown';

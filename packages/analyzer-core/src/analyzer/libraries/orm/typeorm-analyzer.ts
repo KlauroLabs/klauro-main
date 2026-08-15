@@ -28,18 +28,18 @@ interface TypeORMEntity {
   line: number;
 }
 
-/**
- * TypeORM analyzer.
- *
- * Extracts `@Entity()`-decorated classes as data-entity nodes with field nodes for
- * each `@Column`/`@PrimaryGeneratedColumn`/`@PrimaryColumn`, and relation edges for
- * `@OneToMany`/`@ManyToOne`/`@ManyToMany`/`@OneToOne` decorators.
- *
- * Node conventions mirror PrismaAnalyzer: entity nodes are type `'entity'`, level 3,
- * id `entity_typeorm_<name>`, with embedded `fields[]` metadata. Field nodes are type
- * `'field'`, level 4, joined to their entity by `has_field` edges. Relation edges are
- * type `'references'`, category `'database'`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class TypeORMAnalyzer extends BaseAnalyzer {
   constructor() {
     super('typeorm', 'TypeORM Analyzer', '1.0.0', 'library');
@@ -73,7 +73,7 @@ export class TypeORMAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -159,8 +159,8 @@ export class TypeORMAnalyzer extends BaseAnalyzer {
       entities.push(...this.parseEntities(content, context.relativePath));
     }
 
-    // Single-file scope: relation edges to entities defined in other files
-    // under-populate here and re-derive on full analysis.
+
+
     this.emitEntityGraph(entities, nodes, edges);
 
     const exports = entities.map(e => e.className);
@@ -277,12 +277,12 @@ export class TypeORMAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `@Entity() export class User { ... }` blocks.
-   */
+
+
+
   private parseEntities(content: string, filePath: string): TypeORMEntity[] {
     const entities: TypeORMEntity[] = [];
-    // Capture optional @Entity('table_name') immediately before a class declaration.
+
     const entityRegex = /@Entity\s*\(\s*(?:['"`]([^'"`]+)['"`])?[^)]*\)\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)/g;
 
     let match: RegExpExecArray | null;
@@ -311,9 +311,9 @@ export class TypeORMAnalyzer extends BaseAnalyzer {
     return entities;
   }
 
-  /**
-   * Parse `@Column(...) field: type;` / `@PrimaryGeneratedColumn() id: number;`.
-   */
+
+
+
   private parseColumns(body: string): TypeORMColumn[] {
     const columns: TypeORMColumn[] = [];
     const colRegex = /@(PrimaryGeneratedColumn|PrimaryColumn|Column|CreateDateColumn|UpdateDateColumn)\s*\(([^)]*)\)\s*(\w+)/g;
@@ -341,12 +341,12 @@ export class TypeORMAnalyzer extends BaseAnalyzer {
     return columns;
   }
 
-  /**
-   * Parse `@OneToMany(() => Post, p => p.user) posts: Post[];` etc.
-   */
+
+
+
   private parseRelations(body: string): TypeORMRelationField[] {
     const relations: TypeORMRelationField[] = [];
-    // Accepts arrow param forms: `() =>`, `type =>`, `(type) =>`, `(t: Type) =>`.
+
     const relRegex = /@(OneToMany|ManyToOne|ManyToMany|OneToOne)\s*\(\s*(?:\([^)]*\)|\w+)?\s*=>\s*(\w+)[\s\S]*?\)\s*(\w+)/g;
 
     let match: RegExpExecArray | null;

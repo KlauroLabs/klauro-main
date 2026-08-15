@@ -5,20 +5,20 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Warp framework analyzer.
- *
- * Warp routes are built as FILTER CHAINS, not method calls with a path string like
- * axum/actix/rocket: `warp::path("users").and(warp::get()).and_then(list_users)` (or
- * `.map(handler)` for a sync handler). There is no single call site carrying both the
- * path and the method — the path comes from one or more `warp::path(...)` /
- * `warp::path!(...)` segments combined with `.and(...)`, the HTTP method from a
- * `warp::get()`/`warp::post()`/etc. filter joined the same way, and the handler from
- * the terminal `.and_then(...)` / `.map(...)` in the chain. This analyzer parses each
- * such filter-chain expression (a `let <var> = ...;` binding or the argument to a
- * `.or(...)`/`warp::serve(...)` call) to recover path + method + handler as a single
- * logical route, mirroring what fastify/axum surface for method+path+handler.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class WarpAnalyzer extends BaseAnalyzer {
   private rustAnalyzer: RustAnalyzer;
 
@@ -81,34 +81,34 @@ export class WarpAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Find each top-level filter-chain EXPRESSION in the file — a `let <var> = <expr>;`
-   * binding whose RHS references `warp::path`, or a bare statement/return expression
-   * doing the same (`app.or(...)` chains, or the terminal expression of a `fn routes()
-   * -> impl Filter { ... }`). Each expression is parsed independently for its
-   * path segments, method filter, and terminal handler.
-   */
+
+
+
+
+
+
+
   private extractWarpRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): void {
     if (!/\bwarp::path\s*[!(]/.test(content)) return;
 
     const lineForIndex = this.buildLineIndex(content);
     const seen = new Set<string>();
 
-    // `let <var> = <expr>;` bindings whose RHS mentions warp::path — the common case
-    // where each route (or route group) is bound to a name before being `.or()`'d
-    // together into the final filter passed to `warp::serve`.
+
+
+
     for (const m of content.matchAll(/\b(?:let\s+(?:mut\s+)?([a-z_][A-Za-z0-9_]*)\s*=\s*)?(warp::path[\s\S]*?);/g)) {
       const exprStart = m.index! + (m[1] ? m[0].indexOf(m[2]) : 0);
       this.parseFilterChainExpression(m[2], relativePath, exprStart, content, lineForIndex, entryPoints, seen);
     }
   }
 
-  /**
-   * Parse one filter-chain expression for its route facts. A chain may `.or(...)`
-   * multiple independent routes together (e.g. `get_route.or(post_route)`), so this
-   * splits on top-level `.or(` boundaries first, then extracts path/method/handler
-   * from each independent branch.
-   */
+
+
+
+
+
+
   private parseFilterChainExpression(
     expr: string,
     relativePath: string,
@@ -121,28 +121,28 @@ export class WarpAnalyzer extends BaseAnalyzer {
     for (const branch of this.splitTopLevelOr(expr)) {
       if (!/warp::path/.test(branch)) continue;
 
-      // Path segments: `warp::path("x")` / `warp::path::end()` (no segment) / the
-      // `warp::path!("a" / "b" / ..)` macro form (segments joined by `/`).
+
+
       const segments: string[] = [];
       for (const pm of branch.matchAll(/warp::path\s*!\s*\(\s*((?:"[^"]*"\s*\/?\s*)+)\)/g)) {
         for (const seg of pm[1].matchAll(/"([^"]*)"/g)) segments.push(seg[1]);
       }
       for (const pm of branch.matchAll(/warp::path\s*\(\s*"([^"]*)"\s*\)/g)) segments.push(pm[1]);
-      // `warp::path::param()` — a dynamic path segment (typed extractor); we don't
-      // know the param name from the filter alone, so surface it as `:param`.
+
+
       const paramCount = (branch.match(/warp::path::param\s*\(\s*\)/g) || []).length;
       for (let i = 0; i < paramCount; i++) segments.push(':param');
 
       const routePath = segments.length > 0 ? `/${segments.join('/')}` : '/';
 
-      // Method filter: warp::get() / warp::post() / ... anywhere in the chain.
+
       const methodMatch = branch.match(/\bwarp::(get|post|put|patch|delete|head|options)\s*\(\s*\)/);
       const method = methodMatch ? methodMatch[1].toUpperCase() : 'GET';
 
-      // Handler: the argument of the terminal `.and_then(...)` (async handler) or
-      // `.map(...)` (sync handler) — whichever appears LAST in the chain, since a
-      // chain may have intermediate `.and(...)` filters (extractors, guards) before
-      // reaching its actual handler.
+
+
+
+
       const handler = this.resolveTerminalHandler(branch);
       if (!handler) continue;
 
@@ -166,9 +166,9 @@ export class WarpAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Split an expression on `.or(` boundaries that occur at bracket depth 0 (top level
-   *  of the outer expression), returning each `.or()`-joined branch's own sub-expression
-   *  text (including its own nested `.and(...)`/`.and_then(...)` chain). */
+
+
+
   private splitTopLevelOr(expr: string): string[] {
     const branches: string[] = [];
     let depth = 0;
@@ -180,9 +180,9 @@ export class WarpAnalyzer extends BaseAnalyzer {
       if (depth === 0 && expr.slice(i, i + 4) === '.or(') {
         branches.push(cur);
         cur = '';
-        // Skip past ".or(" — the inner content continues accumulating as its own text;
-        // we don't try to balance-match here because each branch is still scanned by
-        // the same regexes above regardless of enclosing punctuation.
+
+
+
         continue;
       }
       cur += ch;
@@ -191,9 +191,9 @@ export class WarpAnalyzer extends BaseAnalyzer {
     return branches;
   }
 
-  /** The handler bound at the LAST `.and_then(<handler>)` or `.map(<handler>)` call
-   *  in a filter-chain branch (bare identifier or member-path only — inline closures
-   *  are still real, navigable-by-location handlers so we surface a synthetic name). */
+
+
+
   private resolveTerminalHandler(branch: string): string | undefined {
     let last: string | undefined;
     for (const m of branch.matchAll(/\.(?:and_then|map)\s*\(\s*([^)]*)\)/g)) {

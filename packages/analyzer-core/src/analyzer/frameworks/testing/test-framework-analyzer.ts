@@ -6,31 +6,31 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { createYieldBudget } from '../../core/event-loop-yield';
 
-/**
- * TestFrameworkAnalyzer — cross-language test structure + coverage map.
- *
- * Complements the Jest and Cypress analyzers (which own the AST-level JS/TS
- * detail) by covering every OTHER mainstream framework with a single,
- * evidence-gated regex walker:
- *   TS/JS   Vitest, Mocha, Jasmine, node:test
- *   Python  pytest (test_ fns + fixtures), unittest (TestCase methods)
- *   Java    JUnit 4/5 (@Test), TestNG
- *   Ruby    RSpec (describe/it/context), minitest
- *   Go      func TestXxx(t *testing.T)
- *   Rust    #[test] / #[tokio::test]
- *   C#      xUnit ([Fact]/[Theory]), NUnit ([Test])
- *   PHP     PHPUnit
- *   Elixir  ExUnit
- *   Solidity Foundry (forge-std Test)
- *   E2E     Playwright, Selenium
- *
- * Emits `test` nodes (suites carry the `suite` subcategory, cases do not — the
- * exact shape orchestrator.buildTestSuites lifts into CASTestSuite/CASTestCase).
- * Test code remains outside the operational entry-point surface. When language
- * analyzers provide test-owned AST nodes and call edges, this analyzer attaches
- * helpers and mocks to the suite and emits exact `tests` edges to executed code;
- * import-derived `covers` edges remain the explicitly coarser fallback.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 type TestKind = 'unit' | 'integration' | 'e2e' | 'snapshot';
 
@@ -50,23 +50,23 @@ interface DiscoveredSuite {
   type: TestKind;
   lineCount: number;
   cases: DiscoveredCase[];
-  /** Project-relative-ish import specifiers pulled from the test file. */
+
   imports: string[];
 }
 
 interface FrameworkRule {
-  /** Human framework label emitted on nodes and entry points. */
+
   framework: string;
   language: string;
-  /** File globs whose contents this rule can own. */
+
   filePatterns: string[];
-  /**
-   * Import/dependency evidence that must be present in the file before a rule
-   * fires — the house-rule gate. A rule with an empty gate relies purely on the
-   * file-naming convention (e.g. `*_test.go`), which is itself the evidence.
-   */
+
+
+
+
+
   evidence: RegExp[];
-  /** Case-extraction patterns; capture group 1 is the case name. */
+
   casePatterns: RegExp[];
 }
 
@@ -76,6 +76,7 @@ interface TestCoverageTargetIndex {
   nodesBySourcePath: Map<string, CASNode[]>;
   nodesById: Map<string, CASNode>;
   callsBySource: Map<string, Array<{ target: string; line?: number }>>;
+  reachableProductionTargets: Map<string, ReadonlySet<string>>;
 }
 
 export class TestFrameworkAnalyzer extends BaseAnalyzer {
@@ -111,7 +112,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     try {
       const ignorePatterns = this.getTestIgnorePatterns(context);
       const suites = await this.discoverSuites(context.projectPath, ignorePatterns);
-      const coverageTargets = this.buildCoverageTargetIndex(context.existingAnalysis);
+      const coverageTargets = this.buildCoverageTargetIndex(context.existingAnalysis, context.projectPath);
 
       for (const suite of suites) {
         this.emitSuite(suite, nodes, edges, coverageTargets);
@@ -245,7 +246,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
 
     this.attachDetailedTestGraph(suite, suiteNode, caseNodes, edges, coverageTargets);
 
-    // covers edge: suite -> subject-under-test, gated on a real local import.
+
     for (const importPath of suite.imports) {
       const targetId = this.resolveImportToNodeId(importPath, suite.file, coverageTargets);
       if (targetId) {
@@ -260,10 +261,10 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Stable, file-namespaced suite id so same-named suites in different files
-   * never collide — mirrors JestAnalyzer.suiteNodeId.
-   */
+
+
+
+
   private suiteNodeId(suite: DiscoveredSuite): string {
     return `test_suite_${this.sanitizeId(suite.file)}_${this.sanitizeId(suite.name)}`;
   }
@@ -292,10 +293,10 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       case 'go-test':
         return /_test\.go$/.test(lower);
       case 'rust-test':
-        // (?:^|\/) — not just \/ — or the extremely common top-level
-        // `src/lib.rs` / `src/main.rs` / top-level `tests/*.rs` layout
-        // (no parent directory before `src`/`tests`) never matches, and
-        // rust-test suite discovery silently misses most single-crate repos.
+
+
+
+
         return /(?:_test\.rs$|(?:^|\/)(?:tests|src)\/.*\.rs$)/.test(lower);
       case 'junit':
       case 'testng':
@@ -310,19 +311,19 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       case 'phpunit':
         return /test\.php$/.test(lower) || /(?:^|\/)tests\/.*\.php$/.test(lower);
       case 'xctest':
-        // Kept in sync with the xctest FrameworkRule's filePatterns above —
-        // this switch is the actual gate (filePatterns is otherwise unused
-        // by matchesRule/fileMatchesPatterns), which is itself a latent
-        // footgun: adding a FrameworkRule alone silently does nothing until
-        // a case is added here too. Out of scope to refactor for task #126,
-        // but worth flagging — see the report on this defect.
+
+
+
+
+
+
         return /tests\.swift$/.test(lower) || /(?:^|\/)tests\/.*\.swift$/.test(lower);
       case 'exunit':
-        // Mix's own convention: `mix test` only runs `test/**/*_test.exs`.
+
         return /_test\.exs$/.test(lower) || /(?:^|\/)test\/.*\.exs?$/.test(lower);
       case 'foundry':
-        // Foundry's `forge test` default naming (`*.t.sol`) plus the
-        // conventional `test/`/`tests/` directory both toolchains use.
+
+
         return /\.t\.sol$/.test(lower) || /(?:^|\/)tests?\/.*\.sol$/.test(lower);
       default:
         return false;
@@ -356,7 +357,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
   }
 
   private suiteName(content: string, file: string, rule: FrameworkRule): string {
-    // Prefer an explicit suite declaration where the framework has one.
+
     const describe = content.match(/(?:describe|context|suite|RSpec\.describe)\s*\(\s*['"`]([^'"`]+)['"`]/);
     if (describe) return describe[1];
     const rubyDescribe = content.match(/(?:describe|context)\s+['"]([^'"]+)['"]\s+do/);
@@ -378,9 +379,9 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       let match: RegExpExecArray | null;
       while ((match = re.exec(content)) !== null) imports.push(match[1] || match[2]);
     }
-    // Go/Rust/Java/C#/Ruby/PHP subjects are co-located by convention rather than
-    // relative-path imports; coverage there is left to the co-location heuristic
-    // in find_tests rather than fabricated edges.
+
+
+
 
     return imports.filter(spec => spec && (spec.startsWith('.') || spec.startsWith('/')));
   }
@@ -404,28 +405,39 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  private buildCoverageTargetIndex(existingAnalysis?: CASContribution[]): TestCoverageTargetIndex {
+  private buildCoverageTargetIndex(existingAnalysis: CASContribution[] | undefined, projectPath: string): TestCoverageTargetIndex {
     const fileNodesByPath = new Map<string, string>();
     const nonTestNodesByPath = new Map<string, string>();
     const nodesBySourcePath = new Map<string, CASNode[]>();
     const nodesById = new Map<string, CASNode>();
     const callsBySource = new Map<string, Array<{ target: string; line?: number }>>();
+    const sourceKeysByFile = new Map<string, string[]>();
+    const sourceKeys = (file: string) => {
+      const cached = sourceKeysByFile.get(file);
+      if (cached) return cached;
+      const keys = this.sourcePathKeys(file, projectPath);
+      sourceKeysByFile.set(file, keys);
+      return keys;
+    };
     for (const contribution of existingAnalysis || []) {
       for (const node of contribution.nodes || []) {
         nodesById.set(node.id, node);
         if (!node.source?.file) continue;
-        for (const key of this.sourcePathSuffixes(node.source.file)) {
-          const sourceNodes = nodesBySourcePath.get(key) || [];
-          sourceNodes.push(node);
-          nodesBySourcePath.set(key, sourceNodes);
+        const testOwned = this.isTestOwnedNode(node);
+        if (testOwned) {
+          for (const key of sourceKeys(node.source.file)) {
+            const sourceNodes = nodesBySourcePath.get(key) || [];
+            sourceNodes.push(node);
+            nodesBySourcePath.set(key, sourceNodes);
+          }
         }
         const index = node.type === 'file'
           ? fileNodesByPath
-          : !this.isTestOwnedNode(node)
+          : !testOwned
             ? nonTestNodesByPath
             : null;
         if (!index) continue;
-        for (const key of this.sourcePathSuffixes(node.source.file)) {
+        for (const key of sourceKeys(node.source.file)) {
           if (!index.has(key)) index.set(key, node.id);
         }
       }
@@ -437,7 +449,14 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         callsBySource.set(edge.source, calls);
       }
     }
-    return { fileNodesByPath, nonTestNodesByPath, nodesBySourcePath, nodesById, callsBySource };
+    return {
+      fileNodesByPath,
+      nonTestNodesByPath,
+      nodesBySourcePath,
+      nodesById,
+      callsBySource,
+      reachableProductionTargets: new Map(),
+    };
   }
 
   private attachDetailedTestGraph(
@@ -504,22 +523,54 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     index: TestCoverageTargetIndex,
     rootCallLines?: { start: number; end: number },
   ): Set<string> {
+    if (!rootCallLines) {
+      const targets = new Set<string>();
+      for (const startNodeId of startNodeIds) {
+        for (const targetId of this.productionTargetsFromTestNode(startNodeId, index)) targets.add(targetId);
+      }
+      return targets;
+    }
     const targets = new Set<string>();
-    const visited = new Set<string>();
-    const queue = [...new Set(startNodeIds)].map(id => ({ id, root: true }));
-    while (queue.length > 0) {
-      const { id: sourceId, root } = queue.shift()!;
-      if (visited.has(sourceId)) continue;
-      visited.add(sourceId);
+    const rootIds = new Set(startNodeIds);
+    for (const sourceId of rootIds) {
       for (const call of index.callsBySource.get(sourceId) || []) {
-        if (root && rootCallLines && call.line !== undefined &&
+        if (call.line !== undefined &&
             (call.line < rootCallLines.start || call.line >= rootCallLines.end)) continue;
         const target = index.nodesById.get(call.target);
         if (!target) continue;
-        if (this.isTestOwnedNode(target)) queue.push({ id: call.target, root: false });
+        if (!this.isTestOwnedNode(target)) {
+          targets.add(call.target);
+          continue;
+        }
+        if (rootIds.has(call.target)) continue;
+        for (const targetId of this.productionTargetsFromTestNode(call.target, index)) targets.add(targetId);
+      }
+    }
+    return targets;
+  }
+
+  private productionTargetsFromTestNode(
+    startNodeId: string,
+    index: TestCoverageTargetIndex,
+  ): ReadonlySet<string> {
+    const cached = index.reachableProductionTargets.get(startNodeId);
+    if (cached) return cached;
+    const targets = new Set<string>();
+    const visited = new Set<string>();
+    const queue = [startNodeId];
+    let cursor = 0;
+    while (cursor < queue.length) {
+      const sourceId = queue[cursor++];
+      if (visited.has(sourceId)) continue;
+      visited.add(sourceId);
+      for (const call of index.callsBySource.get(sourceId) || []) {
+        const target = index.nodesById.get(call.target);
+        if (!target) continue;
+        if (this.isTestOwnedNode(target)) queue.push(call.target);
         else targets.add(call.target);
       }
     }
+    index.reachableProductionTargets.set(startNodeId, targets);
     return targets;
   }
 
@@ -552,14 +603,11 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     edges.push(edge);
   }
 
-  private sourcePathSuffixes(filePath: string): string[] {
+  private sourcePathKeys(filePath: string, projectPath: string): string[] {
     const normalized = this.normalizeSourcePath(filePath);
-    const keys = [normalized];
-    for (let index = normalized.indexOf('/'); index >= 0; index = normalized.indexOf('/', index + 1)) {
-      const suffix = normalized.slice(index + 1);
-      if (suffix) keys.push(suffix);
-    }
-    return keys;
+    if (!path.isAbsolute(filePath)) return [normalized];
+    const relative = this.normalizeSourcePath(path.relative(projectPath, filePath));
+    return relative === normalized ? [normalized] : [normalized, relative];
   }
 
   private normalizeSourcePath(filePath: string): string {
@@ -570,9 +618,9 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     const basePath = path.normalize(path.join(path.dirname(testFilePath), importPath)).replace(/\\/g, '/');
     const extension = path.extname(basePath);
     if (extension) {
-      // TS + ESM projects import `.js`/`.mjs`/`.cjs` specifiers that resolve to
-      // the `.ts`/`.tsx` source on disk — try the source siblings too, else the
-      // covers edge never lands for the single most common TS convention.
+
+
+
       if (/\.(js|mjs|cjs|jsx)$/i.test(extension)) {
         const stem = basePath.slice(0, -extension.length);
         return [basePath, `${stem}.ts`, `${stem}.tsx`, `${stem}.mts`, `${stem}.cts`];
@@ -601,13 +649,13 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     return name.replace(/[^a-zA-Z0-9]/g, '_');
   }
 
-  /**
-   * The framework rule table. Each entry is evidence-gated: the file naming
-   * convention selects candidates, the `evidence` imports confirm the framework,
-   * and `casePatterns` extract runnable cases. Ordering matters — earlier rules
-   * claim a file first, so language-specific naming (e.g. *_test.go) never gets
-   * mis-owned by a generic JS rule.
-   */
+
+
+
+
+
+
+
   private rules(): FrameworkRule[] {
     return [
       {
@@ -730,12 +778,12 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         casePatterns: [/(?:@test[\s\S]{0,40}?)?\bpublic\s+function\s+(test[A-Za-z0-9_]*)\s*\(/gm]
       },
       {
-        // XCTest was previously unregistered here entirely — Swift test
-        // files never produced suite/case `test` nodes, so `test_summary`
-        // undercounted Swift tests independently of the node-tagging fix
-        // in swift-analyzer.ts's applyTestFileBoundary. Both fixes are
-        // needed: this one for suite/case discovery, that one for the
-        // coverage-graph walk to find a test-owned root to traverse from.
+
+
+
+
+
+
         framework: 'xctest',
         language: 'swift',
         filePatterns: ['**/*Tests.swift', '**/Tests/**/*.swift'],
@@ -743,12 +791,12 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         casePatterns: [/\bfunc\s+(test[A-Za-z0-9_]*)\s*\(\s*\)/gm]
       },
       {
-        // ExUnit was previously unregistered here entirely — Elixir test
-        // files never produced suite/case `test` nodes, so `test_summary`
-        // undercounted Elixir tests independently of the node-tagging fix in
-        // elixir-analyzer.ts's applyTestFileBoundary. Both fixes are needed:
-        // this one for suite/case discovery, that one for the coverage-graph
-        // walk to find a test-owned root to traverse from.
+
+
+
+
+
+
         framework: 'exunit',
         language: 'elixir',
         filePatterns: ['**/*_test.exs', '**/test/**/*.exs'],
@@ -756,11 +804,11 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         casePatterns: [/^\s*test\s+["']([^"']+)["']/gm]
       },
       {
-        // Foundry (forge-std) was previously unregistered here entirely —
-        // Solidity test contracts never produced suite/case `test` nodes.
-        // Both fixes needed, same reasoning as xctest/exunit above: this one
-        // for suite/case discovery, solidity-analyzer.ts's
-        // applyTestFileBoundary for the coverage-graph walk's traversal root.
+
+
+
+
+
         framework: 'foundry',
         language: 'solidity',
         filePatterns: ['**/*.t.sol', '**/test/**/*.sol', '**/tests/**/*.sol'],

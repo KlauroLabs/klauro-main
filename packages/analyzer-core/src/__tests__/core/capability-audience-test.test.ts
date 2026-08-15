@@ -2,6 +2,7 @@ import {
   splitIdentifierWords,
   capabilitySubjectTokens,
   testCapabilityNameAgainstIdentifierVocabulary,
+  testCapabilityDescriptionAgainstAudience,
 } from '../../analyzer/core/capability-audience-test';
 
 describe('splitIdentifierWords', () => {
@@ -18,13 +19,80 @@ describe('splitIdentifierWords', () => {
 
 describe('capabilitySubjectTokens', () => {
   it('strips a leading purpose verb and keeps the subject', () => {
-    expect(capabilitySubjectTokens('Authenticate with WebAuthn')).toEqual(['with', 'WebAuthn']);
+    expect(capabilitySubjectTokens('Authenticate with WebAuthn')).toEqual(['WebAuthn']);
   });
   it('strips an inflected purpose verb', () => {
     expect(capabilitySubjectTokens('Manages Session Security')).toEqual(['Session', 'Security']);
   });
   it('keeps everything when there is no leading verb', () => {
     expect(capabilitySubjectTokens('Sound Syft Service')).toEqual(['Sound', 'Syft', 'Service']);
+  });
+  it('removes relationship connectors from a purpose phrase', () => {
+    expect(capabilitySubjectTokens('Coordinate concurrent work through Fabric')).toEqual(['concurrent', 'work', 'Fabric']);
+  });
+  it('recognizes an inflected visualization purpose', () => {
+    expect(capabilitySubjectTokens('Visualizes code flow and coverage')).toEqual(['code', 'flow', 'coverage']);
+    expect(capabilitySubjectTokens('Offers guidance for greenfield projects')).toEqual(['guidance', 'greenfield', 'projects']);
+  });
+});
+
+describe('capability description audience test', () => {
+  it('rejects vague marketing claims unless first-party product text supplies them', () => {
+    const description = 'Turns connected records into actionable insights for operators.';
+    expect(testCapabilityDescriptionAgainstAudience(
+      'Understand connected records',
+      description,
+      [],
+      [],
+      ['connected records'],
+    ).reasons).toContain('marketing-language');
+    expect(testCapabilityDescriptionAgainstAudience(
+      'Understand connected records',
+      description,
+      [],
+      [],
+      ['actionable insights for operators'],
+    ).reasons).not.toContain('marketing-language');
+  });
+
+  it('trusts a trailing name word when most of the capability subject is grounded in first-party product text', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Manage agent context tasks',
+      'Gives coding agents task-specific context before they change code.',
+      [{ name: 'task-runner' }, { name: 'agent-context-sdk' }],
+      [],
+      ['Provides agent context before code changes'],
+    );
+
+    expect(result.failsAudienceTest).toBe(false);
+  });
+
+  it('rejects analyzer-discovered structural type names as product prose', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Analyze codebases',
+      'Produces ErdLayouts and RawResults so users can inspect code relationships.',
+      [],
+      [
+        { name: 'ErdLayout', kind: 'domain-shape' },
+        { name: 'RawResult', kind: 'domain-shape' },
+      ],
+      ['Codebase analysis'],
+    );
+
+    expect(result.failsAudienceTest).toBe(true);
+    expect(result.flaggedTokens).toEqual(expect.arrayContaining(['ErdLayouts', 'RawResults']));
+  });
+
+  it('rejects implementation-led descriptions even when their nouns appear in structural evidence', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Manage intent solvers',
+      'Executes the main CLI entry point to oversee and control solver operations.',
+      [],
+      [],
+      ['intent solver operations'],
+    );
+
+    expect(result.reasons).toContain('implementation-language');
   });
 });
 
@@ -176,6 +244,30 @@ describe('audience-test identifier discriminator: precision/recall vs the 23 aud
       'Manage RSS Feeds', [{ name: 'gorilla/mux' }], [persisted('Feed'), persisted('Entry')],
     );
     expect(r.failsIdentifierTest).toBe(false);
+  });
+
+  it('accepts identifier-overlapping words when first-party product text corroborates them', () => {
+    const withoutProductText = testCapabilityNameAgainstIdentifierVocabulary(
+      'Manage agent context', [{ name: 'agent-context-sdk' }], [],
+    );
+    const withProductText = testCapabilityNameAgainstIdentifierVocabulary(
+      'Manage agent context', [{ name: 'agent-context-sdk' }], [],
+      ['Provides coding agents with task-specific codebase context'],
+    );
+
+    expect(withoutProductText.failsIdentifierTest).toBe(true);
+    expect(withProductText.failsIdentifierTest).toBe(false);
+  });
+
+  it('accepts a mostly first-party subject when one trailing word overlaps a dependency', () => {
+    const result = testCapabilityNameAgainstIdentifierVocabulary(
+      'Manage agent context tasks',
+      [{ name: 'task-runner' }, { name: 'agent-context-sdk' }],
+      [],
+      ['Provides agent context before code changes'],
+    );
+
+    expect(result.failsIdentifierTest).toBe(false);
   });
 
   it('flags "Authenticate with WebAuthn" (identifier-only vocabulary, protocol name) — the audit\'s own falsification target', () => {

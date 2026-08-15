@@ -11,10 +11,10 @@ interface SeaOrmField {
 }
 
 interface SeaOrmEntity {
-  /** SeaORM convention names the row struct `Model` in each entity module; the
-   * module's directory or file stem (e.g. `user.rs` -> `user`) is what
-   * disambiguates one entity's `Model` from another's, so we key entities by
-   * that module name rather than the (always-identical) struct name. */
+
+
+
+
   moduleName: string;
   tableName?: string;
   fields: SeaOrmField[];
@@ -35,19 +35,19 @@ const RELATION_CARDINALITY: Record<SeaOrmRelation['kind'], string> = {
   belongs_to: 'ManyToOne',
 };
 
-/**
- * SeaORM analyzer (Rust).
- *
- * SeaORM entities are one Rust module per table: `#[sea_orm(table_name =
- * "users")] pub struct Model { #[sea_orm(primary_key)] pub id: i32, ... }`,
- * plus a sibling `enum Relation { #[sea_orm(has_many = "super::post::Entity")]
- * Post, ... }` carrying the relation kind and target module path.
- *
- * Because every entity's row struct is named `Model` (not the table name),
- * this analyzer keys entities by their containing module (file stem, e.g.
- * `user.rs` -> `user`) and resolves `super::post::Entity` / `Entity` paths in
- * relation targets back to that same module-name space.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class SeaOrmAnalyzer extends BaseAnalyzer {
   constructor() {
     super('sea-orm', 'SeaORM Analyzer', '1.0.0', 'library');
@@ -77,7 +77,7 @@ export class SeaOrmAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -279,9 +279,9 @@ export class SeaOrmAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `#[sea_orm(table_name = "users")] pub struct Model { #[sea_orm(primary_key)] pub id: i32, pub name: String }`.
-   */
+
+
+
   private parseEntity(content: string, moduleName: string, filePath: string): SeaOrmEntity | undefined {
     const tableNameMatch = /sea_orm\(table_name\s*=\s*"([^"]+)"\)/.exec(content);
     const structMatch = /pub\s+struct\s+Model\s*\{/.exec(content);
@@ -293,7 +293,7 @@ export class SeaOrmAnalyzer extends BaseAnalyzer {
     const line = content.slice(0, structMatch.index).split('\n').length;
 
     const fields: SeaOrmField[] = [];
-    // Split on field boundaries: optional #[sea_orm(...)] attr, then `pub name: Type,`
+
     const fieldRegex = /(?:#\[sea_orm\(([^)]*)\)\]\s*)?pub\s+(\w+)\s*:\s*([\w:<>]+)\s*,?/g;
     let match: RegExpExecArray | null;
     while ((match = fieldRegex.exec(body)) !== null) {
@@ -308,9 +308,9 @@ export class SeaOrmAnalyzer extends BaseAnalyzer {
     return { moduleName, tableName: tableNameMatch?.[1], fields, filePath, line };
   }
 
-  /**
-   * Parse `enum Relation { #[sea_orm(has_many = "super::post::Entity")] Post, #[sea_orm(belongs_to = "super::user::Entity", ...)] User }`.
-   */
+
+
+
   private parseRelations(content: string, moduleName: string): SeaOrmRelation[] {
     const relations: SeaOrmRelation[] = [];
     const relEnumMatch = /enum\s+Relation\s*\{/.exec(content);
@@ -333,10 +333,10 @@ export class SeaOrmAnalyzer extends BaseAnalyzer {
     return relations;
   }
 
-  /**
-   * Resolve `super::post::Entity` / `crate::entities::post::Entity` / `Entity`
-   * down to the bare module name (`post`) used as the entity key.
-   */
+
+
+
+
   private resolveModulePath(target: string): string {
     const parts = target.split('::').filter(p => p && p !== 'super' && p !== 'crate' && p !== 'Entity');
     return parts.length > 0 ? parts[parts.length - 1] : target;

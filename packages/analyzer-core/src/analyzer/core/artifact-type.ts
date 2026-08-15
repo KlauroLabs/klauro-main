@@ -2,18 +2,18 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASArtifactType, CASExitPoint, CASNode } from '../../types/cas.types';
 
-/**
- * Artifact-type classification: WHAT KIND of codebase this is — a product
- * application, a reusable library, a generated API client, a CLI tool, or a
- * boilerplate/starter — decided deterministically BEFORE domain inference.
- *
- * Why this exists: libraries, generated SOAP/REST clients, and starter
- * templates were being forced into business domains ("a SOAP client library
- * for card operations" became 'order-card-carrier-management'; a tray-icon
- * Rust library became 'menu-management'). The artifact type is structural
- * truth that manifests and entry/exit-point shape reveal directly, so it is
- * evidence-gated on those signals — never on the repository name.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface ArtifactManifestSignal {
   packageJson?: {
@@ -21,7 +21,7 @@ export interface ArtifactManifestSignal {
     description?: string;
     isPrivate: boolean;
     hasBin: boolean;
-    /** main / module / exports / types — the published-library entry surface. */
+
     hasLibraryEntry: boolean;
     dependencyNames: string[];
   };
@@ -44,7 +44,7 @@ export interface ArtifactManifestSignal {
     hasConsoleScripts: boolean;
     dependencyNames: string[];
   };
-  /** First ~1500 chars of the README; boilerplate/self-description markers live here. */
+
   readmeLead?: string;
 }
 
@@ -58,11 +58,11 @@ export interface ArtifactTypeInput {
 
 export interface ArtifactTypeResult {
   artifactType: CASArtifactType;
-  /** Human-readable evidence trail for why the type was chosen. */
+
   evidence: string[];
-  /** Protocol/tech qualifier discovered during detection (soap, openapi, ...). */
+
   protocol?: 'soap' | 'openapi' | 'graphql';
-  /** True when generated-code markers backed a client-sdk verdict. */
+
   generated?: boolean;
 }
 
@@ -72,7 +72,7 @@ const OUTBOUND_EXIT_TYPES = new Set(['api', 'sdk', 'message', 'webhook']);
 const CLI_DEPENDENCY_MARKERS = /^(commander|yargs|oclif|@oclif\/.+|meow|cac|vorpal|inquirer|clap|structopt|click|typer|argparse|cobra)$/;
 export const APP_FRAMEWORK_MARKERS = /\b(next(\.js)?|nuxt|express|fastify|koa|nestjs|nest|django|flask|fastapi|rails|laravel|symfony|spring|asp\.?net|angular|remix|sveltekit)\b/i;
 
-/** Boilerplate self-declaration: title-region text or manifest name/description. */
+
 const BOILERPLATE_TEXT = /\b(boilerplate|starter[ -]?(kit|template|project|app)?|skeleton|scaffold(ing)?|template)\b/i;
 
 const GENERATED_CLIENT_TEXT = /\b(wsdl2?php|wsdl|openapi-generator|swagger-codegen|autorest|auto-?generated client|generated (api )?client)\b/i;
@@ -130,10 +130,10 @@ function detectInfrastructure(
   };
 }
 
-/**
- * Generated API client: WSDL/openapi generation markers or generated-code
- * density, with outbound calls and no app entry surface of its own.
- */
+
+
+
+
 function detectClientSdk(
   nodes: ArtifactTypeInput['nodes'],
   manifest: ArtifactManifestSignal,
@@ -179,8 +179,8 @@ function detectClientSdk(
     generated = true;
   }
 
-  // Gate: needs (a) a generation/protocol marker, (b) client-shaped code mass,
-  // and (c) outbound orientation (calls out, nothing routes in).
+
+
   const hasGenerationMarker = composerSoapClient || generated;
   const hasClientMass = clientNamedNodes.length >= 2 || soapPathNodes.length >= 3;
   const outboundOriented = outboundExits > 0 || protocol === 'soap';
@@ -190,11 +190,11 @@ function detectClientSdk(
   return { artifactType: 'client-sdk', evidence, protocol, generated };
 }
 
-/**
- * Boilerplate/starter: the project SAYS it is one — README title region or
- * manifest name/description. Scaffold demo content alone is not enough; the
- * self-declaration is the gate so real apps built FROM a starter stay apps.
- */
+
+
+
+
+
 function detectBoilerplate(manifest: ArtifactManifestSignal, appEntries: number): ArtifactTypeResult | null {
   const candidates: Array<{ text: string; where: string }> = [
     { text: (manifest.readmeLead || '').slice(0, 300), where: 'README title region' },
@@ -217,7 +217,7 @@ function detectBoilerplate(manifest: ArtifactManifestSignal, appEntries: number)
   return null;
 }
 
-/** CLI tool: command entry points dominate — bin/console_scripts/CLI frameworks, no server/page surface. */
+
 function detectCliTool(
   manifest: ArtifactManifestSignal,
   appEntries: number,
@@ -236,8 +236,8 @@ function detectCliTool(
   if (cliDependency) evidence.push(`CLI framework dependency: ${cliDependency}`);
   if (cliEntries > 0) evidence.push(`${cliEntries} cli entry points, 0 server/page entry points`);
 
-  // Gate: a manifest CLI marker (bin/console_scripts/CLI framework) — cli
-  // entry points alone can be incidental management commands in an app repo.
+
+
   const manifestMarker = manifest.packageJson?.hasBin ||
     manifest.pythonSetup?.hasConsoleScripts ||
     Boolean(cliDependency);
@@ -245,11 +245,11 @@ function detectCliTool(
   return { artifactType: 'cli-tool', evidence };
 }
 
-/**
- * Library: manifest library target (Cargo lib without product binary,
- * composer type:library, package.json publish surface) and no app/cli entry
- * surface — exports are the product.
- */
+
+
+
+
+
 function detectLibrary(
   nodes: ArtifactTypeInput['nodes'],
   manifest: ArtifactManifestSignal,
@@ -306,13 +306,13 @@ const GENERIC_QUALIFIER_TOKENS = new Set([
   'typescript', 'javascript', 'python', 'rust', 'php', 'java', 'dart', 'node', 'nodejs',
 ]);
 
-/**
- * Artifact-led domain label for library/client-sdk/boilerplate repos with no
- * anchored product domain: qualifier from the repo's top non-generic
- * concept/capability tokens plus the artifact suffix ('tray-icon-library',
- * 'soap-client-library', 'react-boilerplate'). Returns null when the artifact
- * type does not lead the domain (apps, cli-tools, anchored product domains).
- */
+
+
+
+
+
+
+
 export function artifactLedDomainLabel(
   result: ArtifactTypeResult,
   qualifierCandidates: string[],
@@ -347,12 +347,12 @@ export function artifactLedDomainLabel(
   return null;
 }
 
-/** First N distinct non-generic tokens from concept/capability candidates, in signal order. */
+
 function topQualifierTokens(candidates: string[], limit: number): string[] {
   const tokens: string[] = [];
   for (const candidate of candidates) {
     const words = String(candidate || '')
-      // Split camelCase/PascalCase, then non-alphanumerics.
+
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .toLowerCase()
       .split(/[^a-z0-9]+/)
@@ -368,10 +368,10 @@ function topQualifierTokens(candidates: string[], limit: number): string[] {
   return tokens;
 }
 
-/**
- * Reads the manifest surface the classifier needs. All IO is fault-tolerant —
- * a missing or unparsable manifest contributes nothing.
- */
+
+
+
+
 export function collectArtifactManifestSignal(projectPath: string): ArtifactManifestSignal {
   if (!projectPath) return {};
   const signal: ArtifactManifestSignal = {};

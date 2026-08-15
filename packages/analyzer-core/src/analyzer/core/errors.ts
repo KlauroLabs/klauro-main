@@ -1,5 +1,5 @@
-// Custom error types for the analyzer system
-// Production-ready error handling with proper error codes and context
+
+
 
 export class AnalyzerError extends Error {
   public readonly code: string;
@@ -19,8 +19,8 @@ export class AnalyzerError extends Error {
     this.context = context;
     this.timestamp = new Date();
     this.recoverable = recoverable;
-    
-    // Maintains proper stack trace for where our error was thrown
+
+
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, AnalyzerError);
     }
@@ -119,23 +119,23 @@ export class PluginError extends AnalyzerError {
   }
 }
 
-/**
- * Thrown when a native N-API addon required for parsing (the `tree-sitter`
- * binding and its per-language grammars) cannot be loaded — most commonly a
- * missing prebuilt binary for the running Node ABI (e.g. no `tree-sitter`
- * prebuild exists yet for a newly-released Node major version).
- *
- * This is deliberately NOT recoverable and deliberately distinct from
- * ParsingError: a single file failing to parse is a per-file, often-recoverable
- * event (log a warning, skip the file, keep going). A native addon failing to
- * load is a PROCESS-WIDE, deterministic failure — every file of every language
- * routed through this binding will fail identically and silently produce zero
- * nodes, which is indistinguishable from a legitimately tiny/empty project
- * unless this is surfaced loudly. Callers along the parse path must check for
- * this error type and RETHROW it rather than swallowing it into a per-file
- * warning (see tree-sitter-parser.ts, tree-sitter-ts-extractor.ts,
- * typescript-javascript-analyzer.ts).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class NativeAddonUnavailableError extends AnalyzerError {
   public readonly addon: string;
 
@@ -155,19 +155,19 @@ export class NativeAddonUnavailableError extends AnalyzerError {
   }
 }
 
-/**
- * A short, greppable marker embedded in NativeAddonUnavailableError's message.
- * Necessary because errors crossing a worker_thread boundary are rehydrated
- * from a plain message STRING (postMessage cannot clone class identity), so
- * `instanceof NativeAddonUnavailableError` does not survive that trip. Any
- * code that receives an Error from a worker and needs to tell "this file had
- * a one-off issue" from "the native addon is completely unavailable" should
- * check `isNativeAddonUnavailableError` instead of `instanceof`.
- */
+
+
+
+
+
+
+
+
+
 export const NATIVE_ADDON_UNAVAILABLE_MARKER = 'NATIVE_ADDON_UNAVAILABLE';
 
-/** True for a real NativeAddonUnavailableError OR a rehydrated Error whose
- *  message still carries the marker (post worker_thread round-trip). */
+
+
 export function isNativeAddonUnavailableError(error: unknown): boolean {
   if (error instanceof NativeAddonUnavailableError) return true;
   return error instanceof Error && error.message.includes(NATIVE_ADDON_UNAVAILABLE_MARKER);
@@ -187,7 +187,7 @@ export class ConfigurationError extends AnalyzerError {
   }
 }
 
-// Error aggregator for collecting multiple errors
+
 export class AggregatedError extends AnalyzerError {
   public readonly errors: AnalyzerError[];
 
@@ -211,7 +211,7 @@ export class AggregatedError extends AnalyzerError {
   }
 }
 
-// Error handler utility
+
 export class ErrorHandler {
   private errors: AnalyzerError[] = [];
   private readonly maxErrors: number;
@@ -224,7 +224,7 @@ export class ErrorHandler {
 
   handleError(error: Error): void {
     const analyzerError = this.normalizeError(error);
-    
+
     if (this.throwOnFirstError && !analyzerError.recoverable) {
       throw analyzerError;
     }
@@ -270,7 +270,7 @@ export class ErrorHandler {
   }
 }
 
-// Error recovery strategies
+
 export interface ErrorRecoveryStrategy {
   canRecover(error: AnalyzerError): boolean;
   recover(error: AnalyzerError): Promise<any>;
@@ -284,24 +284,24 @@ export class RetryStrategy implements ErrorRecoveryStrategy {
   ) {}
 
   canRecover(error: AnalyzerError): boolean {
-    return error.recoverable && 
+    return error.recoverable &&
            ['FS_ERROR', 'TIMEOUT_ERROR', 'PARSING_ERROR'].includes(error.code);
   }
 
   async recover(error: AnalyzerError): Promise<any> {
     let delay = this.retryDelay;
-    
+
     for (let i = 0; i < this.maxRetries; i++) {
       await this.sleep(delay);
-      
+
       if (this.exponentialBackoff) {
         delay *= 2;
       }
-      
-      // Actual retry logic would be implemented by the caller
-      // This just provides the retry timing mechanism
+
+
+
     }
-    
+
     throw error;
   }
 
@@ -323,18 +323,18 @@ export class FallbackStrategy implements ErrorRecoveryStrategy {
   }
 }
 
-// Error formatters for different output formats
+
 export class ErrorFormatter {
   static toHumanReadable(error: AnalyzerError): string {
     let message = `[${error.code}] ${error.message}`;
-    
+
     if (error.context) {
       message += '\nContext:';
       for (const [key, value] of Object.entries(error.context)) {
         message += `\n  ${key}: ${JSON.stringify(value)}`;
       }
     }
-    
+
     if (error instanceof ParsingError && error.filePath) {
       message += `\nLocation: ${error.filePath}`;
       if (error.line !== undefined) {
@@ -344,7 +344,7 @@ export class ErrorFormatter {
         }
       }
     }
-    
+
     return message;
   }
 
@@ -359,7 +359,7 @@ export class ErrorFormatter {
       code: error.code,
       message: error.message,
       context: error.context,
-      stack: error.stack?.split('\n').slice(0, 5) // First 5 lines of stack
+      stack: error.stack?.split('\n').slice(0, 5)
     };
   }
 }

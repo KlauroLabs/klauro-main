@@ -1,7 +1,7 @@
 export { DrogonAnalyzer } from './drogon-analyzer';
 export { CrowAnalyzer } from './crow-analyzer';
 
-// Framework registry for automatic detection
+
 export const CPP_FRAMEWORKS = [
   'drogon-analyzer',
   'crow-analyzer'

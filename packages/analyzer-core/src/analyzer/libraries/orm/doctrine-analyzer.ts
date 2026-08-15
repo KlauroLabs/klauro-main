@@ -53,40 +53,40 @@ interface OrmAttributeMatch {
   args: string;
 }
 
-/** A `trait Xxx { ... }` declaration found anywhere in the project, resolved
- *  once up front so any entity class that `use`s it can pull in ORM
- *  fields/relations declared INSIDE the trait (e.g. a shared
- *  `ConnectionBindTrait` that carries the `#[ManyToOne(targetEntity:
- *  Connection::class)] protected $connection` relation every *ConnectionBind
- *  subclass inherits — invisible to a parser that only walks the class's own
- *  body). `content`/`bodyOffset` are the TRAIT'S OWN file/offset, kept
- *  separate from the entity class's, so line numbers resolved from
- *  `collectPrecedingAttributeText` stay correct. */
+
+
+
+
+
+
+
+
+
 interface DoctrineTraitInfo {
   content: string;
   body: string;
   bodyOffset: number;
 }
 
-/**
- * Doctrine ORM analyzer. Must parse via a bracket-balanced attribute-group
- * collector (collectPrecedingAttributeText), not adjacency regex — real
- * Doctrine code commonly uses the PHP 8 grouped attribute form (multi-line
- * `#[...]` groups) and stacks unrelated attribute groups between a field's ORM
- * attribute and its visibility modifier, both of which a simple adjacency
- * check misses. Supports both PHP 8 attribute syntax and legacy `@ORM\Xxx(...)`
- * docblock annotations through the same code path.
- *
- * Node conventions mirror TypeORMAnalyzer: entity nodes are type 'entity',
- * level 3, id `entity_doctrine_<name>`, with embedded fields[] metadata.
- * Cross-entity relations become `references` edges, database-category.
- * persist()/remove() call sites become database-category exit points plus
- * creates/updates/deletes edges into the entity node, using the same
- * write-edge vocabulary orchestrator.buildDataEntities()/data-lineage.ts
- * already recognize. Repository-binding resolution is intentionally not
- * duplicated here — that lives in PHPAnalyzer's PhpTypeIndex; this analyzer
- * owns the entity/field/relation/write-fact layer only.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class DoctrineAnalyzer extends BaseAnalyzer {
   constructor() {
     super('doctrine', 'Doctrine ORM Analyzer', '1.0.0', 'library');
@@ -105,7 +105,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable/invalid composer.json
+
       }
     }
 
@@ -124,7 +124,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -137,14 +137,14 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     const exitPoints: CASContribution['exit_points'] = [];
 
     const ignorePatterns = this.getIgnorePatterns(context);
-    // Sorted before the read fan-out below. Root cause lives in glob-cache.ts
-    // (cachedGlob now sorts its result unconditionally, including outside an
-    // orchestrator beginGlobRun/endGlobRun window — see its NO-TOKEN
-    // DETERMINISM note), so this sort is belt-and-suspenders: it keeps
-    // fileContents' insertion order — which drives entity/write-site
-    // discovery order, which drives node/edge/exit-point emission order —
-    // deterministic locally, independent of whether a future caller bypasses
-    // or changes the shared glob cache.
+
+
+
+
+
+
+
+
     const sourceFiles = this.sortFiles(await glob('**/*.php', {
       cwd: context.projectPath,
       ignore: ignorePatterns,
@@ -155,12 +155,12 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     const entities: DoctrineEntity[] = [];
     const fileContents = new Map<string, string>();
 
-    // Pass 0: read every PHP file's content once. Needed up front (not
-    // interleaved with entity parsing) so the trait registry below sees
-    // trait declarations regardless of which file is scanned first — a
-    // `ConnectionBindTrait` used by `DeviceConnectionBind.php` commonly lives
-    // in a different directory (src/Model/Connection/) than the entity that
-    // consumes it.
+
+
+
+
+
+
     for (const file of sourceFiles) {
       let content: string;
       try {
@@ -171,16 +171,16 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       fileContents.set(file, content);
     }
 
-    // Every `trait Xxx { ... }` declaration in the project, keyed by trait
-    // name. A class's OWN ORM attributes only cover properties declared
-    // directly in its body — properties declared inside a `use`d trait
-    // (a common Symfony/Doctrine idiom for shared bind/audit columns) are
-    // invisible to a body-only scan without this.
+
+
+
+
+
     const traitInfoByName = this.collectTraitInfo(fileContents);
 
-    // Pass 1: parse every Doctrine entity in the project. Needed up front
-    // (not per-file) because relation targetEntity resolution and write-site
-    // entity binding both need the FULL project-wide entity name set.
+
+
+
     for (const [file, content] of fileContents) {
       if (!/ORM\\Entity\b|@ORM\\Entity\b/.test(content)) {
         continue;
@@ -189,29 +189,29 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       entities.push(...this.parseEntities(content, relativePath, traitInfoByName));
     }
 
-    // Emission order is a pure function of WHAT was found, never of the order
-    // it was discovered in — the file list above is already sorted, and this
-    // keeps that property local to the analyzer rather than dependent on a
-    // distant glob contract.
+
+
+
+
     this.sortEntities(entities);
     this.emitEntityGraph(entities, nodes, edges);
 
-    // Pass 2: scan every PHP file (not just entity files) for
-    // persist()/remove() write call sites, bound to a known entity name.
-    //
-    // NOT gated on `EntityManagerInterface`/`getEntityManager()` being
-    // visible in the SAME file: the dominant real-world Symfony/Doctrine
-    // idiom (Symfony's own recommended practice, and what a benchmarked
-    // Symfony repo's BaseRepository does) wraps the EntityManager in domain-repository
-    // `persist()`/`remove()` methods, so the actual call sites live in
-    // SERVICE classes that call `$this->bookingRepository->persist($booking)`
-    // and never mention EntityManagerInterface at all. Requiring that import
-    // in the caller's own file would silently drop nearly every real write
-    // site. The `->persist(`/`->remove(` substring check below is just a
-    // cheap pre-filter; the actual evidence gate is the entity-name BINDING
-    // in extractWriteSites (inline `new Entity(...)`, a locally-constructed
-    // variable, a typed parameter, or a `ServiceEntityRepository`-scoped
-    // fallback) — a call site with none of those produces no fact.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     const knownEntityNames = new Set(entities.map(e => e.className));
     const writeSites: DoctrineWriteSite[] = [];
     for (const [file, content] of fileContents) {
@@ -272,17 +272,17 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
 
     const entities: DoctrineEntity[] = [];
     if (/ORM\\Entity\b|@ORM\\Entity\b/.test(content)) {
-      // Single-file scope has no visibility into trait declarations that may
-      // live in other files (same limitation as the cross-file relation/
-      // write-site gaps noted below) — pass an empty registry rather than
-      // guess; full analysis re-derives the complete picture.
+
+
+
+
       entities.push(...this.parseEntities(content, context.relativePath, new Map()));
     }
 
-    // Single-file scope: relation edges to entities defined in other files,
-    // and write-site facts (which need the project-wide entity name set),
-    // under-populate here and re-derive on full analysis — same documented
-    // limitation as TypeORMAnalyzer.analyzeFileSingle.
+
+
+
+
     this.emitEntityGraph(entities, nodes, edges);
 
     const exports = entities.map(e => e.className);
@@ -301,9 +301,9 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     );
   }
 
-  // ---------------------------------------------------------------------
-  // Entity / field / relation extraction
-  // ---------------------------------------------------------------------
+
+
+
 
   private parseEntities(content: string, filePath: string, traitInfoByName: Map<string, DoctrineTraitInfo>): DoctrineEntity[] {
     const entities: DoctrineEntity[] = [];
@@ -343,9 +343,9 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       if (body !== null) {
         this.parseMembers(content, body, bodyStart, fields, relations, lifecycleCallbacks);
 
-        // Fold in ORM fields/relations declared inside any `use`d trait. A
-        // property the subclass ALSO declares directly wins (skip the trait's
-        // copy) so an explicit override is never shadowed by the shared default.
+
+
+
         for (const traitName of this.extractUsedTraitNames(body)) {
           const traitInfo = traitInfoByName.get(traitName);
           if (!traitInfo) continue;
@@ -378,14 +378,14 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     return entities;
   }
 
-  /**
-   * Walk every property declaration in a class body, resolving each one's
-   * OWN preceding attribute/docblock evidence (which may be split across
-   * multiple stacked `#[...]` groups — e.g. `#[ORM\Column(...)] #[JMS\Type(...)]`)
-   * into a Column/Id/GeneratedValue/Embedded field or an OneToMany/ManyToOne/
-   * ManyToMany/OneToOne relation. Also collects `#[ORM\PrePersist]`-style
-   * method-level lifecycle callback attributes.
-   */
+
+
+
+
+
+
+
+
   private parseMembers(
     fullContent: string,
     body: string,
@@ -399,7 +399,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       'PrePersist', 'PostPersist', 'PreUpdate', 'PostUpdate', 'PreRemove', 'PostRemove', 'PostLoad', 'PreFlush'
     ]);
 
-    // Property declarations.
+
     const propRe = /(?:private|protected|public)\s+(?:static\s+)?(?:readonly\s+)?(?:\??[\w\\|]+\s+)?\$(\w+)/g;
     let match: RegExpExecArray | null;
     while ((match = propRe.exec(body)) !== null) {
@@ -473,9 +473,9 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Method-level lifecycle callback attributes/annotations:
-    // `#[ORM\PrePersist] public function onPrePersist() {}` or
-    // `/** @ORM\PrePersist */ public function onCreate() {}`.
+
+
+
     const methodRe = /(?:public|protected|private)\s+function\s+(\w+)\s*\(/g;
     while ((match = methodRe.exec(body)) !== null) {
       const absoluteIndex = bodyOffset + match.index;
@@ -568,24 +568,24 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------
-  // persist()/remove() write-site extraction
-  // ---------------------------------------------------------------------
 
-  /**
-   * Scan a file for `->persist(...)`/`->remove(...)` call sites and bind each
-   * one to a known Doctrine entity name using three evidence sources, in
-   * order: (1) an inline `new Entity(...)` argument, (2) a local variable
-   * previously assigned `$var = new Entity(...)` or typed as `Entity $var` in
-   * the same method's signature, (3) a file-level ServiceEntityRepository ->
-   * entity binding (`parent::__construct($registry, Entity::class)`). A call
-   * site with none of these is skipped rather than guessed — evidence-first.
-   *
-   * `flush()` alone is NOT turned into its own write fact: it is Doctrine's
-   * batch-commit boundary, not an entity-identifying call, so attributing it
-   * would require the exact same binding evidence persist()/remove() already
-   * provide.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private extractWriteSites(content: string, filePath: string, knownEntityNames: Set<string>): DoctrineWriteSite[] {
     const sites: DoctrineWriteSite[] = [];
     const fileLevelEntity = this.extractFileLevelRepositoryEntity(content, knownEntityNames);
@@ -599,21 +599,21 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       if (body === null) continue;
       const bodyOffset = bodyOpen + 1;
 
-      // Two binding tiers, kept separate so the write ACTION reflects real
-      // evidence: a var bound to a fresh `new Entity(...)` is a genuine
-      // insert; a var bound only via a TYPED PARAMETER is an already-existing
-      // object handed in (the common `save(Booking $booking)` shape), which
-      // is an update/re-attach, not a creation.
+
+
+
+
+
       const constructedVars = new Map<string, string>();
       const paramVars = new Map<string, string>();
       const paramRe = /(\w+)\s+\$(\w+)/g;
       let paramMatch: RegExpExecArray | null;
       while ((paramMatch = paramRe.exec(params)) !== null) {
         const typeHint = paramMatch[1];
-        // Accept the entity's own conventional interface name too
-        // (`BookingInterface $booking` for entity `Booking`) — Symfony/
-        // Doctrine code overwhelmingly type-hints against the domain
-        // interface rather than the concrete entity class.
+
+
+
+
         const resolved = knownEntityNames.has(typeHint)
           ? typeHint
           : (typeHint.endsWith('Interface') && knownEntityNames.has(typeHint.slice(0, -'Interface'.length)))
@@ -623,7 +623,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
           paramVars.set(paramMatch[2], resolved);
         }
       }
-      // Local assignment from a constructor call: `$x = new EntityName(`.
+
       const assignRe = /\$(\w+)\s*=\s*new\s+(\w+)\s*\(/g;
       let assignMatch: RegExpExecArray | null;
       while ((assignMatch = assignRe.exec(body)) !== null) {
@@ -631,11 +631,11 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
           constructedVars.set(assignMatch[1], assignMatch[2]);
         }
       }
-      // Named-constructor / static factory-method assignment:
-      // `$x = EntityName::createNew(...)` / `EntityName::create(...)`. Common
-      // when the entity's real `__construct` is private (Doctrine entities
-      // frequently expose a named factory instead), which `new EntityName(`
-      // above never matches.
+
+
+
+
+
       const factoryRe = /\$(\w+)\s*=\s*(\w+)::\w+\s*\(/g;
       let factoryMatch: RegExpExecArray | null;
       while ((factoryMatch = factoryRe.exec(body)) !== null) {
@@ -645,7 +645,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       }
       const varToEntity = new Map<string, string>([...paramVars, ...constructedVars]);
 
-      // persist(new Entity(...)) or persist($var).
+
       const persistRe = /->persist\s*\(\s*(?:new\s+(\w+)\s*\(|\$(\w+)\b)/g;
       let persistMatch: RegExpExecArray | null;
       while ((persistMatch = persistRe.exec(body)) !== null) {
@@ -677,7 +677,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // remove($var).
+
       const removeRe = /->remove\s*\(\s*\$(\w+)\b/g;
       let removeMatch: RegExpExecArray | null;
       while ((removeMatch = removeRe.exec(body)) !== null) {
@@ -701,12 +701,12 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     return sites;
   }
 
-  /**
-   * `class XRepository extends ServiceEntityRepository { public function
-   * __construct(ManagerRegistry $registry) { parent::__construct($registry,
-   * Booking::class); } }` — binds every persist()/remove() call in this file
-   * to `Booking` when no stronger per-call-site evidence exists.
-   */
+
+
+
+
+
+
   private extractFileLevelRepositoryEntity(content: string, knownEntityNames: Set<string>): string | undefined {
     if (!/extends\s+ServiceEntityRepository/.test(content)) {
       return undefined;
@@ -715,8 +715,8 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     if (ctorEntity && knownEntityNames.has(ctorEntity)) {
       return ctorEntity;
     }
-    // Fallback: generic type param on the class declaration
-    // `extends ServiceEntityRepository<Booking>` or an `@extends` docblock.
+
+
     const genericEntity =
       this.matchFirst(content, /extends\s+ServiceEntityRepository\s*<\s*(\w+)\s*>/) ||
       this.matchFirst(content, /@extends\s+ServiceEntityRepository<\s*(\w+)\s*>/);
@@ -786,16 +786,16 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // ---------------------------------------------------------------------
-  // Trait-declared ORM member support
-  // ---------------------------------------------------------------------
 
-  /** Scan every file's content once for `trait Xxx { ... }` declarations,
-   *  keyed by trait name (first declaration wins on a same-name collision —
-   *  real projects don't declare two traits with the same bare name). Each
-   *  entry keeps its OWN file's content + body offset so line numbers stay
-   *  correct when its members are parsed independently of the consuming
-   *  entity class. */
+
+
+
+
+
+
+
+
+
   private collectTraitInfo(fileContents: Map<string, string>): Map<string, DoctrineTraitInfo> {
     const traits = new Map<string, DoctrineTraitInfo>();
     const traitRe = /\btrait\s+(\w+)/g;
@@ -815,11 +815,11 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     return traits;
   }
 
-  /** Bare trait names from `use TraitName;` / `use Ns\TraitName, OtherTrait;`
-   *  statements inside a class body. Deliberately simple: only the plain
-   *  `use A, B;` form (no conflict-resolution `{ ... }` block) is matched —
-   *  PHP closures (`function () use ($x) { ... }`) never match because they
-   *  are followed by `(`, not an identifier, so this cannot mis-fire there. */
+
+
+
+
+
   private extractUsedTraitNames(classBody: string): string[] {
     const names = new Set<string>();
     const useRe = /\buse\s+([A-Za-z_\\][\w\\]*(?:\s*,\s*[A-Za-z_\\][\w\\]*)*)\s*;/g;
@@ -833,20 +833,20 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     return [...names];
   }
 
-  // ---------------------------------------------------------------------
-  // Deterministic ordering
-  //
-  // Root fix lives in glob-cache.ts (cachedGlob sorts its result even
-  // outside an orchestrator beginGlobRun/endGlobRun window now — see its
-  // NO-TOKEN DETERMINISM note). The sorts below are a local, defense-in-depth
-  // guarantee: they make this analyzer's own emission order a pure function
-  // of file/entity/write-site identity, independent of the cache layer, so
-  // it stays byte-stable even if a future caller bypasses or changes the
-  // shared glob cache.
-  // ---------------------------------------------------------------------
 
-  /** Discovery order for every glob in this analyzer. Plain codepoint sort so
-   *  the result is locale-independent (localeCompare is not). */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private sortFiles(files: string[]): string[] {
     return [...files].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   }
@@ -855,9 +855,9 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     return a < b ? -1 : a > b ? 1 : 0;
   }
 
-  /** Entity node/edge emission order: file path, then declaration line, then
-   *  class name (two classes never share a file+line, so the third key is only
-   *  a total-order guarantee). */
+
+
+
   private sortEntities(entities: DoctrineEntity[]): void {
     entities.sort((a, b) =>
       this.compareStrings(a.filePath, b.filePath) ||
@@ -866,8 +866,8 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     );
   }
 
-  /** Write-fact emission order. Also fixes the `_${index}` suffix in the
-   *  emitted query node ids, which is positional. */
+
+
   private sortWriteSites(sites: DoctrineWriteSite[]): void {
     sites.sort((a, b) =>
       this.compareStrings(a.filePath, b.filePath) ||
@@ -878,9 +878,9 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     );
   }
 
-  // ---------------------------------------------------------------------
-  // Shared text-parsing helpers
-  // ---------------------------------------------------------------------
+
+
+
 
   private extractNamespace(content: string): string {
     const match = content.match(/namespace\s+([^;]+);/);
@@ -892,12 +892,12 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     return m ? m[1] : undefined;
   }
 
-  /**
-   * Extract every `ORM\Xxx(...)` / `ORM\Xxx` (bare) / `@Xxx(...)` occurrence
-   * in a blob of combined attribute-group + docblock text, with a balanced-
-   * paren argument extractor so nested `[...]`/`(...)` in the args (e.g.
-   * `indexes: [new ORM\Index(columns: [...])]`) don't truncate the match.
-   */
+
+
+
+
+
+
   private extractOrmAttributes(text: string): OrmAttributeMatch[] {
     const results: OrmAttributeMatch[] = [];
     const nameRe = /ORM\\(\w+)|@(Entity|Column|Id|GeneratedValue|OneToMany|ManyToOne|ManyToMany|OneToOne|Table|JoinColumn|Embedded|PrePersist|PostPersist|PreUpdate|PostUpdate|PreRemove|PostRemove|PostLoad|PreFlush)\b/g;
@@ -919,21 +919,21 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     return results;
   }
 
-  /**
-   * Walk backward from `beforeIndex`, collecting every contiguous `#[...]`
-   * attribute group (bracket-balanced, so nested `[...]` inside the group's
-   * own arguments doesn't break the scan) AND every contiguous `/** ... *\/`
-   * PHPDoc block, in WHATEVER ORDER they appear (real Doctrine entities mix
-   * both — e.g. Company.php stacks three attribute groups
-   * `#[ORM\Entity(...)]#[UniqueEntity(...)]#[JMS\ExclusionPolicy(...), ...]`
-   * and THEN a trailing `/** @see CompanyTest *\/` docblock before `class`,
-   * the reverse of the more common "docblock, then attributes" ordering). A
-   * collector that only recognized one fixed order would silently return NO
-   * evidence for the other — this walks one token backward at a time,
-   * stopping only when neither a `]`-closed attribute group nor a `*\/`-
-   * closed docblock is found immediately (after whitespace) before the
-   * current position.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private collectPrecedingAttributeText(content: string, beforeIndex: number): { text: string; start: number } {
     const chunks: string[] = [];
     let pos = beforeIndex;

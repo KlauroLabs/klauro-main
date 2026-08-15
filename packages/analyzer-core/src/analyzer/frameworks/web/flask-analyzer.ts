@@ -1,6 +1,6 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, CASExitPoint, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import {
-  CASContribution, CASEntryPoint,
+  CASEntryPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus
 } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
@@ -118,9 +118,9 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
-        // extras group named "flask" (an integration target the package can
-        // instrument) is not evidence the project itself is built with Flask.
+
+
+
         if (this.pyprojectHasRealDependency(pyproject, 'flask')) return true;
       }
 
@@ -132,14 +132,14 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
       for (const file of pythonFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        // Require an actual Flask APPLICATION shape (app construction or a
-        // route/blueprint registration) — never a bare `from flask import`/
-        // `import flask` alone. A lazy, function-scoped `from flask import g,
-        // request` inside a framework-agnostic integration/telemetry helper
-        // (duck-typed so it "imports nothing from the framework at module
-        // load", instrumenting a CALLER's Flask app rather than being one) is
-        // exactly this shape and must not, by itself, mark the analyzed repo
-        // as a Flask application.
+
+
+
+
+
+
+
+
         if (
           /\bFlask\s*\(/.test(content) ||
           /@\s*(?:app|blueprint|bp)\.route\s*\(/.test(content) ||
@@ -409,9 +409,9 @@ export class FlaskAnalyzer extends BaseAnalyzer {
             ));
 
             route.methods.forEach(method => {
-              // Canonical HTTP entry point: buildRouteTable filters type==='http'
-              // and reads trigger.method/path (not metadata) — without trigger it
-              // defaulted every route to "GET /".
+
+
+
               entryPoints.push(this.createEntryPoint(
                 `entry_${routeId}_${method}`,
                 routeId,
@@ -505,8 +505,8 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           ));
 
           route.methods.forEach(method => {
-            // Canonical HTTP entry point (trigger, not metadata) so buildRouteTable
-            // surfaces the real method+path instead of defaulting to "GET /".
+
+
             entryPoints.push(this.createEntryPoint(
               `entry_${routeId}_${method}`,
               routeId,
@@ -659,101 +659,8 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     return templates;
   }
 
-  private async analyzeForms(
-    files: string[],
-    projectPath: string,
-    nodes: CASNode[],
-    edges: CASEdge[]
-  ): Promise<FlaskForm[]> {
-    const forms: FlaskForm[] = [];
 
-    for (const file of files) {
-      const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
-      if (content.includes('FlaskForm') || content.includes('Form') && content.includes('wtforms')) {
-        const extractedForms = this.extractForms(content, file);
-        forms.push(...extractedForms);
-
-        extractedForms.forEach(form => {
-          const formId = `form_${this.sanitizeId(form.name)}`;
-          const formNode = this.createNodeBuilder(formId, form.name, 'component')
-            .withLevel(3, 'code')
-            .withCategory('component', ['ui', 'form'])
-            .withSource({ file: file, line: 1, end_line: 1 })
-            .withDescription(`Flask form component: ${form.name}`)
-            .withMetadata({
-              framework: 'flask',
-              attributes: {
-                baseClass: form.baseClass,
-                fields: form.fields.length,
-                methods: form.methods.length
-              }
-            })
-            .build();
-          nodes.push(formNode);
-        });
-      }
-    }
-
-    return forms;
-  }
-
-  private async analyzeExtensions(
-    files: string[],
-    projectPath: string,
-    nodes: CASNode[]
-  ): Promise<FlaskExtension[]> {
-    const extensions: FlaskExtension[] = [];
-    const commonExtensions = [
-      'SQLAlchemy', 'Migrate', 'Login', 'Mail', 'Cache', 'Bcrypt',
-      'CORS', 'Limiter', 'Principal', 'Admin', 'Compress', 'Debug'
-    ];
-
-    for (const file of files) {
-      const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-
-      commonExtensions.forEach(ext => {
-        if (content.includes(`flask_${ext.toLowerCase()}`) || content.includes(`Flask-${ext}`)) {
-          const extensionName = ext.toLowerCase();
-          if (!extensions.find(e => e.name === extensionName)) {
-            const extension: FlaskExtension = {
-              name: extensionName,
-              importName: `flask_${ext.toLowerCase()}`,
-              configKeys: [],
-              initMethod: `init_app`
-            };
-
-            extensions.push(extension);
-
-            const extensionId = `extension_${this.sanitizeId(extensionName)}`;
-            const extensionNode = this.createNodeBuilder(extensionId, extensionName, 'service')
-              .withLevel(2, 'architectural')
-              .withCategory('service', ['framework', 'flask'])
-              .withSource({ file: file, line: 1, end_line: 1 })
-              .withDescription(`Flask extension: ${extensionName}`)
-              .withMetadata({
-                framework: 'flask',
-                attributes: {
-                  importName: extension.importName,
-                  initMethod: extension.initMethod
-                }
-              })
-              .build();
-            nodes.push(extensionNode);
-          }
-        }
-      });
-    }
-
-    return extensions;
-  }
-
-  private extractAppVariable(content: string): string | null {
-    const appPattern = /(\w+)\s*=\s*Flask\s*\(/;
-    const match = appPattern.exec(content);
-    return match ? match[1] : null;
-  }
 
   private extractPythonImports(content: string): string[] {
     const imports: string[] = [];
@@ -767,201 +674,17 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     return imports;
   }
 
-  private extractConfig(content: string): FlaskConfig {
-    const config: FlaskConfig = {
-      debug: content.includes('debug=True') || content.includes('DEBUG = True'),
-      testing: content.includes('testing=True') || content.includes('TESTING = True'),
-      customSettings: {}
-    };
 
-    const secretKeyMatch = content.match(/SECRET_KEY\s*=\s*['"]([^'"]+)['"]/);
-    if (secretKeyMatch) config.secretKey = secretKeyMatch[1];
 
-    const databaseMatch = content.match(/SQLALCHEMY_DATABASE_URI\s*=\s*['"]([^'"]+)['"]/);
-    if (databaseMatch) config.database = databaseMatch[1];
 
-    return config;
-  }
 
-  private extractBlueprintRegistrations(content: string): string[] {
-    const blueprints: string[] = [];
-    const registerPattern = /\.register_blueprint\s*\(\s*(\w+)/g;
 
-    let match;
-    while ((match = registerPattern.exec(content)) !== null) {
-      blueprints.push(match[1]);
-    }
 
-    return blueprints;
-  }
 
-  private extractExtensionInitializations(content: string): string[] {
-    const extensions: string[] = [];
-    const initPattern = /(\w+)\.init_app\s*\(/g;
 
-    let match;
-    while ((match = initPattern.exec(content)) !== null) {
-      extensions.push(match[1]);
-    }
 
-    return extensions;
-  }
 
-  private extractBlueprintName(content: string): string | null {
-    const blueprintPattern = /(\w+)\s*=\s*Blueprint\s*\(\s*['"]([^'"]+)['"]/;
-    const match = blueprintPattern.exec(content);
-    return match ? match[1] : null;
-  }
 
-  private extractBlueprintUrlPrefix(content: string): string | null {
-    const prefixPattern = /Blueprint\s*\([^)]*url_prefix\s*=\s*['"]([^'"]+)['"]/;
-    const match = prefixPattern.exec(content);
-    return match ? match[1] : null;
-  }
-
-  private extractRoutes(content: string, blueprintName?: string): FlaskRoute[] {
-    const routes: FlaskRoute[] = [];
-    const routePattern = /@(?:(\w+)\.)?route\s*\(\s*['"]([^'"]+)['"](?:,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)[\s\S]*?def\s+(\w+)\s*\(/g;
-
-    let match;
-    while ((match = routePattern.exec(content)) !== null) {
-      const routeBlueprintName = match[1];
-      const pattern = match[2];
-      const methodsStr = match[3];
-      const viewFunction = match[4];
-
-      const methods = methodsStr
-        ? methodsStr.split(',').map(m => m.trim().replace(/['"]/g, '').toLowerCase())
-        : ['get'];
-
-      const decorators = this.extractRouteDecorators(content, match.index);
-      const parameters = this.extractRouteParameters(pattern);
-
-      routes.push({
-        pattern,
-        methods,
-        endpoint: `${blueprintName || routeBlueprintName || 'main'}.${viewFunction}`,
-        viewFunction,
-        decorators,
-        parameters,
-        blueprint: blueprintName || routeBlueprintName
-      });
-    }
-
-    return routes;
-  }
-
-  private extractFunctionViews(content: string, filePath: string): FlaskView[] {
-    const views: FlaskView[] = [];
-    const functionPattern = /@(?:\w+\.)?route[\s\S]*?def\s+(\w+)\s*\(/g;
-
-    let match;
-    while ((match = functionPattern.exec(content)) !== null) {
-      const viewName = match[1];
-      const decorators = this.extractRouteDecorators(content, match.index);
-      const routes = this.extractRoutes(content);
-      const viewRoutes = routes.filter(r => r.viewFunction === viewName);
-      const templateName = this.extractTemplateUsage(content, viewName);
-
-      views.push({
-        name: viewName,
-        filePath,
-        type: 'function',
-        routes: viewRoutes,
-        decorators,
-        templateName
-      });
-    }
-
-    return views;
-  }
-
-  private extractClassViews(content: string, filePath: string): FlaskView[] {
-    const views: FlaskView[] = [];
-    const classPattern = /class\s+(\w+)\s*\(\s*(?:MethodView|View)\s*\):/g;
-
-    let match;
-    while ((match = classPattern.exec(content)) !== null) {
-      const viewName = match[1];
-      const classStart = match.index;
-      const classEnd = this.findClassEnd(content, classStart);
-      const classContent = content.substring(classStart, classEnd);
-
-      const methods = this.extractViewMethods(classContent);
-      const decorators = this.extractClassDecorators(content, classStart);
-
-      views.push({
-        name: viewName,
-        filePath,
-        type: 'class',
-        routes: [],
-        decorators,
-        methods
-      });
-    }
-
-    return views;
-  }
-
-  private extractModels(content: string, filePath: string): FlaskModel[] {
-    const models: FlaskModel[] = [];
-    const modelPattern = /class\s+(\w+)\s*\(\s*(db\.Model|Model)\s*\):/g;
-
-    let match;
-    while ((match = modelPattern.exec(content)) !== null) {
-      const modelName = match[1];
-      const baseClass = match[2];
-      const classStart = match.index;
-      const classEnd = this.findClassEnd(content, classStart);
-      const classContent = content.substring(classStart, classEnd);
-
-      const tableName = this.extractTableName(classContent);
-      const columns = this.extractModelColumns(classContent);
-      const relationships = this.extractModelRelationships(classContent);
-      const methods = this.extractModelMethods(classContent);
-
-      models.push({
-        name: modelName,
-        filePath,
-        baseClass,
-        tableName,
-        columns,
-        relationships,
-        methods
-      });
-    }
-
-    return models;
-  }
-
-  private extractForms(content: string, filePath: string): FlaskForm[] {
-    const forms: FlaskForm[] = [];
-    const formPattern = /class\s+(\w+)\s*\(\s*(FlaskForm|Form)\s*\):/g;
-
-    let match;
-    while ((match = formPattern.exec(content)) !== null) {
-      const formName = match[1];
-      const baseClass = match[2];
-      const classStart = match.index;
-      const classEnd = this.findClassEnd(content, classStart);
-      const classContent = content.substring(classStart, classEnd);
-
-      const fields = this.extractFormFields(classContent);
-      const methods = this.extractFormMethods(classContent);
-
-      forms.push({
-        name: formName,
-        filePath,
-        baseClass,
-        fields,
-        methods
-      });
-    }
-
-    return forms;
-  }
-
-  /** Per-view auth from Flask decorators (flask-login / flask-jwt-extended / flask-security). */
   private flaskSecurity(decorators: string[] = []): { authenticated: boolean; guards: string[] } {
     const AUTH = /^(login_required|fresh_login_required|jwt_required|jwt_optional|roles_required|roles_accepted|permission_required|auth_required|token_required|requires_auth)$/i;
     const guards = decorators.filter(d => AUTH.test(d));
@@ -984,9 +707,9 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Decorators stacked BELOW @app.route but above the `def` (e.g.
-    // `@app.route(...)` then `@login_required` then `def`) also apply to the
-    // view — scan forward to the handler so auth/guard decorators aren't lost.
+
+
+
     const forward = content.substring(position).split('\n');
     for (let i = 1; i < forward.length; i++) {
       const line = forward[i].trim();
@@ -995,7 +718,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         const m = line.match(/@[\w.]*?(\w+)\s*(?:\(|$)/);
         if (m) decorators.push(m[1]);
       }
-      // Other lines (multiline @app.route args) are skipped, not terminal.
+
     }
 
     return [...new Set(decorators)];
@@ -1020,47 +743,8 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     return parameters;
   }
 
-  private extractBeforeRequests(content: string): string[] {
-    const beforeRequests: string[] = [];
-    const pattern = /@(?:\w+\.)?before_request[\s\S]*?def\s+(\w+)\s*\(/g;
 
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      beforeRequests.push(match[1]);
-    }
 
-    return beforeRequests;
-  }
-
-  private extractAfterRequests(content: string): string[] {
-    const afterRequests: string[] = [];
-    const pattern = /@(?:\w+\.)?after_request[\s\S]*?def\s+(\w+)\s*\(/g;
-
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      afterRequests.push(match[1]);
-    }
-
-    return afterRequests;
-  }
-
-  private extractErrorHandlers(content: string): Array<{ code: number | string; handler: string }> {
-    const errorHandlers: Array<{ code: number | string; handler: string }> = [];
-    const pattern = /@(?:\w+\.)?errorhandler\s*\(\s*(\w+)\s*\)[\s\S]*?def\s+(\w+)\s*\(/g;
-
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      const code = match[1];
-      const handler = match[2];
-
-      errorHandlers.push({
-        code: isNaN(Number(code)) ? code : Number(code),
-        handler
-      });
-    }
-
-    return errorHandlers;
-  }
 
   private extractTemplateUsage(content: string, functionName: string): string | undefined {
     const functionPattern = new RegExp(`def\\s+${functionName}[\\s\\S]*?return[\\s\\S]*?render_template\\s*\\(\\s*['"]([^'"]+)['"]`, 'g');
@@ -1258,101 +942,8 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     return content.length;
   }
 
-  private async detectFlaskVersion(projectPath: string): Promise<string> {
-    try {
-      const requirementsPath = path.join(projectPath, 'requirements.txt');
-      if (await fs.pathExists(requirementsPath)) {
-        const requirements = await fs.readFile(requirementsPath, 'utf-8');
-        const versionMatch = requirements.match(/Flask==([^\s\n]+)/i);
-        if (versionMatch) return versionMatch[1];
-      }
-    } catch {
-      // Continue with other methods
-    }
 
-    return 'unknown';
-  }
 
-  private buildFlaskRelationships(
-    application: FlaskApplication | null,
-    blueprints: FlaskBlueprint[],
-    views: FlaskView[],
-    models: FlaskModel[],
-    templates: FlaskTemplate[],
-    nodes: CASNode[],
-    edges: CASEdge[]
-  ): void {
-    if (!application) return;
-
-    const appId = `app_${this.sanitizeId(application.name)}`;
-
-    blueprints.forEach(blueprint => {
-      const blueprintId = `blueprint_${this.sanitizeId(blueprint.name)}`;
-      edges.push(this.createEdge(
-        `${appId}_registers_${blueprintId}`,
-        appId,
-        blueprintId,
-        'registers'
-      ));
-    });
-
-    views.forEach(view => {
-      const viewId = `view_${this.sanitizeId(view.name)}`;
-
-      if (view.templateName) {
-        const templateId = `template_${this.sanitizeId(view.templateName)}`;
-        edges.push(this.createEdge(
-          `${viewId}_renders_${templateId}`,
-          viewId,
-          templateId,
-          'renders'
-        ));
-      }
-
-      models.forEach(model => {
-        const modelId = `model_${this.sanitizeId(model.name)}`;
-        if (view.name.toLowerCase().includes(model.name.toLowerCase()) ||
-            view.templateName?.includes(model.name.toLowerCase())) {
-          edges.push(this.createEdge(
-            `${viewId}_uses_${modelId}`,
-            viewId,
-            modelId,
-            'uses'
-          ));
-        }
-      });
-    });
-
-    models.forEach(model => {
-      const modelId = `model_${this.sanitizeId(model.name)}`;
-
-      model.relationships.forEach(relationship => {
-        const targetModelId = `model_${this.sanitizeId(relationship.target)}`;
-        edges.push(this.createEdge(
-          `${modelId}_${relationship.type}_${targetModelId}`,
-          modelId,
-          targetModelId,
-          relationship.type
-        ));
-      });
-    });
-  }
-
-  private identifyDatabaseConnections(models: FlaskModel[], extensions: FlaskExtension[], exitPoints: any[]): void {
-    if (models.length > 0) {
-      exitPoints.push({
-        id: 'exit_flask_database',
-        name: 'Flask Database Connection',
-        type: 'database_connection',
-        source_node: 'flask_sqlalchemy',
-        metadata: {
-          models: models.map(m => m.name),
-          tables: models.map(m => m.tableName || m.name.toLowerCase()),
-          orm: 'SQLAlchemy'
-        }
-      });
-    }
-  }
 
   protected getCapabilities(): string[] {
     return [
@@ -1568,7 +1159,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         if (versionMatch) return versionMatch[1];
       }
     } catch {
-      // Continue with other methods
+
     }
 
     return 'unknown';
@@ -1816,36 +1407,36 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     return forms;
   }
 
-  // CAS v1.4.0 Documentation and Comment extraction methods
+
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
 
-    // Look for Flask-specific documentation patterns
 
-    // 1. Route decorator documentation
+
+
     const routeDocMatches = content.matchAll(/@app\.route\([^)]*\)\s*\n\s*def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
     const routeDocs = [];
     for (const match of routeDocMatches) {
       routeDocs.push(match[1].trim());
     }
 
-    // 2. Blueprint configuration documentation
+
     const blueprintDocMatches = content.matchAll(/Blueprint\([^)]*\)\s*#\s*(.+)/g);
     const blueprintDocs = [];
     for (const match of blueprintDocMatches) {
       blueprintDocs.push(match[1].trim());
     }
 
-    // 3. Template helper documentation
+
     const templateHelperMatches = content.matchAll(/@app\.template_filter\([^)]*\)\s*\n\s*def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
     const templateHelpers = [];
     for (const match of templateHelperMatches) {
       templateHelpers.push(match[1].trim());
     }
 
-    // 4. Function and class docstrings
+
     const functionDocStrings = [];
     const functionMatches = content.matchAll(/def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
     for (const match of functionMatches) {
@@ -1885,7 +1476,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // Python single-line comments
+
       if (trimmedLine.startsWith('#')) {
         const commentText = trimmedLine.substring(1).trim();
         if (commentText.length > 0) {
@@ -1911,7 +1502,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Multi-line string comments (docstrings used as comments)
+
       const docstringMatch = line.match(/^\s*['"]{3}([^'"]*?)['"]{3}/);
       if (docstringMatch && !line.includes('def ') && !line.includes('class ')) {
         const commentText = docstringMatch[1].trim();
@@ -1952,11 +1543,11 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
         const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
 
-        // Extract assignee from patterns like "TODO(username):"
+
         const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
         const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
 
-        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+
         const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
         let priority: CASTodo['priority'] = 'medium';
         if (priorityMatch) {

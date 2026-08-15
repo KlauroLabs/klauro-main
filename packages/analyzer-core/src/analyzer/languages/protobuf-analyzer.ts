@@ -10,7 +10,7 @@ import * as path from 'path';
 
 interface ProtoField {
   name: string;
-  fieldType: string;       // e.g. 'int32', 'string', 'Bar', 'map<string,int32>'
+  fieldType: string;
   label?: 'repeated' | 'optional' | 'required';
   isMap: boolean;
   number: number | undefined;
@@ -18,8 +18,8 @@ interface ProtoField {
 }
 
 interface ProtoMessage {
-  name: string;            // simple name
-  qualifiedName: string;   // dotted, includes parent messages
+  name: string;
+  qualifiedName: string;
   fields: ProtoField[];
   lineStart: number;
   lineEnd: number;
@@ -66,7 +66,7 @@ interface ProtoFileInfo {
   lineCount: number;
 }
 
-// Scalar protobuf types — field types NOT in this set reference another message/enum.
+
 const SCALAR_TYPES = new Set([
   'double', 'float', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
   'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'string', 'bytes',
@@ -95,6 +95,10 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     return true;
   }
 
+  incrementalContributionScope(): 'project' {
+    return 'project';
+  }
+
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     const files = await this.findProtoFiles(projectPath, { projectPath }, false);
     return files.sort();
@@ -109,7 +113,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     const stat = await fs.stat(context.filePath);
 
     const info = this.parseProtoFile(context.relativePath, context.filePath, content);
-    // Single-file analysis resolves type references and imports within this file only.
+
     const messageIndex = this.buildMessageIndex([info]);
 
     this.emitFileNodes(info, nodes, edges, entryPoints, exitPoints, messageIndex);
@@ -160,7 +164,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
         fileInfos.push(this.parseProtoFile(relativePath, fullPath, content));
       }
 
-      // Resolve type references across all messages/enums in the repo.
+
       const messageIndex = this.buildMessageIndex(fileInfos);
 
       for (const info of fileInfos) {
@@ -205,7 +209,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     return files;
   }
 
-  // ---- Parsing -------------------------------------------------------------
+
 
   private parseProtoFile(relativePath: string, fullPath: string, content: string): ProtoFileInfo {
     const lines = content.split('\n');
@@ -219,7 +223,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
       lineCount: lines.length,
     };
 
-    // File-level: syntax, package, imports.
+
     for (let i = 0; i < lines.length; i++) {
       const line = this.stripComment(lines[i]).trim();
       if (!line) continue;
@@ -235,7 +239,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     return info;
   }
 
-  // Recursively walk top-level (and nested) message/enum/service blocks.
+
   private parseBlocks(
     lines: string[],
     startLine: number,
@@ -265,7 +269,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
           lineEnd: bodyEnd + 1,
         };
         info.messages.push(message);
-        // Nested messages / enums declared inside this message.
+
         this.parseBlocks(lines, i + 1, bodyEnd, qualifiedName, info);
         i = bodyEnd + 1;
         continue;
@@ -303,7 +307,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // Find the line index of the closing brace matching the block opened at/after startLine.
+
   private findBlockEnd(lines: string[], startLine: number, endLine: number): number {
     let depth = 0;
     let seenOpen = false;
@@ -320,14 +324,14 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     return endLine - 1;
   }
 
-  // Extract fields directly in a message body (skips nested blocks).
+
   private extractFields(lines: string[], startLine: number, endLine: number): ProtoField[] {
     const fields: ProtoField[] = [];
-    let depth = 0; // depth relative to the message body; >0 means inside a nested block
+    let depth = 0;
     for (let i = startLine; i < endLine; i++) {
       const stripped = this.stripStringsAndComments(lines[i]);
       const line = stripped.trim();
-      // Track nesting so we only read this message's own fields.
+
       const opens = (stripped.match(/\{/g) || []).length;
       const closes = (stripped.match(/\}/g) || []).length;
 
@@ -343,7 +347,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
   }
 
   private parseFieldLine(line: string, lineNumber: number): ProtoField | undefined {
-    // map<K, V> name = N;
+
     const mapMatch = line.match(/^map\s*<\s*([^>]+)>\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)/);
     if (mapMatch) {
       return {
@@ -354,7 +358,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
         lineNumber,
       };
     }
-    // [repeated|optional|required] Type name = N;
+
     const fieldMatch = line.match(
       /^(?:(repeated|optional|required)\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)/
     );
@@ -390,7 +394,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
 
   private extractRpcs(lines: string[], startLine: number, endLine: number): ProtoRpc[] {
     const rpcs: ProtoRpc[] = [];
-    // RPCs can span multiple lines; join the service body and match globally.
+
     const segment = lines.slice(startLine, endLine).map(l => this.stripStringsAndComments(l)).join('\n');
     const rpcRegex =
       /rpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(stream\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*\)\s*returns\s*\(\s*(stream\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*\)/g;
@@ -410,9 +414,9 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     return rpcs;
   }
 
-  // ---- Indexing & resolution ----------------------------------------------
 
-  // Map every resolvable name (simple, qualified, package-qualified) to its node id.
+
+
   private buildMessageIndex(fileInfos: ProtoFileInfo[]): Map<string, string> {
     const index = new Map<string, string>();
     for (const info of fileInfos) {
@@ -436,7 +440,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     nodeId: string
   ): void {
     const simple = qualifiedName.split('.').pop()!;
-    // Last writer wins for ambiguous simple names; precise keys take priority on lookup.
+
     if (!index.has(simple)) index.set(simple, nodeId);
     index.set(qualifiedName, nodeId);
     if (pkg) {
@@ -464,7 +468,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  // ---- Node / edge emission ------------------------------------------------
+
 
   private emitFileNodes(
     info: ProtoFileInfo,
@@ -494,7 +498,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
       })
       .build());
 
-    // Message nodes (data entities) + field nodes + reference edges.
+
     for (const message of info.messages) {
       const messageId = this.messageId(info.relativePath, message.qualifiedName, message.lineStart);
       const node = this.createNodeBuilder(messageId, message.name, 'data-entity')
@@ -552,7 +556,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        // Field type referencing another message/enum -> reference edge.
+
         const referencedId = this.resolveTypeName(field.fieldType, info, messageIndex);
         if (referencedId && referencedId !== messageId) {
           edges.push(this.createEdge(
@@ -567,7 +571,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Enum nodes.
+
     for (const en of info.enums) {
       const enumId = this.enumId(info.relativePath, en.qualifiedName, en.lineStart);
       const node = this.createNodeBuilder(enumId, en.name, 'enum')
@@ -598,7 +602,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // Service nodes + RPC nodes (= API contract entry points).
+
     for (const service of info.services) {
       const serviceId = this.serviceId(info.relativePath, service.name, service.lineStart);
       nodes.push(this.createNodeBuilder(serviceId, service.name, 'service')
@@ -660,7 +664,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        // Contract: link RPC -> its request and response messages.
+
         const requestId = this.resolveTypeName(rpc.requestType, info, messageIndex);
         if (requestId) {
           edges.push(this.createEdge(
@@ -684,7 +688,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
           ));
         }
 
-        // RPC method = gRPC API contract endpoint + entry point.
+
         const fullPath = info.packageName
           ? `/${info.packageName}.${service.name}/${rpc.name}`
           : `/${service.name}/${rpc.name}`;
@@ -758,25 +762,25 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     byRelative: Map<string, ProtoFileInfo>,
     byBasename: Map<string, ProtoFileInfo>
   ): ProtoFileInfo | undefined {
-    // Imports are typically repo-root-relative (proto include path).
+
     const rootRel = this.normalize(rawPath);
     if (byRelative.has(rootRel)) return byRelative.get(rootRel);
 
-    // Try relative to the importing file's directory.
+
     const abs = path.resolve(sourceDir, rawPath);
     const rel = this.normalize(path.relative(projectPath, abs));
     if (byRelative.has(rel)) return byRelative.get(rel);
 
-    // Match any file whose path ends with the import path.
+
     for (const [key, info] of byRelative) {
       if (key.endsWith(`/${rootRel}`)) return info;
     }
 
-    // Fall back to basename match within the repo.
+
     return byBasename.get(path.basename(rawPath));
   }
 
-  // ---- Comment / string handling ------------------------------------------
+
 
   private stripComment(line: string): string {
     const idx = this.commentIndex(line);
@@ -809,7 +813,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  // ---- Id helpers ----------------------------------------------------------
+
 
   private fileId(relativePath: string): string {
     return `file_${this.sanitizeId(relativePath)}`;

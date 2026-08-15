@@ -1,5 +1,5 @@
 import { deriveFrameworkRole, deriveFrameworkIdentities } from '../../analyzer/core/framework-identity';
-import { CASNode, CASEntryPoint, CASExitPoint, CASDecorator, CASDependencyManifest } from '../../types/cas.types';
+import { CASNode, CASEntryPoint, CASDependencyManifest } from '../../types/cas.types';
 
 describe('deriveFrameworkRole', () => {
   it('assigns web role from http-shaped entry point types', () => {

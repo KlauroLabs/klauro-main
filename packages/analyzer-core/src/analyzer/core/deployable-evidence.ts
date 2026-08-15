@@ -3,6 +3,7 @@ import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, DeployableEvidenc
 import { getProviders } from './deployable-evidence/registry';
 import type { EvidenceCollectionContext, EvidenceProvider } from './deployable-evidence/types';
 import { UNNAMED_SERVICE_PLACEHOLDER } from './deployable-evidence/util';
+import { mergeManifestIdentityRows } from './deployable-evidence/manifest-identity';
 
 export type { EvidenceCollectionContext, EvidenceProvider };
 export type { DeployableEvidence };
@@ -14,7 +15,6 @@ export interface CollectDeployableEvidenceInput {
   exitPoints: CASExitPoint[];
   displayName?: string;
 }
-
 export function collectDeployableEvidence(input: CollectDeployableEvidenceInput): DeployableEvidence[] {
   const { projectPath, nodes, entryPoints, exitPoints, displayName } = input;
 
@@ -30,14 +30,14 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
     try {
       results.push(...provider.collect(ctx));
     } catch (error) {
-      // eslint-disable-next-line no-console
       console.error(`[deployable-evidence] provider "${provider.id}" threw:`, error);
     }
   }
 
   const deduped = dedupe(results, projectPath);
   const consolidated = mergeDuplicateNamedInstallerLeaves(deduped);
-  const composeAndContainerJoined = joinComposeAndContainerUnits(consolidated);
+  const identityJoined = mergeManifestIdentityRows(consolidated);
+  const composeAndContainerJoined = joinComposeAndContainerUnits(identityJoined);
   const joined = mergeSameNamedTier1Rows(composeAndContainerJoined);
   const classified = classifyBuildStageContainers(joined);
   const collapsed = collapseWholeRepoPackagingVariants(collapseContainerVariants(classified));

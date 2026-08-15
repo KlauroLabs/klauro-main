@@ -150,9 +150,9 @@ export class PrismaAnalyzer extends BaseAnalyzer {
 
   private parseFields(modelBody: string): PrismaField[] {
     const fields: PrismaField[] = [];
-    // Per-LINE parsing: a single multiline regex with `\s*(.*)` would let one
-    // field's trailing whitespace span the newline and swallow the next field
-    // line (dropping relations like `author User @relation(...)`).
+
+
+
     for (const rawLine of modelBody.split('\n')) {
       const line = rawLine.trim();
       if (!line || line.startsWith('//') || line.startsWith('@@')) continue;

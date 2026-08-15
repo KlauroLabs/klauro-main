@@ -31,8 +31,8 @@ interface ReactComponent {
   exports: string[];
   jsx: boolean;
   renderedComponents: Array<{ name: string; line: number; props: string[] }>;
-  /** JSX event bindings (`onClick={handler}`) found in this component's own JSX —
-   *  the frontend analog of a route: a user event that triggers a flow. */
+
+
   eventHandlers: Array<{ event: string; handlerName?: string; line: number }>;
 }
 
@@ -63,16 +63,16 @@ interface ReactRoute {
   guards?: string[];
   children?: ReactRoute[];
   lazy?: boolean;
-  /** A react-router index route: renders at the PARENT's path, has none itself. */
+
   index?: boolean;
-  /** File the route declaration was read from. */
+
   filePath?: string;
-  /**
-   * Module specifier the route's component alias resolves to, e.g.
-   * `CodebaseEntities` -> `@/app/Entities/EntitiesPage`. This is the STRUCTURAL
-   * link between a route and the page file that serves it; the local alias name
-   * on its own is not, because a router routinely renames on import.
-   */
+
+
+
+
+
+
   componentModule?: string;
 }
 
@@ -662,9 +662,9 @@ export class ReactAnalyzer extends BaseAnalyzer {
       if (content.includes('Route') || content.includes('Router') || content.includes('routing')) {
         try {
           const extractedRoutes = this.extractRoutes(content, file);
-          // Resolve each route's component alias to the module it is imported
-          // from, so a page can be matched to its route structurally rather than
-          // by a name the router is free to change.
+
+
+
           const moduleMap = this.buildComponentModuleMap(content);
           const annotate = (route: ReactRoute): void => {
             route.filePath = file;
@@ -675,9 +675,9 @@ export class ReactAnalyzer extends BaseAnalyzer {
           extractedRoutes.forEach(annotate);
           routes.push(...extractedRoutes);
 
-          // Path-less (index) routes count for reachability but get no node or
-          // entry point: their address is the parent's, and synthesizing one
-          // here would be a guess.
+
+
+
           extractedRoutes.filter(route => route.path).forEach((route, index) => {
             const routeId = this.generateId('route', file, `${route.path}_${index}`);
             route.nodeId = routeId;
@@ -833,13 +833,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return pages;
   }
 
-  /**
-   * Emits entry points for page components after route extraction so a page
-   * already reachable through an extracted router route is not duplicated as
-   * a second entry. Only file-router projects (Next.js pages directory) map
-   * files to real HTTP routes; everywhere else a page file is a component
-   * reference, not an HTTP path, and is marked as such.
-   */
+
+
+
+
+
+
+
   private createPageEntryPoints(
     pages: ReactPage[],
     routes: ReactRoute[],
@@ -855,10 +855,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     };
     routes.forEach(visit);
 
-    // A page is already covered by a route when the route's component RESOLVES
-    // to this page's module. Matching the alias name alone missed every page the
-    // router renames on import (`EntitiesPage` routed as `CodebaseEntities`),
-    // and those pages then shipped a second time as invented URLs.
+
+
+
+
     const isRouted = (page: ReactPage): boolean => {
       if (routedComponents.has(page.component) || routedComponents.has(page.name)) return true;
       return routedModules.some(target => this.moduleTargetsAgree(target, page.filePath));
@@ -892,13 +892,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (isRouted(page)) continue;
 
-      // NO TRIGGER. Outside a file-router project the page's `route` is derived
-      // from its FILENAME and is declared nowhere — emitting it as a pattern
-      // claimed the component is served at a URL that does not exist
-      // (`/flows-list`, `/function-detail`). The component existing is a real
-      // fact and stays; the URL was not, and is dropped rather than guessed.
-      // Consumers already handle an address-less entry: the UI renders "—" for
-      // it and the journey builder falls back to the page name.
+
+
+
+
+
+
+
       entryPoints.push(this.createEntryPoint(
         `entry_${pageId}`,
         pageId,
@@ -913,8 +913,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
           component: page.component,
           name: page.name,
           trigger_kind: 'page-component',
-          // Recorded so the absence of an address reads as a finding rather
-          // than as missing extraction.
+
+
           has_declared_route: false
         },
         {
@@ -942,11 +942,11 @@ export class ReactAnalyzer extends BaseAnalyzer {
       f.includes('util.') ||
       f.includes('helper.') ||
       f.includes('lib.') ||
-      // API client / data-access modules (e.g. `shared/api/fetch.ts` exporting
-      // apiGet/apiPost/...) are a common home for the fetcher functions that
-      // data-fetching hooks (useQuery/useMutation) call. Without these paths
-      // in scope, extractFetcherCallCandidates has no node to resolve against
-      // even when it correctly identifies the callee name.
+
+
+
+
+
       f.includes('/api/') ||
       f.includes('/services/') ||
       f.includes('api.') ||
@@ -1003,18 +1003,18 @@ export class ReactAnalyzer extends BaseAnalyzer {
       content.includes('export') || content.includes('function') || content.includes('class');
     if (!hasDeclaration) return false;
 
-    // Classic runtime: the file imports/uses React or calls createElement directly.
+
     if ((content.includes('React') || content.includes('createElement')) && content.includes('return')) {
       return true;
     }
 
-    // Automatic JSX runtime (React 17+ / Next.js app router): components render JSX
-    // without ever importing React, so the literal "React" token is absent. Fall back
-    // to detecting real JSX element syntax — the same signal shouldParseJsx trusts.
+
+
+
     return this.containsJsxSyntax(content);
   }
 
-  /** True when the content contains a real JSX element (component or intrinsic tag) or fragment. */
+
   private containsJsxSyntax(content: string): boolean {
     return /<[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:\s|>|\/)/.test(content) ||
       /<[a-z][A-Za-z0-9:-]*(?:\s|>|\/)/.test(content) ||
@@ -1260,13 +1260,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Index routes — `{ index: true, element: <X /> }` and `<Route index
-    // element={<X />} />` — have NO path of their own: they render at the
-    // PARENT's path. Every pattern above requires a path, so these were skipped
-    // entirely and their component looked unrouted. They are recorded with an
-    // empty path and `index: true`; the caller does not emit a node or entry
-    // point for a path-less route (there is no address to report that would not
-    // be invented), but they do count as routed for page reachability.
+
+
+
+
+
+
+
     const indexRouteObjectPattern = /\{\s*index:\s*true\s*,\s*(?:element|component)\s*:\s*(?:<(\w+)|(\w+))/g;
     while ((match = indexRouteObjectPattern.exec(content)) !== null) {
       const component = match[1] || match[2];
@@ -1416,18 +1416,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return utils;
   }
 
-  private getComponentName(node: any, content: string): string | null {
-    if (!node || typeof node !== 'object') return null;
-
-    if (node.type === 'FunctionDeclaration') {
-      return node.id?.name || null;
-    }
-    if (node.type === 'ArrowFunctionExpression') {
-      const declaration = this.findVariableDeclarator(node);
-      return declaration?.id?.name || null;
-    }
-    return null;
-  }
 
   private getHookName(node: any, content: string): string | null {
     if (!node || typeof node !== 'object') return null;
@@ -1477,10 +1465,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /** JSX event props (`onClick={handler}`, `onSubmit={() => submit(x)}`, ...) within
-   *  this component's own JSX. A bare identifier or an arrow body's leading call
-   *  resolves to `handlerName`; anything else is still captured as an event (the
-   *  entry point exists) without a fabricated handler target. */
+
+
+
+
   private extractEventHandlers(node: any, content: string): Array<{ event: string; handlerName?: string; line: number }> {
     const handlers: Array<{ event: string; handlerName?: string; line: number }> = [];
     const nodeStart = node?.range?.[0] || 0;
@@ -1868,13 +1856,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
   private extractComponentHooks(node: any, content: string): Array<{ name: string; type: string; dependencies?: string[]; hookUsageId?: string }> {
     const hooks: Array<{ name: string; type: string; dependencies?: string[]; hookUsageId?: string }> = [];
     const hookPattern = /(use\w+)\s*\(/g;
-    // Hooks that run a caller-supplied fetcher — the fetcher is the real
-    // downstream call (e.g. React Query's `queryFn`/`mutationFn`, SWR's
-    // positional fetcher). We only look for a callee name inside that
-    // fetcher's body text; nothing is resolved here (no node lookup, no
-    // scope check) — extractComponentHooks just surfaces evidence, the
-    // actual `calls` edge is only created later if that name resolves
-    // uniquely to a real function/util node (see buildReactRelationships).
+
+
+
+
+
+
+
     const dataFetchingHooks = new Set(['useQuery', 'useMutation', 'useSWR', 'useSWRMutation', 'useInfiniteQuery']);
 
     let match;
@@ -1899,10 +1887,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return hooks;
   }
 
-  /** Given the index of the opening `(` of a call, return the raw text of the
-   *  arguments (balanced on parens/brackets/braces, string-aware) without
-   *  attempting to split them — used when we want the whole argument blob to
-   *  regex over (e.g. to find `queryFn: ...` inside an options object). */
+
+
+
+
   private extractBalancedCallArgsText(content: string, openParenIndex: number): string {
     let depth = 0;
     let start = -1;
@@ -1921,16 +1909,16 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return start >= 0 ? content.slice(start) : '';
   }
 
-  /**
-   * Best-effort evidence extraction for data-fetching hook callbacks. Looks
-   * for `queryFn:`/`mutationFn:` (React Query) or, failing that, treats the
-   * whole args blob as a fallback scan target (covers SWR's positional
-   * `useSWR(key, fetcherFn)` and `useSWR(key, () => fetcherFn(...))`).
-   * Returns callee names found via CALL EXPRESSIONS inside that scope —
-   * `apiGet(...)` -> 'apiGet', `api.getOrgs(...)` -> ['api.getOrgs','getOrgs'].
-   * A bare identifier with no call (e.g. `mutationFn: apiPost`) is also
-   * captured directly since that's an even stronger, unambiguous reference.
-   */
+
+
+
+
+
+
+
+
+
+
   private extractFetcherCallCandidates(argsText: string): string[] {
     if (!argsText) return [];
     const candidates: string[] = [];
@@ -1951,13 +1939,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
       'await', 'JSON', 'Boolean', 'String', 'Number', 'Array', 'Object',
       'Promise', 'Error', 'new', 'URLSearchParams'
     ]);
-    // Identify `name` or `ns.name` tokens, then independently check (via a
-    // balanced scanner, not a regex character class) whether they're
-    // immediately followed by an optional generic type-argument list and a
-    // call paren. A plain `<[^<>(){}]*>` class fails on the extremely common
-    // `apiGet<{ items: Foo[] }>(...)` shape (object/array types nested in the
-    // generic), which would silently misdetect the callee — hence the
-    // explicit depth-counting skip below instead of a regex for that part.
+
+
+
+
+
+
+
     const identifierPattern = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
     let im;
     while ((im = identifierPattern.exec(argsText)) !== null) {
@@ -1974,7 +1962,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
           if (argsText[j] === '<') depth++;
           else if (argsText[j] === '>') { depth--; if (depth === 0) { j++; break; } }
         }
-        if (depth !== 0) continue; // unbalanced generic — not a confident match
+        if (depth !== 0) continue;
         i = j;
         while (i < argsText.length && /\s/.test(argsText[i])) i++;
       }
@@ -2070,26 +2058,26 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return fileName.replace(/Page$|View$|Screen$/, '') || fileName;
   }
 
-  /**
-   * Local component binding -> the module specifier it comes from, for one file.
-   *
-   * Covers the shapes a router uses to name a page: a plain or named import
-   * (with or without `as`), and a lazily-loaded const whose initialiser contains
-   * a dynamic `import('...')` — including the common wrapper-function form
-   * `const X = lazyPage('Area', () => import('mod'), 'Export')`, which is why
-   * this looks for the dynamic import ANYWHERE in the initialiser rather than
-   * matching one known wrapper.
-   */
+
+
+
+
+
+
+
+
+
+
   private buildComponentModuleMap(content: string): Map<string, string> {
     const map = new Map<string, string>();
 
-    // const X = <expr containing import('mod')>;  (lazy / lazyPage / React.lazy)
+
     for (const m of content.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*([^;]*?)(?:;|\n(?=\s*(?:const|let|var|function|export|import)\b))/g)) {
       const dynamic = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(m[2]);
       if (dynamic) map.set(m[1], dynamic[1]);
     }
 
-    // import Default from 'mod'  /  import { A, B as C } from 'mod'
+
     for (const m of content.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*['"]([^'"]+)['"]/g)) {
       const clause = m[1];
       const moduleSpecifier = m[2];
@@ -2107,13 +2095,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return map;
   }
 
-  /**
-   * Comparable form of a module target: path-alias prefixes (`@/`, `~/`, `./`)
-   * and the file extension removed, plus a trailing `/index` collapsed. Used to
-   * decide whether a route's component module and a page file are the same
-   * module without resolving the project's full alias configuration — a
-   * path-suffix agreement on this form is what identifies them.
-   */
+
+
+
+
+
+
+
   private normalizeModuleTarget(target: string): string {
     return target
       .replace(/\\/g, '/')
@@ -2124,15 +2112,15 @@ export class ReactAnalyzer extends BaseAnalyzer {
       .replace(/^\/+/, '');
   }
 
-  /** True when a route's component module and a page's file denote one module. */
+
   private moduleTargetsAgree(moduleSpecifier: string, pageFilePath: string): boolean {
     const spec = this.normalizeModuleTarget(moduleSpecifier);
     const file = this.normalizeModuleTarget(pageFilePath);
     if (!spec || !file) return false;
-    // One is an alias-relative path and the other repo-relative, so neither is a
-    // prefix of the other in general — agreement is one being a path suffix of
-    // the other, anchored on a segment boundary so `.../Users` never matches
-    // `.../SuperUsers`.
+
+
+
+
     return file === spec || file.endsWith(`/${spec}`) || spec.endsWith(`/${file}`);
   }
 
@@ -2403,11 +2391,11 @@ export class ReactAnalyzer extends BaseAnalyzer {
       const componentId = this.generateId('component', component.filePath, component.name);
       componentNameToId.set(component.name, componentId);
     });
-    // The same parent can render the same child at multiple JSX sites (each
-    // with its own jsx_line/props). A bare hash of source+target+type would
-    // collide for those instances and the merge boundary would drop differing
-    // duplicates, so repeats get a stable per-pair ordinal mixed into the hash.
-    // The first occurrence keeps the historical id shape.
+
+
+
+
+
     const rendersEdgeOccurrences = new Map<string, number>();
     const rendersEdgeId = (sourceId: string, targetId: string): string => {
       const key = `${sourceId}->${targetId}`;
@@ -2437,12 +2425,12 @@ export class ReactAnalyzer extends BaseAnalyzer {
       util.exports.forEach(exportName => namedTargetIds.set(exportName, utilId));
     });
 
-    // Name -> node id for resolving data-fetching hook callbacks (see
-    // extractFetcherCallCandidates). Uses AMBIGUOUS as a sentinel when two
-    // distinct util declarations share a name across files — in that case we
-    // will not guess which one the hook actually calls, so no edge is emitted
-    // (evidence-based: an edge is only created when the candidate resolves to
-    // exactly one function-like node).
+
+
+
+
+
+
     const AMBIGUOUS = Symbol('ambiguous');
     const fetcherTargetIds = new Map<string, string | typeof AMBIGUOUS>();
     utils.forEach(util => {
@@ -2494,13 +2482,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
           }
         }
 
-        // Data-fetching hooks (useQuery/useMutation/useSWR/...) carry
-        // candidate fetcher callee names in `dependencies` (see
-        // extractComponentHooks/extractFetcherCallCandidates). Resolve each
-        // candidate against declared functions; emit a `calls` edge from the
-        // hook_usage node (not the component) to the fetcher it actually
-        // invokes only when exactly one function-like node matches the name.
-        // No match / ambiguous match -> no edge (never fabricated).
+
+
+
+
+
+
+
         if (hook.hookUsageId && hook.dependencies && hook.dependencies.length > 0) {
           for (const candidateName of hook.dependencies) {
             const bare = candidateName.includes('.') ? candidateName.split('.').pop()! : candidateName;
@@ -2538,12 +2526,12 @@ export class ReactAnalyzer extends BaseAnalyzer {
         }
       });
 
-      // JSX event bindings (onClick/onSubmit/...) are real flow roots for a
-      // frontend app — a user event triggers a handler, the same way an HTTP
-      // route triggers a controller. Emit an `event` entry point per binding;
-      // resolve a `triggers` edge to the handler only when the name matches a
-      // hook usage or a util/function already known by name (evidence-based,
-      // never a guess for inline/ambiguous expressions).
+
+
+
+
+
+
       (component.eventHandlers || []).forEach((handler, index) => {
         const entryId = this.generateId('event_entry', component.filePath, `${component.name}_${handler.event}_${index}`);
         entryPoints.push(this.createEntryPoint(

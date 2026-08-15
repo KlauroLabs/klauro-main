@@ -20,19 +20,19 @@ interface ElixirFunction {
 }
 
 interface ElixirModule {
-  name: string;            // last segment, e.g. "Math"
-  qualifiedName: string;   // full dotted, e.g. "App.Math"
+  name: string;
+  qualifiedName: string;
   lineStart: number;
   lineEnd: number;
   functions: ElixirFunction[];
-  // use/import/alias/require targets (dotted module names)
+
   uses: Array<{ target: string; line: number }>;
   imports: Array<{ target: string; line: number }>;
   aliases: Array<{ target: string; as: string; line: number }>;
   requires: Array<{ target: string; line: number }>;
   structFields: string[];
   hasStruct: boolean;
-  // High-value framework/behaviour tags derived from `use ...`.
+
   tags: Set<string>;
 }
 
@@ -45,7 +45,7 @@ interface ElixirFileInfo {
 
 const ELIXIR_GLOBS = ['**/*.ex', '**/*.exs'];
 
-// `use X` target -> high-value tag.
+
 const USE_TAGS: Array<{ match: RegExp; tag: string }> = [
   { match: /\bGenServer\b/, tag: 'genserver' },
   { match: /\bPhoenix\.Router\b/, tag: 'phoenix-router' },
@@ -64,13 +64,13 @@ const USE_TAGS: Array<{ match: RegExp; tag: string }> = [
   { match: /\bTask\b/, tag: 'task' },
 ];
 
-// GenServer/OTP callbacks that are runtime entry points.
+
 const OTP_CALLBACKS = new Set([
   'init', 'handle_call', 'handle_cast', 'handle_info', 'handle_continue',
   'terminate', 'code_change', 'start_link', 'child_spec',
 ]);
 
-// Phoenix Router route macros.
+
 const ROUTE_MACROS = new Set([
   'get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'forward',
 ]);
@@ -108,7 +108,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
 
     const info = this.parseElixirFile(context.relativePath, context.filePath, content);
 
-    // Single-file scope: only resolve module refs to modules in this file.
+
     const moduleIndex = new Map<string, ElixirModule>();
     for (const mod of info.modules) moduleIndex.set(mod.qualifiedName, mod);
 
@@ -160,14 +160,14 @@ export class ElixirAnalyzer extends BaseAnalyzer {
         } catch {
           continue;
         }
-        // Isolate per-file: the line-based parser is a best-effort heuristic
-        // (do/end depth stack, regex matchers), not a real grammar, so an
-        // unanticipated line shape in ONE file must not be able to take down
-        // Elixir analysis for the whole repo. Before this, a throw here
-        // propagated to the outer catch below, turning one malformed/unusual
-        // file into "Elixir analysis failed" for every file. Degrade
-        // gracefully instead: skip only the offending file, name it and the
-        // reason in a warning, and keep going with the rest.
+
+
+
+
+
+
+
+
         try {
           fileInfos.push(this.parseElixirFile(relativePath, fullPath, content));
         } catch (error) {
@@ -177,7 +177,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Repo-wide module index for resolving alias/use/import + call targets.
+
       const moduleIndex = new Map<string, ElixirModule>();
       for (const info of fileInfos) {
         for (const mod of info.modules) moduleIndex.set(mod.qualifiedName, mod);
@@ -230,35 +230,35 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     return [...new Set(files)];
   }
 
-  /**
-   * Mix's own test-file convention: `mix test` only ever runs files under a
-   * `test/` directory, and the near-universal naming inside it is
-   * `*_test.exs` — never a shared cross-language filename heuristic. ExUnit's
-   * `test "..." do ... end` blocks are macro invocations, not `def`s, so this
-   * analyzer's line-based parser (matchFunctionHead only matches
-   * def/defp/defmacro heads) never produces a node for the case itself —
-   * only `def`/`defp` HELPER functions declared inside a test file do. Tagging
-   * by file membership (not by a per-function heuristic) is what makes those
-   * helpers test-owned.
-   */
+
+
+
+
+
+
+
+
+
+
+
   private isElixirTestFile(relativePath: string): boolean {
     const lower = relativePath.toLowerCase();
     return /_test\.exs$/.test(lower) || /(^|\/)test\/.*\.exs?$/.test(lower);
   }
 
-  /**
-   * Tags every node belonging to an ExUnit test file with `metadata.is_test`,
-   * `category: 'test'`, and a `test-code` tag, mirroring go-analyzer.ts's
-   * applyTestFileBoundary. Without this, Elixir test-helper functions (which
-   * DO carry `calls` edges into production code via emitCallEdges) carried no
-   * test-owned marker of any kind, so the cross-language coverage-graph walk
-   * (test-framework-analyzer.ts's isTestOwnedNode / graphNodesForSuite) could
-   * never start a traversal from this analyzer's own function nodes — only
-   * from TestFrameworkAnalyzer's synthetic suite/case nodes, which carry no
-   * `calls` edges of their own. See also the 'exunit' FrameworkRule added to
-   * test-framework-analyzer.ts, needed for the SAME reason XCTest needed one
-   * for Swift: without it no suite/case is ever discovered for Elixir at all.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private applyTestFileBoundary(fileNodes: CASNode[]): void {
     for (const node of fileNodes) {
       node.metadata = { ...node.metadata, is_test: true };
@@ -268,7 +268,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Parsing -------------------------------------------------------------
+
 
   private parseElixirFile(relativePath: string, fullPath: string, content: string): ElixirFileInfo {
     const lines = content.split('\n');
@@ -276,12 +276,12 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     return { relativePath, fullPath, modules, lineCount: lines.length };
   }
 
-  // Line-based parser using a `do`/`end` depth stack. Handles nested modules
-  // by tracking which module is innermost-on-stack at each point.
+
+
   private extractModules(lines: string[]): ElixirModule[] {
     const modules: ElixirModule[] = [];
-    // Stack frames: either a module frame or a generic block frame (so `end`
-    // counts balance). Module frames carry a reference into `modules`.
+
+
     interface Frame { kind: 'module' | 'block'; module?: ElixirModule; }
     const stack: Frame[] = [];
 
@@ -299,7 +299,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
       if (!trimmed) continue;
       const lineNo = i + 1;
 
-      // defmodule App.Foo do
+
       const modMatch = trimmed.match(/^defmodule\s+([A-Z][A-Za-z0-9_.]*)\s+do\b/);
       if (modMatch) {
         const parent = moduleStack();
@@ -324,7 +324,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
       const current = moduleStack();
 
       if (current) {
-        // use / import / alias / require
+
         const directive = this.matchDirective(trimmed);
         if (directive) {
           switch (directive.kind) {
@@ -350,7 +350,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
           }
         }
 
-        // defstruct
+
         const structMatch = trimmed.match(/^defstruct\b(.*)$/);
         if (structMatch) {
           current.hasStruct = true;
@@ -358,11 +358,11 @@ export class ElixirAnalyzer extends BaseAnalyzer {
           current.structFields.push(...this.extractStructFields(structMatch[1]));
         }
 
-        // schema "table" do  (Ecto fields) -> just tag, already covered by use
-        // def / defp / defmacro
+
+
         const fn = this.matchFunctionHead(trimmed, lineNo, current.qualifiedName);
         if (fn) {
-          // Avoid double-counting clauses: keep the first occurrence per name/arity.
+
           const existing = current.functions.find(
             f => f.name === fn.name && f.arity === fn.arity && f.visibility === fn.visibility
           );
@@ -372,12 +372,12 @@ export class ElixirAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Track block depth for `do`/`end` so module end-lines are accurate.
+
       const opens = this.countDoOpeners(trimmed);
       const closes = this.countEnds(trimmed);
       for (let o = 0; o < opens; o++) {
-        // A module `defmodule ... do` already pushed a module frame above;
-        // only push a generic block frame for non-module openers.
+
+
         if (!modMatch || o > 0) stack.push({ kind: 'block' });
       }
       for (let c = 0; c < closes; c++) {
@@ -388,7 +388,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Close any modules left open (malformed/truncated files).
+
     for (const mod of modules) {
       if (mod.lineEnd <= mod.lineStart) mod.lineEnd = lines.length;
     }
@@ -396,8 +396,8 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     return modules;
   }
 
-  // Nested modules in Elixir compose names: outer App.Foo + inner Bar => App.Foo.Bar,
-  // but an inner fully-qualified name (App.X) is used as-is.
+
+
   private resolveNestedModuleName(parent: ElixirModule | undefined, declared: string): string {
     if (!parent) return declared;
     return `${parent.qualifiedName}.${declared}`;
@@ -420,7 +420,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
   }
 
   private matchFunctionHead(trimmed: string, lineNo: number, moduleQN: string): ElixirFunction | undefined {
-    // def name(args), defp name(args), defmacro name(args); also no-paren defs.
+
     const m = trimmed.match(/^(defmacrop?|defp?)\s+([a-z_][A-Za-z0-9_?!]*)\s*(\(([^)]*)\))?/);
     if (!m) return undefined;
     const keyword = m[1];
@@ -444,7 +444,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
   private countArity(argsRaw: string): number {
     const trimmed = argsRaw.trim();
     if (!trimmed) return 0;
-    // Count top-level commas (ignore nested brackets).
+
     let depth = 0;
     let count = 1;
     for (const ch of trimmed) {
@@ -457,7 +457,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
 
   private extractStructFields(rest: string): string[] {
     const fields: string[] = [];
-    // defstruct [:a, :b, c: 1]  OR  defstruct a: 1, b: 2
+
     const atomFields = rest.matchAll(/:([a-z_][A-Za-z0-9_]*)/g);
     for (const f of atomFields) fields.push(f[1]);
     const kwFields = rest.matchAll(/([a-z_][A-Za-z0-9_]*):/g);
@@ -467,12 +467,12 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     return [...new Set(fields)];
   }
 
-  // Count `do` block openers on a line (defmodule/def/if/case/... do, or `do` keyword).
+
   private countDoOpeners(trimmed: string): number {
     let count = 0;
-    // trailing/standalone `do` (block form). Inline `, do:` does NOT open a block.
+
     if (/(^|\s)do\s*$/.test(trimmed)) count++;
-    // `fn ... ->` ... `end` blocks
+
     const fnOpeners = trimmed.match(/\bfn\b/g);
     if (fnOpeners) count += fnOpeners.length;
     return count;
@@ -495,7 +495,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  // ---- Node / edge emission ------------------------------------------------
+
 
   private emitFileNodes(
     info: ElixirFileInfo,
@@ -579,7 +579,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        // Entry points: OTP callbacks and Phoenix controller actions.
+
         if (isGenServer && OTP_CALLBACKS.has(fn.name)) {
           entryPoints.push(this.createEntryPoint(
             `entry_${functionId}`,
@@ -616,12 +616,12 @@ export class ElixirAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Phoenix Router route macros as entry points.
+
       if (isRouter) {
         this.emitRouterEntryPoints(info, mod, moduleId, entryPoints);
       }
 
-      // Application module: `use Application` + `def start` -> lifecycle entry point.
+
       if (mod.tags.has('struct') === false &&
           (mod.uses.some(u => /\bApplication\b/.test(u.target)))) {
         const startFn = mod.functions.find(f => f.name === 'start');
@@ -675,7 +675,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // alias/import/use/require that resolve to a repo-defined module -> module->module edges.
+
   private emitDependencyEdges(
     fileInfos: ElixirFileInfo[],
     moduleIndex: Map<string, ElixirModule>,
@@ -711,8 +711,8 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // Conservative call edges: Module.func( and local func( within a function body,
-  // resolved against repo-defined functions only.
+
+
   private emitCallEdges(
     fileInfos: ElixirFileInfo[],
     moduleIndex: Map<string, ElixirModule>,
@@ -720,7 +720,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
   ): void {
     const seen = new Set(edges.map(e => e.id));
 
-    // Index repo functions by (module, name) for resolution.
+
     const fnByModuleName = new Map<string, ElixirFunction[]>();
     for (const mod of moduleIndex.values()) {
       for (const fn of mod.functions) {
@@ -741,19 +741,19 @@ export class ElixirAnalyzer extends BaseAnalyzer {
       const lines = content.split('\n');
 
       for (const mod of info.modules) {
-        // Local alias resolution map for this module.
+
         const aliasMap = new Map<string, string>();
         for (const a of mod.aliases) aliasMap.set(a.as, a.target);
 
         for (const caller of mod.functions) {
           const callerId = this.functionId(mod.qualifiedName, caller.name, caller.arity);
           const start = caller.lineStart - 1;
-          // Body extends to the next function start or module end.
+
           const end = this.functionBodyEnd(mod, caller, lines.length);
           for (let i = start; i < end && i < lines.length; i++) {
             const stripped = this.stripComment(lines[i]);
 
-            // Qualified calls: Mod.Path.func(  or Alias.func(
+
             const qualified = stripped.matchAll(/\b([A-Z][A-Za-z0-9_.]*)\.([a-z_][A-Za-z0-9_?!]*)\s*\(/g);
             for (const q of qualified) {
               const ref = q[1];
@@ -767,7 +767,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
                 this.functionId(resolvedMod, target.name, target.arity), i + 1, 'qualified');
             }
 
-            // Local calls: bareword func(  resolving to a function in the same module.
+
             const local = stripped.matchAll(/(?:^|[^.\w])([a-z_][A-Za-z0-9_?!]*)\s*\(/g);
             for (const l of local) {
               const fnName = l[1];
@@ -785,11 +785,11 @@ export class ElixirAnalyzer extends BaseAnalyzer {
   }
 
   private functionBodyEnd(mod: ElixirModule, caller: ElixirFunction, fileLineCount: number): number {
-    // The body scan (`for i = start; i < end`) is exclusive of `end`. The next
-    // function's declaration line must NOT be scanned as part of this caller's
-    // body — otherwise an inline `def add(...), do: ...` (no `end`) bleeds into
-    // the following `defp sum(...)` head and mis-reads it as a call (spurious
-    // add→sum). Stop at the next def's declaration line, not one past it.
+
+
+
+
+
     let end = mod.lineEnd;
     for (const other of mod.functions) {
       if (other.lineStart > caller.lineStart && other.lineStart - 1 < end) {
@@ -821,7 +821,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  // Resolve a module reference (possibly aliased) to a repo-defined qualified name.
+
   private resolveModuleRef(
     ref: string,
     moduleIndex: Map<string, ElixirModule>,
@@ -829,18 +829,18 @@ export class ElixirAnalyzer extends BaseAnalyzer {
   ): string | undefined {
     if (moduleIndex.has(ref)) return ref;
     if (aliasMap) {
-      // First segment may be an alias; expand it.
+
       const head = ref.split('.')[0];
       const expandedHead = aliasMap.get(head);
       if (expandedHead) {
-        const rest = ref.slice(head.length); // includes leading '.'
+        const rest = ref.slice(head.length);
         const expanded = `${expandedHead}${rest}`;
         if (moduleIndex.has(expanded)) return expanded;
       }
       const direct = aliasMap.get(ref);
       if (direct && moduleIndex.has(direct)) return direct;
     }
-    // Suffix match: alias resolves a short name to a repo module ending in it.
+
     if (!ref.includes('.')) {
       for (const qn of moduleIndex.keys()) {
         if (qn === ref || qn.endsWith(`.${ref}`)) return qn;
@@ -849,7 +849,7 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  // ---- ID helpers ----------------------------------------------------------
+
 
   private fileId(relativePath: string): string {
     return `file_${this.sanitizeId(relativePath)}`;

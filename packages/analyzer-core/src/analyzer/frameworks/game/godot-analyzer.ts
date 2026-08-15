@@ -4,25 +4,25 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Godot game-engine framework analyzer (GDScript).
- *
- * Godot's engine calls `_ready()` once when a node enters the scene tree and
- * `_process(delta)` / `_physics_process(delta)` every frame/physics tick —
- * these are engine-invoked lifecycle hooks, the same category as Unity's
- * `Update`/Unreal's `Tick`. `signal` declarations plus their `connect(...)`/
- * `.emit(...)` call sites are Godot's event-driven entry points: a handler
- * bound via `connect("signal_name", self, "_on_handler")` (Godot 3) or
- * `signal_name.connect(_on_handler)` (Godot 4) fires when the signal is
- * emitted, independent of any direct call in the script.
- *
- * A C# `Node`/`Control` subclass inside a Godot project uses the same
- * `_Ready`/`_Process`/`_PhysicsProcess` naming (PascalCase) — handled here too
- * since it is still Godot-specific dispatch, not MonoBehaviour/Unity's.
- *
- * Real dependency gate: a `project.godot` file at the project root, or a
- * `.tscn`/`.tres` scene/resource file — never inferred from folder names.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const GDSCRIPT_LIFECYCLE = ['_ready', '_process', '_physics_process', '_enter_tree', '_exit_tree', '_input', '_unhandled_input'];
 const CSHARP_GODOT_LIFECYCLE = ['_Ready', '_Process', '_PhysicsProcess', '_EnterTree', '_ExitTree', '_Input', '_UnhandledInput'];
@@ -137,15 +137,15 @@ export class GodotAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // Signals: `signal foo(args)` declares an event source; a handler bound
-    // via `.connect(...)` is a signal-driven entry point resolved to the
-    // named handler function if present in this same file.
+
+
+
     const signalPattern = /\bsignal\s+([A-Za-z_]\w*)/g;
     let sm: RegExpExecArray | null;
     while ((sm = signalPattern.exec(content)) !== null) {
       const signalName = sm[1];
       const handlerPattern = new RegExp(`\\bfunc\\s+(_on_\\w*${signalName}\\w*|_on_[A-Za-z0-9_]+)\\s*\\(`, 'i');
-      // Prefer the conventional Godot handler naming `_on_<Emitter>_<signal>`.
+
       const conventional = new RegExp(`\\bfunc\\s+(_on_[A-Za-z0-9_]*${this.toPascal(signalName)}\\w*)\\s*\\(`, 'i');
       const handlerMatch = conventional.exec(content) || handlerPattern.exec(content);
       if (!handlerMatch) continue;

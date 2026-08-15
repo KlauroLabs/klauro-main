@@ -26,13 +26,13 @@ interface SanicRoute {
   isBlueprint: boolean;
 }
 
-/**
- * Sanic Framework Analyzer.
- *
- * Covers `@app.route('/path')` / `@app.get(...)` / `@app.post(...)` decorated
- * handlers, `app.add_route(handler, '/path', methods=[...])`, and `Blueprint`
- * registration (`bp = Blueprint('name', url_prefix='/x')` + `@bp.get(...)`).
- */
+
+
+
+
+
+
+
 export class SanicAnalyzer extends BaseAnalyzer {
   constructor() {
     super('sanic', 'Sanic Framework Analyzer', '1.0.0', 'framework');
@@ -248,8 +248,8 @@ export class SanicAnalyzer extends BaseAnalyzer {
       const ownerVariables = new Set<string>();
       if (application) ownerVariables.add(application.appVariable);
       blueprints.filter(bp => bp.filePath === file).forEach(bp => ownerVariables.add(bp.variableName));
-      // Also allow any variable used as a Sanic/Blueprint decorator owner in this file,
-      // even if declared elsewhere (shared blueprints imported across files).
+
+
       const decoratorOwnerPattern = /@(\w+)\.(route|get|post|put|patch|delete|head|options|websocket)\s*\(/g;
       let ownerMatch;
       while ((ownerMatch = decoratorOwnerPattern.exec(content)) !== null) {
@@ -326,7 +326,7 @@ export class SanicAnalyzer extends BaseAnalyzer {
     return allRoutes;
   }
 
-  /** `@app.route('/path', methods=[...])` / `@app.get(...)` / `@bp.post(...)` */
+
   private extractDecoratorRoutes(
     content: string,
     lines: string[],
@@ -381,7 +381,7 @@ export class SanicAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** `app.add_route(handler, '/path', methods=['GET', 'POST'])` */
+
   private extractAddRouteRoutes(content: string, lines: string[], ownerVariables: Set<string>): SanicRoute[] {
     const routes: SanicRoute[] = [];
     if (ownerVariables.size === 0) return routes;
@@ -462,7 +462,7 @@ export class SanicAnalyzer extends BaseAnalyzer {
         if (versionMatch) return versionMatch[1];
       }
     } catch {
-      // Continue
+
     }
     return 'unknown';
   }

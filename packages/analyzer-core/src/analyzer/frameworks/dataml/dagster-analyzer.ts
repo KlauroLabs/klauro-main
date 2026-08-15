@@ -7,13 +7,13 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/** A `@asset` / `@op`-decorated function, or an `@job` composing ops. */
+
 interface DagsterNode {
   kind: 'asset' | 'op' | 'job' | 'graph';
   name: string;
   file: string;
   line: number;
-  deps: string[]; // asset `deps=[...]` / `ins=` param names / op fn params (best-effort)
+  deps: string[];
 }
 
 const DECORATOR_PATTERN = /^\s*@(asset|op|job|graph)\b\s*(\(([^)]*)\))?\s*$/;
@@ -85,7 +85,7 @@ export class DagsterAnalyzer extends BaseAnalyzer {
       let dependenciesFound = 0;
       const nodeIdByName = new Map<string, string>();
 
-      // Pass 1: collect all decorated nodes across files so cross-file asset deps resolve.
+
       const allDagsterNodes: DagsterNode[] = [];
       for (const file of dagsterFiles) {
         const content = await fs.readFile(path.join(context.projectPath, file), 'utf-8');
@@ -124,7 +124,7 @@ export class DagsterAnalyzer extends BaseAnalyzer {
         ));
       }
 
-      // Pass 2: dependency edges from asset `deps=[...]`/`ins={...}` and op param names.
+
       for (const dn of allDagsterNodes) {
         const targetId = nodeIdByName.get(dn.name);
         if (!targetId) continue;
@@ -165,8 +165,8 @@ export class DagsterAnalyzer extends BaseAnalyzer {
       const kind = decoratorMatch[1] as DagsterNode['kind'];
       const decoratorArgs = decoratorMatch[3] || '';
 
-      // Decorator args may span multiple lines before the closing paren; join a
-      // bounded lookahead window so `deps=[...]` split across lines still matches.
+
+
       let argsText = decoratorArgs;
       if (decoratorMatch[2] && !decoratorArgs.includes(')')) {
         let j = i;
@@ -179,7 +179,7 @@ export class DagsterAnalyzer extends BaseAnalyzer {
 
       let j = i + 1;
       while (j < lines.length && (lines[j].trim() === '' || lines[j].trim().startsWith('@'))) {
-        // Skip stacked decorators/blank lines, but stop scanning past 5 stacked lines.
+
         if (j - i > 6) break;
         j++;
       }
@@ -202,7 +202,7 @@ export class DagsterAnalyzer extends BaseAnalyzer {
       }
 
       if (kind === 'op' && deps.length === 0 && params.trim()) {
-        // Best-effort: op params other than `context` often name upstream op outputs.
+
         const paramNames = params.split(',').map(p => p.trim().split(':')[0].split('=')[0].trim()).filter(p => p && p !== 'context' && p !== 'self');
         deps.push(...paramNames);
       }

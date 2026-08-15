@@ -110,7 +110,7 @@ function buildFloodedTerminalCas(): CASOutput {
       risk_analysis: { risk_level: 'low', risk_factors: [] },
     },
   ];
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_orders', name: 'Order Management', category: 'core', criticality: 'high',
       operations: [{ action: 'create order', entry_point_id: 'ep_http', entry_point_type: 'http' }],
@@ -119,7 +119,7 @@ function buildFloodedTerminalCas(): CASOutput {
 
   return {
     analysis_id: 'test-terminal-flooding',
-    nodes, edges, entry_points, exit_points, data_lineage, call_chains, system_capabilities,
+    nodes, edges, entry_points, exit_points, data_lineage, call_chains, capabilities,
   } as unknown as CASOutput;
 }
 

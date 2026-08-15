@@ -650,16 +650,16 @@ export class CapabilityDetector {
     return types[0] || 'unknown';
   }
 
-  /**
-   * PRODUCER-side evidence-grounded naming (shared implementation with the
-   * orchestrator's finalize backstop, see capability-naming.ts). A group key
-   * is a raw structural token ("hot", "cas", "spots_get") — title-casing it
-   * verbatim ships a bare-noun label, so when the humanized key is not a
-   * purpose-headed phrase the name is derived from the capability's REAL
-   * operations instead: a verb-headed operation label ("get_hot_spots" ->
-   * "Get Hot Spots") when one exists, else "Manage <subject>" grounded in
-   * the operation/entry-point evidence.
-   */
+
+
+
+
+
+
+
+
+
+
   private deriveCapabilityName(
     groupKey: string,
     operations: CASOperation[],
@@ -671,11 +671,11 @@ export class CapabilityDetector {
     return deriveCapabilityNameFromOperations(subject, operations, hasAnchorEvidence) ?? subject;
   }
 
-  /**
-   * PRODUCER-side evidence-grounded description (shared implementation with
-   * the orchestrator's finalize backstop): names the group's REAL operations
-   * and entry kinds — never the "<pattern> operation via <type>" template.
-   */
+
+
+
+
+
   private generateDescription(
     operations: CASOperation[],
     entryPoints: CASEntryPoint[]

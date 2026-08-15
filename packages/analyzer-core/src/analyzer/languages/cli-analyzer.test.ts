@@ -122,7 +122,11 @@ test('CliAnalyzer extracts Commander subcommands with actions', async () => {
     const cliNames = names(cas.entry_points);
     assert.deepEqual(cliNames, ['deploy', 'status']);
     const deployEntry = cas.entry_points.find(e => e.name === 'deploy')!;
+    const statusEntry = cas.entry_points.find(e => e.name === 'status')!;
     assert.equal(deployEntry.metadata?.framework, 'commander');
+    assert.equal(deployEntry.handler?.method_name, 'deployHandler');
+    assert.equal(statusEntry.handler?.node_id, statusEntry.source_node);
+    assert.notEqual(statusEntry.handler?.method_name, 'status');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -265,7 +269,22 @@ test('CliAnalyzer falls back to a generic main() entry point when no framework i
     const cas = await analyzer.analyze({ projectPath: dir });
     assert.equal(cas.entry_points.length, 1);
     assert.equal(cas.entry_points[0].metadata?.framework, 'generic');
+    assert.equal(cas.entry_points[0].handler?.method_name, 'do_work');
     assert.ok(cas.nodes.some(node => node.id === cas.entry_points[0].source_node));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CliAnalyzer does not invent a main handler for an object method inside a Python main guard', async () => {
+  const dir = makeTempProject({
+    'api.py': "if __name__ == '__main__':\n    app.run(debug=True)\n",
+  });
+  try {
+    const cas = await new CliAnalyzer().analyze({ projectPath: dir });
+    assert.equal(cas.entry_points.length, 1);
+    assert.notEqual(cas.entry_points[0].handler?.method_name, 'main');
+    assert.equal(cas.entry_points[0].handler?.node_id, cas.entry_points[0].source_node);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

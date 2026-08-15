@@ -27,7 +27,7 @@ export class FlowGraphBuilder {
     const systemInsights = this.detectSystemPatterns(capabilities);
 
     return {
-      capabilities,
+      capability_candidates: capabilities,
       dependencies,
       topology,
       primary_flow: {
@@ -47,7 +47,7 @@ export class FlowGraphBuilder {
 
   private buildEmptyFlowGraph(): CASFlowGraph {
     return {
-      capabilities: [],
+      capability_candidates: [],
       dependencies: [],
       topology: {
         root_capabilities: [],
@@ -398,14 +398,14 @@ export class FlowGraphBuilder {
 
   getPrimaryFlowSummary(flowGraph: CASFlowGraph): string {
     const coreCapId = flowGraph.primary_flow.core_capability_id;
-    const coreCap = flowGraph.capabilities.find(c => c.id === coreCapId);
+    const coreCap = flowGraph.capability_candidates.find(c => c.id === coreCapId);
 
     if (!coreCap) {
       return 'No primary flow detected';
     }
 
     const valueChainNames = flowGraph.primary_flow.value_chain
-      .map(id => flowGraph.capabilities.find(c => c.id === id)?.name || id)
+      .map(id => flowGraph.capability_candidates.find(c => c.id === id)?.name || id)
       .join(' -> ');
 
     return `Core: ${coreCap.name} | Value Chain: ${valueChainNames}`;

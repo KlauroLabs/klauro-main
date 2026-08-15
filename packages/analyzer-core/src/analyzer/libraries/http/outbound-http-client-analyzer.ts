@@ -103,9 +103,9 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
     const seenNodeIds = new Set<string>();
     const seenExitIds = new Set<string>();
     const candidateFiles: string[] = [];
-    // JS/TS files with client-looking method calls but no direct http-lib import:
-    // they may call an instance EXPORTED by another module (`http.get('/users/')`).
-    // Confirmed against the project-level instance map below before scanning.
+
+
+
     const potentialInstanceCallers: string[] = [];
     const jsCallShape = /\.\s*(?:get|post|put|patch|delete|head)\s*(?:<[^<>()]{0,200}>)?\s*\(\s*['"`]/;
     for (const relativePath of allSourceFiles) {
@@ -119,12 +119,12 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
     }
     const sourceFiles = this.capAndPrioritizeSourceFiles(candidateFiles, 'outbound HTTP client candidate files');
 
-    // PROJECT-level client-instance map (corpus-depth sweep fix): the canonical
-    // real-world shape is ONE module doing `export default axios.create({...})`
-    // and every other module importing it — a per-file context never sees the
-    // factory from the call site's file. Collect instance names (+ base URLs
-    // when literal) across ALL candidate files first, then let each file's own
-    // context win on name collision.
+
+
+
+
+
+
     const projectBaseUrls = new Map<string, string>();
     for (const relativePath of sourceFiles) {
       const content = await this.readFileIfPresent(context.projectPath, relativePath);
@@ -134,10 +134,10 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Second-order candidates: files that CALL a known project client instance
-    // without importing an http library themselves (the api-service module
-    // importing the shared axios wrapper). Only files that name a known
-    // instance are admitted.
+
+
+
+
     const instanceCallerFiles: string[] = [];
     if (projectBaseUrls.size > 0 && potentialInstanceCallers.length > 0) {
       const instanceUse = new RegExp(`\\b(?:${[...projectBaseUrls.keys()].join('|')})\\s*\\.`);
@@ -209,8 +209,8 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
   private extractCalls(content: string, relativePath: string, projectBaseUrls?: Map<string, string>): HttpClientCall[] {
     const extension = path.extname(relativePath).toLowerCase();
     const fileContext = this.extractFileContext(content);
-    // Fold the project-level instance map in as a FALLBACK — the file's own
-    // factory declarations win on name collision.
+
+
     if (projectBaseUrls) {
       for (const [name, base] of projectBaseUrls) {
         if (!fileContext.baseUrls.has(name)) fileContext.baseUrls.set(name, base);
@@ -227,9 +227,9 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
 
   private extractJavaScriptCalls(content: string, fileContext: FileHttpContext): HttpClientCall[] {
     const calls: HttpClientCall[] = [];
-    // `(?:<...>)?` after the method: TypeScript generic call-site arguments
-    // (`http.get<User[]>('/users')`) are the NORM in typed API layers — without
-    // this the whole typed call surface is invisible (corpus-depth sweep fix).
+
+
+
     const directClient = /\b(axios|got|ky)\s*(?:\.\s*(get|post|put|patch|delete|head))?\s*(?:<[^<>()]{0,160}(?:<[^<>()]{0,160}>)?[^<>()]{0,40}>)?\s*\(\s*['"`]([^'"`]+)['"`]/g;
     let match: RegExpExecArray | null;
     while ((match = directClient.exec(content)) !== null) {
@@ -242,8 +242,8 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       const variable = match[1];
       if (variable === 'axios' || variable === 'got' || variable === 'ky') continue;
       const baseUrl = fileContext.baseUrls.get(variable);
-      // `undefined` = not a known client instance; `''` = a known instance whose
-      // base URL wasn't a literal (still a REAL outbound call — keep it).
+
+
       if (baseUrl === undefined) continue;
       this.addCall(calls, this.libraryForBaseVariable(variable), match[2], joinEndpoint(baseUrl, match[3]), content, match.index);
     }
@@ -378,11 +378,11 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
     const jsFactories = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:axios|ky|got)\s*\.\s*(?:create|extend)\s*\(\s*\{[\s\S]{0,400}?\b(?:baseURL|prefixUrl)\s*:\s*['"`]([^'"`]+)['"`]/g;
     while ((match = jsFactories.exec(content)) !== null) baseUrls.set(match[1], match[2]);
 
-    // Client instances whose base URL is NOT a string literal
-    // (`axios.create({ baseURL: import.meta.env.API_URL })` or no config at all)
-    // are still real client instances — record them with an empty base so their
-    // call sites are recognized (corpus-depth sweep fix). Literal-base factories
-    // above win (already in the map).
+
+
+
+
+
     const jsInstanceOnly = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:axios|ky|got)\s*\.\s*(?:create|extend)\s*\(/g;
     while ((match = jsInstanceOnly.exec(content)) !== null) {
       if (!baseUrls.has(match[1])) baseUrls.set(match[1], '');
@@ -582,16 +582,16 @@ function readJavaAnnotationString(args: string, key: string): string | undefined
 function normalizeEndpoint(endpoint: string): string | undefined {
   let value = endpoint.trim();
   if (!value) return undefined;
-  // Template-literal path segments (`/users/${id}`) are the NORM for REST call
-  // sites — dropping every templated endpoint made the analyzer blind to most
-  // real call surfaces (corpus-depth sweep fix). Normalize each interpolation
-  // to a `{param}` placeholder instead.
+
+
+
+
   value = value.replace(/\$\{[^}]*\}/g, '{param}');
-  // Reject endpoints with NO static content left (pure `${x}` / `/${x}/`):
-  // a placeholder-only path names nothing and would fabricate an exit target.
+
+
   const staticPart = value.replace(/\{param\}/g, '').replace(/[\/]/g, '');
   if (!staticPart) return undefined;
-  // Keep the original guard for non-template `{...}` fragments in non-URLs.
+
   if (value.includes('{') && !value.includes('{param}') && !value.startsWith('http')) return undefined;
   return value;
 }

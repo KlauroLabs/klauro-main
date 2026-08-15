@@ -4,23 +4,23 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 
-/**
- * CLI/script codebase type: entry points rooted at a command/subcommand rather than
- * a route. Covers the major CLI frameworks across languages so `get_flow_concepts`
- * / `get_entry_points` can root flows at the real invocation surface:
- *   - Python: Click (@click.command/@click.group), argparse (add_parser/add_argument),
- *     Typer (@app.command)
- *   - Node/TS: Commander (program.command('x').action(...)), yargs (.command()), oclif (command classes)
- *   - Go: cobra (&cobra.Command{Use, Run}, AddCommand), urfave/cli
- *   - Rust: clap (#[derive(Parser)], #[command(subcommand)])
- *   - Ruby: Thor (desc + method)
- *   - generic: main()/if __name__=='__main__'/func main() when no framework is detected
- *
- * This is a cross-language, regex/text-based pass (mirrors DistributionArtifactAnalyzer /
- * ShellAnalyzer) — it does not replace the per-language analyzers' own call-graph
- * extraction, it adds `cli`/`command` entry points resolved to a handler name so a
- * subcommand becomes a real flow root.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 type CliFramework =
   | 'click' | 'argparse' | 'typer'
@@ -80,8 +80,8 @@ export class CliAnalyzer extends BaseAnalyzer {
   async canAnalyze(projectPath: string): Promise<boolean> {
     const files = await this.getRelevantFiles(projectPath);
     if (files.length === 0) return false;
-    // Cheap gate: at least one candidate file must contain a framework signal or a
-    // generic main entry marker, otherwise this analyzer has nothing to contribute.
+
+
     for (const relativePath of files.slice(0, 500)) {
       let content: string;
       try {
@@ -178,7 +178,7 @@ export class CliAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // ── Parsing dispatch ─────────────────────────────────────────────────────
+
 
   private parseCliFile(relativePath: string, fullPath: string, content: string): CliFileResult {
     const commands: ParsedCliCommand[] = [];
@@ -204,25 +204,24 @@ export class CliAnalyzer extends BaseAnalyzer {
     return { relativePath, fullPath, commands, frameworksDetected };
   }
 
-  // ── Python: Click, argparse, Typer ───────────────────────────────────────
+
 
   private parsePython(content: string, commands: ParsedCliCommand[], frameworks: Set<CliFramework>): void {
     const lines = content.split('\n');
 
-    // Click / Typer: decorator directly above a `def name(...)`.
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
 
       const clickCommand = line.match(/^@(\w+)\.command\s*\(/);
       const clickGroup = line.match(/^@(\w+)\.group\s*\(/);
-      const typerCommand = line.match(/^@(\w+)\.command\s*\(/); // same shape as click's
       const bareClickCommand = /^@click\.command\b/.test(line);
       const bareClickGroup = /^@click\.group\b/.test(line);
 
       const isClickLike = clickCommand || clickGroup || bareClickCommand || bareClickGroup;
       if (!isClickLike) continue;
 
-      // Find the following `def name(` within a few lines (allow stacked decorators/options).
+
       let handlerLine = -1;
       let handlerName: string | undefined;
       for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
@@ -232,7 +231,7 @@ export class CliAnalyzer extends BaseAnalyzer {
           handlerName = defMatch[1];
           break;
         }
-        // Stop scanning if we hit a non-decorator, non-blank statement first.
+
         if (lines[j].trim() && !lines[j].trim().startsWith('@')) break;
       }
       if (!handlerName) continue;
@@ -253,8 +252,8 @@ export class CliAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // argparse: subparsers.add_parser("name", ...) followed eventually by
-    // `<var>.set_defaults(func=handler)`.
+
+
     if (/argparse\.ArgumentParser\s*\(/.test(content)) {
       frameworks.add('argparse');
       const parserVarToName = new Map<string, { name: string; line: number }>();
@@ -279,26 +278,25 @@ export class CliAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ── Node/TS: Commander, yargs, oclif ─────────────────────────────────────
+
 
   private parseNode(content: string, commands: ParsedCliCommand[], frameworks: Set<CliFramework>): void {
     const lines = content.split('\n');
 
     if (FRAMEWORK_SIGNALS.commander.test(content)) {
       frameworks.add('commander');
-      // program.command('name <arg>').description(...).action(handler)
-      // Scan a bounded window of lines after `.command(` for a chained `.action(`.
+
+
       for (let i = 0; i < lines.length; i++) {
         const m = lines[i].match(/\.command\s*\(\s*["']([^"']+)["']/);
         if (!m) continue;
-        const rawName = m[1].split(/\s+/)[0]; // strip "<arg>"/"[opt]" usage tail
+        const rawName = m[1].split(/\s+/)[0];
         let handler: string | undefined;
         let actionLine = i;
         for (let j = i; j < Math.min(i + 20, lines.length); j++) {
-          const am = lines[j].match(/\.action\s*\(\s*(?:async\s*)?(?:function\s*)?\(?([\w.]*)/);
           if (lines[j].includes('.action(')) {
             actionLine = j;
-            handler = am && am[1] ? am[1] : undefined;
+            handler = this.parseCommanderActionHandler(lines[j]);
             break;
           }
         }
@@ -313,7 +311,7 @@ export class CliAnalyzer extends BaseAnalyzer {
 
     if (FRAMEWORK_SIGNALS.yargs.test(content)) {
       frameworks.add('yargs');
-      // .command('name', 'description', builder, handler) or .command({ command, handler })
+
       for (let i = 0; i < lines.length; i++) {
         const m = lines[i].match(/\.command\s*\(\s*["']([^"']+)["']/);
         if (m) {
@@ -321,7 +319,7 @@ export class CliAnalyzer extends BaseAnalyzer {
           commands.push({ name: rawName, framework: 'yargs', line: i + 1 });
           continue;
         }
-        // object form: `command: 'name'`
+
         const objectForm = lines[i].match(/command\s*:\s*["']([^"']+)["']/);
         if (objectForm && /yargs/i.test(content)) {
           const rawName = objectForm[1].split(/\s+/)[0];
@@ -332,7 +330,7 @@ export class CliAnalyzer extends BaseAnalyzer {
 
     if (FRAMEWORK_SIGNALS.oclif.test(content)) {
       frameworks.add('oclif');
-      // oclif command classes: `export default class Build extends Command { ... static description ... async run() }`
+
       for (let i = 0; i < lines.length; i++) {
         const m = lines[i].match(/^export\s+default\s+class\s+(\w+)\s+extends\s+Command\b/);
         if (m) {
@@ -347,6 +345,13 @@ export class CliAnalyzer extends BaseAnalyzer {
     }
   }
 
+  private parseCommanderActionHandler(line: string): string | undefined {
+    const namedFunction = line.match(/\.action\s*\(\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/);
+    if (namedFunction) return namedFunction[1];
+    const reference = line.match(/\.action\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\)\s*[;.]?/);
+    return reference?.[1];
+  }
+
   private pascalToKebab(name: string): string {
     return name
       .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
@@ -354,17 +359,17 @@ export class CliAnalyzer extends BaseAnalyzer {
       .toLowerCase();
   }
 
-  // ── Go: cobra, urfave/cli ────────────────────────────────────────────────
+
 
   private parseGo(content: string, commands: ParsedCliCommand[], frameworks: Set<CliFramework>): void {
     const lines = content.split('\n');
 
     if (FRAMEWORK_SIGNALS.cobra.test(content)) {
       frameworks.add('cobra');
-      // var xCmd = &cobra.Command{ Use: "name ...", Run/RunE: handler, }
-      // Scan blocks between `&cobra.Command{` and the matching `}`.
-      // A command is a "group" only when some other command is registered under it
-      // via `xCmd.AddCommand(...)` — a bare leaf command is a real, flow-rootable entry.
+
+
+
+
       const varsWithChildren = new Set<string>();
       for (const m of content.matchAll(/\b(\w+)\.AddCommand\s*\(/g)) {
         varsWithChildren.add(m[1]);
@@ -397,7 +402,7 @@ export class CliAnalyzer extends BaseAnalyzer {
 
     if (FRAMEWORK_SIGNALS['urfave-cli'].test(content)) {
       frameworks.add('urfave-cli');
-      // cli.Command{ Name: "name", Action: handler }
+
       for (let i = 0; i < lines.length; i++) {
         if (!/cli\.Command\s*\{/.test(lines[i])) continue;
         let name: string | undefined;
@@ -416,19 +421,19 @@ export class CliAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ── Rust: clap ────────────────────────────────────────────────────────────
+
 
   private parseRust(content: string, commands: ParsedCliCommand[], frameworks: Set<CliFramework>): void {
     if (!FRAMEWORK_SIGNALS.clap.test(content)) return;
     frameworks.add('clap');
     const lines = content.split('\n');
 
-    // #[derive(Parser)] ... struct/enum Name { ... #[command(subcommand)] ... }
-    // Subcommands are typically an enum with #[derive(Subcommand)] and variants
-    // annotated (or bare) — each variant name is a subcommand.
+
+
+
     for (let i = 0; i < lines.length; i++) {
       if (!/#\[derive\([^)]*Subcommand[^)]*\)\]/.test(lines[i])) continue;
-      // Find the enum declaration within the next few lines.
+
       let enumLine = -1;
       for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
         if (/^\s*(?:pub\s+)?enum\s+(\w+)/.test(lines[j])) {
@@ -437,7 +442,7 @@ export class CliAnalyzer extends BaseAnalyzer {
         }
       }
       if (enumLine === -1) continue;
-      // Walk variants until the closing brace of the enum.
+
       let depth = 0;
       let started = false;
       for (let j = enumLine; j < lines.length; j++) {
@@ -461,8 +466,8 @@ export class CliAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Top-level `#[derive(Parser)] struct Cli { ... }` with no subcommand enum:
-    // treat the binary itself as a single flat CLI command (name from #[command(name = "...")]).
+
+
     if (commands.length === 0 && /#\[derive\([^)]*Parser[^)]*\)\]/.test(content)) {
       const nameMatch = content.match(/#\[command\([^)]*name\s*=\s*"([^"]+)"/);
       const structMatch = content.match(/#\[derive\([^)]*Parser[^)]*\)\][\s\S]{0,80}?struct\s+(\w+)/);
@@ -479,14 +484,14 @@ export class CliAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ── Ruby: Thor ────────────────────────────────────────────────────────────
+
 
   private parseRuby(content: string, commands: ParsedCliCommand[], frameworks: Set<CliFramework>): void {
     if (!FRAMEWORK_SIGNALS.thor.test(content)) return;
     frameworks.add('thor');
     const lines = content.split('\n');
 
-    // desc "name ARGS", "description" followed by `def name(...)`
+
     for (let i = 0; i < lines.length; i++) {
       const descMatch = lines[i].match(/^\s*desc\s+["']([^"'\s]+)/);
       if (!descMatch) continue;
@@ -511,7 +516,7 @@ export class CliAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ── Generic fallback: main() with no known framework ────────────────────
+
 
   private parseGeneric(relativePath: string, content: string, commands: ParsedCliCommand[], frameworks: Set<CliFramework>): void {
     const lines = content.split('\n');
@@ -520,8 +525,13 @@ export class CliAnalyzer extends BaseAnalyzer {
     if (ext === '.py') {
       const idx = lines.findIndex(l => /if\s+__name__\s*==\s*['"]__main__['"]/.test(l));
       if (idx !== -1) {
+        const guardedLines = lines.slice(idx + 1, idx + 8);
+        const systemExitHandler = guardedLines.join('\n').match(/SystemExit\s*\(\s*([A-Za-z_]\w*)\s*\(/)?.[1];
+        const directHandler = guardedLines
+          .map(line => line.match(/^\s*(?:await\s+)?([A-Za-z_]\w*)\s*\(/)?.[1])
+          .find(Boolean);
         frameworks.add('generic');
-        commands.push({ name: 'main', framework: 'generic', line: idx + 1, handler: 'main' });
+        commands.push({ name: 'main', framework: 'generic', line: idx + 1, handler: systemExitHandler || directHandler });
       }
       return;
     }
@@ -543,7 +553,7 @@ export class CliAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ── Emission ──────────────────────────────────────────────────────────────
+
 
   private emitEntryPoints(result: CliFileResult, nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
     const fileId = `file_${this.sanitizeId(result.relativePath)}`;

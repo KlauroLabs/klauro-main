@@ -2,27 +2,27 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { CASEntryPoint, CASLibrary, CASNode } from '../../types/cas.types';
 
-/**
- * Codebase-TYPE classifier.
- *
- * Deterministically classifies a repo/root into one or more coarse TYPEs from
- * evidence already on disk (manifest kind + fields) plus facts the orchestrator
- * has already extracted (entry points, libraries, node file extensions). This
- * matters because "what kind of thing is this" changes what an entry point
- * even means: a library's public surface is its exports, not routes; a CLI's
- * surface is its bin commands, not an HTTP route table.
- *
- * Deliberately NOT AI — this is the deterministic-facts-first layer per the
- * Klauro cardinal rule (structural facts + AI interpretation, never a
- * hardcoded-keyword-only guess with no evidence trail). Every classification
- * carries `signals`: the concrete evidence that produced it, so a caller (or a
- * human) can audit *why* a repo got labeled `library` instead of `cli`.
- *
- * A repo can legitimately be more than one type (a monorepo containing both a
- * `web-backend` API and a `library` package) — see `classifyCodebaseTypes`.
- * `classifyCodebaseType` returns just the single best-confidence type for
- * callers that want one answer (e.g. CASOutput.codebase_type).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export type CodebaseType =
   | 'web-backend'
@@ -40,34 +40,34 @@ export type CodebaseType =
   | 'unknown';
 
 export interface CodebaseTypeSignal {
-  /** Short machine-stable id for this piece of evidence, e.g. 'package.json#bin'. */
+
   id: string;
-  /** Human-readable explanation of what was found. */
+
   detail: string;
-  /** Which type(s) this signal supports. */
+
   supports: CodebaseType[];
-  /** Relative weight of this signal (higher = stronger evidence). */
+
   weight: number;
 }
 
 export interface CodebaseTypeClassification {
-  /** All types with non-trivial evidence, ordered by confidence (highest first). */
+
   types: Array<{ type: CodebaseType; confidence: number }>;
-  /** Single best-confidence type (types[0].type, or 'unknown' if no evidence at all). */
+
   primary_type: CodebaseType;
-  /** Confidence 0-1 for primary_type. */
+
   confidence: number;
-  /** Every signal considered, including ones that didn't win — full audit trail. */
+
   signals: CodebaseTypeSignal[];
 }
 
 export interface ClassifyCodebaseTypeInput {
   projectPath: string;
-  /** Already-extracted entry points for this root, if available (better than re-deriving). */
+
   entryPoints?: CASEntryPoint[];
-  /** Already-extracted libraries/dependencies for this root, if available. */
+
   libraries?: CASLibrary[];
-  /** Already-extracted nodes for this root, if available (used for file-extension signals). */
+
   nodes?: CASNode[];
 }
 
@@ -97,10 +97,10 @@ function safeReaddir(dirPath: string): string[] {
   }
 }
 
-// Dependency-name -> type-signal table. Deliberately small and evidence-only:
-// each entry says "if this exact dependency name is present, that's evidence
-// (not proof) of X". Ambiguous/ubiquitous deps (react, express) get modest
-// weight; framework-specific deps (next, electron, react-native) get more.
+
+
+
+
 const DEP_TYPE_HINTS: Array<{ names: string[]; type: CodebaseType; weight: number; detail: string }> = [
   { names: ['next', 'nuxt'], type: 'fullstack', weight: 5, detail: 'meta-framework (SSR + API routes in one app)' },
   { names: ['@remix-run/react', 'remix'], type: 'fullstack', weight: 5, detail: 'Remix (SSR + loaders/actions in one app)' },
@@ -121,7 +121,7 @@ const DEP_TYPE_HINTS: Array<{ names: string[]; type: CodebaseType; weight: numbe
   { names: ['commander', 'yargs', 'clap', 'click', 'typer', 'cobra', 'cliffy'], type: 'cli', weight: 3, detail: 'CLI argument-parsing library' },
 ];
 
-/** Directory-name conventions that hint at a type without full manifest parsing. */
+
 const DIR_HINTS: Array<{ names: string[]; type: CodebaseType; weight: number; detail: string }> = [
   { names: ['notebooks', 'notebook'], type: 'data-ml', weight: 2, detail: 'notebooks/ directory' },
   { names: ['terraform', 'modules'], type: 'infra', weight: 2, detail: 'terraform/ directory' },
@@ -157,22 +157,22 @@ function classifyFromNodePackageJson(projectPath: string, signals: CodebaseTypeS
     pushSignal(signals, 'package.json#bin', 'package.json declares a `bin` entry (installable CLI command)', ['cli'], 4);
   }
 
-  // A published/publishable library: has main/exports, is not private, and has
-  // no bin (a pure CLI package would be caught above but many CLIs also export
-  // a programmatic API — bin dominates when both are present since `weight` for
-  // cli#bin is higher).
+
+
+
+
   if (hasMainOrExports && !isPrivate) {
     pushSignal(signals, 'package.json#main-exports', 'package.json declares main/module/exports and is publishable (not private)', ['library'], 3);
   } else if (hasMainOrExports && isPrivate) {
-    // Private packages with main/exports inside a monorepo are still evidence
-    // of "library-shaped" (an internal shared package), just weaker.
+
+
     pushSignal(signals, 'package.json#main-exports-private', 'package.json declares main/module/exports but is private (internal package)', ['library'], 1.5);
   }
 
   if (!hasBin && !hasMainOrExports && hasScripts) {
-    // No installable surface at all: likely an app (frontend or backend),
-    // decided by deps/dirs elsewhere. Weak negative-shaped signal, so no push here
-    // beyond what dependency/dir hints already contribute.
+
+
+
   }
 
   const depNames = new Set<string>([
@@ -272,8 +272,8 @@ function classifyFromDirectoriesAndExtensions(projectPath: string, signals: Code
     pushSignal(signals, 'dirs:game-engine', `game-engine-shaped directories present (${gameDirHits.join(', ')})`, ['game'], 2);
   }
 
-  // Terraform/HCL and k8s manifest presence anywhere near the root (shallow scan
-  // — this classifier is intentionally cheap, not a full source walk).
+
+
   if (topLevel.some(n => n.endsWith('.tf'))) {
     pushSignal(signals, 'ext:.tf', '.tf files at project root', ['infra'], 3);
   }
@@ -330,13 +330,13 @@ function classifyFromEntryPoints(entryPoints: CASEntryPoint[] | undefined, signa
   }
 }
 
-/**
- * Classify a project root into every codebase TYPE with non-trivial evidence,
- * ranked by confidence. Confidence is a normalized score (0-1), not a
- * probability — it is `type's total weight / sum of all types' total weight`,
- * so it is comparable across types within one classification but not directly
- * comparable across repos.
- */
+
+
+
+
+
+
+
 export function classifyCodebaseTypes(input: ClassifyCodebaseTypeInput): CodebaseTypeClassification {
   const { projectPath, entryPoints, libraries, nodes } = input;
   const signals: CodebaseTypeSignal[] = [];
@@ -348,10 +348,10 @@ export function classifyCodebaseTypes(input: ClassifyCodebaseTypeInput): Codebas
   classifyFromDirectoriesAndExtensions(projectPath, signals, nodes);
   classifyFromEntryPoints(entryPoints, signals);
 
-  // Fold in libraries passed by the caller too (covers roots where the caller
-  // already has a parsed CASLibrary[] and we'd otherwise double-read the
-  // manifest — dedupe by name+type so we don't double-count the same
-  // dependency's evidence).
+
+
+
+
   if (libraries && libraries.length > 0) {
     const alreadyCounted = new Set(signals.filter(s => s.id.startsWith('dep:')).map(s => s.id));
     for (const lib of libraries) {
@@ -388,7 +388,7 @@ export function classifyCodebaseTypes(input: ClassifyCodebaseTypeInput): Codebas
   };
 }
 
-/** Convenience wrapper returning just the single best-confidence type. */
+
 export function classifyCodebaseType(input: ClassifyCodebaseTypeInput): { codebase_type: CodebaseType; confidence: number; signals: CodebaseTypeSignal[] } {
   const result = classifyCodebaseTypes(input);
   return { codebase_type: result.primary_type, confidence: result.confidence, signals: result.signals };

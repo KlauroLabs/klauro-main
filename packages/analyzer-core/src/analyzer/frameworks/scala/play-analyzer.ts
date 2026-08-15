@@ -7,39 +7,39 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Play Framework analyzer (Scala/Java).
- *
- * Play is structurally unusual among the frameworks this repo analyzes: routes
- * are NOT declared inline next to the handler (no DSL, no annotation on the
- * method). They live in a separate, plain-text `conf/routes` file with the
- * grammar:
- *
- *   GET     /users/:id          controllers.UserController.show(id: Long)
- *   POST    /users              controllers.UserController.create()
- *   ->      /api                api.Routes                              # router include
- *   # comments and blank lines allowed; leading whitespace insignificant
- *
- * So this analyzer's route source of truth is the `conf/routes` file (and any
- * additional `*.routes` files referenced via `->` includes), not the
- * controller source. It:
- *   1. Parses every `conf/routes` / `conf/*.routes` file into (method, path,
- *      controllerFQCN, methodName, params) tuples — a route entry_point.
- *   2. Resolves the handler to the real method node by locating
- *      `controllers/<Simple>.scala` (or `.java`) and finding a `def <method>(`
- *      (Scala) / `public ... <method>(` (Java) declaration — the entry point's
- *      `resolved_target` points at that file:line when found, otherwise it
- *      stays path-only (never fabricated).
- *   3. Emits `->` includes as `mounts` edges to the sub-router file (best
- *      effort: the sub-file is parsed too if present in the project).
- *
- * This is the one framework in this JVM-extra batch whose route table cannot
- * be derived from decorated source alone — the `conf/routes` file IS the
- * router. Gating requires either the file's presence with Play-shaped route
- * lines, or a build.sbt with a play plugin/dependency (belt-and-suspenders,
- * since a bare `conf/routes`-shaped file without the Play dependency signal
- * would be a false positive on generic routing tables from other systems).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const ROUTES_GLOBS = ['conf/routes', 'conf/*.routes', '**/conf/routes', '**/conf/*.routes'];
 const BUILD_GLOBS = ['build.sbt', 'project/plugins.sbt', 'project/build.properties'];
@@ -58,7 +58,7 @@ interface PlayRoute {
 
 interface PlayInclude {
   prefix: string;
-  routerRef: string; // e.g. api.Routes -> conf/api.routes by convention, best-effort
+  routerRef: string;
   line: number;
 }
 
@@ -84,8 +84,8 @@ export class PlayAnalyzer extends BaseAnalyzer {
       });
       if (routesFiles.length === 0) return false;
 
-      // Confirm Play shape in at least one routes file: a line matching
-      // `METHOD  /path  controller.Method(...)`.
+
+
       let looksLikePlayRoutes = false;
       for (const rel of routesFiles) {
         const content = await fs.readFile(path.join(projectPath, rel), 'utf-8').catch(() => '');
@@ -96,9 +96,9 @@ export class PlayAnalyzer extends BaseAnalyzer {
       }
       if (!looksLikePlayRoutes) return false;
 
-      // Belt-and-suspenders: build.sbt / plugins.sbt with the Play plugin, OR
-      // a controllers/ directory (Play's conventional layout) — avoids a false
-      // positive on an unrelated `conf/routes`-shaped file from another system.
+
+
+
       const buildFiles = await glob(BUILD_GLOBS, {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
@@ -122,10 +122,10 @@ export class PlayAnalyzer extends BaseAnalyzer {
   }
 
   supportsIncrementalAnalysis(): boolean {
-    // Route resolution here is cross-file by construction (routes file ↔
-    // controller file); a single changed file cannot be re-analyzed in
-    // isolation without re-reading its counterpart, so this analyzer opts out
-    // of incremental single-file mode and always re-runs the full analyze().
+
+
+
+
     return false;
   }
 
@@ -145,8 +145,8 @@ export class PlayAnalyzer extends BaseAnalyzer {
   }
 
   async analyzeFileSingle(_context: FileAnalysisContext): Promise<FileAnalysisResult> {
-    // Not supported (see supportsIncrementalAnalysis); return an empty
-    // contribution rather than a partial/misleading one.
+
+
     return this.createFileAnalysisResult(
       _context.filePath,
       _context.relativePath,
@@ -184,13 +184,13 @@ export class PlayAnalyzer extends BaseAnalyzer {
         routesFiles.push(this.parseRoutesFile(relativePath, fullPath, content));
       }
 
-      // Index controller files by simple class name -> file, for handler resolution.
+
       const controllerFiles = await glob(CONTROLLER_GLOBS, {
         cwd: context.projectPath,
         ignore: this.getIgnorePatterns(context),
         nodir: true,
       });
-      const controllerIndex = new Map<string, string>(); // simpleClassName -> relativePath
+      const controllerIndex = new Map<string, string>();
       for (const rel of controllerFiles) {
         const base = path.basename(rel).replace(/\.(scala|java)$/, '');
         controllerIndex.set(base, rel);
@@ -224,11 +224,11 @@ export class PlayAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing
-  // ---------------------------------------------------------------------------
 
-  /** Parse a `conf/routes`-shaped file: method/path/controller lines + `->` includes. */
+
+
+
+
   private parseRoutesFile(relativePath: string, fullPath: string, content: string): PlayRoutesFile {
     const lines = content.split('\n');
     const routes: PlayRoute[] = [];
@@ -239,14 +239,14 @@ export class PlayAnalyzer extends BaseAnalyzer {
       const line = this.stripComment(raw).trim();
       if (!line) continue;
 
-      // `->  /api  api.Routes`  (sub-router include)
+
       const includeMatch = line.match(/^->\s+(\/\S*)\s+([\w.]+)/);
       if (includeMatch) {
         includes.push({ prefix: includeMatch[1], routerRef: includeMatch[2], line: i + 1 });
         continue;
       }
 
-      // `GET  /users/:id  controllers.UserController.show(id: Long)`
+
       const routeMatch = line.match(/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\/\S*)\s+([\w.]+)\.(\w+)\s*(\([^)]*\))?/);
       if (routeMatch && HTTP_METHODS.has(routeMatch[1])) {
         routes.push({
@@ -264,13 +264,13 @@ export class PlayAnalyzer extends BaseAnalyzer {
   }
 
   private stripComment(line: string): string {
-    // A '#' outside of a string literal starts a comment; routes lines rarely
-    // contain string literals with '#', so a simple scan suffices.
+
+
     const idx = line.indexOf('#');
     return idx >= 0 ? line.slice(0, idx) : line;
   }
 
-  /** Locate `def <method>(` (Scala) or a Java method decl matching `methodName` in the controller file. */
+
   private async resolveHandler(
     projectPath: string,
     controllerRelPath: string | undefined,
@@ -296,9 +296,9 @@ export class PlayAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private async emitRoutesFileContribution(
     rf: PlayRoutesFile,
@@ -395,9 +395,9 @@ export class PlayAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   protected getLevelName(level: number): string {
     switch (level) {

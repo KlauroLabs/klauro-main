@@ -8,40 +8,40 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Solidity security-facts framework analyzer.
- *
- * Grounded on the real vendored tree-sitter-solidity AST:
- *
- *   contract_declaration
- *     identifier <contract name>
- *     inheritance_specifier* -> user_defined_type -> identifier <base name>
- *     contract_body -> function_definition*
- *       identifier <fn name>
- *       visibility <public|external|internal|private>
- *       modifier_invocation -> identifier <modifier name>   (onlyOwner, nonReentrant, ...)
- *       function_body -> ...
- *         member_expression -> member_expression(msg,sender) . identifier(call|transfer|send)
- *           (a `.call{...}(...)`, `.transfer(...)`, `.send(...)` low-level call --
- *            an external-call site whose value/control leaves the contract)
- *         assignment_expression / augmented_assignment_expression
- *           (state write -- LHS is a bare `identifier` or an `array_access`
- *            chain rooted at one, resolved against the contract's declared
- *            state_variable_declaration names)
- *
- * Detected facts (each becomes one `security-fact` CAS node):
- *   - access-control:onlyOwner:<function>    -- function gated by onlyOwner.
- *   - access-control:inherits:<contract>     -- contract inherits Ownable/AccessControl.
- *   - erc20-conformance / erc721-conformance / erc1155-conformance -- contract
- *     declares the full required function set for the standard.
- *   - reentrancy-guard:<function>            -- function gated by nonReentrant.
- *   - external-call-before-state-write:<function> -- function makes a low-level
- *     external call (`.call`/`.transfer`/`.send`) and THEN writes to a state
- *     variable afterward (checks-effects-interactions violation).
- *
- * Fact ids are stable strings so the bench can score F1 by exact string match
- * against truth.json.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const SOL_EXTENSIONS = ['**/*.sol'];
 
@@ -198,16 +198,19 @@ export class SoliditySecurityAnalyzer extends BaseAnalyzer {
       return undefined;
     }
 
-    const contracts: SolContractFact[] = [];
-    const root = tree.rootNode;
-    for (let i = 0; i < root.childCount; i++) {
-      const node = root.child(i);
-      if (node.type === 'contract_declaration') {
-        contracts.push(this.parseContract(node));
+    try {
+      const contracts: SolContractFact[] = [];
+      const root = tree.rootNode;
+      for (let i = 0; i < root.childCount; i++) {
+        const node = root.child(i);
+        if (node.type === 'contract_declaration') {
+          contracts.push(this.parseContract(node));
+        }
       }
+      return { relativePath, fullPath, contracts };
+    } finally {
+      tree.delete?.();
     }
-
-    return { relativePath, fullPath, contracts };
   }
 
   private parseContract(contractNode: any): SolContractFact {

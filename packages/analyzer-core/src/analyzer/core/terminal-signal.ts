@@ -1,18 +1,18 @@
 import type { CASUserJourney, SystemCapability } from '../../types/cas.types';
 
-/**
- * Terminal signal: the deterministic "why this system exists" derived from
- * the TERMINAL SEGMENT of each journey — the terminal entities (what the
- * system ultimately produces or manages) plus the near-terminal steps that
- * lead directly to them. Domain and description inference must anchor here
- * rather than on pooled vocabulary statistics: pooled tokens are dominated
- * by plumbing (auth, serialization, UI state) that exists in every codebase.
- *
- * The near-terminal steps matter because the domain-defining stage can sit a
- * couple of steps above the literal terminal (a portfolio-analysis service
- * whose outputs are insight/trade entities defines the domain as much as the
- * entities themselves). Weight decays with distance from the terminal.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface RankedTerminalEntity {
   name: string;
@@ -27,7 +27,7 @@ export interface RankedTerminalStage {
   name: string;
   score: number;
   journey_count: number;
-  /** 0 = terminal step itself, 1 = one level above, 2 = two levels above. */
+
   min_distance_from_terminal: number;
 }
 
@@ -39,14 +39,14 @@ export interface RankedTerminalCapability {
 
 export interface TerminalSignal {
   ranked_entities: RankedTerminalEntity[];
-  /** Near-terminal business/data stages (services, analyses, engines). */
+
   ranked_stages: RankedTerminalStage[];
   ranked_capabilities: RankedTerminalCapability[];
-  /**
-   * Weighted text for domain rule/token scoring: terminals and near-terminal
-   * stages repeated by rank so structural rules and token-frequency scorers
-   * see the terminal hierarchy instead of a flat bag.
-   */
+
+
+
+
+
   domain_seed_text: string;
 }
 
@@ -62,10 +62,10 @@ const TOP_ENTITY_LIMIT = 8;
 const TOP_STAGE_LIMIT = 8;
 const TOP_CAPABILITY_LIMIT = 8;
 
-// Live-measured pollution in journey terminal data on real repos: HTTP verbs
-// stored as terminal entity names, React hook "usage" nodes, and framework
-// lifecycle methods. None of these are product identity; they must never
-// reach domain seeding.
+
+
+
+
 const HTTP_VERB_NAMES = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'request', 'response']);
 const LIFECYCLE_NAMES = new Set([
   'main', 'build', 'dispose', 'initstate', 'init', 'setup', 'render', 'constructor', '__construct',
@@ -78,14 +78,14 @@ const LOWERCASE_UTILITY_NAMES = new Set([
   'data', 'item', 'items', 'state', 'status', 'config', 'options', 'props', 'context',
 ]);
 
-// Content hashes, uuids, and random generated ids are plumbing artifacts
-// that can survive as a journey's "terminal_entities" name on thin/near-empty
-// repos (e.g. a hashed cache key or generated record id standing in for a
-// real entity). They must never become terminal-entity CANDIDATES in the
-// first place — rejecting them only at the label-composition layer is too
-// late, since ranked_entities is also consumed directly (narrative entity
-// lists, capability matching) without going through domain composition.
-// Kept in sync with orchestrator.ts's isHashOrIdShapedToken.
+
+
+
+
+
+
+
+
 function isHashOrIdShapedName(raw: string): boolean {
   const normalized = (raw || '').toLowerCase();
   if (normalized.length < 8) return false;
@@ -101,21 +101,21 @@ function isNoiseTerminalName(raw: string): boolean {
   const name = (raw || '').trim();
   if (!name) return true;
   if (isHashOrIdShapedName(name)) return true;
-  // Underscore-prefixed names are private helpers in Dart/Python conventions.
+
   if (name.startsWith('_')) return true;
-  // Exception/error classes are failure paths, not product outputs — a
-  // FastAPI app raises HTTPException from every handler and it must never
-  // become the system's terminal identity (alpha_engine regression).
+
+
+
   if (/(exception|error)s?$/i.test(name)) return true;
-  // Bare directory-shaped tokens are structure, not product.
+
   if (/^(src|lib|app|apps|dist|build|out|pkg|bin|test|tests|main|index|core|common|shared|utils?)$/i.test(name)) return true;
   const lower = name.toLowerCase();
   if (HTTP_VERB_NAMES.has(lower) || LIFECYCLE_NAMES.has(lower)) return true;
   if (HOOK_USAGE_PATTERN.test(name)) return true;
   if (UTILITY_NAME_PATTERN.test(name)) return true;
-  // Bare lowercase utility/framework words are noise, but lowercase domain
-  // nouns from Python/Rails/table-style extraction (order, invoice, portfolio)
-  // must remain eligible terminal evidence.
+
+
+
   if (LOWERCASE_UTILITY_NAMES.has(lower)) return true;
   return false;
 }
@@ -156,8 +156,8 @@ export function buildTerminalSignal(input: {
       byEntity.set(name, entry);
     }
 
-    // Terminal segment: deepest STAGE_SEGMENT_LEVELS depth levels of the
-    // journey's business/data steps, weight decaying above the terminal.
+
+
     const stageSteps = (journey.steps || []).filter(step => STAGE_LAYERS.has(step.layer));
     if (stageSteps.length === 0) continue;
     const maxDepth = Math.max(...stageSteps.map(step => step.depth));
@@ -229,10 +229,10 @@ export function buildTerminalSignal(input: {
   };
 }
 
-/**
- * Terminals and near-terminal stages repeated by descending rank (top item
- * appears N times, next N-1, ...) so token-frequency scorers see hierarchy.
- */
+
+
+
+
 function buildDomainSeedText(
   entities: RankedTerminalEntity[],
   stages: RankedTerminalStage[],

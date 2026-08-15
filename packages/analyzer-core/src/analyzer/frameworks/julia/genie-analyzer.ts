@@ -5,45 +5,45 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Genie.jl (Julia web framework) route analyzer.
- *
- * Genie declares routes with the `route` function and `@get`/`@post`/... macros:
- *
- *   route("/") do            # GET / (inline do-block handler)
- *     "home"
- *   end
- *   route("/users", users_index)                       // GET /users    -> users_index
- *   route("/users/:id", show_user)                     // GET /users/:id -> show_user
- *   route("/users", create_user, method = POST)        // POST /users    -> create_user
- *   route("/users/:id", delete_user, method = DELETE)  // DELETE /users/:id
- *   @get("/about", about)                              // GET /about     -> about
- *   @post("/login", do_login)                          // POST /login    -> do_login
- *
- * Method: a `method = <VERB>` keyword (named_argument) when present, else GET.
- * `@get`/`@post`/`@put`/`@patch`/`@delete` macros carry the verb in the macro name.
- * Path: the first string-literal argument; Genie uses `:id` route params, kept as-is.
- *
- * Auth in Genie is applied via middleware / plugins (Genie.Router middleware, or
- * package-level auth like GenieAuthentication) at the app/route-group level, not as a
- * per-route argument. There is no reliable per-route guard token in a `route(...)`
- * call, so we are HONEST and emit auth:false for every route unless a clear per-route
- * guard is present (none in the standard API). Documented limitation.
- *
- * Node types grounded on the real vendored tree-sitter-julia grammar (see artifact):
- *   call_expression
- *     identifier "route"
- *     argument_list
- *       string_literal > content          // clean path text (no quotes)
- *       identifier                         // handler name (positional)
- *       named_argument(identifier "method", operator "=", identifier "POST")
- *       do_clause                          // inline handler (route("/") do ... end)
- *   macrocall_expression
- *     macro_identifier > identifier "get"  // @get / @post / ...
- *     argument_list ( string_literal, identifier )
- */
 
-/** Macro verb names that map to an HTTP method (`@get` -> GET). */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const MACRO_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options']);
 
 interface GenieRoute {
@@ -61,14 +61,14 @@ export class GenieAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      // Manifest signal: Project.toml depending on Genie (content-gated — Project.toml
-      // is a generic Julia manifest, so we only claim it when Genie is referenced).
+
+
       const proj = path.join(projectPath, 'Project.toml');
       if (await fs.pathExists(proj)) {
         const content = await fs.readFile(proj, 'utf-8');
         if (/\bGenie\b/.test(content)) return true;
       }
-      // Source signal: Genie usage / route DSL in any .jl file.
+
       for (const file of await this.findJuliaFiles(projectPath)) {
         const content = await fs.readFile(file, 'utf-8');
         if (/\bGenie\b/.test(content) && /\broute\s*\(|@(get|post|put|patch|delete)\s*\(/.test(content)) {
@@ -125,12 +125,12 @@ export class GenieAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse one Julia source and emit an http entry point per Genie route. We walk to
-   * every `call_expression` whose callee is `route` and every `macrocall_expression`
-   * whose macro is an HTTP verb (`@get`/`@post`/...), then read the path + method +
-   * handler from the argument list.
-   */
+
+
+
+
+
+
   private async extractRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): Promise<void> {
     const tree = await parseWasm('julia', content);
     const root = tree.rootNode;
@@ -156,10 +156,14 @@ export class GenieAnalyzer extends BaseAnalyzer {
       for (let i = 0; i < node.namedChildCount; i++) visit(node.namedChild(i));
     };
 
-    visit(root);
+    try {
+      visit(root);
+    } finally {
+      tree.delete?.();
+    }
   }
 
-  /** Parse a `route("/path", handler, method = VERB)` call (or `route("/") do ... end`). */
+
   private parseRouteCall(callExpr: any): GenieRoute | null {
     const callee = callExpr.namedChild(0);
     if (!callee || callee.type !== 'identifier' || this.nodeText(callee).trim() !== 'route') return null;
@@ -178,16 +182,16 @@ export class GenieAnalyzer extends BaseAnalyzer {
       method,
       fullPath: this.normalizePath(path),
       handler,
-      authed: false, // Genie auth is middleware/plugin-level; no per-route guard. Honest.
+      authed: false,
       line: callExpr.startPosition.row + 1,
     };
   }
 
-  /** Parse a `@get("/path", handler)` / `@post(...)` macro route. */
+
   private parseMacroCall(macroExpr: any): GenieRoute | null {
     const macroId = this.childOfType(macroExpr, 'macro_identifier');
     if (!macroId) return null;
-    // macro_identifier wraps an identifier with the verb name (`@get` -> "get").
+
     const verbId = this.childOfType(macroId, 'identifier');
     const verb = (verbId ? this.nodeText(verbId) : this.nodeText(macroId).replace(/^@/, '')).trim().toLowerCase();
     if (!MACRO_METHODS.has(verb)) return null;
@@ -232,7 +236,7 @@ export class GenieAnalyzer extends BaseAnalyzer {
     );
   }
 
-  // ---- AST helpers (grounded on vendored tree-sitter-julia) ---------------------
+
 
   private nodeText(node: any): string {
     return node?.text ?? '';
@@ -247,7 +251,7 @@ export class GenieAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Clean text of the first string_literal argument (its `content` child), or null. */
+
   private firstStringArg(argList: any): string | null {
     for (let i = 0; i < argList.namedChildCount; i++) {
       const c = argList.namedChild(i);
@@ -256,30 +260,30 @@ export class GenieAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  /** First positional identifier argument after the path (the handler name), or undefined. */
+
   private positionalHandler(argList: any): string | undefined {
     let seenString = false;
     for (let i = 0; i < argList.namedChildCount; i++) {
       const c = argList.namedChild(i);
       if (c.type === 'string_literal') { seenString = true; continue; }
       if (!seenString) continue;
-      if (c.type === 'named_argument') continue;     // method = VERB, not a handler
-      if (c.type === 'do_clause') continue;          // inline closure, handled separately
+      if (c.type === 'named_argument') continue;
+      if (c.type === 'do_clause') continue;
       if (c.type === 'identifier') return this.nodeText(c).trim();
-      // `Controller.action` field expression -> use the full dotted name.
+
       if (c.type === 'field_expression') return this.nodeText(c).trim();
     }
     return undefined;
   }
 
-  /** The HTTP verb of a `method = VERB` named_argument (uppercased), or undefined. */
+
   private methodKeyword(argList: any): string | undefined {
     for (let i = 0; i < argList.namedChildCount; i++) {
       const c = argList.namedChild(i);
       if (c.type !== 'named_argument') continue;
       const key = this.childOfType(c, 'identifier');
       if (!key || this.nodeText(key).trim() !== 'method') continue;
-      // The value is the identifier after the `=` operator (last identifier child).
+
       let value: string | undefined;
       for (let j = 0; j < c.namedChildCount; j++) {
         const v = c.namedChild(j);
@@ -291,7 +295,7 @@ export class GenieAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Clean string value: prefer the `content` child, else strip quotes. */
+
   private stringLiteralValue(lit: any): string {
     const content = this.childOfType(lit, 'content');
     if (content) return this.nodeText(content);

@@ -161,6 +161,23 @@ test('SoapWsdlAnalyzer.analyze returns nothing for a non-SOAP repo', async () =>
   }
 });
 
+test('SoapWsdlAnalyzer does not infer product consumers from test source', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soap-wsdl-test-source-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src', 'soap-client.test.ts'), [
+      "import { SoapClient } from 'soap';",
+      "test('calls SOAP', () => new SoapClient('https://example.test/service.wsdl'));",
+    ].join('\n'));
+
+    const analyzer = new SoapWsdlAnalyzer();
+    assert.equal(await analyzer.canAnalyze(dir), false);
+    assert.deepEqual(await analyzer.getRelevantFiles(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function wexCardManagementXml(): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',

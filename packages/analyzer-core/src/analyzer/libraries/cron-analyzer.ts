@@ -15,23 +15,23 @@ interface ScheduledJob {
   decoratorKind?: 'Cron' | 'Interval' | 'Timeout';
 }
 
-/**
- * CronAnalyzer
- *
- * Detects scheduled-job entry points — real flow roots that a route/CLI-only view
- * of a codebase misses entirely. Covers three real-world scheduling libraries:
- *
- *   - `cron` (the `cron` npm package): `new CronJob(schedule, fn, ...)` /
- *     `CronJob.from({ cronTime, onTick })`
- *   - `node-cron`: `cron.schedule(schedule, fn)`
- *   - `@nestjs/schedule`: `@Cron(schedule)` / `@Interval(ms)` / `@Timeout(ms)`
- *     decorators on a class method
- *
- * Each detected job becomes a `schedule`-type entry point whose handler resolves
- * to the real function/method node, carrying the schedule expression as metadata
- * (`trigger.schedule`) so `get_flow_concepts` can root a flow at it exactly like an
- * HTTP route or CLI command.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class CronAnalyzer extends BaseAnalyzer {
   constructor() {
     super('cron', 'Scheduled Job (Cron) Analyzer', '1.0.0', 'library');
@@ -146,14 +146,14 @@ export class CronAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * `cron` package: `new CronJob(schedule, onTick, ...)` or `new cron.CronJob(...)`,
-   * and the static factory `CronJob.from({ cronTime, onTick })`.
-   */
+
+
+
+
   private extractCronPackageJobs(content: string, file: string): ScheduledJob[] {
     const jobs: ScheduledJob[] = [];
 
-    // new CronJob('<expr>', <fn>, ...) / new cron.CronJob('<expr>', <fn>, ...)
+
     const ctorPattern = /new\s+(?:cron\.)?CronJob\s*\(\s*(['"`])([^'"`]+)\1\s*,/g;
     let m: RegExpExecArray | null;
     while ((m = ctorPattern.exec(content)) !== null) {
@@ -164,7 +164,7 @@ export class CronAnalyzer extends BaseAnalyzer {
       jobs.push({ library: 'cron', schedule, handler, file, line });
     }
 
-    // CronJob.from({ cronTime: '<expr>', onTick: <fn> })
+
     const fromPattern = /CronJob\.from\s*\(\s*\{/g;
     while ((m = fromPattern.exec(content)) !== null) {
       const objStart = m.index + m[0].length - 1;
@@ -186,7 +186,7 @@ export class CronAnalyzer extends BaseAnalyzer {
     return jobs;
   }
 
-  /** node-cron: `cron.schedule('<expr>', <fn>)` / `schedule('<expr>', <fn>)`. */
+
   private extractNodeCronJobs(content: string, file: string): ScheduledJob[] {
     const jobs: ScheduledJob[] = [];
     const pattern = /\b(?:cron\.)?schedule\s*\(\s*(['"`])([^'"`]+)\1\s*,/g;
@@ -201,20 +201,20 @@ export class CronAnalyzer extends BaseAnalyzer {
     return jobs;
   }
 
-  /**
-   * `@nestjs/schedule` decorators on class methods:
-   *   @Cron('* * * * *') method() {}
-   *   @Interval(5000) method() {}
-   *   @Timeout(1000) method() {}
-   * The handler is the decorated method name — the decorator sits immediately
-   * above the method declaration.
-   */
+
+
+
+
+
+
+
+
   private extractNestScheduleJobs(content: string, file: string): ScheduledJob[] {
     const jobs: ScheduledJob[] = [];
-    // A scheduler decorator may be RENAMED at the import site
-    // (`import { Cron as Scheduled }`), and matching the exported name alone
-    // then silently drops the job. Map every local binding back to the
-    // decorator it actually is, and match on the local names.
+
+
+
+
     const localToKind = this.nestScheduleBindings(content);
     const alternation = [...localToKind.keys()]
       .sort((a, b) => b.length - a.length)
@@ -233,9 +233,9 @@ export class CronAnalyzer extends BaseAnalyzer {
       const methodName = m[3];
       const line = content.slice(0, m.index).split('\n').length;
 
-      // @Cron takes a cron expression (string) or CronExpression enum member;
-      // @Interval/@Timeout take a millisecond number. Represent both as the
-      // schedule string verbatim so the raw expression/ms value is preserved.
+
+
+
       const stringMatch = /^(['"`])([^'"`]+)\1$/.exec(rawArg);
       const schedule = stringMatch ? stringMatch[2] : rawArg || 'unspecified';
 
@@ -244,15 +244,15 @@ export class CronAnalyzer extends BaseAnalyzer {
     return jobs;
   }
 
-  /**
-   * Local binding -> scheduler decorator it denotes, for one file.
-   *
-   * Defaults to the decorators' own names so a file that uses them without an
-   * explicit named import (or imports the namespace) still matches; an aliased
-   * named import additionally binds the local name, and REPLACES the original
-   * only for that binding, so `import { Cron as Scheduled }` matches
-   * `@Scheduled` while a different file's plain `@Cron` is untouched.
-   */
+
+
+
+
+
+
+
+
+
   private nestScheduleBindings(content: string): Map<string, 'Cron' | 'Interval' | 'Timeout'> {
     const kinds = ['Cron', 'Interval', 'Timeout'] as const;
     const bindings = new Map<string, 'Cron' | 'Interval' | 'Timeout'>();
@@ -268,7 +268,7 @@ export class CronAnalyzer extends BaseAnalyzer {
         const local = named[2];
         if (local) {
           bindings.set(local, exported);
-          // The exported name is no longer bound in this file.
+
           if (local !== exported) bindings.delete(exported);
         }
       }
@@ -276,8 +276,8 @@ export class CronAnalyzer extends BaseAnalyzer {
     return bindings;
   }
 
-  /** Resolve the handler arg to a readable name: bare identifier as-is, otherwise
-   *  a generic "inline handler" marker (still navigable via file+line). */
+
+
   private describeHandler(raw: string, _content: string, _file: string, _line: number): string {
     const trimmed = raw.trim();
     if (/^[A-Za-z_$][\w$.]*$/.test(trimmed)) return trimmed;
@@ -285,9 +285,9 @@ export class CronAnalyzer extends BaseAnalyzer {
     return 'inline handler';
   }
 
-  /** Parse the arguments of a call starting just after the schedule string
-   *  (depth 1), splitting on top-level commas while respecting nested
-   *  parens/brackets/braces and string/template literals. */
+
+
+
   private parseRemainingCallArgs(content: string, pos: number): string[] {
     const args: string[] = [];
     let depth = 1;

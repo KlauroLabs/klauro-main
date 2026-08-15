@@ -1,16 +1,16 @@
-/**
- * Maps a query match's tree-sitter captures to real CAS facts, following the
- * rule's `emit` template. Evidence-based: a template field referencing
- * `@capture` that the query didn't actually capture for this match resolves
- * to undefined and the fact is DROPPED (never fabricated) rather than emitted
- * with a placeholder. Literal (non-`@capture`) strings pass through unchanged.
- */
+
+
+
+
+
+
+
 import { QueryMatch } from './pack-query-runner';
 import { Emit } from './pack-schema';
 
 const CAPTURE_REF = /^@([A-Za-z_][A-Za-z0-9_]*)$/;
 
-/** Resolve one template field: "@name" -> that capture's text, "literal" -> itself. */
+
 export function resolveField(template: string | undefined, match: QueryMatch): string | undefined {
   if (template === undefined) return undefined;
   const m = CAPTURE_REF.exec(template.trim());
@@ -65,10 +65,10 @@ export interface MappedRoleFact {
 
 export type MappedFact = MappedEntryPointFact | MappedEntityFact | MappedEdgeFact | MappedBindingFact | MappedRoleFact;
 
-/** Map every `emit` entry for one query match into zero-or-more facts.
- *  An emit whose REQUIRED fields don't resolve (missing capture) is skipped
- *  — evidence-gated, matching the .klaurorc conventions applier's contract
- *  ("a declared convention that matches nothing real emits nothing"). */
+
+
+
+
 export function mapMatchToFacts(emits: Emit[], match: QueryMatch, filePath: string): MappedFact[] {
   const facts: MappedFact[] = [];
 
@@ -79,7 +79,7 @@ export function mapMatchToFacts(emits: Emit[], match: QueryMatch, filePath: stri
         const path_ = resolveField(emit.path, match);
         const handler = resolveField(emit.handler, match);
         const explicitName = resolveField(emit.name, match);
-        // Need at least a path or a handler to have real evidence of an endpoint.
+
         if (!path_ && !handler) continue;
         const name = explicitName || [method?.toUpperCase(), path_].filter(Boolean).join(' ') || handler || 'entry point';
         facts.push({

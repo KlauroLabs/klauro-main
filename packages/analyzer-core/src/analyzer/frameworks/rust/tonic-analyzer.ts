@@ -5,21 +5,21 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Tonic (gRPC) framework analyzer.
- *
- * Tonic generates a `<Name>Server` trait per proto `service` and the handwritten
- * server code implements it: `#[tonic::async_trait] impl <Name> for MyServer { async
- * fn some_rpc(&self, request: Request<...>) -> Result<Response<...>, Status> { ... }
- * ... }`. Full route facts (request/response message shapes) require parsing the
- * originating `.proto` file, which is out of scope here — this analyzer surfaces the
- * REAL entry point that matters to an agent: each gRPC-service-trait impl method is an
- * RPC entry point (analogous to an HTTP route), resolved to the real impl-method node,
- * without fabricating proto-level detail we can't verify from Rust source alone. If a
- * sibling `.proto` file for the same service name is present, its RPC method names are
- * cross-checked so only real trait methods (not incidental helper methods on the same
- * impl block) are reported.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class TonicAnalyzer extends BaseAnalyzer {
   private rustAnalyzer: RustAnalyzer;
 
@@ -84,24 +84,24 @@ export class TonicAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** True if the file has at least one `#[tonic::async_trait] impl X for Y { ... }`
-   *  block (with or without the attribute being written exactly that way — tonic's
-   *  generated `*Server` traits are also frequently implemented via the re-exported
-   *  `#[async_trait::async_trait]` or plain `#[async_trait]` when the crate imports
-   *  tonic's re-export under that name) whose body has a Request/Response method. */
+
+
+
+
+
   private hasTonicServiceImpl(content: string): boolean {
     if (!/impl\s+\w+\s+for\s+\w+/.test(content)) return false;
     if (!/async_trait/.test(content)) return false;
     return /Request\s*<|tonic::Request/.test(content) && /Response\s*<|tonic::Response/.test(content);
   }
 
-  /**
-   * Extract each `#[tonic::async_trait] impl <ServiceTrait> for <Struct> { ... }`
-   * block's RPC methods (any `async fn <name>(&self, request: Request<...>) ->
-   * Result<Response<...>, Status>` inside it — the exact shape tonic-build generates
-   * per proto RPC). Each method becomes one gRPC entry point resolved to the real
-   * impl-method source location.
-   */
+
+
+
+
+
+
+
   private extractTonicServiceMethods(
     content: string,
     relativePath: string,
@@ -111,17 +111,17 @@ export class TonicAnalyzer extends BaseAnalyzer {
     if (!/async_trait/.test(content)) return;
     const lineForIndex = this.buildLineIndex(content);
 
-    // `#[tonic::async_trait]` / `#[async_trait::async_trait]` / `#[async_trait]`
-    // immediately preceding `impl <ServiceTrait> for <Struct>`.
+
+
     const implPattern = /#\[\s*(?:tonic::)?async_trait(?:::async_trait)?\s*\]\s*(?:#\[[^\]]*\]\s*)*impl(?:<[^>]*>)?\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*)/g;
     let m: RegExpExecArray | null;
     while ((m = implPattern.exec(content)) !== null) {
       const serviceTraitName = m[1];
       const structName = m[2];
-      // Tonic's generated server trait is named `<Service>Server` (the trait the
-      // generated `<Service>Server<T>` tonic wrapper requires); the logical service
-      // name strips that suffix so it lines up with a `service <Name> { ... }` in the
-      // .proto (if present) and reads naturally (`UserService` not `UserServiceServer`).
+
+
+
+
       const serviceName = serviceTraitName.replace(/Server$/, '');
 
       const braceOpen = content.indexOf('{', m.index + m[0].length);
@@ -133,20 +133,20 @@ export class TonicAnalyzer extends BaseAnalyzer {
 
       const knownRpcs = protoRpcsByService.get(serviceName);
 
-      // Every `async fn <name>(&self, ...) -> Result<Response<...>, Status>` (or
-      // the streaming `Result<Response<Self::XStream>, Status>` form) directly in
-      // the impl body is a generated RPC handler — tonic-build never emits any other
-      // method shape on the service trait.
+
+
+
+
       const methodPattern = /async\s+fn\s+([A-Za-z_]\w*)\s*\(\s*&self[^)]*\)\s*->\s*(?:std::result::)?Result\s*<\s*(?:tonic::)?Response\s*</g;
       let mm: RegExpExecArray | null;
       while ((mm = methodPattern.exec(implBody)) !== null) {
         const rpcName = mm[1];
-        // If we have real proto RPC names for this service, only report methods that
-        // are actually declared RPCs (filters out any plain helper `async fn` on the
-        // same impl block that happens to return a Response<T> incidentally). Compare
-        // via a normalized (lowercase, underscores stripped) key because tonic-build
-        // renames PascalCase proto RPC names (`GetUser`) to snake_case trait methods
-        // (`get_user`) — the two names never match by exact string equality.
+
+
+
+
+
+
         if (knownRpcs && !knownRpcs.has(this.normalizeRpcName(rpcName))) continue;
 
         const absoluteIndex = implBodyOffset + mm.index!;
@@ -179,11 +179,11 @@ export class TonicAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Best-effort: parse any `.proto` file's `service <Name> { rpc <Method>(...) ...
-   *  }` blocks so tonic impl methods can be cross-checked against real RPC names.
-   *  Absence of a .proto is expected (vendored/generated-only repos) — callers must
-   *  treat a missing entry as "unknown", not "no RPCs", which is why this returns a
-   *  Map that's simply empty rather than gating analysis on finding a .proto. */
+
+
+
+
+
   private async collectProtoRpcNames(projectPath: string): Promise<Map<string, Set<string>>> {
     const result = new Map<string, Set<string>>();
     try {
@@ -203,14 +203,14 @@ export class TonicAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // Best effort only — proto cross-check is an enhancement, not a requirement.
+
     }
     return result;
   }
 
-  /** Normalize an RPC name (either a PascalCase proto RPC name or a snake_case tonic
-   *  trait method name) to a lowercase, separator-free key so the two naming schemes
-   *  compare equal (`GetUser` and `get_user` both normalize to `getuser`). */
+
+
+
   private normalizeRpcName(name: string): string {
     return name.toLowerCase().replace(/_/g, '');
   }

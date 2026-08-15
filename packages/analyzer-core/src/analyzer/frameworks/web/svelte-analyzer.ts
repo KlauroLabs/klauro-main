@@ -21,41 +21,41 @@ interface SvelteProp {
 
 interface SvelteComponent {
   name: string;
-  filePath: string; // relative
+  filePath: string;
   hasScript: boolean;
-  scriptLang: string | null; // 'ts' | 'js' | null
+  scriptLang: string | null;
   hasStyle: boolean;
   hasMarkup: boolean;
   props: SvelteProp[];
-  reactiveState: string[]; // $state runes, $: reactive statements, $store usages
-  imports: string[]; // raw module specifiers
-  componentImports: Array<{ name: string; importPath: string }>; // imported .svelte components
-  renderedComponents: string[]; // PascalCase components used in the markup (render tree)
-  eventHandlers: SvelteEventHandler[]; // on:click={handler} bindings in the markup
+  reactiveState: string[];
+  imports: string[];
+  componentImports: Array<{ name: string; importPath: string }>;
+  renderedComponents: string[];
+  eventHandlers: SvelteEventHandler[];
 }
 
 interface SvelteEventHandler {
-  event: string; // e.g. 'click', 'submit'
-  handlerName?: string; // resolvable identifier if the binding is `on:event={name}` or `on:event={() => name(...)}`
+  event: string;
+  handlerName?: string;
   line: number;
 }
 
 interface SvelteStore {
   name: string;
-  filePath: string; // relative
+  filePath: string;
   kind: 'writable' | 'readable' | 'derived';
   line: number;
 }
 
 interface SvelteRoute {
-  routePath: string; // e.g. /api, /blog/[slug]
-  dirRelative: string; // relative dir under src/routes
-  pageComponent?: string; // relative path to +page.svelte
-  hasPageLoad: boolean; // +page.ts / +page.js
-  hasServerLoad: boolean; // +page.server.ts / +page.server.js
-  hasLayout: boolean; // +layout.svelte
-  endpointFile?: string; // relative path to +server.ts/.js
-  endpointMethods: string[]; // exported HTTP methods on +server.*
+  routePath: string;
+  dirRelative: string;
+  pageComponent?: string;
+  hasPageLoad: boolean;
+  hasServerLoad: boolean;
+  hasLayout: boolean;
+  endpointFile?: string;
+  endpointMethods: string[];
 }
 
 export class SvelteAnalyzer extends BaseAnalyzer {
@@ -155,7 +155,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- Components -------------------------------------------------------
+
 
   private async analyzeComponents(
     files: string[],
@@ -203,12 +203,12 @@ export class SvelteAnalyzer extends BaseAnalyzer {
           .build();
         nodes.push(node);
 
-        // Event handlers are real flow roots for a frontend app — a user event
-        // (on:click/on:submit/...) triggers a handler function, the same way an
-        // HTTP route triggers a controller. Emit an event-binding node per handler
-        // here; the entry point + resolution edge to the handler function (when
-        // findable) is created in analyzeEventEntryPoints once all components and
-        // their script-level function declarations are known.
+
+
+
+
+
+
         const emittedHandlerFns = new Set<string>();
         component.eventHandlers.forEach((handler, index) => {
           const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${index}`);
@@ -239,8 +239,8 @@ export class SvelteAnalyzer extends BaseAnalyzer {
             )
           );
 
-          // Resolve to the handler function only when it's declared as a plain
-          // function/arrow in this same file's script — evidence-based, never a guess.
+
+
           if (handler.handlerName) {
             const fnPattern = new RegExp(
               `(?:function\\s+${handler.handlerName}\\s*\\(|(?:const|let)\\s+${handler.handlerName}\\s*=\\s*(?:async\\s*)?(?:\\([^)]*\\)|\\w+)\\s*=>)`
@@ -298,7 +298,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     }
 
     const hasStyle = /<style[\s>]/.test(content);
-    // markup = everything outside script/style; cheap heuristic: any non-tag content remains
+
     const markupStripped = content
       .replace(/<script[\s\S]*?<\/script>/g, '')
       .replace(/<style[\s\S]*?<\/style>/g, '')
@@ -321,11 +321,11 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /** DOM event bindings in the markup: `on:click={handler}`, `on:click={() => handler(x)}`,
-   *  `on:click={() => doThing()}`. Only a plain identifier callback (with or without an
-   *  arrow-function wrapper calling it) is resolved to `handlerName`; inline expressions
-   *  that don't resolve to a single callable name are still captured as an event (the
-   *  entry point exists) but without a resolvable handler target. */
+
+
+
+
+
   private extractEventHandlers(markup: string): SvelteEventHandler[] {
     const handlers: SvelteEventHandler[] = [];
     const pattern = /on:(\w+)(?:\|[\w|]+)?=\{([^}]*)\}/g;
@@ -346,8 +346,8 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     return handlers;
   }
 
-  /** PascalCase component tags actually used in the markup — the render tree,
-   *  distinct from imports (a component can be imported but not rendered). */
+
+
   private extractRenderedComponents(markup: string): string[] {
     const found = new Set<string>();
     for (const m of markup.matchAll(/<([A-Z][A-Za-z0-9_]*)[\s/>]/g)) found.add(m[1]);
@@ -358,7 +358,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     const props: SvelteProp[] = [];
     const seen = new Set<string>();
 
-    // Svelte <=4: export let x; export let y = default;
+
     const exportLetPattern = /export\s+let\s+(\w+)\s*(?::[^=;]+)?(?:=\s*([^;]+))?;?/g;
     let match: RegExpExecArray | null;
     while ((match = exportLetPattern.exec(script)) !== null) {
@@ -372,7 +372,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Svelte 5 runes: let { a, b = 1, ...rest } = $props();
+
     const propsRunePattern = /(?:let|const)\s*\{([^}]*)\}\s*(?::[^=]+)?=\s*\$props\s*\(/g;
     while ((match = propsRunePattern.exec(script)) !== null) {
       const destructured = match[1];
@@ -396,22 +396,22 @@ export class SvelteAnalyzer extends BaseAnalyzer {
   private extractReactiveState(script: string): string[] {
     const state = new Set<string>();
 
-    // Svelte 5 runes: let count = $state(0)
+
     const statePattern = /(?:let|const)\s+(\w+)\s*=\s*\$state\b/g;
     let m: RegExpExecArray | null;
     while ((m = statePattern.exec(script)) !== null) state.add(`$state:${m[1]}`);
 
-    // $derived rune
+
     const derivedPattern = /(?:let|const)\s+(\w+)\s*=\s*\$derived\b/g;
     while ((m = derivedPattern.exec(script)) !== null) state.add(`$derived:${m[1]}`);
 
-    // Reactive statements: $: foo = ...   /  $: { ... }
+
     const reactivePattern = /\$:\s*(\w+)?/g;
     while ((m = reactivePattern.exec(script)) !== null) {
       state.add(m[1] ? `$:${m[1]}` : '$:block');
     }
 
-    // Store auto-subscriptions: $storeName usages (exclude $: , $state, $props, $derived, $effect)
+
     const storeUsagePattern = /\$(\w+)/g;
     const runeNames = new Set(['state', 'props', 'derived', 'effect', 'bindable', 'inspect', 'host']);
     while ((m = storeUsagePattern.exec(script)) !== null) {
@@ -442,7 +442,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     return result;
   }
 
-  // ---- Stores -----------------------------------------------------------
+
 
   private async analyzeStores(
     files: string[],
@@ -460,7 +460,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // Only consider files that import from svelte/store
+
       if (!/from\s+['"]svelte\/store['"]/.test(content)) continue;
 
       const extracted = this.extractStores(content, file);
@@ -500,7 +500,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     return stores;
   }
 
-  // ---- SvelteKit routing ------------------------------------------------
+
 
   private async analyzeRoutes(
     projectPath: string,
@@ -517,7 +517,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    // Group by directory => one route per directory.
+
     const byDir = new Map<string, string[]>();
     for (const rf of routeFiles) {
       const dir = path.dirname(rf) === '.' ? '' : path.dirname(rf);
@@ -589,7 +589,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
         .build();
       nodes.push(routeNode);
 
-      // Page route entry point + edge to its component.
+
       if (route.pageComponent) {
         entryPoints.push(
           this.createEntryPoint(
@@ -618,7 +618,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
         );
       }
 
-      // +server.ts endpoints: each exported HTTP method is an API entry point.
+
       if (route.endpointFile) {
         for (const method of route.endpointMethods) {
           entryPoints.push(
@@ -648,7 +648,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
   private extractEndpointMethods(content: string): string[] {
     const methods = new Set<string>();
     for (const method of HTTP_METHODS) {
-      // export function GET(...)  |  export const GET = ...  |  export async function GET(...)
+
       const fnPattern = new RegExp(
         `export\\s+(?:async\\s+)?function\\s+${method}\\b`
       );
@@ -664,20 +664,20 @@ export class SvelteAnalyzer extends BaseAnalyzer {
     if (!dir) return '/';
     const segments = dir.split(path.sep).filter(Boolean);
     const mapped = segments
-      .filter(seg => !(seg.startsWith('(') && seg.endsWith(')'))) // route groups are transparent
+      .filter(seg => !(seg.startsWith('(') && seg.endsWith(')')))
       .map(seg => seg.replace(/\[([^\]]+)\]/g, (_all, inner) => `:${inner.replace(/^\.\.\./, '')}`));
     const routePath = '/' + mapped.join('/');
     return routePath === '/' && segments.length ? '/' : routePath;
   }
 
-  // ---- Relationships ----------------------------------------------------
+
 
   private buildComponentRelationships(
     components: SvelteComponent[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
-    const byBaseName = new Map<string, string>(); // component name -> node id
+    const byBaseName = new Map<string, string>();
     for (const c of components) {
       byBaseName.set(c.name, this.generateId('component', c.filePath, c.name));
     }
@@ -701,8 +701,8 @@ export class SvelteAnalyzer extends BaseAnalyzer {
         );
       }
 
-      // Render tree (Camp-C): a component used in THIS component's markup, not
-      // merely imported. import/structural graphs only have the `uses` import edge.
+
+
       for (const rendered of new Set(component.renderedComponents)) {
         const targetId = byBaseName.get(rendered);
         if (!targetId || targetId === componentId) continue;

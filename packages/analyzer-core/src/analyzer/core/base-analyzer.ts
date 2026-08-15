@@ -93,6 +93,7 @@ export interface FileAnalysisContext extends AnalysisContext {
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { SCAFFOLD_GLOBS } from './scaffold-paths';
+import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS } from './build-artifact-paths';
 
 const MAX_REPORTED_FILE_WARNINGS = 25;
 
@@ -190,9 +191,9 @@ export abstract class BaseAnalyzer {
 
   abstract analyze(context: AnalysisContext): Promise<CASContribution>;
 
-  supportsIncrementalAnalysis(): boolean {
-    return false;
-  }
+  supportsIncrementalAnalysis(): boolean { return false; }
+
+  incrementalContributionScope(): 'file' | 'project' { return 'file'; }
 
   protected sourceLineForIndex(content: string, index: number): number {
     return sourceLineForIndex(content, index);
@@ -483,8 +484,7 @@ export abstract class BaseAnalyzer {
     const defaultIgnore = [
       'node_modules/**',
       '**/node_modules/**',
-      'dist/**',
-      '**/dist/**',
+      ...BUILD_ARTIFACT_GLOBS,
       'build/**',
       '**/build/**',
       'target/**',
@@ -497,10 +497,7 @@ export abstract class BaseAnalyzer {
       '**/cmake-build-debug/**',
       'cmake-build-release/**',
       '**/cmake-build-release/**',
-      'vendor/**',
-      '**/vendor/**',
-      'vendors/**',
-      '**/vendors/**',
+      ...THIRD_PARTY_SOURCE_GLOBS,
       '**/*.min.js',
       '**/*.min.css',
       '**/lib/waypoints/**',
@@ -510,10 +507,6 @@ export abstract class BaseAnalyzer {
       '**/lib/tempusdominus/**',
       '**/lib/bootstrap/**',
       '**/lib/jquery/**',
-      'third_party/**',
-      '**/third_party/**',
-      'third-party/**',
-      '**/third-party/**',
       '*_extracted/**',
       '**/*_extracted/**',
       '*-extracted/**',

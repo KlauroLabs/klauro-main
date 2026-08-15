@@ -4,7 +4,7 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { arrayOf, IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
-/** Tier-2: public/index.php front controller — the classic PHP web-app server entry. */
+
 function collectFrontController(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -15,7 +15,7 @@ function collectFrontController(ctx: EvidenceCollectionContext): DeployableEvide
     files = [];
   }
   for (const file of files) {
-    // <appRoot>/public/index.php
+
     const root = path.dirname(path.dirname(file));
     out.push({
       root_path: root === '' ? '.' : root,
@@ -28,7 +28,7 @@ function collectFrontController(ctx: EvidenceCollectionContext): DeployableEvide
   return out;
 }
 
-/** Tier-2: artisan (Laravel) — server-entry + bin (console commands via `php artisan`). */
+
 function collectLaravel(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -59,7 +59,7 @@ function collectLaravel(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   return out;
 }
 
-/** Tier-2: composer.json "bin" field — CLI executables shipped by the package. */
+
 function collectComposerBin(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath } = ctx;
   const out: DeployableEvidence[] = [];
@@ -91,7 +91,7 @@ function collectComposerBin(ctx: EvidenceCollectionContext): DeployableEvidence[
   return out;
 }
 
-/** Tier-3: composer.json as package identity. */
+
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
@@ -110,7 +110,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
         ],
       });
     } catch {
-      // unreadable manifest contributes nothing
+
     }
   }
   return out;

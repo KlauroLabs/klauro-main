@@ -18,28 +18,28 @@ interface GormModel {
   line: number;
 }
 
-/**
- * GORM analyzer (Go).
- *
- * GORM models are plain Go structs — there is no decorator syntax to gate on,
- * so detection relies on the combination of a `gorm.io/gorm` import plus
- * either an embedded `gorm.Model` field or a `gorm:"..."` struct tag anywhere
- * in the file (this avoids false-positives on structs that merely happen to
- * share field names with a GORM model).
- *
- * Relations are inferred the same way GORM itself infers them by convention:
- *  - A field whose type is `[]Other` (a slice of another known model) is a
- *    `has-many` (1:N) relation to `Other`.
- *  - A field whose type is `Other` (a known model, singular) is a `belongs-to`
- *    (N:1) relation to `Other`.
- *  - An explicit `gorm:"foreignKey:UserID"` tag is recorded but the target is
- *    still the field's declared type, matching GORM's own resolution order.
- *
- * Entities are emitted per struct: `entity` node, level 3, id
- * `entity_gorm_<name>`; relation edges are `references`/`database` with a
- * `relationType` attribute so they land in database_schema.relationships_summary
- * the same way TypeORM/Mongoose/Drizzle relations do.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class GormAnalyzer extends BaseAnalyzer {
   constructor() {
     super('gorm', 'GORM Analyzer', '1.0.0', 'library');
@@ -71,7 +71,7 @@ export class GormAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -231,8 +231,8 @@ export class GormAnalyzer extends BaseAnalyzer {
           { attributes: { field: f.name, type: f.type } }
         ));
 
-        // Convention-based relation inference: slice-of-model = has-many,
-        // singular model type = belongs-to.
+
+
         if (f.isSlice && modelByName.has(f.type)) {
           edges.push(this.createEdge(
             `gorm_rel_${model.structName}_${f.name}_${f.type}`,
@@ -270,9 +270,9 @@ export class GormAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `type User struct { gorm.Model; Name string; Posts []Post \`gorm:"foreignKey:UserID"\` }`.
-   */
+
+
+
   private parseModels(content: string, filePath: string): GormModel[] {
     const models: GormModel[] = [];
     const structRegex = /type\s+(\w+)\s+struct\s*\{/g;
@@ -282,7 +282,7 @@ export class GormAnalyzer extends BaseAnalyzer {
       const bodyStart = structRegex.lastIndex - 1;
       const body = this.extractBalanced(content, bodyStart);
       if (body === null) continue;
-      // Only treat as a GORM model if it embeds gorm.Model or carries a gorm tag.
+
       if (!/gorm\.Model\b/.test(body) && !/gorm:"/.test(body)) continue;
       const line = content.slice(0, match.index).split('\n').length;
       models.push({
@@ -301,7 +301,7 @@ export class GormAnalyzer extends BaseAnalyzer {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed || trimmed === 'gorm.Model') continue;
-      // `Name string` / `Posts []Post \`gorm:"foreignKey:UserID"\`` / `UserID uint`
+
       const fieldMatch = /^(\w+)\s+(\[\])?([\w.]+)(?:\s+`([^`]*)`)?/.exec(trimmed);
       if (!fieldMatch) continue;
       const name = fieldMatch[1];

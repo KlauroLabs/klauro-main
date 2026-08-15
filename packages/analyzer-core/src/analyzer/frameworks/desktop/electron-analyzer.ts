@@ -7,12 +7,12 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * A single `ipcMain.handle('channel', handler)` / `ipcMain.on('channel', handler)`
- * registration found in the main process — the real entry point of an Electron IPC
- * flow (a renderer -> main call). `handle` is request/response (invoke); `on` is
- * fire-and-forget (send).
- */
+
+
+
+
+
+
 interface IpcHandler {
   channel: string;
   method: 'handle' | 'on';
@@ -21,13 +21,13 @@ interface IpcHandler {
   line: number;
 }
 
-/**
- * A single `ipcRenderer.invoke('channel', ...)` / `ipcRenderer.send('channel', ...)`
- * call site — the renderer-side origin of an IPC flow. Resolved to its handler by
- * channel-string match against every {@link IpcHandler} found anywhere in the project
- * (channels are the only stable cross-process contract; there is no static import
- * link between renderer and main in a contextBridge-isolated app).
- */
+
+
+
+
+
+
+
 interface IpcInvoke {
   channel: string;
   method: 'invoke' | 'send';
@@ -35,15 +35,15 @@ interface IpcInvoke {
   line: number;
 }
 
-/** A `contextBridge.exposeInMainWorld('key', api)` call in a preload script — the
- *  surface actually reachable from the renderer's `window.<key>`. */
+
+
 interface ExposedApi {
   key: string;
   file: string;
   line: number;
 }
 
-/** A `new BrowserWindow({...})` construction — a window/renderer root. */
+
 interface WindowCreation {
   file: string;
   line: number;
@@ -127,7 +127,7 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         const packageJson = await fs.readJson(path.join(context.projectPath, 'package.json'));
         const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
         version = deps.electron || 'unknown';
-      } catch { /* best effort */ }
+      } catch {   }
 
       const appId = 'app_electron';
       const anchorFile = allWindows[0]?.file || jsFiles[0] || '';
@@ -140,7 +140,7 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         .build();
       nodes.push(appNode);
 
-      // Window nodes — each BrowserWindow construction is a renderer root.
+
       allWindows.forEach((win, index) => {
         const winId = `window_electron_${index}`;
         const winNode = this.createNodeBuilder(winId, win.varName ? `BrowserWindow: ${win.varName}` : 'BrowserWindow', 'window')
@@ -154,9 +154,9 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         edges.push(this.createEdge(`${appId}_creates_${winId}`, appId, winId, 'creates'));
       });
 
-      // IPC handler nodes (the real entry points — a renderer->main IPC call is a
-      // flow root). One node/entry-point per (channel, method, file, line) so
-      // multiple handlers for the same channel across files are not collapsed.
+
+
+
       const handlerIdByChannel = new Map<string, string[]>();
       allHandlers.forEach((h, index) => {
         const handlerId = `ipc_handler_${this.sanitizeId(h.channel)}_${index}`;
@@ -207,10 +207,10 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         } as CASEntryPoint);
       });
 
-      // Renderer-side call sites (ipcRenderer.invoke/send) resolved to their main-
-      // process handler by channel string — the flow root (frontend event -> IPC ->
-      // main handler) that makes IPC a real, traceable call graph edge, not just two
-      // disconnected node sets.
+
+
+
+
       allInvokes.forEach((call, index) => {
         const callId = `ipc_invoke_${this.sanitizeId(call.channel)}_${index}`;
         const callNode = this.createNodeBuilder(callId, `ipcRenderer.${call.method} '${call.channel}'`, 'ipc_call')
@@ -234,8 +234,8 @@ export class ElectronAnalyzer extends BaseAnalyzer {
           ));
         }
         if (targets.length === 0) {
-          // Channel string has no matching main-process handler found in this
-          // project scan — still record the call site; do not fabricate a target.
+
+
           edges.push(this.createEdge(
             `${appId}_calls_${callId}`,
             appId,
@@ -247,8 +247,8 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         }
       });
 
-      // Exposed API surface (contextBridge.exposeInMainWorld) — the preload-defined
-      // boundary the renderer actually sees as `window.<key>`.
+
+
       allExposed.forEach((exp, index) => {
         const exposedId = `exposed_api_${this.sanitizeId(exp.key)}_${index}`;
         const exposedNode = this.createNodeBuilder(exposedId, `window.${exp.key}`, 'exposed_api')
@@ -291,15 +291,15 @@ export class ElectronAnalyzer extends BaseAnalyzer {
     return importsElectron && usesCoreApi;
   }
 
-  /**
-   * Extract every `ipcMain.handle('channel', handlerFnOrRef)` and
-   * `ipcMain.on('channel', handlerFnOrRef)` call in a file. The receiver is almost
-   * always the literal `ipcMain` (unlike Fastify's per-plugin-callback receiver
-   * naming), since it's a singleton imported directly from 'electron' — but some
-   * codebases wrap it as a parameter (e.g. `setup: (ipcMain) => {...})`), which this
-   * same literal match still covers since the parameter is conventionally named
-   * `ipcMain` too.
-   */
+
+
+
+
+
+
+
+
+
   private extractIpcHandlers(content: string, file: string): IpcHandler[] {
     const handlers: IpcHandler[] = [];
     const pattern = /\bipcMain\.(handle|on)\s*\(\s*(['"`])([^'"`]+)\2\s*,\s*/g;
@@ -315,10 +315,10 @@ export class ElectronAnalyzer extends BaseAnalyzer {
     return handlers;
   }
 
-  /** Extract every `ipcRenderer.invoke('channel', ...)` / `ipcRenderer.send('channel',
-   *  ...)` call site — including via a renamed local alias from a destructured
-   *  `const { invoke } = ipcRenderer` (rare, but the direct-member form covers the
-   *  overwhelming majority of real preload/renderer code). */
+
+
+
+
   private extractIpcInvokes(content: string, file: string): IpcInvoke[] {
     const invokes: IpcInvoke[] = [];
     const pattern = /\bipcRenderer\.(invoke|send)\s*\(\s*(['"`])([^'"`]+)\2/g;
@@ -332,8 +332,8 @@ export class ElectronAnalyzer extends BaseAnalyzer {
     return invokes;
   }
 
-  /** Extract every `contextBridge.exposeInMainWorld('key', api)` call — the boundary
-   *  a preload script actually publishes to the renderer's global scope. */
+
+
   private extractExposedApis(content: string, file: string): ExposedApi[] {
     const exposed: ExposedApi[] = [];
     const pattern = /\bcontextBridge\.exposeInMainWorld\s*\(\s*(['"`])([^'"`]+)\1/g;
@@ -346,8 +346,8 @@ export class ElectronAnalyzer extends BaseAnalyzer {
     return exposed;
   }
 
-  /** Extract every `new BrowserWindow({...})` construction, capturing the variable
-   *  it's assigned to (if any) for a more useful node name. */
+
+
   private extractWindowCreations(content: string, file: string): WindowCreation[] {
     const windows: WindowCreation[] = [];
     const pattern = /(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*)?new\s+BrowserWindow\s*\(/g;
@@ -359,19 +359,19 @@ export class ElectronAnalyzer extends BaseAnalyzer {
     return windows;
   }
 
-  /** Best-effort human-readable handler name: bare identifier as-is; inline
-   *  arrow/function marked as inline (still a real, navigable handler via file+line). */
+
+
   private describeHandler(raw: string): string {
     if (/^[A-Za-z_$][\w$.]*$/.test(raw)) return raw;
     if (/^async\s+[A-Za-z_$][\w$.]*$/.test(raw)) return raw.replace(/^async\s+/, '');
     return 'inline handler';
   }
 
-  /**
-   * Parse the arguments of a call starting just after the channel string (depth 1),
-   * splitting on top-level commas while respecting nested parens/brackets/braces
-   * and string/template literals. Mirrors FastifyAnalyzer.parseRemainingCallArgs.
-   */
+
+
+
+
+
   private parseRemainingCallArgs(content: string, pos: number): string[] {
     const args: string[] = [];
     let depth = 1;

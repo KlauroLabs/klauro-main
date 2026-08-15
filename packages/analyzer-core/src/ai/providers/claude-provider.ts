@@ -3,7 +3,7 @@ import { AIProvider, AIAnalysisContext, AIRiskAssessment, AIRecommendation, AICo
 import { AIConfig } from '../../config/ai.config';
 import { prompts } from '../ai-prompts';
 import * as winston from 'winston';
-import pRetry from 'p-retry';
+import pRetry, { AbortError } from 'p-retry';
 
 export class ClaudeProvider implements AIProvider {
   public readonly name = 'claude';
@@ -13,7 +13,7 @@ export class ClaudeProvider implements AIProvider {
 
   constructor(config: AIConfig) {
     this.config = config;
-    
+
     if (!config.anthropic.apiKey) {
       throw new Error('Anthropic API key is required');
     }
@@ -51,12 +51,13 @@ export class ClaudeProvider implements AIProvider {
   async generateDescription(context: AIAnalysisContext): Promise<string> {
     const prompt = prompts.generateDescriptionPrompt(context);
     const systemPrompt = prompts.systemPrompts.description;
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.3,
         maxTokens: 500,
-        systemPrompt
+        systemPrompt,
+        signal: context.signal
       });
 
       return this.extractContent(response);
@@ -69,7 +70,7 @@ export class ClaudeProvider implements AIProvider {
   async assessRisk(context: AIAnalysisContext): Promise<AIRiskAssessment> {
     const prompt = prompts.generateRiskAssessmentPrompt(context);
     const systemPrompt = prompts.systemPrompts.riskAssessment + '\n\nPlease respond with valid JSON only.';
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.2,
@@ -88,7 +89,7 @@ export class ClaudeProvider implements AIProvider {
   async generateRecommendations(context: AIAnalysisContext): Promise<AIRecommendation[]> {
     const prompt = prompts.generateRecommendationsPrompt(context);
     const systemPrompt = prompts.systemPrompts.recommendations + '\n\nPlease respond with valid JSON only.';
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.4,
@@ -111,7 +112,7 @@ export class ClaudeProvider implements AIProvider {
 
     const prompt = prompts.generateCodeAnalysisPrompt(context);
     const systemPrompt = prompts.systemPrompts.codeAnalysis + '\n\nPlease respond with valid JSON only.';
-    
+
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.2,
@@ -128,17 +129,19 @@ export class ClaudeProvider implements AIProvider {
   }
 
   private async makeRequest(
-    prompt: string, 
+    prompt: string,
     options: {
       temperature?: number;
       maxTokens?: number;
       systemPrompt?: string;
+      signal?: AbortSignal;
     } = {}
   ): Promise<Anthropic.Messages.Message> {
     const {
       temperature = this.config.anthropic.temperature,
       maxTokens = this.config.anthropic.maxTokens,
-      systemPrompt
+      systemPrompt,
+      signal
     } = options;
 
     const requestParams: Anthropic.Messages.MessageCreateParams = {
@@ -161,13 +164,20 @@ export class ClaudeProvider implements AIProvider {
       async () => {
         this.logger.debug(`Making Claude request with model ${this.config.anthropic.model}`);
         const start = Date.now();
-        
-        const response = await this.client.messages.create(requestParams);
-        
+
+        if (signal?.aborted) throw new AbortError(signal.reason instanceof Error ? signal.reason : new Error('AI request aborted'));
+        let response: Anthropic.Messages.Message;
+        try {
+          response = await this.client.messages.create(requestParams, { signal });
+        } catch (error) {
+          if (signal?.aborted) throw new AbortError(signal.reason instanceof Error ? signal.reason : new Error('AI request aborted'));
+          throw error;
+        }
+
         const duration = Date.now() - start;
         this.logger.debug(`Claude request completed in ${duration}ms`);
-        
-        // Log token usage for cost tracking
+
+
         if (response.usage) {
           this.logger.info('Token usage:', {
             inputTokens: response.usage.input_tokens,
@@ -194,7 +204,7 @@ export class ClaudeProvider implements AIProvider {
       throw new Error('No content in Claude response');
     }
 
-    // Claude returns an array of content blocks
+
     const textBlocks = response.content.filter(
       (block): block is Anthropic.Messages.TextBlock => block.type === 'text'
     );
@@ -208,12 +218,12 @@ export class ClaudeProvider implements AIProvider {
 
   private parseRiskAssessment(content: string): AIRiskAssessment {
     try {
-      // Try to extract JSON from the response (Claude sometimes wraps JSON in backticks)
+
       const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
       const jsonStr = jsonMatch ? jsonMatch[1] : content;
-      
+
       const parsed = JSON.parse(jsonStr);
-      
+
       return {
         riskLevel: parsed.riskLevel || 'low',
         confidence: parsed.confidence || 0.5,
@@ -223,8 +233,8 @@ export class ClaudeProvider implements AIProvider {
       };
     } catch (error) {
       this.logger.warn('Failed to parse risk assessment JSON, using fallback');
-      
-      // Fallback parsing - extract key information from text
+
+
       return {
         riskLevel: this.extractRiskLevel(content),
         confidence: 0.6,
@@ -237,12 +247,12 @@ export class ClaudeProvider implements AIProvider {
 
   private parseRecommendations(content: string): AIRecommendation[] {
     try {
-      // Try to extract JSON from the response
+
       const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
       const jsonStr = jsonMatch ? jsonMatch[1] : content;
-      
+
       const parsed = JSON.parse(jsonStr);
-      
+
       if (!Array.isArray(parsed.recommendations)) {
         return [];
       }
@@ -260,11 +270,11 @@ export class ClaudeProvider implements AIProvider {
       }));
     } catch (error) {
       this.logger.warn('Failed to parse recommendations JSON, using fallback');
-      
-      // Fallback: extract basic recommendations from text
+
+
       const lines = content.split('\n').filter(line => line.trim());
       const recommendations: AIRecommendation[] = [];
-      
+
       for (const line of lines) {
         if (line.match(/^\d+\.|\-|\*/)) {
           recommendations.push({
@@ -280,19 +290,19 @@ export class ClaudeProvider implements AIProvider {
           });
         }
       }
-      
+
       return recommendations;
     }
   }
 
   private parseCodeAnalysis(content: string): AICodeAnalysis {
     try {
-      // Try to extract JSON from the response
+
       const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
       const jsonStr = jsonMatch ? jsonMatch[1] : content;
-      
+
       const parsed = JSON.parse(jsonStr);
-      
+
       return {
         summary: parsed.summary || 'Code analysis completed',
         complexity: {
@@ -308,7 +318,7 @@ export class ClaudeProvider implements AIProvider {
       };
     } catch (error) {
       this.logger.warn('Failed to parse code analysis JSON, using fallback');
-      
+
       return {
         summary: 'Basic analysis completed - JSON parsing failed',
         complexity: {
@@ -327,7 +337,7 @@ export class ClaudeProvider implements AIProvider {
 
   private extractRiskLevel(content: string): 'low' | 'medium' | 'high' | 'critical' {
     const lowerContent = content.toLowerCase();
-    
+
     if (lowerContent.includes('critical') || lowerContent.includes('severe')) {
       return 'critical';
     } else if (lowerContent.includes('high')) {
@@ -335,14 +345,14 @@ export class ClaudeProvider implements AIProvider {
     } else if (lowerContent.includes('medium') || lowerContent.includes('moderate')) {
       return 'medium';
     }
-    
+
     return 'low';
   }
 
   private extractList(content: string, keyword: string): string[] {
     const lines = content.split('\n');
     const items: string[] = [];
-    
+
     for (const line of lines) {
       if (line.toLowerCase().includes(keyword)) {
         const cleaned = line.replace(/^\d+\.|\-|\*/, '').trim();
@@ -351,7 +361,7 @@ export class ClaudeProvider implements AIProvider {
         }
       }
     }
-    
+
     return items;
   }
 }

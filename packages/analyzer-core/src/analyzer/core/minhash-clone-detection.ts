@@ -1,30 +1,30 @@
-/**
- * MinHash near-clone detection — structural parity with codebase-memory-mcp's
- * SIMILAR_TO edge ("MinHash + LSH near-clone detection, Jaccard scored").
- *
- * Deterministic: fixed FNV-1a hash family seeded 0..N-1, k-shingles over a
- * normalized token stream. The same code always yields the same signature and
- * the same clone pairs (no Math.random). This is the standard
- * shingle→MinHash→estimated-Jaccard pipeline; we compare signatures pairwise
- * (fine for per-file / per-module clone groups). Klauro then layers meaning on
- * top — a clone group is a refactor candidate, a copy-paste-divergence risk —
- * which a bare SIMILAR_TO edge has no concept of.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface CloneItem {
   id: string;
-  /** Source text of the function/method/block. */
+
   text: string;
 }
 
 export interface ClonePair {
   a: string;
   b: string;
-  /** Estimated Jaccard similarity in [0,1]. */
+
   similarity: number;
 }
 
-/** 32-bit FNV-1a with a seed mixed in — deterministic, fast, no deps. */
+
 function fnv1a(str: string, seed: number): number {
   let h = (2166136261 ^ seed) >>> 0;
   for (let i = 0; i < str.length; i++) {
@@ -34,8 +34,8 @@ function fnv1a(str: string, seed: number): number {
   return h >>> 0;
 }
 
-/** Cross-language keyword set — kept verbatim so structure survives, while
- *  identifier NAMES are normalized away (Type-2 / renamed-clone detection). */
+
+
 const KEYWORDS = new Set([
   'const', 'let', 'var', 'function', 'fn', 'def', 'func', 'return', 'if', 'else', 'elif', 'for',
   'while', 'do', 'switch', 'case', 'class', 'interface', 'struct', 'enum', 'import', 'from',
@@ -47,13 +47,13 @@ const KEYWORDS = new Set([
   'pub', 'use', 'mod', 'defer', 'go', 'select', 'map', 'range', 'break', 'continue', 'default',
 ]);
 
-/**
- * Normalize code to a structure-preserving token stream: keywords and
- * operators/punctuation kept verbatim, identifier names collapsed to `$id`,
- * numeric literals to `$n`. So `persist(account)` and `archive(record)` produce
- * the same stream — copy-paste-with-rename is caught, while different control
- * structure still diverges.
- */
+
+
+
+
+
+
+
 function tokenize(text: string): string[] {
   const raw = text.toLowerCase().match(/[a-z_$][\w$]*|\d+(?:\.\d+)?|[{}()[\];,.+\-*/%=<>!&|^~?:]/g) || [];
   return raw.map(t => {
@@ -63,7 +63,7 @@ function tokenize(text: string): string[] {
   });
 }
 
-/** k-shingles (default 3) of the token stream, as a deduped set. */
+
 export function shingles(text: string, k = 3): Set<string> {
   const toks = tokenize(text);
   const out = new Set<string>();
@@ -75,7 +75,7 @@ export function shingles(text: string, k = 3): Set<string> {
   return out;
 }
 
-/** MinHash signature: for each of numHashes seeds, the min hash over shingles. */
+
 export function minhashSignature(sh: Set<string>, numHashes = 64): number[] {
   const sig = new Array(numHashes).fill(0xffffffff);
   for (const s of sh) {
@@ -87,7 +87,7 @@ export function minhashSignature(sh: Set<string>, numHashes = 64): number[] {
   return sig;
 }
 
-/** Estimated Jaccard = fraction of signature positions that agree. */
+
 export function estimatedJaccard(a: number[], b: number[]): number {
   const n = Math.min(a.length, b.length);
   if (n === 0) return 0;
@@ -99,14 +99,14 @@ export function estimatedJaccard(a: number[], b: number[]): number {
 export interface CloneOptions {
   numHashes?: number;
   shingleSize?: number;
-  /** Min estimated Jaccard to report a clone pair. */
+
   threshold?: number;
 }
 
-/**
- * Find near-clone pairs among items. Deterministic; pairs sorted by similarity
- * desc then id. Items whose source is too small to shingle are skipped.
- */
+
+
+
+
 export function findNearClones(items: CloneItem[], options: CloneOptions = {}): ClonePair[] {
   const numHashes = options.numHashes ?? 64;
   const k = options.shingleSize ?? 3;

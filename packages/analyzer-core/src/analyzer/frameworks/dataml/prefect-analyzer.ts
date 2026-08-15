@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/** A `@flow` or `@task`-decorated function. */
+
 interface PrefectNode {
   kind: 'flow' | 'task';
   name: string;
@@ -119,9 +119,9 @@ export class PrefectAnalyzer extends BaseAnalyzer {
           ));
         }
 
-        // Dependency edges: within each `@flow` body, calls to other known `@task`/`@flow`
-        // functions define the flow -> task fan-out (Prefect tasks are called as plain
-        // functions/`.submit()` inside the flow body, not chained via `>>`).
+
+
+
         const flowNodes = prefectNodes.filter(n => n.kind === 'flow');
         for (const flow of flowNodes) {
           const flowId = nodeIdByName.get(flow.name);

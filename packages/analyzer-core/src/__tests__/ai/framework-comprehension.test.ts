@@ -73,11 +73,56 @@ describe('selectProductFrameworkNames — comprehension framework gate', () => {
     expect(selectProductFrameworkNames(nodes, [], analyzerTypeMap([{ analyzer_id: 'fastapi', analyzer_type: 'framework' }]), productPathPredicate)).toEqual([]);
   });
 
+  it('keeps a framework that owns a real product entry point backed by an existing file node', () => {
+    const nodes = [
+      { id: 'file_app_api_items_route_ts', type: 'file', source: { file: 'app/api/items/route.ts' }, analyzers: ['typescript-javascript'] },
+    ];
+    const contributions = [
+      { analyzer_id: 'nextjs', analyzer_type: 'framework' },
+      { analyzer_id: 'typescript-javascript', analyzer_type: 'language' },
+    ];
+    const entryPoints = [
+      { source_node: 'file_app_api_items_route_ts', source_analyzer: 'nextjs', metadata: { framework: 'nextjs' } },
+    ];
+    expect(selectProductFrameworkNames(nodes, [], analyzerTypeMap(contributions), productPathPredicate, 10, entryPoints)).toEqual(['nextjs']);
+  });
+
   it('surface set covers common web/UI surfaces and excludes shims', () => {
     expect(FRAMEWORK_APPLICATION_SURFACE_TYPES.has('component')).toBe(true);
     expect(FRAMEWORK_APPLICATION_SURFACE_TYPES.has('route')).toBe(true);
     expect(FRAMEWORK_APPLICATION_SURFACE_TYPES.has('application')).toBe(true);
     expect(FRAMEWORK_APPLICATION_SURFACE_TYPES.has('middleware')).toBe(false);
     expect(FRAMEWORK_APPLICATION_SURFACE_TYPES.has('module')).toBe(false);
+  });
+
+  it('indexes containment edges once for project-scale framework selection', () => {
+    const nodes: any[] = [];
+    const rawEdges: any[] = [];
+    for (let index = 0; index < 500; index++) {
+      nodes.push({ id: `owner-${index}`, type: 'class', role: 'controller', source: { file: `src/${index}.ts` } });
+      nodes.push({
+        id: `method-${index}`,
+        type: 'method',
+        metadata: { framework: 'nestjs' },
+        source: { file: `src/${index}.ts` },
+        analyzers: ['typescript-javascript'],
+      });
+      rawEdges.push({ type: 'contains', source: `owner-${index}`, target: `method-${index}` });
+    }
+    let numericReads = 0;
+    const edges = new Proxy(rawEdges, {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) numericReads++;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const result = selectProductFrameworkNames(
+      nodes,
+      edges,
+      analyzerTypeMap([{ analyzer_id: 'typescript-javascript', analyzer_type: 'language' }]),
+      productPathPredicate,
+    );
+    expect(result).toEqual(['nestjs']);
+    expect(numericReads).toBeLessThan(1000);
   });
 });

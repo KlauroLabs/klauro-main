@@ -6,50 +6,50 @@ import {
   type FlowConcept,
 } from './flow-concepts';
 
-/**
- * SEMANTIC COVERAGE — "everything rolls up" made MEASURABLE (docs/SEMANTIC-MODEL.md,
- * "Coverage invariants"). A pure, DETERMINISTIC (Camp-B) pass over the CAS + the
- * already-computed flow set: no AI, byte-stable run-to-run, evidence-only. It answers
- * three ratios and, crucially, the HONEST lists behind them (never just counts):
- *
- *   reachable_code_to_steps  — of the executable nodes REACHABLE from an entry point
- *                              (the same forward call-graph traversal the flow layer
- *                              builds), what fraction participate in ≥1 flow STEP
- *                              (a step's `functions[].function_id` set)?
- *   steps_to_flows           — of all steps, what fraction are assigned to ≥1 flow?
- *                              (steps are nested in flows by construction, so this is
- *                              an INVARIANT ~1.0 — measured honestly to catch a future
- *                              regression that ever detaches a step from its flow.)
- *   flows_to_capabilities    — of flows, what fraction carry ≥1 capability_relationship
- *                              (B1's flow.capability_relationships M:N edge)?
- *
- * "Reachable" is defined exactly as the flow layer sees it: the union, over every
- * entry-point root (cas.entry_points handler nodes) PLUS every capability-operation
- * node reference (`node:<id>` — the same synthetic roots buildTerminalFlows/
- * computeEntryPointFlows trace from), of the forward call-chain traversal
- * (traceForwardChain), restricted to executable node types (TRACEABLE_NODE_TYPES —
- * the same set flow steps are drawn from). This makes the numerator a strict subset
- * of the denominator by construction: a mapped node is a reachable node that a step
- * cited.
- *
- * Unmapped code is SURFACED, not hidden — it indicates missing semantics, generic
- * infrastructure, dead code, framework-generated behavior, incomplete extraction, or
- * an undiscovered capability/flow. Each unmapped unit carries a deterministic `reason`
- * derived from CAS facts (its own exit points / lineage writes / generated+test
- * metadata), so a reader can tell "worth a flow" from "genuinely plumbing".
- */
 
-// Same bounds the flow layer uses by default (DEFAULT_MAX_DEPTH / DEFAULT_MAX_FUNCTIONS
-// in flow-concepts.ts) so the reachable universe matches what flows can actually cover.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const REACH_MAX_DEPTH = 6;
 const REACH_MAX_FUNCTIONS = 40;
 
-/** Honest lists are capped for response size; the omitted count is always reported. */
+
 const UNMAPPED_LIST_CAP = 50;
 
 export interface CoverageRatio {
-  /** 0..1, rounded to 4 decimals for byte-stable serialization. `total===0`
-   *  yields 1 (vacuously complete — nothing to roll up, never a false regression). */
+
+
   ratio: number;
   mapped: number;
   total: number;
@@ -59,18 +59,18 @@ export interface UnmappedCodeUnit {
   id: string;
   name: string;
   type: string;
-  /** Structural importance of the unmapped node (normalized [0,1], from the
-   *  deterministic graph layer) — EXPOSED so coverage consumers can work the
-   *  unmapped gap highest-importance-first. Prioritization only: presence or
-   *  absence never changes what counts as unmapped. Absent on CAS outputs
-   *  produced before the structural-importance layer existed. */
+
+
+
+
+
   structural_importance?: number;
-  /** Deterministic classification of WHY this reachable node maps to no step. */
+
   reason:
-    | 'reachable-with-effects-uncaptured' // has exit points / lineage writes — likely incomplete extraction or an undiscovered flow
-    | 'framework-generated'               // metadata.is_generated — framework/codegen output
-    | 'test-code'                         // metadata.is_test — test helper reachable from an entry
-    | 'reachable-no-effects';             // no observable surface — generic infra / dead code
+    | 'reachable-with-effects-uncaptured'
+    | 'framework-generated'
+    | 'test-code'
+    | 'reachable-no-effects';
 }
 
 export interface UnmappedStep {
@@ -99,8 +99,8 @@ export interface SemanticCoverage {
   };
 }
 
-/** The compact projection surfaced in buildSummary: ratios + counts only (no full
- *  unmapped lists — those live in the dedicated get_semantic_coverage tool). */
+
+
 export interface SemanticCoverageCompact {
   reachable_code_to_steps: CoverageRatio;
   steps_to_flows: CoverageRatio;
@@ -129,7 +129,7 @@ function buildExitPointIndex(cas: CASOutput): Map<string, CASExitPoint[]> {
   return index;
 }
 
-/** Node ids that write at least one data-lineage entity (a state-changing effect). */
+
 function buildLineageWriterSet(cas: CASOutput): Set<string> {
   const writers = new Set<string>();
   for (const entry of cas.data_lineage || []) {
@@ -138,17 +138,17 @@ function buildLineageWriterSet(cas: CASOutput): Set<string> {
   return writers;
 }
 
-/** Entry-point roots + capability-operation node roots — the SAME roots the flow
- *  layer traces from (real entry points, plus `node:<id>` capability operation
- *  references that buildTerminalFlows/computeEntryPointFlows synthesize roots for).
- *  Sorted for deterministic traversal order. */
+
+
+
+
 function collectEntryRoots(cas: CASOutput, nodesById: Map<string, CASNode>): string[] {
   const roots = new Set<string>();
   for (const ep of cas.entry_points || []) {
     const nid = ep.handler?.node_id || ep.source_node;
     if (nid && nodesById.has(nid)) roots.add(nid);
   }
-  for (const cap of cas.system_capabilities || []) {
+  for (const cap of cas.capabilities || []) {
     for (const op of cap.operations || []) {
       const epId = op.entry_point_id || '';
       if (epId.startsWith('node:')) {
@@ -178,23 +178,23 @@ function classifyUnmappedReason(
   return 'reachable-no-effects';
 }
 
-/**
- * computeSemanticCoverage — the deterministic coverage computer. Takes the CAS,
- * the already-computed `flows` (the flow set whose rollup is being measured — pass
- * the FULL set for an honest product-surface ratio), and the capabilities (only used
- * to align the reachable-root set with the flow layer; flow↔capability edges are read
- * off the flows themselves). Never mutates its inputs.
- */
+
+
+
+
+
+
+
 export function computeSemanticCoverage(
   cas: CASOutput,
   flows: FlowConcept[],
-  _capabilities: SystemCapability[] = cas.system_capabilities || []
+  _capabilities: SystemCapability[] = cas.capabilities || []
 ): SemanticCoverage {
   const nodesById = new Map((cas.nodes || []).map(n => [n.id, n]));
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageWriters = buildLineageWriterSet(cas);
 
-  // --- reachable executable universe (denominator of reachable_code_to_steps) ---
+
   const traversal = buildTraversalIndex(cas);
   const roots = collectEntryRoots(cas, nodesById);
   const reachable = new Set<string>();
@@ -205,16 +205,16 @@ export function computeSemanticCoverage(
     }
   }
 
-  // --- nodes cited by ≥1 flow step (numerator source) ---
+
   const stepNodeIds = new Set<string>();
   let totalSteps = 0;
   const orphanSteps: UnmappedStep[] = [];
   for (const flow of flows) {
     for (const step of flow.steps || []) {
       totalSteps++;
-      // Every step is nested in a flow by construction — a step with a resolvable
-      // flow_id IS assigned to a flow. An orphan (missing flow_id) would be a real
-      // regression: surface it rather than silently counting it as covered.
+
+
+
       if (!flow.flow_id) {
         orphanSteps.push({ step_id: step.step_id, flow_id: '(none)', reason: 'step belongs to a flow with no flow_id' });
       }
@@ -223,7 +223,7 @@ export function computeSemanticCoverage(
   }
   const mappedSteps = totalSteps - orphanSteps.length;
 
-  // --- reachable_code_to_steps ---
+
   const reachableSorted = [...reachable].sort();
   let mappedCode = 0;
   const unmappedCode: UnmappedCodeUnit[] = [];
@@ -244,28 +244,28 @@ export function computeSemanticCoverage(
       });
     }
   }
-  // Highest-importance gaps first (deterministic: importance desc, id asc) so
-  // the capped list is a prioritized worklist instead of an arbitrary slice.
-  // Ordering only — counts and membership are untouched.
+
+
+
   unmappedCode.sort((a, b) =>
     ((b.structural_importance || 0) - (a.structural_importance || 0)) || a.id.localeCompare(b.id)
   );
 
-  // --- flows_to_capabilities ---
+
   let mappedFlows = 0;
   const capablessFlows: UnmappedFlow[] = [];
   for (const flow of flows) {
     if ((flow.capability_relationships?.length || 0) > 0) {
       mappedFlows++;
     } else {
-      // WHY it's unmapped, not just THAT it is (honest orphan diagnosis):
-      // no-entity-evidence — the flow's traced path touches no entity this
-      // repo tracks at all, so entity overlap could never fire (the common
-      // shape for a dead-end console command / DI-dispatched job whose
-      // work happens through an interface with no resolvable lineage);
-      // no-capability-match — the flow DOES touch real entities, but none
-      // of them belong to any capability's related_entities, and no
-      // capability operation references its entry point either.
+
+
+
+
+
+
+
+
       const reason = flow.entities.length > 0
         ? `flow touches entities (${flow.entities.slice(0, 5).join(', ')}${flow.entities.length > 5 ? ', …' : ''}) but none belong to any capability's related_entities, and no capability operation references its entry point (no-capability-match)`
         : 'flow touches no entities this repo tracks, and no capability operation references its entry point (no-entity-evidence)';
@@ -297,8 +297,8 @@ export function computeSemanticCoverage(
   };
 }
 
-/** Strip the full unmapped lists down to the compact summary projection (ratios +
- *  counts) used in buildSummary — the dedicated tool carries the full lists. */
+
+
 export function toCompactSemanticCoverage(coverage: SemanticCoverage): SemanticCoverageCompact {
   return {
     reachable_code_to_steps: coverage.reachable_code_to_steps,

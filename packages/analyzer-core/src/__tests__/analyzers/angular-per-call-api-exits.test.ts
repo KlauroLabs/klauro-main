@@ -252,7 +252,7 @@ describe('AngularAnalyzer: per-call HttpClient API exit extraction', () => {
       exit_points: cas.exit_points || [],
       entry_points: cas.entry_points || [],
       data_lineage: [],
-      data_entities: [],
+      entities: [],
       deployable_evidence: [],
     });
 

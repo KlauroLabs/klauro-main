@@ -167,7 +167,7 @@ export class AngularRouteResolver {
         }
       }
     } catch {
-      // Path aliases stay empty; relative imports still resolve.
+
     }
   }
 
@@ -273,7 +273,7 @@ export class AngularRouteResolver {
       try {
         if (fs.statSync(candidate).isFile()) return candidate;
       } catch {
-        // try next candidate
+
       }
     }
     return null;
@@ -830,8 +830,8 @@ export class AngularRouteResolver {
         switch (node.operator) {
           case '===': return left === right;
           case '!==': return left !== right;
-          case '==': return left == right; // eslint-disable-line eqeqeq
-          case '!=': return left != right; // eslint-disable-line eqeqeq
+          case '==': return left == right;
+          case '!=': return left != right;
           case '+': return (left as any) + (right as any);
           case '-': return (left as number) - (right as number);
           default: throw new Error('binary');

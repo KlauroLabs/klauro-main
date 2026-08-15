@@ -206,6 +206,13 @@ async function captureCatalogFacts(): Promise<any> {
       return JSON.stringify({ descriptions: items.map((item: any) => ({ id: item.id, description: `${item.name} handles a real product concern with grounded evidence.` })) });
     }
     if (facts && Array.isArray(facts.candidate_route_areas)) {
+      expect(opts.additionalContext.responseFormat).toBe('json');
+      expect(opts.additionalContext.maxTokens).toBeGreaterThanOrEqual(600);
+      expect(opts.additionalContext.maxTokens).toBeLessThanOrEqual(1800);
+      expect(opts.additionalContext.requestTimeoutMs).toBe(65000);
+      expect(opts.additionalContext.requestRetries).toBe(0);
+      expect(Array.isArray(facts.required_behavior_candidate_ids)).toBe(true);
+      expect(facts.required_behavior_candidate_ids.every((id: string) => facts.candidate_route_areas.some((area: any) => area.candidate_id === id))).toBe(true);
       return JSON.stringify({
         capabilities: [
           { name: 'Manage customer orders', description: 'Tracks customer identities and the orders each customer places.', category: 'core', entities: ['Customer', 'Order'], journeys: [] },
@@ -251,7 +258,7 @@ describe('capability-catalog prompt input ordering is a total, stable function o
     fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
-  it('sends byte-identical candidate_route_areas / user_journeys / data_entities across two independent from-scratch analyses', async () => {
+  it('sends byte-identical candidate_route_areas / user_journeys / entities across two independent from-scratch analyses', async () => {
     const first = await captureCatalogFacts();
     const second = await captureCatalogFacts();
 
@@ -259,26 +266,26 @@ describe('capability-catalog prompt input ordering is a total, stable function o
     expect(second).toBeDefined();
     expect(Array.isArray(first.candidate_route_areas)).toBe(true);
     expect(first.candidate_route_areas.length).toBeGreaterThan(0);
-    expect(Array.isArray(first.data_entities)).toBe(true);
-    expect(first.data_entities.length).toBeGreaterThanOrEqual(2);
+    expect(Array.isArray(first.entities)).toBe(true);
+    expect(first.entities.length).toBeGreaterThanOrEqual(2);
     // Customer and Order both carry exactly 2 fields (a genuine tie for the
     // fields.length comparator), so a correct TOTAL order must fall back to
     // name and put Customer ('C' < 'O') first — this fails if the sort ever
     // regresses to relying on upstream insertion order instead of an
     // explicit tiebreak.
-    expect(first.data_entities.map((entity: any) => entity.name)).toEqual(['Customer', 'Order']);
+    expect(first.entities.map((entity: any) => entity.name)).toEqual(['Customer', 'Order']);
 
     expect(JSON.stringify(second.candidate_route_areas)).toBe(JSON.stringify(first.candidate_route_areas));
     expect(JSON.stringify(second.user_journeys)).toBe(JSON.stringify(first.user_journeys));
-    expect(JSON.stringify(second.data_entities)).toBe(JSON.stringify(first.data_entities));
+    expect(JSON.stringify(second.entities)).toBe(JSON.stringify(first.entities));
     expect(JSON.stringify(second.external_services)).toBe(JSON.stringify(first.external_services));
 
     // The tie is real: Customer and Order both carry 2 fields, so a name
     // tiebreak (not upstream insertion order) is what makes this assertion
     // meaningful rather than incidentally true.
-    const entityNames = first.data_entities.map((entity: any) => entity.name);
+    const entityNames = first.entities.map((entity: any) => entity.name);
     expect(new Set(entityNames.map((name: string) => name.toLowerCase())).size).toBe(entityNames.length);
-    const sortedByNameAmongTiedFieldCounts = [...first.data_entities]
+    const sortedByNameAmongTiedFieldCounts = [...first.entities]
       .sort((a: any, b: any) => (b.fields?.length || 0) - (a.fields?.length || 0) || a.name.localeCompare(b.name))
       .map((entity: any) => entity.name);
     expect(entityNames).toEqual(sortedByNameAmongTiedFieldCounts);

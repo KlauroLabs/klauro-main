@@ -10,6 +10,8 @@ import {
   FULL_REBUILD_THRESHOLD,
 } from '../../types/cas.types';
 import { computeAffectedFileClosure } from './incremental-impact';
+import { getRegisteredSourceExtensions, isRegisteredSourceExtension } from './language-registry';
+import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS } from './build-artifact-paths';
 
 const CORE_CONFIG_FILES = [
   'package.json',
@@ -85,23 +87,11 @@ function matchesProjectScopeTrigger(file: string): boolean {
   return PROJECT_SCOPE_TRIGGER_FILES.some(pattern => basenameMatchesGlob(basename, pattern));
 }
 
-const SOURCE_EXTENSIONS = [
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-  '.py', '.pyw',
-  '.java', '.kt', '.kts',
-  '.cs', '.vb', '.fs',
-  '.go',
-  '.rs',
-  '.php',
-  '.dart',
-  '.prisma',
-  '.tf',
-  '.tfvars',
-];
+const SOURCE_EXTENSIONS = getRegisteredSourceExtensions().map(extension => `.${extension}`);
 
 const IGNORE_PATTERNS = [
   '**/node_modules/**',
-  '**/dist/**',
+  ...BUILD_ARTIFACT_GLOBS,
   '**/build/**',
   '**/out/**',
   '**/.git/**',
@@ -119,8 +109,7 @@ const IGNORE_PATTERNS = [
   '**/__pycache__/**',
   '**/.pytest_cache/**',
   '**/target/**',
-  '**/vendor/**',
-  '**/vendors/**',
+  ...THIRD_PARTY_SOURCE_GLOBS,
   '**/examples/**',
   '**/Examples/**',
   '**/fixtures/**',
@@ -200,6 +189,10 @@ export class ChangeDetector {
 
     if (previousState.version !== '1.0.0') {
       return this.createFullRebuildChangeSet('State version mismatch');
+    }
+
+    if (this.isGitRepo && previousState.gitCommitHash && !this.commitExists(previousState.gitCommitHash)) {
+      return this.createFullRebuildChangeSet('Previous Git commit is no longer reachable');
     }
 
     const mtimeCandidates = await this.scanByMtime(previousState.lastAnalysisTimestamp);
@@ -360,7 +353,7 @@ export class ChangeDetector {
 
   private commitExists(commit: string): boolean {
     try {
-      execFileSync('git', ['rev-parse', '--verify', commit], {
+      execFileSync('git', ['rev-parse', '--verify', `${commit}^{commit}`], {
         cwd: this.projectPath,
         stdio: 'pipe',
       });
@@ -441,24 +434,6 @@ export class ChangeDetector {
     }
   }
 
-  private parseGitDiff(output: string): Array<{ file: string; status: string }> {
-    const changes: Array<{ file: string; status: string }> = [];
-    const lines = output.split('\n').filter(Boolean);
-
-    for (const line of lines) {
-      const match = line.match(/^([AMDRC])\t(.+)$/);
-      if (match) {
-        changes.push({ status: match[1], file: match[2] });
-      }
-      const renameMatch = line.match(/^R\d*\t(.+)\t(.+)$/);
-      if (renameMatch) {
-        changes.push({ status: 'D', file: renameMatch[1] });
-        changes.push({ status: 'A', file: renameMatch[2] });
-      }
-    }
-
-    return changes;
-  }
 
   private parseGitDiffZ(output: string): Array<{ file: string; status: string }> {
     const changes: Array<{ file: string; status: string }> = [];
@@ -482,33 +457,6 @@ export class ChangeDetector {
     return changes;
   }
 
-  private parseGitStatus(output: string): Array<{ file: string; status: string }> {
-    const changes: Array<{ file: string; status: string }> = [];
-    const lines = output.split('\n').filter(Boolean);
-
-    for (const line of lines) {
-      const staged = line[0];
-      const unstaged = line[1];
-      const file = line.substring(3).trim();
-
-      if (file.includes(' -> ')) {
-        const [oldFile, newFile] = file.split(' -> ');
-        changes.push({ status: 'D', file: oldFile });
-        changes.push({ status: 'A', file: newFile });
-        continue;
-      }
-
-      if (staged === '?' || unstaged === '?') {
-        changes.push({ status: '?', file });
-      } else if (staged !== ' ') {
-        changes.push({ status: staged, file });
-      } else if (unstaged !== ' ') {
-        changes.push({ status: unstaged, file });
-      }
-    }
-
-    return changes;
-  }
 
   private parseGitStatusZ(output: string): Array<{ file: string; status: string }> {
     const changes: Array<{ file: string; status: string }> = [];
@@ -758,8 +706,7 @@ export class ChangeDetector {
   }
 
   private isSourceFile(file: string): boolean {
-    const ext = path.extname(file).toLowerCase();
-    return SOURCE_EXTENSIONS.includes(ext);
+    return isRegisteredSourceExtension(file);
   }
 
   private isTrackedAnalysisFile(file: string): boolean {

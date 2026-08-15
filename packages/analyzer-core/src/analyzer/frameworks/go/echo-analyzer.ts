@@ -8,20 +8,19 @@ import {
   GoRoute, describeGoHandler, isGoMiddlewareIdentifier, parseGoCallArgs,
   joinGoPaths, findGoFiles, readGoFiles, goModRequires, lineForIndex
 } from './go-route-utils';
-import * as path from 'path';
 
 const ECHO_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'CONNECT', 'TRACE', 'Any'];
 
-/**
- * Echo framework analyzer (github.com/labstack/echo).
- *
- * Extracts `e.GET("/path", handler)` / `g := e.Group("/prefix")` route
- * registrations, mirroring the Gin analyzer's group-nesting resolution
- * (Echo's Group() API is structurally identical to Gin's — a `*echo.Group`
- * bound to a var whose own method calls are scoped to that prefix). `g.Use(...)`
- * calls register middleware guards that apply to every route registered
- * directly on that group.
- */
+
+
+
+
+
+
+
+
+
+
 export class EchoAnalyzer extends BaseAnalyzer {
   constructor() {
     super('echo', 'Echo Framework Analyzer', '1.0.0', 'framework');
@@ -145,9 +144,9 @@ export class EchoAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** Local var names bound to `echo.New()`, plus the conventional `e`/`echo` names
-   *  used even when the binding isn't found in this file (helper functions taking
-   *  `*echo.Echo`/`*echo.Group` as a parameter). */
+
+
+
   private findEchoReceiverNames(content: string): string[] {
     const names = new Set<string>(['e']);
     const instancePattern = /(?:const|var)?\s*([A-Za-z_][\w]*)\s*:?=\s*echo\.New\s*\(/g;
@@ -167,7 +166,7 @@ export class EchoAnalyzer extends BaseAnalyzer {
   ): void {
     const escaped = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // g.Use(mw1, mw2) — applies to every route registered directly on this receiver.
+
     const usePattern = new RegExp(`\\b${escaped}\\.Use\\s*\\(`, 'g');
     const groupGuards: string[] = [];
     let match: RegExpExecArray | null;
@@ -176,7 +175,7 @@ export class EchoAnalyzer extends BaseAnalyzer {
       groupGuards.push(...args.filter(a => isGoMiddlewareIdentifier(a)));
     }
 
-    // Route calls: receiver.GET("/path", handler[, middleware...])
+
     const methodAlt = ECHO_METHODS.join('|');
     const routeCallPattern = new RegExp(`\\b${escaped}\\.(${methodAlt})\\s*\\(\\s*(['"\`])([^'"\`]*)\\2`, 'g');
     while ((match = routeCallPattern.exec(content)) !== null) {
@@ -186,7 +185,7 @@ export class EchoAnalyzer extends BaseAnalyzer {
       const args = parseGoCallArgs(content, routeCallPattern.lastIndex);
       const handlerArg = args[0] || 'anonymous';
       const handler = describeGoHandler(handlerArg);
-      // Echo signature is (path, handler, middleware...) — middleware trail after handler.
+
       const inlineGuards = args.slice(1).filter(a => isGoMiddlewareIdentifier(a));
       routes.push({
         method: method === 'Any' ? 'ANY' : method,
@@ -198,7 +197,7 @@ export class EchoAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Group calls: newVar := receiver.Group("/prefix"[, mw...])
+
     const groupPattern = new RegExp(`(?:([A-Za-z_][\\w]*)\\s*:?=\\s*)?\\b${escaped}\\.Group\\s*\\(\\s*(['"\`])([^'"\`]*)\\2`, 'g');
     while ((match = groupPattern.exec(content)) !== null) {
       if (visitedGroupStarts.has(match.index)) continue;
@@ -217,8 +216,8 @@ export class EchoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Extract `.METHOD("/path", handler)` calls chained directly off an anonymous
-   *  `Group()` return, scanning forward for immediate `.METHOD(` chains. */
+
+
   private extractChainedCalls(
     content: string,
     fromIndex: number,

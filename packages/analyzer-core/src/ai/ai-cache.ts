@@ -17,10 +17,10 @@ export interface CacheEntry<T = any> {
 
 let activeProjectScope: string | undefined;
 
-/**
- * Derives the per-project AI cache scope from a project path. Matches the
- * analysis storage slug shape: <basename-slug>-<sha256(absolute path)[0:12]>.
- */
+
+
+
+
 export function aiCacheProjectScope(projectPath: string): string {
   const resolved = path.resolve(projectPath);
   const base = path.basename(resolved)
@@ -33,10 +33,10 @@ export function aiCacheProjectScope(projectPath: string): string {
   return `${base}-${hash}`;
 }
 
-/**
- * Associates subsequent AI cache writes with a project so per-project purge
- * can delete them. Pass undefined to return to unassociated (global) writes.
- */
+
+
+
+
 export function setAICacheProjectScope(projectPath: string | undefined): void {
   activeProjectScope = projectPath ? aiCacheProjectScope(projectPath) : undefined;
 }
@@ -130,9 +130,9 @@ export class AICache {
         maxRetriesPerRequest: 1,
         lazyConnect: true,
         enableOfflineQueue: false,
-        // Give up after 2 attempts instead of reconnecting forever. When
-        // Redis is absent (the common case for CLI analysis runs) this
-        // keeps the in-memory fallback quiet rather than spamming logs.
+
+
+
         retryStrategy: (times: number) => (times > 2 ? null : 200),
       });
 
@@ -140,8 +140,8 @@ export class AICache {
         this.logger.info('Connected to Redis for AI caching');
       });
 
-      // Log the failure exactly once, then permanently fall back to the
-      // in-memory cache so we don't emit an error per reconnection attempt.
+
+
       this.redis.on('error', (error) => {
         this.disableRedis(error);
       });
@@ -170,21 +170,21 @@ export class AICache {
     try {
       client.disconnect();
     } catch {
-      // already disconnected
+
     }
   }
 
-  /**
-   * True when the CURRENT analysis run asked to bypass the AI response cache
-   * (task #132: `klauro analyze --force`). Read fresh on every call rather
-   * than cached on the instance — this is a per-project-analysis worker
-   * process (see apps/mcp-server/src/analysis-worker.ts's applyEnvSnapshot),
-   * jobs run strictly serially on it, and the env var is set/cleared per job,
-   * so `process.env` genuinely reflects "is THIS run forced" at call time.
-   * `this.cache` (the AICache instance) is itself a long-lived singleton
-   * shared across every job that worker ever handles — it must never bake in
-   * a bypass decision at construction time.
-   */
+
+
+
+
+
+
+
+
+
+
+
   private isBypassActive(): boolean {
     return process.env.KLAURO_FORCE_AI_REFRESH === '1';
   }
@@ -193,12 +193,12 @@ export class AICache {
     this.stats.totalRequests++;
 
     if (this.isBypassActive()) {
-      // A forced miss, not a real cache failure: still counted as a miss for
-      // hit-rate purposes (ai_cache_reuse's per-run delta relies on this), but
-      // skip reading Redis/fallback/disk entirely — reading first and then
-      // discarding the result would do the I/O for nothing and could still
-      // race a concurrent expiry/version check into logging a misleading
-      // "cache hit" debug line for a value the caller never sees.
+
+
+
+
+
+
       this.stats.misses++;
       this.updateHitRate();
       this.logger.debug(`Cache bypassed (force) for key: ${key}`);
@@ -208,7 +208,7 @@ export class AICache {
     try {
       const fullKey = this.generateKey(key);
 
-      // Try Redis first
+
       if (this.redis && await this.isRedisAvailable()) {
         const cached = await this.getFromRedis<T>(fullKey);
         if (cached !== null) {
@@ -219,7 +219,7 @@ export class AICache {
         }
       }
 
-      // Fallback to in-memory cache
+
       const fallbackResult = this.getFromFallback<T>(fullKey);
       if (fallbackResult !== null) {
         this.stats.hits++;
@@ -228,10 +228,10 @@ export class AICache {
         return fallbackResult;
       }
 
-      // Disk cache — persists across processes when Redis is unavailable.
+
       const diskResult = this.getFromDisk<T>(fullKey);
       if (diskResult !== null) {
-        // Promote into the in-memory tier for fast subsequent access.
+
         this.setInFallback(fullKey, diskResult.entry);
         this.stats.hits++;
         this.updateHitRate();
@@ -265,11 +265,11 @@ export class AICache {
         project: activeProjectScope
       };
 
-      // Try Redis first
+
       if (this.redis && await this.isRedisAvailable()) {
         await this.setInRedis(fullKey, entry, cacheTtl);
       } else {
-        // Fallback to in-memory cache, plus disk for cross-process persistence.
+
         this.setInFallback(fullKey, entry);
         this.setOnDisk(fullKey, entry);
       }
@@ -287,14 +287,14 @@ export class AICache {
     try {
       const fullKey = this.generateKey(key);
 
-      // Delete from Redis
+
       if (this.redis && await this.isRedisAvailable()) {
         await this.redis.del(fullKey);
       }
 
-      // Delete from fallback cache
+
       const deleted = this.fallbackCache.delete(fullKey);
-      
+
       if (deleted) {
         this.stats.deletes++;
         this.stats.size = Math.max(0, this.stats.size - 1);
@@ -309,7 +309,7 @@ export class AICache {
 
   async clear(): Promise<void> {
     try {
-      // Clear Redis cache
+
       if (this.redis && await this.isRedisAvailable()) {
         const pattern = aiConfig.cache.redis.keyPrefix + '*';
         const keys = await this.redis.keys(pattern);
@@ -318,10 +318,10 @@ export class AICache {
         }
       }
 
-      // Clear fallback cache
+
       this.fallbackCache.clear();
 
-      // Reset stats
+
       this.stats.size = 0;
       this.logger.info('AI cache cleared');
 
@@ -334,13 +334,13 @@ export class AICache {
     try {
       const fullKey = this.generateKey(key);
 
-      // Check Redis first
+
       if (this.redis && await this.isRedisAvailable()) {
         const exists = await this.redis.exists(fullKey);
         if (exists) return true;
       }
 
-      // Check fallback cache
+
       return this.fallbackCache.has(fullKey) && !this.isExpired(this.fallbackCache.get(fullKey)!);
 
     } catch (error) {
@@ -374,7 +374,7 @@ export class AICache {
     let deletedCount = 0;
 
     try {
-      // Invalidate in Redis
+
       if (this.redis && await this.isRedisAvailable()) {
         const searchPattern = aiConfig.cache.redis.keyPrefix + pattern;
         const keys = await this.redis.keys(searchPattern);
@@ -384,7 +384,7 @@ export class AICache {
         }
       }
 
-      // Invalidate in fallback cache
+
       for (const [key] of this.fallbackCache.entries()) {
         if (key.includes(pattern)) {
           this.fallbackCache.delete(key);
@@ -394,7 +394,7 @@ export class AICache {
 
       this.stats.deletes += deletedCount;
       this.stats.size = Math.max(0, this.stats.size - deletedCount);
-      
+
       this.logger.info(`Invalidated ${deletedCount} cache entries matching pattern: ${pattern}`);
       return deletedCount;
 
@@ -404,13 +404,12 @@ export class AICache {
     }
   }
 
-  // Cleanup expired entries from fallback cache
+
   async cleanup(): Promise<number> {
     let cleanedCount = 0;
 
     try {
-      const now = Date.now();
-      
+
       for (const [key, entry] of this.fallbackCache.entries()) {
         if (this.isExpired(entry)) {
           this.fallbackCache.delete(key);
@@ -439,8 +438,8 @@ export class AICache {
       if (!cached) return null;
 
       const entry: CacheEntry<T> = JSON.parse(cached);
-      
-      // Validate cache entry
+
+
       if (this.isExpired(entry) || entry.version !== this.CACHE_VERSION) {
         await this.redis.del(key);
         return null;
@@ -480,7 +479,7 @@ export class AICache {
   }
 
   private setInFallback<T>(key: string, entry: CacheEntry<T>): void {
-    // Implement simple LRU eviction if cache is too large
+
     if (this.fallbackCache.size >= this.MAX_FALLBACK_SIZE) {
       const oldestKey = this.fallbackCache.keys().next().value;
       if (oldestKey) {
@@ -492,14 +491,14 @@ export class AICache {
   }
 
   private diskFileName(fullKey: string): string {
-    // Hash the key so the filename is always filesystem-safe and bounded.
+
     const hash = crypto.createHash('sha1').update(fullKey).digest('hex');
     return `${hash}.json`;
   }
 
   private diskPath(fullKey: string): string {
-    // Project-scoped entries live in a per-project subdirectory so a single
-    // project's derived AI output can be deleted without touching the rest.
+
+
     if (activeProjectScope) {
       return path.join(this.diskCacheDir, activeProjectScope, this.diskFileName(fullKey));
     }
@@ -520,13 +519,13 @@ export class AICache {
         if (!fs.existsSync(file)) continue;
         const entry: CacheEntry<T> = JSON.parse(fs.readFileSync(file, 'utf8'));
         if (this.isExpired(entry) || entry.version !== this.CACHE_VERSION) {
-          try { fs.unlinkSync(file); } catch { /* ignore */ }
+          try { fs.unlinkSync(file); } catch {   }
           continue;
         }
         return { value: entry.data, entry };
       } catch (error) {
-        // Corrupt or unreadable entry — drop it and miss.
-        try { fs.unlinkSync(file); } catch { /* ignore */ }
+
+        try { fs.unlinkSync(file); } catch {   }
       }
     }
     return null;
@@ -534,21 +533,21 @@ export class AICache {
 
   private setOnDisk<T>(fullKey: string, entry: CacheEntry<T>): void {
     if (!this.diskCacheEnabled) return;
-    // Write the project-scoped copy (for per-project deletion granularity) AND a
-    // global, content-addressed copy. The cache KEY is content-only (operation +
-    // element-facts hash — no project path; see AIService.generateCacheKey), so an
-    // identical AI request in ANY project/path can reuse the result: getFromDisk
-    // already reads the global path as a fallback. Populating it turns cold
-    // re-analysis, shared boilerplate, and repeated test fixtures into cache hits
-    // instead of fresh (slow) AI calls. Same key ⇒ same content ⇒ same valid answer,
-    // so this preserves cross-project correctness.
+
+
+
+
+
+
+
+
     const scoped = this.diskPath(fullKey);
     const global = this.legacyDiskPath(fullKey);
     const targets = scoped === global ? [scoped] : [scoped, global];
     for (const file of targets) {
       try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        // Atomic write: write to a temp file then rename.
+
         const tmp = `${file}.${process.pid}.${this.tmpCounter++}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(entry), 'utf8');
         fs.renameSync(tmp, file);
@@ -561,7 +560,7 @@ export class AICache {
   private tmpCounter = 0;
 
   private generateKey(key: string): string {
-    // Ensure key is safe for Redis and consistent
+
     const safeKey = key.replace(/[^a-zA-Z0-9:_-]/g, '_');
     return `ai:${safeKey}`;
   }
@@ -593,12 +592,12 @@ export class AICache {
   }
 
   private updateHitRate(): void {
-    this.stats.hitRate = this.stats.totalRequests > 0 
-      ? this.stats.hits / this.stats.totalRequests 
+    this.stats.hitRate = this.stats.totalRequests > 0
+      ? this.stats.hits / this.stats.totalRequests
       : 0;
   }
 
-  // Utility methods for cache warming and optimization
+
   async warm(keys: Array<{ key: string; generator: () => Promise<any> }>): Promise<void> {
     this.logger.info(`Warming cache with ${keys.length} entries`);
 
@@ -620,17 +619,17 @@ export class AICache {
   }
 
   async getOrSet<T>(
-    key: string, 
-    generator: () => Promise<T>, 
+    key: string,
+    generator: () => Promise<T>,
     ttl?: number
   ): Promise<T> {
-    // Try to get from cache first
+
     const cached = await this.get<T>(key);
     if (cached !== null) {
       return cached;
     }
 
-    // Generate new value
+
     try {
       const value = await generator();
       await this.set(key, value, ttl);
@@ -651,8 +650,8 @@ export class AICache {
     await Promise.allSettled(promises);
   }
 
-  // Start periodic cleanup
-  startCleanup(intervalMs: number = 300000): NodeJS.Timeout { // Default 5 minutes
+
+  startCleanup(intervalMs: number = 300000): NodeJS.Timeout {
     return setInterval(async () => {
       await this.cleanup();
     }, intervalMs);
@@ -663,8 +662,8 @@ export class AICache {
       const client = this.redis;
       this.redis = undefined;
       try {
-        // disconnect() tears down the socket without sending a QUIT command,
-        // so it works even when the connection was never established.
+
+
         client.disconnect();
         this.logger.info('Redis connection closed');
       } catch (error) {

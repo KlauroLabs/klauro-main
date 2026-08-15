@@ -7,7 +7,6 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
-import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
 
 interface VueApplication {
   name: string;
@@ -38,9 +37,9 @@ interface VueComponent {
   exports: string[];
   slots: string[];
   emits: string[];
-  /** Child components used in this component's <template> (the render tree). */
+
   childComponents: string[];
-  /** `@click="handler"` / `v-on:click="handler(...)"` bindings in the <template>. */
+
   eventHandlers: Array<{ event: string; handlerName?: string }>;
 }
 
@@ -381,11 +380,11 @@ export class VueAnalyzer extends BaseAnalyzer {
               ));
             });
 
-            // Template event bindings are real flow roots for a frontend app —
-            // a user event triggers a method, the same way an HTTP route
-            // triggers a controller. Emit an `event` entry point per binding;
-            // resolve a `triggers` edge only when the handler name matches a
-            // method already declared on this component (evidence-based).
+
+
+
+
+
             const methodNames = new Set(component.methods.map(m => m.name));
             component.eventHandlers.forEach((handler, index) => {
               const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${index}`);
@@ -419,9 +418,9 @@ export class VueAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Render tree: link each component to the child components it uses in its
-    // <template> (the Camp-C fact that import/structural graphs cannot express —
-    // App IMPORTS UserCard, but only Klauro says App RENDERS UserCard).
+
+
+
     const idByName = new Map(
       components.map(c => [c.name, this.generateId('component', c.filePath, c.name)])
     );
@@ -799,12 +798,12 @@ export class VueAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /**
-   * Vue event bindings (`@click="handler"`, `v-on:click="handler(...)"`,
-   * `@click="handler($event)"`) in the <template>. A bare identifier or a bare
-   * `methodName(...)` call resolves `handlerName`; a full inline expression is
-   * still captured as an event without a fabricated handler target.
-   */
+
+
+
+
+
+
   private extractTemplateEventHandlers(content: string): Array<{ event: string; handlerName?: string }> {
     const tpl = /<template>([\s\S]*?)<\/template>/.exec(content);
     if (!tpl) return [];
@@ -831,8 +830,8 @@ export class VueAnalyzer extends BaseAnalyzer {
     return handlers;
   }
 
-  /** Child components rendered in the <template>: PascalCase tags (the Vue
-   *  convention for components) — distinct from native lowercase HTML elements. */
+
+
   private extractChildComponents(content: string): string[] {
     const tpl = /<template>([\s\S]*?)<\/template>/.exec(content);
     if (!tpl) return [];
@@ -945,10 +944,10 @@ export class VueAnalyzer extends BaseAnalyzer {
   private extractComponentName(content: string, filePath: string): string | null {
     const fileName = path.basename(filePath, path.extname(filePath));
 
-    // Only an EXPLICIT component-name option counts — a bare `name:` regex also
-    // matches data properties like `const user = { name: 'Ada' }`, so scope it to
-    // `defineOptions({ name })` / `export default { name }`. Otherwise the SFC is
-    // referenced by its filename (the Vue convention), so default to that.
+
+
+
+
     const explicit =
       /defineOptions\s*\(\s*\{[^}]*?\bname:\s*['"`]([^'"`]+)['"`]/.exec(content) ||
       /export\s+default\s*\{[^]*?\bname:\s*['"`]([^'"`]+)['"`]/.exec(content);
@@ -1299,14 +1298,12 @@ export class VueAnalyzer extends BaseAnalyzer {
   }
 
   private extractReactive(content: string): string[] {
-    const reactive: string[] = [];
     const reactivePattern = /reactive\(\s*\{/g;
     const matches = content.match(reactivePattern);
     return matches ? [String(matches.length)] : [];
   }
 
   private extractRefs(content: string): string[] {
-    const refs: string[] = [];
     const refPattern = /ref\(/g;
     const matches = content.match(refPattern);
     return matches ? [String(matches.length)] : [];
@@ -1816,37 +1813,37 @@ export class VueAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // CAS v1.4.0 Documentation and Comment extraction methods
+
 
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
 
-    // Look for Vue-specific documentation patterns
 
-    // 1. Component prop documentation
+
+
     const propDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/[^{]*\n[^{]*props:\s*{/g);
     const propDocs = [];
     for (const match of propDocMatches) {
       propDocs.push(match[1].trim());
     }
 
-    // 2. Computed property docs
+
     const computedDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/[^{]*\n[^{]*computed:\s*{/g);
     const computedDocs = [];
     for (const match of computedDocMatches) {
       computedDocs.push(match[1].trim());
     }
 
-    // 3. Method documentation
+
     const methodDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/[^{]*\n[^{]*methods:\s*{/g);
     const methodDocs = [];
     for (const match of methodDocMatches) {
       methodDocs.push(match[1].trim());
     }
 
-    // 4. Lifecycle hook comments
+
     const lifecycleDocMatches = content.matchAll(/\/\/\s*(mounted|created|beforeDestroy|destroyed|beforeMount|updated|beforeUpdate):\s*([^\n]*)/g);
     const lifecycleDocs = [];
     for (const match of lifecycleDocMatches) {
@@ -1886,7 +1883,7 @@ export class VueAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // JavaScript/TypeScript single-line comments
+
       if (trimmedLine.startsWith('//')) {
         const commentText = trimmedLine.substring(2).trim();
         if (commentText.length > 0) {
@@ -1912,7 +1909,7 @@ export class VueAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Multi-line comments /* */
+
       if (trimmedLine.includes('/*') && !trimmedLine.includes('/**')) {
         let commentText = '';
         let j = i;
@@ -1951,10 +1948,10 @@ export class VueAnalyzer extends BaseAnalyzer {
           comments.push(comment);
         }
 
-        i = j - 1; // Skip processed lines
+        i = j - 1;
       }
 
-      // Vue template comments <!-- -->
+
       const templateCommentMatch = line.match(/<!--\s*([^-]*?)\s*-->/);
       if (templateCommentMatch) {
         const commentText = templateCommentMatch[1].trim();

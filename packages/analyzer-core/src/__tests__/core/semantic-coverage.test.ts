@@ -102,7 +102,7 @@ function buildFixtureCas(): CASOutput {
     } as CASCallChain,
   ];
 
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_order_management', name: 'Order Management', description: 'Create and manage orders', category: 'core',
       operations: [{ entry_point_id: 'ep_createOrder', entry_point_type: 'http', action: 'create' }],
@@ -113,7 +113,7 @@ function buildFixtureCas(): CASOutput {
   return {
     cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test',
     system: { name: 'test-system' } as any,
-    nodes, edges, entry_points, exit_points, data_lineage, call_chains, system_capabilities,
+    nodes, edges, entry_points, exit_points, data_lineage, call_chains, capabilities,
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }

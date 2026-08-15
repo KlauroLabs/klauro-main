@@ -5,36 +5,36 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Reitit + Ring (Clojure) framework analyzer.
- *
- * Reitit declares routes as DATA (a nested vector of `["/path" handler-map]`
- * pairs), unlike Compojure's macro-call routes:
- *
- *   (def routes
- *     ["/api"
- *      ["/users" {:get  {:handler list-users}
- *                 :post {:handler create-user
- *                        :middleware [wrap-auth]}}]
- *      ["/users/:id" {:get {:handler show-user}}]])
- *
- * A route entry is a `vec_lit` whose first element is a `str_lit` path segment.
- * The next sibling is EITHER another vector (nested child routes — the string
- * segment prefixes them) OR a `map_lit` whose keys are HTTP methods (:get,
- * :post, ...), each mapping to a handler map with a `:handler` key (and
- * optionally `:middleware [...]`). Prefixes accumulate down the vector nesting,
- * exactly like Compojure's `context`.
- *
- * Ring: a bare Ring handler is a 1-arity function `(defn handler [request] ...)`
- * that returns a response map (`{:status ... :body ...}`). Ring itself has no
- * routing DSL — it's the request/response contract Reitit (and Compojure)
- * dispatch onto. We surface top-level Ring handler defns only when they are
- * NOT already captured as a Reitit :handler target, so a Ring-only app (no
- * router, just `(run-jetty handler {...})`) still gets its entry points named.
- *
- * Node types grounded on the same tree-sitter-clojure grammar as Compojure
- * (list_lit / vec_lit / map_lit / sym_lit / str_lit / kwd_lit).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const HTTP_METHOD_KEYWORDS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options']);
 
@@ -92,21 +92,21 @@ export class ReititAnalyzer extends BaseAnalyzer {
 
         const relativePath = path.relative(context.projectPath, file);
         const tree = await parseWasm('clojure', content);
-        const root = tree.rootNode;
-
-        const routes = this.extractReititRoutes(root);
-        const handlerNamesUsed = new Set(routes.map(r => r.handler));
-        for (const route of routes) {
-          this.emitReititRoute(route, relativePath, entryPoints);
-          reititRouteCount++;
-        }
-
-        // Bare Ring handlers not already referenced as a Reitit :handler target —
-        // covers Ring-only apps with no router (`(run-jetty handler {...})`).
-        const ringHandlers = this.extractRingHandlers(root).filter(h => !handlerNamesUsed.has(h.name));
-        for (const handler of ringHandlers) {
-          this.emitRingHandler(handler, relativePath, entryPoints);
-          ringHandlerCount++;
+        try {
+          const root = tree.rootNode;
+          const routes = this.extractReititRoutes(root);
+          const handlerNamesUsed = new Set(routes.map(r => r.handler));
+          for (const route of routes) {
+            this.emitReititRoute(route, relativePath, entryPoints);
+            reititRouteCount++;
+          }
+          const ringHandlers = this.extractRingHandlers(root).filter(h => !handlerNamesUsed.has(h.name));
+          for (const handler of ringHandlers) {
+            this.emitRingHandler(handler, relativePath, entryPoints);
+            ringHandlerCount++;
+          }
+        } finally {
+          tree.delete?.();
         }
       }
 
@@ -136,13 +136,13 @@ export class ReititAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Walk every top-level `vec_lit` looking for the Reitit route-data shape:
-   * `["/path" ...]` where the first element is a str_lit. Descend recursively,
-   * accumulating the path prefix; a sibling `map_lit` with HTTP-method keywords
-   * is the route's method table, a sibling `vec_lit` (or a vector-of-vectors) is
-   * nested child routes.
-   */
+
+
+
+
+
+
+
   private extractReititRoutes(root: any): ReititRoute[] {
     const routes: ReititRoute[] = [];
     const seen = new Set<string>();
@@ -156,7 +156,7 @@ export class ReititAnalyzer extends BaseAnalyzer {
           const segment = this.stringValue(first);
           const fullPrefix = this.joinPrefix(prefix, segment);
 
-          // Scan the remaining siblings for a method map and/or nested vectors.
+
           for (let i = 1; i < node.namedChildCount; i++) {
             const sibling = node.namedChild(i);
             if (sibling.type === 'map_lit') {
@@ -170,8 +170,8 @@ export class ReititAnalyzer extends BaseAnalyzer {
           }
           return;
         }
-        // Not a route vector (e.g. the outer `[...]` wrapping a list of route
-        // vectors, or a binding vector) — descend into each child at the same prefix.
+
+
         this.walkChildren(node, prefix, walk);
         return;
       }
@@ -187,7 +187,7 @@ export class ReititAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < node.namedChildCount; i++) walk(node.namedChild(i), prefix);
   }
 
-  /** A route's method table: `{:get {:handler f} :post {:handler g :middleware [...]}}`. */
+
   private extractMethodTable(mapNode: any, fullPath: string): ReititRoute[] {
     const routes: ReititRoute[] = [];
     const entries = this.mapEntries(mapNode);
@@ -215,8 +215,8 @@ export class ReititAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** Top-level `(defn name [request] ...)` / `(defn name [req] ...)` 1-arity
-   *  handler defns — the Ring handler contract. */
+
+
   private extractRingHandlers(root: any): RingHandler[] {
     const handlers: RingHandler[] = [];
     const walk = (node: any): void => {
@@ -244,8 +244,8 @@ export class ReititAnalyzer extends BaseAnalyzer {
   private emitReititRoute(route: ReititRoute, relativePath: string, entryPoints: CASEntryPoint[]): void {
     const nodeId = `function:${relativePath}:${route.handler}`;
     const guards = route.middleware;
-    // Reitit middleware IS attributable per-route (unlike Compojure's whole-handler
-    // Ring middleware) since it's declared inside the route's own method map.
+
+
     const authGuards = guards.filter(g => /auth|jwt|session|token/i.test(g));
 
     entryPoints.push(
@@ -286,7 +286,7 @@ export class ReititAnalyzer extends BaseAnalyzer {
     );
   }
 
-  // ---- AST helpers (grounded on tree-sitter-clojure) ----------------------------
+
 
   private firstNamedChild(node: any): any {
     return node.namedChildCount > 0 ? node.namedChild(0) : undefined;
@@ -307,15 +307,15 @@ export class ReititAnalyzer extends BaseAnalyzer {
     return text.trim() || undefined;
   }
 
-  /** A keyword's clean name (`:get` -> "get"), or undefined if not a kwd_lit. */
+
   private keywordName(node: any): string | undefined {
     if (node.type !== 'kwd_lit') return undefined;
     const text = (node.text ?? '').trim();
     return text.replace(/^:+/, '') || undefined;
   }
 
-  /** A `:handler` value can be a bare symbol (`list-users`) or, less commonly, a
-   *  fully-qualified symbol (`app.core/list-users`) — we keep only the final segment. */
+
+
   private symbolOrKeywordText(node: any): string | undefined {
     if (node.type === 'sym_lit') {
       const name = this.symbolName(node);
@@ -324,7 +324,7 @@ export class ReititAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** Every top-level symbol inside a `[a b c]` vector (e.g. a `:middleware` vector). */
+
   private collectSymbolsInVec(node: any): string[] {
     if (node.type !== 'vec_lit') return [];
     const names: string[] = [];
@@ -338,8 +338,8 @@ export class ReititAnalyzer extends BaseAnalyzer {
     return names;
   }
 
-  /** Pair up a map_lit's alternating key/value named children:
-   *  `{:get {...} :post {...}}` -> [[:get-node, {...}-node], [:post-node, {...}-node]]. */
+
+
   private mapEntries(mapNode: any): Array<[any, any]> {
     const entries: Array<[any, any]> = [];
     const children: any[] = [];

@@ -24,23 +24,23 @@ interface KnexQuerySite {
   line: number;
 }
 
-/**
- * Knex analyzer.
- *
- * Knex is a query builder, not an ORM with class-based entities — it has no
- * decorator or model definition to anchor a data-entity node on. Instead this
- * analyzer surfaces the two things Knex actually defines:
- *
- *  1. Migration-declared tables (`knex.schema.createTable('users', t => {...})`),
- *     emitted as `entity` nodes (level 3) with column fields, and `references`
- *     edges for `.references('id').inTable('other')` foreign-key columns — so
- *     the same database_schema.relationships_summary sink other ORMs feed
- *     picks up Knex-migration-defined relations too.
- *  2. Query-builder call sites (`knex('users').where(...)`, `.insert(...)`,
- *     `.update(...)`, `.del()`), emitted as `database`-category exit points so
- *     read/write access to a table is visible to get_data_lineage even when no
- *     migration file (e.g. a schema owned by another service) is in this repo.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class KnexAnalyzer extends BaseAnalyzer {
   constructor() {
     super('knex', 'Knex Analyzer', '1.0.0', 'library');
@@ -71,7 +71,7 @@ export class KnexAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -294,14 +294,14 @@ export class KnexAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Parse `knex.schema.createTable('users', function(table) { table.increments('id'); ... })`.
-   */
+
+
+
   private parseMigrationTables(content: string, filePath: string): KnexTable[] {
     const tables: KnexTable[] = [];
-    // Matches both `knex.schema.createTable(...)` and the common chained
-    // form `knex.schema.createTable(...).createTable(...)` where the second
-    // (and later) calls are bare `.createTable(` off the builder's return.
+
+
+
     const createRegex = /(?:knex\.schema\.)?\.?createTable\s*\(\s*['"`](\w+)['"`]\s*,\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{/g;
     let match: RegExpExecArray | null;
     while ((match = createRegex.exec(content)) !== null) {
@@ -320,9 +320,9 @@ export class KnexAnalyzer extends BaseAnalyzer {
     return tables;
   }
 
-  /**
-   * Parse `table.string('name')`, `table.integer('user_id').references('id').inTable('users')`, etc.
-   */
+
+
+
   private parseColumns(body: string): KnexTableColumn[] {
     const columns: KnexTableColumn[] = [];
     const colRegex = /table\.(\w+)\s*\(\s*['"`](\w+)['"`][^)]*\)([^;]*)/g;
@@ -342,9 +342,9 @@ export class KnexAnalyzer extends BaseAnalyzer {
     return columns;
   }
 
-  /**
-   * Parse `knex('users').where(...)`, `.insert(...)`, `.update(...)`, `.del()`/`.delete()`.
-   */
+
+
+
   private parseQuerySites(content: string, filePath: string): KnexQuerySite[] {
     const sites: KnexQuerySite[] = [];
     const lines = content.split(/\r?\n/);

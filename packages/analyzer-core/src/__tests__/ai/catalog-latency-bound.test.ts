@@ -103,6 +103,37 @@ describe('awaitAiBoundedThenUncapped (task #107 capability-catalog latency bound
     expect(Date.now() - startedAt).toBeLessThan(200);
   });
 
+  it('aborts each timed-out attempt before starting the next one', async () => {
+    let active = 0;
+    let peakActive = 0;
+    let aborted = 0;
+    const attemptFactory = (attemptIndex: number, signal?: AbortSignal) => new Promise<string>((resolve, reject) => {
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      if (attemptIndex === 2) {
+        active -= 1;
+        resolve('RECOVERED');
+        return;
+      }
+      signal?.addEventListener('abort', () => {
+        aborted += 1;
+        active -= 1;
+        reject(signal.reason);
+      }, { once: true });
+    });
+
+    const result = await orch.awaitAiBoundedThenUncapped(attemptFactory, 'test-op-abort', {
+      perAttemptTimeoutMs: 20,
+      maxBoundedAttempts: 3,
+      slowWarnMs: 1000,
+    });
+
+    expect(result).toBe('RECOVERED');
+    expect(aborted).toBe(1);
+    expect(active).toBe(0);
+    expect(peakActive).toBe(1);
+  });
+
   // TASK #107 HARD CUTOFF: the three tests above prove the pre-existing
   // completeness invariant is untouched. These prove the NEW hard-deadline
   // gate added on top of it, in both directions per the task's own

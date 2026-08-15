@@ -6,38 +6,38 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Vapor (Swift server) framework analyzer.
- *
- * Vapor builds its routes with a builder API on the `Application` (conventionally
- * `app`) and on `RoutesBuilder` group handles:
- *
- *   app.get("users", ":id", use: getUser)        // GET /users/:id  -> getUser
- *   app.post("users") { req in ... }             // POST /users     -> inline closure
- *   let users = app.grouped("users")             // path-prefix group
- *   users.delete(":id", use: deleteUser)         // DELETE /users/:id
- *   let protected = app.grouped(UserAuthenticator())   // middleware group (auth)
- *   protected.get("me", use: me)                 // GET /me  (authenticated)
- *
- * Auth in Vapor is applied with `.grouped(<middleware>)` on a routes builder, not
- * per-route. So which endpoints are protected is a composition fact, resolved by
- * tracking, for each builder variable, (a) its accumulated path prefix and (b)
- * whether any middleware on its `.grouped(...)` chain is an authenticator. A route
- * registered on an authenticated builder is authenticated.
- *
- * Node types are grounded on the real tree-sitter-swift grammar (see the recipe
- * artifact): call_expression -> navigation_expression(receiver + navigation_suffix)
- * + call_suffix(value_arguments [+ lambda_literal]); path segments are
- * value_argument > line_string_literal > line_str_text; the handler is the
- * value_argument whose value_argument_label is `use`; group bindings are
- * property_declaration `let <name> = <chain>`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const HTTP_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head']);
 
-/** A routes-builder handle: a path prefix + whether it sits behind auth middleware. */
+
 interface Builder {
-  prefix: string[];   // accumulated path segments (no leading/trailing slash)
+  prefix: string[];
   authed: boolean;
 }
 
@@ -48,13 +48,13 @@ export class VaporAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      // Manifest signal: Package.swift depending on vapor.
+
       const pkg = path.join(projectPath, 'Package.swift');
       if (await fs.pathExists(pkg)) {
         const content = await fs.readFile(pkg, 'utf-8');
         if (/\bvapor\b/i.test(content)) return true;
       }
-      // Source signal: `import Vapor` in any .swift file.
+
       for (const file of await this.findSwiftFiles(projectPath)) {
         const content = await fs.readFile(file, 'utf-8');
         if (/\bimport\s+Vapor\b/.test(content)) return true;
@@ -109,26 +109,26 @@ export class VaporAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse one Swift source and emit an http entry point per Vapor route.
-   *
-   * Strategy: a single AST walk in document order. We maintain a map of builder
-   * variables (`app` is the implicit root with an empty prefix and no auth). When we
-   * see `let <name> = <chain>` whose chain resolves against a known builder via
-   * `.grouped(...)`, we record the new builder with its derived prefix + auth. When
-   * we see `<builder>.<method>(...)` for an HTTP method, we emit the route. Because
-   * Vapor route files register groups before using them and in lexical order, a
-   * forward document walk resolves builders before their routes.
-   */
+
+
+
+
+
+
+
+
+
+
+
   private async extractRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): Promise<void> {
     const tree = await parseWasm('swift', content);
     const root = tree.rootNode;
 
     const builders = new Map<string, Builder>();
-    // `app` is the implicit root builder. Vapor handlers conventionally take the
-    // application as `app`, but the root receiver can be any name; we seed `app`
-    // and additionally treat any bare receiver that is never declared as a group as
-    // the root (empty prefix, unauthenticated) so `request.` style misuses don't leak.
+
+
+
+
     builders.set('app', { prefix: [], authed: false });
 
     const seen = new Set<string>();
@@ -154,15 +154,19 @@ export class VaporAnalyzer extends BaseAnalyzer {
       }
     };
 
-    visit(root);
+    try {
+      visit(root);
+    } finally {
+      tree.delete?.();
+    }
   }
 
-  /**
-   * `let <name> = <expr>` where <expr> is a `.grouped(...)` chain rooted at a known
-   * builder. Resolves the new builder's prefix (parent prefix + any string path
-   * segment passed to `.grouped("seg")`) and auth (parent auth OR any middleware
-   * arg that classifies as authentication).
-   */
+
+
+
+
+
+
   private handleGroupBinding(node: any, builders: Map<string, Builder>): void {
     const nameNode = this.childOfType(node, 'pattern');
     const name = nameNode ? this.firstIdentifier(nameNode) : undefined;
@@ -173,14 +177,14 @@ export class VaporAnalyzer extends BaseAnalyzer {
     if (resolved) builders.set(name, resolved);
   }
 
-  /**
-   * Resolve a `.grouped(...)` chain expression (e.g.
-   * `app.grouped("v1").grouped(Token.authenticator())`) to a Builder. Returns null
-   * if the chain is not rooted at a known builder.
-   */
+
+
+
+
+
   private resolveGroupChain(callExpr: any, builders: Map<string, Builder>): Builder | null {
-    // Collect the chain of (method, args) suffixes from outermost call inward, plus
-    // the root receiver identifier.
+
+
     const chain: Array<{ method: string; callNode: any }> = [];
     let current: any = callExpr;
     let rootReceiver: string | undefined;
@@ -190,8 +194,8 @@ export class VaporAnalyzer extends BaseAnalyzer {
       if (!nav) break;
       const method = this.navigationMethod(nav);
       chain.push({ method: method || '', callNode: current });
-      // Descend into the navigation's own object: either a nested call_expression
-      // (another link in the chain) or a simple_identifier (the root receiver).
+
+
       const inner = nav.namedChild(0);
       if (inner && inner.type === 'call_expression') {
         current = inner;
@@ -205,7 +209,7 @@ export class VaporAnalyzer extends BaseAnalyzer {
     const base = builders.get(rootReceiver);
     if (!base) return null;
 
-    // Apply chain links outermost-last: reverse so we fold from the root outward.
+
     let prefix = [...base.prefix];
     let authed = base.authed;
     for (const link of chain.reverse()) {
@@ -223,10 +227,10 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return { prefix, authed };
   }
 
-  /**
-   * Parse a `<builder>.<method>(<path...>, use: handler)` route registration.
-   * Returns null if it's not an HTTP route call on a known builder.
-   */
+
+
+
+
   private parseRouteCall(
     callExpr: any,
     builders: Map<string, Builder>
@@ -236,9 +240,9 @@ export class VaporAnalyzer extends BaseAnalyzer {
     const method = this.navigationMethod(nav);
     if (!method) return null;
 
-    // Receiver must be a known builder (a simple_identifier, not a nested call —
-    // `app.grouped("x").get(...)` inline chains are rare in Vapor; groups are bound
-    // to vars first. We still resolve a direct `app.<method>` receiver).
+
+
+
     const receiverNode = nav.namedChild(0);
     if (!receiverNode || receiverNode.type !== 'simple_identifier') return null;
     const receiver = this.nodeText(receiverNode).trim();
@@ -247,8 +251,8 @@ export class VaporAnalyzer extends BaseAnalyzer {
 
     const args = this.callArguments(callExpr);
 
-    // `.on(.GET, "path", use:)` — explicit-method form. Method is the first arg's
-    // member access (.GET); the path follows.
+
+
     let httpMethod: string | undefined;
     let argStart = 0;
     if (method === 'on') {
@@ -262,7 +266,7 @@ export class VaporAnalyzer extends BaseAnalyzer {
       return null;
     }
 
-    // Path segments: string-literal args (excluding the `use:` labelled handler).
+
     const segments: string[] = [];
     let handler: string | undefined;
     for (let i = argStart; i < args.length; i++) {
@@ -277,7 +281,7 @@ export class VaporAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // No `use:` handler -> trailing-closure handler (inline). Name it anonymously.
+
     if (!handler) {
       const hasClosure = this.hasTrailingClosure(callExpr);
       handler = hasClosure ? 'closure' : '';
@@ -322,7 +326,7 @@ export class VaporAnalyzer extends BaseAnalyzer {
     );
   }
 
-  // ---- AST helpers (grounded on tree-sitter-swift) ------------------------------
+
 
   private nodeText(node: any): string {
     return node?.text ?? '';
@@ -336,7 +340,7 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** The method name on a navigation_expression's navigation_suffix (`.get` -> get). */
+
   private navigationMethod(nav: any): string | undefined {
     const suffix = this.childOfType(nav, 'navigation_suffix');
     if (!suffix) return undefined;
@@ -344,7 +348,7 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return id ? this.nodeText(id).trim() : this.nodeText(suffix).replace(/^\./, '').trim();
   }
 
-  /** All `value_argument` nodes under a call_expression's call_suffix > value_arguments. */
+
   private callArguments(callExpr: any): any[] {
     const suffix = this.childOfType(callExpr, 'call_suffix');
     if (!suffix) return [];
@@ -358,15 +362,15 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return out;
   }
 
-  /** True if the call_expression carries a trailing closure (lambda_literal). */
+
   private hasTrailingClosure(callExpr: any): boolean {
     const suffix = this.childOfType(callExpr, 'call_suffix');
     if (suffix && this.childOfType(suffix, 'lambda_literal')) return true;
-    // Some grammars attach the lambda as a child of call_suffix; also check direct.
+
     return Boolean(this.childOfType(callExpr, 'lambda_literal'));
   }
 
-  /** The label of a value_argument (`use: x` -> "use"), or undefined. */
+
   private argumentLabel(arg: any): string | undefined {
     const label = this.childOfType(arg, 'value_argument_label');
     if (!label) return undefined;
@@ -374,17 +378,17 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return id ? this.nodeText(id).trim() : this.nodeText(label).trim();
   }
 
-  /** The clean text of a string-literal argument (no quotes), or null. */
+
   private stringLiteralValue(arg: any): string | null {
     const lit = this.childOfType(arg, 'line_string_literal');
     if (!lit) return null;
     const text = this.childOfType(lit, 'line_str_text');
     if (text) return this.nodeText(text);
-    // Empty string literal "" has no line_str_text child.
+
     return this.nodeText(lit).replace(/^"|"$/g, '');
   }
 
-  /** For `.on(.GET, ...)`: the member name of a `.GET` prefix_expression. */
+
   private memberAccessName(arg: any): string | undefined {
     if (!arg) return undefined;
     const prefix = this.childOfType(arg, 'prefix_expression');
@@ -395,16 +399,16 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** The handler identifier in a `use: handler` argument. */
+
   private useHandlerName(arg: any): string | undefined {
-    // value_argument children: value_argument_label("use"), simple_identifier(handler)
-    // or navigation_expression (e.g. Controller.handler).
+
+
     for (let i = 0; i < arg.namedChildCount; i++) {
       const c = arg.namedChild(i);
       if (c.type === 'value_argument_label') continue;
       if (c.type === 'simple_identifier') return this.nodeText(c).trim();
       if (c.type === 'navigation_expression') {
-        // `Controller.method` -> use the trailing member as handler name.
+
         const m = this.navigationMethod(c);
         if (m) return m;
         return this.nodeText(c).trim();
@@ -413,7 +417,7 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** First simple_identifier text under a node (e.g. a pattern's bound name). */
+
   private firstIdentifier(node: any): string | undefined {
     if (node.type === 'simple_identifier') return this.nodeText(node).trim();
     for (let i = 0; i < node.namedChildCount; i++) {
@@ -423,11 +427,11 @@ export class VaporAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /** True when a `.grouped(...)` middleware argument is an authentication middleware. */
+
   private argIsAuthMiddleware(arg: any): boolean {
     const text = this.nodeText(arg);
-    // e.g. `UserAuthenticator()`, `Token.authenticator()`, `User.guardMiddleware()`,
-    // `app.sessions.middleware`, `JWTBearerAuthenticator()`.
+
+
     if (isAuthenticationGuardName(text)) return true;
     if (/authenticat|guardmiddleware|bearer|\.sessions\b|basicauth/i.test(text)) return true;
     return false;

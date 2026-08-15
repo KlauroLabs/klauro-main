@@ -5,13 +5,13 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Rocket framework analyzer
- * Enhances Rust analysis with Rocket-specific patterns and metadata
- */
+
+
+
+
 export class RocketAnalyzer extends BaseAnalyzer {
   private rustAnalyzer: RustAnalyzer;
-  
+
   constructor() {
     super('rocket', 'Rocket Framework Analyzer', '1.0.0', 'framework');
     this.rustAnalyzer = new RustAnalyzer();
@@ -23,7 +23,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
 
     try {
       const cargoContent = await this.readFileContent(path.join(projectPath, 'Cargo.toml'));
-      const hasRocketDep = cargoContent.includes('rocket') || 
+      const hasRocketDep = cargoContent.includes('rocket') ||
                             cargoContent.includes('rocket_dyn_templates') ||
                             cargoContent.includes('rocket_sync');
       if (!hasRocketDep) return false;
@@ -72,7 +72,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
   protected getCapabilities(): string[] {
     return [
       'route-extraction',
-      'fairing-detection', 
+      'fairing-detection',
       'state-guards',
       'template-detection',
       'error-handling'
@@ -91,14 +91,14 @@ export class RocketAnalyzer extends BaseAnalyzer {
 
   private async enhanceNodesWithRocketInfo(nodes: any[], projectPath: string): Promise<void> {
     const rustFiles = await this.findRustFiles(projectPath);
-    
+
     for (const file of rustFiles) {
       const content = await this.readFileContent(file);
       const rocketPatterns = this.extractRocketPatterns(content, file);
-      
+
       rocketPatterns.forEach(pattern => {
-        const node = nodes.find(n => n.source?.file === file && 
-                                         n.source?.line >= pattern.line && 
+        const node = nodes.find(n => n.source?.file === file &&
+                                         n.source?.line >= pattern.line &&
                                          n.source?.line <= pattern.line + 10);
         if (node) {
           this.enhanceNodeWithRocketMetadata(node, pattern);
@@ -112,7 +112,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
     const lines = content.split('\n');
 
     lines.forEach((line, index) => {
-      // Route attributes
+
       const routeMatch = line.match(/#\[get\("([^"]+)"\)\]|#\[post\("([^"]+)"\)\]|#\[put\("([^"]+)"\)\]|#\[delete\("([^"]+)"\)\]|#\[patch\("([^"]+)"\)/i);
       if (routeMatch) {
         patterns.push({
@@ -123,7 +123,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // Dynamic routes with parameters
+
       const dynamicRouteMatch = line.match(/#\[get\("([^"]+\/<\w+>)"\)\]|#\[post\("([^"]+\/<\w+>)"\)/i);
       if (dynamicRouteMatch) {
         patterns.push({
@@ -135,7 +135,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // Fairing attributes
+
       const fairingMatch = line.match(/#\[launch\(|#\[attach\(as\s+(\w+)\)|impl\s+Fairing\s+for\s+(\w+)/);
       if (fairingMatch) {
         patterns.push({
@@ -145,7 +145,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // State guard
+
       const stateGuardMatch = line.match(/State<(\w+)>|request_guard\(<(\w+)>/);
       if (stateGuardMatch) {
         patterns.push({
@@ -155,7 +155,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // Template response
+
       const templateMatch = line.match(/Template::render\(|\.html\(\)|rocket_dyn_templates::Template/);
       if (templateMatch) {
         patterns.push({
@@ -172,11 +172,11 @@ export class RocketAnalyzer extends BaseAnalyzer {
     const paramRegex = /<(\w+)>/g;
     const parameters: string[] = [];
     let match;
-    
+
     while ((match = paramRegex.exec(path)) !== null) {
       parameters.push(match[1]);
     }
-    
+
     return parameters;
   }
 
@@ -223,18 +223,18 @@ export class RocketAnalyzer extends BaseAnalyzer {
 
   private async createRocketRoutes(nodes: any[], edges: any[], entryPoints: any[], projectPath: string): Promise<void> {
     const routeNodes = nodes.filter(n => n.tags?.includes('rocket-route'));
-    
+
     routeNodes.forEach(routeNode => {
       if (!routeNode.metadata?.rocket?.route) return;
 
       const route = routeNode.metadata.rocket.route;
-      
+
       const entryPoint = {
         id: `entry_rocket_route_${routeNode.id}`,
         type: 'http',
         name: `${route.method} ${route.path}`,
         description: `Rocket ${route.method} handler for ${route.path}`,
-        
+
         trigger: {
           method: route.method,
           path: route.path,
@@ -245,21 +245,21 @@ export class RocketAnalyzer extends BaseAnalyzer {
             location: 'path'
           }))
         },
-        
+
         handler: {
           node_id: routeNode.id,
           method_name: routeNode.name,
           file: routeNode.source?.file || '',
           line: routeNode.source?.line || 0
         },
-        
+
         security: {
           authenticated: false,
           guards: [],
           roles: [],
           permissions: []
         },
-        
+
         metadata: {
           framework: 'rocket',
           route_parameters: route.parameters || []
@@ -272,13 +272,10 @@ export class RocketAnalyzer extends BaseAnalyzer {
 
   private async createRocketFairings(nodes: any[], edges: any[], projectPath: string): Promise<void> {
     const fairingNodes = nodes.filter(n => n.tags?.includes('rocket-fairing'));
-    
+
     fairingNodes.forEach(fairingNode => {
       if (!fairingNode.metadata?.rocket?.fairing) return;
 
-      const fairing = fairingNode.metadata.rocket.fairing;
-      
-      // Mark as middleware
       if (!fairingNode.metadata) fairingNode.metadata = {};
       fairingNode.metadata.middleware_type = 'fairing';
       fairingNode.metadata.execution_order = 'launch';
@@ -287,13 +284,13 @@ export class RocketAnalyzer extends BaseAnalyzer {
 
   private async createRocketState(nodes: any[], edges: any[], projectPath: string): Promise<void> {
     const stateGuardNodes = nodes.filter(n => n.tags?.includes('rocket-state-guard'));
-    
+
     stateGuardNodes.forEach(stateNode => {
       if (!stateNode.metadata?.rocket?.stateGuard) return;
 
       const stateGuard = stateNode.metadata.rocket.stateGuard;
-      
-      // Mark as state management
+
+
       if (!stateNode.metadata) stateNode.metadata = {};
       stateNode.metadata.state_type = 'request-guard';
       stateNode.metadata.managed_state = stateGuard.name;
@@ -310,16 +307,16 @@ export class RocketAnalyzer extends BaseAnalyzer {
 
   private detectRocketPatterns(nodes: any[], edges: any[]): string[] {
     const patterns: string[] = [];
-    
+
     const routeNodes = nodes.filter(n => n.tags?.includes('rocket-route'));
     if (routeNodes.length > 0) patterns.push('REST API');
-    
+
     const fairingNodes = nodes.filter(n => n.tags?.includes('rocket-fairing'));
     if (fairingNodes.length > 0) patterns.push('Request Pipeline');
-    
+
     const stateGuardNodes = nodes.filter(n => n.tags?.includes('rocket-state-guard'));
     if (stateGuardNodes.length > 0) patterns.push('State Management');
-    
+
     const templateNodes = nodes.filter(n => n.tags?.includes('rocket-template'));
     if (templateNodes.length > 0) patterns.push('Template Rendering');
 
@@ -342,7 +339,7 @@ export class RocketAnalyzer extends BaseAnalyzer {
       /Template::render/,
       /rocket_dyn_templates::/
     ];
-    
+
     return rocketPatterns.some(pattern => pattern.test(content));
   }
 

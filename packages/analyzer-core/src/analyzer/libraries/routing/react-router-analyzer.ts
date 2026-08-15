@@ -175,9 +175,9 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     seenRoutes: Set<string>
   ): void {
     const patterns = [JSX_ROUTE_V5, JSX_ROUTE_V6_ELEMENT, OBJECT_ROUTE];
-    // Distinct route paths can sanitize to the same id fragment (e.g. "/" and
-    // "*" both become "_"), so repeats within this file get a stable ordinal
-    // suffix. Keyed per sanitized id; ids are already namespaced by file.
+
+
+
     const usedSanitizedIds = new Map<string, number>();
 
     for (const pattern of patterns) {
@@ -187,8 +187,8 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
         const routePath = match[1];
         const component = match[2] || match[3] || 'Unknown';
 
-        // Key by file + path: the same route path declared in different files
-        // must produce distinct items (ids are namespaced by file below).
+
+
         const routeKey = `${relativePath}::${routePath}`;
         if (seenRoutes.has(routeKey)) continue;
         seenRoutes.add(routeKey);
@@ -228,7 +228,7 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
         }
 
         const componentNodeId = this.findComponentNode(component, context);
-        if (componentNodeId) {
+        if (componentNodeId && !this.hasExistingRelationship(context, nodeId, componentNodeId, 'renders')) {
           edges.push(this.createEdge(
             `edge_${nodeId}_${componentNodeId}`,
             nodeId,
@@ -415,6 +415,12 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
       if (found) return found.id;
     }
     return undefined;
+  }
+
+  private hasExistingRelationship(context: AnalysisContext, source: string, target: string, type: string): boolean {
+    return Boolean(context.existingAnalysis?.some(contribution =>
+      contribution.edges?.some(edge => edge.source === source && edge.target === target && edge.type === type)
+    ));
   }
 
   protected getCapabilities(): string[] {

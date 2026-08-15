@@ -43,7 +43,7 @@ describe('localized incremental canonical ordering', () => {
       filePath: 'a.ts',
       contentHash: 'after',
       mtimeMs: 2,
-      nodes: [{ ...changed, source: { ...changed.source, raw: 'const changed = 2;' } }],
+      nodes: [changed],
       edges: [],
       entryPoints: [],
       exitPoints: [],

@@ -6,208 +6,51 @@ import type {
   CASExitPoint,
   CASEntityLineage,
   CASCallChain,
-  CASFlowRef,
   SystemCapability,
+  CapabilityFlowRelationship,
+  ComputeFlowConceptsOptions,
+  ConstraintKind,
+  ContractTelemetry,
+  FacetConstraint,
+  FacetProvenance,
+  FlowConcept,
+  FlowEdgeKind,
+  FlowICELOTContract,
+  FlowStep,
+  FlowStepEdge,
+  FlowStepGraph,
+  ICELOTContract,
+  ProvenanceFacet,
+  StepCodeMapping,
+  StepCodeRegion,
+  StepCodeRelationship,
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
 import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel } from './journey-builder';
 
-export const CONTRACT_MODEL_NAME = 'ICELOT';
-
-export const UNDERSTANDING_CONTRACT_FACETS = [
-  'input',
-  'constraints',
-  'system_effects',
-  'logic',
-  'output',
-  'telemetry',
-] as const;
-
-export type UnderstandingContractFacet = (typeof UNDERSTANDING_CONTRACT_FACETS)[number];
-
-export type ConstraintKind =
-  | 'validation'
-  | 'auth'
-  | 'rate-limit'
-  | 'error'
-  | 'invariant'
-  | 'business-rule'
-  | 'consistency';
-
-export interface FacetConstraint {
-  kind: ConstraintKind;
-  rule: string;
-  evidence: string;
-}
-
-export interface ContractTelemetry {
-  static_id: string;
-  request_count: number;
-  error_rate: number;
-  p50_ms?: number;
-  p95_ms?: number;
-  p99_ms?: number;
-  status_code_distribution?: Record<string, number>;
-  source: string;
-  last_seen?: string;
-}
-
-export interface LogicSummary {
-  text: string;
-  description_source: 'ai';
-  evidence_refs: string[];
-}
-
-export type ProvenanceFacet =
-  | 'input'
-  | 'output'
-  | 'state_change'
-  | 'external_integration'
-  | 'constraint'
-  | 'telemetry';
-
-export interface FacetProvenance {
-  facet: ProvenanceFacet;
-  value: string;
-  contributed_by_step_ids?: string[];
-  source: 'deterministic';
-  evidence: string;
-}
-
-export interface ILSOContract {
-  input: string[];
-  logic: string;
-  side_effects: {
-    state_changes: string[];
-    external_integrations: string[];
-  };
-  output: string[];
-  constraints: FacetConstraint[];
-  telemetry?: ContractTelemetry;
-  facet_provenance?: FacetProvenance[];
-  logic_summary?: LogicSummary;
-}
-
-export interface FlowILSOContract extends ILSOContract {
-  internal_inputs_count?: number;
-  internal_outputs_count?: number;
-}
-
-export type StepCodeRelationship =
-  | 'implements'
-  | 'partially_implements'
-  | 'initiates'
-  | 'completes'
-  | 'validates'
-  | 'branches'
-  | 'transforms'
-  | 'causes_effect'
-  | 'observes'
-  | 'handles_failure'
-  | 'provides_input'
-  | 'consumes_output';
-
-export interface StepCodeRegion {
-  node_id: string;
-  file?: string;
-  line_range?: [number, number];
-}
-
-export interface StepCodeSubSegment {
-  label: string;
-  line_range: [number, number];
-  description_source: 'ai';
-  evidence_refs: string[];
-}
-
-export interface StepCodeMapping {
-  step_id: string;
-  code_region: StepCodeRegion;
-  relationship: StepCodeRelationship;
-  contribution: string;
-  confidence: number;
-  sub_segments?: StepCodeSubSegment[];
-}
-
-export interface FlowStep {
-  step_id: string;
-  order: number;
-  name: string;
-  description: string;
-  description_source: 'deterministic-label' | 'ai';
-  contract: ILSOContract;
-  functions: Array<{
-    function_id: string;
-    section?: { start_line: number; end_line: number; label?: string };
-  }>;
-  entities: string[];
-  code_mappings?: StepCodeMapping[];
-  code_mappings_truncated?: number;
-}
-
-export type CapabilityFlowRole =
-  | 'primary'
-  | 'supporting'
-  | 'prerequisite'
-  | 'operational'
-  | 'recovery'
-  | 'observability';
-
-export interface CapabilityFlowRelationship {
-  capability_id: string;
-  role: CapabilityFlowRole;
-  rationale: string;
-  evidence?: 'operation' | 'interior-step' | 'route' | 'entity-overlap' | 'surface-membership';
-}
-
-export type FlowEdgeKind = 'sequence' | 'branch' | 'error' | 'compensation';
-
-export interface FlowStepEdge {
-  from_step_id: string;
-  to_step_id: string;
-  kind: FlowEdgeKind;
-  evidence?: string;
-}
-
-export interface FlowStepGraph {
-  edges: FlowStepEdge[];
-}
-
-export interface FlowConcept {
-  flow_id: string;
-  name: string;
-  intent: string;
-  description?: string;
-  description_source?: 'ai';
-  entry_point: string;
-  capability_id?: string;
-  capability_relationships?: CapabilityFlowRelationship[];
-  entities: string[];
-  contract: FlowILSOContract;
-  steps: FlowStep[];
-  terminus?: {
-    exit_point_id: string;
-    kind: string;
-    produces: string;
-    node_id: string;
-  };
-  criticality?: 'critical' | 'high' | 'medium' | 'low';
-  step_graph?: FlowStepGraph;
-  continuations?: string[];
-  continued_from?: string[];
-  is_subflow?: boolean;
-  triggers?: string[];
-  gaps?: string[];
-}
-
-export interface ComputeFlowConceptsOptions {
-  maxDepth?: number;
-  maxFunctionsPerFlow?: number;
-  maxFlows?: number;
-  offset?: number;
-  target?: string;
-  nameStep?: (step: FlowStep, ctx: { flowEntryPoint: CASEntryPoint }) => { name?: string; description?: string } | undefined;
-}
+export { CONTRACT_MODEL_NAME, UNDERSTANDING_CONTRACT_FACETS } from '../../types/cas.types';
+export type {
+  CapabilityFlowRelationship,
+  ComputeFlowConceptsOptions,
+  ConstraintKind,
+  ContractTelemetry,
+  FacetConstraint,
+  FacetProvenance,
+  FlowConcept,
+  FlowEdgeKind,
+  FlowICELOTContract,
+  FlowStep,
+  FlowStepEdge,
+  FlowStepGraph,
+  ICELOTContract,
+  LogicSummary,
+  ProvenanceFacet,
+  StepCodeMapping,
+  StepCodeRegion,
+  StepCodeRelationship,
+  StepCodeSubSegment,
+  UnderstandingContractFacet,
+} from '../../types/cas.types';
 
 export interface ChainNode {
   node: CASNode;
@@ -659,7 +502,7 @@ function nameStepForRoleImpl(
     return { name: 'Respond', description: `Formats/returns the result via ${fnNames}.`, grounded: true };
   }
 
-  // "NEVER a bare 'Process (fnName)' placeholder name". Try entity + verb
+
   const entity = dominantEntityForNodes(nodeIds, lineage);
   const verbNode = nodes.find(n => verbForNode(n, PROCESS_VERB_RE));
   const verb = verbNode ? verbForNode(verbNode, PROCESS_VERB_RE) : undefined;
@@ -786,7 +629,7 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
 
   const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
   const invariantsByNode = new Map<string, Array<{ description: string; entityName: string }>>();
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     for (const invariant of entity.invariants || []) {
       for (const nodeId of invariant.enforced_by || []) {
         const values = invariantsByNode.get(nodeId) || [];
@@ -1019,7 +862,7 @@ function buildContract(
   exitPointsByNode: Map<string, CASExitPoint[]>,
   entryPointsByNode: Map<string, CASEntryPoint[]>,
   scopeEntryPointIds?: Set<string>
-): ILSOContract {
+): ICELOTContract {
   const facts = contractFactIndex(cas);
   const input = new Set<string>();
   const output = new Set<string>();
@@ -1126,7 +969,7 @@ function stepFacetEvidence(step: FlowStep, facet: ProvenanceFacet, value: string
   return step.contract.facet_provenance?.find(p => p.facet === facet && p.value === value)?.evidence;
 }
 
-function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
+function aggregateFlowContract(steps: FlowStep[]): FlowICELOTContract {
   const provenanceByKey = new Map<string, FacetProvenance & { contributed_by_step_ids: string[] }>();
   const record = (facet: ProvenanceFacet, value: string, stepId: string, evidence: string) => {
     const key = `${facet}\u0000${value}`;
@@ -1222,7 +1065,7 @@ function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
     const touches = [...entry.writers, ...entry.readers].some(a => nodeIds.has(a.node_id));
     if (touches) names.add(entry.entity_name);
   }
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     const touchers = [
       ...(entity.lifecycle?.created_by || []),
       ...(entity.lifecycle?.read_by || []),
@@ -1602,7 +1445,7 @@ function buildConditionalOutIndex(cas: CASOutput): Map<string, string> {
 
 function buildDeleterNodeIds(cas: CASOutput): Set<string> {
   const ids = new Set<string>();
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     for (const id of entity.lifecycle?.deleted_by || []) ids.add(id);
   }
   return ids;
@@ -1624,7 +1467,7 @@ function buildStepMappingEvidence(cas: CASOutput): {
     }
   }
   const invariantEvidence = new Map<string, string>();
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     for (const inv of entity.invariants || []) {
       for (const id of inv.enforced_by || []) {
         if (!invariantEvidence.has(id)) {
@@ -1805,7 +1648,7 @@ function buildStepGraph(
     let evidence: string | undefined;
     if (fromIsError && revertsState) {
       kind = 'compensation';
-      evidence = `follows an error-carrying step and reverts state (a data_entities.lifecycle.deleted_by node runs in "${to.name}")`;
+      evidence = `follows an error-carrying step and reverts state (a entities.lifecycle.deleted_by node runs in "${to.name}")`;
     } else if (toErr) {
       kind = 'error';
       evidence = toErr.evidence;
@@ -1943,7 +1786,7 @@ function buildTerminalFlows(
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  const capabilities = [...(cas.system_capabilities || []), ...(cas.behavior_surfaces || [])];
+  const capabilities = [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
@@ -2177,9 +2020,9 @@ function buildTerminalFlows(
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {
-      gaps.push('No system_capabilities entry references this flow\'s entry point or shares its touched entities — capability_relationships omitted rather than guessed.');
+      gaps.push('No capabilities entry references this flow\'s entry point or shares its touched entities — capability_relationships omitted rather than guessed.');
     } else if (!capabilityId) {
-      gaps.push('No system_capabilities operation references this flow\'s entry point — capability_id (primary) omitted rather than guessed; only non-primary relationships derived.');
+      gaps.push('No capabilities operation references this flow\'s entry point — capability_id (primary) omitted rather than guessed; only non-primary relationships derived.');
     }
 
     const flowName = rootEp
@@ -2226,26 +2069,26 @@ const FLOW_RANK_STEP_CAP = 20;
 
 const FLOW_RANK_CRITICALITY: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
 
-function scoreStoredFlowRef(
-  ref: CASFlowRef,
+function scoreMaterializedFlow(
+  flow: FlowConcept,
   isTestRooted: boolean,
   rootImportance: number
 ): number {
-  const steps = Math.min(Math.max(ref.step_count || 0, 0), FLOW_RANK_STEP_CAP);
-  const capabilityLinked = Boolean(ref.capability_id) || Boolean(ref.capability_ids && ref.capability_ids.length);
+  const steps = Math.min(flow.steps.length, FLOW_RANK_STEP_CAP);
+  const capabilityLinked = Boolean(flow.capability_id) || Boolean(flow.capability_relationships?.length);
   return (
     (isTestRooted ? 0 : FLOW_RANK_WEIGHTS.product) +
     steps * FLOW_RANK_WEIGHTS.stepDepth +
     (capabilityLinked ? FLOW_RANK_WEIGHTS.capability : 0) +
-    (ref.terminus ? FLOW_RANK_WEIGHTS.terminus : 0) +
-    (FLOW_RANK_CRITICALITY[ref.criticality || ''] ?? 0) * FLOW_RANK_WEIGHTS.criticality +
+    (flow.terminus ? FLOW_RANK_WEIGHTS.terminus : 0) +
+    (FLOW_RANK_CRITICALITY[flow.criticality || ''] ?? 0) * FLOW_RANK_WEIGHTS.criticality +
     rootImportance * FLOW_RANK_WEIGHTS.importance
   );
 }
 
-export function rankStoredFlowRefs(cas: CASOutput): CASFlowRef[] {
-  const refs = cas.flow_graph?.flows || [];
-  if (refs.length === 0) return [];
+export function rankMaterializedFlows(cas: CASOutput): FlowConcept[] {
+  const flows = cas.flows || [];
+  if (flows.length === 0) return [];
 
   const entryById = new Map((cas.entry_points || []).map(ep => [ep.id, ep]));
   const importanceByNode = new Map<string, number>();
@@ -2253,9 +2096,9 @@ export function rankStoredFlowRefs(cas: CASOutput): CASFlowRef[] {
     if (typeof node.structural_importance === 'number') importanceByNode.set(node.id, node.structural_importance);
   }
 
-  const rootImportanceFor = (ref: CASFlowRef): number => {
-    const ep = entryById.get(ref.entry_point);
-    const candidates = ep ? [ep.handler?.node_id, ep.source_node] : [ref.entry_point];
+  const rootImportanceFor = (flow: FlowConcept): number => {
+    const ep = entryById.get(flow.entry_point);
+    const candidates = ep ? [ep.handler?.node_id, ep.source_node] : [flow.entry_point];
     let best = 0;
     for (const candidate of candidates) {
       if (!candidate) continue;
@@ -2265,21 +2108,40 @@ export function rankStoredFlowRefs(cas: CASOutput): CASFlowRef[] {
     return best;
   };
 
-  const scored = refs.map(ref => ({
-    ref,
-    score: scoreStoredFlowRef(ref, entryById.get(ref.entry_point)?.type === 'test', rootImportanceFor(ref)),
+  const scored = flows.map(flow => ({
+    flow,
+    score: scoreMaterializedFlow(flow, entryById.get(flow.entry_point)?.type === 'test', rootImportanceFor(flow)),
   }));
-  scored.sort((a, b) => (b.score - a.score) || a.ref.flow_id.localeCompare(b.ref.flow_id));
-  return scored.map(s => s.ref);
+  scored.sort((a, b) => (b.score - a.score) || a.flow.flow_id.localeCompare(b.flow.flow_id));
+  return scored.map(entry => entry.flow);
 }
 
 export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
-  const rankedWindowFlows = computeRankedWindowFlows(cas, opts);
-  if (rankedWindowFlows) return finalizeFlows(cas, rankedWindowFlows, opts);
-
+  if (cas.flows) {
+    const target = String(opts.target || '').trim().toLowerCase();
+    const matching = target
+      ? cas.flows.filter(flow => [
+          flow.flow_id,
+          flow.name,
+          flow.intent,
+          flow.entry_point,
+          ...flow.entities,
+          ...flow.steps.flatMap(step => [
+            step.step_id,
+            step.name,
+            step.description,
+            ...step.entities,
+            ...step.functions.map(fn => fn.function_id),
+          ]),
+        ].some(value => String(value || '').toLowerCase().includes(target)))
+      : rankMaterializedFlows(cas);
+    const offset = Math.max(0, opts.offset || 0);
+    const end = opts.maxFlows && opts.maxFlows > 0 ? offset + opts.maxFlows : undefined;
+    return matching.slice(offset, end);
+  }
   const terminalFlows = buildTerminalFlows(cas, opts);
 
-  // UNION (not all-or-nothing): a handful of terminal chains must not suppress
+
   let flows: FlowConcept[];
   if (terminalFlows.length === 0) {
     flows = computeEntryPointFlows(cas, opts);
@@ -2332,60 +2194,7 @@ function finalizeFlows(cas: CASOutput, input: FlowConcept[], opts: ComputeFlowCo
     cas,
     pruneBlanketCapabilityRelationships(stitchContinuations(flows, cas)).map(collapseDuplicateFunctionSteps)
   );
-  return attachStoredCriticality(cas, finalized);
-}
-
-function attachStoredCriticality(cas: CASOutput, flows: FlowConcept[]): FlowConcept[] {
-  const refs = cas.flow_graph?.flows;
-  if (!refs || refs.length === 0) return flows;
-  const criticalityById = new Map<string, CASFlowRef['criticality']>();
-  for (const ref of refs) {
-    if (ref.criticality) criticalityById.set(ref.flow_id, ref.criticality);
-  }
-  if (criticalityById.size === 0) return flows;
-  for (const flow of flows) {
-    const criticality = criticalityById.get(flow.flow_id);
-    if (criticality) flow.criticality = criticality;
-  }
-  return flows;
-}
-
-function computeRankedWindowFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): FlowConcept[] | null {
-  if (opts.target) return null;
-  const limit = opts.maxFlows && opts.maxFlows > 0 ? Math.floor(opts.maxFlows) : undefined;
-  const offset = opts.offset && opts.offset > 0 ? Math.floor(opts.offset) : 0;
-  if (limit === undefined && offset === 0) return null;
-
-  const ranked = rankStoredFlowRefs(cas);
-  if (ranked.length === 0) return null;
-
-  const window = limit === undefined ? ranked.slice(offset) : ranked.slice(offset, offset + limit);
-  if (window.length === 0) return [];
-
-  const rankIndex = new Map<string, number>();
-  window.forEach((ref, index) => rankIndex.set(ref.flow_id, index));
-
-  const chainIds = new Set<string>();
-  const entryKeys = new Set<string>();
-  for (const ref of window) {
-    if (ref.call_chain_id) chainIds.add(ref.call_chain_id);
-    else entryKeys.add(ref.entry_point);
-  }
-
-  const windowOpts: ComputeFlowConceptsOptions = { ...opts, maxFlows: undefined, offset: undefined };
-  const derived: FlowConcept[] = [];
-  if (chainIds.size > 0) derived.push(...buildTerminalFlows(cas, windowOpts, undefined, chainIds));
-  if (entryKeys.size > 0) {
-    derived.push(...computeEntryPointFlows(cas, windowOpts, { onlyEntryKeys: entryKeys }));
-  }
-
-  const seen = new Set<string>();
-  const deduped = derived.filter(f => (seen.has(f.flow_id) ? false : (seen.add(f.flow_id), true)));
-  deduped.sort((a, b) =>
-    ((rankIndex.get(a.flow_id) ?? Number.MAX_SAFE_INTEGER) - (rankIndex.get(b.flow_id) ?? Number.MAX_SAFE_INTEGER)) ||
-    a.flow_id.localeCompare(b.flow_id)
-  );
-  return deduped;
+  return finalized;
 }
 
 function dedupeStepEdges<T extends { from_step_id: string; to_step_id: string; kind: string }>(edges: T[]): T[] {
@@ -2549,7 +2358,7 @@ function computeEntryPointFlows(
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  const capabilities = [...(cas.system_capabilities || []), ...(cas.behavior_surfaces || [])];
+  const capabilities = [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const cronScheduleIndex = buildCronScheduleIndex(cas.nodes || []);
 
@@ -2642,7 +2451,7 @@ function computeEntryPointFlows(
 
     const gaps: string[] = [];
     if (synthesizedRootIds.has(ep.id)) {
-      gaps.push('Root synthesized from a system_capabilities operation node reference — this codebase\'s entry-point extraction did not surface a dedicated entry point for this handler.');
+      gaps.push('Root synthesized from a capabilities operation node reference — this codebase\'s entry-point extraction did not surface a dedicated entry point for this handler.');
     }
     if (chain.length >= maxFunctions) {
       gaps.push(`Call chain truncated at maxFunctionsPerFlow=${maxFunctions}; some downstream steps may be missing.`);
@@ -2735,9 +2544,9 @@ function computeEntryPointFlows(
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {
-      gaps.push('No system_capabilities entry references this entry point or shares its touched entities — capability_relationships omitted rather than guessed.');
+      gaps.push('No capabilities entry references this entry point or shares its touched entities — capability_relationships omitted rather than guessed.');
     } else if (!capabilityId) {
-      gaps.push('No system_capabilities operation references this entry point — capability_id (primary) omitted rather than guessed; only non-primary relationships derived.');
+      gaps.push('No capabilities operation references this entry point — capability_id (primary) omitted rather than guessed; only non-primary relationships derived.');
     }
 
     flows.push({

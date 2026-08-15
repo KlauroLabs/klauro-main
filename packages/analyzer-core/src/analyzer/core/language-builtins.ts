@@ -1,13 +1,13 @@
 import type { CASExitPoint } from '../../types/cas.types';
 
-/**
- * Names that belong to a language runtime or standard library rather than an
- * external service. These must never be presented as external data recipients,
- * external services, or SDK integrations: "External call: array_filter" is a
- * language operation, not a system boundary.
- */
+
+
+
+
+
+
 const LANGUAGE_BUILTIN_NAMES = new Set([
-  // JavaScript/Node built-ins
+
   'console', 'path', 'fs', 'os', 'crypto', 'http', 'https', 'url', 'util',
   'stream', 'buffer', 'events', 'child_process', 'cluster', 'dgram', 'dns',
   'net', 'readline', 'repl', 'tls', 'tty', 'v8', 'vm', 'zlib', 'assert',
@@ -22,7 +22,7 @@ const LANGUAGE_BUILTIN_NAMES = new Set([
   'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
   'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array',
   'BigUint64Array', 'BigInt', 'Infinity', 'NaN', 'undefined', 'null',
-  // Rust standard library
+
   'std', 'core', 'alloc', 'Vec', 'HashMap', 'HashSet', 'BTreeMap', 'BTreeSet',
   'Option', 'Result', 'Box', 'Rc', 'Arc', 'Cell', 'RefCell', 'Mutex', 'RwLock',
   'Duration', 'Instant', 'SystemTime', 'Path', 'PathBuf', 'OsStr', 'OsString',
@@ -40,9 +40,9 @@ const LANGUAGE_BUILTIN_NAMES = new Set([
   'vec', 'format_args', 'write', 'writeln', 'DefaultHasher', 'RandomState',
   'ErrorKind', 'Formatter', 'Arguments', 'Pin', 'Waker', 'Context', 'Poll',
   'Future', 'CStr', 'CString', 'ipaddr', 'RateLimiter',
-  // Python modules that are pure in-process coordination for analysis purposes.
+
   'asyncio', 'logging',
-  // .NET base class library
+
   'System', 'Console', 'Task', 'Thread', 'Timer', 'Directory',
   'MemoryStream', 'FileStream', 'DateTime', 'TimeSpan', 'Guid', 'Uri',
   'Regex', 'Enumerable',
@@ -50,12 +50,12 @@ const LANGUAGE_BUILTIN_NAMES = new Set([
   'Math.Abs', 'Math.Max', 'Math.Min',
 ]);
 
-/**
- * PHP language builtins that are pure in-process operations. Calls to these
- * are language semantics, never an external interaction, so they must not
- * become exit points. Builtins that DO cross a process boundary (curl_*,
- * file_get_contents, mysqli_*, mail, exec, sockets) are intentionally absent.
- */
+
+
+
+
+
+
 const PHP_PURE_BUILTIN_FUNCTIONS = new Set([
   'echo', 'print', 'printf', 'sprintf', 'vsprintf', 'die', 'exit',
   'isset', 'unset', 'empty', 'compact', 'extract', 'list',
@@ -87,50 +87,50 @@ const PHP_PURE_BUILTIN_FUNCTIONS = new Set([
   'include', 'require', 'include_once', 'require_once',
 ]);
 
-/**
- * Module, package, keyword, and platform tokens that come from a language or
- * its source layout rather than the product domain. Capability and domain
- * naming must never seed a capability from these: "Fmt Management" or
- * "Lib Management" describe Rust stdlib and file layout, not system behavior.
- * Unlike LANGUAGE_BUILTIN_NAMES, entries here may legitimately cross process
- * boundaries (subprocess, urllib) because this set only guards domain naming,
- * never exit-point classification.
- */
+
+
+
+
+
+
+
+
+
 const LANGUAGE_MODULE_TOKENS = new Set([
-  // Rust keywords, source-layout module names, and plumbing crates whose
-  // names surface in type/derive names (ClientClap, SerdeConfig)
+
+
   'lib', 'mod', 'main', 'impl', 'dyn', 'mut', 'pub', 'crate', 'crates', 'super',
   'trait', 'struct', 'enum', 'unsafe', 'async', 'await', 'match', 'loop',
   'ref', 'move', 'where', 'spawn', 'cfg', 'derive', 'macro', 'panic',
   'src', 'clap', 'serde', 'tokio',
-  // Go standard library packages and source-layout names
-  // ('runtime' and 'log' stay out: they are real product-domain nouns)
+
+
   'fmt', 'errors', 'strings', 'strconv', 'bytes', 'bufio', 'sort',
   'regexp', 'flag', 'encoding', 'xml', 'filepath', 'ioutil',
   'reflect', 'unicode', 'rand', 'atomic', 'func', 'chan',
   'pkg', 'cmd', 'internal', 'golang',
-  // Python standard library modules
+
   'sys', 'itertools', 'functools', 'typing', 'datetime', 'pathlib',
   'subprocess', 'threading', 'asyncio', 'logging', 'random', 'abc',
   'dataclasses', 'contextlib', 'argparse', 'shutil', 'tempfile', 'glob',
   'hashlib', 'hmac', 'uuid', 'urllib', 'inspect', 'traceback', 'warnings',
   'weakref', 'queue', 'heapq', 'bisect', 'pickle', 'textwrap', 'codecs',
   'dict', 'list', 'tuple',
-  // Platform module names used for OS-specific source files
+
   'linux', 'windows', 'macos', 'darwin', 'unix', 'posix', 'win32', 'android',
   'native',
-  // Language/runtime labels emitted by polyglot paths, namespaces, and build
-  // metadata. They describe an implementation surface, never the product.
+
+
   'javascript', 'typescript', 'nodejs', 'python', 'java', 'kotlin', 'scala',
   'dotnet', 'csharp', 'fsharp', 'rust', 'ruby', 'php', 'dart', 'flutter',
   'swift', 'objectivec', 'terraform', 'powershell',
 ]);
 
-/**
- * Lowercase builtin names that double as common product-domain nouns. A todo
- * app's "Todo Management" or a trading platform's "Crypto Management" must
- * survive even though `todo!` is a Rust macro and `crypto` is a Node module.
- */
+
+
+
+
+
 const DOMAIN_NOUN_EXCEPTIONS = new Set([
   'todo', 'crypto', 'stream', 'events', 'cluster', 'dns', 'tls',
 ]);
@@ -148,27 +148,27 @@ const LOWERCASE_BUILTIN_DOMAIN_TOKENS = (() => {
   return tokens;
 })();
 
-/**
- * Qualifier and hedge words that describe certainty, age, or grab-bag grouping
- * rather than product behavior. A capability named "Likely Management" or
- * "Misc Management" carries no domain meaning, so these can never seed a
- * capability or domain name.
- */
+
+
+
+
+
+
 const QUALIFIER_DOMAIN_TOKENS = new Set([
   'likely', 'unlikely', 'maybe', 'probably', 'possibly', 'perhaps',
   'unknown', 'misc', 'miscellaneous', 'temp', 'tmp', 'temporary',
   'new', 'old', 'common', 'util', 'utils', 'other', 'others', 'various',
 ]);
 
-/**
- * CSS/DOM state adjectives that surface in theme and frontend code (class
- * toggles, pseudo-state handlers, layout helpers). A storefront theme's
- * "Inner Management", "Active Management", or "Predictive Management" is a
- * UI state token, not a product capability, so these can never seed a
- * capability or domain name. Real product nouns ("cart", "checkout",
- * "product") are unaffected because filtering is per-token: "Active
- * Directory" still seeds from "directory".
- */
+
+
+
+
+
+
+
+
+
 const UI_STATE_DOMAIN_TOKENS = new Set([
   'inner', 'outer', 'active', 'inactive', 'connected', 'disconnected',
   'predictive', 'hover', 'hovered', 'hovering', 'focused', 'focusable',
@@ -177,14 +177,14 @@ const UI_STATE_DOMAIN_TOKENS = new Set([
   'draggable', 'scrollable', 'clicked', 'pressed', 'highlighted',
 ]);
 
-/**
- * Serialization/encoding plumbing verbs. When serde/marshalling helpers are
- * the most connected terminal nodes (common in Rust and Go service plumbing),
- * they produce capabilities like "Deserialize Management" or "Serialize
- * Management" that describe wire-format mechanics, not system behavior.
- * Domain nouns that merely contain these stems ("token", "encoder ring"
- * products) are unaffected because matching is exact-token.
- */
+
+
+
+
+
+
+
+
 const SERIALIZATION_PLUMBING_TOKENS = new Set([
   'serialize', 'serializes', 'serialized', 'serializing', 'serialization',
   'deserialize', 'deserializes', 'deserialized', 'deserializing', 'deserialization',
@@ -193,46 +193,46 @@ const SERIALIZATION_PLUMBING_TOKENS = new Set([
   'unmarshalled', 'unmarshaled',
 ]);
 
-/**
- * Vendor/infrastructure library names that show up as terminal nodes when a
- * codebase wraps an SDK (Jito block-engine clients, Borsh codecs). Unlike
- * LANGUAGE_MODULE_TOKENS these are not filtered unconditionally: a vendor
- * token may legitimately name a capability when the surrounding group shows
- * product evidence (entities or multiple operations). Capability building
- * consults isVendorLibDomainToken only for the evidence-free
- * "<Label> Capability" fallback.
- */
+
+
+
+
+
+
+
+
+
 const VENDOR_LIB_DOMAIN_TOKENS = new Set([
   'jito', 'borsh',
 ]);
 
-/**
- * True when a lowercased domain/capability token names a vendor or
- * infrastructure library (jito, borsh) rather than a product concept.
- * Callers should only suppress these when the capability has no product
- * evidence; see VENDOR_LIB_DOMAIN_TOKENS.
- */
+
+
+
+
+
+
 export function isVendorLibDomainToken(token: string | undefined): boolean {
   if (!token) return false;
   return VENDOR_LIB_DOMAIN_TOKENS.has(token.trim().toLowerCase());
 }
 
-/**
- * Digit-led tokens that name real technology rather than numeric noise.
- * These survive the numeric-token rejection below.
- */
+
+
+
+
 const DIGIT_LED_TECHNOLOGY_TOKENS = new Set([
   '2fa', '3ds', '5g', 'i18n', 'a11y',
 ]);
 
-/**
- * True when a lowercased domain/capability token is numeric noise (an IP
- * octet like "172", a port, a version fragment) or a qualifier word. Pure
- * digits and digit-led tokens are rejected unless they name a real
- * technology ("2fa", "3ds"); qualifier words ("likely", "misc", "temp") are
- * always rejected. Capability clustering applies this alongside
- * isLanguageBuiltinDomainToken so junk tokens never seed capability names.
- */
+
+
+
+
+
+
+
+
 export function isCapabilityNoiseToken(token: string | undefined): boolean {
   if (!token) return false;
   const normalized = token.trim().toLowerCase();
@@ -246,14 +246,14 @@ export function isCapabilityNoiseToken(token: string | undefined): boolean {
   return false;
 }
 
-/**
- * True when a lowercased domain/capability token originates from a language
- * runtime, standard library module, keyword, or source-layout convention
- * (fmt, lib, mod, vec, asyncio, strconv) instead of the product domain.
- * Capability clustering uses this so stdlib names never seed capability
- * names in any language. Intentionally skips capitalized-only builtins such
- * as Task, File, and Command whose lowercase forms are ordinary domain nouns.
- */
+
+
+
+
+
+
+
+
 export function isLanguageBuiltinDomainToken(token: string | undefined): boolean {
   if (!token) return false;
   return LOWERCASE_BUILTIN_DOMAIN_TOKENS.has(token.trim().toLowerCase());
@@ -274,12 +274,12 @@ export function isLanguageBuiltinName(name: string | undefined): boolean {
 
 const EXTERNAL_CALL_LABEL = /^(external call|linq operation):\s*/i;
 
-/**
- * True when an exit point's target resolves to a language/stdlib builtin
- * instead of an external system. Handles raw targets ("array_filter", "io"),
- * labeled names ("External call: array_filter"), and class-qualified calls
- * ("External call: Math::abs").
- */
+
+
+
+
+
+
 export function isLanguageBuiltinExitPoint(
   exitPoint: Pick<CASExitPoint, 'name' | 'target'>
 ): boolean {

@@ -30,25 +30,25 @@ interface DieselQueryableStruct {
   line: number;
 }
 
-/**
- * Diesel analyzer (Rust).
- *
- * Diesel splits schema and model into two artifacts:
- *  - `table! { users (id) { id -> Integer, name -> Text, } }` macros (usually
- *    in a generated `schema.rs`), which declare the table shape.
- *  - `#[derive(Queryable)] struct User { ... }` structs, which map rows onto
- *    Rust types but carry no column types of their own — the fields are typed
- *    Rust types, not SQL types, so the `table!` columns are the source of truth
- *    used for entity field metadata when a struct name matches a table.
- *  - `diesel::joinable!(posts -> users (user_id))` and `allow_tables_to_appear_in_same_query!`
- *    macros declare the FK relationship between tables explicitly.
- *
- * Entities are emitted per `table!` (matching TypeORM/Mongoose node
- * conventions: `entity` type, level 3, id `entity_diesel_<name>`), and
- * `joinable!` produces `references` edges with `relationType: 'ManyToOne'`
- * (child -> parent) that database_schema's edge-based relation reader already
- * understands.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class DieselAnalyzer extends BaseAnalyzer {
   constructor() {
     super('diesel', 'Diesel Analyzer', '1.0.0', 'library');
@@ -78,7 +78,7 @@ export class DieselAnalyzer extends BaseAnalyzer {
           return true;
         }
       } catch {
-        // ignore unreadable files
+
       }
     }
 
@@ -274,10 +274,10 @@ export class DieselAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // Queryable structs whose name matches a table (singularized) but that
-    // aren't backed by a table! macro in this same set of files still get an
-    // entity node so `get_data_entities` sees the Rust-side model shape even
-    // when schema.rs lives in a different crate/file not co-located here.
+
+
+
+
     for (const struct of structs) {
       const matchesTable = tables.some(t => this.pluralize(struct.structName).toLowerCase() === t.name.toLowerCase());
       if (matchesTable) continue;
@@ -301,9 +301,9 @@ export class DieselAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Parse `table! { users (id) { id -> Integer, name -> Text, } }`.
-   */
+
+
+
   private parseTables(content: string, filePath: string): DieselTable[] {
     const tables: DieselTable[] = [];
     const tableRegex = /table!\s*\{\s*(\w+)\s*(?:\([^)]*\))?\s*\{/g;
@@ -325,9 +325,9 @@ export class DieselAnalyzer extends BaseAnalyzer {
     return tables;
   }
 
-  /**
-   * Parse `diesel::joinable!(posts -> users (user_id));` / `joinable!(posts -> users (user_id));`.
-   */
+
+
+
   private parseJoinables(content: string): DieselJoinable[] {
     const joinables: DieselJoinable[] = [];
     const joinRegex = /joinable!\s*\(\s*(\w+)\s*->\s*(\w+)\s*\(\s*(\w+)\s*\)/g;
@@ -339,9 +339,9 @@ export class DieselAnalyzer extends BaseAnalyzer {
     return joinables;
   }
 
-  /**
-   * Parse `#[derive(Queryable)] pub struct User { pub id: i32, pub name: String }`.
-   */
+
+
+
   private parseQueryableStructs(content: string, filePath: string): DieselQueryableStruct[] {
     const structs: DieselQueryableStruct[] = [];
     const structRegex = /#\[derive\([^)]*Queryable[^)]*\)\][\s\S]{0,200}?struct\s+(\w+)\s*\{/g;

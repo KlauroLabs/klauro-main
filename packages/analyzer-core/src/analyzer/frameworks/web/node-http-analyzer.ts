@@ -7,12 +7,12 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * A single statically-resolvable route found inside a raw `http.createServer`
- * request handler's dispatch logic — e.g.
- * `if (request.method === 'GET' && request.url === '/health') { ... }` or a
- * `switch (pathname)` case, or a path -> handler lookup table/object.
- */
+
+
+
+
+
+
 interface NodeHttpRoute {
   method: string;
   path: string;
@@ -21,13 +21,13 @@ interface NodeHttpRoute {
   line: number;
 }
 
-/**
- * A `http.createServer(handler)` / `https.createServer([opts,] handler)` call
- * found in a file — the server construction site itself. When no routes could
- * be statically resolved from the handler's body, this is still surfaced as a
- * single generic entry point (the handler function is a real request entry,
- * even if its internal dispatch is fully dynamic).
- */
+
+
+
+
+
+
+
 interface NodeHttpServerCall {
   file: string;
   line: number;
@@ -87,9 +87,9 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
 
       const serverCalls: NodeHttpServerCall[] = [];
       for (const [file, content] of fileContents) {
-        // Only files that actually import node:http/https AND construct a server
-        // are considered — avoids matching unrelated `createServer` identifiers
-        // from other libraries.
+
+
+
         if (!this.looksLikeRawHttpServer(content)) continue;
         serverCalls.push(...this.extractServerCalls(content, file));
       }
@@ -116,13 +116,13 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
           .build();
         nodes.push(appNode);
 
-        // Only look inside the handler's OWN declaring file for its dispatch body.
-        // The handler is very often declared inline as the createServer() argument
-        // (same file/line), or as a named function/arrow assigned earlier in the
-        // same file — both cases are covered by handlerFile === server.file in
-        // extractServerCalls. Cross-file handler resolution (imported handler) is
-        // out of scope: only emit the createServer-call fallback entry for those,
-        // since we can't honestly claim to see the dispatch body.
+
+
+
+
+
+
+
         const handlerContent = fileContents.get(server.handlerFile);
         const routes = handlerContent
           ? this.extractRoutesFromHandlerBody(handlerContent, server.handlerFile, server.handlerLine)
@@ -182,9 +182,9 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
           });
           totalRoutes += routes.length;
         } else {
-          // Fully dynamic / unresolvable dispatch (or handler defined in another
-          // file we didn't trace): honestly surface the createServer handler
-          // itself as a single request entry point rather than inventing routes.
+
+
+
           const entryId = `entry_node_http_handler_${serverIndex}`;
           entryPoints.push({
             id: entryId,
@@ -236,8 +236,8 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Real evidence: the file imports node:http or node:https AND constructs a
-   *  server via createServer(...) — avoids matching unrelated identifiers. */
+
+
   private looksLikeRawHttpServer(content: string): boolean {
     const importsHttp =
       /from\s+['"](?:node:)?https?['"]/.test(content) ||
@@ -246,19 +246,19 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     return importsHttp && constructsServer;
   }
 
-  /**
-   * Find every `http.createServer(handler)` / `https.createServer(handler)` /
-   * bare `createServer(handler)` (imported via `import { createServer } from
-   * 'node:http'`) call. Resolves the handler to a real function node where
-   * possible:
-   *  - inline `(request, response) => { ... }` / `async (req, res) => {...}` —
-   *    handler body IS the call-site itself (file/line of the createServer call).
-   *  - a bare identifier referencing a function/arrow declared earlier in the
-   *    SAME file — resolved to that declaration's file/line.
-   *  - anything else (imported handler, member expression) — handler name kept
-   *    as best-effort description, file/line falls back to the call site since
-   *    we can't honestly resolve it further within this analyzer's scope.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   private extractServerCalls(content: string, file: string): NodeHttpServerCall[] {
     const calls: NodeHttpServerCall[] = [];
     const pattern = /\b(https?)\.createServer\s*\(|(?<![.\w])createServer\s*\(/g;
@@ -270,12 +270,12 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
       const args = this.parseRemainingCallArgs(content, pattern.lastIndex);
       if (args.length === 0) continue;
 
-      // https.createServer(options, handler) has 2 args; http.createServer(handler)
-      // has 1. The handler is always the last argument.
+
+
       const handlerArg = args[args.length - 1].trim();
 
       if (/^(async\s*)?\(/.test(handlerArg) || /^async\s+function\b/.test(handlerArg) || /^function\b/.test(handlerArg)) {
-        // Inline handler: the function body lives right here at the call site.
+
         calls.push({
           file,
           line,
@@ -302,9 +302,9 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // Anything else (member expression, call expression, etc.) — best-effort
-      // label, can't resolve further; keep call-site location so it's still
-      // navigable to where the server is wired up.
+
+
+
       calls.push({
         file,
         line,
@@ -318,8 +318,8 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     return calls;
   }
 
-  /** Line number of `const NAME = (...) => {...}` / `function NAME(...) {...}`
-   *  in the same file, or undefined if not found locally. */
+
+
   private findFunctionDeclarationLine(content: string, name: string): number | undefined {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const patterns = [
@@ -333,23 +333,23 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  /**
-   * Extract statically-resolvable routes from a request handler's dispatch
-   * body. Handles the shapes actually observed in real raw-Node servers:
-   *
-   *  1. `if (request.method === 'GET' && request.url === '/health')` and the
-   *     `pathname` variant (`new URL(request.url, ...).pathname`), including
-   *     `||` chains of multiple path literals under one condition, and
-   *     `.startsWith('/prefix')` conditions (recorded as a prefix match).
-   *  2. `switch (request.url) { case '/x': ... }` / `switch (pathname)`.
-   *  3. A static path -> handler lookup table: `const routes = { '/x': fn }`
-   *     referenced by the dispatcher (best-effort; only claimed when the
-   *     object literal has string-literal keys mapped to bare identifiers).
-   *
-   * Anything not matching one of these shapes is left alone — never fabricate
-   * a route. `handlerBodyStartLine` anchors line numbers relative to the file
-   * containing the handler (may differ from the createServer call's file).
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private extractRoutesFromHandlerBody(content: string, file: string, _handlerBodyStartLine: number): NodeHttpRoute[] {
     const routes: NodeHttpRoute[] = [];
     const seen = new Set<string>();
@@ -360,13 +360,13 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
       routes.push({ method: method.toLowerCase(), path: routePath, handler, file, line });
     };
 
-    // Shape 1: if (method === 'GET' && (request.url === '/x' || url === '/y'))
-    // and the simpler if (request.method === 'GET' && request.url === '/x') form.
-    // Method and url/pathname comparisons may appear in either order. Both the
-    // member-expression form (`request.method`, `req.url`, `url.pathname`) and
-    // the bare-local-variable form (a destructured/aliased `const method = ...`,
-    // `const pathname = url.pathname` hoisted once per handler — the shape
-    // a real API service package actually uses) are real, equally static evidence.
+
+
+
+
+
+
+
     const ifPattern = /if\s*\(([^)]*?(?:method|url|pathname)[^)]*?)\)\s*\{/g;
     let ifMatch: RegExpExecArray | null;
     while ((ifMatch = ifPattern.exec(content)) !== null) {
@@ -388,13 +388,13 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Shape 2: switch (request.url) { case '/x': ... } (also pathname variant),
-    // where every case in the switch is treated as sharing the method guarded
-    // by an enclosing `if (request.method === 'X')`, when present; otherwise the
-    // method is left as GET only when explicitly checked inside the case body,
-    // else recorded as best-effort 'GET' since a bare url switch is almost
-    // always GET-only routing in practice — still statically resolvable, not
-    // fabricated (the path literal is real; only the implicit method is inferred).
+
+
+
+
+
+
+
     const switchPattern = /switch\s*\(\s*(?:[\w.]*\.)?(?:url|pathname)\s*\)\s*\{/g;
     let switchMatch: RegExpExecArray | null;
     while ((switchMatch = switchPattern.exec(content)) !== null) {
@@ -413,9 +413,9 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** Best-effort handler description for an if-block dispatch body: prefer a
-   *  bare `return handlerFn(...)` / `handlerFn(request, response)` call inside
-   *  the body; else mark as inline. */
+
+
+
   private describeIfBodyHandler(body: string, _matchedHeader: string, _content: string, _matchIndex: number): string {
     const callMatch = /\b([A-Za-z_$][\w$]*)\s*\(\s*(?:request|req)\s*,\s*(?:response|res)\s*\)/.exec(body);
     if (callMatch) return callMatch[1];
@@ -424,18 +424,18 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     return 'inline handler';
   }
 
-  /** Best-effort human-readable handler name for a createServer argument that
-   *  isn't a simple identifier or inline function. */
+
+
   private describeHandler(raw: string): string {
     if (/^[A-Za-z_$][\w$.]*$/.test(raw)) return raw;
     return 'handler';
   }
 
-  /**
-   * Parse the arguments of a call starting just after its opening '(' (depth 1),
-   * splitting on top-level commas while respecting nested parens/brackets/braces
-   * and string/template literals. Mirrors FastifyAnalyzer.parseRemainingCallArgs.
-   */
+
+
+
+
+
   private parseRemainingCallArgs(content: string, pos: number): string[] {
     const args: string[] = [];
     let depth = 1;
@@ -462,9 +462,9 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     return args;
   }
 
-  /** Extract the text of a balanced `{...}` block starting at `openBraceIndex`
-   *  (which must point at the '{'). Returns the inner text (without outer
-   *  braces), or null if unbalanced. Mirrors FastifyAnalyzer.extractBalancedBraces. */
+
+
+
   private extractBalancedBraces(content: string, openBraceIndex: number): string | null {
     let depth = 0;
     let inStr: string | null = null;

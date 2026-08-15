@@ -12,7 +12,7 @@ export class FallbackProvider implements AIProvider {
   constructor(config: AIConfig) {
     this.config = config;
 
-    // Initialize Hugging Face client if API key is available
+
     if (config.huggingface.apiKey) {
       this.hf = new HfInference(config.huggingface.apiKey);
     }
@@ -38,14 +38,14 @@ export class FallbackProvider implements AIProvider {
   }
 
   get available(): boolean {
-    // Fallback is always available with local processing
+
     return true;
   }
 
   async generateDescription(context: AIAnalysisContext): Promise<string> {
     this.logger.info('Using fallback description generation');
 
-    // Try Hugging Face first if available
+
     if (this.hf && context.code) {
       try {
         return await this.generateHuggingFaceDescription(context);
@@ -54,14 +54,14 @@ export class FallbackProvider implements AIProvider {
       }
     }
 
-    // Rule-based fallback
+
     return this.generateRuleBasedDescription(context);
   }
 
   async assessRisk(context: AIAnalysisContext): Promise<AIRiskAssessment> {
     this.logger.info('Using fallback risk assessment');
 
-    // Try Hugging Face first if available
+
     if (this.hf && context.code) {
       try {
         return await this.generateHuggingFaceRiskAssessment(context);
@@ -70,14 +70,14 @@ export class FallbackProvider implements AIProvider {
       }
     }
 
-    // Rule-based fallback
+
     return this.generateRuleBasedRiskAssessment(context);
   }
 
   async generateRecommendations(context: AIAnalysisContext): Promise<AIRecommendation[]> {
     this.logger.info('Using fallback recommendation generation');
 
-    // For recommendations, we'll use rule-based approach since it requires domain knowledge
+
     return this.generateRuleBasedRecommendations(context);
   }
 
@@ -88,7 +88,7 @@ export class FallbackProvider implements AIProvider {
       throw new Error('Code context is required for code analysis');
     }
 
-    // Try Hugging Face first if available
+
     if (this.hf) {
       try {
         return await this.generateHuggingFaceCodeAnalysis(context);
@@ -97,7 +97,7 @@ export class FallbackProvider implements AIProvider {
       }
     }
 
-    // Rule-based fallback
+
     return this.generateRuleBasedCodeAnalysis(context);
   }
 
@@ -139,10 +139,10 @@ export class FallbackProvider implements AIProvider {
     });
 
     const analysis = response.generated_text?.replace(prompt, '').trim() || '';
-    
+
     return {
       riskLevel: this.extractRiskLevelFromText(analysis),
-      confidence: 0.4, // Lower confidence for simple models
+      confidence: 0.4,
       reasons: this.extractReasonsFromText(analysis),
       suggestions: this.extractSuggestionsFromText(analysis),
       categories: []
@@ -187,17 +187,17 @@ export class FallbackProvider implements AIProvider {
     const component = context.component;
     let description = `This is a ${component.type} component`;
 
-    // Add framework-specific information
+
     if (component.framework) {
       description += ` built with ${component.framework}`;
     }
 
-    // Add responsibility information
+
     if (component.metadata.responsibilities.length > 0) {
       description += ` that handles ${component.metadata.responsibilities.join(', ')}`;
     }
 
-    // Add complexity information
+
     if (component.metadata.complexity > 7) {
       description += '. This component is highly complex';
     } else if (component.metadata.complexity > 4) {
@@ -206,22 +206,22 @@ export class FallbackProvider implements AIProvider {
       description += '. This is a simple component';
     }
 
-    // Add dependency information
+
     if (component.dependencies.length > 0) {
       description += ` and depends on ${component.dependencies.length} other components`;
     }
 
-    // Add usage information
+
     if (component.dependents.length > 0) {
       description += `. It is used by ${component.dependents.length} other components`;
     }
 
-    // Add HTTP method information for routes
+
     if (component.metadata.httpMethods && component.metadata.httpMethods.length > 0) {
       description += ` and supports ${component.metadata.httpMethods.join(', ')} HTTP methods`;
     }
 
-    // Add database query information
+
     if (component.metadata.dbQueries && component.metadata.dbQueries.length > 0) {
       description += ` with ${component.metadata.dbQueries.length} database queries`;
     }
@@ -246,12 +246,12 @@ export class FallbackProvider implements AIProvider {
       };
     }
 
-    // Complexity-based risk assessment
+
     if (component.metadata.complexity > 8) {
       riskLevel = 'high';
       reasons.push('Extremely high complexity score');
       suggestions.push('Consider breaking this component into smaller, more manageable pieces');
-      
+
       categories.push({
         category: 'maintainability',
         score: 20,
@@ -262,7 +262,7 @@ export class FallbackProvider implements AIProvider {
       riskLevel = riskLevel === 'low' ? 'medium' : 'high';
       reasons.push('High complexity score');
       suggestions.push('Monitor complexity and consider refactoring');
-      
+
       categories.push({
         category: 'maintainability',
         score: 60,
@@ -271,12 +271,12 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Dependency-based risk assessment
+
     if (component.dependencies.length > 15) {
       riskLevel = 'high';
       reasons.push('Very high number of dependencies');
       suggestions.push('Review and reduce dependencies where possible');
-      
+
       categories.push({
         category: 'scalability',
         score: 30,
@@ -289,13 +289,13 @@ export class FallbackProvider implements AIProvider {
       suggestions.push('Consider dependency injection patterns');
     }
 
-    // Test coverage-based risk assessment
+
     if (component.metadata.testCoverage !== undefined) {
       if (component.metadata.testCoverage < 40) {
         riskLevel = riskLevel === 'low' ? 'medium' : 'high';
         reasons.push('Very low test coverage');
         suggestions.push('Increase test coverage to at least 80%');
-        
+
         categories.push({
           category: 'reliability',
           score: 25,
@@ -309,11 +309,11 @@ export class FallbackProvider implements AIProvider {
       }
     }
 
-    // External API calls risk
+
     if (component.metadata.externalCalls && component.metadata.externalCalls.length > 0) {
       reasons.push('Makes external API calls');
       suggestions.push('Implement proper error handling and retry mechanisms for external calls');
-      
+
       categories.push({
         category: 'reliability',
         score: 70,
@@ -322,11 +322,11 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Database queries risk
+
     if (component.metadata.dbQueries && component.metadata.dbQueries.length > 5) {
       reasons.push('High number of database queries');
       suggestions.push('Review database queries for N+1 problems and optimization opportunities');
-      
+
       categories.push({
         category: 'performance',
         score: 60,
@@ -335,11 +335,11 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Entry point risk (higher scrutiny needed)
+
     if (component.metadata.isEntry) {
       reasons.push('This is an entry point to the system');
       suggestions.push('Ensure proper input validation and security measures');
-      
+
       categories.push({
         category: 'security',
         score: 50,
@@ -348,7 +348,7 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Orphaned component risk
+
     if (component.metadata.isOrphaned) {
       reasons.push('This component appears to be orphaned (unused)');
       suggestions.push('Consider removing if truly unused, or document its purpose');
@@ -371,7 +371,7 @@ export class FallbackProvider implements AIProvider {
       return recommendations;
     }
 
-    // Complexity recommendations
+
     if (component.metadata.complexity > 6) {
       recommendations.push({
         type: 'refactoring',
@@ -386,7 +386,7 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Test coverage recommendations
+
     if (component.metadata.testCoverage !== undefined && component.metadata.testCoverage < 70) {
       recommendations.push({
         type: 'testing',
@@ -401,7 +401,7 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Performance recommendations for database-heavy components
+
     if (component.metadata.dbQueries && component.metadata.dbQueries.length > 3) {
       recommendations.push({
         type: 'performance',
@@ -416,7 +416,7 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Security recommendations for entry points
+
     if (component.metadata.isEntry) {
       recommendations.push({
         type: 'security',
@@ -431,7 +431,7 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Architectural recommendations for highly coupled components
+
     if (component.dependencies.length > 10) {
       recommendations.push({
         type: 'architectural',
@@ -476,7 +476,7 @@ export class FallbackProvider implements AIProvider {
 
     let complexity = 1;
     for (const keyword of complexityKeywords) {
-      // Escape special regex characters
+
       const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       try {
         const matches = code.match(new RegExp(`\\b${escapedKeyword}\\b`, 'g'));
@@ -484,7 +484,7 @@ export class FallbackProvider implements AIProvider {
           complexity += matches.length;
         }
       } catch (error) {
-        // If regex fails, try simple string matching
+
         const simpleMatches = code.split(keyword).length - 1;
         complexity += simpleMatches;
       }
@@ -500,7 +500,7 @@ export class FallbackProvider implements AIProvider {
   private detectPatternsInCode(code: string, language?: string): any[] {
     const patterns: any[] = [];
 
-    // Singleton pattern detection
+
     if (code.includes('getInstance') || code.includes('instance') && code.includes('static')) {
       patterns.push({
         name: 'Singleton',
@@ -511,7 +511,7 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Factory pattern detection
+
     if (code.includes('Factory') || code.includes('create') && code.includes('new')) {
       patterns.push({
         name: 'Factory',
@@ -522,7 +522,7 @@ export class FallbackProvider implements AIProvider {
       });
     }
 
-    // Observer pattern detection
+
     if (code.includes('addEventListener') || code.includes('observer') || code.includes('notify')) {
       patterns.push({
         name: 'Observer',
@@ -540,7 +540,7 @@ export class FallbackProvider implements AIProvider {
     const issues: any[] = [];
     const lines = code.split('\n');
 
-    // Long lines
+
     lines.forEach((line, index) => {
       if (line.length > 120) {
         issues.push({
@@ -552,7 +552,7 @@ export class FallbackProvider implements AIProvider {
       }
     });
 
-    // TODO/FIXME comments
+
     lines.forEach((line, index) => {
       if (line.includes('TODO') || line.includes('FIXME')) {
         issues.push({
@@ -565,7 +565,7 @@ export class FallbackProvider implements AIProvider {
       }
     });
 
-    // Multiple return statements (potential complexity)
+
     const returnMatches = code.match(/\breturn\b/g);
     if (returnMatches && returnMatches.length > 3) {
       issues.push({
@@ -582,7 +582,7 @@ export class FallbackProvider implements AIProvider {
   private generateCodeSuggestions(code: string, language?: string): any[] {
     const suggestions: any[] = [];
 
-    // Function length suggestion
+
     const functions = code.match(/function\s+\w+|def\s+\w+|public\s+\w+|private\s+\w+/g);
     if (functions && functions.length > 0) {
       const avgFunctionSize = code.split('\n').length / functions.length;
@@ -595,7 +595,7 @@ export class FallbackProvider implements AIProvider {
       }
     }
 
-    // Documentation suggestion
+
     if (!code.includes('/**') && !code.includes('"""') && !code.includes('///')) {
       suggestions.push({
         type: 'documentation',
@@ -608,19 +608,19 @@ export class FallbackProvider implements AIProvider {
   }
 
   private estimateTestability(code: string): number {
-    let score = 5; // Base score
+    let score = 5;
 
-    // Higher testability if functions are small
+
     const lines = code.split('\n').length;
     if (lines < 50) score += 2;
     else if (lines < 100) score += 1;
 
-    // Higher testability if no global state
+
     if (!code.includes('global ') && !code.includes('window.')) {
       score += 2;
     }
 
-    // Higher testability if dependency injection is used
+
     if (code.includes('inject') || code.includes('constructor')) {
       score += 1;
     }
@@ -631,12 +631,12 @@ export class FallbackProvider implements AIProvider {
   private generateCodeDocumentation(code: string, language?: string): string {
     const lines = code.split('\n').length;
     const functions = code.match(/function\s+\w+|def\s+\w+|public\s+\w+|private\s+\w+/g)?.length || 0;
-    
+
     return `This ${language || 'code'} file contains ${lines} lines with approximately ${functions} functions or methods. ` +
            `Rule-based analysis suggests reviewing complexity and considering additional documentation.`;
   }
 
-  // Helper methods for text parsing
+
   private extractRiskLevelFromText(text: string): 'low' | 'medium' | 'high' | 'critical' {
     const lowerText = text.toLowerCase();
     if (lowerText.includes('critical') || lowerText.includes('severe')) return 'critical';
@@ -651,14 +651,14 @@ export class FallbackProvider implements AIProvider {
   }
 
   private extractSuggestionsFromText(text: string): string[] {
-    const lines = text.split('\n').filter(line => 
+    const lines = text.split('\n').filter(line =>
       line.includes('suggest') || line.includes('recommend') || line.includes('should')
     );
     return lines.slice(0, 3).map(line => line.trim());
   }
 
   private extractIssuesFromText(text: string): any[] {
-    const lines = text.split('\n').filter(line => 
+    const lines = text.split('\n').filter(line =>
       line.includes('issue') || line.includes('problem') || line.includes('error')
     );
     return lines.slice(0, 5).map(line => ({
@@ -669,7 +669,7 @@ export class FallbackProvider implements AIProvider {
   }
 
   private extractSuggestionsFromAnalysis(text: string): any[] {
-    const lines = text.split('\n').filter(line => 
+    const lines = text.split('\n').filter(line =>
       line.includes('improve') || line.includes('optimize') || line.includes('consider')
     );
     return lines.slice(0, 5).map((line, index) => ({

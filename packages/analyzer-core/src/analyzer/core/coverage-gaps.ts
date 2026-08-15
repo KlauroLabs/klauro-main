@@ -3,48 +3,48 @@ import * as path from 'path';
 import type { CASCoverageGap, CASEntryPoint, CASLibrary, CASNode } from '../../types/cas.types';
 import type { CodebaseType } from './codebase-type';
 
-/**
- * Coverage-gap self-discovery.
- *
- * The mechanism that makes gap-closing systematic: instead of only finding out
- * "we don't support X" when a human notices, this records a structured gap
- * the moment analysis itself sees evidence it doesn't understand. Four kinds:
- *
- *  (a) unknown-dependency  — a manifest dependency that matches no known
- *      analyzer/framework signal. The single biggest signal: it means "there's
- *      a whole framework/library here we have zero facts about."
- *  (b) low-extraction-ratio — a source file that got parsed (it produced file-
- *      level structure) but yielded almost no nodes relative to its size —
- *      i.e. tree-sitter/the language analyzer saw the file but barely anything
- *      in it was recognized as a meaningful construct.
- *  (c) zero-entry-points   — a root that clearly has source code but the
- *      analysis found NO entry points at all. Combined with codebase_type,
- *      this says "we don't have an entry-point model for this TYPE."
- *  (d) unhandled-node-type — aggregate counts of raw tree-sitter node types
- *      that were walked but never mapped to a CASNode by any analyzer.
- *
- * Every function here is pure (no fs writes, no AI, no orchestrator-internal
- * imports) so it can be unit-tested with plain fixtures and wired into the
- * orchestrator as a late, additive pass over already-produced facts.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface UnknownDependencyGapInput {
   libraries: CASLibrary[];
-  /** Every dependency name recognized by at least one registered analyzer
-   *  (drawn from each AnalyzerRegistration.detectPatterns.dependencies at the
-   *  orchestrator call site — kept as a plain string set here to avoid this
-   *  module depending on orchestrator internals). */
+
+
+
+
   recognizedDependencyNames: Set<string> | string[];
-  /** Dependency names ubiquitous enough (build tooling, type-only, testing
-   *  utilities) that "no analyzer recognizes this" isn't a meaningful gap.
-   *  Merged with a small built-in ignore list. */
+
+
+
   ignoreNames?: Set<string> | string[];
 }
 
 const DEFAULT_IGNORE_DEPENDENCIES = new Set([
-  // Type-only / build-tooling / lint / test-infra packages: near-universal,
-  // never themselves the subject of a framework analyzer, and would otherwise
-  // dominate the gap list with noise on every single repo.
+
+
+
   'typescript', 'eslint', 'prettier', 'ts-node', 'tslib', 'rimraf', 'nodemon',
   'cross-env', 'dotenv', 'chalk', 'lodash', 'moment', 'uuid', 'axios',
   'node-fetch', 'jest', 'mocha', 'chai', 'sinon', 'vitest', 'ts-jest',
@@ -58,16 +58,16 @@ function toSet(value: Set<string> | string[] | undefined): Set<string> {
   return value instanceof Set ? value : new Set(value);
 }
 
-/** Strip an npm scope + subpath so "@types/node" and "@babel/core/lib/x" compare cleanly. */
+
 function normalizeDependencyName(name: string): string {
   return name.trim().toLowerCase();
 }
 
-/**
- * (a) Dependencies present in the manifest that match no analyzer's known
- * signal set. Skips type-only packages (`@types/*`) since those never carry
- * their own runtime framework identity.
- */
+
+
+
+
+
 export function findUnknownDependencyGaps(input: UnknownDependencyGapInput): CASCoverageGap[] {
   const recognized = new Set([...toSet(input.recognizedDependencyNames)].map(normalizeDependencyName));
   const ignore = new Set([...DEFAULT_IGNORE_DEPENDENCIES, ...toSet(input.ignoreNames)].map(normalizeDependencyName));
@@ -95,12 +95,12 @@ export function findUnknownDependencyGaps(input: UnknownDependencyGapInput): CAS
 export interface LowExtractionRatioInput {
   nodes: CASNode[];
   projectPath: string;
-  /** Minimum lines for a file to be considered (skip trivial/near-empty files
-   *  — a 5-line file with 0 nodes isn't a gap, it's just short). Default 40. */
+
+
   minLines?: number;
-  /** Node-count-per-line threshold below which a file is flagged. Default
-   *  0.02 (1 node per 50 lines) — deliberately generous so only files that
-   *  are clearly "parsed but nothing recognized" trip it. */
+
+
+
   minNodesPerLine?: number;
 }
 
@@ -109,11 +109,11 @@ const CODE_EXTENSIONS_FOR_RATIO = new Set([
   'php', 'cs', 'swift', 'scala', 'c', 'cpp', 'cc', 'h', 'hpp',
 ]);
 
-/**
- * (b) Files that produced file-level structure (they're in the graph at all)
- * but with a node-count-to-line-count ratio so low it signals an unhandled
- * construct rather than a genuinely tiny/simple file.
- */
+
+
+
+
+
 export function findLowExtractionRatioGaps(input: LowExtractionRatioInput): CASCoverageGap[] {
   const minLines = input.minLines ?? 40;
   const minNodesPerLine = input.minNodesPerLine ?? 0.02;
@@ -136,7 +136,7 @@ export function findLowExtractionRatioGaps(input: LowExtractionRatioInput): CASC
       const content = fs.readFileSync(absPath, 'utf8');
       lineCount = content.split('\n').length;
     } catch {
-      continue; // file not readable at this path — skip rather than guess
+      continue;
     }
     if (lineCount < minLines) continue;
 
@@ -162,13 +162,13 @@ export interface ZeroEntryPointGapInput {
   codebaseType?: CodebaseType;
 }
 
-/**
- * (c) A root with source (nodes were produced) but zero entry points at all.
- * Combined with codebase_type this pinpoints "we lack an entry-point model
- * for this TYPE" rather than just "this repo happens to have none."
- */
+
+
+
+
+
 export function findZeroEntryPointGap(input: ZeroEntryPointGapInput): CASCoverageGap[] {
-  if (input.nodeCount === 0) return []; // no source at all — not a gap, nothing to find entry points in
+  if (input.nodeCount === 0) return [];
   if (input.entryPoints.length > 0) return [];
   const type = input.codebaseType ?? 'unknown';
   return [{
@@ -181,23 +181,23 @@ export function findZeroEntryPointGap(input: ZeroEntryPointGapInput): CASCoverag
 }
 
 export interface UnhandledNodeTypeInput {
-  /** Raw tree-sitter node-type -> occurrence count, aggregated by the walker
-   *  during this analysis pass, BEFORE any per-language resolver/declFilter
-   *  claims them (see generic-tree-sitter-analyzer.ts). */
+
+
+
   encounteredNodeTypeCounts: Map<string, number> | Record<string, number>;
-  /** Node types any analyzer actually turned into a CASNode/edge this pass. */
+
   handledNodeTypes: Set<string> | string[];
-  /** Only report node types seen at least this many times (default 3) — a
-   *  one-off exotic node isn't worth a gap entry. */
+
+
   minOccurrences?: number;
 }
 
-/**
- * (d) Tree-sitter node types the walker saw but no analyzer ever mapped to a
- * CASNode/edge, aggregated by count. This is the raw material for "which
- * constructs are we blind to" across a language, independent of any single
- * file's extraction ratio.
- */
+
+
+
+
+
+
 export function findUnhandledNodeTypeGaps(input: UnhandledNodeTypeInput): CASCoverageGap[] {
   const counts = input.encounteredNodeTypeCounts instanceof Map
     ? input.encounteredNodeTypeCounts
@@ -232,7 +232,7 @@ export interface CollectCoverageGapsInput {
   ignoreDependencyNames?: Set<string> | string[];
 }
 
-/** Runs all four gap-discovery passes and returns the combined, deduped list. */
+
 export function collectCoverageGaps(input: CollectCoverageGapsInput): CASCoverageGap[] {
   const gaps: CASCoverageGap[] = [];
 

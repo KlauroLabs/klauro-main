@@ -4,21 +4,21 @@ import {
   SystemPurpose
 } from '../../types/cas.types';
 
-/**
- * Capability ranking — importance-driven, evidence-only.
- *
- * CONSTRAINTS:
- * - NO keyword/vocabulary sets. The former implementation ranked with three
- *   hardcoded English word lists and a `centrality_score` wired to 0 — the
- *   cause of "UI click handler surfaces as a core flow". Ranking evidence is
- *   now structural: per-node structural-importance mass (seeded random-walk
- *   centrality over the call graph, structural-importance.ts), repo-derived
- *   domain-concept alignment, entry/exit coverage, and complexity profile.
- * - Deterministic: same capabilities + same importance map → same scores and
- *   classifications. Ties break by capability id.
- * - Repo-agnostic: every signal is computed from THIS repo's extracted facts
- *   (domain concepts come from domain-extractor, not a fixed vocabulary).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class FlowScorer {
   scoreCapabilities(
     capabilities: CASCapability[],
@@ -49,9 +49,9 @@ export class FlowScorer {
         cap.signals.centrality_score = importanceMass.get(cap.id) || 0;
       }
     } else {
-      // No structural-importance layer on this CAS (pre-layer analysis or an
-      // edge-less graph) — fall back to the dependency-topology heuristic so
-      // centrality never silently reads 0 across the board.
+
+
+
       this.scoreCentralityFromDependencies(capabilities);
     }
 
@@ -66,13 +66,13 @@ export class FlowScorer {
     this.classifyCapabilities(capabilities);
   }
 
-  /**
-   * Aggregate structural-importance mass per capability: the sum of the
-   * normalized importance of every unique node its operations implement,
-   * rescaled so the heaviest capability scores 100. A UI event-handler chain
-   * with no downstream mass sums to ~0; a chain through the graph core does
-   * not — the structural fix for keyword-era misranking.
-   */
+
+
+
+
+
+
+
   private computeImportanceMass(
     capabilities: CASCapability[],
     importanceByNode?: Map<string, number>
@@ -89,7 +89,7 @@ export class FlowScorer {
         }
       }
       let mass = 0;
-      // Deterministic accumulation order (float addition is order-sensitive).
+
       for (const nodeId of [...nodeIds].sort()) {
         mass += importanceByNode.get(nodeId) || 0;
       }
@@ -106,8 +106,8 @@ export class FlowScorer {
     return scaled;
   }
 
-  /** Alignment with THIS repo's extracted core domain concepts plus structural
-   *  operation-pattern evidence. No fixed vocabulary. */
+
+
   private scoreDomainAlignment(cap: CASCapability, coreConcepts: string[]): number {
     const name = cap.name.toLowerCase();
     let score = 0;
@@ -147,8 +147,8 @@ export class FlowScorer {
     return Math.max(0, Math.min(100, score));
   }
 
-  /** Dependency-topology fallback used ONLY when no structural-importance map
-   *  exists: how depended-upon and service-connected a capability is. */
+
+
   private scoreCentralityFromDependencies(capabilities: CASCapability[]): void {
     for (const cap of capabilities) {
       let centralityScore = 0;
@@ -243,9 +243,9 @@ export class FlowScorer {
     return Math.min(100, score);
   }
 
-  /** Rank-and-threshold classification over the evidence-driven total score.
-   *  No name-based overrides: a capability is infrastructure because it lacks
-   *  structural mass/coverage, never because of what it is called. */
+
+
+
   private classifyCapabilities(capabilities: CASCapability[]): void {
     if (capabilities.length === 0) return;
 

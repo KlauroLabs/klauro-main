@@ -6,16 +6,6 @@ import { cachedGlob as glob } from '../core/glob-cache';
 
 type MediatorSystem = 'mediatr' | 'masstransit' | 'nservicebus' | 'nestjs-cqrs' | 'aws-sqs';
 
-interface HandlerDecl {
-  system: MediatorSystem;
-  /** The command/query/event/message type the handler is declared for. */
-  messageType: string;
-  /** The handler class/function name itself. */
-  handlerName: string;
-  kind: 'command' | 'query' | 'event' | 'message';
-  filePath: string;
-  line: number;
-}
 
 interface DispatchSite {
   system: MediatorSystem;
@@ -25,31 +15,31 @@ interface DispatchSite {
   line: number;
 }
 
-/**
- * MediatorCqrsAnalyzer
- *
- * Surfaces the CQRS/mediator dispatch architecture that the generic
- * ArchitecturalLibraryAnalyzer only sees as line-level "usage" nodes:
- *   - MediatR (C#): IRequestHandler<TCmd,TRes> / INotificationHandler<T>
- *     declarations resolved to the actual handler class, plus
- *     _mediator.Send(new TCmd(...)) / .Publish(new TEvent(...)) call sites
- *     resolved to that handler by message-type name.
- *   - MassTransit / NServiceBus (C#): IConsumer<T> / IHandleMessages<T>
- *     consumer classes.
- *   - NestJS CQRS (@nestjs/cqrs, TS): @CommandHandler(Cmd)/@QueryHandler(Qry)/
- *     @EventsHandler(Evt) decorated classes resolved from commandBus.execute(new
- *     Cmd(...)) / eventBus.publish(new Evt(...)) call sites.
- *   - AWS SQS/Lambda handlers (TS/Python): exports.handler / def handler
- *     processing an SQS event -> a message entry point (no dispatch edge,
- *     since the producer is typically a different service/account).
- *
- * Each resolved handler becomes a FLOW node + a message/event entry point
- * (a message triggers a flow root), and each dispatch call site that
- * resolves to a declared handler becomes a command/event -> handler edge.
- * Resolution is evidence-based: an edge is only emitted when the dispatched
- * message type name matches a handler actually declared in the codebase;
- * unmatched dispatches are dropped rather than fabricated.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class MediatorCqrsAnalyzer extends BaseAnalyzer {
   constructor() {
     super('mediator-cqrs-messaging', 'Mediator/CQRS Messaging Analyzer', '1.0.0', 'library');
@@ -77,7 +67,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
         const content = await fs.readFile(file, 'utf-8');
         if (markerRe.test(content)) return true;
       } catch {
-        // ignore unreadable files
+
       }
     }
     return false;
@@ -145,8 +135,8 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     const content = await fs.readFile(context.filePath, 'utf-8');
     const stat = await fs.stat(context.filePath);
 
-    // Single-file scope: dispatch -> handler edges to handlers declared in other
-    // files under-populate here and re-derive on full analysis.
+
+
     const { nodes, edges, entryPoints } = await this.processFiles([context.filePath], context.projectPath);
 
     const exitPoints: CASExitPoint[] = [];
@@ -174,9 +164,9 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
 
-    // messageType -> handler node id, keyed per system so a `CreateOrder` command
-    // in MediatR doesn't collide with an unrelated `CreateOrder` in NestJS CQRS.
-    const handlerNodeIds = new Map<string, string>(); // `${system}:${messageType}` -> nodeId
+
+
+    const handlerNodeIds = new Map<string, string>();
     const pendingDispatches: DispatchSite[] = [];
 
     for (const file of files) {
@@ -203,10 +193,10 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Resolve dispatch call sites -> edge into the declared handler node.
+
     for (const dispatch of pendingDispatches) {
       const targetId = handlerNodeIds.get(`${dispatch.system}:${dispatch.messageType}`);
-      if (!targetId) continue; // evidence-gated: no fabricated edges for unmatched message types
+      if (!targetId) continue;
       const siteId = `flow_${dispatch.system}_dispatch_${this.sanitizeId(dispatch.messageType)}_${dispatch.filePath}_${dispatch.line}`
         .replace(/[\\/]/g, '_');
       nodes.push(
@@ -232,7 +222,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     return { nodes, edges, entryPoints };
   }
 
-  // ---- MediatR (C#): IRequestHandler<TCmd,TRes> / INotificationHandler<T> ----
+
   private extractMediatRHandlers(
     content: string,
     filePath: string,
@@ -241,8 +231,8 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     handlerNodeIds: Map<string, string>,
     lineOf: (index: number) => number
   ): void {
-    // class OrderCreatedHandler : IRequestHandler<CreateOrderCommand, Result>
-    // class OrderCreatedHandler : INotificationHandler<OrderCreatedEvent>
+
+
     const classRe =
       /class\s+(\w+)\s*(?::|<)?[^{]*?\b(IRequestHandler|INotificationHandler)\s*<\s*(\w+)/g;
     let m: RegExpExecArray | null;
@@ -278,7 +268,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // .Send(new CreateOrderCommand(...))  /  mediator.Publish(new OrderCreatedEvent(...))
+
   private extractMediatRDispatches(
     content: string,
     filePath: string,
@@ -296,7 +286,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- MassTransit / NServiceBus (C#): IConsumer<T> / IHandleMessages<T> ----
+
   private extractMassTransitNServiceBus(
     content: string,
     filePath: string,
@@ -340,7 +330,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- NestJS CQRS (@nestjs/cqrs, TS): @CommandHandler / @QueryHandler / @EventsHandler ----
+
   private extractNestCqrsHandlers(
     content: string,
     filePath: string,
@@ -383,7 +373,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // commandBus.execute(new CreateOrderCommand(...)) / eventBus.publish(new OrderCreatedEvent(...))
+
   private extractNestCqrsDispatches(
     content: string,
     filePath: string,
@@ -401,7 +391,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- AWS SQS handlers (TS/JS Lambda) ----
+
   private extractSqsHandlerTs(
     content: string,
     filePath: string,
@@ -409,8 +399,8 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     lineOf: (index: number) => number
   ): void {
-    // export const handler = async (event: SQSEvent) => { ... }
-    // export async function handler(event: SQSEvent) { ... }
+
+
     const handlerRe =
       /export\s+(?:const|async\s+function)\s+(\w+)\s*[:=]?\s*(?:async\s*)?\(\s*\w+\s*:\s*SQSEvent/g;
     let m: RegExpExecArray | null;
@@ -440,7 +430,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---- AWS SQS handlers (Python Lambda) ----
+
   private extractSqsHandlerPy(
     content: string,
     filePath: string,
@@ -448,14 +438,14 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     lineOf: (index: number) => number
   ): void {
-    // def lambda_handler(event, context): ... event['Records'] (SQS event shape)
+
     const defRe = /def\s+(\w*handler\w*)\s*\(\s*event\s*,\s*context\s*\)/g;
     let m: RegExpExecArray | null;
     while ((m = defRe.exec(content)) !== null) {
       const name = m[1];
       const line = lineOf(m.index);
-      // Gate on SQS-shaped event access nearby so a generic Lambda handler for
-      // API Gateway/EventBridge isn't misattributed to SQS.
+
+
       const bodySlice = content.slice(m.index, m.index + 800);
       if (!/['"]Records['"]|receiptHandle|eventSourceARN|sqs/i.test(bodySlice)) continue;
       const id = `flow_aws_sqs_handler_${this.sanitizeId(name)}_${this.sanitizeId(filePath)}`;
@@ -492,7 +482,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
     try {
       const csprojFiles = await glob('**/*.csproj', {
@@ -509,7 +499,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
     try {
       const reqPath = path.join(projectPath, 'requirements.txt');
@@ -521,7 +511,7 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
         }
       }
     } catch {
-      // ignore
+
     }
     return names;
   }

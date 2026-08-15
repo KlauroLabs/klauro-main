@@ -333,7 +333,6 @@ export class RailsAnalyzer extends BaseAnalyzer {
     const contentByFile = new Map(sources.map(source => [source.file, source.content]));
 
     for (const model of models) {
-      const fullPath = path.join(projectPath, model.filePath);
       const content = contentByFile.get(model.filePath) || '';
       const modelId = this.modelNodeId(model);
       nodes.push(this.createNodeBuilder(modelId, model.name, 'rails_model')
@@ -378,8 +377,8 @@ export class RailsAnalyzer extends BaseAnalyzer {
         const related = models.find(candidate => candidate.name === association.className);
         if (!related) continue;
         const relatedId = this.modelNodeId(related);
-        // Cardinality for the database_schema relation graph: has_many -> 1:N,
-        // belongs_to -> N:1, has_one -> 1:1, HABTM -> N:M.
+
+
         const relationType = association.type === 'has_many' ? 'OneToMany' :
           association.type === 'belongs_to' ? 'ManyToOne' :
           association.type === 'has_and_belongs_to_many' ? 'ManyToMany' : 'OneToOne';
@@ -538,11 +537,11 @@ export class RailsAnalyzer extends BaseAnalyzer {
       validations,
       scopes,
       callbacks,
-      // Two abstract-base idioms: the classic `self.abstract_class = true` and
-      // Rails 7.1+'s `primary_abstract_class` (the generated ApplicationRecord
-      // uses the latter). Missing the second made ApplicationRecord — a class
-      // with no table and no fields of its own that every model merely
-      // inherits from — surface as a DOMAIN ENTITY in the ERD (rung-5, seen on a benchmarked Rails repo).
+
+
+
+
+
       abstract: /self\.abstract_class\s*=\s*true|^\s*primary_abstract_class\b/m.test(content)
     };
   }
@@ -1016,7 +1015,6 @@ export class RailsAnalyzer extends BaseAnalyzer {
         || this.findNamespacePrefixedTable(columnsByTable, model);
       if (!tableColumns || tableColumns.size === 0) continue;
       const modelId = this.modelNodeId(model);
-      const modelFile = path.join(projectPath, model.filePath);
 
       for (const [columnName, columnType] of tableColumns) {
         const fieldId = this.generateId('field', model.filePath, `${model.name}_${columnName}`);

@@ -476,7 +476,7 @@ export function diffBehavior(before: CASOutput, after: CASOutput): CASBehaviorDi
       boundaries_removed: boundariesRemoved,
       newly_unguarded_entries: newlyUnguarded,
     },
-    capabilities: diffCapabilities(before.system_capabilities || [], after.system_capabilities || []),
+    capabilities: diffCapabilities(before.capabilities || [], after.capabilities || []),
     lineage: diffLineage(before.data_lineage || [], after.data_lineage || []),
     paradigms: diffParadigms(before.paradigm_conformance, after.paradigm_conformance),
   };

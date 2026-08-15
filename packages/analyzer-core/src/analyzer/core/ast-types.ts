@@ -130,14 +130,14 @@ export interface PHPASTNode {
     class?: string;
     method?: string;
     function?: string;
-    /** Receiver variable for a member call `$recv->method()` (without `$`). */
+
     receiver?: string;
     line: number;
-    /** True when the call site sits inside an if/elseif/else/switch/case/
-     *  match/ternary construct within its enclosing function — the
-     *  deterministic ground for a 'branch' step-graph edge (evidence: the
-     *  call expression's tree-sitter ancestor chain contains a conditional
-     *  node type). Absent (not `false`) when there is no such ancestor. */
+
+
+
+
+
     isConditional?: boolean;
   }>;
   uses?: Array<{

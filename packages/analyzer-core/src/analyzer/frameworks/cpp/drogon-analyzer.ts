@@ -4,18 +4,18 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Drogon (C++) framework analyzer.
- *
- * Drogon exposes routes two ways, both handled here:
- *  1. Controller macro: `ADD_METHOD_TO(Controller::method, "/path", Get)` (or the
- *     path-parameter form `ADD_METHOD_TO(Controller::method, "/path/{id}", Get)`),
- *     usually inside `PATH_LIST_BEGIN ... PATH_LIST_END` in a `HttpController`
- *     subclass's header.
- *  2. Programmatic registration: `app().registerHandler("/path", &handler, {Get})`.
- * Real dependency gate: a CMakeLists.txt (or vcpkg/conan manifest) referencing Drogon,
- * or a direct `#include <drogon/...>` — never inferred from folder names.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class DrogonAnalyzer extends BaseAnalyzer {
   constructor() {
     super('drogon', 'Drogon Framework Analyzer', '1.0.0', 'framework');
@@ -83,8 +83,8 @@ export class DrogonAnalyzer extends BaseAnalyzer {
       const content = await fs.readFile(path.join(projectPath, file), 'utf-8').catch(() => '');
       if (/\bdrogon\b/i.test(content)) return true;
     }
-    // Fall back to a direct include, in case the build system reference is indirect
-    // (e.g. a vendored/system-installed Drogon with no manifest entry).
+
+
     for (const file of await this.findCppFiles(projectPath)) {
       const content = await fs.readFile(file, 'utf-8').catch(() => '');
       if (/#include\s*[<"]drogon\//.test(content)) return true;
@@ -99,11 +99,11 @@ export class DrogonAnalyzer extends BaseAnalyzer {
     return includesDrogon && (hasMacroRoute || hasRegisterHandler);
   }
 
-  /**
-   * `ADD_METHOD_TO(Controller::method, "/path", Get[, Post, ...])` — one macro
-   * invocation can list multiple HTTP methods for the same handler/path, so each
-   * listed method becomes its own entry point.
-   */
+
+
+
+
+
   private extractAddMethodToRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): void {
     if (!/\bADD_METHOD_TO\s*\(/.test(content)) return;
     const lineForIndex = this.buildLineIndex(content);
@@ -136,10 +136,10 @@ export class DrogonAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * `app().registerHandler("/path", &SomeClass::method, {Get, Post})` (methods list
-   * optional — Drogon defaults to Get when omitted) or a free-function/lambda handler.
-   */
+
+
+
+
   private extractRegisterHandlerRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): void {
     if (!/\bapp\s*\(\s*\)\s*\.\s*registerHandler\s*\(/.test(content)) return;
     const lineForIndex = this.buildLineIndex(content);
@@ -171,7 +171,7 @@ export class DrogonAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Drogon's HttpMethod enum values used in ADD_METHOD_TO / registerHandler lists. */
+
   private isHttpMethodToken(token: string): boolean {
     return /^(Get|Post|Put|Delete|Patch|Head|Options)$/i.test(token);
   }

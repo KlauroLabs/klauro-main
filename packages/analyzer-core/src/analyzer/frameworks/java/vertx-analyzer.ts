@@ -7,30 +7,30 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import * as path from 'path';
 
-/**
- * Vert.x (vertx-web) framework analyzer (Java/Kotlin reactive toolkit).
- *
- * Extracts the vertx-web routing conventions the generic Java/Kotlin analyzers
- * cannot see:
- *   - `Router router = Router.router(vertx)` → the router instance.
- *   - `router.get("/path").handler(this::method)` / `router.post("/path").handler(h -> {...})`
- *     → routes, resolved method (`Class::method` reference or inline lambda).
- *   - `router.route("/path").method(HttpMethod.GET).handler(...)` → the same,
- *     via the generic `.route(...)` + `.method(...)` builder form.
- *   - `router.mountSubRouter("/api", subRouter)` → sub-router prefixing (best
- *     effort: recorded as a `mounts` edge; full transitive prefix folding across
- *     files is out of scope for a line-based extractor).
- *   - `BridgeEvent` / `EventBus` `consumer("address", handler)` → message entry
- *     points (event-bus consumers), `publish`/`send` → message exit points.
- *   - `AuthenticationHandler` / `JWTAuthHandler` / `router.route().handler(authHandler)`
- *     preceding a route in the same file → the route inherits an authenticated
- *     signal only where a handler chain shows it directly on that route.
- *
- * Extraction is line/regex-based over `.java` and `.kt` files (no shared AST),
- * mirroring the Ktor/Quarkus analyzers' proven approach. Handler resolution
- * favors explicit method references (`this::foo`, `Class::foo`) over anonymous
- * lambdas, which are recorded as inline (no real method node to link to).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const SOURCE_GLOBS = ['**/*.java', '**/*.kt'];
 const BUILD_GLOBS = [
@@ -210,9 +210,9 @@ export class VertxAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Parsing
-  // ---------------------------------------------------------------------------
+
+
+
 
   private parseVertxFile(relativePath: string, fullPath: string, content: string): VertxFileInfo {
     const lines = content.split('\n');
@@ -229,7 +229,7 @@ export class VertxAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /** `Router router = Router.router(vertx)` / `val router = Router.router(vertx)`. */
+
   private extractRouters(lines: string[]): VertxRouter[] {
     const routers: VertxRouter[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -245,19 +245,19 @@ export class VertxAnalyzer extends BaseAnalyzer {
     return routers;
   }
 
-  /**
-   * `router.get("/path").handler(ref)` / `router.route("/path").method(HttpMethod.GET).handler(ref)`.
-   * Scans a small forward window for `.handler(...)` since the fluent chain can
-   * wrap to following lines, and for an auth handler mounted just before it.
-   */
+
+
+
+
+
   private extractRoutes(lines: string[]): VertxRoute[] {
     const routes: VertxRoute[] = [];
     for (let i = 0; i < lines.length; i++) {
       const stripped = this.stripComments(lines[i]);
 
-      // Direct method form: router.get("/path")
+
       const directMatch = stripped.match(/\brouter\.(get|post|put|delete|patch|head|options)\s*\(\s*"([^"]*)"\s*\)/);
-      // Generic .route("/path").method(HttpMethod.GET) form.
+
       const genericMatch = stripped.match(/\brouter\.route\s*\(\s*"([^"]*)"\s*\)/);
 
       let method: string | null = null;
@@ -275,7 +275,7 @@ export class VertxAnalyzer extends BaseAnalyzer {
 
       if (!method || routePath === null) continue;
 
-      // Handler resolution: look forward for `.handler(...)`.
+
       const window = lines.slice(i, Math.min(lines.length, i + 6)).join(' ');
       const refMatch = window.match(/\.handler\s*\(\s*([\w.]+)::(\w+)\s*\)/);
       const lambdaMatch = window.match(/\.handler\s*\(\s*(\w+)\s*->/);
@@ -307,7 +307,7 @@ export class VertxAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** `eventBus().consumer("address", handler)` → an event-bus entry point. */
+
   private extractConsumers(lines: string[]): VertxEventBusConsumer[] {
     const consumers: VertxEventBusConsumer[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -322,7 +322,7 @@ export class VertxAnalyzer extends BaseAnalyzer {
     return consumers;
   }
 
-  /** `eventBus().send("address", ...)` / `.publish("address", ...)` → message exit points. */
+
   private extractPublishes(lines: string[]): VertxEventBusPublish[] {
     const publishes: VertxEventBusPublish[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -346,9 +346,9 @@ export class VertxAnalyzer extends BaseAnalyzer {
     return idx >= 0 ? line.slice(0, idx) : line;
   }
 
-  // ---------------------------------------------------------------------------
-  // Emission
-  // ---------------------------------------------------------------------------
+
+
+
 
   private emitFileContribution(
     info: VertxFileInfo,
@@ -467,9 +467,9 @@ export class VertxAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+
+
+
 
   protected getLevelName(level: number): string {
     switch (level) {

@@ -5,25 +5,25 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Anchor framework analyzer (Solana smart contracts, Rust).
- *
- * Anchor programs are Rust, so generic functions/structs are extracted by the base
- * RustAnalyzer. This analyzer adds the Anchor-specific structure that has no other
- * home and is the actual product surface of a Solana program:
- *
- *  - the `#[program]` module is the deployed contract;
- *  - each `pub fn` inside it is a callable INSTRUCTION (the program's real entry points,
- *    analogous to HTTP routes) — these are who-can-call-what;
- *  - `#[derive(Accounts)]` structs are the per-instruction account contexts whose
- *    `#[account(...)]` constraints (signer, init, mut, seeds/PDA) decide authority;
- *  - `#[account]` structs are the on-chain STATE (the program's storage = data entities);
- *  - `#[event]` / `#[error_code]` are the event and error contracts;
- *  - CPIs (`CpiContext`, `invoke`/`invoke_signed`) are cross-program calls = exit points.
- *
- * Without this, an Anchor program looks like an undifferentiated pile of Rust fns and
- * structs, hiding the contract's instructions, authority model, and cross-program edges.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class AnchorAnalyzer extends BaseAnalyzer {
   private rustAnalyzer: RustAnalyzer;
 
@@ -128,10 +128,10 @@ export class AnchorAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /**
-   * Extract Anchor constructs from one Rust source file. Returns per-construct counts.
-   * All node/edge/entry/exit collections are mutated in place.
-   */
+
+
+
+
   private extractAnchor(
     content: string,
     relativePath: string,
@@ -150,8 +150,8 @@ export class AnchorAnalyzer extends BaseAnalyzer {
 
     const lineForIndex = this.lineIndexer(content);
 
-    // ---- Program module + its instructions ----------------------------------
-    // `#[program] pub mod my_program { ... }`
+
+
     const programRe = /#\[program\]\s*(?:pub\s+)?mod\s+([A-Za-z_]\w*)\s*\{/g;
     let pm: RegExpExecArray | null;
     while ((pm = programRe.exec(content)) !== null) {
@@ -174,7 +174,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
       ));
       counts.programs++;
 
-      // Each `pub fn name(ctx: Context<Foo>, ...)` inside the program is an instruction.
+
       const fnRe = /pub\s+fn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/g;
       let fm: RegExpExecArray | null;
       while ((fm = fnRe.exec(body)) !== null) {
@@ -198,7 +198,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
         ));
         counts.instructions++;
 
-        // contains edge program -> instruction
+
         edges.push(this.createEdge(
           `anchor:contains:${programNodeId}:${instrNodeId}`,
           programNodeId,
@@ -208,7 +208,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
           { anchor: true }
         ));
 
-        // instruction is a callable entry point (like an HTTP route)
+
         entryPoints.push(this.createEntryPoint(
           `entry:anchor:${relativePath}:${programName}:${instrName}`,
           instrNodeId,
@@ -227,8 +227,8 @@ export class AnchorAnalyzer extends BaseAnalyzer {
           { node_id: instrNodeId, method_name: instrName, file: relativePath, line: fnLine }
         ));
 
-        // Link instruction -> its Accounts context (resolved after contexts exist below
-        // via a deferred edge keyed on the context type's node id).
+
+
         if (contextType) {
           const ctxNodeId = `anchor:accounts:${relativePath}:${contextType}`;
           edges.push(this.createEdge(
@@ -243,7 +243,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // ---- Accounts contexts: #[derive(Accounts)] pub struct Foo<'info> { ... } ----
+
     const accountsRe = /#\[derive\(([^)]*\bAccounts\b[^)]*)\)\]\s*(?:pub\s+)?struct\s+([A-Za-z_]\w*)\s*(?:<[^>]*>)?\s*\{/g;
     let am: RegExpExecArray | null;
     while ((am = accountsRe.exec(content)) !== null) {
@@ -266,14 +266,14 @@ export class AnchorAnalyzer extends BaseAnalyzer {
       ));
       counts.accountsContexts++;
 
-      // Parse each account field: optional #[account(...)] attr then `pub name: Type`.
+
       const fieldRe = /(?:#\[account\(([^\]]*)\)\]\s*)?(?:pub\s+)?([A-Za-z_]\w*)\s*:\s*([^,\n}]+)/g;
       let fdm: RegExpExecArray | null;
       while ((fdm = fieldRe.exec(fieldsBody)) !== null) {
         const constraints = (fdm[1] || '').trim();
         const fieldName = fdm[2];
         const fieldType = fdm[3].trim().replace(/,$/, '');
-        // Only treat it as an account field if the type looks like an Anchor account wrapper.
+
         const accKind = /\bSigner\b/.test(fieldType) ? 'signer'
           : /\bProgram\b/.test(fieldType) ? 'program'
           : /\bAccount\b|\bAccountInfo\b|\bUncheckedAccount\b|\bSystemAccount\b|\bSysvar\b/.test(fieldType) ? 'account'
@@ -319,8 +319,8 @@ export class AnchorAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // ---- State accounts: #[account] pub struct State { ... } => data entity --------
-    // `#[account]` NOT followed by `(` (that would be a constraint), preceding a struct.
+
+
     const stateRe = /#\[account\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?struct\s+([A-Za-z_]\w*)/g;
     let sm: RegExpExecArray | null;
     while ((sm = stateRe.exec(content)) !== null) {
@@ -340,7 +340,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
       counts.stateAccounts++;
     }
 
-    // ---- Events: #[event] pub struct X --------------------------------------------
+
     const eventRe = /#\[event\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?struct\s+([A-Za-z_]\w*)/g;
     let em: RegExpExecArray | null;
     while ((em = eventRe.exec(content)) !== null) {
@@ -359,7 +359,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
       counts.events++;
     }
 
-    // ---- Errors: #[error_code] enum X ---------------------------------------------
+
     const errorRe = /#\[error_code\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?enum\s+([A-Za-z_]\w*)/g;
     let erm: RegExpExecArray | null;
     while ((erm = errorRe.exec(content)) !== null) {
@@ -378,7 +378,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
       counts.errors++;
     }
 
-    // ---- CPIs: cross-program invocations => exit points ----------------------------
+
     const cpiRe = /\b(CpiContext\s*::\s*new(?:_with_signer)?|invoke_signed|invoke)\s*\(/g;
     let cm: RegExpExecArray | null;
     const cpiSeen = new Set<string>();
@@ -405,7 +405,7 @@ export class AnchorAnalyzer extends BaseAnalyzer {
     return counts;
   }
 
-  /** Build a fast line-number lookup for byte offsets in `content`. */
+
   private lineIndexer(content: string): (index: number) => number {
     const lineStartOffsets: number[] = [];
     let offset = 0;
@@ -423,13 +423,13 @@ export class AnchorAnalyzer extends BaseAnalyzer {
     };
   }
 
-  /**
-   * Given the index of an opening `{` (or the char just before the body), return the
-   * index of the matching closing `}`. Returns -1 if unbalanced.
-   */
+
+
+
+
   private matchBrace(content: string, openBraceIndex: number): number {
     let i = openBraceIndex;
-    // Find the actual opening brace from the given position.
+
     while (i < content.length && content[i] !== '{') i++;
     if (i >= content.length) return -1;
     let depth = 0;

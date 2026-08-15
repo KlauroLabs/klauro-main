@@ -1,31 +1,31 @@
 import { AnalysisContext, BaseAnalyzer, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
-import { CASContribution, CASEdge, CASExitPoint, CASLibrary, CASNode } from '../../../types/cas.types';
+import { CASContribution, CASEdge, CASLibrary, CASNode } from '../../../types/cas.types';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * DI-container binding-graph analyzer.
- *
- * The `dependency-injection` rules in architectural-library-analyzer.ts detect that a DI
- * container is *used* (usage-pattern regex hits) but do not extract the actual binding
- * graph: which interface/token maps to which implementation, at what lifetime. That graph
- * is exactly what defines a codebase's architecture ("what depends on what") and is what
- * this analyzer surfaces, as import-gated, evidence-based facts:
- *
- *   - one CASNode per binding (interface/token -> implementation, with lifetime metadata)
- *   - a `binds` edge: container/module node -> binding node
- *   - a `provides` edge: binding node -> implementation node (mirrors the existing
- *     `provides` edge convention already read by orchestrator.ts's DI pattern detector)
- *
- * so agents can answer "what implements interface X" and "what is the DI graph" without
- * re-deriving it from source on every question.
- *
- * Evidence-based: every rule is gated on the file actually importing one of the
- * container's real packages (see requiresImportEvidence handling in findBindings), never
- * on a bare symbol name alone — the same import-source-gating discipline used by the ORM
- * rules above (typeorm vs mikro-orm's shared `EntityManager` symbol).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 type DiContainerId =
   | 'inversify'
@@ -43,9 +43,9 @@ type DiContainerId =
 type Lifetime = 'singleton' | 'scoped' | 'transient' | 'unknown';
 
 interface BindingMatch {
-  /** Registered interface/token/abstract type name. */
+
   interfaceName: string;
-  /** Concrete implementation type name, when statically determinable. */
+
   implementationName?: string;
   lifetime: Lifetime;
   file: string;
@@ -58,18 +58,18 @@ interface DiContainerRule {
   displayName: string;
   language: 'typescript' | 'csharp' | 'java-kotlin' | 'php' | 'python';
   packageManagers: string[];
-  /** Import sources (or, for JVM/gradle-style deps, group:artifact substrings) that gate every extractor below. */
+
   packages: string[];
-  /** File globs this rule's extractors should run against (in addition to the shared candidate set). */
+
   fileExtensions: string[];
-  /** One or more binding-extraction patterns, each producing (interface, implementation?, lifetime). */
+
   extractors: BindingExtractor[];
   agentGuidance: string;
 }
 
 interface BindingExtractor {
   label: string;
-  /** Regex with named groups `iface` (required) and `impl` (optional). Must be global (`g` flag). */
+
   pattern: RegExp;
   lifetime: Lifetime | ((match: RegExpMatchArray) => Lifetime);
 }
@@ -93,7 +93,7 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['ts', 'tsx', 'js', 'jsx'],
     extractors: [
       {
-        // container.bind<Foo>(TYPES.Foo).to(FooImpl).inSingletonScope()
+
         label: 'bind<T>().to()',
         pattern: /\bbind<(?<iface>[A-Za-z0-9_.]+)>\([^)]*\)\s*\.to\s*\(\s*(?<impl>[A-Za-z0-9_.]+)\s*\)(?<lifetime>(?:\s*\.\s*in\w*Scope\s*\(\s*\))?)/g,
         lifetime: match => {
@@ -101,12 +101,12 @@ const RULES: DiContainerRule[] = [
           if (/inSingletonScope/i.test(scope)) return 'singleton';
           if (/inRequestScope/i.test(scope)) return 'scoped';
           if (/inTransientScope/i.test(scope)) return 'transient';
-          return 'singleton'; // Inversify default bind() scope
+          return 'singleton';
         },
       },
       {
-        // container.bind(TYPES.Foo).to(FooImpl).inSingletonScope() (non-generic bind() call,
-        // very common in real Inversify code that doesn't spell out bind<T>()).
+
+
         label: 'bind().to()',
         pattern: /\bbind\s*\(\s*(?:[A-Za-z0-9_.]*\.)?(?<iface>[A-Za-z0-9_]+)\s*\)\s*\.to\s*\(\s*(?<impl>[A-Za-z0-9_.]+)\s*\)(?<lifetime>(?:\s*\.\s*in\w*Scope\s*\(\s*\))?)/g,
         lifetime: match => {
@@ -114,11 +114,11 @@ const RULES: DiContainerRule[] = [
           if (/inSingletonScope/i.test(scope)) return 'singleton';
           if (/inRequestScope/i.test(scope)) return 'scoped';
           if (/inTransientScope/i.test(scope)) return 'transient';
-          return 'singleton'; // Inversify default bind() scope
+          return 'singleton';
         },
       },
       {
-        // bind(TYPES.Foo).toSelf().inSingletonScope()
+
         label: 'bind().toSelf()',
         pattern: /\bbind\s*\(\s*(?:[A-Za-z0-9_.]*\.)?(?<iface>[A-Za-z0-9_]+)\s*\)\s*\.toSelf\s*\(\s*\)(?<lifetime>(?:\s*\.\s*in\w*Scope\s*\(\s*\))?)/g,
         lifetime: match => {
@@ -126,7 +126,7 @@ const RULES: DiContainerRule[] = [
           if (/inSingletonScope/i.test(scope)) return 'singleton';
           if (/inRequestScope/i.test(scope)) return 'scoped';
           if (/inTransientScope/i.test(scope)) return 'transient';
-          return 'singleton'; // Inversify default bind() scope
+          return 'singleton';
         },
       },
     ],
@@ -141,7 +141,7 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['ts', 'tsx'],
     extractors: [
       {
-        // container.register<Foo>("Foo", { useClass: FooImpl }) / registerSingleton(Foo, FooImpl)
+
         label: 'register useClass',
         pattern: /\bregister\s*(?:<[^>]*>)?\s*\(\s*["'`]?(?<iface>[A-Za-z0-9_.]+)["'`]?\s*,\s*\{\s*useClass\s*:\s*(?<impl>[A-Za-z0-9_.]+)/g,
         lifetime: 'transient',
@@ -163,7 +163,7 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['cs'],
     extractors: [
       {
-        // Bind<IFoo>().To<Foo>().InSingletonScope()
+
         label: 'Bind<T>().To<T>()',
         pattern: /\bBind<(?<iface>[A-Za-z0-9_.]+)>\s*\(\s*\)\s*\.\s*To<(?<impl>[A-Za-z0-9_.]+)>\s*\(\s*\)(?<lifetime>(?:\s*\.\s*In\w+Scope\s*\(\s*\))?)/g,
         lifetime: match => {
@@ -171,7 +171,7 @@ const RULES: DiContainerRule[] = [
           if (/InSingletonScope/i.test(scope)) return 'singleton';
           if (/InRequestScope/i.test(scope)) return 'scoped';
           if (/InTransientScope/i.test(scope)) return 'transient';
-          return 'transient'; // Ninject default Bind() scope
+          return 'transient';
         },
       },
     ],
@@ -186,7 +186,7 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['cs'],
     extractors: [
       {
-        // builder.RegisterType<Foo>().As<IFoo>().SingleInstance()
+
         label: 'RegisterType<T>().As<T>()',
         pattern: /\bRegisterType<(?<impl>[A-Za-z0-9_.]+)>\s*\(\s*\)\s*\.\s*As<(?<iface>[A-Za-z0-9_.]+)>\s*\(\s*\)(?<lifetime>(?:\s*\.\s*(?:SingleInstance|InstancePerLifetimeScope|InstancePerDependency|InstancePerRequest)\s*\(\s*\))?)/g,
         lifetime: match => {
@@ -194,7 +194,7 @@ const RULES: DiContainerRule[] = [
           if (/SingleInstance/i.test(scope)) return 'singleton';
           if (/InstancePerLifetimeScope|InstancePerRequest/i.test(scope)) return 'scoped';
           if (/InstancePerDependency/i.test(scope)) return 'transient';
-          return 'transient'; // Autofac default RegisterType scope
+          return 'transient';
         },
       },
     ],
@@ -209,13 +209,13 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['cs'],
     extractors: [
       {
-        // services.AddSingleton<IFoo, Foo>() / AddScoped<IFoo, Foo>() / AddTransient<IFoo, Foo>()
+
         label: 'Add{Lifetime}<TService, TImplementation>()',
         pattern: /\bAdd(?<lifetime>Singleton|Scoped|Transient)\s*<\s*(?<iface>[A-Za-z0-9_.]+)\s*,\s*(?<impl>[A-Za-z0-9_.]+)\s*>\s*\(\s*\)/g,
         lifetime: match => lifetimeFromKeyword(match.groups?.lifetime),
       },
       {
-        // services.AddSingleton<Foo>() (self-registration, no separate interface)
+
         label: 'Add{Lifetime}<TImplementation>()',
         pattern: /\bAdd(?<lifetime>Singleton|Scoped|Transient)\s*<\s*(?<iface>[A-Za-z0-9_.]+)\s*>\s*\(\s*\)/g,
         lifetime: match => lifetimeFromKeyword(match.groups?.lifetime),
@@ -232,13 +232,13 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['java', 'kt'],
     extractors: [
       {
-        // @Provides fun provideFoo(): IFoo = FooImpl() / @Provides Foo provideFoo() { return new FooImpl(); }
+
         label: '@Provides',
         pattern: /@Provides(?:\s*\n)?[^\n]*?\b(?:fun\s+\w+\s*\([^)]*\)\s*:\s*(?<iface>[A-Za-z0-9_.]+)|(?<iface2>[A-Za-z0-9_.]+)\s+\w+\s*\([^)]*\)\s*\{)/g,
         lifetime: 'unknown',
       },
       {
-        // @Binds abstract fun bindFoo(impl: FooImpl): IFoo
+
         label: '@Binds',
         pattern: /@Binds[^\n]*\n?[^\n]*\bfun\s+\w+\s*\(\s*\w+\s*:\s*(?<impl>[A-Za-z0-9_.]+)\s*\)\s*:\s*(?<iface>[A-Za-z0-9_.]+)/g,
         lifetime: 'unknown',
@@ -255,7 +255,7 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['java', 'kt'],
     extractors: [
       {
-        // bind(IFoo.class).to(Foo.class).in(Singleton.class)
+
         label: 'bind().to()',
         pattern: /\bbind\s*\(\s*(?<iface>[A-Za-z0-9_.]+)\.class\s*\)\s*\.to\s*\(\s*(?<impl>[A-Za-z0-9_.]+)\.class\s*\)(?<lifetime>(?:\s*\.\s*in\s*\(\s*[A-Za-z0-9_.]+\.class\s*\))?)/g,
         lifetime: match => {
@@ -277,19 +277,19 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['kt'],
     extractors: [
       {
-        // single<IFoo> { FooImpl(get()) }  /  single { FooImpl(get()) }
+
         label: 'single { }',
         pattern: /\bsingle(?:<(?<iface>[A-Za-z0-9_.]+)>)?\s*\{\s*(?<impl>[A-Za-z0-9_.]+)\s*\(/g,
         lifetime: 'singleton',
       },
       {
-        // factory<IFoo> { FooImpl(get()) }
+
         label: 'factory { }',
         pattern: /\bfactory(?:<(?<iface>[A-Za-z0-9_.]+)>)?\s*\{\s*(?<impl>[A-Za-z0-9_.]+)\s*\(/g,
         lifetime: 'transient',
       },
       {
-        // scoped<IFoo> { FooImpl(get()) }
+
         label: 'scoped { }',
         pattern: /\bscoped(?:<(?<iface>[A-Za-z0-9_.]+)>)?\s*\{\s*(?<impl>[A-Za-z0-9_.]+)\s*\(/g,
         lifetime: 'scoped',
@@ -306,13 +306,13 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['php', 'yaml', 'yml'],
     extractors: [
       {
-        // $container->register(FooInterface::class, Foo::class)->setPublic(true)
+
         label: 'register()',
         pattern: /->register\s*\(\s*(?<iface>[A-Za-z0-9_\\]+)::class\s*,\s*(?<impl>[A-Za-z0-9_\\]+)::class\s*\)/g,
         lifetime: 'unknown',
       },
       {
-        // $container->autowire(FooInterface::class, Foo::class)
+
         label: 'autowire()',
         pattern: /->autowire\s*\(\s*(?<iface>[A-Za-z0-9_\\]+)::class\s*,\s*(?<impl>[A-Za-z0-9_\\]+)::class\s*\)/g,
         lifetime: 'unknown',
@@ -329,10 +329,10 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['php'],
     extractors: [
       {
-        // FooInterface::class => \DI\create(Foo::class)  or  FooInterface::class => \DI\autowire(Foo::class)
+
         label: 'create()/autowire()',
         pattern: /(?<iface>[A-Za-z0-9_\\]+)::class\s*=>\s*(?:\\?DI\\)?(?:create|autowire)\s*\(\s*(?<impl>[A-Za-z0-9_\\]+)::class\s*\)/g,
-        lifetime: 'singleton', // PHP-DI container entries are singletons by default
+        lifetime: 'singleton',
       },
     ],
     agentGuidance: 'PHP-DI container definitions define the binding graph; preserve definition keys and factory/autowire wiring when changing implementations.',
@@ -346,13 +346,13 @@ const RULES: DiContainerRule[] = [
     fileExtensions: ['py'],
     extractors: [
       {
-        // foo_service = providers.Singleton(FooImpl, ...)
+
         label: 'providers.Singleton',
         pattern: /(?<iface>[A-Za-z0-9_]+)\s*=\s*providers\.Singleton\s*\(\s*(?<impl>[A-Za-z0-9_.]+)/g,
         lifetime: 'singleton',
       },
       {
-        // foo_service = providers.Factory(FooImpl, ...)
+
         label: 'providers.Factory',
         pattern: /(?<iface>[A-Za-z0-9_]+)\s*=\s*providers\.Factory\s*\(\s*(?<impl>[A-Za-z0-9_.]+)/g,
         lifetime: 'transient',
@@ -452,11 +452,11 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // Import-source evidence: the file must actually reference the container's real
-      // package, never just a bare symbol that could belong to a different container
-      // (e.g. bare `bind(...)` / `single { }` shaped calls exist across multiple
-      // ecosystems). This mirrors the requiresImportEvidence discipline in
-      // architectural-library-analyzer.ts.
+
+
+
+
+
       if (!this.fileReferencesContainerPackage(content, ruleDef)) continue;
 
       for (const extractor of ruleDef.extractors) {
@@ -475,7 +475,7 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
             line: lineIndex,
             excerpt: match[0].replace(/\s+/g, ' ').trim().slice(0, 200),
           });
-          if (extractor.pattern.lastIndex === match.index) extractor.pattern.lastIndex++; // guard zero-width match loops
+          if (extractor.pattern.lastIndex === match.index) extractor.pattern.lastIndex++;
         }
       }
     }
@@ -574,7 +574,7 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
           }
         ));
 
-        // container -> binding: `binds`
+
         edges.push(this.createEdge(
           `edge_${containerNodeId}_binds_${bindingNodeId}`,
           containerNodeId,
@@ -584,8 +584,8 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
           { container: ruleDef.id, lifetime: binding.lifetime }
         ));
 
-        // binding -> implementation: `provides` (matches the `provides` edge type already
-        // consumed by orchestrator.ts's detectDependencyInjectionPattern()).
+
+
         if (binding.implementationName) {
           const implementationNodeId = `di_impl_${this.sanitizeId(ruleDef.id)}_${this.sanitizeId(binding.implementationName)}`;
           edges.push(this.createEdge(

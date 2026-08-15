@@ -67,8 +67,8 @@ function buildStaleChainCas(): CASOutput {
       { id: 'xp_save', source_node: 'n_addMember', type: 'database', name: 'save', target: { resource: 'members_table' } },
     ],
     data_lineage: [],
-    data_entities: [],
-    system_capabilities: [],
+    entities: [],
+    capabilities: [],
     analyzer_contributions: [],
     call_chains,
   } as unknown as CASOutput;

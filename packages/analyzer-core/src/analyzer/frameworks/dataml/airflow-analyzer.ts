@@ -7,11 +7,11 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * A single Airflow task: either a `@task` (TaskFlow API) decorated function or a
- * classic operator instantiation (`PythonOperator(task_id=...)`, `BashOperator(...)`, etc.)
- * assigned to a variable inside a `with DAG(...) as dag:` block.
- */
+
+
+
+
+
 interface AirflowTask {
   taskId: string;
   varName: string;
@@ -29,7 +29,7 @@ interface AirflowDag {
   schedule?: string;
 }
 
-/** `a >> b`, `a << b`, `a >> [b, c]`, `[a, b] >> c`, `a.set_downstream(b)`, `a.set_upstream(b)` */
+
 interface AirflowDependency {
   file: string;
   line: number;
@@ -179,9 +179,9 @@ export class AirflowAnalyzer extends BaseAnalyzer {
           ));
         }
 
-        // Dependency edges: `a >> b` etc. Resolve var names to task node ids where known;
-        // fall back to a synthetic id (still emitted, so the edge is visible even when the
-        // task node itself lives in another file we haven't scanned yet).
+
+
+
         for (const dep of deps) {
           for (const up of dep.upstream) {
             for (const down of dep.downstream) {
@@ -211,7 +211,7 @@ export class AirflowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** `with DAG("id", schedule=...) as dag:` / `dag = DAG("id", ...)` / `@dag(...)\ndef my_dag():` */
+
   extractDags(content: string, file: string): AirflowDag[] {
     const dags: AirflowDag[] = [];
     const lines = content.split('\n');
@@ -248,7 +248,7 @@ export class AirflowAnalyzer extends BaseAnalyzer {
 
       const dagDecoratorMatch = line.match(DAG_DECORATOR_PATTERN);
       if (dagDecoratorMatch) {
-        // Next non-blank line should be `def my_dag():`
+
         let j = i + 1;
         while (j < lines.length && lines[j].trim() === '') j++;
         const defMatch = j < lines.length ? lines[j].match(DEF_PATTERN) : null;
@@ -267,7 +267,7 @@ export class AirflowAnalyzer extends BaseAnalyzer {
     return dags;
   }
 
-  /** Classic operator instantiations + `@task`-decorated functions. */
+
   extractTasks(content: string, file: string, dags: AirflowDag[]): AirflowTask[] {
     const tasks: AirflowTask[] = [];
     const lines = content.split('\n');
@@ -280,7 +280,7 @@ export class AirflowAnalyzer extends BaseAnalyzer {
       if (operatorMatch) {
         const varName = operatorMatch[1];
         const operator = operatorMatch[2];
-        // task_id may be on this line or a following line before the closing paren.
+
         let callText = line;
         let j = i;
         while (!/task_id\s*=/.test(callText) && j < lines.length - 1 && !/\)\s*$/.test(lines[j].trim())) {
@@ -314,7 +314,7 @@ export class AirflowAnalyzer extends BaseAnalyzer {
     return tasks;
   }
 
-  /** `a >> b`, `a << b`, `[a, b] >> c`, `a >> [b, c]`, `a.set_downstream(b)`, `a.set_upstream(b)` */
+
   extractDependencies(content: string, file: string): AirflowDependency[] {
     const deps: AirflowDependency[] = [];
     const lines = content.split('\n');
@@ -324,9 +324,9 @@ export class AirflowAnalyzer extends BaseAnalyzer {
       if (trimmed === '' || trimmed.startsWith('#')) continue;
 
       if (/>>|<</.test(trimmed) && /^[\w.\[\], "'<>]+$/.test(trimmed)) {
-        // Tokenize a full `a >> b >> [c, d] << e` chain into alternating operand/operator
-        // tokens, then emit one dependency per adjacent pair, respecting each pair's own
-        // operator direction (Airflow allows mixing >> and << in one chain).
+
+
+
         const parts = trimmed.split(/\s*(>>|<<)\s*/).filter(p => p !== '');
         if (parts.length >= 3 && parts.length % 2 === 1) {
           for (let p = 0; p < parts.length - 2; p += 2) {

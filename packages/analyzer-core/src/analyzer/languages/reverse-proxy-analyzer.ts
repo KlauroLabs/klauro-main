@@ -5,45 +5,45 @@ import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as yaml from 'js-yaml';
 
-/**
- * REVERSE-PROXY / WEB-SERVER CONFIG ANALYZERS — the "how public traffic routes
- * to services" layer of infra topology. These parse the checked-in config files
- * that sit in front of the app (Caddy, Nginx, Apache, HAProxy, Traefik) and turn
- * their site/route blocks into topology facts: a PUBLIC host/path that fronts an
- * UPSTREAM target (service name / host:port), plus the upstream pools those
- * targets resolve to.
- *
- * They mirror the container-topology-analyzer siblings exactly — one file, one
- * abstract base with shared file/glob helpers, one concrete analyzer per config
- * dialect, node/edge emission via the same BaseAnalyzer builders. They emit the
- * SAME join vocabulary those analyzers use (topology_surface,
- * deployment_service_name, service_aliases, ports) so the infra-topology-linker
- * joins a proxy route's upstream to a known compose/k8s service or a deployable
- * port with no proxy-specific hardcoding — completing the topology edge
- * public URL -> proxy -> service:port -> route -> handler.
- *
- * EVIDENCE-GATED (the cardinal rule): every upstream, port, and route is parsed
- * from a directive actually present in the config — never inferred, never
- * fabricated. A route with no resolvable upstream target still records the
- * public host/path, but no PROXIES_TO edge is asserted without a concrete target.
- */
 
-/** A single parsed public route: a listen/host+path matcher fronting an upstream. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 interface ProxyRoute {
-  /** Public host (site address / server_name / router rule host). */
+
   host?: string;
-  /** Path matcher, when the route is path-scoped. */
+
   matchPath?: string;
-  /** Listen port(s) the route is served on. */
+
   listenPorts: string[];
-  /** The upstream target as written (service name, host:port, or upstream pool name). */
+
   upstream?: string;
-  /** Directive kind that produced the route (reverse_proxy, proxy_pass, ProxyPass, …). */
+
   directive: string;
   line: number;
 }
 
-/** A named upstream/backend pool and the concrete servers it balances across. */
+
 interface ProxyUpstream {
   name: string;
   servers: string[];
@@ -55,23 +55,23 @@ interface ProxyConfig {
   upstreams: ProxyUpstream[];
 }
 
-/**
- * Shared base for the five reverse-proxy config dialects. Holds the glob/read
- * helpers and the node/edge/entry-point emission that is identical across
- * dialects — each subclass only supplies its file patterns and its parser.
- */
+
+
+
+
+
 abstract class ReverseProxyAnalyzer extends BaseAnalyzer {
-  /** Surface tag every proxy node carries — recognized by the infra linker. */
+
   protected static readonly SURFACE = 'reverse-proxy';
 
   supportsIncrementalAnalysis(): boolean {
     return true;
   }
 
-  /** Human-readable dialect label used in node names ('Caddy', 'Nginx', …). */
+
   protected abstract dialect(): string;
 
-  /** Parse one config file's raw text into routes + upstreams. */
+
   protected abstract parseConfig(content: string, relativeFile: string): ProxyConfig;
 
   protected async readFiles(projectPath: string, patterns: string[]): Promise<string[]> {
@@ -133,14 +133,14 @@ abstract class ReverseProxyAnalyzer extends BaseAnalyzer {
     return level <= 3 ? 'proxy topology' : 'proxy route detail';
   }
 
-  /**
-   * Emit topology nodes/edges for one config file. Upstream pools become
-   * `upstream` nodes; each public route becomes a `proxy_route` node. Where the
-   * route's upstream resolves — to a declared upstream pool OR a bare
-   * service:port target — a PROXIES_TO edge is drawn from the route to that
-   * target. The route also carries a `proxied_service` on its metadata (the
-   * bare service name) so the infra linker can join it to a compose/k8s service.
-   */
+
+
+
+
+
+
+
+
   private async analyzeConfigFile(projectPath: string, relativeFile: string) {
     const content = await fs.readFile(path.join(projectPath, relativeFile), 'utf8');
     const { routes, upstreams } = this.parseConfig(content, relativeFile);
@@ -180,13 +180,13 @@ abstract class ReverseProxyAnalyzer extends BaseAnalyzer {
 
     for (const route of routes) {
       const target = route.upstream;
-      // An upstream target may be written with a scheme (`http://ui`) while the
-      // declared pool is named `ui` — resolve the pool by the scheme/port/path-
-      // stripped host so `proxy_pass http://ui;` binds to `upstream ui { … }`.
+
+
+
       const resolvedPool = target ? resolvePool(target, upstreams) : undefined;
       const resolvedUpstreamNodeId = resolvedPool ? upstreamNodeIdByName.get(resolvedPool.name) : undefined;
-      // The bare service name the upstream points at (drop scheme/port) — this is
-      // the token the infra linker joins to a compose/k8s service or deployable.
+
+
       const proxiedService = target ? serviceNameOf(target, upstreams) : undefined;
       const targetPort = target ? extractPort(target) || upstreamPort(target, upstreams) : undefined;
       const listenPorts = route.listenPorts.length ? route.listenPorts : [];
@@ -210,10 +210,10 @@ abstract class ReverseProxyAnalyzer extends BaseAnalyzer {
           directive: route.directive,
           upstream_target: target,
           proxied_service: proxiedService,
-          // Present the resolved upstream as the route's own join identity so the
-          // infra linker (which reads deployment_service_name / service_aliases /
-          // ports off any topology node) can join this route to the service it
-          // fronts without any proxy-specific code.
+
+
+
+
           deployment_service_name: proxiedService,
           service_aliases: dedupe([proxiedService, target, ...(route.host ? [route.host] : [])].filter(Boolean) as string[]),
           ports: targetPort ? [targetPort] : [],
@@ -221,10 +221,10 @@ abstract class ReverseProxyAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      // PROXIES_TO: the public route -> its upstream. Evidence-gated — only drawn
-      // when the config names a concrete target (a declared upstream pool, or a
-      // bare service:port). A route with no upstream (a static file_server /
-      // respond block) records the public host but asserts no edge.
+
+
+
+
       if (resolvedUpstreamNodeId) {
         edges.push(this.createEdge(
           `edge_proxy_to_${this.sanitizeId(relativeFile)}_${this.sanitizeId(label)}_${route.line}`,
@@ -236,9 +236,9 @@ abstract class ReverseProxyAnalyzer extends BaseAnalyzer {
         ));
       }
 
-      // A route that fronts a real upstream target is an outbound dependency on
-      // that service — record it as an exit point so the dependency is visible
-      // even before the infra linker joins it to a first-party deployable.
+
+
+
       if (proxiedService) {
         const endpoint = targetPort ? `http://${proxiedService}:${targetPort}` : `http://${proxiedService}`;
         exitPoints.push(this.createExitPoint(
@@ -266,9 +266,9 @@ abstract class ReverseProxyAnalyzer extends BaseAnalyzer {
   abstract getRelevantFiles(projectPath: string): Promise<string[]>;
 }
 
-// ---------------------------------------------------------------------------
-// Caddy
-// ---------------------------------------------------------------------------
+
+
+
 
 export class CaddyAnalyzer extends ReverseProxyAnalyzer {
   constructor() {
@@ -288,9 +288,9 @@ export class CaddyAnalyzer extends ReverseProxyAnalyzer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Nginx
-// ---------------------------------------------------------------------------
+
+
+
 
 export class NginxAnalyzer extends ReverseProxyAnalyzer {
   constructor() {
@@ -316,9 +316,9 @@ export class NginxAnalyzer extends ReverseProxyAnalyzer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Apache httpd
-// ---------------------------------------------------------------------------
+
+
+
 
 export class ApacheAnalyzer extends ReverseProxyAnalyzer {
   constructor() {
@@ -346,9 +346,9 @@ export class ApacheAnalyzer extends ReverseProxyAnalyzer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// HAProxy
-// ---------------------------------------------------------------------------
+
+
+
 
 export class HAProxyAnalyzer extends ReverseProxyAnalyzer {
   constructor() {
@@ -368,9 +368,9 @@ export class HAProxyAnalyzer extends ReverseProxyAnalyzer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Traefik (static + dynamic YAML config)
-// ---------------------------------------------------------------------------
+
+
+
 
 export class TraefikAnalyzer extends ReverseProxyAnalyzer {
   constructor() {
@@ -399,15 +399,15 @@ export class TraefikAnalyzer extends ReverseProxyAnalyzer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Parsers — one per dialect, all pure string/YAML functions.
-// ---------------------------------------------------------------------------
 
-/**
- * Parse a Caddyfile. Site address blocks (`host { … }`) hold `reverse_proxy
- * <upstream>` directives (and `handle`/`handle_path`/`route` path matchers).
- * The site address optionally carries a `:port` prefix (e.g. `:8080`).
- */
+
+
+
+
+
+
+
+
 function parseCaddyfile(content: string): ProxyConfig {
   const lines = content.split(/\r?\n/);
   const routes: ProxyRoute[] = [];
@@ -418,18 +418,46 @@ function parseCaddyfile(content: string): ProxyConfig {
   let currentHandlePath: string | undefined;
   let depth = 0;
   let inGlobalBlock = false;
+  let pendingReverseProxy: {
+    host?: string;
+    matchPath?: string;
+    listenPorts: string[];
+    line: number;
+    depth: number;
+    upstream?: string;
+    name?: string;
+    port?: string;
+  } | undefined;
+
+  const emitPendingReverseProxy = () => {
+    if (!pendingReverseProxy) return;
+    const upstream = pendingReverseProxy.upstream || (pendingReverseProxy.name
+      ? `${pendingReverseProxy.name}${pendingReverseProxy.port ? `:${pendingReverseProxy.port}` : ''}`
+      : undefined);
+    if (upstream) {
+      routes.push({
+        host: pendingReverseProxy.host,
+        matchPath: pendingReverseProxy.matchPath,
+        listenPorts: pendingReverseProxy.listenPorts,
+        upstream,
+        directive: 'reverse_proxy',
+        line: pendingReverseProxy.line,
+      });
+    }
+    pendingReverseProxy = undefined;
+  };
 
   lines.forEach((raw, index) => {
     const line = stripCaddyComment(raw).trim();
     if (!line) return;
     const lineNo = index + 1;
 
-    // A site address block header: `host.example.com {` or `:8080 {` or
-    // `host, host2 {`. Only recognized at top level (depth 0).
+
+
     const blockHeader = line.match(/^([^\s{][^{]*?)\s*\{$/);
     if (depth === 0 && blockHeader) {
       const addr = blockHeader[1].trim();
-      // The global options block has no host — its header is a bare `{`.
+
       const parsed = parseCaddyAddress(addr);
       currentHost = parsed.host;
       currentPort = parsed.port;
@@ -442,14 +470,26 @@ function parseCaddyfile(content: string): ProxyConfig {
       depth++;
       return;
     }
+    if (/^reverse_proxy\s*\{$/.test(line) && (currentHost !== undefined || currentPort)) {
+      depth++;
+      pendingReverseProxy = {
+        host: currentHost,
+        matchPath: currentHandlePath,
+        listenPorts: currentPort ? [currentPort] : inferSchemePorts(currentHost),
+        line: lineNo,
+        depth,
+      };
+      return;
+    }
     if (line.endsWith('{')) {
-      // Nested directive block (handle, handle_path, route, header, log, tls, @matcher).
+
       const handleMatch = line.match(/^(handle_path|handle|route)\s+([^\s{]+)\s*\{$/);
       if (handleMatch) currentHandlePath = handleMatch[2];
       depth++;
       return;
     }
     if (line === '}') {
+      if (pendingReverseProxy && depth === pendingReverseProxy.depth) emitPendingReverseProxy();
       depth--;
       if (depth <= 0) {
         depth = 0;
@@ -464,11 +504,21 @@ function parseCaddyfile(content: string): ProxyConfig {
     }
     if (inGlobalBlock) return;
 
-    // reverse_proxy [matcher] <upstream...>
+    if (pendingReverseProxy) {
+      const name = line.match(/^name\s+([^\s{]+)/)?.[1];
+      const port = line.match(/^port\s+(\d+)/)?.[1];
+      const target = line.match(/^(?:to|upstream)\s+([^\s{]+)/)?.[1];
+      if (name) pendingReverseProxy.name = name;
+      if (port) pendingReverseProxy.port = port;
+      if (target) pendingReverseProxy.upstream = target;
+      return;
+    }
+
+
     const rp = line.match(/^reverse_proxy\s+(.+)$/);
-    if (rp && currentHost !== undefined || (rp && currentPort)) {
+    if (rp && (currentHost !== undefined || currentPort)) {
       const args = rp![1].trim().split(/\s+/).filter(Boolean);
-      // First arg may be a path matcher (starts with / or @) — skip it as the path.
+
       let matchPath = currentHandlePath;
       let rest = args;
       if (args[0] && (args[0].startsWith('/') || args[0].startsWith('@'))) {
@@ -494,7 +544,7 @@ function parseCaddyfile(content: string): ProxyConfig {
 }
 
 function parseCaddyAddress(addr: string): { host?: string; port?: string } {
-  // Take the first address in a comma list; may be `:8080`, `host:8080`, or `host`.
+
   const first = addr.split(',')[0].trim().replace(/^https?:\/\//, '');
   if (first.startsWith(':')) return { host: undefined, port: first.slice(1) };
   const portMatch = first.match(/^(.+?):(\d+)$/);
@@ -503,16 +553,16 @@ function parseCaddyAddress(addr: string): { host?: string; port?: string } {
 }
 
 function stripCaddyComment(line: string): string {
-  // A `#` starts a comment only when preceded by whitespace or at line start.
+
   return line.replace(/(^|\s)#.*$/, '$1');
 }
 
-/**
- * Parse an nginx config. `upstream <name> { server <host:port>; }` pools plus
- * `server { listen <port>; server_name <host>; location <path> { proxy_pass
- * <upstream>; } }` blocks. Brace-depth tracked so listen/server_name attach to
- * the enclosing server block and proxy_pass to the enclosing location.
- */
+
+
+
+
+
+
 function parseNginx(content: string): ProxyConfig {
   const lines = content.split(/\r?\n/);
   const routes: ProxyRoute[] = [];
@@ -529,7 +579,7 @@ function parseNginx(content: string): ProxyConfig {
     if (!line) return;
     const lineNo = index + 1;
 
-    // Open a named block.
+
     const upstreamOpen = line.match(/^upstream\s+([A-Za-z0-9_.-]+)\s*\{?/);
     if (upstreamOpen && line.includes('{')) {
       currentUpstream = { name: upstreamOpen[1], servers: [], line: lineNo };
@@ -564,7 +614,7 @@ function parseNginx(content: string): ProxyConfig {
       return;
     }
 
-    // Directives inside the current innermost blocks.
+
     if (currentUpstream) {
       const server = line.match(/^server\s+([^\s;]+)/);
       if (server) currentUpstream.servers.push(server[1]);
@@ -607,14 +657,14 @@ function parseNginx(content: string): ProxyConfig {
 }
 
 function normalizeNginxLocation(raw: string): string {
-  // Strip nginx location modifiers (=, ~, ~*, ^~) and surrounding whitespace.
+
   return raw.replace(/^(=|~\*?|\^~)\s*/, '').trim();
 }
 
-/**
- * Parse Apache httpd config. `<VirtualHost *:port>` blocks with `ServerName`,
- * `ProxyPass <path> <url>` / `ProxyPassReverse`, and `RewriteRule`.
- */
+
+
+
+
 function parseApache(content: string): ProxyConfig {
   const lines = content.split(/\r?\n/);
   const routes: ProxyRoute[] = [];
@@ -646,7 +696,7 @@ function parseApache(content: string): ProxyConfig {
       currentHost = serverName[1].replace(/:\d+$/, '');
       return;
     }
-    // ProxyPass [path] <url> — path is optional (defaults to /).
+
     const proxyPass = line.match(/^ProxyPass\s+(\S+)(?:\s+(\S+))?/i);
     if (proxyPass && !/^ProxyPassReverse/i.test(line)) {
       const hasPath = proxyPass[2] !== undefined;
@@ -669,11 +719,11 @@ function parseApache(content: string): ProxyConfig {
   return { routes, upstreams: [] };
 }
 
-/**
- * Parse an HAProxy config. `frontend`/`backend` sections with `bind <addr:port>`,
- * `server <name> <host:port>`, `use_backend <name> if <acl>`, `default_backend
- * <name>`. Frontend routes join to backend pools by name.
- */
+
+
+
+
+
 function parseHAProxy(content: string): ProxyConfig {
   const lines = content.split(/\r?\n/);
   const routes: ProxyRoute[] = [];
@@ -743,9 +793,9 @@ function parseHAProxy(content: string): ProxyConfig {
   });
   closeBackend();
 
-  // Turn each frontend use_backend/default_backend into a route pointing at the
-  // named backend pool (the upstream is the backend name; resolved by the node
-  // emitter to the pool node).
+
+
+
   for (const pending of pendingRoutes) {
     routes.push({
       host: pending.host,
@@ -759,11 +809,11 @@ function parseHAProxy(content: string): ProxyConfig {
   return { routes, upstreams };
 }
 
-/**
- * Parse Traefik config (static traefik.yml + dynamic config). Routers carry a
- * `rule` (Host(`…`) / PathPrefix(`…`)) and a `service`; services carry
- * `loadBalancer.servers[].url`; entrypoints define listen addresses.
- */
+
+
+
+
+
 function parseTraefik(content: string): ProxyConfig {
   const routes: ProxyRoute[] = [];
   const upstreams: ProxyUpstream[] = [];
@@ -782,7 +832,7 @@ function parseTraefik(content: string): ProxyConfig {
   const services = (http.services && typeof http.services === 'object') ? http.services : undefined;
   const routers = (http.routers && typeof http.routers === 'object') ? http.routers : undefined;
 
-  // Services -> upstream pools (loadBalancer.servers[].url).
+
   const serviceTargets = new Map<string, string[]>();
   if (services) {
     for (const [name, raw] of Object.entries<any>(services)) {
@@ -803,8 +853,8 @@ function parseTraefik(content: string): ProxyConfig {
       const matchPath = rule ? (extractTraefikRuleValue(rule, 'PathPrefix') || extractTraefikRuleValue(rule, 'Path')) : undefined;
       const entryPoints = toStringArray(raw?.entryPoints);
       const ports = dedupe(entryPoints.map(ep => entryPointPorts.get(ep)).filter(Boolean) as string[]);
-      // A router points at a service pool; use the first server url as the
-      // resolvable target when the service resolves, else the service name.
+
+
       const targetUrls = service ? serviceTargets.get(service) : undefined;
       const upstream = targetUrls && targetUrls.length ? targetUrls[0] : service;
       routes.push({
@@ -843,54 +893,54 @@ function findTraefikLine(lines: string[], key: string): number {
   return index === -1 ? 1 : index + 1;
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
-/** Human label for a route: host+path when available, else the upstream/directive. */
+
+
+
+
 function routeLabel(route: ProxyRoute): string {
   const host = route.host || (route.listenPorts.length ? `:${route.listenPorts[0]}` : 'route');
   return route.matchPath && route.matchPath !== '/' ? `${host}${route.matchPath}` : host;
 }
 
-/** Strip scheme + path, return `host` from `http://host:port/path`, `host:port`, or a bare name. */
+
 function hostOf(target: string): string | undefined {
   const cleaned = target.replace(/^(https?|balancer|unix):\/\//, '').replace(/\/.*$/, '');
   const host = cleaned.replace(/:\d+$/, '').trim();
   return host || undefined;
 }
 
-/** The service NAME an upstream target resolves to — the bare host with scheme,
- *  port, and path stripped. When the target is a declared upstream-pool name, we
- *  keep the pool name (its own servers carry the concrete host). */
+
+
+
 function serviceNameOf(target: string, upstreams: ProxyUpstream[]): string | undefined {
   const pool = resolvePool(target, upstreams);
   if (pool) return pool.name;
   return hostOf(target);
 }
 
-/** Resolve a target to a declared pool, matching either the raw target
- *  (`api_servers`) or its scheme/port-stripped host (`http://ui` -> `ui`). */
+
+
 function resolvePool(target: string, upstreams: ProxyUpstream[]): ProxyUpstream | undefined {
   const host = hostOf(target);
   return upstreams.find(u => u.name === target || u.name === host);
 }
 
-/** Extract a port number from a `host:port` / `http://host:port` target. */
+
 function extractPort(target: string): string | undefined {
   const cleaned = target.replace(/^(https?|balancer|unix):\/\//, '').replace(/\/.*$/, '');
   const match = cleaned.match(/:(\d{2,5})$/);
   return match?.[1];
 }
 
-/** When the target is a named upstream pool, borrow the port off its first server. */
+
 function upstreamPort(target: string, upstreams: ProxyUpstream[]): string | undefined {
   const pool = resolvePool(target, upstreams);
   const first = pool?.servers[0];
   return first ? extractPort(first) : undefined;
 }
 
-/** Default listen ports for a Caddy site with no explicit port (auto-HTTPS). */
+
 function inferSchemePorts(host: string | undefined): string[] {
   if (!host) return [];
   if (/^https?:\/\//.test(host)) return host.startsWith('https') ? ['443'] : ['80'];

@@ -96,6 +96,23 @@ test('KubernetesManifestAnalyzer extracts raw manifests and routes ingress to se
   }
 });
 
+test('KubernetesManifestAnalyzer does not claim Docker Compose files', async () => {
+  const dir = tempDir('kubernetes-compose-exclusion');
+  try {
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'), [
+      'services:',
+      '  api:',
+      '    image: example/api:latest',
+    ].join('\n'));
+
+    const analyzer = new KubernetesManifestAnalyzer();
+    assert.equal(await analyzer.canAnalyze(dir), false);
+    assert.deepEqual(await analyzer.getRelevantFiles(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('DockerComposeAnalyzer extracts service build, ports, dependencies, env, volumes, and networks', async () => {
   const dir = tempDir('compose-test');
   try {

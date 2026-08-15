@@ -4,19 +4,19 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * Crow (C++) framework analyzer.
- *
- * Crow routes are declared with the `CROW_ROUTE(app, "/path")([](...){ ... })` macro
- * (optionally chained with `.methods(crow::HTTPMethod::Post, ...)` to restrict/extend
- * beyond the default GET). The handler is almost always an inline lambda passed
- * directly to the macro's call operator — there is no separate named-function
- * definition to resolve to in the common case, so (mirroring how fastify/axum treat
- * inline handlers) this analyzer records the handler as the lambda's own source
- * location rather than fabricating a named node. Real dependency gate: a
- * CMakeLists.txt/vcpkg/conan manifest referencing Crow, or a direct
- * `#include <crow.h>` / `#include <crow/...>`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 export class CrowAnalyzer extends BaseAnalyzer {
   constructor() {
     super('crow', 'Crow Framework Analyzer', '1.0.0', 'framework');
@@ -96,14 +96,14 @@ export class CrowAnalyzer extends BaseAnalyzer {
     return includesCrow && hasRoute;
   }
 
-  /**
-   * `CROW_ROUTE(app, "/path")([...](...){...})` optionally chained with
-   * `.methods(crow::HTTPMethod::X, crow::HTTPMethod::Y)("...")([...](...){...})` (the
-   * `.methods()` call re-returns the rule builder, so the handler-attaching `(...)`
-   * call operator is whatever appears LAST before the lambda body — parsed by walking
-   * forward from the macro to the first balanced `(...)`  that contains a `[` lambda
-   * capture opener).
-   */
+
+
+
+
+
+
+
+
   private extractCrowRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): void {
     if (!/\bCROW_ROUTE\s*\(/.test(content)) return;
     const lineForIndex = this.buildLineIndex(content);
@@ -112,8 +112,8 @@ export class CrowAnalyzer extends BaseAnalyzer {
     while ((m = macroPattern.exec(content)) !== null) {
       const routePath = m[1];
       const afterMacro = m.index + m[0].length;
-      // Look ahead a bounded window for an optional `.methods(...)` modifier, then the
-      // handler-attaching call `(...)`.
+
+
       const windowEnd = Math.min(content.length, afterMacro + 400);
       const window = content.slice(afterMacro, windowEnd);
 
@@ -126,8 +126,8 @@ export class CrowAnalyzer extends BaseAnalyzer {
         searchFrom = afterMacro + methodsMatch[0].length;
       }
 
-      // The handler-attach call: the next top-level `(` after searchFrom whose
-      // argument text starts with a lambda capture `[`.
+
+
       const attachMatch = content.slice(searchFrom, searchFrom + 200).match(/^\s*\(\s*(\[[^\]]*\][\s\S]*)/);
       const line = lineForIndex(m.index);
       const handlerDescriptor = attachMatch ? 'inline handler' : 'unresolved handler';
@@ -151,8 +151,8 @@ export class CrowAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Crow's HTTPMethod enum names -> canonical uppercase HTTP verbs (Crow spells a few
-   *  differently from the wire method, e.g. `Delete`, `Purge`, `Connect`). */
+
+
   private normalizeMethod(name: string): string | undefined {
     const known = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'CONNECT', 'TRACE', 'PURGE']);
     const upper = name.toUpperCase();

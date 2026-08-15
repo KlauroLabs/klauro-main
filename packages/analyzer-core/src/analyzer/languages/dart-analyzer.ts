@@ -29,9 +29,9 @@ interface DartFunction {
   file: string;
   line: number;
   ownerClass?: string;
-  /** Raw parameter list text, e.g. "Account a, int n". */
+
   params?: string;
-  /** Method body text (for call extraction). */
+
   body?: string;
 }
 
@@ -92,8 +92,8 @@ export class DartAnalyzer extends BaseAnalyzer {
       exitPoints,
       pendingCalls,
     });
-    // Single-file mode: only same-file receiver types resolve (cross-file targets
-    // are linked on the next full analysis).
+
+
     this.resolveDartCallEdges(pendingCalls, nodes, edges);
 
     const imports = this.extractImports(content);
@@ -149,8 +149,8 @@ export class DartAnalyzer extends BaseAnalyzer {
         });
       }
 
-      // Cross-file call resolution: link each `recv.method()` site to the method
-      // node on the receiver's resolved type (excludes same-name decoys).
+
+
       this.resolveDartCallEdges(pendingCalls, nodes, edges);
 
       const warnings = this.collectAnalysisWarnings();
@@ -417,9 +417,9 @@ export class DartAnalyzer extends BaseAnalyzer {
     return classes;
   }
 
-  /** Resolve a receiver variable to its declared class within a method body:
-   *  typed params (`Account a`) and constructor locals (`var a = Account()`,
-   *  `final a = Account()`, `Account a = Account()`). */
+
+
+
   private dartReceiverTypes(fn: DartFunction): Map<string, string> {
     const m = new Map<string, string>();
     for (const p of (fn.params || '').split(',')) {
@@ -432,8 +432,8 @@ export class DartAnalyzer extends BaseAnalyzer {
     return m;
   }
 
-  /** Extract `recv.method()` call sites in a method body, type-resolving the
-   *  receiver so cross-file resolution links only the receiver's class method. */
+
+
   private collectDartCalls(fn: DartFunction, callerId: string, pending: DartPendingCall[]): void {
     if (!fn.body) return;
     const recvTypes = this.dartReceiverTypes(fn);
@@ -446,8 +446,8 @@ export class DartAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Index method nodes by `owner_class:name` and emit a call edge per resolved
-   *  pending call. */
+
+
   private resolveDartCallEdges(pending: DartPendingCall[], nodes: CASNode[], edges: CASEdge[]): void {
     const methodByOwnerName = new Map<string, CASNode>();
     for (const node of nodes) {
@@ -484,7 +484,7 @@ export class DartAnalyzer extends BaseAnalyzer {
       if (['if', 'for', 'while', 'switch', 'catch'].includes(name)) continue;
       const owner = classRanges.find(range => match!.index > range.bodyStart && match!.index < range.bodyEnd);
       const paramsMatch = match[0].match(/\(([^;{}]*)\)/);
-      // Body spans the matched `{` to its matching brace (block bodies only).
+
       let body: string | undefined;
       const braceIndex = match.index + match[0].length - 1;
       if (content[braceIndex] === '{') {

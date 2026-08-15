@@ -1,6 +1,7 @@
 import { globSync } from 'glob';
 import { PROJECT_SCOPE_TRIGGER_PATTERNS } from './change-detector';
 import { SCAFFOLD_GLOBS } from './scaffold-paths';
+import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS } from './build-artifact-paths';
 import { ChangeSemanticImpact } from '../../types/cas.types';
 import { CASEntryPoint, CASExitPoint, CASOutput } from '../../types/cas.types';
 export function getIncrementalSourceFiles(projectPath: string): string[] {
@@ -32,7 +33,6 @@ export function getIncrementalSourceFiles(projectPath: string): string[] {
       'composer.json',
       'composer.lock'
     ].flatMap(pattern => [pattern, `**/${pattern}`]);
-
     const patterns = [
       '**/*.{ts,tsx,js,jsx,mjs,cjs}',
       '**/*.{py,pyw}',
@@ -51,7 +51,7 @@ export function getIncrementalSourceFiles(projectPath: string): string[] {
       cwd: projectPath,
       ignore: [
         '**/node_modules/**',
-        '**/dist/**',
+        ...BUILD_ARTIFACT_GLOBS,
         '**/build/**',
         '**/out/**',
         '**/.git/**',
@@ -68,14 +68,7 @@ export function getIncrementalSourceFiles(projectPath: string): string[] {
         '**/__pycache__/**',
         '**/.pytest_cache/**',
         '**/target/**',
-        'vendor/**',
-        '**/vendor/**',
-        'vendors/**',
-        '**/vendors/**',
-        'third_party/**',
-        '**/third_party/**',
-        'third-party/**',
-        '**/third-party/**',
+        ...THIRD_PARTY_SOURCE_GLOBS,
         '**/*_extracted/**',
         '**/*-extracted/**',
         'examples/**',
@@ -138,7 +131,7 @@ export function buildSemanticChangeImpact(
         reason: 'Changed nodes or entry points participate in this journey'
       }));
 
-    const affected_capabilities = (output.system_capabilities || [])
+    const affected_capabilities = (output.capabilities || [])
       .filter(capability =>
         capability.operations.some(operation => affectedEntryPointIds.has(operation.entry_point_id)) ||
         capability.related_entities.some(entity => changedNodeIds.has(entity))
@@ -149,7 +142,7 @@ export function buildSemanticChangeImpact(
         reason: 'Changed entry points or related entities participate in this capability'
       }));
 
-    const affected_data_entities = (output.data_entities || [])
+    const affected_data_entities = (output.entities || [])
       .filter(entity => {
         const lifecycleNodes = [
           ...entity.lifecycle.created_by,
@@ -228,7 +221,7 @@ export function buildScopedSemanticChangeImpact(
         name: journey.name,
         reason: 'Journey is connected to a changed file or entry point'
       }));
-    const affected_capabilities = (currentOutput.system_capabilities || [])
+    const affected_capabilities = (currentOutput.capabilities || [])
       .filter(capability =>
         capability.operations.some(operation => changedNodeIds.has(operation.entry_point_id.replace(/^node:/, ''))) ||
         capability.related_entities.some(entityId => changedNodeIds.has(entityId))
@@ -239,7 +232,7 @@ export function buildScopedSemanticChangeImpact(
         name: capability.name,
         reason: 'Capability references changed graph facts'
       }));
-    const affected_data_entities = (currentOutput.data_entities || [])
+    const affected_data_entities = (currentOutput.entities || [])
       .filter(entity => [
         ...entity.lifecycle.created_by,
         ...entity.lifecycle.read_by,

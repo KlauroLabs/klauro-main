@@ -103,7 +103,7 @@ describe('in-repo call resolution', () => {
         cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-crosspkg',
         system: { name: 'test-system' } as any,
         nodes: input.nodes, edges: input.edges, entry_points, exit_points: input.exitPoints,
-        data_lineage: [], data_entities: [], system_capabilities: [], analyzer_contributions: [],
+        data_lineage: [], entities: [], capabilities: [], analyzer_contributions: [],
       } as unknown as CASOutput;
 
       const flow = computeFlowConcepts(cas)[0];

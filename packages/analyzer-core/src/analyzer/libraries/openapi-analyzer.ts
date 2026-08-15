@@ -8,7 +8,7 @@ import * as path from 'path';
 
 const HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'trace'];
 const SPEC_GLOBS = ['**/*.yaml', '**/*.yml', '**/*.json'];
-// Cheap top-of-file signal that a *.json/*.yaml is an OpenAPI/Swagger spec.
+
 const SPEC_SIGNAL = /("?openapi"?\s*:\s*["']?3|"?swagger"?\s*:\s*["']?2)/i;
 const SPEC_FILENAMES = new Set(['openapi.json', 'openapi.yaml', 'openapi.yml', 'swagger.json', 'swagger.yaml', 'swagger.yml']);
 
@@ -18,20 +18,20 @@ interface OpenApiOperation {
   operationId?: string;
   summary?: string;
   tags: string[];
-  refs: string[]; // schema refs referenced via request/response/parameters
+  refs: string[];
 }
 
 interface OpenApiProperty {
   name: string;
   type: string;
   required: boolean;
-  ref?: string; // schema name this property points at
+  ref?: string;
 }
 
 interface OpenApiSchema {
   name: string;
   properties: OpenApiProperty[];
-  refs: string[]; // schema names referenced by this schema
+  refs: string[];
 }
 
 interface OpenApiSpec {
@@ -135,7 +135,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     });
   }
 
-  // --- shared per-file emit helper -------------------------------------------------
+
 
   private emitSpec(
     spec: OpenApiSpec,
@@ -146,7 +146,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     const schemaNodeId = (name: string) => `openapi_schema_${this.sanitizeId(name)}`;
     const knownSchemas = new Set(spec.schemas.map(s => s.name));
 
-    // Schemas -> data-entity nodes
+
     for (const schema of spec.schemas) {
       const nodeId = schemaNodeId(schema.name);
       const fields = schema.properties.map(p => ({
@@ -173,7 +173,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      // $ref between schemas -> reference edges
+
       for (const ref of schema.refs) {
         if (knownSchemas.has(ref) && ref !== schema.name) {
           edges.push(this.createEdge(
@@ -188,7 +188,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Operations -> api-operation nodes + entry points + contract edges
+
     for (const op of spec.operations) {
       const opKey = op.operationId || `${op.method}_${op.apiPath}`;
       const nodeId = `openapi_op_${this.sanitizeId(opKey)}`;
@@ -223,7 +223,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
         { method: op.method.toUpperCase(), path: op.apiPath }
       ));
 
-      // Operation -> schema contract edges (request/response/params $refs)
+
       for (const ref of op.refs) {
         if (knownSchemas.has(ref)) {
           edges.push(this.createEdge(
@@ -239,7 +239,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // --- file discovery ----------------------------------------------------------------
+
 
   private async findSpecFiles(
     projectPath: string,
@@ -282,7 +282,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // --- parsing -----------------------------------------------------------------------
+
 
   private parseSpec(relativePath: string, content: string): OpenApiSpec | null {
     const trimmed = content.trimStart();
@@ -293,7 +293,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
   }
 
   private refName(ref: string): string | undefined {
-    // "#/components/schemas/User" or "#/definitions/User"
+
     const m = ref.match(/#\/(?:components\/schemas|definitions)\/([A-Za-z0-9_.-]+)/);
     return m ? m[1] : undefined;
   }
@@ -383,20 +383,20 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     };
   }
 
-  // Lightweight indentation-based YAML parser scoped to OpenAPI structure.
+
   private parseYamlSpec(relativePath: string, content: string): OpenApiSpec | null {
     const lines = content.split(/\r?\n/);
     let title: string | undefined;
     let version: string | undefined;
 
-    // Top-level signal check.
+
     if (!lines.some(l => /^\s{0,2}(openapi|swagger)\s*:/.test(l))) {
       return null;
     }
 
     const indentOf = (line: string) => line.match(/^(\s*)/)![1].length;
 
-    // Find section ranges by 0-indent keys.
+
     const sectionRange = (key: string): [number, number] | null => {
       const re = new RegExp(`^${key}\\s*:`);
       let start = -1;
@@ -413,7 +413,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
       return [start, end];
     };
 
-    // info.title
+
     const infoRange = sectionRange('info');
     if (infoRange) {
       for (let i = infoRange[0] + 1; i < infoRange[1]; i++) {
@@ -441,7 +441,6 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     const operations: OpenApiOperation[] = [];
     if (!range) return operations;
     const [start, end] = range;
-    const baseIndent = indentOf(lines[start]); // 0
 
     let currentPath: string | undefined;
     let pathIndent = -1;
@@ -464,7 +463,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
       const indent = indentOf(line);
       const trimmed = line.trim();
 
-      // path key: indent just under "paths:" and value looks like a route, ends with ':'
+
       const pathMatch = trimmed.match(/^(\/[^:]*)\s*:\s*$/);
       if (pathMatch && (pathIndent === -1 || indent <= pathIndent)) {
         flushOp();
@@ -474,7 +473,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      // method key under a path
+
       const methodMatch = trimmed.match(/^(get|post|put|delete|patch|head|options|trace)\s*:\s*$/i);
       if (methodMatch && currentPath && indent > pathIndent) {
         flushOp();
@@ -518,7 +517,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
   ): OpenApiSchema[] {
     const schemas: OpenApiSchema[] = [];
 
-    // Determine the schema block: components.schemas (OpenAPI 3) or top-level definitions (Swagger 2).
+
     let blockStart = -1;
     let blockEnd = -1;
     let schemaKeyIndent = -1;
@@ -529,7 +528,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
         if (/^\s+schemas\s*:\s*$/.test(lines[i])) {
           blockStart = i;
           schemaKeyIndent = indentOf(lines[i]);
-          // block ends when indent returns to <= schemaKeyIndent
+
           blockEnd = cEnd;
           for (let j = i + 1; j < cEnd; j++) {
             const l = lines[j];
@@ -543,11 +542,11 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     if (blockStart === -1 && definitionsRange) {
       blockStart = definitionsRange[0];
       blockEnd = definitionsRange[1];
-      schemaKeyIndent = indentOf(lines[blockStart]); // 0 for definitions:
+      schemaKeyIndent = indentOf(lines[blockStart]);
     }
     if (blockStart === -1) return schemas;
 
-    // schema name keys are the next indent level under the block key.
+
     let nameIndent = -1;
     for (let i = blockStart + 1; i < blockEnd; i++) {
       const l = lines[i];
@@ -589,7 +588,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
     const refs = new Set<string>();
     const requiredNames = new Set<string>();
 
-    // Locate properties: block and required: list.
+
     let propsIndent = -1;
     let propNameIndent = -1;
     let inProps = false;

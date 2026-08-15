@@ -4,10 +4,10 @@ import { CASNode, CASEdge, CASMethodCall, CASCallChain, generateNodeId } from '.
 
 type RustAST = RustASTNode;
 
-/**
- * Enhanced call graph extractor for Rust code
- * Supports comprehensive call tracking, async patterns, and external service detection
- */
+
+
+
+
 export class EnhancedRustCallGraphExtractor {
   private nodes: CASNode[] = [];
   private methodToNodeMap = new Map<string, string>();
@@ -24,9 +24,9 @@ export class EnhancedRustCallGraphExtractor {
     private astCache: Map<string, RustAST>
   ) {}
 
-  /**
-   * Extract enhanced call graph from analyzed nodes
-   */
+
+
+
   extractCallGraph(nodes: CASNode[], edges: CASEdge[]): {
     methodCalls: CASMethodCall[];
     callChains: CASCallChain[];
@@ -35,7 +35,7 @@ export class EnhancedRustCallGraphExtractor {
     this.nodes = nodes;
     this.buildNodeMaps();
     this.analyzeMethodCalls();
-    
+
     const callChains = this.buildCallChains();
     const enhancedEdges = this.buildEnhancedEdges();
 
@@ -46,9 +46,9 @@ export class EnhancedRustCallGraphExtractor {
     };
   }
 
-  /**
-   * Build lookup maps for efficient node resolution
-   */
+
+
+
   private buildNodeMaps(): void {
     this.nodes.forEach(node => {
       if (node.type === 'method' || node.type === 'function') {
@@ -60,12 +60,12 @@ export class EnhancedRustCallGraphExtractor {
     });
   }
 
-  /**
-   * Analyze all methods to extract call patterns
-   */
+
+
+
   private analyzeMethodCalls(): void {
     const methodNodes = this.nodes.filter(n => n.type === 'method' || n.type === 'function');
-    
+
     methodNodes.forEach(methodNode => {
       const sourceCode = this.getMethodSourceCode(methodNode);
       if (sourceCode) {
@@ -74,17 +74,17 @@ export class EnhancedRustCallGraphExtractor {
     });
   }
 
-  /**
-   * Get source code for a method/function
-   */
+
+
+
   private getMethodSourceCode(methodNode: CASNode): string | null {
     if (!methodNode.source?.file) return null;
-    
+
     try {
       const ast = this.astCache.get(methodNode.source.file);
       if (!ast) return null;
-      
-      // Extract method body from AST
+
+
       const method = this.findMethodInAST(methodNode.name, ast);
       return method?.body || null;
     } catch (error) {
@@ -93,21 +93,21 @@ export class EnhancedRustCallGraphExtractor {
     }
   }
 
-  /**
-   * Find method in AST
-   */
+
+
+
   private findMethodInAST(methodName: string, ast: RustAST): any {
-    // This would be enhanced with actual AST traversal
-    // For now, return basic structure
+
+
     return {
       name: methodName,
-      body: null // Would extract from AST
+      body: null
     };
   }
 
-  /**
-   * Analyze calls within a method
-   */
+
+
+
   private analyzeCallsInMethod(methodNode: CASNode, sourceCode: string): void {
     const lines = sourceCode.split('\n');
     let callDepth = 0;
@@ -115,57 +115,57 @@ export class EnhancedRustCallGraphExtractor {
     let conditionalDepth = 0;
 
     lines.forEach((line, index) => {
-      // Track control flow depth
+
       callDepth = this.calculateCallDepth(line, callDepth);
       loopDepth = this.calculateLoopDepth(line, loopDepth);
       conditionalDepth = this.calculateConditionalDepth(line, conditionalDepth);
 
-      // Extract method calls from line
+
       const calls = this.extractCallsFromLine(line, index + 1, methodNode);
       this.methodCalls.push(...calls);
     });
   }
 
-  /**
-   * Calculate call nesting depth
-   */
+
+
+
   private calculateCallDepth(line: string, currentDepth: number): number {
-    // Simple heuristic - would be more sophisticated with AST
+
     const openBraces = (line.match(/{/g) || []).length;
     const closeBraces = (line.match(/}/g) || []).length;
     return Math.max(0, currentDepth + openBraces - closeBraces);
   }
 
-  /**
-   * Calculate loop nesting depth
-   */
+
+
+
   private calculateLoopDepth(line: string, currentDepth: number): number {
     const loopKeywords = ['for ', 'while ', 'loop '];
     const hasLoopStart = loopKeywords.some(keyword => line.includes(keyword));
     return hasLoopStart ? currentDepth + 1 : currentDepth;
   }
 
-  /**
-   * Calculate conditional nesting depth
-   */
+
+
+
   private calculateConditionalDepth(line: string, currentDepth: number): number {
     const conditionalKeywords = ['if ', 'match ', 'else if'];
     const hasConditionalStart = conditionalKeywords.some(keyword => line.includes(keyword));
     return hasConditionalStart ? currentDepth + 1 : currentDepth;
   }
 
-  /**
-   * Extract method calls from a line of code
-   */
+
+
+
   private extractCallsFromLine(line: string, lineNumber: number, callerNode: CASNode): CASMethodCall[] {
     const calls: CASMethodCall[] = [];
     const trimmedLine = line.trim();
 
     if (trimmedLine.startsWith('//') || trimmedLine.startsWith('/*')) {
-      return calls; // Skip comment lines
+      return calls;
     }
 
-    // Pattern: method()
+
     const methodCallRegex = /(\w+)\s*\(([^)]*)\)/g;
     let match;
 
@@ -182,7 +182,7 @@ export class EnhancedRustCallGraphExtractor {
       }
     }
 
-    // Pattern: object.method()
+
     const objectMethodRegex = /(\w+)\.(\w+)\s*\(([^)]*)\)/g;
     while ((match = objectMethodRegex.exec(trimmedLine)) !== null) {
       const call = this.createMethodCall(
@@ -191,14 +191,14 @@ export class EnhancedRustCallGraphExtractor {
         lineNumber,
         callerNode,
         trimmedLine,
-        match[1] // object context
+        match[1]
       );
       if (call) {
         calls.push(call);
       }
     }
 
-    // Pattern: Crate::module::function()
+
     const crateCallRegex = /(\w+)::(\w+)::(\w+)\s*\(([^)]*)\)/g;
     while ((match = crateCallRegex.exec(trimmedLine)) !== null) {
       const crateName = match[1];
@@ -222,9 +222,9 @@ export class EnhancedRustCallGraphExtractor {
     return calls;
   }
 
-  /**
-   * Create a method call object
-   */
+
+
+
   private createMethodCall(
     methodName: string,
     argsStr: string,
@@ -235,7 +235,7 @@ export class EnhancedRustCallGraphExtractor {
   ): CASMethodCall | null {
     const targetNodeId = this.resolveMethodTarget(methodName, objectContext);
     const parsedArgs = this.parseArguments(argsStr);
-    
+
     const call: CASMethodCall = {
       id: `call_${callerNode.id}_to_${targetNodeId || 'external'}_${lineNumber}`,
       caller_node: callerNode.id,
@@ -270,12 +270,12 @@ export class EnhancedRustCallGraphExtractor {
       }
     };
 
-    // Add external details if needed
+
     if (!targetNodeId) {
       call.external_details = this.createExternalDetails(methodName, objectContext);
     }
 
-    // Add framework semantics if applicable
+
     const frameworkInfo = this.detectFrameworkSemantics(methodName, fullLine, callerNode);
     if (frameworkInfo) {
       call.framework_semantics = frameworkInfo;
@@ -284,9 +284,9 @@ export class EnhancedRustCallGraphExtractor {
     return call;
   }
 
-  /**
-   * Create external call method call
-   */
+
+
+
   private createExternalCall(
     functionName: string,
     argsStr: string,
@@ -297,11 +297,11 @@ export class EnhancedRustCallGraphExtractor {
     moduleName: string
   ): CASMethodCall | null {
     const parsedArgs = this.parseArguments(argsStr);
-    
+
     const call: CASMethodCall = {
       id: `call_${callerNode.id}_to_${crateName}_${moduleName}_${functionName}_${lineNumber}`,
       caller_node: callerNode.id,
-      target_node: undefined, // External call
+      target_node: undefined,
       call_details: {
         method_name: functionName,
         signature: this.buildSignature(functionName, parsedArgs),
@@ -332,7 +332,7 @@ export class EnhancedRustCallGraphExtractor {
         is_sdk: this.isStdCrate(crateName)
       },
       performance_hints: {
-        is_hot_path: false, // External calls typically not hot paths
+        is_hot_path: false,
         is_potential_bottleneck: this.isPotentialExternalBottleneck(crateName, functionName),
         is_critical_path: false
       }
@@ -341,12 +341,12 @@ export class EnhancedRustCallGraphExtractor {
     return call;
   }
 
-  /**
-   * Parse arguments string into argument objects
-   */
+
+
+
   private parseArguments(argsStr: string): Array<{ position: number; type?: string; value?: string; is_literal: boolean; is_variable: boolean }> {
     if (!argsStr.trim()) return [];
-    
+
     const args = argsStr.split(',').map(arg => arg.trim());
     return args.map((arg, index) => ({
       position: index,
@@ -357,19 +357,19 @@ export class EnhancedRustCallGraphExtractor {
     }));
   }
 
-  /**
-   * Resolve method call target node
-   */
+
+
+
   private resolveMethodTarget(methodName: string, objectContext?: string): string | undefined {
-    // Try to resolve to local method
+
     const targetId = this.methodToNodeMap.get(methodName);
     if (targetId) return targetId;
 
-    // Try to resolve with object context
+
     if (objectContext) {
       const objectNodeId = this.methodToNodeMap.get(objectContext);
       if (objectNodeId) {
-        // Look for method on the object's struct
+
         const structNode = this.nodes.find(n => n.id === objectNodeId);
         if (structNode) {
           const methodId = `${structNode.id}_${methodName}`;
@@ -379,12 +379,12 @@ export class EnhancedRustCallGraphExtractor {
       }
     }
 
-    return undefined; // External call
+    return undefined;
   }
 
-  /**
-   * Determine call type
-   */
+
+
+
   private determineCallType(methodName: string, objectContext?: string): 'direct' | 'method' | 'constructor' | 'abstract' | 'interface' | 'callback' | 'hook' | 'dynamic' {
     if (methodName === 'new' || objectContext?.startsWith(methodName)) return 'constructor';
     if (objectContext) return 'method';
@@ -393,13 +393,13 @@ export class EnhancedRustCallGraphExtractor {
     return 'direct';
   }
 
-  /**
-   * Create external details for method call
-   */
+
+
+
   private createExternalDetails(methodName: string, objectContext?: string): any {
     const isBuiltin = this.isBuiltinMethod(methodName);
     const isStdLibrary = this.isStdLibraryMethod(methodName);
-    
+
     return {
       library: objectContext || 'unknown',
       module: 'unknown',
@@ -408,19 +408,19 @@ export class EnhancedRustCallGraphExtractor {
     };
   }
 
-  /**
-   * Build method signature
-   */
+
+
+
   private buildSignature(methodName: string, args: any[]): string {
     const argsStr = args.map(arg => arg.type || arg.value || 'unknown').join(', ');
     return `${methodName}(${argsStr})`;
   }
 
-  /**
-   * Detect framework semantics
-   */
+
+
+
   private detectFrameworkSemantics(methodName: string, fullLine: string, callerNode: CASNode): any {
-    // Actix-web route handling
+
     if (fullLine.includes('HttpResponse')) {
       return {
         framework: 'actix-web',
@@ -429,7 +429,7 @@ export class EnhancedRustCallGraphExtractor {
       };
     }
 
-    // Database operations
+
     if (methodName.includes('save') || methodName.includes('update') || methodName.includes('delete')) {
       return {
         framework: 'database',
@@ -438,7 +438,7 @@ export class EnhancedRustCallGraphExtractor {
       };
     }
 
-    // Async operations
+
     if (methodName === 'spawn' || methodName === 'tokio::spawn') {
       return {
         framework: 'tokio',
@@ -450,7 +450,7 @@ export class EnhancedRustCallGraphExtractor {
     return null;
   }
 
-  // Helper methods for call analysis
+
   private isAsyncCall(line: string): boolean {
     return line.includes('.await') || line.includes('async ') || line.includes('tokio::');
   }
@@ -520,14 +520,14 @@ export class EnhancedRustCallGraphExtractor {
   }
 
   private findEnclosingClass(node: CASNode): string | undefined {
-    // Find parent struct/impl block
+
     const parentNode = this.nodes.find(n => n.id === node.parent);
     return parentNode?.type === 'struct' ? parentNode.name : undefined;
   }
 
-  /**
-   * Build call chains from method calls
-   */
+
+
+
   private buildCallChains(): CASCallChain[] {
     const chains: CASCallChain[] = [];
     const entryPoints = this.nodes.filter(n =>
@@ -546,16 +546,16 @@ export class EnhancedRustCallGraphExtractor {
     return chains;
   }
 
-  /**
-   * Build chain from entry point
-   */
+
+
+
   private buildChainFromEntryPoint(entryPoint: CASNode): CASCallChain | null {
     const callsFromEntry = this.methodCalls.filter(call => call.caller_node === entryPoint.id);
-    
+
     if (callsFromEntry.length === 0) return null;
 
     const callPath = this.traceCallPath(entryPoint.id);
-    
+
     return {
       id: `chain_from_${entryPoint.id}`,
       chain_type: 'entry-to-exit',
@@ -592,28 +592,28 @@ export class EnhancedRustCallGraphExtractor {
     };
   }
 
-  /**
-   * Trace complete call path from entry point
-   */
+
+
+
   private traceCallPath(entryPointId: string): Array<{ call_id: string; node_id: string; method_name: string; depth: number }> {
     const path: Array<{ call_id: string; node_id: string; method_name: string; depth: number }> = [];
     const visited = new Set<string>();
-    
+
     this.traceCallsRecursive(entryPointId, 0, path, visited);
-    
+
     return path;
   }
 
-  /**
-   * Recursively trace calls
-   */
+
+
+
   private traceCallsRecursive(nodeId: string, depth: number, path: any[], visited: Set<string>): void {
-    if (visited.has(nodeId) || depth > 10) return; // Prevent infinite recursion
-    
+    if (visited.has(nodeId) || depth > 10) return;
+
     visited.add(nodeId);
-    
+
     const callsFromNode = this.methodCalls.filter(call => call.caller_node === nodeId);
-    
+
     callsFromNode.forEach(call => {
       const targetNode = this.nodes.find(n => n.id === call.target_node);
       if (targetNode) {
@@ -623,21 +623,21 @@ export class EnhancedRustCallGraphExtractor {
           method_name: call.call_details.method_name,
           depth
         });
-        
+
         this.traceCallsRecursive(targetNode.id, depth + 1, path, visited);
       }
     });
   }
 
-  /**
-   * Build enhanced edges from method calls
-   */
+
+
+
   private buildEnhancedEdges(): CASEdge[] {
     const edges: CASEdge[] = [];
-    
+
     this.methodCalls.forEach(call => {
       if (call.target_node) {
-        // Create standard calls edge
+
         edges.push({
           id: `edge_${call.id}`,
           source: call.caller_node,
@@ -658,28 +658,28 @@ export class EnhancedRustCallGraphExtractor {
     return edges;
   }
 
-  // Helper methods for chain analysis
+
   private hasCircularCall(path: any[]): boolean {
     const nodeIds = path.map(p => p.node_id);
     return new Set(nodeIds).size !== nodeIds.length;
   }
 
   private hasRecursiveCall(path: any[]): boolean {
-    return path.some((p, index) => 
+    return path.some((p, index) =>
       path.slice(index + 1).some(p2 => p2.node_id === p.node_id)
     );
   }
 
   private calculateComplexityScore(path: any[]): number {
     let score = 0;
-    
+
     this.methodCalls.forEach(call => {
       if (call.execution_context.is_async) score += 1;
       if (call.execution_context.is_in_loop) score += 2;
       if (call.execution_context.is_conditional) score += 1;
       if (call.external_details) score += 1;
     });
-    
+
     return score;
   }
 }

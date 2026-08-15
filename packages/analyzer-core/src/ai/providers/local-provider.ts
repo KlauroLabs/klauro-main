@@ -96,10 +96,10 @@ export class LocalProvider implements AIProvider {
   private getPipeline(): Promise<TextGenerationPipeline> {
     if (!this.pipelinePromise) {
       this.pipelinePromise = loadPipeline(this.model).catch(error => {
-        // The model is downloaded from the Hugging Face hub on first use.
-        // If that fails (offline, hub down, disk full) mark the provider
-        // unavailable so the AI cascade skips straight to the next provider
-        // instead of retrying a doomed download on every request.
+
+
+
+
         this.available = false;
         const message = error instanceof Error ? error.message : String(error);
         const offline = /fetch failed|ENOTFOUND|ECONNREFUSED|getaddrinfo/i.test(message);
@@ -133,9 +133,9 @@ export function readGeneratedText(output: GenerationOutput): string {
 }
 
 export function extractJson(text: string): unknown {
-  // Try the structure that appears first in the text. Always probing `{`
-  // before `[` would mis-extract the first object out of a JSON array of
-  // objects (e.g. a recommendations array).
+
+
+
   const candidates: Array<{ start: number; open: string; close: string }> = [];
   const firstBrace = text.indexOf('{');
   const firstBracket = text.indexOf('[');

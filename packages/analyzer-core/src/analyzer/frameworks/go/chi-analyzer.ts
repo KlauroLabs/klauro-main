@@ -8,22 +8,21 @@ import {
   GoRoute, describeGoHandler, isGoMiddlewareIdentifier, parseGoCallArgs,
   balancedSpan, joinGoPaths, findGoFiles, readGoFiles, goModRequires, lineForIndex
 } from './go-route-utils';
-import * as path from 'path';
 
 const CHI_METHODS = ['Get', 'Post', 'Put', 'Patch', 'Delete', 'Head', 'Options', 'Connect', 'Trace', 'HandleFunc', 'Handle'];
 
-/**
- * Chi framework analyzer (github.com/go-chi/chi).
- *
- * Chi's nesting model differs from Gin/Echo/Fiber: `r.Route("/prefix", func(r
- * chi.Router) { ... })` is a lexically brace-scoped callback, not a var
- * returned from Group() that gets reused elsewhere — so routes are resolved by
- * recursively descending into each `Route()` call's balanced-brace function
- * body (rather than the whole-file receiver-name regex scan the other three
- * analyzers use), accumulating path prefix and `r.Use(...)` guards per scope.
- * Chi also supports `r.Group(func(r chi.Router) { ... })` (no prefix — just a
- * shared middleware scope) and `r.Mount("/prefix", subRouter)`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class ChiAnalyzer extends BaseAnalyzer {
   constructor() {
     super('chi', 'Chi Framework Analyzer', '1.0.0', 'framework');
@@ -147,10 +146,10 @@ export class ChiAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** Local var names bound to `chi.NewRouter()`, plus the conventional `r`/`router`
-   *  names used even when the binding isn't found (helper functions taking
-   *  `chi.Router` as a parameter — including `Route`/`Group`/`Mount` callback params,
-   *  which are discovered per-scope in walkScope itself). */
+
+
+
+
   private findChiReceiverNames(content: string): string[] {
     const names = new Set<string>(['r', 'router']);
     const instancePattern = /(?:const|var)?\s*([A-Za-z_][\w]*)\s*:?=\s*chi\.NewRouter\s*\(/g;
@@ -159,13 +158,13 @@ export class ChiAnalyzer extends BaseAnalyzer {
     return [...names];
   }
 
-  /**
-   * Walk route/guard/nesting calls for `receiver` restricted to the byte range
-   * [scopeStart, scopeEnd) of `content` — i.e. lexically scoped, unlike the
-   * whole-file scans the other three Go analyzers use, because Chi's
-   * Route()/Group() nesting IS a brace-delimited callback rather than a
-   * reusable var.
-   */
+
+
+
+
+
+
+
   private walkScope(
     content: string,
     file: string,
@@ -179,14 +178,14 @@ export class ChiAnalyzer extends BaseAnalyzer {
     const scope = content.slice(scopeStart, scopeEnd);
     const escaped = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // Direct-child Route()/Group() nested scopes — used to exclude THEIR route
-    // calls and Use() calls from this pass (they're handled by the recursive
-    // descent below, which uses the same receiver name inside its own callback
-    // parameter — usually also named `r`, so without exclusion they'd double count).
+
+
+
+
     const nestedRanges = this.findNestedScopeRanges(scope, escaped);
     const inNestedRange = (idx: number) => nestedRanges.some(([s, e]) => idx >= s && idx < e);
 
-    // receiver.Use(mw1, mw2) within this scope only (not inside a nested child scope).
+
     const usePattern = new RegExp(`\\b${escaped}\\.Use\\s*\\(`, 'g');
     const scopeGuards: string[] = [];
     let match: RegExpExecArray | null;
@@ -197,8 +196,8 @@ export class ChiAnalyzer extends BaseAnalyzer {
     }
     const combinedGuards = [...guards, ...scopeGuards];
 
-    // Route calls: receiver.Get("/path", handler) / receiver.HandleFunc(...) /
-    // receiver.Handle(...).
+
+
     const methodAlt = CHI_METHODS.join('|');
     const routeCallPattern = new RegExp(`\\b${escaped}\\.(${methodAlt})\\s*\\(\\s*(['"\`])([^'"\`]*)\\2`, 'g');
     while ((match = routeCallPattern.exec(scope)) !== null) {
@@ -222,7 +221,7 @@ export class ChiAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Recurse into Route()/Group()/With() nested scopes.
+
     for (const nested of this.findChiNestedCalls(scope, escaped)) {
       const absStart = scopeStart + nested.bodyStart;
       const absEnd = scopeStart + nested.bodyEnd;
@@ -231,28 +230,28 @@ export class ChiAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Byte ranges (relative to `scope`) of every nested Route/Group callback body,
-   *  used to avoid double-counting their route calls in the parent pass. */
+
+
   private findNestedScopeRanges(scope: string, escaped: string): Array<[number, number]> {
     return this.findChiNestedCalls(scope, escaped).map(n => [n.bodyStart, n.bodyEnd] as [number, number]);
   }
 
-  /**
-   * Find DIRECT (immediate-child, not transitively nested) `receiver.Route("/prefix",
-   * func(paramName chi.Router) { ... })` and `receiver.Group(func(paramName
-   * chi.Router) { ... })` calls, returning each nested callback's parameter name,
-   * optional path prefix, and body byte range (relative to `scope`, body range
-   * EXCLUDES the outer braces).
-   *
-   * Regex matching over the flattened `scope` text finds every Route()/Group()
-   * call textually present, including ones nested two-or-more levels deep inside
-   * an already-found sibling's body — those must be excluded here (recursion
-   * itself descends one level at a time via {@link walkScope}, so a deeper call
-   * is discovered again, correctly, on the next recursive pass over the outer
-   * match's own body). Matches are sorted by start position and a match is kept
-   * only if its start does not fall inside any already-accepted match's body
-   * range, which keeps exactly the outermost (immediate-child) matches.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   private findChiNestedCalls(
     scope: string,
     escaped: string
@@ -260,7 +259,7 @@ export class ChiAnalyzer extends BaseAnalyzer {
     interface Candidate { matchIndex: number; paramName: string; prefix?: string; bodyStart: number; bodyEnd: number }
     const candidates: Candidate[] = [];
 
-    // Route("/prefix", func(paramName chi.Router) {
+
     const routePattern = new RegExp(
       `\\b${escaped}\\.Route\\s*\\(\\s*(['"\`])([^'"\`]*)\\1\\s*,\\s*func\\s*\\(\\s*([A-Za-z_][\\w]*)`,
       'g'
@@ -276,7 +275,7 @@ export class ChiAnalyzer extends BaseAnalyzer {
       candidates.push({ matchIndex: m.index, paramName, prefix, bodyStart: span[0] + 1, bodyEnd: span[1] });
     }
 
-    // Group(func(paramName chi.Router) { — no prefix, shared middleware scope.
+
     const groupPattern = new RegExp(
       `\\b${escaped}\\.Group\\s*\\(\\s*func\\s*\\(\\s*([A-Za-z_][\\w]*)`,
       'g'

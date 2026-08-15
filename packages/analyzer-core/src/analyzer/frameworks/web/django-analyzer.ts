@@ -137,11 +137,6 @@ interface DjangoSerializer {
   meta?: { model?: string; fields?: string[]; depth?: number };
 }
 
-interface DjangoMiddleware {
-  name: string;
-  filePath: string;
-  methods: Array<{ name: string; parameters: string[] }>;
-}
 
 interface GraphQLMutation {
   name: string;
@@ -223,9 +218,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
-        // extras group named "django" (an integration target the package can
-        // instrument) is not evidence the project itself is built with Django.
+
+
+
         if (this.pyprojectHasRealDependency(pyproject, 'django')) return true;
       }
 
@@ -344,7 +339,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const projects = await this.analyzeProjects(context.projectPath, pythonFiles, nodes);
       const project = projects[0] || null;
       const apps = await this.analyzeApps(pythonFiles, context.projectPath, nodes, edges, entryPoints, exitPoints);
-      const middleware = await this.analyzeMiddleware(pythonFiles, context.projectPath, nodes, edges);
 
       this.buildDjangoRelationships(projects, apps, nodes, edges);
       this.identifyDatabaseConnections(apps, nodes, exitPoints);
@@ -639,12 +633,12 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        // Namespaced by the app-scoped mutationId, not the bare field name: two
-        // different Django apps (or two ObjectType containers in one app) can
-        // declare a same-named field (e.g. both expose "create"), and a
-        // name-only id collided across them, silently dropping one entry
-        // point in every downstream id-keyed merge (see orchestrator.ts
-        // previousEntryPointsById/entryPointById Maps).
+
+
+
+
+
+
         const entryPointId = `entry_${mutationId}`;
         const resolverMethodName = mutation.resolverMethod || 'mutate';
         entryPoints.push(this.createEntryPoint(
@@ -716,8 +710,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        // Namespaced by the app-scoped queryId — see the matching comment on
-        // the mutation entry point id above for why a bare-name id is wrong.
+
+
         const entryPointId = `entry_${queryId}`;
         const resolverMethodName = 'resolve';
         entryPoints.push(this.createEntryPoint(
@@ -871,7 +865,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         ));
       }
 
-      for (const [index, model] of models.entries()) {
+      for (const [, model] of models.entries()) {
         if (!model.name) continue;
 
         const modelId = `model_${appId}_${this.sanitizeId(model.name)}`;
@@ -938,7 +932,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         }
       }
 
-      for (const [index, view] of views.entries()) {
+      for (const [, view] of views.entries()) {
         if (!view.name) continue;
 
         const viewId = this.viewNodeId(appId, view);
@@ -1054,8 +1048,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           ? url.methods
           : matchingView?.type === 'class'
             ? (matchingView.methods.length > 0 ? matchingView.methods : ['GET'])
-            // Function view: prefer its @api_view verbs; only fall back to GET+POST
-            // when none were declared.
+
+
             : (matchingView?.methods && matchingView.methods.length > 0
                 ? matchingView.methods
                 : ['GET', 'POST']);
@@ -2294,51 +2288,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     return str.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
   }
 
-  private async analyzeMiddleware(
-    files: string[],
-    projectPath: string,
-    nodes: CASNode[],
-    edges: CASEdge[]
-  ): Promise<DjangoMiddleware[]> {
-    const middleware: DjangoMiddleware[] = [];
-    const middlewareFiles = files.filter(f => f.includes('middleware'));
-
-    for (const file of middlewareFiles) {
-      const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-      const extractedMiddleware = this.extractMiddleware(content, file);
-      middleware.push(...extractedMiddleware);
-
-      extractedMiddleware.forEach(mw => {
-        const middlewareId = `middleware_${this.sanitizeId(mw.name)}`;
-        const middlewareContent = content;
-        const middlewareDocumentation = this.extractDocumentation(middlewareContent, path.join(projectPath, mw.filePath));
-        const middlewareComments = this.extractComments(middlewareContent, path.join(projectPath, mw.filePath));
-        const middlewareTodos = this.extractTodos(middlewareComments);
-        const middlewareImplementationStatus = this.determineImplementationStatus(middlewareContent, middlewareComments);
-
-        const middlewareNode = this.createNodeBuilder(middlewareId, mw.name, 'middleware')
-          .withLevel(3, 'code')
-          .withCategory('middleware', ['framework', 'django'])
-          .withSource({ file: mw.filePath, line: 1, end_line: 1 })
-          .withDescription(`Django middleware: ${mw.name}`)
-          .withDocumentation(middlewareDocumentation)
-          .withComments(middlewareComments)
-          .withTodos(middlewareTodos)
-          .withImplementationStatus(middlewareImplementationStatus)
-          .withMetadata({
-            framework: 'django',
-            attributes: {
-              methods: mw.methods.map(m => m.name)
-            }
-          })
-          .withAnalyzers([this.analyzerId], this.analyzerId)
-          .build();
-        nodes.push(middlewareNode);
-      });
-    }
-
-    return middleware;
-  }
 
   private extractSettings(content: string, filePath: string): DjangoSettings {
     const debug = content.includes('DEBUG = True');
@@ -2458,30 +2407,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     return serializers;
   }
 
-  private extractMiddleware(content: string, filePath: string): DjangoMiddleware[] {
-    const middleware: DjangoMiddleware[] = [];
-    const middlewarePattern = /class\s+(\w+)(?:\s*\([^)]*\))?:/g;
-
-    let match;
-    while ((match = middlewarePattern.exec(content)) !== null) {
-      const middlewareName = match[1];
-      const classStart = match.index;
-      const classEnd = this.findClassEnd(content, classStart);
-      const classContent = content.substring(classStart, classEnd);
-
-      const methods = this.extractMiddlewareMethods(classContent);
-
-      if (methods.length > 0) {
-        middleware.push({
-          name: middlewareName,
-          filePath,
-          methods
-        });
-      }
-    }
-
-    return middleware;
-  }
 
   private extractListVariable(content: string, varName: string): string[] {
     const pattern = new RegExp(`${varName}\\s*=\\s*\\[([\\s\\S]*?)\\]`, 'g');
@@ -2512,7 +2437,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     if (match) {
       databases.push({
         name: 'default',
-        engine: 'postgresql', // Default assumption
+        engine: 'postgresql',
         config: {}
       });
     }
@@ -2631,8 +2556,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         filePath,
         type: 'function',
         owningClass,
-        // DRF `@api_view(['GET','POST'])` declares the HTTP verbs a function view
-        // serves — without this every function view defaulted to GET+POST.
+
+
         methods: this.extractApiViewMethods(content, functionStart),
         decorators,
         permissions: this.extractPermissions(decorators),
@@ -2738,12 +2663,12 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     return views;
   }
 
-  /** Parse the HTTP verbs from a DRF `@api_view(['GET','POST'])` decorator sitting
-   *  immediately above a function view. Returns [] when there is none. */
+
+
   private extractApiViewMethods(content: string, functionStart: number): string[] {
     const before = content.substring(Math.max(0, functionStart - 600), functionStart);
-    // Take the CLOSEST @api_view above this function (last match in the window),
-    // not the first — an earlier view's decorator must not leak onto this one.
+
+
     const matches = [...before.matchAll(/@api_view\s*\(\s*\[([^\]]*)\]/g)];
     if (matches.length === 0) return [];
     return matches[matches.length - 1][1]
@@ -3188,10 +3113,10 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
       if (line.startsWith('@')) {
-        // Keep the decorator's arguments, not just its name: DRF auth lives in the
-        // args (`@permission_classes([IsAuthenticated])`), and hasAuthDecorator /
-        // extractGuardsFromDecorators match on substrings, so dropping the args
-        // made every @permission_classes look unauthenticated.
+
+
+
+
         const decoratorMatch = line.match(/@(\w+(?:\s*\([\s\S]*?\))?)/);
         if (decoratorMatch) {
           decorators.unshift(decoratorMatch[1]);
@@ -3214,20 +3139,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     );
   }
 
-  private extractMiddlewareMethods(content: string): Array<{ name: string; parameters: string[] }> {
-    const methods: Array<{ name: string; parameters: string[] }> = [];
-    const methodPattern = /def\s+(process_request|process_view|process_template_response|process_response|process_exception)\s*\([^)]*\)/g;
-
-    let match;
-    while ((match = methodPattern.exec(content)) !== null) {
-      methods.push({
-        name: match[1],
-        parameters: []
-      });
-    }
-
-    return methods;
-  }
 
   private findClassEnd(content: string, classStart: number): number {
     const lines = content.substring(classStart).split('\n');
@@ -3280,7 +3191,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         if (versionMatch) return versionMatch[1];
       }
     } catch {
-      // Continue with other methods
+
     }
 
     return 'unknown';
@@ -3827,15 +3738,15 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // CAS v1.4.0 Documentation and Comment extraction methods
+
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
 
-    // Look for Django-specific documentation patterns
 
-    // 1. Model field help_text attributes
+
+
     const helpTextPattern = /help_text\s*=\s*['"]([^'"]+)['"]/g;
     const fieldDocs: string[] = [];
     let helpMatch;
@@ -3843,10 +3754,10 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       fieldDocs.push(helpMatch[1]);
     }
 
-    // 2. Class docstrings
+
     const classDocStringMatch = content.match(/class\s+\w+[^:]*:\s*['""]([\s\S]*?)['""]/);
 
-    // 3. Function docstrings
+
     const functionDocStrings: string[] = [];
     const funcDocPattern = /def\s+\w+[^:]*:\s*['""]([\s\S]*?)['""]/g;
     let funcMatch;
@@ -3854,7 +3765,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       functionDocStrings.push(funcMatch[1].trim());
     }
 
-    // 4. Module-level docstring
+
     const moduleDocMatch = content.match(/^\s*['""]([\s\S]*?)['""]/);
 
     if (classDocStringMatch || functionDocStrings.length > 0 || moduleDocMatch || fieldDocs.length > 0) {
@@ -3899,7 +3810,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // Python single-line comments
+
       if (trimmedLine.startsWith('#')) {
         const commentText = trimmedLine.substring(1).trim();
         if (commentText.length > 0) {
@@ -3925,7 +3836,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Multi-line string comments (docstrings used as comments)
+
       const docstringMatch = line.match(/^\s*['""]([\s\S]*?)['""]/);
       if (docstringMatch && !line.includes('def ') && !line.includes('class ')) {
         const commentText = docstringMatch[1].trim();
@@ -3966,11 +3877,11 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
         const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
 
-        // Extract assignee from patterns like "TODO(username):"
+
         const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
         const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
 
-        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+
         const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
         let priority: CASTodo['priority'] = 'medium';
         if (priorityMatch) {

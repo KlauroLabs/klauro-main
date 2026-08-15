@@ -7,27 +7,27 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/**
- * WordPress analyzer.
- *
- * WordPress's control flow is driven by the hooks system (actions/filters), not by
- * classes/routes the way Laravel or Symfony are. The high-value semantics this analyzer
- * extracts, regex/line-based over .php files:
- *
- *  - Hooks: add_action / add_filter -> a hook registration node linked (edge) to its callback.
- *    This is "what runs on which event" — the core of any WP theme/plugin.
- *  - Custom post types / taxonomies: register_post_type / register_taxonomy -> the content model.
- *  - Shortcodes: add_shortcode -> entry points.
- *  - REST API: register_rest_route -> API route nodes + entry points (method + path + callback).
- *  - AJAX: add_action('wp_ajax_*' / 'wp_ajax_nopriv_*') -> AJAX endpoint entry points.
- *  - Enqueued assets: wp_enqueue_script / wp_enqueue_style -> asset nodes.
- *  - Plugin/Theme metadata: the Plugin Name / Theme Name header block -> a top-level node.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 interface WPCallback {
-  /** Raw callback expression, e.g. 'demo_init', "[$this, 'method']", "['Cls','m']" */
+
   raw: string;
-  /** Best-effort resolved callback name for linking, e.g. demo_init / Cls::method */
+
   name: string | null;
 }
 
@@ -63,10 +63,10 @@ export class WordPressAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      // wp-config.php is a definitive WordPress signal.
+
       if (await fs.pathExists(path.join(projectPath, 'wp-config.php'))) return true;
 
-      // A theme: style.css with a `Theme Name:` header.
+
       const styleCss = path.join(projectPath, 'style.css');
       if (await fs.pathExists(styleCss)) {
         const css = await fs.readFile(styleCss, 'utf-8');
@@ -81,9 +81,9 @@ export class WordPressAnalyzer extends BaseAnalyzer {
 
       for (const file of phpFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        // A plugin: a .php with a `Plugin Name:` header.
+
         if (/^\s*\*?\s*Plugin Name:/im.test(content)) return true;
-        // Usage of core WP functions.
+
         if (WP_FUNCTION_HINT.test(content)) return true;
       }
 
@@ -198,7 +198,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
     return ['wp-hooks', 'wp-post-types', 'wp-shortcodes', 'wp-rest-routes', 'wp-ajax'];
   }
 
-  // --- core per-file extraction ------------------------------------------------
+
 
   private analyzeFileContent(
     content: string,
@@ -210,7 +210,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
   ): { hooks: number; postTypes: number; taxonomies: number; shortcodes: number; restRoutes: number; ajax: number; assets: number; meta: number } {
     const result = { hooks: 0, postTypes: 0, taxonomies: 0, shortcodes: 0, restRoutes: 0, ajax: 0, assets: 0, meta: 0 };
 
-    // Plugin / theme metadata header.
+
     const metaInfo = this.extractMeta(content, relativePath);
     let metaNodeId: string | undefined;
     if (metaInfo) {
@@ -236,7 +236,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       result.meta++;
     }
 
-    // Hooks (actions + filters). AJAX hooks are special-cased into AJAX endpoints.
+
     const hooks = this.extractHooks(content);
     for (const hook of hooks) {
       const ajaxMatch = hook.kind === 'action' && /^wp_ajax(_nopriv)?_(.+)$/.exec(hook.name);
@@ -269,7 +269,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       );
       result.hooks++;
 
-      // Link the hook to its callback (hook -> callback control flow).
+
       this.linkCallback(hookId, hook.callback, 'registers', { hook: hook.name, kind: hook.kind }, fullPath, edges);
 
       if (metaNodeId) {
@@ -280,7 +280,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Custom post types.
+
     for (const pt of this.extractPostTypes(content)) {
       const ptId = this.generateId('wp_post_type', fullPath, pt.name);
       nodes.push(
@@ -299,7 +299,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Taxonomies.
+
     for (const tax of this.extractTaxonomies(content)) {
       const taxId = this.generateId('wp_taxonomy', fullPath, tax.name);
       nodes.push(
@@ -318,7 +318,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Shortcodes (entry points).
+
     for (const sc of this.extractShortcodes(content)) {
       const scId = this.generateId('wp_shortcode', fullPath, sc.name);
       nodes.push(
@@ -349,7 +349,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // REST routes (API route nodes + entry points).
+
     for (const rr of this.extractRestRoutes(content)) {
       const fullRoute = `/${rr.namespace}${rr.route.startsWith('/') ? '' : '/'}${rr.route}`.replace(/\/+/g, '/');
       const methods = rr.methods.length ? rr.methods : ['GET'];
@@ -387,7 +387,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Enqueued assets (optional).
+
     for (const asset of this.extractAssets(content)) {
       const assetId = this.generateId('wp_asset', fullPath, `${asset.kind}_${asset.handle}_${asset.line}`);
       nodes.push(
@@ -439,7 +439,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  /** Link a hook/shortcode/route/ajax node to its resolved callback node, if resolvable. */
+
   private linkCallback(
     sourceId: string,
     callback: WPCallback,
@@ -449,7 +449,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
     edges: CASEdge[]
   ): void {
     if (!callback.name) return;
-    // Target a function/method node by name (resolved later by the call-graph merge).
+
     const targetId = this.generateId('function', '', callback.name);
     edges.push(this.createEdge(
       this.generateEdgeId(sourceId, targetId, edgeType),
@@ -461,7 +461,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
     ));
   }
 
-  // --- regex extractors --------------------------------------------------------
+
 
   private lineOf(content: string, index: number): number {
     return content.substring(0, index).split('\n').length;
@@ -469,11 +469,11 @@ export class WordPressAnalyzer extends BaseAnalyzer {
 
   private parseCallback(raw: string): WPCallback {
     const trimmed = raw.trim();
-    // String callback: 'demo_init' or "demo_init"
+
     const strMatch = /^['"]([A-Za-z_\\][\w\\]*)['"]$/.exec(trimmed);
     if (strMatch) return { raw: trimmed, name: strMatch[1] };
 
-    // Array callback: [$obj, 'method'] or ['Class', 'method'] or array($obj, 'method')
+
     const arrMatch = /^(?:\[|array\s*\()\s*([^,]+?)\s*,\s*['"](\w+)['"]\s*(?:\]|\))$/.exec(trimmed);
     if (arrMatch) {
       const objExpr = arrMatch[1].trim();
@@ -483,11 +483,11 @@ export class WordPressAnalyzer extends BaseAnalyzer {
       return { raw: trimmed, name: `${cls}::${method}` };
     }
 
-    // Closures / arrow functions are inline — no resolvable name.
+
     return { raw: trimmed, name: null };
   }
 
-  /** Split a single function-call argument list into top-level comma-separated args. */
+
   private splitArgs(argStr: string): string[] {
     const args: string[] = [];
     let depth = 0, current = '', quote: string | null = null;
@@ -508,7 +508,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
     return args;
   }
 
-  /** Capture the balanced argument list following a function name occurrence. */
+
   private captureCall(content: string, fnName: string): Array<{ args: string[]; index: number }> {
     const results: Array<{ args: string[]; index: number }> = [];
     const re = new RegExp(`\\b${fnName}\\s*\\(`, 'g');
@@ -612,7 +612,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
     const m = /['"]methods['"]\s*=>\s*([^,]+?)(?:,\s*['"]callback|,\s*['"]permission|\}|$)/s.exec(optsBlob);
     if (!m) return [];
     const raw = m[1];
-    // Could be 'GET', "GET, POST", WP_REST_Server::READABLE, ['GET','POST']
+
     const literals = raw.match(/['"]([A-Za-z]+)['"]/g);
     if (literals) {
       return literals
@@ -648,7 +648,7 @@ export class WordPressAnalyzer extends BaseAnalyzer {
 
   private extractMeta(content: string, relativePath: string): WPMeta | null {
     const isCss = relativePath.endsWith('.css');
-    const header = content.substring(0, 8192); // metadata lives at the top
+    const header = content.substring(0, 8192);
     if (isCss) {
       const themeName = /^\s*Theme Name:\s*(.+)$/im.exec(header);
       if (!themeName) return null;

@@ -1,6 +1,6 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import {
-  CASContribution, CASEntryPoint, CASExitPoint,
+  CASEntryPoint, CASExitPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus,
   CASPerspective
 } from '../../../types/cas.types';
@@ -125,9 +125,9 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
-        // extras group named "fastapi" (an integration target the package can
-        // instrument) is not evidence the project itself is built with FastAPI.
+
+
+
         if (this.pyprojectHasRealDependency(pyproject, 'fastapi')) return true;
       }
 
@@ -139,11 +139,11 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
       for (const file of pythonFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        // Require an actual FastAPI application shape (app construction or a
-        // router/route registration) — never a bare `from fastapi import`/
-        // `import fastapi` alone, which a framework-agnostic ASGI middleware
-        // helper (instrumenting a CALLER's FastAPI app rather than being one)
-        // can contain without the analyzed repo itself being a FastAPI app.
+
+
+
+
+
         if (
           /\bFastAPI\s*\(/.test(content) ||
           /\bAPIRouter\s*\(/.test(content) ||
@@ -482,8 +482,8 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
               calleeId,
               edgeType,
               isInjection ? 'data' : undefined,
-              // FastAPI `Depends(get_x)` is constructor-style DI: the container
-              // resolves and injects the dependency factory's result.
+
+
               isInjection ? { dependency_type: 'injection' } : undefined
             ));
           }
@@ -864,11 +864,11 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     return dependencies;
   }
 
-  /**
-   * Stable node id for a router, namespaced by the router's project-relative
-   * file path so the common `router = APIRouter()` variable name in multiple
-   * api files never collides.
-   */
+
+
+
+
+
   private routerNodeId(routerName: string, filePath: string): string {
     return `router_${this.sanitizeId(filePath)}_${this.sanitizeId(routerName)}`;
   }
@@ -1430,7 +1430,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         if (versionMatch) return versionMatch[1];
       }
     } catch {
-      // Continue with other methods
+
     }
 
     return 'unknown';
@@ -1546,36 +1546,36 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     }
   }
 
-  // CAS v1.4.0 Documentation and Comment extraction methods
+
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
 
-    // Look for FastAPI-specific documentation patterns
 
-    // 1. Pydantic field descriptions
+
+
     const fieldDescMatches = content.matchAll(/Field\([^)]*description\s*=\s*['"]([^'"]+)['"]/g);
     const fieldDescriptions = [];
     for (const match of fieldDescMatches) {
       fieldDescriptions.push(match[1]);
     }
 
-    // 2. Route operation descriptions and summaries
+
     const routeDocMatches = content.matchAll(/@app\.(get|post|put|delete|patch)\([^)]*summary\s*=\s*['"]([^'"]+)['"]/g);
     const routeDocs = [];
     for (const match of routeDocMatches) {
       routeDocs.push(`${match[1].toUpperCase()}: ${match[2]}`);
     }
 
-    // 3. Pydantic model docstrings
+
     const modelDocMatches = content.matchAll(/class\s+\w+\([^)]*BaseModel[^)]*\):\s*['"""]([^'"]*?)['"""]/g);
     const modelDocs = [];
     for (const match of modelDocMatches) {
       modelDocs.push(match[1].trim());
     }
 
-    // 4. Function docstrings
+
     const functionDocStrings = [];
     const functionMatches = content.matchAll(/def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
     for (const match of functionMatches) {
@@ -1619,7 +1619,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // Python single-line comments
+
       if (trimmedLine.startsWith('#')) {
         const commentText = trimmedLine.substring(1).trim();
         if (commentText.length > 0) {
@@ -1645,7 +1645,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         }
       }
 
-      // Multi-line string comments (docstrings used as comments)
+
       const docstringMatch = line.match(/^\s*['"]{3}([^'"]*?)['"]{3}/);
       if (docstringMatch && !line.includes('def ') && !line.includes('class ')) {
         const commentText = docstringMatch[1].trim();
@@ -1686,11 +1686,11 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
         const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
 
-        // Extract assignee from patterns like "TODO(username):"
+
         const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
         const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
 
-        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+
         const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
         let priority: CASTodo['priority'] = 'medium';
         if (priorityMatch) {

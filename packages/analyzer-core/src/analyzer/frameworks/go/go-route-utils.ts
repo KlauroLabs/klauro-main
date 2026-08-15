@@ -2,8 +2,8 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-/** One HTTP route extracted from a Go source file, path already includes any
- *  Group()/Route() prefix accumulated at the call site's lexical nesting depth. */
+
+
 export interface GoRoute {
   method: string;
   path: string;
@@ -13,13 +13,13 @@ export interface GoRoute {
   line: number;
 }
 
-/** Find every 1-based line number for a byte offset in `content`, memoized per call. */
+
 export function lineForIndex(content: string, index: number): number {
   return content.slice(0, index).split('\n').length;
 }
 
-/** Best-effort human-readable handler name: bare identifier / selector as-is;
- *  inline func literal marked as inline (still navigable via file+line). */
+
+
 export function describeGoHandler(raw: string): string {
   const trimmed = raw.trim();
   if (/^[A-Za-z_][\w.]*$/.test(trimmed)) return trimmed;
@@ -27,9 +27,9 @@ export function describeGoHandler(raw: string): string {
   return trimmed || 'anonymous';
 }
 
-/** A bare identifier / selector expression (e.g. `AuthMiddleware`,
- *  `middleware.RequireAuth()`) — not an inline func literal. Used to recognize
- *  guard/middleware args passed alongside a handler. */
+
+
+
 export function isGoMiddlewareIdentifier(arg: string): boolean {
   const trimmed = arg.trim();
   if (!trimmed) return false;
@@ -37,11 +37,11 @@ export function isGoMiddlewareIdentifier(arg: string): boolean {
   return /^[A-Za-z_][\w.]*(\s*\([^)]*\))?$/.test(trimmed);
 }
 
-/**
- * Parse the arguments of a call starting just after the opening '(' (depth 1),
- * splitting on top-level commas while respecting nested parens/brackets/braces
- * and string/backtick literals. Mirrors the JS analyzers' arg parser for Go syntax.
- */
+
+
+
+
+
 export function parseGoCallArgs(content: string, pos: number): string[] {
   const args: string[] = [];
   let depth = 1;
@@ -68,8 +68,8 @@ export function parseGoCallArgs(content: string, pos: number): string[] {
   return args;
 }
 
-/** Span `[openIndex, matching-close-index]` for the balanced bracket pair starting
- *  at `openIndex` (which must point at one of '(', '{', '['). */
+
+
 export function balancedSpan(content: string, openIndex: number): [number, number] | null {
   const open = content[openIndex];
   const close = open === '(' ? ')' : open === '{' ? '}' : open === '[' ? ']' : undefined;
@@ -89,7 +89,7 @@ export function balancedSpan(content: string, openIndex: number): [number, numbe
   return null;
 }
 
-/** Join two path segments with exactly one '/' between them, collapsing repeats. */
+
 export function joinGoPaths(a: string, b: string): string {
   const left = (a || '').replace(/\/+$/, '');
   const right = (b || '').replace(/^\/+/, '');
@@ -98,8 +98,8 @@ export function joinGoPaths(a: string, b: string): string {
   return `${left}/${right}`;
 }
 
-/** Find all `.go` files in a project (excluding vendor/tests), returning
- *  project-relative paths. */
+
+
 export async function findGoFiles(projectPath: string, extraIgnore: string[] = []): Promise<string[]> {
   return glob(['**/*.go'], {
     cwd: projectPath,
@@ -122,7 +122,7 @@ export async function readGoFiles(projectPath: string, files: string[]): Promise
   return contents;
 }
 
-/** True if go.mod (or any vendored copy) requires `modulePath`. */
+
 export async function goModRequires(projectPath: string, modulePath: string): Promise<boolean> {
   const goModPath = path.join(projectPath, 'go.mod');
   if (!(await fs.pathExists(goModPath))) return false;

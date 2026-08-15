@@ -8,22 +8,21 @@ import {
   GoRoute, describeGoHandler, isGoMiddlewareIdentifier, parseGoCallArgs,
   balancedSpan, joinGoPaths, findGoFiles, readGoFiles, goModRequires, lineForIndex
 } from './go-route-utils';
-import * as path from 'path';
 
 const GIN_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'Any'];
 
-/**
- * Gin framework analyzer (github.com/gin-gonic/gin).
- *
- * Extracts `r.GET("/path", handler)` / `router.Group("/prefix")` route
- * registrations. Groups nest lexically (a `.Group()` call returns a
- * `*gin.RouterGroup` bound to a local variable whose own `.GET/.POST/...`
- * calls are scoped to that block) — prefixes are resolved by walking each
- * `Group(...)` call's brace-delimited body and recursively descending into
- * nested `Group()` calls, accumulating the prefix chain. `.Use(...)` calls
- * inside a group (or chained off a `Group()` return) register guards/middleware
- * that apply to every route within that scope.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export class GinAnalyzer extends BaseAnalyzer {
   constructor() {
     super('gin', 'Gin Framework Analyzer', '1.0.0', 'framework');
@@ -138,12 +137,12 @@ export class GinAnalyzer extends BaseAnalyzer {
     return importsGin && (constructsEngine || hasRouteCall);
   }
 
-  /**
-   * Extract all routes in a file, resolving Group() nesting by recursively
-   * walking each top-level receiver's (r/router/engine) method calls and any
-   * `.Group("/prefix")` call's balanced-brace body (or trailing chained calls),
-   * accumulating the prefix and any `.Use(...)` guards registered in scope.
-   */
+
+
+
+
+
+
   private extractRoutes(content: string, file: string): GoRoute[] {
     const routes: GoRoute[] = [];
     const receivers = this.findEngineReceiverNames(content);
@@ -153,9 +152,9 @@ export class GinAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  /** Local var names bound to `gin.Default()`/`gin.New()`, plus the conventional
-   *  `r`/`router`/`engine` names used even when the binding isn't found (covers
-   *  helper functions receiving `*gin.Engine`/`*gin.RouterGroup` as a parameter). */
+
+
+
   private findEngineReceiverNames(content: string): string[] {
     const names = new Set<string>(['r', 'router', 'engine']);
     const instancePattern = /(?:const|var)?\s*([A-Za-z_][\w]*)\s*:?=\s*gin\.(?:Default|New)\s*\(/g;
@@ -164,13 +163,13 @@ export class GinAnalyzer extends BaseAnalyzer {
     return [...names];
   }
 
-  /**
-   * Walk every `receiver.METHOD("/path", handler)` and `receiver.Group("/prefix")`
-   * call at the top level of `content` (not scoped to a specific brace range —
-   * regex-based, so it will also match calls inside nested functions using the
-   * same receiver name, which is the common Gin pattern of route-registration
-   * helper functions taking `r *gin.RouterGroup`).
-   */
+
+
+
+
+
+
+
   private walkScope(
     content: string,
     file: string,
@@ -182,10 +181,10 @@ export class GinAnalyzer extends BaseAnalyzer {
   ): void {
     const escaped = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // Use() calls that add group-scoped middleware: receiver.Use(mw1, mw2).
-    // Computed BEFORE the route loop so `receiver.Use(...)` guards apply to every
-    // route registered directly on this same receiver, not just to further-nested
-    // Group() descendants.
+
+
+
+
     const usePattern = new RegExp(`\\b${escaped}\\.Use\\s*\\(`, 'g');
     const groupGuards: string[] = [];
     let match: RegExpExecArray | null;
@@ -194,7 +193,7 @@ export class GinAnalyzer extends BaseAnalyzer {
       groupGuards.push(...args.filter(a => isGoMiddlewareIdentifier(a)));
     }
 
-    // Route calls: receiver.GET("/path", handler) / receiver.Any("/path", handler)
+
     const methodAlt = GIN_METHODS.join('|');
     const routeCallPattern = new RegExp(`\\b${escaped}\\.(${methodAlt})\\s*\\(\\s*(['"\`])([^'"\`]*)\\2`, 'g');
     while ((match = routeCallPattern.exec(content)) !== null) {
@@ -215,7 +214,7 @@ export class GinAnalyzer extends BaseAnalyzer {
       });
     }
 
-    // Group calls: newVar := receiver.Group("/prefix"[, mw...]) { ... } or chained.
+
     const groupPattern = new RegExp(`(?:([A-Za-z_][\\w]*)\\s*:?=\\s*)?\\b${escaped}\\.Group\\s*\\(\\s*(['"\`])([^'"\`]*)\\2`, 'g');
     while ((match = groupPattern.exec(content)) !== null) {
       if (visitedGroupStarts.has(match.index)) continue;
@@ -227,18 +226,18 @@ export class GinAnalyzer extends BaseAnalyzer {
       const combinedGuards = [...guards, ...groupGuards, ...groupCallGuards];
 
       if (groupVar) {
-        // `v1 := r.Group("/v1")` — descend using the new variable name as receiver,
-        // scanning the WHOLE file (Gin group vars are commonly used across a
-        // function body, sometimes passed to a sibling route-registration func).
+
+
+
         this.walkScope(content, file, groupVar, groupPrefix, combinedGuards, routes, visitedGroupStarts);
       } else {
-        // Anonymous group with no var binding: either chained directly
-        // (`r.Group("/v1").GET("/x", h)`) or passed a func literal receiver
-        // (`r.Group("/v1", func(rg *gin.RouterGroup) { rg.GET(...) })`). Handle the
-        // func-literal case by recursing with that param name as the new receiver
-        // over the SAME full content (consistent with the var-binding case above —
-        // route calls are still matched by receiver name via regex, not brace scope),
-        // then also check for a direct chain in case there's no func literal.
+
+
+
+
+
+
+
         const braceMatch = /^\s*,?\s*func\s*\(\s*([A-Za-z_][\w]*)/.exec(content.slice(match.index, match.index + 400));
         if (braceMatch) {
           this.walkScope(content, file, braceMatch[1], groupPrefix, combinedGuards, routes, visitedGroupStarts);
@@ -249,9 +248,9 @@ export class GinAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Extract `.METHOD("/path", handler)` calls chained directly off an anonymous
-   *  `Group()` return (`r.Group("/v1").GET("/x", h)`), scanning forward from the
-   *  Group() call for immediate `.METHOD(` chains until a non-chain break. */
+
+
+
   private extractChainedCalls(
     content: string,
     fromIndex: number,
@@ -285,7 +284,7 @@ export class GinAnalyzer extends BaseAnalyzer {
         file,
         line
       });
-      // Advance cursor past this call's closing paren.
+
       const parenOpen = content.indexOf('(', absoluteIndex);
       const span = parenOpen !== -1 ? balancedSpan(content, parenOpen) : null;
       cursor = span ? span[1] + 1 : cursor + m[0].length;
