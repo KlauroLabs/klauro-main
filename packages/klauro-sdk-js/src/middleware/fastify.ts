@@ -19,13 +19,6 @@ function routeOf(req: FastifyReqLike): string | undefined {
   return req.routeOptions?.url || req.routerPath;
 }
 
-/**
- * Fastify plugin. Registers onRequest / onResponse / onError hooks so each
- * request produces a CAS-correlated event.
- *
- *   import { klauroFastify } from '@klauro/telemetry/fastify';
- *   await app.register(klauroFastify());
- */
 export function klauroFastify(client?: KlauroClient) {
   const plugin = (fastify: any, _opts: unknown, done: HookDone): void => {
     const c = client || getClient();
@@ -55,7 +48,7 @@ export function klauroFastify(client?: KlauroClient) {
     });
     done();
   };
-  // Mark as a Fastify plugin so `fastify.register` accepts it without fastify-plugin.
+
   (plugin as any)[Symbol.for('skip-override')] = true;
   return plugin;
 }

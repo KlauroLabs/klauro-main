@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 
 from klauro_telemetry import KlauroClient
@@ -125,3 +128,33 @@ def test_max_queue_size_bounds_memory():
 def test_requires_project_id():
     with pytest.raises(ValueError):
         KlauroClient(flush_interval=0)
+
+
+def test_concurrent_flushes_serialize_transport_delivery():
+    class ConcurrentTransport:
+        def __init__(self):
+            self.active = 0
+            self.maximum_active = 0
+            self.lock = threading.Lock()
+
+        def send(self, events):
+            with self.lock:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            time.sleep(0.02)
+            with self.lock:
+                self.active -= 1
+
+    transport = ConcurrentTransport()
+    client = make_client(transport)
+    client.record("first")
+    first = threading.Thread(target=client.flush)
+    first.start()
+    client.record("second")
+    second = threading.Thread(target=client.flush)
+    second.start()
+    first.join()
+    second.join()
+    assert transport.maximum_active == 1
+    assert client.pending == 0
+    client.shutdown()

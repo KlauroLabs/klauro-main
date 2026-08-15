@@ -1,5 +1,3 @@
-"""Klauro telemetry client: batched, non-blocking, crash-safe delivery."""
-
 import atexit
 import json
 import os
@@ -12,21 +10,13 @@ from datetime import datetime, timezone
 
 from .contract import SCHEMA_VERSION, DEFAULT_ENDPOINT, ingest_path
 
-
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
-
 
 def _rand_hex(nbytes):
     return os.urandom(nbytes).hex()
 
-
 class HttpTransport:
-    """Default transport: POSTs {"events": [...]} to the CAS ingest endpoint.
-
-    Delivery is best-effort. Failures raise, and the client re-queues + reports.
-    """
-
     def __init__(self, endpoint, project_id, api_key=None, timeout=5.0):
         self.url = endpoint.rstrip("/") + ingest_path(project_id)
         self.api_key = api_key
@@ -43,10 +33,7 @@ class HttpTransport:
             if status < 200 or status >= 300:
                 raise RuntimeError("klauro ingest returned HTTP {}".format(status))
 
-
 class Span:
-    """A live span. ``end()`` records an ``exit`` event with the elapsed duration."""
-
     def __init__(self, client, name, extra=None):
         self._client = client
         self._name = name
@@ -103,17 +90,7 @@ class Span:
     def _noop(cls):
         return cls(None, "noop")
 
-
 class KlauroClient:
-    """The Klauro runtime telemetry client.
-
-    Recording is non-blocking: events are enqueued under a lock and delivered by
-    a background daemon thread (on a flush interval or batch threshold), on
-    explicit :meth:`flush`, and at interpreter exit. Network failures never
-    propagate into user code — the batch is re-queued (bounded) and ``on_error``
-    is invoked.
-    """
-
     def __init__(
         self,
         project_id=None,
@@ -146,6 +123,7 @@ class KlauroClient:
 
         self._queue = []
         self._lock = threading.Lock()
+        self._flush_lock = threading.Lock()
         self._flush_now = threading.Event()
         self._stopped = threading.Event()
         self._worker = None
@@ -153,8 +131,6 @@ class KlauroClient:
             self._worker = threading.Thread(target=self._run, name="klauro-flush", daemon=True)
             self._worker.start()
         atexit.register(self._atexit)
-
-    # ---- public API ----
 
     def record_event(self, event):
         if self._stopped.is_set():
@@ -164,7 +140,6 @@ class KlauroClient:
         with self._lock:
             self._queue.append(normalized)
             if len(self._queue) > self.max_queue_size:
-                # Drop oldest to bound memory; telemetry must never OOM the host.
                 del self._queue[: len(self._queue) - self.max_queue_size]
             if len(self._queue) >= self.batch_size:
                 should_flush = True
@@ -206,31 +181,29 @@ class KlauroClient:
             return len(self._queue)
 
     def flush(self):
-        """Synchronously deliver all queued events. Never raises."""
-        with self._lock:
-            batch = self._queue
-            self._queue = []
-        if not batch:
-            return
-        try:
-            self._transport.send(batch)
-            if self.debug:
-                print("[klauro] delivered {} event(s)".format(len(batch)))
-        except Exception as exc:  # noqa: BLE001 - telemetry must not crash the host
-            self._requeue(batch)
-            self._on_error(exc)
+        with self._flush_lock:
+            with self._lock:
+                batch = self._queue
+                self._queue = []
+            if not batch:
+                return
+            try:
+                self._transport.send(batch)
+                if self.debug:
+                    print("[klauro] delivered {} event(s)".format(len(batch)))
+            except Exception as exc:
+                self._requeue(batch)
+                self._on_error(exc)
 
     def shutdown(self):
-        """Flush and stop the background worker. Idempotent."""
         if self._stopped.is_set():
             return
         self._stopped.set()
+        atexit.unregister(self._atexit)
         self._flush_now.set()
         if self._worker is not None:
             self._worker.join(timeout=self.flush_interval + 2.0)
         self.flush()
-
-    # ---- internals ----
 
     def _requeue(self, batch):
         with self._lock:
@@ -259,7 +232,7 @@ class KlauroClient:
     def _atexit(self):
         try:
             self.shutdown()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     def _default_on_error(self, exc):

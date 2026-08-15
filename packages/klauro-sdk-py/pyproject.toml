@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Klauro runtime telemetry SDK. Emits CAS-correlated runtime events so production signal maps back onto your Klauro static analysis."
 readme = "README.md"
 requires-python = ">=3.8"
-license = { text = "MIT" }
+license = "MIT"
 keywords = ["klauro", "telemetry", "observability", "opentelemetry", "runtime", "instrumentation"]
 dependencies = []
 
@@ -26,7 +26,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The package lives under src/, so a plain `pytest` in a fresh checkout could
-# not import klauro_telemetry and every test module errored at collection —
-# the suite only ran for someone who had already `pip install -e .`'d it.
 pythonpath = ["src"]

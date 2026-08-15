@@ -20,14 +20,6 @@ function resolveRoute(req: ExpressReqLike): string | undefined {
   return undefined;
 }
 
-/**
- * Express request-instrumentation middleware. Records one `request` (or `error`
- * for 5xx) event per completed request, with method, route pattern, status, and
- * duration.
- *
- *   import { klauroExpress } from '@klauro/telemetry/express';
- *   app.use(klauroExpress());
- */
 export function klauroExpress(client?: KlauroClient) {
   return (req: ExpressReqLike, res: ExpressResLike, next: () => void): void => {
     const c = client || getClient();
@@ -51,12 +43,6 @@ export function klauroExpress(client?: KlauroClient) {
   };
 }
 
-/**
- * Express error-handling middleware. Register AFTER routes so thrown errors are
- * captured with their stack.
- *
- *   app.use(klauroExpressErrorHandler());
- */
 export function klauroExpressErrorHandler(client?: KlauroClient) {
   return (err: Error, req: ExpressReqLike, _res: ExpressResLike, next: (err: Error) => void): void => {
     const c = client || getClient();

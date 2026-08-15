@@ -1,15 +1,7 @@
-"""CAS runtime event contract constants and the canonical event field set.
-
-Mirrors the JS SDK's ``types.ts`` and the backend ``get_runtime_event_contract``.
-"""
-
 SCHEMA_VERSION = "1.0.0"
 DEFAULT_ENDPOINT = "https://mcp.klauro.com"
 EVENT_TYPES = ("request", "error", "exit", "log", "custom")
 
-# All recognized CAS runtime event fields. Used to keep events clean and to
-# document the contract in one place. `type` is required; everything else is
-# optional and correlation-relevant.
 EVENT_FIELDS = (
     "type",
     "timestamp",
@@ -35,9 +27,7 @@ EVENT_FIELDS = (
     "attributes",
 )
 
-
 def ingest_path(project_id):
-    """Return the ingest path for a project id (path portion only)."""
     from urllib.parse import quote
 
     return "/api/telemetry/runtime-events/{}".format(quote(str(project_id), safe=""))

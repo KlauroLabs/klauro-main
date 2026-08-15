@@ -7,7 +7,7 @@ interface KoaCtxLike {
   path?: string;
   url?: string;
   status: number;
-  // koa-router populates this
+
   _matchedRoute?: string;
   routePath?: string;
 }
@@ -16,13 +16,6 @@ function routeOf(ctx: KoaCtxLike): string | undefined {
   return ctx._matchedRoute || ctx.routePath;
 }
 
-/**
- * Koa middleware. Records a `request`/`error` event once the downstream chain
- * resolves, and captures thrown errors before re-raising them.
- *
- *   import { klauroKoa } from '@klauro/telemetry/koa';
- *   app.use(klauroKoa());
- */
 export function klauroKoa(client?: KlauroClient) {
   return async (ctx: KoaCtxLike, next: () => Promise<void>): Promise<void> => {
     const c = client || getClient();

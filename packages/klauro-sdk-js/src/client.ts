@@ -7,10 +7,29 @@ import {
 } from './types';
 import { nowMs, elapsedMs } from './clock';
 
-/**
- * A live handle to a running span. `end()` records an `exit` event with the
- * elapsed duration. Safe to call once; subsequent calls are no-ops.
- */
+const activeClients = new Set<KlauroClient>();
+let lifecycleHookInstalled = false;
+
+function flushActiveClients(): void {
+  if (typeof process !== 'undefined') process.removeListener('beforeExit', flushActiveClients);
+  lifecycleHookInstalled = false;
+  for (const client of activeClients) void client.flush();
+}
+
+function registerActiveClient(client: KlauroClient): void {
+  activeClients.add(client);
+  if (lifecycleHookInstalled || typeof process === 'undefined' || typeof process.on !== 'function') return;
+  process.on('beforeExit', flushActiveClients);
+  lifecycleHookInstalled = true;
+}
+
+function unregisterActiveClient(client: KlauroClient): void {
+  activeClients.delete(client);
+  if (activeClients.size > 0 || !lifecycleHookInstalled || typeof process === 'undefined') return;
+  process.removeListener('beforeExit', flushActiveClients);
+  lifecycleHookInstalled = false;
+}
+
 export interface Span {
   readonly spanId: string;
   readonly traceId: string;
@@ -26,20 +45,12 @@ function randomHex(bytes: number): string {
   return out;
 }
 
-/**
- * The Klauro runtime telemetry client.
- *
- * Non-blocking: `recordEvent` / `captureError` / span end just enqueue and
- * return. Delivery happens on a batch threshold, a flush interval, or process
- * exit. Network failures never crash the host process — failed batches are
- * re-queued (bounded) and `onError` is invoked.
- */
 export class KlauroClient {
   private readonly config: ResolvedConfig;
   private queue: CasRuntimeEvent[] = [];
   private timer: ReturnType<typeof setInterval> | undefined;
-  private exitHooksInstalled = false;
   private shuttingDown = false;
+  private flushChain: Promise<void> = Promise.resolve();
 
   constructor(config: KlauroConfig) {
     const projectId = config.projectId;
@@ -70,27 +81,21 @@ export class KlauroClient {
       this.timer = setInterval(() => {
         void this.flush();
       }, this.config.flushInterval);
-      // Do not keep the event loop alive just for telemetry.
+
       if (typeof this.timer.unref === 'function') this.timer.unref();
     }
-    this.installExitHooks();
+    registerActiveClient(this);
   }
 
-  /** Record a fully-formed CAS runtime event. Non-blocking. */
   recordEvent(event: CasRuntimeEvent): void {
     if (this.shuttingDown) return;
     this.enqueue(event);
   }
 
-  /**
-   * Record a named custom event with arbitrary attributes.
-   * Maps to a `custom` CAS event with `signal = name`.
-   */
   record(name: string, attributes: Record<string, unknown> = {}): void {
     this.recordEvent({ type: 'custom', signal: name, attributes });
   }
 
-  /** Record a numeric counter increment as a custom metric event. */
   incrementCounter(name: string, value = 1, attributes: Record<string, unknown> = {}): void {
     this.recordEvent({
       type: 'custom',
@@ -99,7 +104,6 @@ export class KlauroClient {
     });
   }
 
-  /** Record a gauge reading as a custom metric event. */
   recordGauge(name: string, value: number, attributes: Record<string, unknown> = {}): void {
     this.recordEvent({
       type: 'custom',
@@ -108,7 +112,6 @@ export class KlauroClient {
     });
   }
 
-  /** Capture an error. Non-blocking. */
   captureError(err: unknown, extra: Partial<CasRuntimeEvent> = {}): void {
     const error = err instanceof Error ? err : new Error(String(err));
     this.recordEvent({
@@ -119,7 +122,6 @@ export class KlauroClient {
     });
   }
 
-  /** Start a span. Call `.end()` to record the `exit` event. */
   startSpan(name: string, extra: Partial<CasRuntimeEvent> = {}): Span {
     const startedAt = nowMs();
     const traceId = extra.trace_id || randomHex(16);
@@ -151,13 +153,17 @@ export class KlauroClient {
     };
   }
 
-  /** Number of events waiting to be delivered. */
   get pending(): number {
     return this.queue.length;
   }
 
-  /** Force-deliver queued events. Awaitable; resolves even on failure. */
   async flush(): Promise<void> {
+    const operation = this.flushChain.then(() => this.deliverQueuedEvents());
+    this.flushChain = operation.catch(() => {});
+    await operation;
+  }
+
+  private async deliverQueuedEvents(): Promise<void> {
     if (this.queue.length === 0) return;
     const batch = this.queue.splice(0, this.queue.length);
     const fetchImpl = this.config.fetchImpl || (globalThis.fetch as typeof fetch | undefined);
@@ -187,9 +193,9 @@ export class KlauroClient {
     }
   }
 
-  /** Flush and stop timers/exit hooks. Idempotent. */
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    unregisterActiveClient(this);
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
@@ -200,7 +206,7 @@ export class KlauroClient {
   private enqueue(event: CasRuntimeEvent): void {
     this.queue.push(this.normalize(event));
     if (this.queue.length > this.config.maxQueueSize) {
-      // Drop oldest to bound memory; telemetry must never OOM the host.
+
       this.queue.splice(0, this.queue.length - this.config.maxQueueSize);
     }
     if (this.queue.length >= this.config.batchSize) {
@@ -231,15 +237,4 @@ export class KlauroClient {
     )}`;
   }
 
-  private installExitHooks(): void {
-    if (this.exitHooksInstalled) return;
-    if (typeof process === 'undefined' || typeof process.once !== 'function') return;
-    this.exitHooksInstalled = true;
-    const finalFlush = () => {
-      void this.flush();
-    };
-    process.once('beforeExit', finalFlush);
-    process.once('SIGTERM', finalFlush);
-    process.once('SIGINT', finalFlush);
-  }
 }

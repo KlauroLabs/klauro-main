@@ -166,3 +166,35 @@ test('flush is a no-op with an empty queue', async () => {
   await c.flush();
   assert.equal(captures.length, 0);
 });
+
+test('many clients share one lifecycle hook and never intercept process signals', async () => {
+  const beforeExitCount = process.listenerCount('beforeExit');
+  const sigintCount = process.listenerCount('SIGINT');
+  const sigtermCount = process.listenerCount('SIGTERM');
+  const clients = Array.from({ length: 25 }, () => new KlauroClient({ projectId: 'p', flushInterval: 0 }));
+  assert.ok(process.listenerCount('beforeExit') <= beforeExitCount + 1);
+  assert.equal(process.listenerCount('SIGINT'), sigintCount);
+  assert.equal(process.listenerCount('SIGTERM'), sigtermCount);
+  await Promise.all(clients.map((client) => client.shutdown()));
+});
+
+test('concurrent flush requests serialize delivery', async () => {
+  let activeDeliveries = 0;
+  let maximumConcurrentDeliveries = 0;
+  const fetchImpl = (async () => {
+    activeDeliveries += 1;
+    maximumConcurrentDeliveries = Math.max(maximumConcurrentDeliveries, activeDeliveries);
+    await new Promise((resolve) => setImmediate(resolve));
+    activeDeliveries -= 1;
+    return { ok: true, status: 200 } as Response;
+  }) as typeof fetch;
+  const client = new KlauroClient({ projectId: 'p', flushInterval: 0, fetchImpl });
+  client.record('first');
+  const first = client.flush();
+  client.record('second');
+  const second = client.flush();
+  await Promise.all([first, second]);
+  assert.equal(maximumConcurrentDeliveries, 1);
+  assert.equal(client.pending, 0);
+  await client.shutdown();
+});

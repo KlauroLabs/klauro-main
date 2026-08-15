@@ -1,40 +1,17 @@
-"""Framework integrations: FastAPI (ASGI), Flask, Django.
-
-Each integration is duck-typed and imports nothing from the framework at module
-load, so ``klauro-telemetry`` installs cleanly in any project. Install the
-matching extra (``klauro-telemetry[fastapi]`` etc.) for your framework.
-"""
-
 import time
 
 from . import get_client
 
-
 def _elapsed_ms(started_at):
-    """Elapsed milliseconds from a ``time.perf_counter()`` reading.
-
-    ``perf_counter`` is a monotonic high-resolution clock, so latency is
-    accurate even for sub-millisecond handlers and immune to wall-clock jumps.
-    Rounded to 3 decimals so fast handlers still produce a comparable value.
-    """
     return round(max(0.0, (time.perf_counter() - started_at) * 1000.0), 3)
 
-
 def _route_of_asgi(scope):
-    # Starlette/FastAPI put the matched route object under scope["route"].
     route = scope.get("route")
     if route is not None:
         return getattr(route, "path", None) or getattr(route, "path_format", None)
     return scope.get("path")
 
-
 class KlauroASGIMiddleware:
-    """ASGI middleware for FastAPI / Starlette.
-
-        from klauro_telemetry.middleware import KlauroASGIMiddleware
-        app.add_middleware(KlauroASGIMiddleware)
-    """
-
     def __init__(self, app, client=None):
         self.app = app
         self._client = client
@@ -58,7 +35,7 @@ class KlauroASGIMiddleware:
 
         try:
             await self.app(scope, receive, send_wrapper)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             client.capture_error(
                 exc,
                 {
@@ -82,14 +59,8 @@ class KlauroASGIMiddleware:
                 }
             )
 
-
 def init_flask(app, client=None):
-    """Instrument a Flask app via before/after/teardown request hooks.
-
-        from klauro_telemetry.middleware import init_flask
-        init_flask(app)
-    """
-    from flask import g, request  # local import; requires the flask extra
+    from flask import g, request
 
     @app.before_request
     def _klauro_before():
@@ -123,13 +94,7 @@ def init_flask(app, client=None):
 
     return app
 
-
 class KlauroDjangoMiddleware:
-    """Django middleware. Add to ``MIDDLEWARE`` in settings:
-
-        MIDDLEWARE = [..., "klauro_telemetry.middleware.KlauroDjangoMiddleware"]
-    """
-
     def __init__(self, get_response):
         self.get_response = get_response
 
