@@ -1,6 +1,7 @@
-import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
+import { BaseAnalyzer, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import * as incrementalScope from './incremental-scope';
 import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isTestFileName } from './scaffold-paths';
+import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS, isBuildArtifactDirectoryName } from './build-artifact-paths';
 import {
   CASOutput,
   CASNestedRepository,
@@ -49,7 +50,6 @@ import {
   CASDomainConcept,
   EnhancedSystemPurpose,
   CASFlowGraph,
-  CASFlowRef,
   CASCapabilityDependency,
   CASTestSuite,
   CASTestCase,
@@ -73,25 +73,26 @@ import {
   CASSystemHealth,
   CASSecurityContext,
   CASCallGraph,
-  CASNodePerspective,
   CASLibrary,
   IncrementalState,
   ChangeSet,
   FileAnalysisRecord,
   ChangeReport,
+  ChangeExecutionLocality,
   ChangeSemanticImpact,
   FileAnalysisResult,
   CAS_VERSION,
   INCREMENTAL_STATE_VERSION,
   CASArtifactType
 } from '../../types/cas.types';
-import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS, type ArtifactTypeResult } from './artifact-type';
+import { classifyArtifactType, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS } from './artifact-type';
 import { collectDeployableEvidence } from './deployable-evidence';
 import { attachDeployable } from './entry-point-deployable';
 import { determineSystemType as determineSystemTypeImpl } from './system-type';
 import * as CapabilityText from './capability-description';
 import { isIdentifierShapedRepoBasename } from './deployable-evidence/util';
 import { buildDependencyManifest } from './dependency-manifest';
+import { buildChangeExecutionLocality, localizedNodeFingerprint } from './incremental-locality';
 import { classifyCodebaseTypes } from './codebase-type';
 import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
 import { linkInfraTopology } from './infra-topology-linker';
@@ -99,15 +100,38 @@ import { describeValidationRules, type ValidationContractField } from '../librar
 import { classifyCommunicationSeams, mergeSeams } from './communication-seams';
 import { deriveConsistencyModel, toCommunicationSeams } from './consistency-model';
 import { collectCoverageGaps } from './coverage-gaps';
-import { ChangeDetector, PROJECT_SCOPE_TRIGGER_PATTERNS } from './change-detector';
+import { ChangeDetector } from './change-detector';
+import { anchorUnresolvedCliHandler, permitsGlobalHandlerFallback, rankHandlerCandidateFiles } from './route-handler-resolution';
+import { linkStructuralOwnership } from './structural-ownership';
 import {
   computeGraphAffectedFileClosure,
   filesRequiringIncrementalAnalysis,
   normalizeIncrementalStateImports,
-  remapIncrementalNodeReferences,
+  remapIncrementalNodeReferences, resolveImportedFileReferences,
 } from './incremental-impact';
+import {
+  filterInvalidIncrementalEndpoints,
+  createIncrementalGraphAccumulator,
+  createIncrementalAnalysisSnapshot,
+  graphItemAnalyzers,
+  indexIncrementalAnalyzersByFile,
+  refreshProjectScopedContributions,
+  mergeIncrementalFileAnalysisResult,
+  reusedIncrementalFileResult,
+  removeFileScopedGraphItemsBatch,
+  projectScopedFileAnalysisSnapshot,
+  selectPromotedIncrementalAnalyzers,
+  shouldPreferFullRebuildForFanout,
+  stampAnalyzerAttribution,
+  updatedIncrementalFileRecord,
+} from './incremental-contribution-refresh';
+import { previousDescriptionNeedsCurrentValidation } from './previous-description-validation';
+import { refreshIncrementalStateFromGraph } from './incremental-state-refresh';
+import { buildImportedHandlerResolver } from './imported-handler-resolver';
+import { dedupeCanonicalEdges } from './canonical-edge-deduplication';
 import { getBuildIdentity } from './build-identity';
 import { getStageFingerprints } from './stage-fingerprint';
+import { getAnalyzerDetectionEvidence, invalidateAnalyzerDetectionEvidence, refreshAnalyzerDetectionEvidence, setAnalyzerDetectionEvidence } from './analyzer-detection-cache';
 import {
   PersistentAnalyzerContributionCache,
   type AnalyzerContributionCacheEvidence,
@@ -115,8 +139,16 @@ import {
 } from './analyzer-contribution-cache';
 import { buildUserJourneys, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
+import { buildCasTerminality } from './terminality';
+import {
+  behaviorSurfaceEntryCount as countBehaviorSurfaceEntries,
+  catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
+  catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
+  firstPartySupportsIdentityProduct as supportsIdentityProduct,
+} from './capability-catalog-evidence';
+import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
-import { testCapabilityNameAgainstIdentifierVocabulary, testCapabilityDescriptionAgainstAudience } from './capability-audience-test';
+import { capabilitySubjectTokens, testCapabilityNameAgainstIdentifierVocabulary, testCapabilityDescriptionAgainstAudience } from './capability-audience-test';
 import {
   attachFlowContract,
   attachCapability,
@@ -152,8 +184,6 @@ import {
   namingSubjectFromPath,
   stripSourceFileExtension,
   isPathDerivedCapabilityName,
-  isStoragePathToken,
-  isMalformedCapabilityLabel,
   collapseDuplicateAdjacentWords
 } from './capability-naming';
 import { CallChainAnalyzer } from './call-chain-analyzer';
@@ -171,8 +201,10 @@ import { aiService, isProviderUnavailableFailure } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
-import { validateElementDescription as validateSharedElementDescription, capabilityDescriptionScaffoldReason } from '../../ai/element-description-validator';
+import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
+import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain-recovery';
+import { containsGenericImplementationMechanicFiller, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
 
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
@@ -222,14 +254,13 @@ function aiConcurrencyLimit(): number {
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
 }
 
-// regression — a budget must never be met by silently shipping less, but it
-// also must never be missed by an unbounded amount.
-const UNGROUNDED_FALLBACK_KEEP = 3;
+function writeAnalyzerStatus(...values: unknown[]): void {
+  const line = values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(' ');
+  process.stderr.write(`${line}\n`);
+}
 
 const STUTTER_MAX_TOKENS = 3;
 
-// p75 of operations per capability across the real corpus: above this a capability
-// is carrying substantially more implementation than the median one.
 const CAPABILITY_SUBSTANTIAL_OPERATIONS = 3;
 
 const CATALOG_HARD_DEADLINE_MS = (() => {
@@ -310,14 +341,6 @@ export function hasStructuralSecurityEvidence(node: Pick<CASNode, 'security'>): 
   return !!(node.security?.authentication_required || node.security?.authorization_roles);
 }
 
-interface DetectedAnalyzerCacheEntry {
-  expiresAt: number;
-  projectRoots: string[];
-  manifestOwningProjectRoots: string[];
-  analyzerRootEntries: Array<[string, string]>;
-  analyzers: AnalyzerRegistration[];
-}
-
 interface SourceFileInventory {
   expiresAt: number;
   files: string[];
@@ -333,6 +356,7 @@ interface ProjectTextSignal {
   manifestDescription?: string;
   productDocTitle?: string;
   productDocSummary?: string;
+  productVocabulary?: string[];
 }
 
 type DescriptionTargetKind = 'capability' | 'entity';
@@ -411,7 +435,7 @@ export class AnalyzerOrchestrator {
 
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
-  // manifest) — see getAnalyzerScopeFilters, which must not exclude a
+
   private manifestOwningProjectRoots: Set<string> = new Set();
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
@@ -424,7 +448,6 @@ export class AnalyzerOrchestrator {
   private analyzerContextEvidenceDigestCache = new WeakMap<object, string>();
   private activeSemanticPackIdentity: readonly string[] = [];
   private nestedRepoIgnoreCache: Map<string, string[]> = new Map();
-  private detectedAnalyzerCache: Map<string, DetectedAnalyzerCacheEntry> = new Map();
   private sourceFileInventoryCache: Map<string, SourceFileInventory> = new Map();
   private nodeLookupSource: CASNode[] | null = null;
   private nodeLookupById: Map<string, CASNode> = new Map();
@@ -437,16 +460,12 @@ export class AnalyzerOrchestrator {
   private primaryProductPathCache: Map<string, boolean> = new Map();
   private elementDescriptionGroundingVocabulary: string[] = [];
   private elementDescriptionArtifactType?: string;
-  private static aiInterpretationTimeouts = 0;
-  private static aiInterpretationDisabledUntil = 0;
 
   private deferredAiEnrichments: WeakMap<CASOutput, () => Promise<void>> = new WeakMap();
 
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
-    this.detectedAnalyzerCache.clear();
   }
-
   listRegisteredAnalyzers(): Array<{
     id: string;
     name: string;
@@ -524,7 +543,7 @@ export class AnalyzerOrchestrator {
       const matches = (await this.getManifestFiles(projectPath)).filter(isPackageBoundaryManifest);
       for (const match of matches) {
         const relativeDir = path.dirname(match).replace(/\\/g, '/');
-        // is the Klauro self-project) must not be promoted to a project root —
+
         if (this.isExcludedLegacyReferencePath(relativeDir, projectPath)) continue;
         const absolutePath = path.join(projectPath, relativeDir);
         rootSet.add(absolutePath);
@@ -534,7 +553,7 @@ export class AnalyzerOrchestrator {
     }
 
     try {
-      // to read there), so getAnalyzerScopeFilters must not wall them off the
+
       const globMembers = discoverWorkspaceGlobRootsWithoutManifest(
         projectPath,
         (absoluteDir) => manifestRootAbsolutePaths.has(absoluteDir),
@@ -550,27 +569,6 @@ export class AnalyzerOrchestrator {
 
     this.manifestOwningProjectRoots = manifestRootAbsolutePaths;
     return Array.from(rootSet).sort((a, b) => a.length - b.length);
-  }
-
-  private getManifestPatterns(): string[] {
-    return [
-      '**/package.json',
-      '**/requirements*.txt',
-      '**/setup.py',
-      '**/pyproject.toml',
-      '**/Pipfile',
-      '**/pom.xml',
-      '**/build.gradle',
-      '**/build.gradle.kts',
-      '**/Cargo.toml',
-      '**/composer.json',
-      '**/*.csproj',
-      '**/*.fsproj',
-      '**/*.vbproj',
-      '**/*.sln',
-      '**/go.mod',
-      '**/pubspec.yaml'
-    ];
   }
 
   private async getManifestFiles(projectPath: string): Promise<string[]> {
@@ -664,6 +662,7 @@ export class AnalyzerOrchestrator {
     if (nestedIgnoredDirectories.has(relativePath)) return true;
     if (this.isExcludedLegacyReferencePath(relativePath, projectPath)) return true;
     if (relativePath === 'bin') return false;
+    if (isBuildArtifactDirectoryName(directoryName)) return true;
     return new Set([
       'node_modules',
       ...SCAFFOLD_DIR_NAMES,
@@ -858,7 +857,7 @@ export class AnalyzerOrchestrator {
     const patterns = [
       '**/node_modules/**',
       ...SCAFFOLD_GLOBS,
-      '**/dist/**',
+      ...BUILD_ARTIFACT_GLOBS,
       '**/build/**',
       '.git/**',
       '**/.git/**',
@@ -869,10 +868,7 @@ export class AnalyzerOrchestrator {
       '.scannerwork/**',
       '**/.scannerwork/**',
       '**/target/**',
-      'vendor/**',
-      '**/vendor/**',
-      'vendors/**',
-      '**/vendors/**',
+      ...THIRD_PARTY_SOURCE_GLOBS,
       '**/*.min.js',
       '**/*.min.css',
       '**/lib/waypoints/**',
@@ -944,12 +940,13 @@ export class AnalyzerOrchestrator {
 
   async detectAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {
     const cacheKey = path.resolve(projectPath);
-    const cached = this.detectedAnalyzerCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    const registryFingerprint = this.analyzerRegistryFingerprint(this.analyzers.values());
+    const cached = getAnalyzerDetectionEvidence(cacheKey, registryFingerprint);
+    if (cached) {
       this.projectRoots = [...cached.projectRoots];
       this.manifestOwningProjectRoots = new Set(cached.manifestOwningProjectRoots);
       this.analyzerRootMap = new Map(cached.analyzerRootEntries);
-      return [...cached.analyzers];
+      return cached.analyzerIds.map(id => this.analyzers.get(id)).filter((registration): registration is AnalyzerRegistration => Boolean(registration));
     }
 
     this.projectRoots = await this.discoverProjectRoots(projectPath);
@@ -964,19 +961,20 @@ export class AnalyzerOrchestrator {
     }
 
     const ordered = this.orderAnalyzers(detected);
-    this.detectedAnalyzerCache.set(cacheKey, {
+    setAnalyzerDetectionEvidence(cacheKey, {
+      registryFingerprint,
       expiresAt: Date.now() + 60_000,
       projectRoots: [...this.projectRoots],
       manifestOwningProjectRoots: [...this.manifestOwningProjectRoots],
       analyzerRootEntries: [...this.analyzerRootMap.entries()],
-      analyzers: [...ordered],
+      analyzerIds: ordered.map(registration => registration.id),
     });
     return ordered;
   }
 
   private invalidateProjectDiscovery(projectPath: string): void {
     const cacheKey = path.resolve(projectPath);
-    this.detectedAnalyzerCache.delete(cacheKey);
+    invalidateAnalyzerDetectionEvidence(cacheKey);
     this.manifestFileCache.delete(projectPath);
     this.manifestEvidenceCache.delete(projectPath);
     this.manifestRuntimeDependencyCache.delete(projectPath);
@@ -1022,15 +1020,15 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     cas: Pick<
       CASOutput,
-      'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'call_chains' | 'data_lineage' | 'system_capabilities' | 'behavior_surfaces' | 'data_entities'
+      'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'call_chains' | 'data_lineage' | 'capabilities' | 'behavior_surfaces' | 'entities'
     >,
-    flowGraph?: CASFlowGraph
+    persistFlows?: (flows: FlowConcept[]) => void,
   ): CASEntryPoint[] {
     try {
       const flows = computeFlowConcepts(cas as CASOutput, {});
+      this.stampFlowCriticality(flows, cas.call_chains || []);
+      persistFlows?.(flows);
       if (flows.length === 0) return entryPoints;
-
-      if (flowGraph) this.materializeFlowGraphFlows(flowGraph, flows, cas.call_chains || []);
 
       const flowLikes: FlowLike[] = flows.map((flow) => ({
         flow_id: flow.flow_id,
@@ -1039,7 +1037,7 @@ export class AnalyzerOrchestrator {
       }));
 
       const capNameById = new Map<string, string>();
-      for (const cap of cas.system_capabilities || []) capNameById.set(cap.id, cap.name);
+      for (const cap of cas.capabilities || []) capNameById.set(cap.id, cap.name);
       for (const surf of cas.behavior_surfaces || []) capNameById.set(surf.id, surf.name);
 
       const capsById = new Map<string, { id: string; name: string; related_flows: Array<{ flow_id: string; role?: string; rationale?: string }> }>();
@@ -1063,7 +1061,7 @@ export class AnalyzerOrchestrator {
 
       const capabilities: CapabilityLike[] = Array.from(capsById.values());
 
-      for (const cap of cas.system_capabilities || []) {
+      for (const cap of cas.capabilities || []) {
         const derived = capsById.get(cap.id);
         if (derived && derived.related_flows.length > 0) {
           cap.related_flows = derived.related_flows.map(rf => ({
@@ -1084,12 +1082,13 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      this.rollupSystemCapabilityDependencies(flows, cas.system_capabilities || [], cas.data_entities || []);
+      this.rollupSystemCapabilityDependencies(flows, cas.capabilities || [], cas.entities || []);
 
       const withContract = attachFlowContract(entryPoints as unknown as EntryPointLike[], flowLikes);
       const withCapability = attachCapability(withContract, flowLikes, capabilities);
       return withCapability as unknown as CASEntryPoint[];
     } catch {
+      persistFlows?.([]);
       return entryPoints;
     }
   }
@@ -1099,6 +1098,10 @@ export class AnalyzerOrchestrator {
     capabilities: SystemCapability[],
     dataEntities: CASDataEntity[] = [],
   ): void {
+    for (const capability of capabilities) {
+      delete capability.depends_on;
+      delete capability.depended_by;
+    }
     const depPairs = new Map<string, { from: string; to: string; count: number }>();
     for (const flow of flows) {
       const relationships = flow.capability_relationships || [];
@@ -1235,7 +1238,7 @@ export class AnalyzerOrchestrator {
         completedAt: new Date().toISOString(),
       });
       if (process.env.KLAURO_DEBUG_ANALYZER_PHASES === '1') {
-        console.error(`[Klauro] phase ${phase} completed in ${timings[phase]}ms`);
+        writeAnalyzerStatus(`[Klauro] phase ${phase} completed in ${timings[phase]}ms`);
       }
     };
 
@@ -1462,7 +1465,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     });
     if (process.env.KLAURO_DEBUG_FILE_READ_CACHE === '1') {
-      console.error('[Klauro] file-read-cache stats:', JSON.stringify(getDebugCacheStats()));
+      writeAnalyzerStatus('[Klauro] file-read-cache stats:', getDebugCacheStats());
     }
 
     phaseStart = startPhase();
@@ -1476,7 +1479,7 @@ export class AnalyzerOrchestrator {
       nodes: allNodes, edges: allEdges, exitPoints: allExitPoints, libraries: allLibraries,
     });
     if (process.env.KLAURO_DEBUG_ANALYZE === '1') {
-      console.error('[Klauro] in-repo call resolution:', JSON.stringify(internalizedCalls));
+      writeAnalyzerStatus('[Klauro] in-repo call resolution:', internalizedCalls);
     }
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
     this.dedupeHttpEntryPoints(allEntryPoints, projectPath);
@@ -1493,7 +1496,7 @@ export class AnalyzerOrchestrator {
       const conventionsResult = applyConventions(options?.conventions, allNodes, allEdges, decoratorsForConventions);
       appendAll(allEntryPoints, conventionsResult.entry_points);
       appendAll(allEdges, conventionsResult.edges);
-      declaredDataEntities = conventionsResult.data_entities;
+      declaredDataEntities = conventionsResult.entities;
       declaredConventionMatches = conventionsResult.matches;
       for (const { node_id, role } of conventionsResult.role_tags) {
         const node = allNodes.find(n => n.id === node_id);
@@ -1557,7 +1560,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
     logTiming('pp_flowSummary', phaseStart);
     await yieldToEventLoop();
     phaseStart = startPhase();
@@ -1610,23 +1612,24 @@ export class AnalyzerOrchestrator {
     phaseStart = startPhase();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
+    const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
+    this.enrichNodeCallGraphs(allNodes, callGraphBuilder, allEntryPoints, allExitPoints);
+    this.deriveParentFromContainsEdges(allNodes, allEdges);
+    this.enrichNodePerspectives(allNodes, allPerspectives);
+    logTiming('pp_enrichNodes', phaseStart);
+    await yieldToEventLoop();
+
+    phaseStart = startPhase();
     const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath, allExitPoints);
+    const structuralCapabilityCandidates = structuredClone(systemCapabilities);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
     const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder, systemCapabilities);
     logTiming('pp_callGraph', phaseStart);
-    await yieldToEventLoop();
-
-    phaseStart = startPhase();
-    this.enrichNodeCallGraphs(allNodes, callGraphBuilder, allEntryPoints, allExitPoints);
-    this.deriveParentFromContainsEdges(allNodes, allEdges);
-    this.enrichNodePerspectives(allNodes, allPerspectives);
-    logTiming('pp_enrichNodes', phaseStart);
     await yieldToEventLoop();
 
     phaseStart = startPhase();
@@ -1681,10 +1684,11 @@ export class AnalyzerOrchestrator {
       exit_points: allExitPoints,
       call_chains: callChains,
       data_lineage: [],
-      data_entities: dataEntities,
-      system_capabilities: systemCapabilities,
+      entities: dataEntities,
+      capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
     } as unknown as CASOutput, {});
+    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
     const userJourneyResult = buildUserJourneys({
       nodes: allNodes,
       edges: allEdges,
@@ -1728,9 +1732,9 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
-    // path or the project record, so it must never win over a real content
+
     systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
-    const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, allEdges, projectPath);
+    const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, allEdges, projectPath, allEntryPoints);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
     const comprehensionJourneys = this.filterPrimaryProductJourneys(
@@ -1753,7 +1757,7 @@ export class AnalyzerOrchestrator {
       frameworkNames,
       externalServiceNames,
       systemCapabilities,
-      flowGraph,
+      flowsForJourneys,
       systemName,
       projectTextSignal,
       allNodes,
@@ -1806,7 +1810,7 @@ export class AnalyzerOrchestrator {
       exitPoints: allExitPoints,
       displayName: systemName,
     });
-    allEntryPoints.splice(0, allEntryPoints.length, ...attachDeployable(allEntryPoints, deployableEvidence, allNodes));
+    replaceArrayContents(allEntryPoints, attachDeployable(allEntryPoints, deployableEvidence, allNodes));
     const topLevelShipUnits = deployableEvidence.filter(item =>
       item.tier === 1 && item.kind !== 'build-image' && !item.bundled_into
     );
@@ -1867,7 +1871,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    const methodCalls = this.buildMethodCalls(allNodes, allEdges);
+    const methodCalls = this.buildMethodCalls(allNodes, allEdges, allExitPoints);
     logTiming('pp_methodCalls', phaseStart);
     await yieldToEventLoop();
 
@@ -1958,25 +1962,30 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
+    if (!deferAiEnrichment) {
+      this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
+    }
+    const canonicalSystemCapabilities = deferAiEnrichment ? [] : systemCapabilities;
     this.finalizeFlowGraphCapabilities(flowGraph);
-    const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
+    let comprehensionFlows: FlowConcept[] = [];
+    let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
       nodes: allNodes,
       edges: allEdges,
       entry_points: allEntryPoints,
       exit_points: allExitPoints,
       call_chains: callChains,
       data_lineage: dataLineage,
-      system_capabilities: systemCapabilities,
+      capabilities: canonicalSystemCapabilities,
       behavior_surfaces: behaviorSurfaces,
-      data_entities: dataEntities,
-    }, flowGraph);
+      entities: dataEntities,
+    }, flows => { comprehensionFlows = flows; });
+    entryPointsWithContractAndCapability = attachDeployable(entryPointsWithContractAndCapability, deployableEvidence, allNodes);
     logTiming('pp_entryPointContractCapability', phaseStart);
     await yieldToEventLoop();
 
     const totalTime = Date.now() - startTime;
     const overBudget = totalTime > 180_000;
-    console.error(
+    writeAnalyzerStatus(
       `[Klauro] Analysis completed in ${totalTime}ms${overBudget ? ' (OVER the 180s hard budget)' : ''}. Breakdown:`,
       JSON.stringify(timings),
     );
@@ -1991,7 +2000,6 @@ export class AnalyzerOrchestrator {
       temporalStability,
       principleViolations: architecturalConflicts.principle_violations,
     });
-
     const output = {
       cas_version: CAS_VERSION,
       analyzer_build: getBuildIdentity().version,
@@ -2026,7 +2034,7 @@ export class AnalyzerOrchestrator {
       analysis_phases: this.buildAnalysisPhases({
         hasAIProvider: this.hasAIInterpretationProviderConfigured(),
         systemDescriptionSource: enhancedSystemPurpose.description_source,
-        capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
+        capabilityDescriptionSource: canonicalSystemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
         embeddingEnabled: Boolean(this.embeddingPhaseConfig),
         runtimeSignals: runtimeStaticLinks.length,
       }),
@@ -2053,7 +2061,7 @@ export class AnalyzerOrchestrator {
       progressive_levels: progressiveLevels,
       intents: intents.length > 0 ? intents : undefined,
       change_risk_summary: changeRiskSummary,
-      data_entities: dataEntities.length > 0 ? dataEntities : undefined,
+      entities: dataEntities.length > 0 ? dataEntities : undefined,
       data_summary: dataSummary,
       behavioral_invariants: behavioralInvariants.length > 0 ? behavioralInvariants : undefined,
       behavioral_invariant_summary: behavioralInvariants.length > 0 ? behavioralInvariantSummary : undefined,
@@ -2063,7 +2071,10 @@ export class AnalyzerOrchestrator {
       test_gaps: testGaps.length > 0 ? testGaps : undefined,
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
-      system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
+      capabilities: canonicalSystemCapabilities.length > 0 ? canonicalSystemCapabilities : undefined,
+      structural_capability_candidates: structuralCapabilityCandidates,
+      flows: comprehensionFlows.length > 0 ? comprehensionFlows : undefined,
+      steps: comprehensionFlows.length > 0 ? comprehensionFlows.flatMap(flow => flow.steps) : undefined,
       behavior_surfaces: behaviorSurfaces.length > 0 ? behaviorSurfaces : undefined,
       system_purpose: {
         ...systemPurpose,
@@ -2111,7 +2122,7 @@ export class AnalyzerOrchestrator {
       test_summary: testSummary
     } as CASOutput;
 
-    this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
+    this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
     output.product_map = buildProductMap(output);
 
     try {
@@ -2171,7 +2182,7 @@ export class AnalyzerOrchestrator {
       console.error('[Klauro] codebase-type/coverage-gaps pass failed:', error);
     }
 
-    this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
+    this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
     output.product_map = buildProductMap(output);
 
     if (deferAiEnrichment) {
@@ -2183,8 +2194,8 @@ export class AnalyzerOrchestrator {
             await runAiInterpretation();
           } catch (error) {
             systemCapabilities.splice(0, systemCapabilities.length, ...rawCapabilitySnapshot);
-            output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
-            this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
+            output.capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+            this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
             output.product_map = buildProductMap(output);
             throw error;
           }
@@ -2195,11 +2206,15 @@ export class AnalyzerOrchestrator {
             exit_points: allExitPoints,
             call_chains: callChains,
             data_lineage: dataLineage,
-            system_capabilities: systemCapabilities,
+            capabilities: systemCapabilities,
             behavior_surfaces: behaviorSurfaces,
-            data_entities: dataEntities,
-          }, flowGraph);
-          output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+            entities: dataEntities,
+          }, flows => {
+            output.flows = flows.length > 0 ? flows : undefined;
+            output.steps = flows.length > 0 ? flows.flatMap(flow => flow.steps) : undefined;
+          });
+          output.capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+          output.terminality = buildCasTerminality(output);
           output.analysis_phases = this.buildAnalysisPhases({
             hasAIProvider: this.hasAIInterpretationProviderConfigured(),
             systemDescriptionSource: enhancedSystemPurpose.description_source,
@@ -2218,13 +2233,13 @@ export class AnalyzerOrchestrator {
           if (enhancedSystemPurpose.inferred_description) {
             output.system.description = enhancedSystemPurpose.inferred_description;
           }
-          this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
+          this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
           output.product_map = buildProductMap(output);
         });
       } else {
         this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
-        output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
-        this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
+        output.capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+        this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
         output.product_map = buildProductMap(output);
       }
     } else {
@@ -2240,6 +2255,10 @@ export class AnalyzerOrchestrator {
       this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
     }
     output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions, cpuUsageStart);
+    output.entry_points = attachDeployable(output.entry_points || [], output.deployable_evidence, output.nodes);
+    linkStructuralOwnership(output.nodes, output.edges);
+    assignNodeRoles({ nodes: output.nodes, edges: output.edges, entry_points: output.entry_points, exit_points: output.exit_points, resetDerivedRoles: true });
+    output.terminality = buildCasTerminality(output);
 
     const sourceFiles = new Set<string>();
     for (const node of output.nodes) {
@@ -2256,6 +2275,7 @@ export class AnalyzerOrchestrator {
       errors: analysisErrors.filter(issue => issue.severity === 'error').length,
       warnings: analysisErrors.filter(issue => issue.severity === 'warning').length,
     });
+    refreshAnalyzerDetectionEvidence(path.resolve(projectPath), this.analyzerRegistryFingerprint(this.analyzers.values()), Date.now() + 60_000);
     return output;
   }
 
@@ -2293,7 +2313,7 @@ export class AnalyzerOrchestrator {
       const trigger = /^(Parser-layer fingerprint changed|Derived-layer fingerprint changed|Analyzer build changed)/.test(schemaRebuildReason)
         ? 'analyzer-version'
         : 'persisted-output-schema';
-      console.error(`[Klauro] incremental full rebuild (${trigger}): ${schemaRebuildReason}`);
+      writeAnalyzerStatus(`[Klauro] incremental full rebuild (${trigger}): ${schemaRebuildReason}`);
       this.invalidateProjectDiscovery(projectPath);
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
@@ -2306,13 +2326,15 @@ export class AnalyzerOrchestrator {
           reason: schemaRebuildReason
         }
       );
+      changeReport.locality = buildChangeExecutionLocality({ strategy: 'full-rebuild', state, changeSet, fileResults: new Map(), cas: output, fullRebuildReason: schemaRebuildReason });
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: schemaRebuildReason };
     }
 
     if (!previousState) {
-      const output = previousOutput?.analysis_id ? previousOutput : await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
+      const output = previousOutput;
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
+      changeReport.locality = buildChangeExecutionLocality({ strategy: 'full-rebuild', state, changeSet, fileResults: new Map(), cas: output, fullRebuildReason: 'No previous analysis state' });
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: 'No previous analysis state' };
     }
 
@@ -2321,6 +2343,9 @@ export class AnalyzerOrchestrator {
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
+      changeReport.locality = buildChangeExecutionLocality({
+        strategy: 'full-rebuild', state, changeSet, fileResults: new Map(), cas: output, fullRebuildReason: changeSet.reason
+      });
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: changeSet.reason };
     }
 
@@ -2332,16 +2357,15 @@ export class AnalyzerOrchestrator {
         gitCommitHash: changeDetector.getCurrentGitCommit()
       };
       const changeReport = this.buildChangeReport(previousOutput, previousOutput, changeSet);
+      changeReport.locality = buildChangeExecutionLocality({
+        strategy: 'no-change', state: previousState, changeSet, fileResults: new Map(), cas: previousOutput
+      });
       return { output: previousOutput, state, changeReport, wasFullRebuild: false };
     }
 
-    const incrementalResult = await this.runIncrementalAnalysis(
-      projectPath,
-      previousOutput,
-      previousState,
-      changeSet,
-      options
-    );
+    const incrementalResult = await withAnalyzerFileReadCache(() => this.runIncrementalAnalysis(
+      projectPath, previousOutput, previousState, changeSet, options
+    ));
 
     if (incrementalResult.wasFullRebuild) {
       this.invalidateProjectDiscovery(projectPath);
@@ -2355,6 +2379,14 @@ export class AnalyzerOrchestrator {
           reason: incrementalResult.fullRebuildReason || changeSet.reason
         }
       );
+      changeReport.locality = buildChangeExecutionLocality({
+        strategy: 'full-rebuild',
+        state: updatedState,
+        changeSet,
+        fileResults: new Map(),
+        cas: incrementalResult.output,
+        fullRebuildReason: incrementalResult.fullRebuildReason || changeSet.reason
+      });
 
       return {
         output: incrementalResult.output,
@@ -2368,16 +2400,22 @@ export class AnalyzerOrchestrator {
     let finalIncrementalPhaseStartedAt = Date.now();
     const debugFinalIncrementalPhase = (label: string) => {
       if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES !== '1') return;
-      console.error(`[Klauro] incremental final phase ${label}: ${Date.now() - finalIncrementalPhaseStartedAt}ms`);
+      writeAnalyzerStatus(`[Klauro] incremental final phase ${label}: ${Date.now() - finalIncrementalPhaseStartedAt}ms`);
       finalIncrementalPhaseStartedAt = Date.now();
     };
 
-    const updatedState = this.updateIncrementalState(
-      previousState,
-      incrementalResult,
-      changeSet,
-      changeDetector
-    );
+    const updatedState = incrementalResult.rebuiltIncrementalState
+      ? refreshIncrementalStateFromGraph({
+        projectPath, previousState, changeSet, output: incrementalResult.output, fileResults: incrementalResult.fileResults,
+        gitCommitHash: changeDetector.getCurrentGitCommit(),
+        analyzerRegistryFingerprint: this.analyzerRegistryFingerprint(this.analyzers.values()),
+      })
+      : this.updateIncrementalState(
+        previousState,
+        incrementalResult,
+        changeSet,
+        changeDetector
+      );
     debugFinalIncrementalPhase('update-state');
     await yieldToEventLoop();
 
@@ -2388,10 +2426,23 @@ export class AnalyzerOrchestrator {
       changeSet,
       incrementalResult.fileResults
     );
+    changeReport.locality = buildChangeExecutionLocality({
+      strategy: incrementalResult.executionStrategy || 'derived-layer-rebuild',
+      state: previousState,
+      changeSet,
+      fileResults: incrementalResult.fileResults,
+      cas: incrementalResult.output,
+      refreshedProjectAnalyzers: incrementalResult.refreshedProjectAnalyzers
+    });
     debugFinalIncrementalPhase('build-change-report');
     await yieldToEventLoop();
 
     await this.applyEmbeddingPhase(incrementalResult.output, projectPath);
+    incrementalResult.output.entry_points = attachDeployable(
+      incrementalResult.output.entry_points || [],
+      incrementalResult.output.deployable_evidence,
+      incrementalResult.output.nodes
+    );
     debugFinalIncrementalPhase('apply-embedding-phase');
     await yieldToEventLoop();
 
@@ -2404,7 +2455,7 @@ export class AnalyzerOrchestrator {
   }
 
   private fullRebuildReasonForPreviousOutput(previousOutput: CASOutput): string | null {
-    // NEVER reuse on ambiguity.
+
     const currentAnalyzerBuild = getBuildIdentity().version;
     const previousAnalyzerBuild = previousOutput.analyzer_build;
     const previousParserFingerprint = previousOutput.parser_fingerprint;
@@ -2423,7 +2474,7 @@ export class AnalyzerOrchestrator {
         return `Derived-layer fingerprint changed (${previousDerivedFingerprint} -> ${currentFingerprints.derived_fingerprint})`;
       }
       if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1' && previousAnalyzerBuild !== currentAnalyzerBuild) {
-        console.error(`[Klauro] analyzer_build changed (${previousAnalyzerBuild} -> ${currentAnalyzerBuild}) but both stage fingerprints matched — skipping forced full rebuild`);
+        writeAnalyzerStatus(`[Klauro] analyzer_build changed (${previousAnalyzerBuild} -> ${currentAnalyzerBuild}) but both stage fingerprints matched — skipping forced full rebuild`);
       }
     }
     if (previousOutput.cas_version !== CAS_VERSION) {
@@ -2438,77 +2489,10 @@ export class AnalyzerOrchestrator {
     if (!previousOutput.analysis_facts?.length) {
       return 'CAS analysis facts are missing';
     }
-    if (this.previousDescriptionNeedsCurrentValidation(previousOutput)) {
+    if (previousDescriptionNeedsCurrentValidation(previousOutput)) {
       return 'CAS system description needs current narrative validation';
     }
     return null;
-  }
-
-  private previousDescriptionHasUnsupportedExternalClaim(previousOutput: CASOutput): boolean {
-    const description = previousOutput.enhanced_system_purpose?.inferred_description || '';
-    if (/\b(?:connects to|connected to|calls out to)\b[^.]*\b(?:Self|gtk|objc_sys|[A-Z][A-Za-z0-9]*(?:Data|Decl|Item|Pool|Size))\b/.test(description)) {
-      return true;
-    }
-    if (/\bexternal services? like\b/i.test(description)) {
-      const candidates = description
-        .split(/[,\s.()]+/)
-        .map(token => token.trim())
-        .filter(Boolean);
-      if (candidates.some(candidate => isLanguageBuiltinName(candidate))) return true;
-    }
-    return false;
-  }
-
-  private previousDescriptionNeedsCurrentValidation(previousOutput: CASOutput): boolean {
-    const description = previousOutput.enhanced_system_purpose?.inferred_description || '';
-    const domain = previousOutput.enhanced_system_purpose?.primary_domain || '';
-    const previousOperations = (previousOutput.system_capabilities || []).flatMap(capability => capability.operations || []);
-    const previousHasRead = previousOperations.some(operation =>
-      /^(?:view|read|list|get|show|access|analyze|review)$/i.test(operation.action || '') ||
-      /^(?:GET|HEAD|OPTIONS)$/i.test(operation.trigger?.method || '')
-    );
-    const previousHasMutation = previousOperations.some(operation =>
-      /^(?:create|update|delete|write|modify|submit|configure|manage|mutate)$/i.test(operation.action || '') ||
-      /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')
-    );
-    if (this.previousDescriptionHasUnsupportedExternalClaim(previousOutput)) return true;
-    if (previousHasRead && !previousHasMutation &&
-      /\b(?:creat(?:e|es|ing|ion)|updat(?:e|es|ing)|delet(?:e|es|ing|ion)|writ(?:e|es|ing)|modif(?:y|ies|ying|ication)|submits?|configur(?:e|es|ing|ation)|manag(?:e|es|ing|ement)|mutat(?:e|es|ing|ion))\b/i.test(description)) {
-      return true;
-    }
-    if (/\b(?:manages|coordinates?)\s+[^.]{3,140}\s+workflows\b/i.test(description) ||
-      /\bworkflows?\s+to\s+produce\s+and\s+manage\b/i.test(description) ||
-      /\bmain grounded concepts are\b/i.test(description) ||
-      /\bservice records?\b/i.test(description) ||
-      /\bhttp requests?\b|\b(?:dedicated|specific|internal|route|request)?\s*handlers?\b/i.test(description) ||
-      /\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b/i.test(description) ||
-      /\bframeworks?\s+(?:like|such as)\b/i.test(description) ||
-      /\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description) ||
-      /\bgraph evidence\b/i.test(description) ||
-      /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/.test(description)) {
-      return true;
-    }
-    const primaryType = previousOutput.enhanced_system_purpose?.primary_type || '';
-    const classificationContext = `${domain} ${primaryType}`.toLowerCase();
-    if (!domain.trim() && !primaryType.trim()) return false;
-    const typeClaimStopWords = new Set([
-      'a', 'an', 'the', 'this', 'that', 'and', 'or', 'for', 'with', 'its',
-      'their', 'our', 'main', 'core', 'general', 'basic', 'internal',
-      'primary', 'central', 'various', 'multiple', 'other', 'more', 'built',
-      'used', 'using', 'full', 'stack', 'based',
-    ]);
-    const typeClaimPattern = /\b((?:[a-z][a-z-]{2,}(?:[- ][a-z][a-z-]{2,}){0,2}))\s+(?:tool|system|service|platform|application|app|api|engine|framework|library|server|gateway|pipeline|dashboard|suite|toolkit|sdk)s?\b/gi;
-    let typeClaimMatch: RegExpExecArray | null;
-    while ((typeClaimMatch = typeClaimPattern.exec(description)) !== null) {
-      const modifierTokens = typeClaimMatch[1]
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter(token => token.length >= 4 && !typeClaimStopWords.has(token));
-      if (modifierTokens.length === 0) continue;
-      const grounded = modifierTokens.some(token => classificationContext.includes(token));
-      if (!grounded) return true;
-    }
-    return false;
   }
 
   private async runIncrementalAnalysis(
@@ -2522,11 +2506,14 @@ export class AnalyzerOrchestrator {
     fileResults: Map<string, FileAnalysisResult>;
     wasFullRebuild?: boolean;
     fullRebuildReason?: string;
+    rebuiltIncrementalState?: boolean;
+    executionStrategy?: ChangeExecutionLocality['strategy'];
+    refreshedProjectAnalyzers?: string[];
   }> {
     let incrementalPhaseStartedAt = Date.now();
     const debugIncrementalPhase = (label: string) => {
       if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES !== '1') return;
-      console.error(`[Klauro] incremental phase ${label}: ${Date.now() - incrementalPhaseStartedAt}ms`);
+      writeAnalyzerStatus(`[Klauro] incremental phase ${label}: ${Date.now() - incrementalPhaseStartedAt}ms`);
       incrementalPhaseStartedAt = Date.now();
     };
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
@@ -2578,6 +2565,10 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('select-candidate-analyzers');
     await yieldToEventLoop();
     const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
+    const previousEdgesById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
+    const previousEntryPointsById = new Map((previousOutput.entry_points || []).map(item => [item.id, item]));
+    const previousExitPointsById = new Map((previousOutput.exit_points || []).map(item => [item.id, item]));
+    const previousAnalyzerIdsByFile = indexIncrementalAnalyzersByFile(previousOutput, projectPath);
     const matchingAnalyzerPlansByFile = new Map<string, Array<{ registration: AnalyzerRegistration; relevantFiles: Set<string> }>>();
     const filesNeedingRelevanceScan: string[] = [];
 
@@ -2587,6 +2578,9 @@ export class AnalyzerOrchestrator {
         previousState,
         previousNodesById
       );
+      for (const analyzerId of previousAnalyzerIdsByFile.get(relativePath) || []) {
+        expectedAnalyzerIds.add(analyzerId);
+      }
       const directMatches = expectedAnalyzerIds.size > 0
         ? candidateIncrementalAnalyzers.filter(registration =>
           expectedAnalyzerIds.has(registration.id) && this.analyzerCanHandleFile(registration.id, relativePath)
@@ -2634,15 +2628,35 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    const projectScopedAnalyzerIds = new Set<string>();
+    const scannedRelevantFilesByAnalyzer = new Map(
+      analyzerPlans.map(plan => [plan.registration.id, plan.relevantFiles.size])
+    );
+    const promotedProjectAnalyzerIds = await selectPromotedIncrementalAnalyzers(
+      projectPath,
+      candidateIncrementalAnalyzers,
+      matchingAnalyzerPlansByFile,
+      scannedRelevantFilesByAnalyzer
+    );
+
+    const projectScopedAnalyzerIds = new Set(promotedProjectAnalyzerIds);
+    const directlyChangedFiles = new Set([...changeSet.added, ...changeSet.modified]);
+    const registeredAnalyzerIds = new Set(detectedAnalyzers.map(registration => registration.id));
     const filesWithUnsupportedDerivedFacts = filesToAnalyze.filter(relativePath => {
+      const projectScopedPlans = (matchingAnalyzerPlansByFile.get(relativePath) || [])
+        .filter(plan =>
+          plan.registration.analyzer.incrementalContributionScope() === 'project' ||
+          promotedProjectAnalyzerIds.has(plan.registration.id)
+        );
+      const isDirectChange = directlyChangedFiles.has(relativePath);
+      if (isDirectChange) for (const plan of projectScopedPlans) projectScopedAnalyzerIds.add(plan.registration.id);
       const record = previousState.files[relativePath];
-      if (!record) return false;
+      if (!record) return projectScopedPlans.length > 0;
 
       const coveredAnalyzers = new Set(
         (matchingAnalyzerPlansByFile.get(relativePath) || []).map(plan => plan.registration.id)
       );
 
+      let unsupported = isDirectChange && projectScopedPlans.length > 0;
       for (const nodeId of record.nodeIds) {
         const node = previousNodesById.get(nodeId);
         if (!node) continue;
@@ -2653,22 +2667,40 @@ export class AnalyzerOrchestrator {
         ]);
 
         for (const analyzerId of nodeAnalyzers) {
-          if (analyzerId && !coveredAnalyzers.has(analyzerId)) {
+          if (isDirectChange && analyzerId && !coveredAnalyzers.has(analyzerId)) {
             projectScopedAnalyzerIds.add(analyzerId);
-            return true;
+            unsupported = true;
           }
         }
       }
 
-      return false;
+      const graphItems = [
+        ...record.edgeIds.map(id => previousEdgesById.get(id)),
+        ...record.entryPointIds.map(id => previousEntryPointsById.get(id)),
+        ...record.exitPointIds.map(id => previousExitPointsById.get(id)),
+      ].filter((item): item is CASEdge | CASEntryPoint | CASExitPoint => Boolean(item));
+      for (const item of graphItems) {
+        for (const analyzerId of graphItemAnalyzers(item)) {
+          if (!isDirectChange || !registeredAnalyzerIds.has(analyzerId) || coveredAnalyzers.has(analyzerId)) continue;
+          projectScopedAnalyzerIds.add(analyzerId);
+          unsupported = true;
+        }
+      }
+
+      return unsupported;
     });
     debugIncrementalPhase('unsupported-derived-fact-check');
     await yieldToEventLoop();
+    const trackedFileCount = Object.keys(previousState.files).length;
+    if (shouldPreferFullRebuildForFanout(filesToAnalyze.length, trackedFileCount, projectScopedAnalyzerIds.size)) {
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+      const fullRebuildReason = `Affected dependency closure spans ${filesToAnalyze.length} of ${trackedFileCount} tracked files while ${projectScopedAnalyzerIds.size} project-scoped analyzers require refresh`;
+      return { output, fileResults: new Map(), wasFullRebuild: true, fullRebuildReason };
+    }
     const allNodes = [...previousOutput.nodes];
     const allEdges = [...previousOutput.edges];
     const allEntryPoints = [...(previousOutput.entry_points || [])];
     const allExitPoints = [...(previousOutput.exit_points || [])];
-
     const deletedNodeIds = new Set<string>();
     const deletedEdgeIds = new Set<string>();
     const deletedEntryPointIds = new Set<string>();
@@ -2683,11 +2715,7 @@ export class AnalyzerOrchestrator {
         record.exitPointIds.forEach(id => deletedExitPointIds.add(id));
       }
     }
-
-    const invalidatedFiles = new Set([
-      ...changeSet.modified,
-      ...(changeSet.affectedFiles || []),
-    ]);
+    const invalidatedFiles = new Set(changeSet.modified);
     for (const invalidatedFile of invalidatedFiles) {
       const record = previousState.files[invalidatedFile];
       if (record) {
@@ -2702,10 +2730,21 @@ export class AnalyzerOrchestrator {
     const filteredEdges = allEdges.filter(e => !deletedEdgeIds.has(e.id));
     const filteredEntryPoints = allEntryPoints.filter(ep => !deletedEntryPointIds.has(ep.id));
     const filteredExitPoints = allExitPoints.filter(ex => !deletedExitPointIds.has(ex.id));
+    const fileScopedRemovals: Array<{ record: FileAnalysisRecord; analyzerIds: ReadonlySet<string> }> = [];
+    for (const affectedFile of changeSet.affectedFiles || []) {
+      const record = previousState.files[affectedFile];
+      if (!record || directlyChangedFiles.has(affectedFile)) continue;
+      const analyzerIds = new Set((matchingAnalyzerPlansByFile.get(affectedFile) || [])
+        .filter(plan => plan.registration.analyzer.incrementalContributionScope() === 'file')
+        .map(plan => plan.registration.id));
+      fileScopedRemovals.push({ record, analyzerIds });
+    }
+    const filteredGraph = { nodes: filteredNodes, edges: filteredEdges, entryPoints: filteredEntryPoints, exitPoints: filteredExitPoints };
+    removeFileScopedGraphItemsBatch(filteredGraph, fileScopedRemovals);
     debugIncrementalPhase('filter-previous-graph');
     await yieldToEventLoop();
-
     const fileResults = new Map<string, FileAnalysisResult>();
+    const appendFileResult = createIncrementalGraphAccumulator({ nodes: filteredNodes, edges: filteredEdges, entryPoints: filteredEntryPoints, exitPoints: filteredExitPoints });
     const failedFiles: string[] = [];
     const BATCH_SIZE = 8;
     const previousSnapshot: CASContribution = {
@@ -2731,11 +2770,28 @@ export class AnalyzerOrchestrator {
         batch.map(async (relativePath) => {
           const fullPath = path.join(projectPath, relativePath);
           try {
+            const matchingPlans = (matchingAnalyzerPlansByFile.get(relativePath) || [])
+              .filter(({ registration }) =>
+                registration.analyzer.incrementalContributionScope() === 'file' ||
+                directlyChangedFiles.has(relativePath)
+              );
+            const previousRecord = previousState.files[relativePath];
+            if (
+              matchingPlans.length === 0 &&
+              previousRecord &&
+              !changeSet.modified.includes(relativePath) &&
+              !changeSet.added.includes(relativePath)
+            ) {
+              return {
+                relativePath,
+                result: reusedIncrementalFileResult(relativePath, previousRecord),
+                success: true,
+              };
+            }
             const stat = await fs.stat(fullPath);
             const content = await fs.readFile(fullPath, 'utf-8');
             const contentHash = this.computeContentHash(content);
 
-            const matchingPlans = matchingAnalyzerPlansByFile.get(relativePath) || [];
             const combinedResult: FileAnalysisResult = {
               filePath: relativePath,
               contentHash,
@@ -2747,32 +2803,62 @@ export class AnalyzerOrchestrator {
               imports: [],
               exports: []
             };
+            const analysisSnapshot = createIncrementalAnalysisSnapshot(previousSnapshot);
+            const projectScopedSnapshot = matchingPlans.some(({ registration }) => registration.analyzer.incrementalContributionScope() === 'project')
+              ? projectScopedFileAnalysisSnapshot(previousSnapshot, relativePath) : undefined;
 
             for (const { registration } of matchingPlans) {
               if (!registration.analyzer.analyzeFileSingle) continue;
 
+              const analyzerRoot = this.analyzerRootMap.get(registration.id) || projectPath;
+              const analyzerRelativePath = analyzerRoot === projectPath
+                ? relativePath
+                : path.relative(analyzerRoot, fullPath);
+
               const fileContext: FileAnalysisContext = {
                 filePath: fullPath,
-                relativePath,
-                projectPath,
+                relativePath: analyzerRelativePath,
+                projectPath: analyzerRoot,
                 contentHash,
-                existingAnalysis: [previousSnapshot]
+                existingAnalysis: [registration.analyzer.incrementalContributionScope() === 'project' ? projectScopedSnapshot! : analysisSnapshot.current()]
               };
               const cacheKey = this.incrementalFileCacheKey(registration, fileContext);
               let result = options?.loadCache ? await options.loadCache(cacheKey) : null;
               if (!result) {
                 result = await registration.analyzer.analyzeFileSingle(fileContext);
-
                 if (options?.saveCache && result) {
                   await options.saveCache(cacheKey, result);
                 }
               }
 
-              this.mergeFileAnalysisResult(combinedResult, result);
+              if (analyzerRoot !== projectPath) {
+                this.normalizeFilePaths({
+                  nodes: result.nodes,
+                  edges: result.edges,
+                  entry_points: result.entryPoints,
+                  exit_points: result.exitPoints,
+                }, path.relative(projectPath, analyzerRoot));
+                result.filePath = relativePath;
+              }
+
+              stampAnalyzerAttribution(
+                result.nodes,
+                result.edges,
+                result.entryPoints,
+                result.exitPoints,
+                registration.id
+              );
+              mergeIncrementalFileAnalysisResult(combinedResult, result);
+              analysisSnapshot.append(result);
             }
 
             combinedResult.imports = [...new Set(combinedResult.imports)];
             combinedResult.exports = [...new Set(combinedResult.exports)];
+            filterInvalidIncrementalEndpoints(
+              combinedResult,
+              entryPoint => this.isValidEntryPoint(entryPoint),
+              exitPoint => this.isValidExitPoint(exitPoint)
+            );
 
             return { relativePath, result: combinedResult, success: true };
           } catch (error) {
@@ -2785,10 +2871,7 @@ export class AnalyzerOrchestrator {
       for (const { relativePath, result, success } of batchResults) {
         if (success && result) {
           fileResults.set(relativePath, result);
-          filteredNodes.push(...result.nodes);
-          filteredEdges.push(...result.edges);
-          filteredEntryPoints.push(...result.entryPoints);
-          filteredExitPoints.push(...result.exitPoints);
+          appendFileResult(result);
         } else {
           failedFiles.push(relativePath);
         }
@@ -2798,6 +2881,12 @@ export class AnalyzerOrchestrator {
     this.dedupeGraphItemsInPlace(filteredEntryPoints, 'entry point', 'incremental', incrementalMergeWarnings);
     this.dedupeGraphItemsInPlace(filteredExitPoints, 'exit point', 'incremental', incrementalMergeWarnings);
     this.dedupeGraphItemsInPlace(filteredEdges, 'edge', 'incremental', incrementalMergeWarnings);
+    replaceArrayContents(filteredNodes, filteredNodes.filter(node =>
+      !node.analyzers?.includes('infra-topology-linker') && node.primaryAnalyzer !== 'infra-topology-linker'
+    ));
+    replaceArrayContents(filteredEdges, filteredEdges.filter(edge =>
+      !(edge.metadata?.attributes as Record<string, unknown> | undefined)?.topology_link
+    ));
     debugIncrementalPhase('analyze-changed-files');
     await yieldToEventLoop();
 
@@ -2822,16 +2911,71 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('retain-stable-missing-facts');
     await yieldToEventLoop();
 
-    if (filesWithUnsupportedDerivedFacts.length > 0) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      return {
-        output,
-        fileResults: new Map(),
-        wasFullRebuild: true,
-        fullRebuildReason: `Changed files affect project-scoped analyzer contributions: ${[...projectScopedAnalyzerIds].sort().join(', ')}`,
-      };
-    }
+    const localizedEligibility = changeSet.added.length === 0 && changeSet.deleted.length === 0
+      ? this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults)
+      : { allowed: false, reason: 'added or deleted files require project contribution refresh' };
+    if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1') writeAnalyzerStatus(`[Klauro] incremental localized eligibility: ${localizedEligibility.allowed ? 'allowed' : localizedEligibility.reason}`);
+    const needsProjectContributionRefresh = filesWithUnsupportedDerivedFacts.length > 0 && !localizedEligibility.allowed;
 
+    let rebuiltIncrementalState = false;
+    const refreshedLibrariesById = new Map(
+      (previousOutput.libraries || []).map(library => [library.id, library])
+    );
+    if (needsProjectContributionRefresh) {
+      let refreshMergeIndexes: AnalysisMergeIndexes | undefined;
+      const refreshed = await refreshProjectScopedContributions({
+        projectPath,
+        registrations: detectedAnalyzers,
+        analyzerIds: projectScopedAnalyzerIds,
+        graph: {
+          nodes: filteredNodes,
+          edges: filteredEdges,
+          entryPoints: filteredEntryPoints,
+          exitPoints: filteredExitPoints,
+        },
+        ownershipGraph: {
+          nodes: previousOutput.nodes,
+          edges: previousOutput.edges,
+          entryPoints: previousOutput.entry_points || [],
+          exitPoints: previousOutput.exit_points || [],
+        },
+        analyzerRoot: analyzerId => this.analyzerRootMap.get(analyzerId) || projectPath,
+        analysisFilters: await this.getAnalysisContextFilters(projectPath),
+        scopeFilters: (registration, analyzerRoot) =>
+          this.getAnalyzerScopeFilters(projectPath, analyzerRoot, registration as AnalyzerRegistration),
+        normalizeContribution: (contribution, analyzerRoot) => {
+          if (analyzerRoot !== projectPath) this.normalizeFilePaths(contribution, path.relative(projectPath, analyzerRoot));
+        },
+        mergeContribution: async (graph, contribution, analyzerId) => {
+          for (const library of contribution.libraries || []) {
+            refreshedLibrariesById.set(library.id, library);
+          }
+          const target = {
+            allNodes: graph.nodes,
+            allEdges: graph.edges,
+            allEntryPoints: graph.entryPoints,
+            allExitPoints: graph.exitPoints,
+          };
+          refreshMergeIndexes ||= this.createAnalysisMergeIndexes(target);
+          await this.mergeAnalysisResult(target, contribution, { analyzerId, mergeIndexes: refreshMergeIndexes });
+          return graph;
+        },
+      });
+      if (!refreshed) {
+        const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+        return {
+          output,
+          fileResults: new Map(),
+          wasFullRebuild: true,
+          fullRebuildReason: `Changed files affect non-replaceable project-scoped analyzer contributions: ${[...projectScopedAnalyzerIds].sort().join(', ')}`,
+        };
+      }
+      replaceArrayContents(filteredNodes, refreshed.nodes);
+      replaceArrayContents(filteredEdges, refreshed.edges);
+      replaceArrayContents(filteredEntryPoints, refreshed.entryPoints);
+      replaceArrayContents(filteredExitPoints, refreshed.exitPoints);
+      rebuiltIncrementalState = true;
+    }
     remapIncrementalNodeReferences({
       projectPath,
       previousNodes: previousOutput.nodes,
@@ -2841,17 +2985,17 @@ export class AnalyzerOrchestrator {
       exitPoints: filteredExitPoints,
     });
 
-    const localizedOutput = filesWithUnsupportedDerivedFacts.length === 0
+    const localizedOutput = !rebuiltIncrementalState
       ? this.tryBuildLocalizedIncrementalOutput(previousOutput, previousState, changeSet, fileResults)
       : undefined;
     debugIncrementalPhase('try-localized-output');
     await yieldToEventLoop();
     if (localizedOutput) {
-      return { output: localizedOutput, fileResults };
+      return { output: localizedOutput, fileResults, rebuiltIncrementalState, executionStrategy: 'localized-file-merge' };
     }
 
-    if (this.isStructuralNoopIncremental(previousOutput, previousState, changeSet, fileResults)) {
-      return { output: previousOutput, fileResults };
+    if (!rebuiltIncrementalState && this.isStructuralNoopIncremental(previousOutput, previousState, changeSet, fileResults)) {
+      return { output: previousOutput, fileResults, rebuiltIncrementalState, executionStrategy: 'structural-noop' };
     }
 
     const rebuiltOutput = await this.rebuildDerivedData(
@@ -2860,14 +3004,18 @@ export class AnalyzerOrchestrator {
       filteredEdges,
       filteredEntryPoints,
       filteredExitPoints,
-      previousOutput,
+      rebuiltIncrementalState
+        ? { ...previousOutput, libraries: [...refreshedLibrariesById.values()] }
+        : previousOutput,
       options
     );
     if (incrementalMergeWarnings.length > 0) {
       rebuiltOutput.analysis_errors = [...(rebuiltOutput.analysis_errors || []), ...incrementalMergeWarnings];
     }
 
-    return { output: rebuiltOutput, fileResults };
+    return { output: rebuiltOutput, fileResults, rebuiltIncrementalState,
+      executionStrategy: rebuiltIncrementalState ? 'project-contribution-refresh' : 'derived-layer-rebuild',
+      refreshedProjectAnalyzers: rebuiltIncrementalState ? [...projectScopedAnalyzerIds].sort() : undefined };
   }
 
   private async rebuildDerivedData(
@@ -2884,12 +3032,14 @@ export class AnalyzerOrchestrator {
     const filePathsForGit = nodes
       .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
       .map(n => n.source.file);
-    gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
+    const buildGitDerivedFacts = gitAnalyzer.isAvailable() && filePathsForGit.length <= 500;
+    if (buildGitDerivedFacts) gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
     this.removeTestEntryPoints(nodes, edges, entryPoints);
     this.dedupeUtilNodeDuplicates(nodes, edges);
     this.resolveNodeTwins(nodes, edges, entryPoints, exitPoints);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     this.linkRouteHandlers(nodes, edges, entryPoints);
+    this.liftValidationToEntryPoints(nodes, entryPoints);
     this.linkHookUsageFetchers(nodes, edges);
     internalizeInRepoCalls({
       nodes, edges, exitPoints, libraries: previousOutput.libraries || [],
@@ -2899,6 +3049,7 @@ export class AnalyzerOrchestrator {
     this.dedupeEntryPointTwins(entryPoints, projectPath);
     this.normalizeNodeMetrics(nodes);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
+    assignNodeRoles({ nodes, edges, entry_points: entryPoints, exit_points: exitPoints, resetDerivedRoles: true });
 
     const categories = previousOutput.categories || {};
     let systemName = options?.displayName || path.basename(projectPath);
@@ -2915,8 +3066,7 @@ export class AnalyzerOrchestrator {
 
     const detectedPatterns = this.detectPatterns(nodes, edges);
     const intents = this.buildIntents(nodes);
-    const flowSummary = this.buildFlowSummary(nodes, entryPoints);
-    const changeRisks = this.buildChangeRisks(nodes, edges, entryPoints, gitAnalyzer);
+    const changeRisks = this.buildChangeRisks(nodes, edges, entryPoints, buildGitDerivedFacts ? gitAnalyzer : undefined);
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const dataEntities = this.enrichCuratedProductDataEntities(
       this.buildDataEntities(nodes, edges, projectPath, databaseSchema),
@@ -2929,22 +3079,22 @@ export class AnalyzerOrchestrator {
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath);
     const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints, projectPath, edges);
     const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, productEntryPointsForSecurity);
-    const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
+    const temporalStability = buildGitDerivedFacts ? this.buildTemporalStability(nodes, gitAnalyzer) : [];
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
     const testSuites = await this.buildTestSuites(nodes, entryPoints, projectPath, edges);
     const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
 
+    const callGraphBuilder = new CallGraphBuilder(nodes, edges, exitPoints);
+    this.enrichNodeCallGraphs(nodes, callGraphBuilder, entryPoints, exitPoints);
+    this.deriveParentFromContainsEdges(nodes, edges);
+    this.enrichNodePerspectives(nodes, previousOutput.perspectives || []);
+
     const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath, exitPoints);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
 
-    const callGraphBuilder = new CallGraphBuilder(nodes, edges, exitPoints);
     const callChains = this.buildCallChains(nodes, edges, entryPoints, exitPoints, callGraphBuilder, systemCapabilities);
-
-    this.enrichNodeCallGraphs(nodes, callGraphBuilder, entryPoints, exitPoints);
-    this.deriveParentFromContainsEdges(nodes, edges);
-    this.enrichNodePerspectives(nodes, previousOutput.perspectives || []);
 
     const flowCoverage = await this.buildFlowCoverage(nodes, entryPoints, callChains, testSuites);
     const testGaps = this.buildTestGaps(flowCoverage, nodes);
@@ -2976,10 +3126,11 @@ export class AnalyzerOrchestrator {
       exit_points: exitPoints,
       call_chains: callChains,
       data_lineage: [],
-      data_entities: dataEntities,
-      system_capabilities: systemCapabilities,
+      entities: dataEntities,
+      capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
     } as unknown as CASOutput, {});
+    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
     const userJourneyResult = buildUserJourneys({
       nodes,
       edges,
@@ -3035,48 +3186,8 @@ export class AnalyzerOrchestrator {
     const incrementalDeployableCount = incrementalTopLevelShipUnits.length > 0
       ? incrementalTopLevelShipUnits.length
       : undefined;
-    const analysisFacts = await this.buildAnalysisFacts(
-      nodes,
-      edges,
-      entryPoints,
-      exitPoints,
-      externalServices,
-      userJourneyResult.journeys,
-      systemCapabilities,
-      runtimeStaticLinks,
-      repositoryLinks,
-      previousOutput.analyzer_contributions
-    );
-    const decorators = this.buildAllDecorators(nodes);
-    const idiomDetection = await detectCodebaseIdioms({
-      projectPath,
-      nodes,
-      edges,
-      entryPoints,
-      exitPoints,
-      databaseSchema,
-      testSuites,
-      behavioralInvariants,
-      decorators,
-      patterns: detectedPatterns,
-      libraries,
-      configuration,
-      analysisFacts,
-    });
-    const systemHealth = this.buildSystemHealth(
-      architectureSummary,
-      implementationHealth,
-      changeRiskSummary,
-      idiomDetection,
-      nodes,
-      callChains,
-      runtime
-    );
-    const validation = this.buildValidation(nodes, edges, entryPoints, exitPoints, runtimeStaticLinks, analysisFacts);
-
     const analysisId = `analysis_incr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    const incrFrameworkNames = this.frameworkNamesForPurpose(previousOutput.analyzer_contributions || [], nodes, edges, projectPath);
+    const incrFrameworkNames = this.frameworkNamesForPurpose(previousOutput.analyzer_contributions || [], nodes, edges, projectPath, entryPoints);
     const incrDbEntityNames = databaseSchema.entities.map(e => e.name);
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
@@ -3093,7 +3204,7 @@ export class AnalyzerOrchestrator {
       incrFrameworkNames,
       incrExternalServiceNames,
       systemCapabilities,
-      flowGraph,
+      flowsForJourneys,
       previousOutput.system?.name || path.basename(projectPath),
       incrProjectTextSignal,
       nodes,
@@ -3139,14 +3250,14 @@ export class AnalyzerOrchestrator {
         entryPoints
       );
       const stabilizedCapabilities = this.stabilizeRefreshedCapabilityCatalog(
-        previousOutput.system_capabilities || [],
+        previousOutput.capabilities || [],
         incrementalCapabilityCandidates,
         systemCapabilities,
       );
       systemCapabilities.splice(0, systemCapabilities.length, ...stabilizedCapabilities);
     } else if (
       previousOutput.enhanced_system_purpose?.inferred_description &&
-      !this.previousDescriptionNeedsCurrentValidation(previousOutput)
+      !previousDescriptionNeedsCurrentValidation(previousOutput)
     ) {
       enhancedSystemPurpose.inferred_description = previousOutput.enhanced_system_purpose.inferred_description;
       enhancedSystemPurpose.description_source = 'reused';
@@ -3169,26 +3280,67 @@ export class AnalyzerOrchestrator {
         enhancedSystemPurpose.domain_source = 'reused';
       }
       const reusedCapabilities = this.reusePreviousCapabilityCatalog(
-        previousOutput.system_capabilities || [],
+        previousOutput.capabilities || [],
         systemCapabilities,
       );
       systemCapabilities.splice(0, systemCapabilities.length, ...reusedCapabilities);
     }
 
+    const analysisFacts = await this.buildAnalysisFacts(
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      externalServices,
+      userJourneyResult.journeys,
+      systemCapabilities,
+      runtimeStaticLinks,
+      repositoryLinks,
+      previousOutput.analyzer_contributions
+    );
+    const decorators = this.buildAllDecorators(nodes);
+    const idiomDetection = await detectCodebaseIdioms({
+      projectPath,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      databaseSchema,
+      testSuites,
+      behavioralInvariants,
+      decorators,
+      patterns: detectedPatterns,
+      libraries,
+      configuration,
+      analysisFacts,
+    });
+    const systemHealth = this.buildSystemHealth(
+      architectureSummary,
+      implementationHealth,
+      changeRiskSummary,
+      idiomDetection,
+      nodes,
+      callChains,
+      runtime
+    );
+    const validation = this.buildValidation(nodes, edges, entryPoints, exitPoints, runtimeStaticLinks, analysisFacts);
+
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
 
-    const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
+    let comprehensionFlows: FlowConcept[] = [];
+    let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
       nodes,
       edges,
       entry_points: entryPoints,
       exit_points: exitPoints,
       call_chains: callChains,
       data_lineage: dataLineage,
-      system_capabilities: systemCapabilities,
+      capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
-      data_entities: dataEntities,
-    }, flowGraph);
+      entities: dataEntities,
+    }, flows => { comprehensionFlows = flows; });
+    entryPointsWithContractAndCapability = attachDeployable(entryPointsWithContractAndCapability, deployableEvidence, nodes);
 
     const rebuiltReachabilityIndex = buildReachabilityIndexFromCas({
       nodes,
@@ -3204,7 +3356,6 @@ export class AnalyzerOrchestrator {
       temporalStability,
       principleViolations: architecturalConflicts.principle_violations,
     });
-
     const rebuiltOutput: CASOutput = {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
@@ -3225,6 +3376,7 @@ export class AnalyzerOrchestrator {
       edges,
       entry_points: entryPointsWithContractAndCapability,
       exit_points: exitPoints,
+      libraries: libraries.length > 0 ? libraries : undefined,
       progressive_levels: progressiveLevels,
       index,
       architecture_summary: architectureSummary,
@@ -3239,7 +3391,7 @@ export class AnalyzerOrchestrator {
       change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
       change_risk_summary: changeRiskSummary,
       reachability_index: rebuiltReachabilityIndex.stats.nodes > 0 ? rebuiltReachabilityIndex : undefined,
-      data_entities: dataEntities.length > 0 ? dataEntities : undefined,
+      entities: dataEntities.length > 0 ? dataEntities : undefined,
       data_summary: dataSummary,
       behavioral_invariants: behavioralInvariants.length > 0 ? behavioralInvariants : undefined,
       behavioral_invariant_summary: behavioralInvariants.length > 0 ? behavioralInvariantSummary : undefined,
@@ -3247,7 +3399,10 @@ export class AnalyzerOrchestrator {
       security_summary: securitySummary,
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
-      system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
+      capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
+      structural_capability_candidates: incrementalCapabilityCandidates,
+      flows: comprehensionFlows.length > 0 ? comprehensionFlows : undefined,
+      steps: comprehensionFlows.length > 0 ? comprehensionFlows.flatMap(flow => flow.steps) : undefined,
       behavior_surfaces: behaviorSurfaces.length > 0 ? behaviorSurfaces : undefined,
       system_purpose: {
         ...systemPurpose,
@@ -3285,13 +3440,49 @@ export class AnalyzerOrchestrator {
       test_suites: testSuites
     };
 
-    this.enforceCapabilityDescriptionProvenanceInvariant(rebuiltOutput.system_capabilities);
+    this.enforceCapabilityDescriptionProvenanceInvariant(rebuiltOutput.capabilities);
     rebuiltOutput.product_map = buildProductMap(rebuiltOutput);
+    try {
+      const infraLinks = linkInfraTopology(rebuiltOutput);
+      const nodeIds = new Set(rebuiltOutput.nodes.map(node => node.id));
+      const edgeIds = new Set(rebuiltOutput.edges.map(edge => edge.id));
+      appendAll(rebuiltOutput.nodes, infraLinks.nodes.filter(node => !nodeIds.has(node.id)));
+      appendAll(rebuiltOutput.edges, infraLinks.edges.filter(edge => !edgeIds.has(edge.id)));
+    } catch (error) {
+      console.error('[Klauro] infra-topology-linker pass failed:', error);
+    }
+    try {
+      rebuiltOutput.communication_seams = classifyCommunicationSeams(rebuiltOutput);
+    } catch (error) {
+      console.error('[Klauro] communication-seams pass failed:', error);
+    }
+    try {
+      const consistency = deriveConsistencyModel(rebuiltOutput);
+      rebuiltOutput.consistency_model = consistency;
+      if (consistency.passive_seams.length > 0 && rebuiltOutput.communication_seams) {
+        rebuiltOutput.communication_seams = mergeSeams(
+          rebuiltOutput.communication_seams,
+          toCommunicationSeams(consistency.passive_seams)
+        );
+      }
+    } catch (error) {
+      console.error('[Klauro] consistency-model pass failed:', error);
+    }
+    rebuiltOutput.entry_points = attachDeployable(
+      rebuiltOutput.entry_points || [],
+      rebuiltOutput.deployable_evidence,
+      rebuiltOutput.nodes
+    );
+    linkStructuralOwnership(rebuiltOutput.nodes, rebuiltOutput.edges);
+    assignNodeRoles({ nodes: rebuiltOutput.nodes, edges: rebuiltOutput.edges, entry_points: rebuiltOutput.entry_points, exit_points: rebuiltOutput.exit_points, resetDerivedRoles: true });
+    rebuiltOutput.terminality = buildCasTerminality(rebuiltOutput);
     return rebuiltOutput;
   }
 
   createIncrementalBaseline(projectPath: string, output: CASOutput): IncrementalState {
-    return this.buildIncrementalState(projectPath, output, new ChangeDetector(projectPath));
+    const state = this.buildIncrementalState(projectPath, output, new ChangeDetector(projectPath));
+    refreshAnalyzerDetectionEvidence(path.resolve(projectPath), this.analyzerRegistryFingerprint(this.analyzers.values()), Date.now() + 60_000);
+    return state;
   }
 
   private buildIncrementalState(
@@ -3450,19 +3641,12 @@ export class AnalyzerOrchestrator {
     }
 
     for (const [filePath, fileResult] of result.fileResults) {
-        files[filePath] = {
-          filePath: fileResult.filePath,
-          contentHash: fileResult.contentHash,
-          mtimeMs: fileResult.mtimeMs,
-          lastAnalyzed: new Date().toISOString(),
-          analyzerId: this.analyzerIdForNodes(fileResult.nodes),
-          nodeIds: fileResult.nodes.map(n => n.id),
-        edgeIds: fileResult.edges.map(e => e.id),
-        entryPointIds: fileResult.entryPoints.map(ep => ep.id),
-        exitPointIds: fileResult.exitPoints.map(ex => ex.id),
-        importedFiles: fileResult.imports,
-        exportedSymbols: fileResult.exports
-      };
+      files[filePath] = updatedIncrementalFileRecord({
+        previous: previousState.files[filePath],
+        result: fileResult,
+        output: result.output,
+        preservePreviousFacts: Boolean(changeSet.affectedFiles?.includes(filePath) && !changeSet.modified.includes(filePath) && !changeSet.added.includes(filePath)),
+      });
     }
 
     normalizeIncrementalStateImports(files);
@@ -3479,84 +3663,6 @@ export class AnalyzerOrchestrator {
     return nodes.find(node => node.primaryAnalyzer)?.primaryAnalyzer ||
       nodes.find(node => node.analyzers?.length)?.analyzers?.[0] ||
       'unknown';
-  }
-
-  private dedupeById<T extends { id: string }>(items: T[]): T[] {
-    const seen = new Set<string>();
-    const deduped: T[] = [];
-
-    for (const item of items) {
-      if (seen.has(item.id)) continue;
-      seen.add(item.id);
-      deduped.push(item);
-    }
-
-    return deduped;
-  }
-
-  private mergeFileAnalysisResult(target: FileAnalysisResult, source: FileAnalysisResult): void {
-    const nodeIds = new Set(target.nodes.map(node => node.id));
-    const edgeIds = new Set(target.edges.map(edge => edge.id));
-    const entryPointIds = new Set(target.entryPoints.map(entryPoint => entryPoint.id));
-    const exitPointIds = new Set(target.exitPoints.map(exitPoint => exitPoint.id));
-
-    for (const node of source.nodes) {
-      if (!nodeIds.has(node.id)) {
-        target.nodes.push(node);
-        nodeIds.add(node.id);
-        continue;
-      }
-
-      const existingNode = target.nodes.find(candidate => candidate.id === node.id);
-      if (!existingNode) continue;
-
-      if (node.metadata) {
-        existingNode.metadata = {
-          ...existingNode.metadata,
-          ...node.metadata,
-          attributes: {
-            ...((existingNode.metadata as any)?.attributes || {}),
-            ...((node.metadata as any)?.attributes || {})
-          }
-        };
-      }
-      if (node.subcategories?.length) {
-        existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), ...node.subcategories])];
-      }
-      if (node.level !== undefined) existingNode.level = node.level;
-      if (node.level_name) existingNode.level_name = node.level_name;
-      if (node.description) existingNode.description = node.description;
-      if (node.tags?.length) existingNode.tags = [...new Set([...(existingNode.tags || []), ...node.tags])];
-      if (node.type) existingNode.type = node.type;
-      if (node.analyzers?.length) existingNode.analyzers = [...new Set([...(existingNode.analyzers || []), ...node.analyzers])];
-      if (node.primaryAnalyzer) existingNode.primaryAnalyzer = node.primaryAnalyzer;
-      if (node.documentation) existingNode.documentation = node.documentation;
-      if (node.comments?.length) existingNode.comments = node.comments;
-      if (node.todos?.length) existingNode.todos = node.todos;
-      if (node.implementation_status) existingNode.implementation_status = node.implementation_status;
-      if (node.signature) existingNode.signature = { ...existingNode.signature, ...node.signature };
-    }
-
-    for (const edge of source.edges) {
-      if (edgeIds.has(edge.id)) continue;
-      target.edges.push(edge);
-      edgeIds.add(edge.id);
-    }
-
-    for (const entryPoint of source.entryPoints) {
-      if (entryPointIds.has(entryPoint.id)) continue;
-      target.entryPoints.push(entryPoint);
-      entryPointIds.add(entryPoint.id);
-    }
-
-    for (const exitPoint of source.exitPoints) {
-      if (exitPointIds.has(exitPoint.id)) continue;
-      target.exitPoints.push(exitPoint);
-      exitPointIds.add(exitPoint.id);
-    }
-
-    target.imports.push(...source.imports);
-    target.exports.push(...source.exports);
   }
 
   private retainStableMissingFileFacts(
@@ -3666,7 +3772,7 @@ export class AnalyzerOrchestrator {
     let localizedPhaseStartedAt = localizedStartedAt;
     const debugPhase = (label: string) => {
       if (process.env.KLAURO_DEBUG_LOCALIZED_INCREMENTAL !== '1') return;
-      console.error(`[Klauro] localized incremental timing ${label}: ${Date.now() - localizedPhaseStartedAt}ms`);
+      writeAnalyzerStatus(`[Klauro] localized incremental timing ${label}: ${Date.now() - localizedPhaseStartedAt}ms`);
       localizedPhaseStartedAt = Date.now();
     };
 
@@ -3679,7 +3785,6 @@ export class AnalyzerOrchestrator {
     for (const filePath of changeSet.modified) {
       const record = previousState.files[filePath];
       if (!record) continue;
-      for (const nodeId of record.nodeIds) nodeById.delete(nodeId);
       for (const edgeId of record.edgeIds) edgeById.delete(edgeId);
       for (const entryPointId of record.entryPointIds) entryPointById.delete(entryPointId);
       for (const exitPointId of record.exitPointIds) exitPointById.delete(exitPointId);
@@ -3687,7 +3792,7 @@ export class AnalyzerOrchestrator {
     debugPhase('remove-modified-file-facts');
 
     for (const result of fileResults.values()) {
-      for (const node of result.nodes) nodeById.set(node.id, node);
+      for (const node of result.nodes) if (!nodeById.has(node.id)) nodeById.set(node.id, node);
       for (const edge of result.edges) edgeById.set(edge.id, edge);
       for (const entryPoint of result.entryPoints) entryPointById.set(entryPoint.id, entryPoint);
       for (const exitPoint of result.exitPoints) exitPointById.set(exitPoint.id, exitPoint);
@@ -3715,7 +3820,7 @@ export class AnalyzerOrchestrator {
     );
     debugPhase('build-validation');
     if (process.env.KLAURO_DEBUG_LOCALIZED_INCREMENTAL === '1') {
-      console.error(`[Klauro] localized incremental timing total: ${Date.now() - localizedStartedAt}ms`);
+      writeAnalyzerStatus(`[Klauro] localized incremental timing total: ${Date.now() - localizedStartedAt}ms`);
     }
 
     return {
@@ -3748,7 +3853,12 @@ export class AnalyzerOrchestrator {
       const result = fileResults.get(filePath);
       if (!record || !result) return { allowed: false, reason: `missing record or file result for ${filePath}` };
 
-      if (!this.sameLocalImportSet(record.importedFiles || [], result.imports || [])) {
+      const resolvedCurrentImports = resolveImportedFileReferences(
+        filePath,
+        result.imports || [],
+        new Set(Object.keys(previousState.files)),
+      );
+      if (!this.sameStringSet(record.importedFiles || [], resolvedCurrentImports)) {
         return { allowed: false, reason: `local import set changed for ${filePath}` };
       }
 
@@ -3757,6 +3867,9 @@ export class AnalyzerOrchestrator {
         .filter((node): node is CASNode => Boolean(node));
       const previousNodeIds = new Set(previousNodes.map(node => node.id));
       const currentNodeIds = new Set(result.nodes.map(node => node.id));
+      const retainedPreviousNodes = previousNodes.filter(node => currentNodeIds.has(node.id));
+      const retainedCurrentNodes = result.nodes.filter(node => previousNodeIds.has(node.id));
+      if (!this.sameFingerprint(retainedPreviousNodes, retainedCurrentNodes, localizedNodeFingerprint)) return { allowed: false, reason: `node fingerprint changed for ${filePath}` };
       const missingPreviousNodes = previousNodes.filter(node => !currentNodeIds.has(node.id));
       if (missingPreviousNodes.some(node => this.isBehavioralIncrementalNode(node))) {
         return { allowed: false, reason: `behavioral nodes disappeared for ${filePath}: ${missingPreviousNodes.slice(0, 5).map(node => `${node.type}:${node.name}`).join(', ')}` };
@@ -3810,7 +3923,7 @@ export class AnalyzerOrchestrator {
     const resultSummary = [...fileResults.entries()].map(([file, result]) =>
       `${file}: ${result.nodes.length} nodes, ${result.edges.length} edges, ${result.entryPoints.length} entries, ${result.exitPoints.length} exits`
     ).join('; ');
-    console.error(`[Klauro] localized incremental ${status}: ${reason}; files=${files}; results=${resultSummary}`);
+    writeAnalyzerStatus(`[Klauro] localized incremental ${status}: ${reason}; files=${files}; results=${resultSummary}`);
   }
 
   private sameStringSet(previous: string[], current: string[]): boolean {
@@ -3818,17 +3931,6 @@ export class AnalyzerOrchestrator {
     const left = [...previous].sort();
     const right = [...current].sort();
     return left.every((value, index) => value === right[index]);
-  }
-
-  private sameLocalImportSet(previous: string[], current: string[]): boolean {
-    return this.sameStringSet(
-      previous.filter(imported => this.isLocalImportSpecifier(imported)).map(imported => imported.replace(/\\/g, '/')),
-      current.filter(imported => this.isLocalImportSpecifier(imported)).map(imported => imported.replace(/\\/g, '/'))
-    );
-  }
-
-  private isLocalImportSpecifier(imported: string): boolean {
-    return imported.startsWith('.') || imported.startsWith('/') || /\.(ts|tsx|js|jsx|mjs|cjs|py|cs|java|go|rs|php|dart)$/i.test(imported);
   }
 
   private isBehavioralIncrementalNode(node: CASNode): boolean {
@@ -5025,7 +5127,6 @@ export class AnalyzerOrchestrator {
       return [];
     }
 
-    // manifest of its own can NEVER pass canAnalyze() there, so excluding it
     return this.projectRoots
       .filter(root => root !== matchedRoot && this.manifestOwningProjectRoots.has(root))
       .map(root => path.relative(matchedRoot, root).replace(/\\/g, '/'))
@@ -5036,78 +5137,6 @@ export class AnalyzerOrchestrator {
         !path.isAbsolute(relativeRoot)
       )
       .map(relativeRoot => `${relativeRoot}/**`);
-  }
-
-  private async detectPrimaryProjectType(projectPath: string): Promise<string> {
-    try {
-      const indicators = [
-        { type: 'typescript', files: ['**/package.json'], content: ['"typescript"', '"@types/', '"next"', '"ts-node"'] },
-        { type: 'javascript', files: ['**/package.json'], content: ['"react"', '"express"', '"vue"', '"next"', '"socket.io"'] },
-        { type: 'python', files: ['**/requirements.txt', '**/setup.py', '**/pyproject.toml', '**/Pipfile'] },
-        { type: 'java', files: ['**/pom.xml', '**/build.gradle', '**/build.gradle.kts'] },
-        { type: 'csharp', files: ['**/*.csproj', '**/*.sln'] },
-        { type: 'go', files: ['**/go.mod'] },
-        { type: 'rust', files: ['**/Cargo.toml'] },
-        { type: 'php', files: ['**/composer.json'] },
-        { type: 'dart', files: ['**/pubspec.yaml'], content: ['flutter:', 'sdk: flutter'] }
-      ];
-
-      const ignorePatterns = this.getProjectDiscoveryIgnorePatterns();
-
-      for (const indicator of indicators) {
-        for (const filePattern of indicator.files) {
-          try {
-            const files = await glob(filePattern, { cwd: projectPath, ignore: ignorePatterns, nodir: true });
-            if (files.length > 0) {
-              if (indicator.content && indicator.content.length > 0) {
-                for (const f of files) {
-                  try {
-                    const content = await fs.readFile(path.join(projectPath, f), 'utf-8');
-                    if (indicator.content.some(c => content.includes(c))) {
-                      return indicator.type;
-                    }
-                  } catch {
-                  }
-                }
-              } else {
-                return indicator.type;
-              }
-            }
-          } catch {
-          }
-        }
-      }
-
-      return 'unknown';
-    } catch {
-      return 'unknown';
-    }
-  }
-
-  private isAnalyzerRelevantForProject(registration: AnalyzerRegistration, projectType: string): boolean {
-    if (projectType === 'unknown') {
-      return true;
-    }
-
-    if (registration.type === 'language') {
-      if (['terraform', 'dockerfile', 'docker-compose', 'kubernetes-manifest', 'distribution-artifacts'].includes(registration.id)) {
-        return true;
-      }
-      const languageMap: { [key: string]: string[] } = {
-        'typescript-javascript': ['typescript', 'javascript'],
-        'python': ['python'],
-        'java': ['java', 'kotlin', 'scala'],
-        'csharp': ['csharp', 'fsharp', 'vb'],
-        'go': ['go'],
-        'rust': ['rust'],
-        'php': ['php'],
-        'dart': ['dart']
-      };
-
-      return languageMap[registration.id]?.includes(projectType) || false;
-    }
-
-    return true;
   }
 
   private orderAnalyzers(analyzers: AnalyzerRegistration[]): AnalyzerRegistration[] {
@@ -5489,7 +5518,7 @@ export class AnalyzerOrchestrator {
     const eventTokens = typeof ep?.trigger?.event === 'string'
       ? ep.trigger.event.split(/[:.]/).map((token: string) => token.trim()).filter(Boolean)
       : [];
-    // not a (system, channel) pair — it must never form an identity.
+
     if (eventTokens.length < 2 && !(metadata.system || metadata.task_type)) return undefined;
 
     const system = [metadata.system, metadata.task_type, eventTokens[0]]
@@ -5719,22 +5748,13 @@ export class AnalyzerOrchestrator {
     const mergeIndexes = options?.mergeIndexes ?? this.createAnalysisMergeIndexes(target);
     const validEntryPoints = (source.entry_points || []).filter(ep => this.isValidEntryPoint(ep));
     const validExitPoints = (source.exit_points || []).filter(ep => this.isValidExitPoint(ep));
-    for (const node of source.nodes || []) {
-      node.analyzers = [...new Set([...(node.analyzers || []), contributingAnalyzer])];
-      node.primaryAnalyzer ||= contributingAnalyzer;
-    }
-    for (const edge of source.edges || []) {
-      edge.metadata = {
-        ...(edge.metadata || {}),
-        attributes: {
-          ...((edge.metadata as any)?.attributes || {}),
-          source_analyzer: (edge.metadata as any)?.attributes?.source_analyzer || contributingAnalyzer,
-        },
-      };
-    }
-    for (const item of [...validEntryPoints, ...validExitPoints]) {
-      item.metadata = { ...(item.metadata || {}), source_analyzer: item.metadata?.source_analyzer || contributingAnalyzer };
-    }
+    stampAnalyzerAttribution(
+      source.nodes || [],
+      source.edges || [],
+      validEntryPoints,
+      validExitPoints,
+      contributingAnalyzer
+    );
     const validEntryPointIds = new Set(validEntryPoints.map(entryPoint => entryPoint.id));
     const validExitPointIds = new Set(validExitPoints.map(exitPoint => exitPoint.id));
     const invalidEntryPointIds = new Set((source.entry_points || [])
@@ -6131,7 +6151,7 @@ export class AnalyzerOrchestrator {
     for (const [level, levelCategories] of Object.entries(source)) {
       if (!isRecord(levelCategories)) continue;
       for (const [category, rawCategoryData] of Object.entries(levelCategories)) {
-        // the shape gate — a level whose every entry is malformed must not
+
         if (!isRecord(rawCategoryData)) continue;
         if (!isRecord(target[level])) {
           target[level] = {};
@@ -6259,7 +6279,12 @@ export class AnalyzerOrchestrator {
     matchedRoot: string
   ): Promise<CASAnalysisError | null> {
     if (registration.type !== 'language') return null;
-    if ((result.nodes?.length || 0) > 0 || (result.edges?.length || 0) > 0) return null;
+    if (
+      (result.nodes?.length || 0) > 0 ||
+      (result.edges?.length || 0) > 0 ||
+      (result.entry_points?.length || 0) > 0 ||
+      (result.exit_points?.length || 0) > 0
+    ) return null;
 
     let claimedFiles: string[] = [];
     try {
@@ -6404,7 +6429,7 @@ export class AnalyzerOrchestrator {
         try {
           const size = fs.statSync(path.join(dir, entry.name)).size;
           bytes.set(family, (bytes.get(family) || 0) + size);
-        } catch { /* unreadable file: skip */ }
+        } catch {   }
       }
     }
     return bytes;
@@ -6507,7 +6532,6 @@ export class AnalyzerOrchestrator {
     const projectPath = legacyCall ? '' : projectPathOrNodes;
     const nodes = legacyCall ? projectPathOrNodes : nodesOrEntryPoints as CASNode[];
     const entryPoints = legacyCall ? nodesOrEntryPoints as CASEntryPoint[] : entryPointsOrExitPoints as CASEntryPoint[];
-    const exitPoints = legacyCall ? entryPointsOrExitPoints as CASExitPoint[] : exitPointsOrContributions as CASExitPoint[];
     const contributions = legacyCall ? exitPointsOrContributions as any[] : maybeContributions;
     const productNodes = nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath));
     const productNodeIds = new Set(productNodes.map(node => node.id));
@@ -6695,7 +6719,7 @@ export class AnalyzerOrchestrator {
     const hasMobileSurface = frameworkNames.some(name => /\b(flutter|react native|ios|android)\b/.test(name)) ||
       hasAppleMobileFrameworkEvidence ||
       productFiles.some(file => /\.(dart|kt)$/i.test(file) || /(^|\/)(android|ios|lib\/screens)\//.test(file)) ||
-      // project with no UIKit import must not be misclassified as mobile
+
       (productFiles.some(file => /\.swift$/i.test(file)) && !hasAppleDesktopFrameworkEvidence);
     const hasBackendFramework = frameworkNames.some(name =>
       /\b(symfony|laravel|django|fastapi|spring|asp\.?net|nestjs)\b/.test(name)
@@ -7175,13 +7199,20 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  private frameworkNamesForPurpose(contributions: any[], nodes: CASNode[], edges: CASEdge[], projectPath: string): string[] {
+  private frameworkNamesForPurpose(
+    contributions: any[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    projectPath: string,
+    entryPoints: CASEntryPoint[] = [],
+  ): string[] {
     return selectProductFrameworkNames(
       nodes,
       edges,
       analyzerTypeMap(contributions),
       node => Boolean(node.source?.file) && this.isPrimaryProductNodeForProject(node as CASNode, projectPath),
       8,
+      entryPoints,
     );
   }
 
@@ -7792,10 +7823,6 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private entityPropertyNodes(nodes: CASNode[], entityNode: CASNode): CASNode[] {
-    return this.entityPropertyNodesFromIndex(this.buildEntityPropertyIndex(nodes), entityNode);
-  }
-
   private buildEntityPropertyIndex(nodes: CASNode[]): EntityPropertyIndex {
     const byParent = new Map<string, Array<{ node: CASNode; position: number }>>();
     const byFileBasename = new Map<string, Array<{ node: CASNode; position: number; normalizedFile: string }>>();
@@ -7876,10 +7903,6 @@ export class AnalyzerOrchestrator {
 
   private normalizedSourcePathsCompatible(left: string, right: string): boolean {
     return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
-  }
-
-  private sourceFilesCompatible(left: string, right: string): boolean {
-    return this.normalizedSourcePathsCompatible(this.normalizeSourcePath(left), this.normalizeSourcePath(right));
   }
 
   private sourceDecoratorsForNode(projectPath: string | undefined, node: CASNode): string[] {
@@ -8022,7 +8045,17 @@ export class AnalyzerOrchestrator {
 
     aiLibraries.forEach(lib => {
       const key = lib.name?.includes('openai') ? 'openai' : 'anthropic';
-      if (!serviceMap.has(key)) {
+      const providerService = Array.from(serviceMap.values()).find(service =>
+        service.connected_nodes?.some(nodeId => {
+          const node = nodes.find(candidate => candidate.id === nodeId);
+          return node?.analyzers?.some(analyzer => analyzer.toLowerCase().includes(key));
+        })
+      );
+      if (providerService) {
+        providerService.name = key === 'openai' ? 'OpenAI' : 'Anthropic';
+        providerService.type = 'ai_provider';
+        providerService.configuration = { library: lib.name, version: lib.version };
+      } else if (!serviceMap.has(key)) {
         serviceMap.set(key, {
           id: `ext_${key}`,
           name: key === 'openai' ? 'OpenAI' : 'Anthropic',
@@ -8046,7 +8079,7 @@ export class AnalyzerOrchestrator {
     const value = (name || '').replace(/^call to\s*/i, '').trim();
     if (!value) return false;
     const lower = value.toLowerCase();
-    // `dotnet pack "Foo/Foo.csproj" -p:Version=$VER`) must never become
+
     if (isCommandShapedLabel(value)) return false;
     if (isHostnameLikeServiceName(value)) return true;
     if (/\boperations?\s+via\b/i.test(value)) return false;
@@ -8278,10 +8311,6 @@ export class AnalyzerOrchestrator {
       const incomingDeps = dependsOnEdges.filter(e => e.target === n.id);
       return incomingDeps.length > 0;
     });
-
-    const providedByModules = nodes.filter(n =>
-      edges.some(e => e.type === 'provides' && e.target === n.id)
-    );
 
     const variations: CASPattern['variations'] = [];
 
@@ -8721,78 +8750,6 @@ export class AnalyzerOrchestrator {
     return intents;
   }
 
-  private buildFlowSummary(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASFlowSummary {
-    const criticalPatterns = ['auth', 'login', 'password', 'payment', 'checkout', 'billing', 'charge', 'refund', 'token', 'session', 'oauth', 'credential'];
-    const highPatterns = ['user', 'account', 'order', 'profile', 'subscription', 'permission', 'role', 'admin', 'delete', 'remove'];
-    const mediumPatterns = ['create', 'update', 'modify', 'change', 'setting', 'preference'];
-
-    const classified = {
-      critical: [] as string[],
-      high: [] as string[],
-      medium: [] as string[],
-      low: [] as string[]
-    };
-
-    for (const ep of entryPoints) {
-      if (ep.type === 'test') continue;
-
-      const path = (ep.trigger?.path || ep.name || '').toLowerCase();
-      const method = ep.trigger?.method?.toUpperCase() || '';
-      const hasAuth = ep.security?.authenticated || (ep as any).security?.authenticated;
-
-      let score = 0;
-
-      if (criticalPatterns.some(p => path.includes(p))) {
-        score += 40;
-      }
-      if (highPatterns.some(p => path.includes(p))) {
-        score += 20;
-      }
-      if (mediumPatterns.some(p => path.includes(p))) {
-        score += 10;
-      }
-
-      if (method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH') {
-        score += 15;
-      }
-
-      if (hasAuth) {
-        score += 10;
-      }
-
-      if (ep.type === 'cli') {
-        score += 5;
-      }
-
-      let criticality: 'critical' | 'high' | 'medium' | 'low';
-      if (score >= 50) {
-        criticality = 'critical';
-      } else if (score >= 30) {
-        criticality = 'high';
-      } else if (score >= 15) {
-        criticality = 'medium';
-      } else {
-        criticality = 'low';
-      }
-
-      classified[criticality].push(ep.id);
-    }
-
-    const totalCritical = classified.critical.length + classified.high.length;
-
-    return {
-      total_critical_flows: totalCritical,
-      by_criticality: {
-        critical: classified.critical.length,
-        high: classified.high.length,
-        medium: classified.medium.length,
-        low: classified.low.length
-      },
-      untested_critical_flows: [],
-      high_error_rate_flows: []
-    };
-  }
-
   private buildCallChains(
     nodes: CASNode[],
     edges: CASEdge[],
@@ -9113,7 +9070,6 @@ export class AnalyzerOrchestrator {
       high_error_rate_flows: highErrorRate
     };
   }
-
   private enhanceChangeRisks(
     changeRisks: CASChangeRisk[],
     callGraph: CallGraphBuilder,
@@ -9124,7 +9080,6 @@ export class AnalyzerOrchestrator {
       const transitiveCallers = callGraph.getTransitiveCallers(risk.node_id);
       const affectedChains = callGraph.getAffectedCallChains(risk.node_id, callChains);
       const affectedEntries = callGraph.getEntryPointsReachingNode(risk.node_id, entryPoints);
-
       return {
         ...risk,
         downstream_impact: {
@@ -9176,11 +9131,16 @@ export class AnalyzerOrchestrator {
       .map(token => this.stemTerminologyToken(token));
   }
 
+  private catalogCandidateTerminality(candidates: SystemCapability[]) {
+    return analyzeCatalogCandidateTerminality(candidates);
+  }
+
   private rankCatalogPromptCandidates(
     candidates: SystemCapability[],
     userJourneys: CASUserJourney[],
   ): SystemCapability[] {
     const journeyTokens = this.buildJourneyTerminologyTokens(userJourneys);
+    const terminality = this.catalogCandidateTerminality(candidates);
     const scored = candidates.map(candidate => {
       const subjectTokens = this.candidateSubjectTerminologyTokens(candidate);
       const journeyCorroboration = new Set(subjectTokens.filter(token => journeyTokens.has(token))).size;
@@ -9188,11 +9148,13 @@ export class AnalyzerOrchestrator {
       const externalOps = (candidate.operations || [])
         .filter(operation => operation.entry_point_type && operation.entry_point_type !== 'internal').length;
       const categoryRank = this.catalogCandidateCategoryRank(candidate.category);
-      return { candidate, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, entityCount, journeyCorroboration, categoryRank, externalOps };
+      const distanceToTerminal = terminality.get(candidate.id)?.distance_to_terminal ?? Number.MAX_SAFE_INTEGER;
+      return { candidate, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, distanceToTerminal, entityCount, journeyCorroboration, categoryRank, externalOps };
     });
     return scored
       .sort((a, b) =>
         a.grounded - b.grounded ||
+        a.distanceToTerminal - b.distanceToTerminal ||
         b.entityCount - a.entityCount ||
         b.journeyCorroboration - a.journeyCorroboration ||
         a.categoryRank - b.categoryRank ||
@@ -9201,93 +9163,33 @@ export class AnalyzerOrchestrator {
         a.candidate.name.localeCompare(b.candidate.name))
       .map(entry => entry.candidate);
   }
-
   private catalogCandidateCategoryRank(category: SystemCapability['category']): number {
     if (category === 'core') return 0;
     if (category === 'supporting') return 1;
     if (category === 'admin') return 2;
     return 3;
   }
-
-  private static readonly LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD = 15;
-
   private behaviorSurfaceEntryCount(surface: SystemCapability): number {
-    const factor = (surface.criticality_factors || [])[0] || '';
-    const factorMatch = /^\s*(\d+)\b/.exec(factor);
-    if (factorMatch) return Number(factorMatch[1]);
-    const descMatch = /Behavior surface:\s*(\d+)\b/i.exec(surface.description || '');
-    if (descMatch) return Number(descMatch[1]);
-    return (surface.operations || []).length;
+    return countBehaviorSurfaceEntries(surface);
   }
-
-  private splitLargeBehaviorSurfaceByModule(
-    surface: SystemCapability,
-    entryPoints: CASEntryPoint[],
-    nodes: CASNode[]
+  private firstPartySupportsIdentityProduct(signal?: ProjectTextSignal): boolean {
+    return supportsIdentityProduct(signal);
+  }
+  private catalogEvidenceCandidates(
+    candidates: SystemCapability[],
+    behaviorSurfaces: SystemCapability[],
+    dataEntities?: CASDataEntity[],
+    artifactType = 'app',
+    projectTextSignal?: ProjectTextSignal,
   ): SystemCapability[] {
-    const epType = surface.operations?.[0]?.entry_point_type;
-    if (!epType || !entryPoints.length) return [surface];
-
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
-    const moduleOf = (ep: CASEntryPoint): string | undefined => {
-      const file = ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file;
-      if (!file) return undefined;
-      const dir = path.dirname(file);
-      return dir === '.' || dir === '' ? path.basename(file) : path.basename(dir);
-    };
-
-    const groups = new Map<string, CASEntryPoint[]>();
-    for (const ep of entryPoints) {
-      if (String(ep.type) !== epType) continue;
-      const moduleKey = moduleOf(ep);
-      if (!moduleKey) continue;
-      const bucket = groups.get(moduleKey);
-      if (bucket) bucket.push(ep);
-      else groups.set(moduleKey, [ep]);
-    }
-
-    const qualifying = [...groups.entries()]
-      .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
-      .sort((left, right) => right[1].length - left[1].length);
-    const coveredCount = qualifying.reduce((sum, [, entries]) => sum + entries.length, 0);
-    const totalCount = this.behaviorSurfaceEntryCount(surface);
-    if (qualifying.length < 2 || (totalCount > 0 && coveredCount / totalCount < 0.5)) return [surface];
-
-    const kindLabel = this.humanizeDomainKey(String(epType).replace(/[_-]+/g, ' '));
-    return qualifying.slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX).map(([moduleKey, entries]) => {
-      const moduleLabel = this.humanizeDomainKey(moduleKey.replace(/[_-]+/g, ' '));
-      const operations = entries.slice(0, 12).map(ep => ({
-        entry_point_id: ep.id,
-        entry_point_type: String(ep.type),
-        action: this.inferActionFromEntryPoint(ep),
-        path_or_command: this.extractPathOrCommand(ep),
-        trigger: this.extractTrigger(ep),
-      }));
-      const exampleNames = entries.slice(0, 3).map(ep => String(ep.trigger?.event || ep.name || '').trim()).filter(Boolean);
-      return {
-        ...surface,
-        id: `cap_pending_${moduleKey.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`,
-        name: /\bSurface$/i.test(surface.name || '')
-          ? String(surface.name).replace(/\bSurface$/i, `${moduleLabel} Surface`)
-          : `${moduleLabel} ${surface.name || kindLabel}`,
-        description: `Behavior surface module: ${entries.length} ${kindLabel.toLowerCase()} entry points registered under '${moduleKey}'` +
-          (exampleNames.length > 0 ? ` (e.g. ${exampleNames.join(', ')})` : '') + '.',
-        operations,
-        criticality_factors: Array.from(new Set([
-          ...(surface.criticality_factors || []),
-          `${entries.length} ${epType} entry points share the '${moduleKey}' handler module`,
-          'module-split-from-behavior-surface',
-        ])),
-      };
-    });
+    return selectCatalogEvidenceCandidates(candidates, behaviorSurfaces, dataEntities, artifactType, projectTextSignal);
   }
-
   private async awaitAiWithoutCutoff<T>(promise: Promise<T>, operation: string, slowMs: number): Promise<T> {
     let slowTimer: NodeJS.Timeout | undefined;
     const startedAt = Date.now();
     if (Number.isFinite(slowMs) && slowMs > 0) {
       slowTimer = setTimeout(() => {
-        console.error(`[Klauro] ${operation} is still running after ${Date.now() - startedAt}ms; continuing until the provider completes`);
+        console.warn(`[Klauro] ${operation} is still running after ${Date.now() - startedAt}ms; continuing until the provider completes`);
       }, slowMs);
       slowTimer.unref?.();
     }
@@ -9297,9 +9199,8 @@ export class AnalyzerOrchestrator {
       if (slowTimer) clearTimeout(slowTimer);
     }
   }
-
   private async awaitAiBoundedThenUncapped<T>(
-    attemptFactory: (attemptIndex: number) => Promise<T>,
+    attemptFactory: (attemptIndex: number, signal?: AbortSignal) => Promise<T>,
     operation: string,
     opts: { perAttemptTimeoutMs: number; maxBoundedAttempts: number; slowWarnMs: number; hardDeadlineAt?: number },
   ): Promise<T> {
@@ -9316,11 +9217,15 @@ export class AnalyzerOrchestrator {
       }
       const attemptStartedAt = Date.now();
       let timer: NodeJS.Timeout | undefined;
+      const controller = new AbortController();
       try {
         const raced = await Promise.race<T | typeof TIMED_OUT>([
-          attemptFactory(attemptIndex),
+          attemptFactory(attemptIndex, controller.signal),
           new Promise<typeof TIMED_OUT>(resolve => {
-            timer = setTimeout(() => resolve(TIMED_OUT), opts.perAttemptTimeoutMs);
+            timer = setTimeout(() => {
+              controller.abort(new Error(`${operation} exceeded ${opts.perAttemptTimeoutMs}ms`));
+              resolve(TIMED_OUT);
+            }, opts.perAttemptTimeoutMs);
             timer.unref?.();
           }),
         ]);
@@ -9349,11 +9254,15 @@ export class AnalyzerOrchestrator {
       const finalAttemptStartedAt = Date.now();
       const FINAL_TIMED_OUT = Symbol('ai-final-attempt-hard-deadline-timeout');
       let finalTimer: NodeJS.Timeout | undefined;
+      const controller = new AbortController();
       try {
         const raced = await Promise.race<T | typeof FINAL_TIMED_OUT>([
-          attemptFactory(opts.maxBoundedAttempts + 1),
+          attemptFactory(opts.maxBoundedAttempts + 1, controller.signal),
           new Promise<typeof FINAL_TIMED_OUT>(resolve => {
-            finalTimer = setTimeout(() => resolve(FINAL_TIMED_OUT), remaining);
+            finalTimer = setTimeout(() => {
+              controller.abort(new Error(`${operation} exceeded its hard deadline`));
+              resolve(FINAL_TIMED_OUT);
+            }, remaining);
             finalTimer.unref?.();
           }),
         ]);
@@ -9369,7 +9278,6 @@ export class AnalyzerOrchestrator {
     console.error(`[Klauro] ${operation}: all ${opts.maxBoundedAttempts} bounded attempts (${opts.perAttemptTimeoutMs}ms each) were cut off or failed; committing to one final uncapped attempt — completion is guaranteed, latency is not`);
     return this.awaitAiWithoutCutoff(attemptFactory(opts.maxBoundedAttempts + 1), operation, opts.slowWarnMs);
   }
-
   private narrativeModel(): string | undefined {
     return process.env.DEEPINFRA_NARRATIVE_MODEL ||
       process.env.OPENAI_NARRATIVE_MODEL ||
@@ -9377,7 +9285,6 @@ export class AnalyzerOrchestrator {
       process.env.OPENAI_MODEL ||
       undefined;
   }
-
   private async aiExtractCapabilityCatalog(input: {
     systemName: string;
     enhancedSystemPurpose: EnhancedSystemPurpose;
@@ -9403,34 +9310,57 @@ export class AnalyzerOrchestrator {
         writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
         terminal: (journey.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
       }));
-    const entities = [...(input.dataEntities || [])]
+    const productEntities = (input.dataEntities || []).filter(entity =>
+      entity.kind === 'persisted-entity' || entity.kind === 'api-response'
+    );
+    const entities = [...productEntities]
       .sort((left, right) =>
         (right.fields?.length || 0) - (left.fields?.length || 0) ||
         left.name.localeCompare(right.name))
       .slice(0, 18)
       .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
-    const largeSurfaceCandidates = (input.behaviorSurfaces || []).filter(
-      surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+    const artifactType = String(purpose.artifact_type || 'app');
+    const candidatePoolForRanking = this.catalogEvidenceCandidates(
+      input.candidateCapabilities,
+      input.behaviorSurfaces || [],
+      input.dataEntities,
+      artifactType,
+      input.projectTextSignal,
     );
-    const candidatePoolForRanking = [...input.candidateCapabilities, ...largeSurfaceCandidates];
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
-    const candidateWindowSize = Math.min(40, Math.max(24, Math.ceil(rankedCandidateAreas.length / 6)));
-    const candidateAreas = rankedCandidateAreas
+    const behaviorCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind === 'behavior-surface');
+    const requiredBehaviorCandidateAreas = behaviorCandidateAreas.filter(candidate => candidate.category !== 'internal');
+    const promptCandidateAreas = [
+      ...behaviorCandidateAreas,
+      ...rankedCandidateAreas.filter(candidate => candidate.evidence_kind !== 'behavior-surface'),
+    ];
+    const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
+    const catalogEntityNameById = new Map(input.dataEntities.map(entity => [entity.id, entity.name]));
+    const candidateWindowSize = Math.min(64, Math.max(24, behaviorCandidateAreas.length, Math.ceil(rankedCandidateAreas.length / 6)));
+    const candidateAreas = promptCandidateAreas
       .map(capability => capability.name)
       .slice(0, candidateWindowSize);
-    const candidateAreaFacts = rankedCandidateAreas
+    const candidateAreaFacts = promptCandidateAreas
       .slice(0, candidateWindowSize)
       .map(capability => ({
+        candidate_id: capability.id,
+        family: capability.name,
+        operations: (capability.evidence_examples || []).slice(0, 8),
         name: capability.evidence_kind === 'behavior-surface' && (capability.evidence_examples || []).length > 0
           ? (capability.evidence_examples as string[]).join(', ')
           : capability.name,
         entry_points: this.behaviorSurfaceEntryCount(capability),
         entities: (capability.related_entities || []).length,
+        entity_names: (capability.related_entities || []).map(id => catalogEntityNameById.get(id) || id),
+        terminality: candidateTerminality.get(capability.id)?.terminal ? 'terminal'
+          : candidateTerminality.get(capability.id)?.proximal_terminal ? 'proximal-terminal'
+            : 'upstream',
+        distance_to_terminal: candidateTerminality.get(capability.id)?.distance_to_terminal,
       }));
     const services = (input.externalServices || []).slice(0, 12);
-    const catalogCountMax = Math.max(1, Math.min(20, Math.ceil(candidateAreas.length / 2)));
-    const catalogCountMin = Math.min(catalogCountMax, Math.max(1, Math.round(candidateAreas.length / 4)));
-    const artifactType = String(purpose.artifact_type || 'app');
+    const promptFamilyCount = this.catalogDistinctFamilyCount(candidatePoolForRanking);
+    const catalogCountMax = Math.max(1, Math.min(20, Math.max(promptFamilyCount, behaviorCandidateAreas.length)));
+    const catalogCountMin = Math.min(catalogCountMax, Math.max(1, Math.ceil(Math.log2(promptFamilyCount + 1))));
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
       'runtime', 'service', 'topology', 'workload',
@@ -9451,11 +9381,10 @@ export class AnalyzerOrchestrator {
       }
     }
     const catalogTask = artifactType === 'infrastructure'
-      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language, such as "Provision platform infrastructure" or "Deploy service runtime". Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability; "Manage Shell Deploy" and similar mechanism labels are invalid. Merge related deployment/configuration candidates. entities/journeys must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language, such as "Provision platform infrastructure" or "Deploy service runtime". Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability; "Manage Shell Deploy" and similar mechanism labels are invalid. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
-        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. entities/journeys must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
-        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
-
+        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Each description is ONE concise sentence, 8-16 words, that explains the user outcome grounded by the cited candidate operations. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts. NEVER use the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding. (8) Every subject noun in a capability name and description must come from a cited candidate's entity_names or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
       ...journeys.map(journey => journey.name),
@@ -9465,34 +9394,43 @@ export class AnalyzerOrchestrator {
     if (signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle;
     if (signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary;
     if (signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription;
-    if (purpose.inferred_description) topDownSignals.inferred_product_description = purpose.inferred_description;
+    const hasFirstPartyProductText = Boolean(
+      signal?.productDocTitle || signal?.productDocSummary || signal?.manifestDescription || signal?.summary
+    );
+    if (!hasFirstPartyProductText && purpose.inferred_description) {
+      topDownSignals.inferred_product_description = purpose.inferred_description;
+    }
     if (productTerminology.length) topDownSignals.product_terminology = productTerminology;
     const hasTopDown = Object.keys(topDownSignals).length > 0;
-
     const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
-    const CATALOG_ATTEMPT_BOUND_MS = 40000;
+    const CATALOG_ATTEMPT_BOUND_MS = 70000;
     const CATALOG_MAX_BOUNDED_ATTEMPTS = 3;
     const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
       return this.awaitAiBoundedThenUncapped(
-        () => aiService.generateComponentDescription({
+        (_boundedAttempt, signal) => aiService.generateComponentDescription({
+            signal,
             additionalContext: {
               model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
+              responseFormat: 'json',
+              maxTokens: Math.min(2200, Math.max(600, 180 + catalogCountMax * 110)),
+              requestTimeoutMs: 65000,
+              requestRetries: 0,
               ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
-              task: catalogTask,
-              style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
+              task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence.`,
+              style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports.',
               product: {
                 name: input.systemName,
                 domain: purpose.primary_domain,
                 concepts: (purpose.core_concepts || []).slice(0, 12),
-                description: purpose.inferred_description,
+                description: hasFirstPartyProductText ? undefined : purpose.inferred_description,
                 frameworks: (input.frameworks || []).slice(0, 6),
               },
               facts: {
                 user_journeys: journeys,
-                data_entities: entities,
+                entities: entities,
                 candidate_route_areas: candidateAreaFacts,
+                required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id),
                 external_services: services,
-                // product-facing text. Its absence must not weaken the catalog;
                 ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
               },
             },
@@ -9506,7 +9444,6 @@ export class AnalyzerOrchestrator {
         },
       );
     };
-
     let catalog: Array<Record<string, unknown>> = [];
     let raw = '';
     const maxInitialAttempts = input.qualityNudge ? 1 : 2;
@@ -9519,12 +9456,11 @@ export class AnalyzerOrchestrator {
         if (process.env.KLAURO_DEBUG_CATALOG) console.error(`[catalog-debug] attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
         if (isAiCatalogHardDeadlineExceeded(error)) break;
       }
-      if (catalog.length >= catalogCountMin) break;
+      if (catalog.length > 0) break;
       if (catalog.length && process.env.KLAURO_DEBUG_CATALOG) {
         console.error(`[catalog-debug] attempt ${attempt} under-count: got ${catalog.length}, evidence-derived min ${catalogCountMin}`);
       }
     }
-
     const effectiveSize = (items: Array<Record<string, unknown>>): number => {
       const sets = new Set(items.map((item, index) => {
         const entities = Array.isArray(item.entities)
@@ -9558,6 +9494,11 @@ export class AnalyzerOrchestrator {
     }
     if (process.env.KLAURO_DEBUG_CATALOG) {
       console.error('[catalog-debug] raw.length=', (raw || '').length, 'parsed=', catalog.length, 'rawHead=', JSON.stringify(String(raw || '').slice(0, 300)));
+      writeAnalyzerStatus('[catalog-debug] parsed catalog:', catalog.map(item => ({
+        name: String(item.name || ''),
+        description: String(item.description || ''),
+        candidate_ids: Array.isArray(item.candidate_ids) ? item.candidate_ids : [],
+      })));
     }
     const catalogEvidenceDigest = {
       systemName: input.systemName,
@@ -9584,7 +9525,6 @@ export class AnalyzerOrchestrator {
       });
       return [];
     }
-
     const entityIdByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity.id]));
     const entityNameById = new Map(input.dataEntities.map(entity => [entity.id, entity.name]));
     const out: SystemCapability[] = [];
@@ -9598,8 +9538,8 @@ export class AnalyzerOrchestrator {
       'access', 'add', 'analyze', 'authorize', 'build', 'calculate', 'collect',
       'create', 'delete', 'deploy', 'display', 'execute', 'generate', 'get',
       'list', 'manage', 'monitor', 'navigate', 'process', 'provide', 'read',
-      'remove', 'retrieve', 'run', 'show', 'store', 'sync', 'track', 'update',
-      'validate', 'view', 'write',
+      'remove', 'retrieve', 'run', 'show', 'store', 'sync', 'track', 'update', 'offer',
+      'validate', 'view', 'visualize', 'write',
     ]);
     const systemIdentityTokens = new Set(
       String(input.systemName || '')
@@ -9612,6 +9552,7 @@ export class AnalyzerOrchestrator {
     const capabilityEvidenceVocabulary = new Set<string>();
     for (const value of [
       ...candidateAreas,
+      ...candidatePoolForRanking.flatMap(candidate => candidate.evidence_examples || []),
       ...input.dataEntities.map(entity => entity.name),
       ...(input.userJourneys || []).map(journey => journey.name),
       String(purpose.primary_domain || ''),
@@ -9628,6 +9569,19 @@ export class AnalyzerOrchestrator {
     if (artifactType === 'infrastructure') {
       for (const token of infrastructureResponsibilityTokens) capabilityEvidenceVocabulary.add(token);
     }
+    const firstPartyEvidenceVocabulary = new Set<string>();
+    for (const value of [
+      signal?.productDocTitle,
+      signal?.productDocSummary,
+      signal?.manifestDescription,
+      signal?.summary,
+      ...(signal?.concepts || []),
+      ...(signal?.productVocabulary || []),
+    ]) {
+      for (const token of String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) {
+        if (token.length >= 3) firstPartyEvidenceVocabulary.add(this.stemTerminologyToken(token));
+      }
+    }
     const seen = new Set<string>();
     type StagedCatalogItem = {
       name: string;
@@ -9638,11 +9592,17 @@ export class AnalyzerOrchestrator {
       entityNameSet: Set<string>;
       nameTokensAll: string[];
       journeys: unknown;
-      nameRepairedFromBareNoun?: boolean;
+      candidateIds: string[];
     };
     const staged: StagedCatalogItem[] = [];
-    let bareNounRepaired = 0;
     let bareNounRejected = 0;
+    const catalogRejectionReasons = new Map<string, number>();
+    const debugCatalogRejection = (name: string, reason: string): void => {
+      catalogRejectionReasons.set(reason, (catalogRejectionReasons.get(reason) || 0) + 1);
+      if (process.env.KLAURO_DEBUG_CATALOG) {
+        writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason });
+      }
+    };
     for (const item of catalog) {
       let name = String(item.name || '').replace(/\s+/g, ' ').trim();
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
@@ -9656,7 +9616,10 @@ export class AnalyzerOrchestrator {
       if (description.length < 25 && itemEntityNamesRaw.length) {
         description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
       }
-      if (!name || description.length < 20) continue;
+      if (!name || description.length < 20) {
+        debugCatalogRejection(name, 'missing-name-or-description');
+        continue;
+      }
       if (/(->|→|»)/.test(name)) {
         if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;
         const head = name.split(/->|→|»/)[0].trim().replace(/[:\-–—\s]+$/, '');
@@ -9666,18 +9629,18 @@ export class AnalyzerOrchestrator {
         if (!headIsPurposePhrase || this.isRawCandidateLabelName(head, candidateAreas)) continue;
         name = head;
       }
-      if (this.isRawCandidateLabelName(name, candidateAreas)) continue;
-      let itemBareNounRepaired = false;
+      if (this.isRawCandidateLabelName(name, candidateAreas)) {
+        debugCatalogRejection(name, 'raw-candidate-label');
+        continue;
+      }
       if (this.isBareNounCapabilityLabel(name)) {
-        if (itemEntityNamesRaw.length === 0) { bareNounRejected++; continue; }
-        itemBareNounRepaired = true;
-        bareNounRepaired++;
+        bareNounRejected++;
+        debugCatalogRejection(name, 'bare-noun-label');
+        continue;
       }
       const key = name.toLowerCase();
-      const purposeNouns = key
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .split(/[^a-z0-9]+/)
-        .map(token => this.stemTerminologyToken(token))
+      const purposeNouns = capabilitySubjectTokens(name)
+        .map(token => this.stemTerminologyToken(token.toLowerCase()))
         .filter(token => token.length >= 3)
         .filter(token => !capabilityActionTokens.has(token))
         .filter(token => !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
@@ -9686,6 +9649,7 @@ export class AnalyzerOrchestrator {
         artifactType === 'infrastructure' &&
         purposeNouns.some(token => infrastructureMechanismTokens.has(token))
       ) {
+        debugCatalogRejection(name, 'infrastructure-mechanism-name');
         continue;
       }
       const unsupportedValueNouns = new Set([
@@ -9695,17 +9659,108 @@ export class AnalyzerOrchestrator {
       if (purposeNouns.some(token =>
         unsupportedValueNouns.has(token) && !capabilityEvidenceVocabulary.has(token)
       )) {
+        debugCatalogRejection(name, 'unsupported-value-noun');
         continue;
       }
-      const hasExactEntityEvidence = itemEntityNamesRaw.some(entityName => entityIdByName.has(entityName.toLowerCase()));
+      const itemNameEvidenceTokens = key
+        .split(/[^a-z0-9]+/)
+        .map(token => this.stemTerminologyToken(token))
+        .filter(token => token.length >= 4);
+      const itemEntityEvidenceTokens = itemEntityNamesRaw
+        .flatMap(entityName => String(entityName).replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/))
+        .map(token => this.stemTerminologyToken(token.toLowerCase()))
+        .filter(token => token.length >= 4);
+      const hasEntitySubjectEvidence = itemNameEvidenceTokens.some(nameToken =>
+        itemEntityEvidenceTokens.some(entityToken =>
+          nameToken === entityToken ||
+          (Math.min(nameToken.length, entityToken.length) >= 5 &&
+            (nameToken.startsWith(entityToken.slice(0, 5)) || entityToken.startsWith(nameToken.slice(0, 5))))
+        )
+      );
+      const descriptionEvidenceTokens = description
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .split(/[^A-Za-z0-9]+/)
+        .map(token => this.stemTerminologyToken(token.toLowerCase()))
+        .filter(token => token.length >= 4);
+      const citedEntityNames = new Set(input.dataEntities.map(entity => entity.name.toLowerCase()));
+      const hasEntityDescriptionEvidence = itemEntityNamesRaw.some(entityName => citedEntityNames.has(entityName.toLowerCase())) &&
+        descriptionEvidenceTokens.some(descriptionToken =>
+          itemEntityEvidenceTokens.some(entityToken =>
+            descriptionToken === entityToken ||
+            (Math.min(descriptionToken.length, entityToken.length) >= 5 &&
+              (descriptionToken.startsWith(entityToken.slice(0, 5)) || entityToken.startsWith(descriptionToken.slice(0, 5))))
+          )
+        );
+      const candidateIds = (Array.isArray(item.candidate_ids) ? item.candidate_ids : [])
+        .map((value: unknown) => String(value || ''))
+        .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
+      const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
+      const citedEvidenceTokens = new Set(
+        citedCandidates
+          .flatMap(candidate => [candidate.name, ...(candidate.evidence_examples || [])])
+          .flatMap(value => String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/))
+          .map(token => this.stemTerminologyToken(token.toLowerCase()))
+          .filter(token => token.length >= 3)
+          .filter(token => !capabilityActionTokens.has(token) && !GENERIC_CAPABILITY_NAME_TOKENS.has(token)),
+      );
+      const tokenMatches = (token: string, evidence: Set<string>): boolean =>
+        evidence.has(token) || [...evidence].some(candidate =>
+          Math.min(token.length, candidate.length) >= 3 &&
+          (token.startsWith(candidate) || candidate.startsWith(token) ||
+            (Math.min(token.length, candidate.length) >= 5 && token.slice(0, 5) === candidate.slice(0, 5)))
+        );
+      const catalogItemEvidenceTokens = new Set(
+        `${name} ${description}`
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .map(token => this.stemTerminologyToken(token))
+          .filter(token => token.length >= 3),
+      );
+      const hasCitedEvidenceBridge = [...catalogItemEvidenceTokens].some(token =>
+        tokenMatches(token, citedEvidenceTokens)
+      );
+      const itemEntityEvidenceVocabulary = new Set(itemEntityEvidenceTokens);
+      const allPurposeNounsGrounded = purposeNouns.every(token =>
+        tokenMatches(token, citedEvidenceTokens) ||
+        tokenMatches(token, firstPartyEvidenceVocabulary) ||
+        tokenMatches(token, itemEntityEvidenceVocabulary)
+      );
+      const identityConcernTokens = new Set([
+        'auth', 'authentication', 'authorization', 'identity', 'permission', 'session',
+      ].map(token => this.stemTerminologyToken(token)));
+      const namesIdentityConcern = purposeNouns.some(token => identityConcernTokens.has(token)) ||
+        /\baccess[ -]?control\b/i.test(name);
+      const firstPartySupportsIdentity = this.firstPartySupportsIdentityProduct(signal);
+      if (artifactType === 'app' && namesIdentityConcern && !firstPartySupportsIdentity) {
+        debugCatalogRejection(name, 'supporting-identity-concern');
+        continue;
+      }
       if (
         purposeNouns.length > 0 &&
-        !purposeNouns.some(token => capabilityEvidenceVocabulary.has(token)) &&
-        !hasExactEntityEvidence
+        !purposeNouns.some(token => capabilityEvidenceVocabulary.has(token) || tokenMatches(token, firstPartyEvidenceVocabulary)) &&
+        !hasEntitySubjectEvidence &&
+        !hasEntityDescriptionEvidence
       ) {
+        debugCatalogRejection(name, 'purpose-noun-missing-global-evidence');
         continue;
       }
-      if (seen.has(key)) continue;
+      if (candidateIds.length > 0 && purposeNouns.length > 0 && !hasCitedEvidenceBridge && !hasEntitySubjectEvidence) {
+        debugCatalogRejection(name, 'purpose-noun-missing-cited-evidence');
+        continue;
+      }
+      if (candidateIds.length > 0 && purposeNouns.length > 0 && !allPurposeNounsGrounded) {
+        debugCatalogRejection(name, `ungrounded-purpose-nouns:${purposeNouns.filter(token =>
+          !tokenMatches(token, citedEvidenceTokens) &&
+          !tokenMatches(token, firstPartyEvidenceVocabulary) &&
+          !tokenMatches(token, itemEntityEvidenceVocabulary)
+        ).join(',')}`);
+        continue;
+      }
+      if (seen.has(key)) {
+        debugCatalogRejection(name, 'duplicate-name');
+        continue;
+      }
       seen.add(key);
       const category: SystemCapability['category'] = item.category === 'core' ? 'core' : item.category === 'infrastructure' ? 'internal' : 'supporting';
       const itemEntityNames = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '').toLowerCase());
@@ -9719,33 +9774,64 @@ export class AnalyzerOrchestrator {
         category,
         relatedEntities,
         entityNameSet: new Set(itemEntityNames),
-        nameTokensAll: key.split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token)),
+        nameTokensAll: `${key} ${description.toLowerCase()}`
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .split(/[^a-z0-9]+/)
+          .map(token => this.stemTerminologyToken(token))
+          .filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token) &&
+            (artifactType !== 'app' || !capabilityActionTokens.has(token))),
         journeys: item.journeys,
-        nameRepairedFromBareNoun: itemBareNounRepaired,
+        candidateIds,
       });
     }
-
     const tokenDf = new Map<string, number>();
     for (const item of staged) {
       for (const token of new Set(item.nameTokensAll)) tokenDf.set(token, (tokenDf.get(token) || 0) + 1);
     }
     const nonDiscriminative = new Set(
       staged.length >= 3
-        ? [...tokenDf.entries()].filter(([, df]) => df > staged.length / 2).map(([token]) => token)
+        ? [...tokenDf.entries()].filter(([, df]) => df > Math.max(2, staged.length / 2)).map(([token]) => token)
         : []
     );
     const discriminativeTokens = (tokens: string[]) => new Set(tokens.filter(token => !nonDiscriminative.has(token)));
     const itemTokens = staged.map(item => discriminativeTokens(item.nameTokensAll));
     const opsByItemIndex = new Map<number, SystemCapability['operations']>();
     const entityIdsByItemIndex = new Map<number, Set<string>>();
+    const candidateIdsByItemIndex = new Map<number, Set<string>>();
     for (const candidate of candidatePoolForRanking) {
-      const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
-      const candidateTokens = discriminativeTokens(
-        candidate.name.toLowerCase().split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
+      const citedIndices = staged
+        .map((item, index) => item.candidateIds.includes(candidate.id) ? index : -1)
+        .filter(index => index >= 0);
+      if (citedIndices.length > 0) {
+        for (const index of citedIndices) {
+          if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
+          opsByItemIndex.get(index)!.push(...candidate.operations);
+          if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
+          for (const id of candidate.related_entities || []) entityIdsByItemIndex.get(index)!.add(id);
+          if (!candidateIdsByItemIndex.has(index)) candidateIdsByItemIndex.set(index, new Set());
+          candidateIdsByItemIndex.get(index)!.add(candidate.id);
+        }
+        continue;
+      }
+      const uncitedItemIndices = new Set(
+        staged.map((item, index) => item.candidateIds.length === 0 ? index : -1).filter(index => index >= 0),
       );
+      if (uncitedItemIndices.size === 0) continue;
+      const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
+      const candidateTokens = discriminativeTokens([...new Set(
+        [candidate.name, ...(candidate.evidence_examples || [])]
+          .flatMap(value => String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/))
+          .map(token => this.stemTerminologyToken(token))
+          .filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token) &&
+            (artifactType !== 'app' || !capabilityActionTokens.has(token)))
+      )]);
       let best = 0;
       const entityOverlaps: number[] = [];
       const scores: number[] = staged.map((item, index) => {
+        if (!uncitedItemIndices.has(index)) {
+          entityOverlaps.push(0);
+          return 0;
+        }
         const entityOverlap = candidateEntityNames.filter(entityName => item.entityNameSet.has(entityName)).length;
         entityOverlaps.push(entityOverlap);
         let tokenOverlap = 0;
@@ -9773,32 +9859,35 @@ export class AnalyzerOrchestrator {
         opsByItemIndex.get(index)!.push(...candidate.operations);
         if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
         for (const id of candidate.related_entities || []) entityIdsByItemIndex.get(index)!.add(id);
+        if (!candidateIdsByItemIndex.has(index)) candidateIdsByItemIndex.set(index, new Set());
+        candidateIdsByItemIndex.get(index)!.add(candidate.id);
       }
     }
 
-    // a resolvable operation/entity/entry-point, and must never re-admit a
     let unanchoredRejected = 0;
     const unanchoredRejectedNames: string[] = [];
 
+    if (process.env.KLAURO_DEBUG_CATALOG) {
+      writeAnalyzerStatus('[catalog-debug] candidate pool:', candidatePoolForRanking.map(candidate => ({
+        id: candidate.id,
+        name: candidate.name,
+        operations: (candidate.operations || []).length,
+      })));
+      writeAnalyzerStatus('[catalog-debug] candidate assignments:', staged.map((item, index) => ({
+        name: item.name,
+        candidate_ids: [...(candidateIdsByItemIndex.get(index) || [])],
+        operations: (opsByItemIndex.get(index) || []).length,
+      })));
+    }
+
     for (let index = 0; index < staged.length; index++) {
-      const { name, key, description, category, relatedEntities, journeys, nameRepairedFromBareNoun } = staged[index];
+      const { name, description, category, relatedEntities, journeys } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
       const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
+      const anchoredCandidateIds = candidateIdsByItemIndex.get(index) || new Set<string>();
       const allRelatedEntities = Array.from(new Set([...relatedEntities, ...candidateEntityIds]));
-      const resolvedName = nameRepairedFromBareNoun
-        ? this.deriveDeterministicFallbackPurposeLabel({
-            id: `capability_${key.replace(/[^a-z0-9]+/g, '_')}`,
-            name,
-            description,
-            category,
-            operations: dedupedOps,
-            related_entities: allRelatedEntities,
-            related_domains: [],
-            criticality: category === 'core' ? 'high' : 'medium',
-            criticality_factors: [],
-          }, input.dataEntities, true)
-        : name;
+      const resolvedName = name;
       if (!resolvedName) continue;
       const resolvedKey = resolvedName.toLowerCase();
       if (this.capabilityContradictsObservedOperations({ name: resolvedName, description: '', operations: dedupedOps })) continue;
@@ -9827,7 +9916,7 @@ export class AnalyzerOrchestrator {
         criticality: category === 'core' ? 'high' : 'medium',
         criticality_factors: Array.from(new Set([
           'ai-extracted-from-journeys-and-entities',
-          ...(nameRepairedFromBareNoun ? ['bare-noun-purpose-repaired'] : []),
+          ...[...anchoredCandidateIds].map(candidateId => `catalog-candidate:${candidateId}`),
           ...(descriptionContradictsOperations ? ['catalog-description-rejected'] : []),
         ])),
       });
@@ -9840,9 +9929,9 @@ export class AnalyzerOrchestrator {
         ...catalogEvidenceDigest,
         parsed: catalog.length,
         kept: out.length,
-        bareNounRepaired,
         bareNounRejected,
         unanchoredRejected,
+        rejectionReasons: Object.fromEntries(catalogRejectionReasons),
         ...(unanchoredRejected > 0 ? { unanchoredRejectedNames: unanchoredRejectedNames.slice(0, 10) } : {}),
       },
       raw_output_excerpt: raw,
@@ -9855,7 +9944,7 @@ export class AnalyzerOrchestrator {
         : undefined,
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
-    // The hard cap must never clip below what the prompt itself was told to
+
     return out.slice(0, Math.max(16, catalogCountMax));
   }
 
@@ -9867,9 +9956,10 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[] = [],
     purpose?: EnhancedSystemPurpose,
     libraryNames: string[] = [],
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
-    // Defense-in-depth: a behavior-surface item must never enter the ranked
+
     const result = [...cataloged]
       .map(capability => this.normalizePolyglotCapabilityName(capability, entityById))
       .filter(capability =>
@@ -9893,18 +9983,36 @@ export class AnalyzerOrchestrator {
       if (!this.isInfrastructureOnlyCapability(capability, entityById, nodeTypeByEntryPointId)) return true;
       return false;
     });
-    const gated = purposeGated.length > 0 ? purposeGated : result;
+    const gated = purposeGated;
 
-    // in a product description... NEVER as a mechanism or a supporting
+    const productTerms = [
+      purpose?.primary_domain,
+      ...(purpose?.description_source && purpose.description_source !== 'ai'
+        ? [purpose.inferred_description, ...(purpose?.core_concepts || [])]
+        : []),
+      projectTextSignal.productDocTitle,
+      projectTextSignal.productDocSummary,
+      projectTextSignal.manifestDescription,
+      projectTextSignal.summary,
+      ...(projectTextSignal.concepts || []),
+    ].filter((value): value is string => Boolean(value));
     const vocabularyGated = gated.filter(capability => {
+      const operationTerms = (capability.operations || []).flatMap(operation => [
+        operation.action,
+        operation.path_or_command,
+        operation.entry_point_id,
+        operation.trigger?.path,
+      ]).filter((value): value is string => Boolean(value));
+      const capabilityProductTerms = [...productTerms, ...operationTerms];
       if (libraryNames.length > 0) {
         const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(
           capability.name,
           libraryNames.map(name => ({ name })),
           dataEntities,
+          capabilityProductTerms,
         );
         if (nameVerdict.failsIdentifierTest) {
-          console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${capability.name}" post-generation — candidate generation should have excluded this before it ever reached the AI catalog.`);
+          console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${capability.name}" post-generation (${nameVerdict.flaggedTokens.join(', ')}) — candidate generation should have excluded this before it ever reached the AI catalog.`);
           return false;
         }
       }
@@ -9913,6 +10021,7 @@ export class AnalyzerOrchestrator {
         capability.description,
         libraryNames.map(name => ({ name })),
         dataEntities,
+        [...capabilityProductTerms, capability.name],
       );
       if (descVerdict.failsAudienceTest) {
         console.error(`[Klauro] audience test rejected the DESCRIPTION of "${capability.name}" (${descVerdict.reasons.join(',')}) — see §0.7.1's audience test.`);
@@ -9920,7 +10029,7 @@ export class AnalyzerOrchestrator {
       }
       return true;
     });
-    const audienceGated = vocabularyGated.length > 0 ? vocabularyGated : gated;
+    const audienceGated = vocabularyGated;
 
     const deduped = this.dedupeSystemCapabilitiesByName(audienceGated);
 
@@ -10045,8 +10154,8 @@ export class AnalyzerOrchestrator {
     return {
       ...capability,
       name: normalizedName,
-      description: '',
-      description_source: undefined,
+      description: `${normalizedName} across supported product workflows.`,
+      description_source: 'deterministic',
       description_generation: undefined,
     };
   }
@@ -10061,12 +10170,12 @@ export class AnalyzerOrchestrator {
     return /^(?:manage|create|update|delete|modify|write|submit|set|configure)\b/i.test(capability.name) ||
       /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
   }
-
   private isInfrastructureOnlyCapability(
     capability: SystemCapability,
     entityById: Map<string, CASDataEntity>,
     nodeTypeByEntryPointId?: Map<string, string>,
   ): boolean {
+    if (this.isInfrastructureMachineryName(capability.name, true)) return true;
     const anchors = (capability.related_entities || [])
       .map(id => entityById.get(id))
       .filter((entity): entity is CASDataEntity => Boolean(entity));
@@ -10081,7 +10190,6 @@ export class AnalyzerOrchestrator {
     const operationsAllDistributionOrCi = operationNodeTypes.length > 0
       && operationNodeTypes.every(isDistributionOrCiNodeType);
 
-    // product evidence by itself. Zero entity evidence must not ship
     if (anchors.length === 0) {
       if (operationNodeTypes.length === 0) {
         return this.isInfrastructureMachineryName(capability.name);
@@ -10099,13 +10207,12 @@ export class AnalyzerOrchestrator {
     return entityAnchorsAllInfra || operationsAllDistributionOrCi;
   }
 
-  private isInfrastructureMachineryName(name: string): boolean {
+  private isInfrastructureMachineryName(name: string, scriptsAndPipelinesOnly = false): boolean {
     const trimmed = String(name || '').trim();
     if (!trimmed) return false;
-    const verb = '(?:manage|deploy|run|build|release|install|execute|configure|orchestrate|maintain|publish|package)';
-    const subject = '(?:shell\\s+scripts?|batch\\s+scripts?|powershell\\s+scripts?|binari(?:es|y)|installers?|' +
-      'release\\s+scripts?|deploy(?:ment)?\\s+scripts?|build\\s+scripts?|docker\\s+images?|container\\s+images?|' +
-      'ci(?:\\/cd)?\\s+pipelines?|continuous\\s+integration\\s+pipelines?|build\\s+pipelines?)';
+    const verb = '(?:manage|monitor|supervise|deploy|run|build|release|install|execute|configure|orchestrate|maintain|publish|package)';
+    const scriptSubjects = 'shell\\s+scripts?|batch\\s+scripts?|powershell\\s+scripts?|release\\s+scripts?|deploy(?:ment)?\\s+scripts?|build\\s+scripts?|ci(?:\\/cd)?\\s+pipelines?|continuous\\s+integration\\s+pipelines?|build\\s+pipelines?';
+    const subject = scriptsAndPipelinesOnly ? `(?:${scriptSubjects})` : `(?:${scriptSubjects}|binari(?:es|y)|installers?|docker\\s+images?|container\\s+images?)`;
     return new RegExp(`^${verb}\\b(?:\\s+and\\s+${verb}\\b)?.{0,20}\\b${subject}\\b`, 'i').test(trimmed);
   }
 
@@ -10119,12 +10226,6 @@ export class AnalyzerOrchestrator {
     return sharedIsBareNounCapabilityLabel(name);
   }
 
-  private deriveManagePurposeLabel(subject: string, hasAnchorEvidence: boolean): string | undefined {
-    const trimmed = subject.trim();
-    if (!trimmed || !hasAnchorEvidence) return undefined;
-    return `Manage ${trimmed}`;
-  }
-
   private isStructuralPlaceholderCapabilityDescription(description: string): boolean {
     return sharedIsStructuralPlaceholderCapabilityDescription(description);
   }
@@ -10136,7 +10237,7 @@ export class AnalyzerOrchestrator {
   }
 
   private finalizeFlowGraphCapabilities(flowGraph: CASFlowGraph | undefined): void {
-    for (const capability of flowGraph?.capabilities || []) {
+    for (const capability of flowGraph?.capability_candidates || []) {
       const name = String(capability.name || '');
       if (this.isBareNounCapabilityLabel(name)) {
         const hasAnchorEvidence = (capability.operations?.length || 0) > 0 || (capability.entry_points?.length || 0) > 0;
@@ -10150,18 +10251,8 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private materializeFlowGraphFlows(
-    flowGraph: CASFlowGraph,
-    flows: Array<{
-      flow_id: string;
-      name: string;
-      intent: string;
-      entry_point: string;
-      capability_id?: string;
-      capability_relationships?: Array<{ capability_id: string }>;
-      steps?: unknown[];
-      terminus?: { kind: string; produces: string };
-    }>,
+  private stampFlowCriticality(
+    flows: FlowConcept[],
     callChains: CASCallChain[]
   ): void {
     const criticalityByChainId = new Map<string, CASCallChain['criticality']>();
@@ -10169,33 +10260,11 @@ export class AnalyzerOrchestrator {
       if (chain.criticality) criticalityByChainId.set(chain.id, chain.criticality);
     }
 
-    const refs: CASFlowRef[] = [];
-    const seen = new Set<string>();
     for (const flow of flows) {
-      if (!flow.flow_id || seen.has(flow.flow_id)) continue;
-      seen.add(flow.flow_id);
-
       const anchorId = flow.flow_id.startsWith('flow::') ? flow.flow_id.slice('flow::'.length) : undefined;
       const criticality = anchorId ? criticalityByChainId.get(anchorId) : undefined;
-      const capabilityIds = [...new Set([
-        ...(flow.capability_id ? [flow.capability_id] : []),
-        ...(flow.capability_relationships || []).map(relationship => relationship.capability_id).filter(Boolean),
-      ])];
-
-      refs.push({
-        flow_id: flow.flow_id,
-        name: flow.name,
-        intent: flow.intent,
-        entry_point: flow.entry_point,
-        ...(criticality ? { call_chain_id: anchorId, criticality } : {}),
-        ...(flow.capability_id ? { capability_id: flow.capability_id } : {}),
-        ...(capabilityIds.length > 0 ? { capability_ids: capabilityIds } : {}),
-        step_count: Array.isArray(flow.steps) ? flow.steps.length : 0,
-        ...(flow.terminus ? { terminus: { kind: flow.terminus.kind, produces: flow.terminus.produces } } : {}),
-      });
+      if (criticality) flow.criticality = criticality;
     }
-
-    flowGraph.flows = refs;
   }
 
   private isRawCandidateLabelName(name: string, candidateAreas: string[]): boolean {
@@ -10241,192 +10310,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private isSingleEntityCrudCapability(capability: SystemCapability): boolean {
-    const repaired = (capability.criticality_factors || []).includes('bare-noun-purpose-repaired');
-    if (!repaired) return false;
-    const source = capability.name_source;
-    if (source === 'ai' || source === 'manual' || source === 'reused') return false;
-    if ((capability.related_entities?.length || 0) === 0 && (capability.operations?.length || 0) === 0) {
-      return true;
-    }
-    if ((capability.related_entities?.length || 0) > 1) return false;
-    const subject = String(capability.name || '').replace(/^(manage|view)\s+/i, '');
-    if (!subject) return false;
-    const normalise = (value: string): string => value.replace(/[^a-z0-9]/gi, '').toLowerCase();
-    const normalisedSubject = normalise(subject);
-    if (!normalisedSubject) return false;
-    return (this.fallbackEntityNameIndex || new Set<string>()).has(normalisedSubject);
-  }
-
-  private fallbackEntityNameIndex?: Set<string>;
-
-  private applyDeterministicCapabilityFallback(
-    candidateSnapshot: SystemCapability[],
-    behaviorSurfaces: SystemCapability[],
-    entryPoints: CASEntryPoint[],
-    nodes: CASNode[],
-    systemCapabilities: SystemCapability[],
-    dataEntities: CASDataEntity[] = [],
-  ): void {
-    this.fallbackEntityNameIndex = new Set(
-      (dataEntities || [])
-        .map(entity => String(entity.name || '').replace(/[^a-z0-9]/gi, '').toLowerCase())
-        .filter(Boolean),
-    );
-    const candidatesWithEntityAnchors = candidateSnapshot
-      .map(capability => ({ ...capability, name: collapseDuplicateAdjacentWords(String(capability.name || '')) }))
-      .map(capability => this.attachFallbackEntityAnchor(capability, dataEntities));
-    const validDeterministic = candidatesWithEntityAnchors
-      .filter(capability => !isMalformedCapabilityLabel(String(capability.name || '')))
-      .filter(capability => !this.isRawCandidateLabelName(String(capability.name || ''), []))
-      .map(capability => {
-        const name = String(capability.name || '');
-        if (!this.isBareNounCapabilityLabel(name)) return capability;
-        const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
-        const repaired = this.deriveDeterministicFallbackPurposeLabel(capability, dataEntities, hasAnchorEvidence);
-        if (!repaired) return undefined;
-        return {
-          ...capability,
-          name: repaired,
-          criticality_factors: Array.from(new Set([...(capability.criticality_factors || []), 'bare-noun-purpose-repaired'])),
-        };
-      })
-      .filter((capability): capability is SystemCapability => Boolean(capability));
-    const outcomeShaped = validDeterministic.filter(capability => !this.isSingleEntityCrudCapability(capability));
-    const crudShare = validDeterministic.length > 0
-      ? (validDeterministic.length - outcomeShaped.length) / validDeterministic.length
-      : 0;
-    if (crudShare > 0.5 && outcomeShaped.length > 0) {
-      console.error(
-        `[Klauro] capability fallback: ${validDeterministic.length - outcomeShaped.length} of ${validDeterministic.length} ` +
-        `deterministic candidates are ungrounded or single-entity labels (${Math.round(crudShare * 100)}%); publishing the ` +
-        `${outcomeShaped.length} outcome-shaped entries instead of the raw candidate list`,
-      );
-      validDeterministic.splice(0, validDeterministic.length, ...outcomeShaped);
-    } else if (outcomeShaped.length === 0 && validDeterministic.length > UNGROUNDED_FALLBACK_KEEP) {
-      const ranked = [...validDeterministic].sort((a, b) =>
-        (b.operations?.length || 0) - (a.operations?.length || 0)
-        || (b.related_entities?.length || 0) - (a.related_entities?.length || 0)
-        || String(a.name || '').localeCompare(String(b.name || '')));
-      const kept = ranked.slice(0, UNGROUNDED_FALLBACK_KEEP);
-      console.error(
-        `[Klauro] capability fallback: NONE of ${validDeterministic.length} deterministic candidates are grounded in an ` +
-        `outcome (no entities, no operations, no authored name); keeping the ${kept.length} best-evidenced rather than ` +
-        `publishing the raw candidate list as a catalog`,
-      );
-      validDeterministic.splice(0, validDeterministic.length, ...kept);
-    }
-    if (validDeterministic.length > 0) {
-      systemCapabilities.splice(
-        0,
-        systemCapabilities.length,
-        ...this.dedupeSystemCapabilitiesByName(validDeterministic),
-      );
-      return;
-    }
-    const largeSurfaceCandidates = behaviorSurfaces.filter(
-      surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
-    );
-    const splitSurfaceCandidates = largeSurfaceCandidates.flatMap(
-      surface => this.splitLargeBehaviorSurfaceByModule(surface, entryPoints, nodes)
-    );
-    systemCapabilities.splice(0, systemCapabilities.length, ...splitSurfaceCandidates.map(surface => ({
-      ...surface,
-      criticality_factors: Array.from(new Set([...(surface.criticality_factors || []), 'genuine-fallback-from-behavior-surface'])),
-    })));
-  }
-
-  private deriveDeterministicFallbackPurposeLabel(
-    capability: SystemCapability,
-    dataEntities: CASDataEntity[],
-    hasAnchorEvidence: boolean,
-  ): string | undefined {
-    if (!hasAnchorEvidence) return undefined;
-    const entityById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
-    const groundedEntityName = (capability.related_entities || [])
-      .map(id => entityById.get(id))
-      .find(Boolean);
-    const routeSubject = (capability.operations || [])
-      .map(operation => this.fallbackRouteResourceSubject(operation.path_or_command || operation.trigger?.path || ''))
-      .find(Boolean);
-    const subject = this.humanizeDisplayName(groundedEntityName || routeSubject || capability.name);
-    if (!subject) return undefined;
-    const operations = capability.operations || [];
-    const readOnly = this.capabilityHasObservedRead(operations) &&
-      !this.capabilityHasObservedMutation(operations) &&
-      (capability.related_entities || []).every(id => {
-        const entity = dataEntities.find(candidate => candidate.id === id);
-        return !entity || (
-          (entity.lifecycle?.created_by?.length || 0) === 0 &&
-          (entity.lifecycle?.updated_by?.length || 0) === 0 &&
-          (entity.lifecycle?.deleted_by?.length || 0) === 0
-        );
-      });
-    return `${readOnly ? 'View' : 'Manage'} ${subject}`;
-  }
-
-  private attachFallbackEntityAnchor(
-    capability: SystemCapability,
-    dataEntities: CASDataEntity[],
-  ): SystemCapability {
-    if ((capability.related_entities || []).length > 0 || dataEntities.length === 0) return capability;
-    const evidence = [
-      capability.name,
-      ...(capability.related_domains || []),
-      ...(capability.operations || []).flatMap(operation => [
-        operation.path_or_command || '',
-        operation.trigger?.path || '',
-      ]),
-    ].join(' ');
-    const canonicalEvidence = this.canonicalCapabilitySubject(evidence);
-    if (!canonicalEvidence) return capability;
-    const match = dataEntities
-      .map(entity => ({ entity, canonical: this.canonicalCapabilitySubject(entity.name) }))
-      .filter(item => item.canonical.length >= 4)
-      .sort((left, right) => right.canonical.length - left.canonical.length)
-      .find(item =>
-        canonicalEvidence.includes(item.canonical) ||
-        item.canonical.includes(canonicalEvidence)
-      );
-    if (!match) return capability;
-    return {
-      ...capability,
-      related_entities: [match.entity.id],
-      criticality_factors: Array.from(new Set([
-        ...(capability.criticality_factors || []),
-        'entity-anchor-inferred-from-resource-evidence',
-      ])),
-    };
-  }
-
-  private canonicalCapabilitySubject(value: string): string {
-    const tokens = this.humanizePascalName(String(value || ''))
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean)
-      .filter(token => token.length > 1)
-      .filter(token => !isLanguageBuiltinDomainToken(token))
-      .filter(token => !['api', 'http', 'https', 'route', 'controller', 'handler', 'workflow', 'management', 'analysis', 'dashboard', 'view', 'manage', 'list', 'get', 'id'].includes(token))
-      .map(token => token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token);
-    return tokens.join('');
-  }
-
-  private fallbackRouteResourceSubject(value: string): string | undefined {
-    const segments = String(value || '')
-      .replace(/\\/g, '/')
-      .split(/[/?#]+/)
-      .map(segment => stripSourceFileExtension(segment.replace(/[{}:]/g, '').trim()))
-      .filter(Boolean)
-      .filter(segment => !/^\d+$/.test(segment))
-      .filter(segment => !/^(?:api|v\d+|id|index)$/i.test(segment))
-      .filter(segment => !isStoragePathToken(segment))
-      .filter(segment => !isLanguageBuiltinDomainToken(segment.toLowerCase()));
-    const resource = [...segments].reverse().find(segment => !/(?:_id|Id)$/i.test(segment));
-    if (!resource) return undefined;
-    const singular = resource.replace(/s$/i, '');
-    return singular.length >= 2 ? singular : undefined;
-  }
-
   private capabilityHasObservedRead(operations: SystemCapability['operations']): boolean {
     return operations.some(operation =>
       /^(?:view|read|list|get|show|access|retrieve|review|analyze|compare|present|render)$/i.test(operation.action || '') ||
@@ -10442,15 +10325,46 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  private catalogQualityFailure(reconciled: SystemCapability[], distinctFamilyCount: number): string | undefined {
+  private isPublishableCapability(capability: SystemCapability): boolean {
+    const authored = capability.name_source === 'ai' ||
+      capability.name_source === 'manual' ||
+      capability.name_source === 'reused';
+    const description = String(capability.description || '').trim();
+    const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
+    const recordedDescriptionDegradation = capability.description_generation?.status === 'ai_rejected';
+    const descriptionIsPublishable = recordedDescriptionDegradation || (
+      Boolean(description) &&
+      !this.isStructuralPlaceholderCapabilityDescription(description) &&
+      descriptionWordCount >= 6 &&
+      descriptionWordCount <= 32
+    );
+    const anchored = (capability.related_entities || []).length > 0 || (capability.operations || []).length > 0;
+    return authored &&
+      anchored &&
+      !this.isBareNounCapabilityLabel(String(capability.name || '')) &&
+      descriptionIsPublishable;
+  }
+
+  private catalogQualityFailure(
+    reconciled: SystemCapability[],
+    distinctFamilyCount: number,
+    requiredBehaviorCandidateIds: string[] = [],
+  ): string | undefined {
     if (reconciled.length === 0) {
       return distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
     }
-    if (reconciled.length === 1 && distinctFamilyCount >= 2) {
-      return `catalog collapse: 1 capability against ${distinctFamilyCount} distinct deterministic candidate families`;
+    const citedCandidateIds = new Set(
+      reconciled.flatMap(capability => (capability.criticality_factors || [])
+        .filter(factor => factor.startsWith('catalog-candidate:'))
+        .map(factor => factor.slice('catalog-candidate:'.length))),
+    );
+    const omittedBehaviorCandidateIds = requiredBehaviorCandidateIds.filter(candidateId => !citedCandidateIds.has(candidateId));
+    if (omittedBehaviorCandidateIds.length > 0) {
+      return `catalog omitted ${omittedBehaviorCandidateIds.length} behavior evidence famil${omittedBehaviorCandidateIds.length === 1 ? 'y' : 'ies'}: ${omittedBehaviorCandidateIds.slice(0, 8).join(', ')}`;
     }
-    if (reconciled.length <= 3 && distinctFamilyCount >= Math.max(6, reconciled.length * 2)) {
-      return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families`;
+    const minimumCapabilities = Math.ceil(Math.log2(distinctFamilyCount + 1));
+    if (reconciled.length < minimumCapabilities) {
+      return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families; at least ${minimumCapabilities} independently expressed outcomes are required`;
     }
     const bareNouns = reconciled.filter(capability => this.isBareNounCapabilityLabel(String(capability.name || '')));
     if (bareNouns.length > 0) {
@@ -10459,6 +10373,20 @@ export class AnalyzerOrchestrator {
     const placeholders = reconciled.filter(capability => this.isStructuralPlaceholderCapabilityDescription(capability.description));
     if (placeholders.length > 0) {
       return `structural template descriptions survived reconciliation: ${placeholders.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
+    }
+    const unauthored = reconciled.filter(capability =>
+      capability.name_source !== 'ai' &&
+      capability.name_source !== 'manual' &&
+      capability.name_source !== 'reused');
+    if (unauthored.length > 0) {
+      return `unauthored capability names survived reconciliation: ${unauthored.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
+    }
+    const weakDescriptions = reconciled.filter(capability => {
+      const wordCount = String(capability.description || '').trim().split(/\s+/).filter(Boolean).length;
+      return wordCount < 6 || wordCount > 32;
+    });
+    if (weakDescriptions.length > 0) {
+      return `capability descriptions fall outside the product-language quality range: ${weakDescriptions.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
     }
     const unanchored = reconciled.filter(capability =>
       (capability.related_entities || []).length === 0 && (capability.operations || []).length === 0
@@ -10471,10 +10399,13 @@ export class AnalyzerOrchestrator {
 
   private catalogDistinctFamilyCount(candidates: SystemCapability[]): number {
     candidates = candidates.filter(candidate => {
-      const hasDomainEvidence = (candidate.related_entities?.length || 0) > 0 || (candidate.related_domains?.length || 0) > 0;
+      const hasEntityEvidence = (candidate.related_entities?.length || 0) > 0;
       const operations = candidate.operations || [];
-      const pageOnly = operations.length > 0 && operations.every(operation => operation.entry_point_type === 'page');
-      return hasDomainEvidence || !pageOnly || candidate.category === 'core';
+      const pageOnly = operations.length > 0 && operations.every(operation =>
+        operation.entry_point_type === 'page' || operation.entry_point_type === 'route'
+      );
+      const externalOnly = operations.length > 0 && operations.every(operation => operation.entry_point_type === 'external');
+      return !externalOnly && (!pageOnly || candidate.category === 'core' || hasEntityEvidence);
     });
     if (candidates.length === 0) return 0;
     const actionTokens = new Set([
@@ -10488,7 +10419,21 @@ export class AnalyzerOrchestrator {
       .split(/[^a-z0-9]+/)
       .map(token => this.stemTerminologyToken(token))
       .filter(token => token.length >= 4 && !actionTokens.has(token) && !this.isGenericCapabilityToken(token));
-    const tokens = candidates.map(candidate => new Set(tokenize(String(candidate.name || ''))));
+    const rawTokens = candidates.map(candidate => new Set(tokenize(String(candidate.name || ''))));
+    const tokenFrequency = new Map<string, number>();
+    for (const candidateTokens of rawTokens) {
+      for (const token of candidateTokens) tokenFrequency.set(token, (tokenFrequency.get(token) || 0) + 1);
+    }
+    const nonDiscriminativeTokens = new Set(
+      candidates.length >= 3
+        ? [...tokenFrequency.entries()]
+            .filter(([, frequency]) => frequency > candidates.length / 2)
+            .map(([token]) => token)
+        : [],
+    );
+    const tokens = rawTokens.map(candidateTokens =>
+      new Set([...candidateTokens].filter(token => !nonDiscriminativeTokens.has(token)))
+    );
     const entities = candidates.map(candidate => new Set((candidate.related_entities || []).map(value => String(value).toLowerCase())));
     const parent = candidates.map((_, index) => index);
     const find = (index: number): number => parent[index] === index ? index : (parent[index] = find(parent[index]));
@@ -10505,7 +10450,6 @@ export class AnalyzerOrchestrator {
       }
       return false;
     };
-    const setsOverlap = (left: Set<string>, right: Set<string>): boolean => [...left].some(value => right.has(value));
     for (let left = 0; left < candidates.length; left++) {
       for (let right = left + 1; right < candidates.length; right++) {
         const subjectOverlap = tokenSetsOverlap(tokens[left], tokens[right]);
@@ -10515,12 +10459,19 @@ export class AnalyzerOrchestrator {
           .split(/[^a-z0-9]+/)
           .some(token => token.length >= 4 && !this.isGenericCapabilityToken(token)));
         const entityOverlap = sharedEntities.length > 0;
-        if (subjectOverlap || (entityOverlap && (distinctiveEntityOverlap || tokens[left].size === 0 || tokens[right].size === 0))) union(left, right);
+        const bothBehaviorSurfaces = candidates[left].evidence_kind === 'behavior-surface' &&
+          candidates[right].evidence_kind === 'behavior-surface';
+        if (subjectOverlap || (!bothBehaviorSurfaces && entityOverlap &&
+          (distinctiveEntityOverlap || tokens[left].size === 0 || tokens[right].size === 0))) {
+          union(left, right);
+        }
       }
     }
     const roots = new Set<number>();
     for (let index = 0; index < candidates.length; index++) {
-      if (tokens[index].size > 0 || entities[index].size > 0) roots.add(find(index));
+      const evidenceAnchoredProductCandidate = candidates[index].evidence_kind !== 'behavior-surface' &&
+        (entities[index].size > 0 || (candidates[index].operations || []).length > 0);
+      if (tokens[index].size > 0 || evidenceAnchoredProductCandidate) roots.add(find(index));
     }
     return roots.size;
   }
@@ -10542,20 +10493,36 @@ export class AnalyzerOrchestrator {
     libraryNames?: string[];
     hardDeadlineAt?: number;
   }): Promise<SystemCapability[]> {
-    const distinctFamilyCount = this.catalogDistinctFamilyCount(args.candidateSnapshot);
+    const catalogCandidates = mergeCapabilityCatalogFlowEvidence(
+      args.candidateSnapshot,
+      args.flowGraph.capability_candidates || [],
+    );
+    const evidenceCandidates = this.catalogEvidenceCandidates(
+      catalogCandidates,
+      args.behaviorSurfaces,
+      args.dataEntities,
+      String(args.enhancedSystemPurpose.artifact_type || 'app'),
+      args.projectTextSignal,
+    );
+    const distinctFamilyCount = this.catalogDistinctFamilyCount(evidenceCandidates);
+    const requiredBehaviorCandidateIds = evidenceCandidates
+      .filter(candidate => candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'internal' && candidate.id)
+      .map(candidate => candidate.id);
+    const catalogEntityNameById = new Map(args.dataEntities.map(entity => [entity.id, entity.name]));
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
+    let retainedQualityFailure: string | undefined;
     let cyclesRun = 0;
     let deadlineExceeded = false;
     for (let cycle = 1; cycle <= 3; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
-        console.error(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
+        console.warn(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
         break;
       }
       cyclesRun = cycle;
       const cycleNudge = cycle === 1 ? undefined
-        : `Previous catalog failed a quality check (${qualityFailure}). Return a FULL catalog of purposeful capabilities: one per distinct product area the facts support, each named as a purpose a PM would write (verb-headed, never a bare noun or a page/view label), each description stating why the ability exists.`;
+        : `Previous catalog failed a quality check (${qualityFailure}). Return a FULL catalog of purposeful capabilities covering these distinct evidence families: ${[...evidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface'), ...evidenceCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface')].slice(0, 24).map(candidate => `${candidate.id}=${(candidate.evidence_examples || []).slice(0, 8).join(', ') || candidate.name}; allowed_subject_nouns=${(candidate.related_entities || []).map(id => catalogEntityNameById.get(id) || id).join(', ')}`).join('; ')}. Cite candidate_ids exactly. Merge only families that express the same user outcome. Name each result as a purpose a PM would write (verb-headed, never a bare noun or a page/view label). Use the exact allowed_subject_nouns or exact nouns from the cited operations, journeys, or top-down product text; never replace them with plausible synonyms. State why the ability exists without naming code types, interfaces, UI widgets, or implementation structures.`;
       let extracted: SystemCapability[];
       try {
         extracted = await this.aiExtractCapabilityCatalog({
@@ -10564,7 +10531,7 @@ export class AnalyzerOrchestrator {
           frameworks: args.frameworks,
           userJourneys: args.userJourneys,
           dataEntities: args.dataEntities,
-          candidateCapabilities: args.candidateSnapshot,
+          candidateCapabilities: catalogCandidates,
           behaviorSurfaces: args.behaviorSurfaces,
           externalServices: args.externalServices,
           flowGraph: args.flowGraph,
@@ -10576,27 +10543,46 @@ export class AnalyzerOrchestrator {
       } catch (error) {
         if (isAiCatalogHardDeadlineExceeded(error)) {
           deadlineExceeded = true;
-          console.error(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
+          console.warn(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
           break;
         }
         throw error;
       }
-      const cycleReconciled = extracted.length > 0
-        ? this.reconcileCatalogedCapabilities(extracted, args.candidateSnapshot, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [])
+      const reconciledCandidates = extracted.length > 0
+        ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal)
         : [];
-      if (cycleReconciled.length > reconciled.length) reconciled = cycleReconciled;
-      qualityFailure = this.catalogQualityFailure(reconciled, distinctFamilyCount);
-      if (!qualityFailure) break;
+      const cycleReconciled = reconciledCandidates.filter(capability => this.isPublishableCapability(capability));
+      const cycleQualityFailure = this.catalogQualityFailure(
+        cycleReconciled,
+        distinctFamilyCount,
+        requiredBehaviorCandidateIds,
+      );
+      writeAnalyzerStatus(
+        `[Klauro] capability catalog cycle ${cycle}/3: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${cycleReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s)` : ''}`,
+      );
+      if (!cycleQualityFailure) {
+        reconciled = cycleReconciled;
+        qualityFailure = undefined;
+        retainedQualityFailure = undefined;
+        break;
+      }
+      if (cycleReconciled.length > reconciled.length) {
+        reconciled = cycleReconciled;
+        retainedQualityFailure = cycleQualityFailure;
+      }
+      qualityFailure = cycleQualityFailure;
     }
+    if (qualityFailure) qualityFailure = retainedQualityFailure || qualityFailure;
     const catalogPath = deadlineExceeded
-      ? (reconciled.length > 0 ? 'ai-partial-hard-deadline' : 'deterministic-fallback-hard-deadline')
+      ? (reconciled.length > 0 ? 'rejected-hard-deadline' : 'unavailable-hard-deadline')
       : reconciled.length > 0
         ? (qualityFailure ? 'ai-below-quality-bar' : 'ai')
-        : 'deterministic-fallback';
+        : 'unavailable';
     const gateReason = deadlineExceeded
-      ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; deterministic capabilities remain complete${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
+      ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
-    console.error(
+    const publishGroundedPartial = reconciled.length > 0 && Boolean(qualityFailure?.startsWith('catalog omitted '));
+    writeAnalyzerStatus(
       `[Klauro] capability catalog path: ${catalogPath} (cycles=${cyclesRun}, capabilities=${reconciled.length}, families=${distinctFamilyCount}${gateReason ? `, last_failure=${gateReason}` : ''})`
     );
     recordSemanticDecision({
@@ -10615,133 +10601,46 @@ export class AnalyzerOrchestrator {
       gate_reason: gateReason,
       final_outcome: reconciled.length > 0 ? (deadlineExceeded || qualityFailure ? 'degraded' : 'ai') : 'degraded',
     });
-    return reconciled;
+    args.enhancedSystemPurpose.capability_catalog_coverage = {
+      evidence_families: distinctFamilyCount,
+      published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? reconciled.length : 0,
+      minimum_published_capabilities: Math.ceil(Math.log2(distinctFamilyCount + 1)),
+      status: publishGroundedPartial ? 'rejected' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
+      ...(gateReason ? { reason: gateReason } : {}),
+    };
+    return publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? reconciled : [];
   }
 
   private finalizeSystemCapabilityNames(
     systemCapabilities: SystemCapability[],
-    dataEntities: CASDataEntity[] = [],
+    _dataEntities: CASDataEntity[] = [],
     purpose?: EnhancedSystemPurpose,
   ): void {
-    let repaired = 0;
-    const dropped: string[] = [];
-    const kept: SystemCapability[] = [];
-    const nameDegradations: NonNullable<EnhancedSystemPurpose['capability_name_degradations']> = [];
-    for (const capability of systemCapabilities) {
-      if (capability.description_source === 'ai' || capability.description_source === 'manual' || capability.description_source === 'reused') continue;
-      if (!this.isStructuralPlaceholderCapabilityDescription(capability.description)) continue;
-      const rebuilt = this.rebuildCapabilityDescriptionFromOperations(capability.operations || []);
-      if (!rebuilt) continue;
-      capability.description = rebuilt;
-      capability.description_source = 'deterministic';
-      capability.criticality_factors = Array.from(new Set([...(capability.criticality_factors || []), 'placeholder-description-rebuilt']));
-    }
-    for (const capability of systemCapabilities) {
-      if (capability.name_source === 'ai' || capability.name_source === 'manual' || capability.name_source === 'reused') {
-        kept.push(capability);
-        continue;
-      }
-      const name = String(capability.name || '');
-      if (isPathDerivedCapabilityName(name)) {
-        if (capability.structural_label && isPathDerivedCapabilityName(capability.structural_label)) {
-          delete (capability as Partial<SystemCapability>).structural_label;
-        }
-        const hasAnchor = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
-        const rebuilt = this.deriveDeterministicFallbackPurposeLabel(capability, dataEntities, hasAnchor);
-        if (rebuilt && !isPathDerivedCapabilityName(rebuilt)) {
-          capability.name = rebuilt;
-          capability.criticality_factors = Array.from(new Set([
-            ...(capability.criticality_factors || []),
-            'path-derived-name-rebuilt-from-evidence',
-          ]));
-          nameDegradations.push({
-            id: capability.id,
-            name: rebuilt,
-            rejected_name: name,
-            reason: 'name-derived-from-source-path',
-            disposition: 'rebuilt-from-evidence',
-          });
-          repaired++;
-          kept.push(capability);
-          continue;
-        }
-        dropped.push(name);
-        nameDegradations.push({
-          id: capability.id,
-          name,
-          rejected_name: name,
-          reason: 'name-derived-from-source-path',
-          disposition: 'dropped',
-        });
-        continue;
-      }
-      if (
-        /^Manage\b/i.test(name) &&
-        this.capabilityHasObservedRead(capability.operations || []) &&
-        !this.capabilityHasObservedMutation(capability.operations || [])
-      ) {
-        capability.name = name.replace(/^Manage\b/i, 'View');
-        capability.criticality_factors = Array.from(new Set([
-          ...(capability.criticality_factors || []),
-          'read-only-purpose-repaired',
-        ]));
-        repaired++;
-        kept.push(capability);
-        continue;
-      }
-      if (!this.isBareNounCapabilityLabel(name)) {
-        kept.push(capability);
-        continue;
-      }
-      const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
-      const repairedName = this.deriveDeterministicFallbackPurposeLabel(
-        capability,
-        dataEntities,
-        hasAnchorEvidence,
-      );
-      if (!repairedName) {
-        dropped.push(name);
-        continue;
-      }
-      capability.name = repairedName;
-      capability.criticality_factors = Array.from(new Set([...(capability.criticality_factors || []), 'bare-noun-purpose-repaired']));
-      repaired++;
-      kept.push(capability);
-    }
-    const deduped = this.dedupeSystemCapabilitiesByName(kept);
+    const authored = systemCapabilities.filter(capability => this.isPublishableCapability(capability));
+    const excluded = systemCapabilities.filter(capability => !authored.includes(capability));
+    const deduped = this.dedupeSystemCapabilitiesByName(authored);
     systemCapabilities.splice(0, systemCapabilities.length, ...deduped);
     if (purpose) {
-      if (nameDegradations.length > 0) {
-        purpose.capability_name_degradations = [
-          ...(purpose.capability_name_degradations || []),
-          ...nameDegradations,
-        ];
-      }
-      const unnamed = deduped.filter(capability =>
-        capability.name_source !== 'ai' &&
-        capability.name_source !== 'manual' &&
-        capability.name_source !== 'reused');
       purpose.capability_naming_coverage = {
-        total: deduped.length,
-        authored: deduped.length - unnamed.length,
-        un_enriched: unnamed.length,
-        path_derived_rejected: nameDegradations.length,
+        total: deduped.length + excluded.length,
+        authored: deduped.length,
+        un_enriched: excluded.length,
+        path_derived_rejected: excluded.filter(capability => isPathDerivedCapabilityName(capability.name)).length,
       };
     }
-    if (repaired > 0 || dropped.length > 0) {
+    if (excluded.length > 0) {
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'capability_finalization',
         input_evidence_digest: {
-          total: kept.length + dropped.length,
-          bareNounRepaired: repaired,
-          bareNounDropped: dropped.length,
-          droppedNames: dropped.slice(0, 10),
+          total: deduped.length + excluded.length,
+          authored: deduped.length,
+          excluded: excluded.length,
+          excludedNames: excluded.slice(0, 10).map(capability => capability.name),
         },
         parse_ok: true,
         gate_verdict: 'accepted',
-        gate_reason: 'bare-noun-final-assembly-guard',
-        mechanical_corrections: repaired > 0 ? ['bare-noun-purpose-repaired'] : undefined,
+        gate_reason: 'canonical-capabilities-require-authored-comprehension',
         final_outcome: 'degraded',
       });
     }
@@ -10805,7 +10704,11 @@ export class AnalyzerOrchestrator {
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
       enhancedSystemPurpose.core_concepts,
-      enhancedSystemPurpose.inferred_description
+      enhancedSystemPurpose.inferred_description,
+      [
+        projectTextSignal.productDocSummary,
+        ...(projectTextSignal.productVocabulary || []),
+      ].filter((value): value is string => Boolean(value)),
     );
 
     if (process.env.KLAURO_AI_INTERPRETATION === 'false' || process.env.KLAURO_AI_INTERPRETATION === '0') {
@@ -10846,10 +10749,13 @@ export class AnalyzerOrchestrator {
         candidateSnapshot,
       )
     );
-    // DO NOT move this Date.now() call earlier (e.g. up to analysis/request
-    // forbids: budgets must NEVER be met by delivering an incomplete
+
     const catalogHardDeadlineAt = Date.now() + CATALOG_HARD_DEADLINE_MS;
-    const capabilityCatalogPromise = systemCapabilities.length > 0 || userJourneys.length > 0
+    const capabilityCatalogPromise = systemCapabilities.length > 0 ||
+      userJourneys.length > 0 ||
+      dataEntities.length > 0 ||
+      entryPoints.length > 0 ||
+      (flowGraph.capability_candidates?.length || 0) > 0
       ? this.runCapabilityCatalogWithQualityGate({
         systemName,
         enhancedSystemPurpose,
@@ -10919,6 +10825,20 @@ export class AnalyzerOrchestrator {
           },
         }
       : this.focusedSystemDescriptionFacts(structuralFacts);
+    const domainVocabulary = buildGroundedDomainVocabulary({
+      systemName,
+      projectText: [projectTextSignal.productDocTitle, projectTextSignal.productDocSummary, projectTextSignal.manifestDescription],
+      entityNames: dataEntities.map(entity => entity.name),
+      capabilityNames: candidateSnapshot.map(capability => capability.name),
+      coreConcepts: enhancedSystemPurpose.core_concepts || [],
+      implementationNames: [...frameworks, ...libraryNames],
+      isGenericToken: token => this.isGenericCapabilityToken(token),
+    });
+    if (artifactType !== 'infrastructure' && domainVocabulary.length > 0) {
+      systemNarrativeFacts.domainVocabulary = domainVocabulary;
+    }
+    const narrativeRepairFacts: Record<string, unknown> = { ...structuralFacts, domainVocabulary };
+    delete narrativeRepairFacts.externalServices;
     const narrativePrimaryDomain = artifactType === 'infrastructure' ? undefined : enhancedSystemPurpose.primary_domain;
     if (artifactType === 'infrastructure') {
       delete descriptionPromptContract.suppliedPrimaryDomain;
@@ -10959,21 +10879,21 @@ export class AnalyzerOrchestrator {
     const readOnlyNarrativeRule = observedReadOnly
       ? ' The observed product is a retrieval and review surface. Use affirmative sentences whose product-action verbs are retrieves, presents, returns, views, reviews, compares, or analyzes. Describe what is available to users, not ownership or state transitions. Do not discuss missing abilities or limitations. The domain label must describe the information or review purpose and must not use an ownership-oriented suffix.'
       : '';
-    // narrowing it must never make a legitimately grounded description fail
-    const noInternalVocabularyRule = ' Never use the words intent, journey, entity, deployable, component, components, artifact, or record type as a label in the prose, and never put an internal name (a journey name, an entity name, a capability name) inside quotation marks — describe what the system does and what a user gets in your own plain words instead of naming or quoting the internal label for it. Never introduce a list of entity/record names with phrasing like "integrates various components like" or "operates as a deployable unit that integrates" — if multiple record types are relevant, name at most one as an ordinary noun inside a real sentence about what happens to it, never as an enumerated list.';
+
+    const noInternalVocabularyRule = ' Never use the words intent, journey, entity, deployable, component, components, artifact, or record type as a label in the prose, and never put an internal name (a journey name, an entity name, a capability name) inside quotation marks — describe what the system does and what a user gets in your own plain words instead of naming or quoting the internal label for it. Never introduce a list of entity/record names with phrasing like "integrates various components like" or "operates as a deployable unit that integrates" — if multiple record types are relevant, name at most one as an ordinary noun inside a real sentence about what happens to it, never as an enumerated list. Never write the generic phrases "external services" or "event emitter operations"; name one exact evidenced integration in a concrete relationship or omit integrations entirely.';
     const semanticRepairTask = artifactType === 'infrastructure'
       ? 'Regenerate the rejected infrastructure description from scratch. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write exactly 4 factual sentences. Use infrastructureDeclarations to name the exact declared resource types, runtime units, providers, replicas, and ports. Explain their declared topology without inferring application behavior from names. Do not hedge, market, discuss source artifacts, or describe scripts and commands. The domain must be a lowercase kebab-case infrastructure/deployment/platform label.'
       : observedReadOnly
         ? 'Regenerate the rejected parts from the supplied evidence. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write only affirmative product statements. Describe the system as a retrieval and review product. Every product action must use one of these verbs: retrieves, presents, returns, views, reviews, compares, analyzes. Write one paragraph of 4 to 6 full sentences (at least 240 characters) answering what the system is, what information users receive, how one product action produces one concrete result, and the evidenced operating shape. Use exact nouns from distinctiveEntities, terminalOutputs, and recordsRead as ordinary words in sentences, never as internal labels. Choose a domain made from those product nouns plus information, reference, query, or review when appropriate. Do not discuss limitations, absent behavior, implementation surfaces, source artifacts, prompt fields, or framework internals.' + noInternalVocabularyRule
-      : 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does, how it works, and how it is built. Replace generic mechanism phrases with one explicit relationship from productBehaviorPaths: describe, in your own plain words, one concrete thing a user does and the record or message that results — never by naming or quoting the productBehaviorPaths.intent label itself. Explain a transformation or decision only when businessTransformations contains one. The prompt intentionally withholds route and implementation names; never invent or name a request path, handler, function, method, source file, or framework internal. Use the exact domain nouns supplied by distinctiveEntities, terminalOutputs, recordsRead, recordsWritten, or messagesEmitted as ordinary words in sentences. Never say data lookup behavior, resource checks, lifecycle operations, manages data, or coordinates workflows. Frameworks may appear only as product-shaping context, never a package inventory; architecture shapes require corroborating deployable/topology facts. Do not translate entry-point categories into prose. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; libraries are supporting evidence only. Mention integrations only by exact names listed in externalServices.' + noInternalVocabularyRule;
+      : 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does, how it works, and how it is built. The supplied capabilities are the accepted product outcomes; the paragraph must explain at least one core capability in ordinary product language. Replace generic mechanism phrases with one explicit relationship from productBehaviorPaths: describe, in your own plain words, one concrete thing a user does and the record or message that results — never by naming or quoting the productBehaviorPaths.intent label itself. Explain a transformation or decision only when businessTransformations contains one. The prompt intentionally withholds route and implementation names; never invent or name a request path, handler, function, method, source file, or framework internal. Use the exact domain nouns supplied by distinctiveEntities, terminalOutputs, recordsRead, recordsWritten, or messagesEmitted as ordinary words in sentences. Never say data lookup behavior, resource checks, lifecycle operations, manages data, or coordinates workflows. Do not list tools, packages, libraries, frameworks, programming languages, or data formats. If the rejected paragraph contained a tool inventory, omit the entire inventory rather than paraphrasing it. Architecture shapes require corroborating deployable/topology facts. Do not translate entry-point categories into prose. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; libraries are supporting evidence only. Mention integrations only by exact names listed in externalServices.' + noInternalVocabularyRule;
     const systemNarrativeTask = artifactType === 'infrastructure'
       ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence. Name the exact resource types and runtime units in infrastructureDeclarations; explain what is provisioned, how the declarations compose the runtime, and the evidenced replica/port/provider shape. State only declared facts: never hedge with likely/possibly, infer business behavior from a resource label, or call representations of one runtime separate applications. Do not mention scripts, source files, functions, variables, prompt keys, or graph evidence. Avoid marketing language. domain must be a lowercase kebab-case label of 2 to 4 nouns and must include infrastructure, deployment, provisioning, or platform.'
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
-        : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and the evidenced operating/deployment shape. Use concrete product nouns. Do not mention frameworks, libraries, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns.${readOnlyNarrativeRule}`;
+        : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and either another evidenced product behavior or a distinctive evidenced operating/deployment property. Use concrete product nouns. Do not use generic servers, databases, backends, frontends, or storage mechanics as filler. Do not mention frameworks, libraries, tools, packages, programming languages, data formats, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns selected only from domainVocabulary when that list is present.${readOnlyNarrativeRule}`;
     try {
       timeoutHandle = setTimeout(() => {
-        console.error(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
+        console.warn(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
       }, budgetMs);
       timeoutHandle.unref?.();
       raw = await aiService.generateComponentDescription({
@@ -11013,18 +10933,23 @@ export class AnalyzerOrchestrator {
     const catalogOutcome = await capabilityCatalogOutcome;
     if (catalogOutcome.status === 'rejected') throw catalogOutcome.reason;
     const reconciled = catalogOutcome.value;
-    if (reconciled.length > 0) {
-      systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
-    } else if (candidateSnapshot.length > 0 || behaviorSurfaces.length > 0) {
-      this.applyDeterministicCapabilityFallback(
-        candidateSnapshot,
-        behaviorSurfaces,
-        entryPoints,
-        nodes,
-        systemCapabilities,
-        dataEntities,
-      );
-    }
+    systemCapabilities.splice(
+      0,
+      systemCapabilities.length,
+      ...(reconciled.length > 0
+        ? reconciled
+        : systemCapabilities.filter(capability =>
+          capability.name_source === 'ai' ||
+          capability.name_source === 'manual' ||
+          capability.name_source === 'reused')),
+    );
+    const authoredCapabilityFacts = systemCapabilities.map(capability => ({
+      name: capability.name,
+      description: capability.description,
+      category: capability.category,
+    }));
+    systemNarrativeFacts.capabilities = authoredCapabilityFacts;
+    narrativeRepairFacts.capabilities = authoredCapabilityFacts;
     capabilityTargets = elementsEnabled
       ? systemCapabilities.slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById))
       : [];
@@ -11079,6 +11004,23 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose,
       interpretationFacts
     );
+    const coreCapabilityTokens = new Set(
+      systemCapabilities
+        .filter(capability => capability.category === 'core')
+        .flatMap(capability => String(capability.name || '').toLowerCase().split(/[^a-z0-9]+/))
+        .map(token => this.stemTerminologyToken(token))
+        .filter(token => token.length >= 4 && !this.isGenericCapabilityToken(token)),
+    );
+    const narrativeCoversCoreCapability = (text: string): boolean => {
+      if (coreCapabilityTokens.size === 0) return true;
+      const tokens = new Set(
+        text.toLowerCase().split(/[^a-z0-9]+/).map(token => this.stemTerminologyToken(token)),
+      );
+      return [...coreCapabilityTokens].some(token => tokens.has(token));
+    };
+    if (validation.ok && !narrativeCoversCoreCapability(cleaned)) {
+      validation = { ok: false, reason: 'omits-core-capability' };
+    }
     if (!validation.ok && !enhancedSystemPurpose.domain_source &&
       firstDomainCandidate === enhancedSystemPurpose.primary_domain) {
       enhancedSystemPurpose.primary_domain = '';
@@ -11087,7 +11029,18 @@ export class AnalyzerOrchestrator {
     const acceptedElements = new Map<string, string>();
     const rejectedElements = new Map<string, string>();
     for (const target of capabilityTargets) {
-      const originalCandidate = combined.elements.get(target.id) || '';
+      const existingCatalogDescription = systemCapabilities.find(capability => capability.id === target.id)?.description || '';
+      const existingCatalogValidation = this.validateElementDescription(existingCatalogDescription, target);
+      if (process.env.KLAURO_DEBUG_CATALOG && existingCatalogDescription && !existingCatalogValidation.ok) {
+        writeAnalyzerStatus('[catalog-debug] rejected catalog description:', {
+          name: target.name,
+          description: existingCatalogDescription,
+          reason: existingCatalogValidation.reason,
+        });
+      }
+      const originalCandidate = existingCatalogValidation.ok
+        ? existingCatalogDescription
+        : combined.elements.get(target.id) || '';
       const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);
       const elementValidation = candidate
         ? this.validateElementDescription(candidate, target)
@@ -11104,7 +11057,7 @@ export class AnalyzerOrchestrator {
       try {
         const remainingMs = budgetMs;
         repairTimeoutHandle = setTimeout(() => {
-          console.error(`[Klauro] AI interpretation repair is still running after ${remainingMs}ms; continuing until the provider completes`);
+          console.warn(`[Klauro] AI interpretation repair is still running after ${remainingMs}ms; continuing until the provider completes`);
         }, remainingMs);
         repairTimeoutHandle.unref?.();
         const repairRaw = await aiService.generateComponentDescription({
@@ -11121,9 +11074,9 @@ export class AnalyzerOrchestrator {
                 .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
               primaryDomain: narrativePrimaryDomain,
               coreConcepts: narrativeCoreConcepts,
-              ...(artifactType === 'infrastructure' ? systemNarrativeFacts : structuralFacts),
+              ...(artifactType === 'infrastructure' ? systemNarrativeFacts : narrativeRepairFacts),
               dependencySignalInstruction: 'libraries lists a compact, evidence-ranked set of declared packages for grounding only — treat it as the LAST-resort domain signal, after readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs. Generic infrastructure/tooling dependencies (loggers, auto-updaters, IPC/RPC transports, test/build tooling) are never domain evidence by themselves.',
-              integrationEvidenceInstruction: 'externalServices are integrations supported by static code evidence. Phrase them as supported integrations unless runtime or deployment facts explicitly prove they are active; never claim every listed service is deployed.',
+              integrationEvidenceInstruction: 'Omit integrations from the system description; capability cataloging handles them separately.',
             },
           });
         const repaired = this.parseCombinedInterpretation(repairRaw);
@@ -11137,6 +11090,9 @@ export class AnalyzerOrchestrator {
           if (outcome.text) {
             cleaned = outcome.text;
             validation = outcome.validation;
+            if (validation.ok && !narrativeCoversCoreCapability(cleaned)) {
+              validation = { ok: false, reason: 'omits-core-capability' };
+            }
           }
         }
         for (const target of capabilityTargets) {
@@ -11149,7 +11105,7 @@ export class AnalyzerOrchestrator {
         }
       } catch (repairError) {
         const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
-        console.error(`[Klauro] AI interpretation repair skipped (${repairMessage}); using first-pass results`);
+        console.warn(`[Klauro] AI interpretation repair skipped (${repairMessage}); using first-pass results`);
       } finally {
         if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
       }
@@ -11161,7 +11117,7 @@ export class AnalyzerOrchestrator {
           additionalContext: {
             model: this.narrativeModel(),
             model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
-            task: `${systemNarrativeTask} Regenerate from scratch and do not copy the rejected paragraph. Translate identifiers into ordinary domain language. Do not include item descriptions.`,
+            task: `${systemNarrativeTask} Regenerate from scratch and do not copy the rejected paragraph. Translate identifiers into ordinary domain language. Do not include item descriptions. If rejection_reason is implementation-stack-filler, omit every tool, package, library, framework, programming-language, and data-format name. If rejection_reason is generic-implementation-mechanic-filler, replace generic server, database, backend, frontend, or storage mechanics with an additional evidenced product behavior.`,
             rejection_reason: validation.reason,
             retry_attempt: focusedAttempt + 1,
             primaryDomain: narrativePrimaryDomain,
@@ -11180,6 +11136,9 @@ export class AnalyzerOrchestrator {
           if (outcome.text) {
             cleaned = outcome.text;
             validation = outcome.validation;
+            if (validation.ok && !narrativeCoversCoreCapability(cleaned)) {
+              validation = { ok: false, reason: 'omits-core-capability' };
+            }
           }
         }
       } catch (focusedRepairError) {
@@ -11190,7 +11149,6 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // must not be FATAL to the rest of comprehension.
     if (!validation.ok) {
       const systemDescriptionReason = validation.reason || 'generated-description-failed-quality-gate';
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_rejected', true, systemDescriptionReason, budgetMs);
@@ -11209,7 +11167,7 @@ export class AnalyzerOrchestrator {
         reason: systemDescriptionReason,
         failure_class: isProviderUnavailableFailure(systemDescriptionReason) ? 'provider-unavailable' : 'failed-grounding',
       };
-      console.error(
+      console.warn(
         `[Klauro] system description degraded (no AI comprehension text shipped — reason: ${systemDescriptionReason}). ` +
         `Capability naming, capability descriptions and the primary domain are unaffected and continue.`
       );
@@ -11280,12 +11238,41 @@ export class AnalyzerOrchestrator {
         { label, reason: verdict.reason },
       ];
     }
+    if (!domainApplied && artifactType !== 'infrastructure' && domainVocabulary.length > 0 && domainCandidates.length > 0) {
+      const recovery = await recoverAIDomainLabel({
+        systemName,
+        domainVocabulary,
+        capabilities: systemCapabilities.map(capability => capability.name),
+        entities: dataEntities.map(entity => entity.name),
+        rejectedCandidates: enhancedSystemPurpose.domain_rejected_candidates || [],
+        readOnly: observedReadOnly,
+        model: this.narrativeModel(),
+        modelProvider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
+        parseDomain: raw => this.parseCombinedInterpretation(raw).domain,
+        normalize: candidate => this.normalizeAIDomainLabel(candidate),
+        evaluate: label => this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, projectTextSignal),
+      });
+      enhancedSystemPurpose.domain_rejected_candidates = [
+        ...(enhancedSystemPurpose.domain_rejected_candidates || []),
+        ...recovery.rejections,
+      ];
+      if (recovery.label) {
+        const verdict = this.evaluateAIDomainCandidate(recovery.label, enhancedSystemPurpose, libraryNames, projectTextSignal);
+        enhancedSystemPurpose.primary_domain = recovery.label;
+        enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
+        enhancedSystemPurpose.primary_type = this.refinePurposeTypeForDomain(
+          enhancedSystemPurpose.primary_type,
+          recovery.label,
+          frameworks,
+          entryPointSummary
+        );
+        domainApplied = true;
+      }
+    }
     if (enhancedSystemPurpose.primary_domain && !enhancedSystemPurpose.domain_source) {
       enhancedSystemPurpose.domain_source = 'ai';
     }
-
     const unresolvedCapabilityIds: string[] = [];
-    const deterministicCapabilityText = new Map<string, string>();
     for (const target of capabilityTargets) {
       const accepted = acceptedElements.get(target.id);
       if (accepted) {
@@ -11293,9 +11280,6 @@ export class AnalyzerOrchestrator {
       } else {
         const existing = systemCapabilities.find(capability => capability.id === target.id);
         if (existing && (!existing.description || !this.validateElementDescription(existing.description, target).ok)) {
-          if (existing.description && existing.description_source !== 'ai') {
-            deterministicCapabilityText.set(target.id, existing.description);
-          }
           delete (existing as Partial<SystemCapability>).description;
           existing.description_source = undefined;
         }
@@ -11328,48 +11312,14 @@ export class AnalyzerOrchestrator {
             ? this.validateElementDescription(capability.description, target)
             : { ok: false as const, reason: 'missing-description' };
           const reason = capability.description_generation?.reason || validation.reason || 'unknown-quality-failure';
-          const fallback = deterministicCapabilityText.get(capability.id);
-          // fails the same structural/marketing/scaffold checks, must not
-          const fallbackValidation = fallback ? this.validateElementDescription(fallback, target) : undefined;
-          let regeneratedValidation: { ok: boolean; reason?: string } | undefined;
-          if (fallback && fallbackValidation?.ok) {
-            capability.description = fallback;
-            capability.description_source = 'deterministic';
-          } else {
-            // capability whose name and description DISAGREE must not ship
-            const regenerated = this.generateCapabilityDescription(
-              capability.name,
-              capability.operations,
-              capability.related_entities.map(id => ({ name: entityNamesById?.get(id) || id })),
-              [],
-            );
-            regeneratedValidation = this.validateElementDescription(regenerated, target);
-            if (regeneratedValidation.ok) {
-              capability.description = regenerated;
-              capability.description_source = 'deterministic';
-            } else {
-              // marketing/scaffold/filler checks. A capability must never ship
-              const lastResort = this.lastResortCapabilityDescription(capability.name);
-              const lastResortValidation = this.validateElementDescription(lastResort, target);
-              if (lastResortValidation.ok) {
-                capability.description = lastResort;
-                capability.description_source = 'deterministic';
-              } else {
-                delete (capability as Partial<SystemCapability>).description;
-                capability.description_source = undefined;
-              }
-            }
-          }
+          delete (capability as Partial<SystemCapability>).description;
+          capability.description_source = undefined;
           capability.description_generation = {
             ...(capability.description_generation || { attempted: true }),
             status: 'ai_rejected',
             attempted: true,
-            reason: fallback && !fallbackValidation?.ok
-              ? `deterministic-fallback-ungrounded:${fallbackValidation?.reason || 'unknown'}`
-              : regeneratedValidation && !regeneratedValidation.ok
-                ? `deterministic-regeneration-ungrounded:${regeneratedValidation.reason || 'unknown'}`
-                : reason,
-            origin_source: capability.description_source === 'deterministic' ? 'deterministic' : capability.description_generation?.origin_source,
+            reason,
+            origin_source: capability.description_generation?.origin_source,
           };
           degraded.push({
             id: capability.id,
@@ -11380,8 +11330,8 @@ export class AnalyzerOrchestrator {
         }
         enhancedSystemPurpose.capability_description_degradations = degraded;
         const unavailable = degraded.filter(item => item.failure_class === 'provider-unavailable').length;
-        console.error(
-          `[Klauro] ${degraded.length}/${capabilityTargets.length} capability descriptions degraded to their deterministic text ` +
+        console.warn(
+          `[Klauro] ${degraded.length}/${capabilityTargets.length} capability descriptions failed the AI quality gate; no substitute description was published ` +
           `(${unavailable} provider-unavailable, ${degraded.length - unavailable} failed grounding). ` +
           `The system description, primary domain and the remaining capabilities are unaffected: ` +
           `${degraded.map(item => `${item.name} [${item.failure_class}] (${item.reason})`).join(', ')}`
@@ -11440,27 +11390,11 @@ export class AnalyzerOrchestrator {
       reason,
       generated_at: new Date().toISOString(),
     };
-    for (const capability of systemCapabilities) {
-      if (capability.description_source === 'ai' || capability.description_source === 'manual') continue;
-      capability.description_generation = { status: 'ai_skipped', attempted: false, reason };
-    }
-    for (let index = systemCapabilities.length - 1; index >= 0; index--) {
-      const collapsedName = collapseDuplicateAdjacentWords(String(systemCapabilities[index].name || ''));
-      systemCapabilities[index].name = collapsedName;
-      if (isMalformedCapabilityLabel(collapsedName) || this.isRawCandidateLabelName(collapsedName, [])) {
-        systemCapabilities.splice(index, 1);
-      }
-    }
-    for (const capability of systemCapabilities) {
-      if (capability.name_source === 'ai' || capability.name_source === 'manual') continue;
-      const name = String(capability.name || '');
-      if (!this.isBareNounCapabilityLabel(name)) continue;
-      const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
-      const repaired = this.deriveManagePurposeLabel(name, hasAnchorEvidence);
-      if (!repaired) continue;
-      capability.name = repaired;
-      capability.criticality_factors = Array.from(new Set([...(capability.criticality_factors || []), 'bare-noun-purpose-repaired']));
-    }
+    systemCapabilities.splice(
+      0,
+      systemCapabilities.length,
+      ...systemCapabilities.filter(capability => this.isPublishableCapability(capability)),
+    );
     for (const entity of dataEntities) {
       if (entity.description_source === 'ai' || entity.description_source === 'manual') continue;
       entity.description_generation = { status: 'ai_skipped', attempted: false, reason };
@@ -11621,7 +11555,7 @@ export class AnalyzerOrchestrator {
       !/(?:^|-)(?:infrastructure|deployment|provisioning|platform)(?:-|$)/.test(label)) {
       return { accepted: false, refined: false, reason: 'infrastructure-domain-missing-artifact-semantics' };
     }
-    if (!this.isGroundedAIDomainLabel(label, enhancedSystemPurpose)) {
+    if (!this.isGroundedAIDomainLabel(label, enhancedSystemPurpose, projectTextSignal)) {
       return { accepted: false, refined: false, reason: 'not-grounded-in-facts' };
     }
     const stem = (token: string) => token.slice(0, Math.min(6, token.length));
@@ -11633,7 +11567,7 @@ export class AnalyzerOrchestrator {
       return { accepted: false, refined: false, reason: 'truncated-domain-token' };
     }
     const currentTokens = new Set(currentDomainTokens.map(stem));
-    // truth to anchor against — the gate must not reject grounded AI labels
+
     const writeEntities = (this.activeTerminalSignal?.ranked_entities || [])
       .filter(entity => entity.write_journeys > 0);
     const terminalVocabulary = new Set<string>();
@@ -11671,11 +11605,37 @@ export class AnalyzerOrchestrator {
         if (dependencyOnlyGrounded) {
           return { accepted: false, refined: false, reason: 'dependency-name-only-grounded' };
         }
+        const dependencyPolluted = labelTokens.some(token => {
+          const stemmed = stem(token);
+          return dependencyTokens.has(stemmed) && !independentEvidenceTokens.has(stemmed);
+        });
+        if (dependencyPolluted) {
+          return { accepted: false, refined: false, reason: 'dependency-name-domain-pollution' };
+        }
       }
     }
 
     const inTerminal = (token: string) => terminalVocabulary.has(stem(token));
     const inCurrent = (token: string) => currentTokens.has(stem(token));
+    const productTextTokens = new Set(
+      [
+        projectTextSignal.productDocTitle,
+        projectTextSignal.productDocSummary,
+        projectTextSignal.manifestDescription,
+      ]
+        .flatMap(value => String(value || '').toLowerCase().split(/[^a-z0-9]+/))
+        .filter(token => token.length > 2)
+        .map(stem),
+    );
+    const productTextGrounded = labelTokens.length > 0 &&
+      labelTokens.every(token => productTextTokens.has(stem(token)));
+    const implementationMechanismTokens = new Set(['get', 'post', 'put', 'patch', 'delete', 'http', 'https', 'graphql', 'grpc']);
+    if (labelTokens.some(token => implementationMechanismTokens.has(token) && !productTextTokens.has(stem(token)))) {
+      return { accepted: false, refined: false, reason: 'implementation-mechanism-domain' };
+    }
+    const supportingMechanismTokens = new Set(['auth', 'authentication', 'authorization', 'guard', 'middleware', 'validation', 'security', 'session', 'logging', 'cache', 'queue']);
+    if (labelTokens.some(token => supportingMechanismTokens.has(token) && !inTerminal(token) && !productTextTokens.has(stem(token))))
+      return { accepted: false, refined: false, reason: 'nonterminal-supporting-mechanism-domain' };
 
     const allPlumbing = labelTokens.length > 0 &&
       labelTokens.every(token => AnalyzerOrchestrator.PLUMBING_DOMAIN_TOKENS.has(token));
@@ -11683,7 +11643,9 @@ export class AnalyzerOrchestrator {
       return { accepted: false, refined: false, reason: 'generic-plumbing-label' };
     }
 
-    if (terminalVocabulary.size > 0 && !labelTokens.some(token => inTerminal(token) || inCurrent(token))) {
+    if (terminalVocabulary.size > 0 &&
+      !labelTokens.some(token => inTerminal(token) || inCurrent(token)) &&
+      !productTextGrounded) {
       return { accepted: false, refined: false, reason: 'not-anchored-in-terminal-outputs' };
     }
 
@@ -11695,7 +11657,11 @@ export class AnalyzerOrchestrator {
     return { accepted: true, refined, reason: 'accepted' };
   }
 
-  private isGroundedAIDomainLabel(label: string, enhancedSystemPurpose: EnhancedSystemPurpose): boolean {
+  private isGroundedAIDomainLabel(
+    label: string,
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
+  ): boolean {
     const genericTokens = new Set([
       'system', 'software', 'application', 'app', 'platform', 'service', 'services', 'tool', 'tools',
       'portal', 'web', 'site', 'management', 'operations', 'solution', 'solutions', 'product',
@@ -11708,6 +11674,10 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose.inferred_description,
       enhancedSystemPurpose.primary_domain,
       ...(enhancedSystemPurpose.core_concepts || []),
+      projectTextSignal.productDocTitle,
+      projectTextSignal.productDocSummary,
+      projectTextSignal.manifestDescription,
+      ...(projectTextSignal.concepts || []),
     ].join(' ').toLowerCase();
     return meaningful.every(token => groundingText.includes(token.slice(0, Math.min(6, token.length))));
   }
@@ -11747,7 +11717,11 @@ export class AnalyzerOrchestrator {
     this.setElementDescriptionGrounding(
       context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
       context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts,
-      context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary
+      context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
+      [
+        context.projectTextSignal?.productDocSummary,
+        ...(context.projectTextSignal?.productVocabulary || []),
+      ].filter((value): value is string => Boolean(value)),
     );
     const entityNamesById = new Map(entities.map(entity => [entity.id, entity.name]));
     const entityFieldsById = new Map(entities.map(entity => [
@@ -11976,7 +11950,7 @@ export class AnalyzerOrchestrator {
             : { ok: false, reason: originalValidation.reason || 'generated-description-failed-quality-gate' };
           const individualDescription = originalValidation.ok || repairedValidation.ok ? undefined : individualRepairs.get(target.id);
           const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription;
-          // — see docs/SEMANTIC-MODEL.md. NEVER changes the outcome above.
+
           recordSemanticDecision({
             ts: Date.now(),
             decision_type: target.kind === 'entity' ? 'entity_description' : 'capability_description',
@@ -12089,12 +12063,14 @@ export class AnalyzerOrchestrator {
   private setElementDescriptionGrounding(
     domain?: string,
     concepts?: string[],
-    deterministicOverview?: string
+    deterministicOverview?: string,
+    firstPartyEvidence: string[] = [],
   ): void {
     this.elementDescriptionGroundingVocabulary = [
       domain,
       ...(concepts || []),
       deterministicOverview,
+      ...firstPartyEvidence,
     ].filter((term): term is string => Boolean(term && term !== 'unknown'));
   }
 
@@ -12104,17 +12080,6 @@ export class AnalyzerOrchestrator {
     const validation = this.validateElementDescription(cleaned, target);
     if (validation.ok) return cleaned;
     return undefined;
-  }
-
-  private isCodeIdentifierSubjectToken(token: string): boolean {
-    if (token.length <= 3) return true;
-    return new Set([
-      'impl', 'impls', 'util', 'utils', 'libs', 'mods', 'crate', 'crates', 'proc', 'procs',
-      'init', 'main', 'misc', 'temp', 'tmps', 'vars', 'func', 'funcs', 'iter', 'sync', 'async',
-      'macro', 'macros', 'trait', 'traits', 'struct', 'structs', 'enums', 'types', 'typedefs',
-      'param', 'params', 'args', 'deps', 'pkgs', 'bins', 'objs', 'ptrs', 'refs', 'vecs',
-      'stdlib', 'builtin', 'builtins', 'internals', 'srcs',
-    ]).has(token);
   }
 
   private entityDescriptionTarget(
@@ -12239,10 +12204,6 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private isUsefulElementDescription(description: string, target: DescriptionTarget): boolean {
-    return this.validateElementDescription(description, target).ok;
-  }
-
   private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
     const shared = validateSharedElementDescription(cleaned, {
@@ -12263,6 +12224,12 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'raw-route-restatement' };
     }
     if (target.kind === 'capability') {
+      if ((target.operations || []).length > 0 && /\bno operations?\b/i.test(cleaned)) {
+        return { ok: false, reason: 'contradicts-resolved-operations' };
+      }
+      if ((target.relatedEntities || []).length > 0 && /\bno (?:(?:operations?\s+or\s+))?(?:related )?(?:data )?entit(?:y|ies)\b/i.test(cleaned)) {
+        return { ok: false, reason: 'contradicts-resolved-entities' };
+      }
       if (
         target.artifactType === 'infrastructure' &&
         /\b(?:shell|batch|powershell)\s+(?:scripts?|commands?)\b|\b(?:scripts?|source files?)\s+to\s+(?:provision|deploy|configure|manage|create|update)\b/i.test(cleaned)
@@ -12410,7 +12377,7 @@ export class AnalyzerOrchestrator {
     reason?: string,
     budgetMs?: number
   ): void {
-    // so it must not claim `description_source:'ai'` over an empty description —
+
     const authored = status !== 'ai_failed' && status !== 'ai_rejected';
     if (authored) {
       enhancedSystemPurpose.description_source = source;
@@ -12553,7 +12520,7 @@ export class AnalyzerOrchestrator {
         purpose: 'agent-development',
         default_phase: true,
         description: 'Adds capabilities, domains, flows, tests, risks, idioms, and behavioral invariants used to plan and validate edits.',
-        outputs: ['system_capabilities', 'domain_concepts', 'flow_graph', 'call_chains', 'test_suites', 'change_risks', 'codebase_idioms', 'behavioral_invariants'],
+        outputs: ['capabilities', 'domain_concepts', 'flow_graph', 'call_chains', 'test_suites', 'change_risks', 'codebase_idioms', 'behavioral_invariants'],
         agent_value: 'Supplies agent contexts, risk checks, idiom guidance, and test targeting.',
         visualization_value: 'Shows what the system does and which areas are risky or important.',
         can_run_later: false,
@@ -12569,7 +12536,7 @@ export class AnalyzerOrchestrator {
         purpose: 'ai-enrichment',
         default_phase: true,
         description: 'Uses AI to turn the structural CAS facts into the system overview and primary capability descriptions.',
-        outputs: ['enhanced_system_purpose.inferred_description', 'system_capabilities.description'],
+        outputs: ['enhanced_system_purpose.inferred_description', 'capabilities.description'],
         agent_value: 'Gives agents a compact, human-readable summary of what matters without scanning raw graph facts.',
         visualization_value: 'Turns the overview and primary capability cards into explanations rather than labels.',
         can_run_later: true,
@@ -12585,7 +12552,7 @@ export class AnalyzerOrchestrator {
         purpose: 'ai-enrichment',
         default_phase: false,
         description: 'Generates AI descriptions for individual nodes, services, entities, capabilities, entry points, or exit points only when explicitly requested.',
-        outputs: ['nodes.description', 'data_entities.description', 'entry_points.description', 'exit_points.description'],
+        outputs: ['nodes.description', 'entities.description', 'entry_points.description', 'exit_points.description'],
         agent_value: 'Lets agents ask for focused explanations of a target without paying token cost for the whole graph.',
         visualization_value: 'Populates drilldown pages on demand and invalidates stale text when source fingerprints change.',
         can_run_later: true,
@@ -12649,9 +12616,16 @@ export class AnalyzerOrchestrator {
         return { ok: false, reason: 'infrastructure-source-mechanic-restatement' };
       }
     }
+    if (facts.artifactType === 'app' && mentionsDeclaredImplementationName(cleaned, facts.frameworks || [])) {
+      return { ok: false, reason: 'implementation-stack-filler' };
+    }
+    if (facts.artifactType === 'app' && containsGenericImplementationMechanicFiller(cleaned)) {
+      return { ok: false, reason: 'generic-implementation-mechanic-filler' };
+    }
     const base = this.validateAIInterpretation(cleaned, enhancedSystemPurpose, facts);
     if (!base.ok) return base;
-    if (/\b(?:combination of technologies|multiple programming languages|multi-language (?:backend )?development|flexibility in how)\b/i.test(cleaned)) {
+    if (/\b(?:combination of technologies|multiple programming languages|multi-language (?:backend )?development|flexibility in how|tools? (?:like|such as))\b/i.test(cleaned) ||
+      /\bintegrat(?:e|es|ed|ing) with (?:tools?|technologies|libraries|frameworks)(?: like| such as)?\b/i.test(cleaned)) {
       return { ok: false, reason: 'implementation-stack-filler' };
     }
     if (cleaned.length < 200) return { ok: false, reason: 'too-short-for-ai-paragraph' };
@@ -12741,7 +12715,7 @@ export class AnalyzerOrchestrator {
       const trimmed = (lastSentenceEnd > 0 ? window.slice(0, lastSentenceEnd + 1) : window).trim();
       return trimmed && trimmed !== cleaned ? trimmed : undefined;
     }
-    // Marketing/vague language is NEVER word-deleted: surgical removal leaves
+
     if (/^unsupported-marketing-language:/.test(reason)) return undefined;
     const ungroundedType = /^ungrounded-system-type:\s*(.+)$/.exec(reason);
     if (ungroundedType) {
@@ -12838,6 +12812,17 @@ export class AnalyzerOrchestrator {
     );
     let validation = this.validateGeneratedAIInterpretation(text, enhancedSystemPurpose, facts);
     if (validation.ok) return { text, validation };
+
+    if (facts?.artifactType === 'app' && (
+      validation.reason === 'implementation-stack-filler' ||
+      validation.reason === 'generic-implementation-mechanic-filler'
+    )) {
+      const productSentences = stripApplicationImplementationFillerSentences(text, facts.frameworks || []);
+      if (productSentences !== text) {
+        const productValidation = this.validateGeneratedAIInterpretation(productSentences, enhancedSystemPurpose, facts);
+        if (productValidation.ok) return { text: productSentences, validation: productValidation };
+      }
+    }
 
     const preserveForSemanticRepair = new Set([
       'read-only-product-mutation-claim',
@@ -12989,7 +12974,7 @@ export class AnalyzerOrchestrator {
       for (let i = rawTokens.length - 1; i >= 0; i--) {
         const nonFinalParticiple = i < rawTokens.length - 1 && /[a-z]{3,}ing$/.test(rawTokens[i]);
         if (nonFinalParticiple || clauseBreakers.has(rawTokens[i]) || finiteVerbConnectors.has(rawTokens[i])) {
-          // attributive modifier of the type head, so it must not be enforced as
+
           const relativePronouns = new Set(['that', 'which', 'who', 'whose']);
           const skipRelativeClauseVerb = relativePronouns.has(rawTokens[i]) && i + 1 < rawTokens.length;
           attributiveTokens = rawTokens.slice(skipRelativeClauseVerb ? i + 2 : i + 1);
@@ -13125,14 +13110,22 @@ export class AnalyzerOrchestrator {
     if (/\b(prefetch strategies?|main grounded concepts are\s+(?:network|routing|access|checkout))\b/i.test(cleaned)) {
       return { ok: false, reason: 'description-leans-on-framework-plumbing' };
     }
-    const genericConceptListEnding = /\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b(?:,\s*(?:and\s+)?\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b){1,4}\.?$/i.test(cleaned);
+    if (/\bgraph evidence\b/i.test(description)) {
+      return { ok: false, reason: 'analysis-product-filler' };
+    }
+    const genericConceptListEnding = /\b(access|network|data|app|page|component|service|route|user|settings|portal|company|surface|concept|flow|workflow|integration|operation|feature|record)\b(?:s)?(?:,\s*(?:and\s+)?\b(access|network|data|app|page|component|service|route|user|settings|portal|company|surface|concept|flow|workflow|integration|operation|feature|record)\b(?:s)?){1,4}\.?$/i.test(cleaned);
+    const genericProductTail = /\b(?:the\s+)?(?:platform|system|application|app|product|it|this)\s+(?:provides|supports|handles|manages|coordinates|offers|exposes)\s+[^.]{0,120}\b(?:access|network|data|app|page|component|service|route|user|settings|portal|company|surface|concept|flow|workflow|integration|operation|feature|record)s?\.?$/i.test(cleaned);
     const genericDataEnding = /\b(?:manage|manages|managing|track|tracks|tracking|handle|handles|handling|coordinate|coordinates|coordinating)\s+(?:user|portal|company|application|app|system)\s+data\.?$/i.test(cleaned);
     const genericManagedDataListEnding = /\b(?:manage|manages|managing|track|tracks|tracking|handle|handles|handling|coordinate|coordinates|coordinating)\s+[^.]{0,120}\b(?:user|portal|company|application|app|system)\b[^.]{0,120}\bdata\.?$/i.test(cleaned);
     if (genericManagedDataListEnding) {
       return { ok: false, reason: 'generic-concept-ending' };
     }
-    if ((genericConceptListEnding || genericDataEnding) &&
-      !this.endsWithGroundedMultiwordConcept(cleaned, groundedTerms)) {
+    if ((genericConceptListEnding || genericProductTail || genericDataEnding) &&
+      !this.endsWithGroundedMultiwordConcept(cleaned, [
+        ...groundedTerms,
+        ...(facts.databaseEntities || []),
+        ...(facts.frameworks || []),
+      ])) {
       return { ok: false, reason: 'generic-concept-ending' };
     }
     if (/\b(command-line interface|coupons?|discounts?|user data)\b/i.test(description) &&
@@ -13173,9 +13166,6 @@ export class AnalyzerOrchestrator {
     }
     if (/\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b|\bframeworks?\s+(?:like|such as)\b|\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description)) {
       return { ok: false, reason: 'framework-inventory-instead-of-architecture' };
-    }
-    if (/\bgraph evidence\b/i.test(description)) {
-      return { ok: false, reason: 'analysis-product-filler' };
     }
     if (/\bhttp requests?\b|\b(?:dedicated|specific|internal|route|request)?\s*handlers?\b|\bhandle(?:s|d|ing)?\s+(?:these\s+|incoming\s+)?requests?\b|\brouter\s+to\s+(?:direct|route)\b/i.test(description)) {
       return { ok: false, reason: 'source-implementation-mechanics' };
@@ -13303,10 +13293,16 @@ export class AnalyzerOrchestrator {
 
   private endsWithGroundedMultiwordConcept(description: string, groundedTerms: string[]): boolean {
     const normalized = description.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    return groundedTerms
+    const terms = groundedTerms
       .map(term => term.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
-      .filter(term => term.includes(' ') && term.length >= 7)
-      .some(term => normalized.endsWith(term));
+      .filter(term => term.length >= 4);
+    return terms.some(term => term.includes(' ') && normalized.endsWith(term)) ||
+      terms.some(term =>
+        normalized.endsWith(`${term} data`) ||
+        normalized.endsWith(`${term} service`) ||
+        normalized.endsWith(`${term} web service`) ||
+        normalized.endsWith(`${term} backend service`)
+      );
   }
 
   private ungroundedDomainClaims(
@@ -13616,7 +13612,7 @@ export class AnalyzerOrchestrator {
       domainConcepts,
       systemCapabilities
     );
-    console.error(`[Klauro] AI interpretation refresh=${decision.refresh} reason=${decision.reason}`);
+    writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${decision.refresh} reason=${decision.reason}`);
     return decision.refresh;
   }
 
@@ -13636,10 +13632,10 @@ export class AnalyzerOrchestrator {
     if (!previousOutput.enhanced_system_purpose?.inferred_description) {
       return { refresh: true, reason: 'missing-previous-description' };
     }
-    if (this.previousDescriptionNeedsCurrentValidation(previousOutput)) {
+    if (previousDescriptionNeedsCurrentValidation(previousOutput)) {
       return { refresh: true, reason: 'previous-description-failed-current-validation' };
     }
-    if ((previousOutput.system_capabilities || []).slice(0, 8).some(capability =>
+    if ((previousOutput.capabilities || []).slice(0, 8).some(capability =>
       !capability.description || !this.validateElementDescription(
         capability.description,
         this.capabilityDescriptionTarget(capability),
@@ -13673,7 +13669,7 @@ export class AnalyzerOrchestrator {
       (previousOutput.database_schema?.entities || []).map(entity => entity.name),
       (previousOutput.external_services || []).map(service => service.name),
       previousOutput.domain_concepts || [],
-      previousOutput.system_capabilities || []
+      previousOutput.capabilities || []
     );
 
     return JSON.stringify(previousFacts) !== JSON.stringify(nextFacts)
@@ -13858,7 +13854,6 @@ export class AnalyzerOrchestrator {
       'domainConcepts',
       'capabilities',
       'databaseEntities',
-      'externalServices',
       'observedProductActions',
       'infrastructureDeclarations',
     ];
@@ -13890,8 +13885,7 @@ export class AnalyzerOrchestrator {
         'projectTextDomain, projectTextSummary, and projectTextConcepts from human-authored repo text',
         'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product journeys; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces',
         'productBehaviorPaths — language-neutral traces tying a user intent to business transformations and terminal records/messages; use these to explain HOW the product works without copying code identifiers or route syntax',
-        // test/build tooling, serialization libs — are NEVER domain evidence
-        // by themselves and must never be read as implying a security,
+
         'libraries/dependencies — supporting evidence only; see dependencySignalInstruction',
         'capabilities and domainConcepts',
         'databaseEntities, externalServices, and frameworks',
@@ -13969,6 +13963,8 @@ export class AnalyzerOrchestrator {
         'Do not use marketing fluff: seamless, robust, efficient, compliant, productivity, business value, streamline, insights.',
         'Do not invent behavior beyond the entities, domain, and item evidence.',
       ],
+      firstPartyProductOverview: projectTextSignal.productDocSummary,
+      firstPartyProductTerminology: (projectTextSignal.productVocabulary || []).slice(0, 120),
     };
   }
 
@@ -14000,7 +13996,7 @@ export class AnalyzerOrchestrator {
       ? systemCapabilities
         .slice(0, 8)
         .map(c => c.name.replace(/_/g, ' '))
-      : [...flowGraph.capabilities]
+      : [...flowGraph.capability_candidates]
         .sort((a, b) => b.signals.total_score - a.signals.total_score)
         .slice(0, 8)
         .map(c => c.name.replace(/_/g, ' ')))
@@ -14039,36 +14035,11 @@ export class AnalyzerOrchestrator {
   private frameworksForNarrativeFacts(_systemName: string, frameworks: string[]): string[] {
     const unique = Array.from(new Set(frameworks.map(framework => String(framework || '').trim()).filter(Boolean)));
     if (unique.length <= 3) return unique;
-    // NO repo-name matching. Critically, NEVER collapse to a shape-word like
+
     const definingFramework = /\b(nest|next|express|fastify|koa|hapi|remix|nuxt|astro|django|flask|fastapi|spring|rails|laravel|symfony|asp\.?net|gin|echo|fiber|actix|axum|rocket|phoenix|react|vue|svelte|angular|solid|flutter|mikroorm|prisma|typeorm|sequelize|mongoose|sqlalchemy|hibernate|entity framework)\b/;
     const preferred = unique.filter(framework => definingFramework.test(framework.toLowerCase()));
     const rest = unique.filter(framework => !preferred.includes(framework));
     return [...preferred, ...rest].slice(0, 4);
-  }
-
-  private emptyFlowGraph(): CASFlowGraph {
-    return {
-      capabilities: [],
-      dependencies: [],
-      topology: {
-        root_capabilities: [],
-        leaf_capabilities: [],
-        critical_path: [],
-        max_depth: 0,
-      },
-      primary_flow: {
-        core_capability_id: '',
-        value_chain: [],
-        supporting_capabilities: [],
-        infrastructure_capabilities: [],
-      },
-      layers: [],
-      system_insights: {
-        detected_patterns: [],
-        primary_entry_type: 'unknown',
-        data_flow_type: 'unknown',
-      },
-    };
   }
 
   private buildEnhancedSystemPurpose(
@@ -14080,7 +14051,7 @@ export class AnalyzerOrchestrator {
     frameworks: string[],
     externalServices: string[],
     systemCapabilities: SystemCapability[],
-    flowGraph: CASFlowGraph,
+    flows: FlowConcept[],
     systemName?: string,
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     nodes: CASNode[] = [],
@@ -14108,10 +14079,10 @@ export class AnalyzerOrchestrator {
     );
 
     const criticalityRank: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
-    const rankedFlows = [...(flowGraph.flows || [])].sort((a, b) => {
+    const rankedFlows = [...flows].sort((a, b) => {
       const byCriticality = (criticalityRank[b.criticality || 'low'] ?? 0) - (criticalityRank[a.criticality || 'low'] ?? 0);
       if (byCriticality !== 0) return byCriticality;
-      return (b.step_count || 0) - (a.step_count || 0);
+      return b.steps.length - a.steps.length;
     });
     const primaryWorkflowId = rankedFlows[0]?.flow_id;
     const supportingWorkflowIds = rankedFlows.slice(1, 6).map(flow => flow.flow_id);
@@ -14122,7 +14093,7 @@ export class AnalyzerOrchestrator {
       evidence: this.orderPurposeEvidence([...basePurpose.evidence, ...projectTextSignal.evidence]).slice(0, 20),
       artifact_type: artifactResult.artifactType,
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
-      // provenance must never be written.
+
       primary_domain: '',
       inferred_description: '',
       primary_workflow_id: primaryWorkflowId,
@@ -14247,31 +14218,11 @@ export class AnalyzerOrchestrator {
     return primaryType;
   }
 
-  private shouldPreferProjectTextSummary(
-    primaryDomain: string,
-    systemCapabilities: SystemCapability[],
-    flowGraph: CASFlowGraph
-  ): boolean {
-    const usefulCapabilities = systemCapabilities.filter(capability => !this.isGenericCapabilityDisplayName(capability.name));
-    const flowCapabilities = [...(flowGraph.capabilities || [])].filter(capability => !this.isGenericCapabilityDisplayName(capability.name));
-    return !primaryDomain ||
-      primaryDomain === 'unknown' ||
-      this.isGenericDomainToken(primaryDomain) ||
-      usefulCapabilities.length <= 2 ||
-      flowCapabilities.length <= 2;
-  }
-
   private stripAgentToolingInstructionText(text: string): string {
     return text
       .split(/\r?\n/)
       .filter(line => !/\b(klauro|unravl|mcp|claude(?:\s+code)?|codex|anthropic|cursor|copilot|coding agents?|agent operating loop|agent contexts?|analysis-focus|cas graph|codebase intelligence|query the analysis|analyze_codebase|get_summary|get_level|get_node|get_callers|get_callees|find_tests|search_nodes|get_agent_|run_answer_pack|assess_change_risk|get_coding_context)\b/i.test(line))
       .join('\n');
-  }
-
-  private systemDisplayNameIsBareBasename(displayName: string | undefined, projectPath: string): boolean {
-    if (!displayName) return true;
-    const basename = path.basename(projectPath.replace(/[/\\]+$/, ''));
-    return displayName.trim().toLowerCase() === basename.trim().toLowerCase();
   }
 
   private resolveSystemDisplayName(projectPath: string, productDocTitle?: string): string | undefined {
@@ -14553,6 +14504,7 @@ export class AnalyzerOrchestrator {
 
   private extractProjectTextSignal(projectPath: string): ProjectTextSignal {
     const textParts: string[] = [];
+    const productTextParts: string[] = [];
     const evidence: string[] = [];
 
     let manifestDescription: string | undefined;
@@ -14560,6 +14512,7 @@ export class AnalyzerOrchestrator {
     if (packageJson?.description) {
       const rawDescription = String(packageJson.description).trim();
       textParts.push(rawDescription);
+      productTextParts.push(rawDescription);
       evidence.push('package.json description');
       if (rawDescription) manifestDescription = rawDescription;
     }
@@ -14572,6 +14525,7 @@ export class AnalyzerOrchestrator {
       const useful = this.stripBoilerplateProjectText(content);
       if (useful.length > 80) {
         textParts.push(useful);
+        productTextParts.push(useful);
         evidence.push(readmeName);
       }
       break;
@@ -14606,8 +14560,22 @@ export class AnalyzerOrchestrator {
       const useful = this.stripAgentToolingInstructionText(stripped);
       if (useful.length > 80) {
         textParts.push(useful);
+        productTextParts.push(useful);
         evidence.push(guideName);
       }
+    }
+
+    for (const productDocName of [
+      'VISION.md', 'CONTEXT.md', 'PRODUCT.md', 'PRD.md', 'OVERVIEW.md',
+      'docs/VISION.md', 'docs/CONTEXT.md', 'docs/PRODUCT.md', 'docs/PRD.md', 'docs/OVERVIEW.md',
+      'docs/context/VISION.md', 'docs/context/CONTEXT.md',
+    ]) {
+      const content = this.safeReadText(path.join(projectPath, productDocName), 30000);
+      if (!content) continue;
+      const useful = this.stripBoilerplateProjectText(content);
+      if (useful.length <= 80) continue;
+      productTextParts.push(useful);
+      if (!evidence.includes(productDocName)) evidence.push(productDocName);
     }
 
     let sourceTextFound = false;
@@ -14632,8 +14600,26 @@ export class AnalyzerOrchestrator {
 
     const text = textParts.join('\n').toLowerCase();
     const concepts = this.inferConceptsFromProjectText(text);
+    const productVocabulary = Array.from(new Set(
+      productTextParts
+        .join('\n')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .map(token => this.stemTerminologyToken(token))
+        .filter(token => token.length >= 3),
+    )).slice(0, 1200);
 
-    return { primaryDomain: undefined, concepts, summary: undefined, evidence, manifestDescription, productDocTitle, productDocSummary };
+    return {
+      primaryDomain: undefined,
+      concepts,
+      summary: undefined,
+      evidence,
+      manifestDescription,
+      productDocTitle,
+      productDocSummary,
+      productVocabulary,
+    };
   }
 
   private extractProductDocFraming(content: string): { title?: string; summary?: string } {
@@ -14949,34 +14935,6 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  private describeEntryPointsForNarrative(entryPoints: { type: string; count: number }[]): string {
-    const meaningfulEntryPoints = entryPoints
-      .filter(ep => ep.type !== 'test' && ep.count > 0)
-      .sort((a, b) => b.count - a.count);
-    if (meaningfulEntryPoints.length === 0) return '';
-    const types = meaningfulEntryPoints.slice(0, 3).map(ep => this.entryPointTypeLabel(ep.type));
-    return `the main interaction surfaces are ${this.joinHumanList(types)}`;
-  }
-
-  private entryPointTypeLabel(type: string): string {
-    switch (type.toLowerCase()) {
-      case 'http':
-        return 'HTTP endpoints';
-      case 'cli':
-        return 'CLI commands';
-      case 'message':
-        return 'message handlers';
-      case 'event':
-        return 'event handlers';
-      case 'page':
-        return 'page routes';
-      case 'websocket':
-        return 'WebSocket channels';
-      default:
-        return `${type} surfaces`;
-    }
-  }
-
   private joinHumanList(values: string[]): string { return CapabilityText.joinHumanList(values); }
 
   private humanizePascalName(value: string): string {
@@ -15088,9 +15046,8 @@ export class AnalyzerOrchestrator {
     const result = computeStructuralImportance(nodes, edges, entryPoints);
     for (const node of nodes) {
       const score = result.scores.get(node.id);
-      if (score !== undefined) {
-        node.structural_importance = score;
-      }
+      if (score === undefined) delete node.structural_importance;
+      else node.structural_importance = score;
     }
     return result;
   }
@@ -15217,7 +15174,6 @@ export class AnalyzerOrchestrator {
 
       const directCallers = callerCounts.get(node.id) || [];
       const file = node.source?.file?.replace(/\\/g, '/').toLowerCase() || '';
-      const nameLower = node.name.toLowerCase();
       const isEntryRelated = node.type === 'controller' ||
         node.type === 'route' ||
         node.type === 'handler' ||
@@ -15533,8 +15489,8 @@ export class AnalyzerOrchestrator {
         n.type === 'entity' ||
         n.type === 'model' ||
         n.subcategories?.includes('entity') ||
-        (n.type === 'class' && n.source?.file?.includes('/entities/')) ||
-        (this.isDtoLikeDataShapeNode(n) && n.source?.file?.includes('/entities/')) ||
+        (n.type === 'class' && this.isConventionalEntityPathNode(n)) ||
+        (this.isDtoLikeDataShapeNode(n) && this.isConventionalEntityPathNode(n)) ||
         this.isPocoEntityClassNode(n) ||
         this.isPlainStructEntityNode(n)
       )
@@ -15667,7 +15623,7 @@ export class AnalyzerOrchestrator {
         }
       };
       this.tagDataEntityKind(ormEntity, [entityNode], 'persisted-entity', persistence);
-      if (!ormEntity.fields?.length && ormEntity.kind !== 'persisted-entity') continue;
+      if (!ormEntity.fields?.length && ormEntity.kind !== 'persisted-entity' && !this.isConventionalEntityPathNode(entityNode)) continue;
       mergeOrmEntity(ormEntity);
     }
     entities.push(...ormEntitiesById.values());
@@ -15725,7 +15681,7 @@ export class AnalyzerOrchestrator {
       sourceKey: string,
       relation: NonNullable<CASDataEntity['relations']>[number],
     ) => {
-      // typed-composition `1:1` over the decorator's `N:1`) must not double it.
+
       if (relation.kind === 'data' && relation.field
         && relationFieldsByEntity.get(sourceKey)?.has(relation.field)) return;
       const key = [
@@ -15873,8 +15829,7 @@ export class AnalyzerOrchestrator {
       const key = String(sub).toLowerCase();
       if (ORM_FAMILY_SUBCATEGORIES.has(key)) return `analyzer subcategory \`${key}\` on ${node.name}`;
     }
-    const type = String(node.type || '').toLowerCase();
-    if (type === 'entity' || type === 'model') return `analyzer node type \`${type}\` on ${node.name}`;
+    if (String(node.type || '').toLowerCase() === 'entity') return `analyzer node type \`entity\` on ${node.name}`;
     return undefined;
   }
 
@@ -16255,7 +16210,7 @@ export class AnalyzerOrchestrator {
           deleted_by: [...new Set([...edgeLifecycle.deleted_by, ...affix('delete')])],
         },
       };
-      // must not PROMOTE an arbitrary typed request/response shape into durable
+
       this.tagDataEntityKind(derivedEntity, group.nodes, 'value-object');
       const everyAnchorNested = group.nodes.every(node =>
         nestedFieldTypeNames.has(String(node.name || '').toLowerCase()));
@@ -16300,6 +16255,11 @@ export class AnalyzerOrchestrator {
     return propertyCount >= 1 && propertyCount >= methodCount;
   }
 
+  private isConventionalEntityPathNode(node: CASNode): boolean {
+    const file = String(node.source?.file || '').replace(/\\/g, '/');
+    return /(^|\/)entit(?:y|ies)(\/|$)/i.test(file) && !this.isCodeArtifactRoleName(node.name);
+  }
+
   private isPlainStructEntityNode(node: CASNode): boolean {
     if (node.type !== 'struct') return false;
     if (node.subcategories?.includes('abstract')) return false;
@@ -16333,17 +16293,17 @@ export class AnalyzerOrchestrator {
 
   private isCodeArtifactRoleName(name: string): boolean {
     const trimmed = String(name || '').trim();
-    if (/(Handler|Handlers|Adapter|Adapters|Registry|Registries|Factory|Factories|Provider|Providers|Middleware|Middlewares|Preflight|Pending|Core|Gate|Gates|Dispatcher|Dispatchers|Dispatch|Container|Containers|View|Views)$/.test(trimmed)) {
+    if (/(Handler|Handlers|Adapter|Adapters|Registry|Registries|Factory|Factories|Builder|Builders|Provider|Providers|Middleware|Middlewares|Preflight|Pending|Core|Gate|Gates|Dispatcher|Dispatchers|Dispatch|Container|Containers|View|Views)$/.test(trimmed)) {
       return true;
     }
     if (/^(Send|Handle|Register)[A-Z]/.test(trimmed)) {
       return true;
     }
-    // domain noun) is NOT flagged — the role token must not be the head word.
+
     const segments = trimmed.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/);
     return segments.some((segment, index) =>
       index >= 1 &&
-      /^(Gate|Gates|Dispatch|Dispatcher|Dispatchers|Handler|Handlers|Container|Containers|Sentinel|Sentinels)$/.test(segment));
+      /^(Gate|Gates|Dispatch|Dispatcher|Dispatchers|Handler|Handlers|Builder|Builders|Container|Containers|Sentinel|Sentinels)$/.test(segment));
   }
 
 	  private enrichCuratedProductDataEntities(
@@ -17789,7 +17749,7 @@ export class AnalyzerOrchestrator {
     for (const ep of entryPoints) {
       if (ep.deployable_id) entryPointDeployableById.set(ep.id, ep.deployable_id);
     }
-    // construction and must not be promoted to Tier 3 capabilities.
+
     const hasOutwardFace = productEntryPoints.some(
       ep => USER_FACING_ENTRY_TYPES.has(ep.type as any)
     );
@@ -17803,6 +17763,10 @@ export class AnalyzerOrchestrator {
       ];
       return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
     });
+    const productEntityDomains = new Set(productDataEntities.flatMap(entity => [
+      this.domainKeyFromText(entity.name),
+      ...this.domainTokensFromText(entity.name),
+    ]).filter((domain): domain is string => Boolean(domain)));
     const productEdges = edges.filter(edge => productNodeIds.has(edge.source) || productNodeIds.has(edge.target));
     const productNodeById = new Map(productNodes.map(node => [node.id, node] as const));
     const productNodeOrder = new Map(productNodes.map((node, index) => [node.id, index] as const));
@@ -17822,7 +17786,8 @@ export class AnalyzerOrchestrator {
 
       const resourceKey = this.inferResourceKey(ep);
       const resourceName = this.inferResourceName(ep, resourceKey);
-      if (this.isGenericCapabilityResourceKey(resourceKey, resourceName)) continue;
+      if (this.isGenericCapabilityResourceKey(resourceKey, resourceName) &&
+        !this.domainVariantInSet(resourceKey, productEntityDomains)) continue;
 
       if (!resourceGroups.has(resourceKey)) {
         resourceGroups.set(resourceKey, { entryPoints: [], name: resourceName });
@@ -17993,7 +17958,6 @@ export class AnalyzerOrchestrator {
         if (epAny.handler?.node_id) relatedNodeIds.add(epAny.handler.node_id);
       });
 
-      // itself stays handler-only — criticality/labeling below must not
       const matches = groupEntityMatches.get(resourceKey) || { direct: new Set<string>(), hop: new Set<string>() };
       const relatedEntities = productDataEntities.filter(de =>
         matches.direct.has(de.id) ||
@@ -18439,7 +18403,6 @@ export class AnalyzerOrchestrator {
       removed.add(loser);
     };
 
-    // reachability). Its entity set is therefore not a merge key: it must never
     const isSurfaceCap = (capability: SystemCapability) => capability.evidence_kind === 'behavior-surface';
 
     const subjectPhraseOf = (capability: SystemCapability): string =>
@@ -18451,6 +18414,19 @@ export class AnalyzerOrchestrator {
         .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
         .replace(/[^a-z0-9]+/g, ' ')
         .trim();
+    const semanticSubjectTokens = (capability: SystemCapability): Set<string> => new Set(
+      subjectPhraseOf(capability)
+        .split(/\s+/)
+        .map(token => this.stemTerminologyToken(token))
+        .filter(token => token.length >= 3 && !this.isGenericCapabilityToken(token)),
+    );
+    const subjectsSemanticallyOverlap = (left: SystemCapability, right: SystemCapability): boolean => {
+      const leftTokens = semanticSubjectTokens(left);
+      const rightTokens = semanticSubjectTokens(right);
+      if (leftTokens.size === 0 || rightTokens.size === 0) return false;
+      const shared = [...leftTokens].filter(token => rightTokens.has(token)).length;
+      return shared / Math.min(leftTokens.size, rightTokens.size) >= 0.6;
+    };
 
     const bySetKey = new Map<string, SystemCapability>();
     for (const capability of capabilities) {
@@ -18499,8 +18475,6 @@ export class AnalyzerOrchestrator {
       if (superset) mergeInto(superset, capability);
     }
 
-    // empty set is trivially "contained" in everything and must never merge on
-    // a near-duplicate, and must never be merged away.
     const opSurvivors = capabilities.filter(capability =>
       !removed.has(capability) && !isSurfaceCap(capability) && capability.operations.length > 0);
     for (const capability of opSurvivors) {
@@ -18508,6 +18482,7 @@ export class AnalyzerOrchestrator {
       const ownOperationKeys = new Set(capability.operations.map(operationKey));
       const opSuperset = opSurvivors.find(other => {
         if (other === capability || removed.has(other)) return false;
+        if (!subjectsSemanticallyOverlap(capability, other)) return false;
         const otherOperationKeys = new Set(other.operations.map(operationKey));
         if (otherOperationKeys.size < ownOperationKeys.size) return false;
         if (otherOperationKeys.size === ownOperationKeys.size) {
@@ -18752,22 +18727,18 @@ export class AnalyzerOrchestrator {
   }
 
   private systemCapabilityProductPriority(capability: SystemCapability): number {
-    // Rank from the capability's OWN evidence, never from its wording: operations
-    // and entities are what a reader can click through to.
+
     const operationCount = (capability.operations || []).length;
     const entityCount = (capability.related_entities || []).length;
     const grounded = operationCount > 0 && entityCount > 0;
     const isCore = capability.category === 'core';
 
-    // A half-step inside the tier, never an override: a grounded cross-cutting
-    // capability must still outrank an ungrounded product one.
     const crossCutting = this.isCrossCuttingCapabilityName(capability.name) ? 0.5 : 0;
 
     if (isCore && grounded && operationCount >= CAPABILITY_SUBSTANTIAL_OPERATIONS) return 0 + crossCutting;
     if (isCore && grounded) return 1 + crossCutting;
     if (grounded) return 2 + crossCutting;
-    // Nothing grounded at all: category is the only evidence left, and it IS
-    // evidence — it came from the analysis, not from the name.
+
     if (operationCount === 0 && entityCount === 0) return (isCore ? 4 : 5) + crossCutting;
     return 3 + crossCutting;
   }
@@ -18803,13 +18774,6 @@ export class AnalyzerOrchestrator {
         return tokens.length > 1 && tokens[tokens.length - 1] === domain;
       });
     });
-  }
-  private isAnalyzerImplementationPurposeSignalNode(node: CASNode): boolean {
-    const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
-    if (/(^|\/)packages\/analyzer-core\/src\/analyzer\/(core|frameworks|languages|library|libraries)\//.test(file)) return true;
-    if (/(^|\/)packages\/analyzer-core\/src\/ai\//.test(file)) return true;
-    if (/(^|\/)apps\/mcp-server\/src\/agent-.*benchmark\.ts$/.test(file)) return true;
-    return false;
   }
 
   private async buildTerminalCapabilities(
@@ -18932,7 +18896,7 @@ export class AnalyzerOrchestrator {
       const operations = group.operations.length > 0
         ? group.operations
         : uniqueNodes
-          // must never become a capability operation.
+
           .filter(node => TRACEABLE_NODE_TYPES.has(node.type) || node.type === 'method' || node.type === 'class')
           .slice(0, 6).map(node => ({
             entry_point_id: `node:${node.id}`,
@@ -19004,10 +18968,10 @@ export class AnalyzerOrchestrator {
   private static readonly BEHAVIOR_FAMILY_MIN_ENTRIES = 4;
   private static readonly BEHAVIOR_SURFACE_MIN_ENTRIES = 12;
   private static readonly OUTWARD_FACING_BEHAVIOR_KINDS = new Set(['cli', 'ipc', 'command']);
-  private static readonly BEHAVIOR_CAPABILITY_MAX = 10;
+  private static readonly BEHAVIOR_CAPABILITY_MAX = 16;
 
-  private behaviorEntryModuleArea(ep: CASEntryPoint, nodesById: Map<string, CASNode>): string | undefined {
-    const file = ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file || '';
+  private behaviorEntryModuleArea(ep: CASEntryPoint | undefined, nodesById: Map<string, CASNode>): string | undefined {
+    const file = ep?.handler?.file || nodesById.get(ep?.source_node || '')?.source?.file || '';
     return this.moduleAreaFromFile(file);
   }
 
@@ -19075,6 +19039,9 @@ export class AnalyzerOrchestrator {
     'submit', 'send', 'sync', 'run', 'execute', 'process', 'handle', 'make',
     'build', 'init', 'initialize', 'validate', 'check', 'resolve', 'generate',
     'start', 'stop', 'open', 'close', 'enable', 'disable', 'apply', 'compute',
+    'deploy', 'assess', 'evaluate', 'correlate', 'compare', 'preview', 'plan',
+    'declare', 'subscribe', 'ingest', 'record', 'simulate', 'claim', 'release',
+    'verify', 'analyze', 'inspect', 'audit', 'scan', 'chart',
   ]);
 
   private async buildBehaviorCapabilities(
@@ -19167,20 +19134,18 @@ export class AnalyzerOrchestrator {
           .split(/[^a-z0-9]+/)
           .filter(Boolean);
 
-        const firstToken = subjectTokens.find(token =>
-          !/^(socket|sockets|event|events|message|messages|cmd|command|commands|on|emit|ws|handler|handlers)$/.test(token));
+        const firstToken = subjectTokens.find(token => {
+          const normalized = this.normalizeDomainToken(token);
+          return !/^(socket|sockets|event|events|message|messages|cmd|command|commands|on|emit|ws|handler|handlers|tool|tools|api|apis|endpoint|endpoints|route|routes|page|pages|service|services|system)$/.test(token) &&
+            !AnalyzerOrchestrator.BEHAVIOR_ACTION_VERB_PREFIXES.has(normalized) &&
+            !AnalyzerOrchestrator.DOM_INTERACTION_EVENT_TOKENS.has(normalized) &&
+            !isCapabilityNoiseToken(normalized) &&
+            !isLanguageBuiltinDomainToken(normalized);
+        });
         let prefix: string | undefined;
         if (firstToken && firstToken.length > 2) {
           const normalized = this.normalizeDomainToken(firstToken);
-          if (normalized &&
-            !AnalyzerOrchestrator.BEHAVIOR_ACTION_VERB_PREFIXES.has(normalized) &&
-            !AnalyzerOrchestrator.DOM_INTERACTION_EVENT_TOKENS.has(normalized) &&
-            !this.isGenericCapabilityToken(normalized) &&
-            !this.isGenericDomainToken(normalized) &&
-            !isCapabilityNoiseToken(normalized) &&
-            !isLanguageBuiltinDomainToken(normalized)) {
-            prefix = normalized;
-          }
+          if (normalized) prefix = normalized;
         }
         return { ep, prefix, subject: rawSubject || undefined };
       });
@@ -19246,7 +19211,7 @@ export class AnalyzerOrchestrator {
 
       const kindLabel = this.humanizeDomainKey(surface.kind.replace(/[_-]+/g, ' '));
       const prefixLabel = prefix ? this.humanizeDomainKey(prefix) : undefined;
-      // "Mcp Tool" must not read "Mcp Mcp Tool").
+
       const structuralLabel = prefixLabel && !kindLabel.toLowerCase().startsWith(prefixLabel.toLowerCase())
         ? `${prefixLabel} ${kindLabel} Surface`
         : `${kindLabel} Surface`;
@@ -19319,18 +19284,23 @@ export class AnalyzerOrchestrator {
         if (family) family.push(entry);
         else familyMap.set(entry.prefix, [entry]);
       }
+      const largeRegistrationSurface = surface.kindEvidence === 'registration' &&
+        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES;
+      const familyMinimum = largeRegistrationSurface ? 2 : AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES;
       const strongFamilies = [...familyMap.entries()]
-        .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
+        .filter(([, entries]) => entries.length >= familyMinimum)
         .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
-      const familyCoverage = strongFamilies.reduce((sum, [, entries]) => sum + entries.length, 0) / total;
+      const isLargeDiverseSurface = largeRegistrationSurface;
 
-      const isLargeDiverseSurface = surface.kindEvidence === 'registration' &&
-        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES &&
-        (strongFamilies.length === 0 || familyCoverage < 0.5);
+      if (AnalyzerOrchestrator.OUTWARD_FACING_BEHAVIOR_KINDS.has(surface.kind) &&
+        total < AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES) {
+        candidates.push({ capability: buildCandidate(surface, undefined, surface.entries), evidence: total });
+        continue;
+      }
 
       if (isLargeDiverseSurface) {
-        const coveredByFamily = new Set(strongFamilies.flatMap(([, entries]) => entries));
-        const remainder = surface.entries.filter(entry => !coveredByFamily.has(entry));
+        const familyEntries = new Set(strongFamilies.flatMap(([, entries]) => entries));
+        const remainder = surface.entries.filter(entry => !familyEntries.has(entry));
         const moduleMap = new Map<string, BehaviorEntry[]>();
         for (const entry of remainder) {
           const area = this.behaviorEntryModuleArea(entry.ep, nodesById);
@@ -19340,7 +19310,7 @@ export class AnalyzerOrchestrator {
           else moduleMap.set(area, [entry]);
         }
         const moduleClusters = [...moduleMap.entries()]
-          .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
+          .filter(([, entries]) => entries.length >= familyMinimum)
           .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
         const moduleCoverage = moduleClusters.reduce((sum, [, entries]) => sum + entries.length, 0) /
           Math.max(remainder.length, 1);
@@ -19351,7 +19321,7 @@ export class AnalyzerOrchestrator {
           }
           const clustered = new Set(moduleClusters.flatMap(([, entries]) => entries));
           const leftover = remainder.filter(entry => !clustered.has(entry));
-          if (leftover.length >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES) {
+          if (leftover.length > 0) {
             candidates.push({ capability: buildCandidate(surface, undefined, leftover), evidence: leftover.length });
           }
         } else {
@@ -19365,7 +19335,7 @@ export class AnalyzerOrchestrator {
             else calleeModuleMap.set(area, [entry]);
           }
           const calleeModuleClusters = [...calleeModuleMap.entries()]
-            .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
+            .filter(([, entries]) => entries.length >= familyMinimum)
             .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
           const calleeModuleCoverage = calleeModuleClusters.reduce((sum, [, entries]) => sum + entries.length, 0) /
             Math.max(remainder.length, 1);
@@ -19376,14 +19346,14 @@ export class AnalyzerOrchestrator {
             }
             const clustered = new Set(calleeModuleClusters.flatMap(([, entries]) => entries));
             const leftover = remainder.filter(entry => !clustered.has(entry));
-            if (leftover.length >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES) {
+            if (leftover.length > 0) {
               candidates.push({ capability: buildCandidate(surface, undefined, leftover), evidence: leftover.length });
             }
           } else if (remainder.length > 0) {
             candidates.push({ capability: buildCandidate(surface, undefined, remainder), evidence: remainder.length });
           }
         }
-        for (const [prefix, entries] of strongFamilies.slice(0, 3)) {
+        for (const [prefix, entries] of strongFamilies.slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX)) {
           candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
         }
         continue;
@@ -19623,7 +19593,7 @@ export class AnalyzerOrchestrator {
       ...best.related_domains,
       ...candidate.related_domains,
     ]));
-    // CRITICALITY/CATEGORY ARE NEVER BOOSTED BY A MERGED SURFACE. `candidate`
+
     best.criticality_factors = Array.from(new Set([
       ...best.criticality_factors,
       ...candidate.criticality_factors,
@@ -19892,7 +19862,7 @@ export class AnalyzerOrchestrator {
   }
 
   private domainKeyFromText(text: string): string | undefined {
-    // token: a subject like "Monte Carlo" or "Profit And Loss" must not
+
     const tokens = this.domainTokensFromText(text);
     if (tokens.length === 0) return undefined;
     return tokens.join('-');
@@ -20458,24 +20428,6 @@ export class AnalyzerOrchestrator {
     return CapabilityText.generateTerminalCapabilityDescription(label, entities, operations || [], this.activeAnalysisProjectPath);
   }
 
-  private capabilityVerbClause(actions: string[]): string { return CapabilityText.capabilityVerbClause(actions); }
-
-  private entryPointSurfaceLabel(type: string, count: number): string { return CapabilityText.entryPointSurfaceLabel(type, count); }
-
-  private capabilityActionPhrase(actions: string[]): string {
-    const actionSet = new Set(actions.map(action => action.toLowerCase()));
-    if (actionSet.has('analyze')) return 'analyzes';
-    if (actionSet.has('validate')) return 'validates';
-    if (actionSet.has('generate')) return 'generates';
-    if (actionSet.has('rebalance')) return 'rebalances';
-    if (actionSet.has('settle')) return 'settles';
-    if (actionSet.has('send')) return 'sends';
-    if (actionSet.has('read') && actionSet.size === 1) return 'reads';
-    if (actionSet.has('create') || actionSet.has('update') || actionSet.has('delete')) return 'manages';
-    if (actionSet.has('process')) return 'processes';
-    return 'coordinates';
-  }
-
   private capabilitySourceAreas(
     nodes: CASNode[],
     operations: SystemCapability['operations']
@@ -20627,7 +20579,7 @@ export class AnalyzerOrchestrator {
     }
 
     if (ep.type === 'notebook-cell') {
-      // (the struct-field-style over-fragmentation this same fix must not
+
       return this.inferModuleResourceKeyFromPath(ep.handler?.file || '') ||
         this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
         'notebook';
@@ -20747,7 +20699,7 @@ export class AnalyzerOrchestrator {
     if (tokens.length === 0) return undefined;
     const meaningfulTokens = tokens.filter(token => !/^(app|bin|console|command|event|message|handler|handlers)$/.test(token));
     const startIndex = tokens.findIndex(token => meaningfulTokens.includes(token));
-    // like "Monte Carlo" or "Profit And Loss" must not collapse to a single
+
     return (startIndex >= 0 ? tokens.slice(startIndex) : tokens).join('-');
   }
 
@@ -20968,8 +20920,6 @@ export class AnalyzerOrchestrator {
     return 'supporting';
   }
 
-  private relativizeRepoPath(input: string): string { return CapabilityText.relativizeRepoPath(input, this.activeAnalysisProjectPath); }
-
   private enforceCapabilityDescriptionProvenanceInvariant(capabilities: SystemCapability[] | undefined): void {
     for (const capability of capabilities || []) {
       if (capability.description) continue;
@@ -20999,10 +20949,6 @@ export class AnalyzerOrchestrator {
   ): string {
     return CapabilityText.generateCapabilityDescription(name, operations, entities, entryPoints, this.activeAnalysisProjectPath);
   }
-
-  private capabilityInteractionPhrase(entryTypes: string[]): string { return CapabilityText.capabilityInteractionPhrase(entryTypes); }
-
-
 
   private signalTokens(item: string): string[] {
     return item
@@ -21056,35 +21002,6 @@ export class AnalyzerOrchestrator {
       if (this.signalPatternTokenCache.size < 20000) this.signalPatternTokenCache.set(pattern, patternTokens);
     }
     return patternTokens;
-  }
-
-  private matchesSignalPattern(rawTokens: string[], pattern: string): boolean {
-    const patternTokens = this.normalizedSignalPatternTokens(pattern);
-    if (patternTokens.length === 0) return false;
-    const tokens = rawTokens.map(token => this.singularizeSignalToken(token));
-    for (let i = 0; i + patternTokens.length <= tokens.length; i++) {
-      let matched = true;
-      for (let j = 0; j < patternTokens.length; j++) {
-        if (tokens[i + j] !== patternTokens[j]) {
-          matched = false;
-          break;
-        }
-      }
-      if (matched && !this.isBlockedSignalCompound(tokens, i, i + patternTokens.length)) {
-        return true;
-      }
-    }
-    if (patternTokens.length === 1) {
-      const target = patternTokens[0];
-      for (let i = 0; i < tokens.length - 1; i++) {
-        let joined = tokens[i];
-        for (let j = i + 1; j < tokens.length && joined.length < target.length; j++) {
-          joined += tokens[j];
-          if (joined === target) return true;
-        }
-      }
-    }
-    return false;
   }
 
   private tokenizeSignalItems(items: string[]): string[][] {
@@ -21146,7 +21063,7 @@ export class AnalyzerOrchestrator {
       ];
       return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
     });
-    // capability that somehow still ships must never feed primary_type
+
     const productCapabilities = capabilities.filter(capability =>
       capability.category !== 'internal' &&
       ((capability.related_entities || []).length > 0 || (capability.operations || []).length > 0)
@@ -21293,7 +21210,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      // matched indicator tokens. One incidental keyword must never assert a
       if (score > 0 && distinctSignals.size < 2) {
         score = 0;
         typeEvidence.length = 0;
@@ -21336,7 +21252,6 @@ export class AnalyzerOrchestrator {
     const httpEntryPoints = productEntryPoints.filter(ep => ep.type === 'http');
     const pageEntryPoints = productEntryPoints.filter(ep => ep.type === 'page' || ep.type === 'route');
     const desktopUiSignals = await countMatches([...nodeNames, ...paths], ['window', 'viewmodel', 'xaml', 'modal']);
-    const nameEntityCapabilityPathTokens = [...nodeNames, ...entityNames, ...capabilityNames, ...paths];
     const hasDominantDesktopUi =
       desktopUiSignals.matched.includes('viewmodel') || desktopUiSignals.matched.includes('xaml');
     const CLINICAL_INTEROP_PACKAGES = [
@@ -21419,9 +21334,6 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    // spec-purity violation besides (product source must never name specific
-
-    // e-signature, wiki or DAM product, and 'revision' as the load-bearing
     const CMS_FRAMEWORK_PACKAGES = [
       'wagtail', 'django-cms', 'mezzanine', 'strapi', 'sanity', 'contentful',
       'keystone', '@keystone-6/core', 'payload', 'directus', 'decap-cms',
@@ -21583,6 +21495,7 @@ export class AnalyzerOrchestrator {
     }
 
     const existingEdgeIds = new Set(edges.map(e => e.id));
+    const resolveImportedHandler = buildImportedHandlerResolver(nodes);
 
     const callEdgeSources = new Set<string>();
     for (const edge of edges) {
@@ -21635,7 +21548,7 @@ export class AnalyzerOrchestrator {
         for (const [candidateFile, candidates] of functionNodesByFile) {
           if (candidateFile === commandFile ||
               candidateFile.endsWith(commandFile) || commandFile.endsWith(candidateFile)) {
-            fns.push(...candidates);
+            appendAll(fns, candidates);
           }
         }
         const entryMethod = ['execute', '__invoke', 'run']
@@ -21684,18 +21597,10 @@ export class AnalyzerOrchestrator {
         continue;
       }
 
-      const filesToSearch: string[] = [];
-      if (handlerFile) {
-        for (const file of functionNodesByFile.keys()) {
-          if (file.includes(handlerFile) || handlerFile.includes(file.replace(/^.*?\//, ''))) {
-            filesToSearch.push(file);
-          }
-        }
-      }
-
-      if (filesToSearch.length === 0) {
-        filesToSearch.push(...functionNodesByFile.keys());
-      }
+      const filesToSearch = rankHandlerCandidateFiles(functionNodesByFile.keys(), [
+        handlerFile,
+        ep.type === 'cli' ? sourceNode?.source?.file : undefined,
+      ]);
 
       let matchedFunctionNode: CASNode | null = null;
 
@@ -21709,7 +21614,9 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      if (!matchedFunctionNode && handlerName) {
+      matchedFunctionNode ||= resolveImportedHandler(handlerFile, handlerName) || null;
+
+      if (!matchedFunctionNode && handlerName && permitsGlobalHandlerFallback(ep.type, handlerName)) {
         const globalMatches = functionNodesByName.get(handlerName) || [];
         if (globalMatches.length === 1) {
           matchedFunctionNode = globalMatches[0];
@@ -21801,6 +21708,7 @@ export class AnalyzerOrchestrator {
           existingEdgeIds.add(edgeId);
           addedForThisEntryPoint++;
         }
+        anchorUnresolvedCliHandler(ep, sourceNode, handlerName);
       }
     }
   }
@@ -21973,38 +21881,42 @@ export class AnalyzerOrchestrator {
 
     const MEMBER_TYPES = new Set(['method', 'function']);
     {
-      const groups = new Map<string, CASNode[]>();
+      const candidateGroups = new Map<string, CASNode[]>();
       for (const node of nodes) {
         if (!MEMBER_TYPES.has(node.type)) continue;
         if (!node.parent) continue;
         const key = `${normalizeFile(node.source?.file)}::${node.parent}::${node.name}`;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key)!.push(node);
+        if (!candidateGroups.has(key)) candidateGroups.set(key, []);
+        candidateGroups.get(key)!.push(node);
+      }
+      const groups = new Map<string, CASNode[]>();
+      for (const [candidateKey, candidates] of candidateGroups) {
+        const byAnalyzer = new Map<string, CASNode[]>();
+        for (const node of candidates) {
+          const analyzerIdentity = node.primaryAnalyzer || [...(node.analyzers || [])].sort()[0] || `unattributed:${node.id}`;
+          const analyzerNodes = byAnalyzer.get(analyzerIdentity) || [];
+          analyzerNodes.push(node);
+          byAnalyzer.set(analyzerIdentity, analyzerNodes);
+        }
+        let occurrenceCount = 0;
+        for (const analyzerNodes of byAnalyzer.values()) {
+          analyzerNodes.sort((left, right) =>
+            (left.source?.line || Number.MAX_SAFE_INTEGER) - (right.source?.line || Number.MAX_SAFE_INTEGER) ||
+            left.id.localeCompare(right.id)
+          );
+          occurrenceCount = Math.max(occurrenceCount, analyzerNodes.length);
+        }
+        for (let occurrence = 0; occurrence < occurrenceCount; occurrence++) {
+          const occurrenceGroup = [...byAnalyzer.values()]
+            .map(analyzerNodes => analyzerNodes[occurrence])
+            .filter((node): node is CASNode => Boolean(node));
+          groups.set(`${candidateKey}::${occurrence}`, occurrenceGroup);
+        }
       }
       runPass(groups);
     }
 
-    if (edges.length > 0) {
-      const survivorByKey = new Map<string, CASEdge>();
-      const deduped: CASEdge[] = [];
-      for (const edge of edges) {
-        const meta = edge.metadata as Record<string, unknown> | undefined;
-        const attrs = meta?.attributes as Record<string, unknown> | undefined;
-        const relIdent = meta?.field ?? meta?.via ?? meta?.relation ?? meta?.relationType ?? meta?.relation_type
-          ?? attrs?.relationType ?? attrs?.relation ?? attrs?.property ?? attrs?.kind ?? '';
-        const key = `${edge.source}::${edge.target}::${edge.type}::${String(relIdent)}`;
-        const existing = survivorByKey.get(key);
-        if (!existing) {
-          survivorByKey.set(key, edge);
-          deduped.push(edge);
-          continue;
-        }
-        if (edge.metadata) {
-          existing.metadata = { ...edge.metadata, ...existing.metadata };
-        }
-      }
-      replaceArrayContents(edges, deduped);
-    }
+    dedupeCanonicalEdges(edges);
   }
 
   private dedupeUtilNodeDuplicates(nodes: CASNode[], edges: CASEdge[]): void {
@@ -22183,7 +22095,6 @@ export class AnalyzerOrchestrator {
     const existingIds = new Set(entryPoints.map(entryPoint => entryPoint.id));
     const existingSourceNodes = new Set(entryPoints.map(entryPoint => entryPoint.source_node));
     const candidates = this.collectEntryPointCandidates(projectPath);
-    const startingCount = entryPoints.length;
 
     for (const candidate of candidates) {
       const sourceNode = this.findNodeForEntryFile(nodes, projectPath, candidate.file);
@@ -24793,7 +24704,7 @@ export class AnalyzerOrchestrator {
 
   private readonly maxNodeCallGraphReferences = 50;
 
-  private buildMethodCalls(nodes: CASNode[], edges: CASEdge[]): CASMethodCall[] {
+  private buildMethodCalls(nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[] = []): CASMethodCall[] {
     const methodCalls: CASMethodCall[] = [];
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
     const callEdgeTypes = new Set(['calls', 'invokes', 'method_call', 'delegates_to']);
@@ -24856,6 +24767,55 @@ export class AnalyzerOrchestrator {
           is_potential_bottleneck: attrs.target_type === 'database' || attrs.target_type === 'api',
           is_critical_path: attrs.target_type === 'database' || attrs.target_type === 'api'
         }
+      });
+    }
+
+    const representedExitPoints = new Set(
+      methodCalls.map(call => call.external_details?.exit_point_id).filter((id): id is string => Boolean(id))
+    );
+    for (const exitPoint of exitPoints) {
+      if (representedExitPoints.has(exitPoint.id)) continue;
+      const sourceNode = nodeMap.get(exitPoint.source_node);
+      if (!sourceNode) continue;
+      const methodName = exitPoint.metadata?.method
+        || exitPoint.metadata?.operation
+        || exitPoint.name;
+      methodCalls.push({
+        id: `mc_exit_${this.slugForId(exitPoint.id)}`,
+        caller_node: sourceNode.id,
+        call_details: {
+          method_name: String(methodName),
+          location: {
+            file: sourceNode.source?.file || '',
+            line: sourceNode.source?.line || 0,
+            column: sourceNode.source?.column || 0,
+          },
+          call_type: 'method',
+          resolution_type: 'external',
+        },
+        execution_context: {
+          is_async: Boolean(sourceNode.metadata?.is_async || exitPoint.metadata?.async),
+          is_conditional: Boolean(exitPoint.metadata?.conditional),
+          is_in_loop: false,
+          is_recursive: false,
+          call_depth: 0,
+          conditional_depth: exitPoint.metadata?.conditional ? 1 : 0,
+          loop_depth: 0,
+          enclosing_function: sourceNode.type === 'function' || sourceNode.type === 'method' ? sourceNode.name : undefined,
+          enclosing_class: sourceNode.parent ? nodeMap.get(sourceNode.parent)?.name : undefined,
+        },
+        external_details: {
+          library: exitPoint.target?.sdk || exitPoint.target?.service_id || exitPoint.type,
+          module: exitPoint.target?.endpoint || exitPoint.target?.resource,
+          is_builtin: false,
+          is_sdk: exitPoint.type === 'sdk',
+          exit_point_id: exitPoint.id,
+        },
+        performance_hints: {
+          is_hot_path: Boolean(sourceNode.call_graph?.is_hot_path),
+          is_potential_bottleneck: exitPoint.type === 'database' || exitPoint.type === 'api',
+          is_critical_path: exitPoint.type === 'database' || exitPoint.type === 'api',
+        },
       });
     }
 
@@ -25085,6 +25045,12 @@ export class AnalyzerOrchestrator {
       if (callees.length === 0 && callers.length === 0 && !node.call_graph) continue;
 
       const existingCallGraph = node.call_graph || {} as CASCallGraph;
+      node.metadata ||= {};
+      node.metadata.attributes ||= {};
+      node.metadata.attributes.incoming_calls = callers.length;
+      node.metadata.attributes.outgoing_calls = callees.length;
+      node.metadata.attributes.is_leaf = callees.length === 0;
+      node.metadata.attributes.is_entry = callers.length === 0;
 
       const calls: CASCallGraph['calls'] = callees.slice(0, this.maxNodeCallGraphReferences).map(targetId => {
         const target = nodeMap.get(targetId);
@@ -25119,8 +25085,8 @@ export class AnalyzerOrchestrator {
 
       node.call_graph = {
         ...existingCallGraph,
-        calls: calls.length > 0 ? calls : existingCallGraph.calls,
-        called_by: calledBy.length > 0 ? calledBy : existingCallGraph.called_by,
+        calls: calls.length > 0 ? calls : undefined,
+        called_by: calledBy.length > 0 ? calledBy : undefined,
         call_chain_depth: callees.length > 0 ? 1 : 0,
         is_entry_point: entryNodeIds.has(node.id),
         is_exit_point: exitNodeIds.has(node.id),
@@ -25138,7 +25104,6 @@ export class AnalyzerOrchestrator {
     const contexts: CASSecurityContext[] = [];
     const securityKeywords = ['auth', 'guard', 'middleware', 'permission', 'role', 'token', 'jwt', 'session', 'encrypt', 'decrypt', 'hash', 'password', 'credential', 'security', 'validate', 'sanitize'];
 
-    // repos no framework analyzer recognized, and it MUST NOT run on prose
     const isTestOrBenchmarkNode = (n: CASNode): boolean =>
       n.type === 'test' || n.category === 'test' ||
       (n.subcategories || []).some(s => s.toLowerCase() === 'benchmark') ||
@@ -25409,12 +25374,8 @@ export class AnalyzerOrchestrator {
   }
 
   private deriveParentFromContainsEdges(nodes: CASNode[], edges: CASEdge[]): void {
-    const nodeMap = new Map<string, CASNode>();
-    for (const node of nodes) {
-      nodeMap.set(node.id, node);
-    }
-
-    const containsEdges = edges.filter(e => e.type === 'contains');
+    const nodeMap = new Map(nodes.map(node => [node.id, node] as const));
+    const containsEdges = edges.filter(e => e.type === 'contains' && e.metadata?.attributes?.relationship !== 'structural_ownership');
     for (const edge of containsEdges) {
       const child = nodeMap.get(edge.target);
       if (child && !child.parent) {

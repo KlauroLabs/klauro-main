@@ -19,6 +19,13 @@ const AI_ENV_KEYS = [
   'AZURE_OPENAI_ENDPOINT',
   'AZURE_OPENAI_DEPLOYMENT',
   'AZURE_OPENAI_MODEL',
+  'KLAURO_ALLOW_LOCAL_AI',
+  'LOCAL_LLM_BASE_URL',
+  'LOCAL_LLM_MODEL',
+  'LOCAL_LLM_STRUCTURED_MODEL',
+  'LOCAL_LLM_FALLBACK_MODELS',
+  'LOCAL_LLM_API_KEY',
+  'LOCAL_LLM_MAX_TOKENS',
 ];
 
 describe('getAIConfig', () => {
@@ -140,5 +147,20 @@ describe('getAIConfig', () => {
       KLAURO_ALLOW_LOCAL_AI: '1',
       LOCAL_LLM_BASE_URL: 'http://127.0.0.1:11434/v1',
     }).map(entry => entry.name)).toContain('local-llm');
+  });
+
+  it('builds an ordered deduplicated local model fallback chain', () => {
+    const chain = getAIProviderChain({
+      KLAURO_ALLOW_LOCAL_AI: '1',
+      LOCAL_LLM_BASE_URL: 'http://100.64.0.1:11434/v1',
+      LOCAL_LLM_MODEL: 'qwen2.5-coder:14b',
+      LOCAL_LLM_STRUCTURED_MODEL: 'qwen2.5-coder:14b',
+      LOCAL_LLM_FALLBACK_MODELS: 'deepseek-coder-v2:16b-lite, qwen2.5-coder:14b, deepseek-coder-v2:16b-lite',
+      LOCAL_LLM_MAX_TOKENS: '2400',
+    });
+
+    expect(chain.map(entry => entry.name)).toEqual(['local-llm', 'local-llm-fallback-1']);
+    expect(chain.map(entry => entry.model)).toEqual(['qwen2.5-coder:14b', 'deepseek-coder-v2:16b-lite']);
+    expect(chain.every(entry => entry.maxTokens === 2400)).toBe(true);
   });
 });

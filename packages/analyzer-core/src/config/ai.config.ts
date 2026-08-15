@@ -15,7 +15,7 @@ const AIConfigSchema = z.object({
       tokensPerMinute: z.number().default(40000),
     }),
   }),
-  
+
   anthropic: z.object({
     apiKey: z.string().optional(),
     model: z.string().default('claude-3-haiku-20240307'),
@@ -28,7 +28,7 @@ const AIConfigSchema = z.object({
       tokensPerMinute: z.number().default(100000),
     }),
   }),
-  
+
   huggingface: z.object({
     apiKey: z.string().optional(),
     model: z.string().default('microsoft/codebert-base'),
@@ -39,8 +39,8 @@ const AIConfigSchema = z.object({
 
   cache: z.object({
     enabled: z.boolean().default(true),
-    ttl: z.number().default(86400), // 24 hours in seconds
-    maxSize: z.number().default(1000), // Maximum cached items
+    ttl: z.number().default(86400),
+    maxSize: z.number().default(1000),
     redis: z.object({
       host: z.string().default('localhost'),
       port: z.number().default(6379),
@@ -49,16 +49,16 @@ const AIConfigSchema = z.object({
       keyPrefix: z.string().default('ai:cache:'),
     }),
   }),
-  
+
   costTracking: z.object({
     enabled: z.boolean().default(true),
-    maxDailyCost: z.number().default(10), // USD
-    maxMonthlyCost: z.number().default(100), // USD
-    alertThreshold: z.number().default(0.8), // Alert at 80% of limit
+    maxDailyCost: z.number().default(10),
+    maxMonthlyCost: z.number().default(100),
+    alertThreshold: z.number().default(0.8),
     pricing: z.object({
       openai: z.object({
         'gpt-4': z.object({
-          input: z.number().default(0.03), // per 1K tokens
+          input: z.number().default(0.03),
           output: z.number().default(0.06),
         }),
         'gpt-4o': z.object({
@@ -90,7 +90,7 @@ const AIConfigSchema = z.object({
       }),
     }),
   }),
-  
+
   features: z.object({
     codeAnalysis: z.boolean().default(true),
     naturalLanguageDescriptions: z.boolean().default(true),
@@ -101,13 +101,13 @@ const AIConfigSchema = z.object({
     testSuggestions: z.boolean().default(false),
     documentationGeneration: z.boolean().default(false),
   }),
-  
+
   fallback: z.object({
     enabled: z.boolean().default(true),
     strategy: z.enum(['cascade', 'loadbalance', 'failover']).default('cascade'),
     providers: z.array(z.enum(['openai', 'claude', 'fallback'])).default(['openai', 'claude', 'fallback']),
   }),
-  
+
   prompts: z.object({
     maxContextLength: z.number().default(8000),
     includeCodeContext: z.boolean().default(true),
@@ -120,9 +120,9 @@ export type AIConfig = z.infer<typeof AIConfigSchema>;
 
 export const DEEPINFRA_OPENAI_BASE_URL = 'https://api.deepinfra.com/v1/openai';
 
-// Cheap, valid default for the DeepInfra endpoint the product uses. Replaces stale
-// defaults (Meta-Llama-3.3-70B-Instruct, which DeepInfra 404s) and the gpt-4o-mini
-// fallback that a DeepInfra base URL would otherwise resolve to. ~$0.02–0.05/Mtok.
+
+
+
 export const DEFAULT_DEEPINFRA_MODEL = 'mistralai/Mistral-Small-3.2-24B-Instruct-2506';
 
 function hasAzureOpenAIConfig(): boolean {
@@ -178,7 +178,7 @@ export function describeConfiguredAIProvider(env: NodeJS.ProcessEnv = process.en
     return {
       provider: isDeepInfra ? 'deepinfra' : 'openai-compatible',
       baseURL: env.OPENAI_BASE_URL,
-      // A DeepInfra base URL must never fall through to gpt-4o-mini (404 there).
+
       model: env.OPENAI_MODEL || (isDeepInfra ? DEFAULT_DEEPINFRA_MODEL : undefined),
       structuredModel: env.OPENAI_STRUCTURED_MODEL || (isDeepInfra ? DEFAULT_DEEPINFRA_MODEL : undefined),
       hosted: true,
@@ -203,10 +203,10 @@ export function describeConfiguredAIProvider(env: NodeJS.ProcessEnv = process.en
 }
 
 function defaultRequestTimeoutMs(): string {
-  // One stalled shared-inference request must not hold the entire analysis
-  // critical path for minutes. Completeness is preserved by the provider chain:
-  // a timed-out attempt advances to a fresh attempt/provider, and the analysis is
-  // only complete after a grounded response is accepted.
+
+
+
+
   return '30000';
 }
 
@@ -223,17 +223,17 @@ export function getAIConfig(): AIConfig {
         process.env.DEEPINFRA_MODEL ||
         process.env.AZURE_OPENAI_DEPLOYMENT ||
         process.env.AZURE_OPENAI_MODEL ||
-        // When the endpoint is DeepInfra (the product's hosted provider), a cheap
-        // VALID model — never gpt-4o-mini, which 404s there. Only fall back to
-        // gpt-4o-mini for genuine OpenAI.
+
+
+
         (hasDeepInfraConfig() || (openAICompatibleBaseURL && /deepinfra/i.test(openAICompatibleBaseURL))
           ? DEFAULT_DEEPINFRA_MODEL
           : 'gpt-4o-mini'),
       maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '2000'),
-      // Klauro interprets/extracts from deterministic facts — determinism is
-      // always desired. temp 0 dramatically stabilizes structured capability
-      // extraction/merge (high-temp samples leak routes, vary wrapper keys, and
-      // make the merge fall back). Override with OPENAI_TEMPERATURE if needed.
+
+
+
+
       temperature: parseFloat(process.env.OPENAI_TEMPERATURE || '0'),
       timeout: parseInt(process.env.AI_TIMEOUT || defaultRequestTimeoutMs()),
       maxRetries: parseInt(process.env.AI_MAX_RETRIES || '3'),
@@ -242,7 +242,7 @@ export function getAIConfig(): AIConfig {
         tokensPerMinute: parseInt(process.env.OPENAI_RATE_LIMIT_TPM || '40000'),
       },
     },
-    
+
     anthropic: {
       apiKey: process.env.ANTHROPIC_API_KEY,
       model: process.env.ANTHROPIC_MODEL || 'claude-3-haiku-20240307',
@@ -255,7 +255,7 @@ export function getAIConfig(): AIConfig {
         tokensPerMinute: parseInt(process.env.ANTHROPIC_RATE_LIMIT_TPM || '100000'),
       },
     },
-    
+
     huggingface: {
       apiKey: process.env.HUGGINGFACE_API_KEY,
       model: process.env.HUGGINGFACE_MODEL || 'microsoft/codebert-base',
@@ -276,7 +276,7 @@ export function getAIConfig(): AIConfig {
         keyPrefix: process.env.AI_CACHE_PREFIX || 'ai:cache:',
       },
     },
-    
+
     costTracking: {
       enabled: process.env.AI_COST_TRACKING_ENABLED !== 'false',
       maxDailyCost: parseFloat(process.env.AI_MAX_DAILY_COST || '10'),
@@ -317,7 +317,7 @@ export function getAIConfig(): AIConfig {
         },
       },
     },
-    
+
     features: {
       codeAnalysis: process.env.AI_FEATURE_CODE_ANALYSIS !== 'false',
       naturalLanguageDescriptions: process.env.AI_FEATURE_NL_DESCRIPTIONS !== 'false',
@@ -328,13 +328,13 @@ export function getAIConfig(): AIConfig {
       testSuggestions: process.env.AI_FEATURE_TEST_SUGGESTIONS === 'true',
       documentationGeneration: process.env.AI_FEATURE_DOC_GENERATION === 'true',
     },
-    
+
     fallback: {
       enabled: process.env.AI_FALLBACK_ENABLED !== 'false',
       strategy: (process.env.AI_FALLBACK_STRATEGY as any) || 'cascade',
       providers: (process.env.AI_FALLBACK_PROVIDERS?.split(',') as any[]) || ['openai', 'claude', 'fallback'],
     },
-    
+
     prompts: {
       maxContextLength: parseInt(process.env.AI_MAX_CONTEXT_LENGTH || '8000'),
       includeCodeContext: process.env.AI_INCLUDE_CODE_CONTEXT !== 'false',
@@ -342,40 +342,40 @@ export function getAIConfig(): AIConfig {
       responseFormat: (process.env.AI_RESPONSE_FORMAT as any) || 'structured',
     },
   };
-  
+
   return AIConfigSchema.parse(config);
 }
 
 export const aiConfig = getAIConfig();
 
-/**
- * One entry in the ordered AI provider fallback chain. Each is an
- * OpenAI-compatible endpoint tried in order; on error / 429 / empty content the
- * next is tried, so a slow-or-rate-limited provider never causes L5 comprehension
- * to silently skip.
- */
+
+
+
+
+
+
 export interface AIProviderChainEntry {
   name: string;
   baseURL: string;
   apiKey: string;
   model: string;
   structuredModel?: string;
-  /** Reasoning models (e.g. OpenRouter hy3) burn output budget on hidden
-   * reasoning tokens and return empty content unless given generous room. */
+
+
   maxTokens?: number;
 }
 
-/**
- * Build the ordered provider fallback chain. Priority:
- *   1. KLAURO_AI_PROVIDER_CHAIN — a JSON array of
- *      {name?, base_url, key_env?|api_key?, model, structured_model?, max_tokens?}
- *      giving explicit, ordered control (DeepInfra -> local Mac -> OpenRouter).
- *   2. Otherwise a sensible default chain from the discrete env vars:
- *      DeepInfra (primary) -> explicitly opted-in development LLM ->
- *      OpenRouter (OPENROUTER_API_KEY, reasoning-safe max_tokens).
- * Entries missing a base URL or resolvable key are dropped. Returns [] when
- * nothing is configured (the caller then uses its single-provider path).
- */
+
+
+
+
+
+
+
+
+
+
+
 export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProviderChainEntry[] {
   const resolveKey = (spec: { key_env?: string; api_key?: string }): string | undefined => {
     if (spec.api_key) return spec.api_key;
@@ -383,7 +383,7 @@ export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProv
     return undefined;
   };
 
-  // 1) Explicit JSON chain.
+
   if (env.KLAURO_AI_PROVIDER_CHAIN) {
     try {
       const parsed = JSON.parse(env.KLAURO_AI_PROVIDER_CHAIN);
@@ -406,17 +406,17 @@ export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProv
         if (chain.length) return chain;
       }
     } catch {
-      // fall through to the default chain on malformed JSON
+
     }
   }
 
-  // 2) Default chain from discrete env vars.
+
   const chain: AIProviderChainEntry[] = [];
 
-  // Primary: DeepInfra (cheap hosted 70B, no reasoning-token overhead).
-  // Production commonly configures this OpenAI-compatible endpoint through
-  // OPENAI_* variables; recognize that shape too so it does not silently fall
-  // back to the single-provider retry path.
+
+
+
+
   const openAICompatibleDeepInfra = Boolean(env.OPENAI_BASE_URL && /deepinfra/i.test(env.OPENAI_BASE_URL));
   const deepInfraKey = env.DEEPINFRA_API_KEY || (openAICompatibleDeepInfra ? env.OPENAI_API_KEY : undefined);
   if (deepInfraKey) {
@@ -441,9 +441,9 @@ export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProv
         structuredModel: fastFallbackModel,
       });
     }
-    // One final fresh primary request recovers a transient shared-worker stall.
-    // SDK/provider retries remain disabled, so every attempt is explicit and
-    // observable rather than multiplying invisibly.
+
+
+
     chain.push({
       name: 'deepinfra-retry',
       baseURL,
@@ -453,23 +453,41 @@ export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProv
     });
   }
 
-  // Analyzer-development escape hatch only. Customer/hosted execution is
-  // remote-AI-only; a stale LOCAL_LLM_BASE_URL must never make production wait
-  // on a laptop or nonexistent Ollama service.
+
+
+
   if (env.KLAURO_ALLOW_LOCAL_AI === '1' && env.LOCAL_LLM_BASE_URL) {
+    const primaryModel = env.LOCAL_LLM_MODEL || 'qwen2.5:7b-instruct';
+    const structuredModel = env.LOCAL_LLM_STRUCTURED_MODEL || primaryModel;
+    const maxTokens = env.LOCAL_LLM_MAX_TOKENS ? parseInt(env.LOCAL_LLM_MAX_TOKENS) : undefined;
     chain.push({
       name: 'local-llm',
       baseURL: env.LOCAL_LLM_BASE_URL,
       apiKey: (env.LOCAL_LLM_API_KEY && env.LOCAL_LLM_API_KEY) || 'local',
-      model: env.LOCAL_LLM_MODEL || 'qwen2.5:7b-instruct',
-      structuredModel: env.LOCAL_LLM_STRUCTURED_MODEL || env.LOCAL_LLM_MODEL || 'qwen2.5:7b-instruct',
-      maxTokens: env.LOCAL_LLM_MAX_TOKENS ? parseInt(env.LOCAL_LLM_MAX_TOKENS) : undefined,
+      model: primaryModel,
+      structuredModel,
+      maxTokens,
     });
+    const fallbackModels = String(env.LOCAL_LLM_FALLBACK_MODELS || '')
+      .split(',')
+      .map(model => model.trim())
+      .filter(Boolean)
+      .filter((model, index, models) => model !== primaryModel && models.indexOf(model) === index);
+    for (const [index, model] of fallbackModels.entries()) {
+      chain.push({
+        name: `local-llm-fallback-${index + 1}`,
+        baseURL: env.LOCAL_LLM_BASE_URL,
+        apiKey: (env.LOCAL_LLM_API_KEY && env.LOCAL_LLM_API_KEY) || 'local',
+        model,
+        structuredModel: model,
+        maxTokens,
+      });
+    }
   }
 
-  // Fallback: OpenRouter free model. hy3 is a reasoning model, so it needs a
-  // generous max_tokens or it returns empty content (which the loop treats as a
-  // provider failure and would otherwise thrash).
+
+
+
   if (env.OPENROUTER_API_KEY) {
     chain.push({
       name: 'openrouter',

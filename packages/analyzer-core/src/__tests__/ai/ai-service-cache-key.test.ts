@@ -1,4 +1,4 @@
-import { aiService, AIAnalysisContext } from '../../ai/ai-service';
+import { AIService, aiService, AIAnalysisContext } from '../../ai/ai-service';
 
 // generateCacheKey is private; reached via a typed `any` handle.
 const svc = aiService as any;
@@ -38,5 +38,38 @@ describe('AIService.generateCacheKey', () => {
     expect(svc.generateCacheKey('description', ctx)).not.toBe(
       svc.generateCacheKey('risk', ctx),
     );
+  });
+});
+
+describe('AIService provider-chain model routing', () => {
+  it('uses the chain entry model when an unscoped model hint belongs to another provider', async () => {
+    let receivedModel = '';
+    const service = Object.create(AIService.prototype) as any;
+    service.providerChain = [{
+      entry: {
+        name: 'local-llm',
+        baseURL: 'http://100.64.0.1:11434/v1',
+        apiKey: 'local',
+        model: 'qwen2.5-coder:14b',
+        structuredModel: 'qwen2.5-coder:14b',
+      },
+      provider: {
+        generateDescription: async (context: AIAnalysisContext) => {
+          receivedModel = String(context.additionalContext?.model || '');
+          return '{"capabilities":[]}';
+        },
+      },
+    }];
+    service.updateUsageStats = () => undefined;
+    service.logger = { info: () => undefined, warn: () => undefined };
+
+    await service.generateDescriptionViaChain({
+      additionalContext: {
+        model: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
+        responseFormat: 'json',
+      },
+    });
+
+    expect(receivedModel).toBe('qwen2.5-coder:14b');
   });
 });
