@@ -200,7 +200,7 @@ import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embeddin
 import { aiService, isProviderUnavailableFailure } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
-import { aiConfig, getAIConfig } from '../../config/ai.config';
+import { aiConfig, getAIConfig, getAIProviderChain } from '../../config/ai.config';
 import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain-recovery';
@@ -11679,16 +11679,18 @@ export class AnalyzerOrchestrator {
     const freshConfig = getAIConfig();
     return Boolean(
       freshConfig.openai.apiKey ||
-      freshConfig.anthropic.apiKey
+      freshConfig.anthropic.apiKey ||
+      getAIProviderChain().length > 0
     );
   }
 
   private configuredAiInterpretationProviders(): string[] {
     const freshConfig = getAIConfig();
-    const providers: string[] = [];
-    if (freshConfig.openai.apiKey) providers.push(process.env.DEEPINFRA_API_KEY && freshConfig.openai.apiKey === process.env.DEEPINFRA_API_KEY ? 'deepinfra' : 'openai');
-    if (freshConfig.anthropic.apiKey) providers.push('anthropic');
-    return providers;
+    const providers = new Set<string>();
+    if (freshConfig.openai.apiKey) providers.add(process.env.DEEPINFRA_API_KEY && freshConfig.openai.apiKey === process.env.DEEPINFRA_API_KEY ? 'deepinfra' : 'openai');
+    if (freshConfig.anthropic.apiKey) providers.add('anthropic');
+    for (const entry of getAIProviderChain()) providers.add(entry.name);
+    return [...providers];
   }
 
   private async applyAIElementDescriptions(
