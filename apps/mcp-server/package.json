@@ -108,6 +108,7 @@
     "installed-intelligence-gauntlet": "tsx src/installed-intelligence-gauntlet.ts",
     "architecture-pattern-benchmark": "tsx src/architecture-pattern-benchmark.ts",
     "capability-inference-benchmark": "tsx src/capability-inference-benchmark.ts",
+    "capability-model-benchmark": "tsx src/capability-model-benchmark.ts",
     "execution-capsule-benchmark": "tsx src/execution-capsule-benchmark.ts",
     "agent-context-codec-benchmark": "tsx src/agent-context-codec-benchmark.ts",
     "greenfield-build-codec-benchmark": "tsx src/greenfield-build-codec-benchmark.ts",
