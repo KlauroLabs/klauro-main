@@ -32,11 +32,12 @@ describe('analyzeTerminality', () => {
 });
 
 describe('buildCasTerminality', () => {
-  const flow = (id: string, continuations: string[] = []): FlowConcept => ({
+  const flow = (id: string, continuations: string[] = [], capabilityId?: string): FlowConcept => ({
     flow_id: id,
     name: id,
     intent: id,
     entry_point: `entry-${id}`,
+    capability_id: capabilityId,
     entities: [],
     contract: { input: [], logic: id, side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] },
     steps: [],
@@ -94,5 +95,45 @@ describe('buildCasTerminality', () => {
     const capabilityById = new Map(result.capabilities.map(member => [member.id, member]));
     expect(capabilityById.get('authentication')?.terminal).toBe(true);
     expect(capabilityById.get('credential-validation')?.proximal_terminal).toBe(true);
+  });
+
+  it('projects capability prerequisites onto primary flows without requiring an explicit continuation', () => {
+    const cas = {
+      nodes: [],
+      edges: [],
+      entities: [],
+      flows: [
+        flow('sign-in-request', [], 'authentication'),
+        flow('place-order', [], 'purchasing'),
+      ],
+      capabilities: [
+        capability('authentication'),
+        capability('purchasing', ['authentication']),
+      ],
+    } as unknown as CASOutput;
+    const result = buildCasTerminality(cas);
+    const flowById = new Map(result.flows.map(member => [member.id, member]));
+    expect(flowById.get('place-order')).toMatchObject({ terminal: true, distance_to_terminal: 0 });
+    expect(flowById.get('sign-in-request')).toMatchObject({ proximal_terminal: true, distance_to_terminal: 1 });
+  });
+
+  it('uses prerequisite flow relationships when capability dependencies are unavailable', () => {
+    const purchasingFlow = flow('place-order', [], 'purchasing');
+    purchasingFlow.capability_relationships = [{
+      capability_id: 'authentication',
+      role: 'prerequisite',
+      rationale: 'Ordering requires an authenticated account.',
+    }];
+    const cas = {
+      nodes: [],
+      edges: [],
+      entities: [],
+      flows: [flow('sign-in-request', [], 'authentication'), purchasingFlow],
+      capabilities: [capability('authentication'), capability('purchasing')],
+    } as unknown as CASOutput;
+    const result = buildCasTerminality(cas);
+    const flowById = new Map(result.flows.map(member => [member.id, member]));
+    expect(flowById.get('place-order')?.terminal).toBe(true);
+    expect(flowById.get('sign-in-request')?.proximal_terminal).toBe(true);
   });
 });

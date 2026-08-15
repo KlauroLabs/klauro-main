@@ -136,15 +136,53 @@ export function analyzeTerminality(idsInput: Iterable<string>, edgeInput: CASTer
     left.id.localeCompare(right.id));
 }
 
-function flowEdges(flows: FlowConcept[]): CASTerminalityEdge[] {
+function primaryCapabilityIds(flow: FlowConcept): string[] {
+  return uniqueIds([
+    ...(flow.capability_id ? [flow.capability_id] : []),
+    ...(flow.capability_relationships || [])
+      .filter(relationship => relationship.role === 'primary')
+      .map(relationship => relationship.capability_id),
+  ]);
+}
+
+function flowEdges(cas: CASOutput): CASTerminalityEdge[] {
+  const flows = cas.flows || [];
   const flowIds = new Set(flows.map(flow => flow.flow_id));
   const edges: CASTerminalityEdge[] = [];
   for (const flow of flows) {
     for (const continuation of flow.continuations || []) {
       if (flowIds.has(continuation)) edges.push({ source: flow.flow_id, target: continuation });
     }
-    for (const trigger of flow.triggers || []) {
-      if (flowIds.has(trigger)) edges.push({ source: flow.flow_id, target: trigger });
+    for (const predecessor of flow.continued_from || []) {
+      if (flowIds.has(predecessor)) edges.push({ source: predecessor, target: flow.flow_id });
+    }
+  }
+
+  const primaryFlowsByCapability = new Map<string, string[]>();
+  for (const flow of flows) {
+    for (const capabilityId of primaryCapabilityIds(flow)) {
+      const relatedFlows = primaryFlowsByCapability.get(capabilityId) || [];
+      relatedFlows.push(flow.flow_id);
+      primaryFlowsByCapability.set(capabilityId, relatedFlows);
+    }
+  }
+  for (const capability of cas.capabilities || []) {
+    const dependentFlows = primaryFlowsByCapability.get(capability.id) || [];
+    for (const dependency of capability.depends_on || []) {
+      const prerequisiteFlows = primaryFlowsByCapability.get(dependency.to_capability) || [];
+      for (const prerequisiteFlow of prerequisiteFlows) {
+        for (const dependentFlow of dependentFlows) {
+          edges.push({ source: prerequisiteFlow, target: dependentFlow });
+        }
+      }
+    }
+  }
+  for (const flow of flows) {
+    for (const relationship of flow.capability_relationships || []) {
+      if (relationship.role !== 'prerequisite') continue;
+      for (const prerequisiteFlow of primaryFlowsByCapability.get(relationship.capability_id) || []) {
+        edges.push({ source: prerequisiteFlow, target: flow.flow_id });
+      }
     }
   }
   return edges;
@@ -183,7 +221,7 @@ export function buildCasTerminality(cas: CASOutput): CASTerminality {
     ),
     flows: analyzeTerminality(
       flows.map(flow => flow.flow_id),
-      flowEdges(flows),
+      flowEdges(cas),
     ),
     capabilities: analyzeTerminality(
       (cas.capabilities || []).map(capability => capability.id),
