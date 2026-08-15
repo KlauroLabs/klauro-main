@@ -316,6 +316,58 @@ test('segmented CAS retrieval retries a dropped section response', async (t) => 
   assert.equal(sectionRequests, 2);
 });
 
+test('segmented CAS retrieval retries a section that is still being published', async (t) => {
+  const analysisId = 'segmented-publication-race';
+  let sectionRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        manifest_version: 1,
+        cas_version: '3.0.0',
+        analysis_id: analysisId,
+        analysis_timestamp: new Date().toISOString(),
+        sections: [{ name: 'identity', fields: ['system'] }],
+        logical_fields: ['system'],
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/sections/identity`) {
+      sectionRequests += 1;
+      if (sectionRequests === 1) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'error', error: 'CAS section is not ready' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({ system: { name: 'published-segmented-read' } }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+
+  const cas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    ['identity'],
+  );
+
+  assert.equal(cas.system.name, 'published-segmented-read');
+  assert.equal(sectionRequests, 2);
+});
+
 test('wait mode follows a structural response until pending comprehension completes', async (t) => {
   disableConnectorAuth(t);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-resilience-test-'));

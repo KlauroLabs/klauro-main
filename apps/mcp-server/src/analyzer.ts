@@ -1,4 +1,6 @@
 import { AnalyzerOrchestrator, type AnalysisProgressEvent } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
+import { linkStructuralOwnership } from '../../../packages/analyzer-core/src/analyzer/core/structural-ownership';
+import { assignNodeRoles } from '../../../packages/analyzer-core/src/analyzer/core/node-roles';
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
@@ -2376,6 +2378,14 @@ async function runIncrementalAnalysis(
 
   const previousLayersReady = JSON.stringify(result.output.layers_ready ?? null);
   result.output.layers_ready = buildCompletedAnalysisLayersReady(result.output);
+  linkStructuralOwnership(result.output.nodes, result.output.edges);
+  assignNodeRoles({
+    nodes: result.output.nodes,
+    edges: result.output.edges,
+    entry_points: result.output.entry_points,
+    exit_points: result.output.exit_points,
+    resetDerivedRoles: true,
+  });
   const layersManifestChanged = JSON.stringify(result.output.layers_ready) !== previousLayersReady;
   const casChanged = hasCasReportChanges(result.changeReport);
   const outputChanged = result.output !== previousOutput || casChanged || layersManifestChanged;

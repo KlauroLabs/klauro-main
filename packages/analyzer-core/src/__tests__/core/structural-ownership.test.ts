@@ -44,4 +44,18 @@ describe('structural ownership', () => {
     expect(pairs(forward)).toEqual([`${file.id}:${first.id}`, `${file.id}:${second.id}`]);
     expect(pairs(reverse)).toEqual(pairs(forward));
   });
+
+  it('uses the canonical file node when analyzers emit the same source file at different depths', () => {
+    const canonical = { id: 'file_src_main_rs', name: 'main.rs', type: 'file', source: { file: 'src/main.rs', line: 1 } } as CASNode;
+    const language = { id: 'file_src_main_rs_main_rs_47210bc3', name: 'main.rs', type: 'file', source: { file: 'src/main.rs', line: 1 } } as CASNode;
+    const handler = { id: 'function:src/main.rs:list_users', name: 'list_users', type: 'function', source: { file: 'src/main.rs', line: 3 } } as CASNode;
+    const edges: CASEdge[] = [];
+
+    linkStructuralOwnership([language, handler, canonical], edges);
+
+    expect(edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: canonical.id, target: language.id, type: 'contains' }),
+      expect.objectContaining({ source: canonical.id, target: handler.id, type: 'contains' }),
+    ]));
+  });
 });

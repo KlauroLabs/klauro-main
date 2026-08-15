@@ -18,7 +18,7 @@ export function linkStructuralOwnership(nodes: CASNode[], edges: CASEdge[]): voi
     if (node.type !== 'file' || !node.source?.file) continue;
     const normalized = normalizeOwnershipPath(node.source.file);
     const existing = fileNodeByPath.get(normalized);
-    if (!existing || node.id.localeCompare(existing.id) < 0) fileNodeByPath.set(normalized, node);
+    if (!existing || compareFileOwners(node, existing) < 0) fileNodeByPath.set(normalized, node);
   }
   for (const node of nodes) {
     if (node.type === 'system' || incidentNodeIds.has(node.id)) continue;
@@ -45,6 +45,11 @@ export function linkStructuralOwnership(nodes: CASNode[], edges: CASEdge[]): voi
     });
     edgeKeys.add(key);
   }
+}
+
+function compareFileOwners(left: CASNode, right: CASNode): number {
+  const lengthDifference = left.id.length - right.id.length;
+  return lengthDifference || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
 }
 
 function isStructuralOwnershipEdge(edge: CASEdge): boolean {

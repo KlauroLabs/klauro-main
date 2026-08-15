@@ -26,7 +26,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { devDataRoot, reportDevDataDirSizeOnExit } from './dev-data';
 import { buildSourceSnapshot, matchExcludedDirectoryName } from '../remote-source';
-import { getAnalysisEntry, loadAnalysisSections, saveAnalysis } from '../storage';
+import { getAnalysisEntry, saveAnalysis } from '../storage';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 import { getStageFingerprints } from '../../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from '../remote-analyzer-protocol';
@@ -35,8 +35,9 @@ import { CAS_SECTION_NAMES } from '../cas-sections';
 import { readStreamingGzipJson, writeStreamingGzipJson } from '../streaming-gzip-json';
 
 let localServerUrl: string | null = null;
-let localServerDataDir: string | null = null;
 let localServerProcess: ChildProcess | null = null;
+let localHttpServer: http.Server | null = null;
+let localServerStart: Promise<string> | null = null;
 let benchDataDirCleanupRegistered = false;
 let benchStoreScoped = false;
 let benchProcessStorageDir: string | null = null;
@@ -78,14 +79,39 @@ async function ensureProductServer(): Promise<string> {
   const override = process.env.KLAURO_BENCH_ANALYZER_URL;
   if (override) return override.replace(/\/$/, '');
   if (localServerUrl) return localServerUrl;
+  if (localServerStart) return localServerStart;
+
+  localServerStart = startProductServer();
+  try {
+    return await localServerStart;
+  } catch (error) {
+    localServerStart = null;
+    throw error;
+  }
+}
+
+async function startProductServer(): Promise<string> {
 
   scopeBenchProcessToDevStore();
   const dataDir = benchProcessStorageDir || path.join(os.tmpdir(), `klauro-bench-storage-${process.pid}`);
-  localServerDataDir = dataDir;
   if (!process.env.KLAURO_COORD_DIR) {
     process.env.KLAURO_COORD_DIR = path.join(dataDir, 'coordination');
   }
   const port = await availableLoopbackPort();
+  if (process.env.KLAURO_ANALYSIS_IN_PROCESS === '1' || process.env.KLAURO_ANALYSIS_IN_PROCESS === 'true') {
+    const serviceModule = await import('../remote-analyzer-service');
+    const service = (serviceModule as any).default || serviceModule;
+    const server = service.createRemoteAnalyzerHttpServer({ dataDir });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', () => resolve());
+    });
+    server.unref();
+    localHttpServer = server;
+    localServerUrl = `http://127.0.0.1:${port}`;
+    registerBenchServerCleanup(dataDir);
+    return localServerUrl;
+  }
   const entry = path.resolve(__dirname, '..', 'remote-analyzer-service.ts');
   const child = spawn(process.execPath, ['--import', 'tsx', entry], {
     env: {
@@ -99,16 +125,21 @@ async function ensureProductServer(): Promise<string> {
   });
   localServerProcess = child;
   child.unref();
-  if (!benchDataDirCleanupRegistered) {
-    benchDataDirCleanupRegistered = true;
-    process.once('exit', () => {
-      localServerProcess?.kill('SIGTERM');
-      try { fs.removeSync(dataDir); } catch { }
-    });
-  }
-  localServerUrl = `http://127.0.0.1:${port}`;
-  await waitForLocalServer(localServerUrl, child);
+  const serverUrl = `http://127.0.0.1:${port}`;
+  await waitForLocalServer(serverUrl, child);
+  localServerUrl = serverUrl;
+  registerBenchServerCleanup(dataDir);
   return localServerUrl;
+}
+
+function registerBenchServerCleanup(dataDir: string): void {
+  if (benchDataDirCleanupRegistered) return;
+  benchDataDirCleanupRegistered = true;
+  process.once('exit', () => {
+    localServerProcess?.kill('SIGTERM');
+    localHttpServer?.close();
+    try { fs.removeSync(dataDir); } catch { }
+  });
 }
 
 async function availableLoopbackPort(): Promise<number> {
@@ -313,7 +344,6 @@ async function analyzeForBenchOnce(dir: string): Promise<CASOutput> {
 }
 
 async function waitForBenchAnalysis(serverUrl: string, response: any): Promise<CASOutput> {
-  if (localServerDataDir) return waitForAcceptedBenchAnalysis(response.analysis_id);
   return await waitForRemoteAnalysis(
     serverUrl,
     response.analysis_id,
@@ -326,7 +356,9 @@ async function waitForBenchAnalysis(serverUrl: string, response: any): Promise<C
 
 async function seedBenchAnalysisIfAbsent(dir: string, cas: CASOutput): Promise<void> {
   const existing = await getAnalysisEntry(dir).catch(() => null);
-  if (!existing) await saveAnalysis(dir, cas).catch(() => undefined);
+  if (!existing) {
+    await saveAnalysis(dir, cas, 'main', { writeSegmentedAnalysis: false }).catch(() => undefined);
+  }
 }
 
 function benchCacheLocation(dir: string, snapshotDigest: string | undefined): { file: string; lock: string } | undefined {
@@ -379,44 +411,6 @@ async function acquireBenchCacheLock(lock: string, cacheFile: string): Promise<s
     }
   }
   return undefined;
-}
-
-async function waitForAcceptedBenchAnalysis(analysisId: string): Promise<CASOutput> {
-  if (!analysisId) throw new Error('Klauro analyzer accepted the benchmark source without returning an analysis_id');
-  if (!localServerDataDir) {
-    throw new Error('Hosted benchmark analysis was accepted asynchronously; configure the hosted project query path before reading its CAS');
-  }
-  const workspace = path.join(localServerDataDir, 'workspaces', analysisId);
-  const deadline = Date.now() + benchAnalysisTimeoutMs();
-  let lastError = 'analysis has not been persisted yet';
-  while (Date.now() < deadline) {
-    try {
-      const status = await getJson(`${localServerUrl}/v1/analyses/${encodeURIComponent(analysisId)}/status`);
-      if (status.status === 'failed') {
-        throw new Error(`analysis failed: ${JSON.stringify(status.failed_layers || status)}`);
-      }
-      if (status.status !== 'ready') {
-        lastError = `analysis status is ${status.status || 'unknown'}`;
-        await new Promise(resolve => setTimeout(resolve, 100));
-        continue;
-      }
-      const cas = await loadAnalysisSections(
-        workspace,
-        CAS_SECTION_NAMES.filter(section => section !== 'tree'),
-      ) as CASOutput | null;
-      if (!cas) throw new Error('analysis was ready but its CAS sections were unavailable');
-      const failedLayer = cas.layers_ready?.layers?.find(layer => layer.status === 'error');
-      if (failedLayer) {
-        throw new Error(`Klauro benchmark analysis failed at ${failedLayer.layer}: ${failedLayer.error || cas.ai_enrichment_error || 'unknown error'}`);
-      }
-      if (acceptedBenchCasReady(cas)) return cas;
-      lastError = 'analysis is still populating';
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out waiting for accepted Klauro benchmark analysis ${analysisId}: ${lastError}`);
 }
 
 export function acceptedBenchCasReady(cas: CASOutput): boolean {

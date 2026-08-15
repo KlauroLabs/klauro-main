@@ -361,6 +361,18 @@ test('an INCOMPLETE layered CAS skips the sidecar but stays fully readable', asy
   });
 });
 
+test('authoritative-only persistence stays readable without writing segmented sections', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/authoritative-only-project';
+    const cas = casFixture('authoritative-only');
+    (cas as unknown as { layers_ready: unknown }).layers_ready = { complete: true, layers: [] };
+    await saveAnalysis(project, cas, 'main', { writeSegmentedAnalysis: false });
+    assert.equal(await savedSectionsExist(storagePath, project), false);
+    clearLoadedAnalysisCache();
+    assert.equal((await loadAnalysis(project))?.analysis_id, 'authoritative-only');
+  });
+});
+
 test('a CAS with no layers_ready keeps the previous always-write behaviour', async () => {
   await withStoragePath(async storagePath => {
     // Non-layered / incremental paths never populate layers_ready; they must not

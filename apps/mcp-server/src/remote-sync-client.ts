@@ -397,6 +397,9 @@ async function fetchSegmentedRemoteCas(
         { headers },
         remoteRequestTimeoutMs(),
       );
+      if (response.status === 404 || response.status === 409) {
+        throw new RetriableRemoteError(`Remote CAS section ${section} is still populating`);
+      }
       if (response.status >= 500) throw new RetriableRemoteError(`Remote CAS section ${section} returned ${response.status}`);
       if (!response.ok) throw new Error(`Remote CAS section ${section} returned ${response.status}`);
       return parseRemoteCasSection(response);

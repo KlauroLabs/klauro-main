@@ -865,14 +865,15 @@ export async function saveAnalysis(
   projectPath: string,
   output: CASOutput,
   track: AnalysisTrack = 'main',
-  options: { deferSegmentedWrite?: boolean; segmentedWriteDelayMs?: number } = {},
+  options: { deferSegmentedWrite?: boolean; segmentedWriteDelayMs?: number; writeSegmentedAnalysis?: boolean } = {},
 ): Promise<AnalysisEntry> {
   const storagePath = await ensureStorageDir();
   const fileName = `${projectSlug(projectPath)}${trackSuffix(track)}.json${compressedJsonExtension()}`;
   const filePath = path.join(storagePath, fileName);
   const layersReady = output.layers_ready;
-  const segmentsWorthWriting = !layersReady || layersReady.complete === true;
-  const persistedOutput = segmentsWorthWriting ? materializeDeployableCasTree(output) : output;
+  const completedOutput = !layersReady || layersReady.complete === true;
+  const segmentsWorthWriting = completedOutput && options.writeSegmentedAnalysis !== false;
+  const persistedOutput = completedOutput ? materializeDeployableCasTree(output) : output;
   const segmentedGeneration = beginSegmentedWriteGeneration(filePath);
   await fs.remove(path.join(segmentedAnalysisRoot(filePath), 'current.json')).catch(() => undefined);
 
