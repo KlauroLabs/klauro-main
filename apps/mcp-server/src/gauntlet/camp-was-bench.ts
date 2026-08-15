@@ -1,21 +1,21 @@
-/**
- * FIRST-CLASS workspace-level CAS bench — Camp C's biggest moat, benched as
- * its own taxonomy W1–W8 (NOT a single bullet).
- *
- * WHY out-of-category: Camp A/B and every serious competitor (scip, stack-graphs,
- * codebase-memory) index ONE repository. The workspace-level CAS understands a whole WORKSPACE
- * (ui → api → worker → infra) as ONE product. There is no single-repo tool to
- * compare against; the win is EMISSION COVERAGE of cross-repo facts with provenance.
- *
- * This bench runs ONE real workspace-level CAS: it analyzes each repo of a multi-repo fixture via
- * the orchestrator, calls the REAL buildCrossCodebaseSystemGraph, then COUNTS the
- * emitted facts per W-group from the returned CrossCodebaseSystemGraph. Counts are
- * MEASURED, never hardcoded. A W-group that emits 0 on the fixture is recorded
- * honestly as 0.
- *
- * The W1–W8 taxonomy and its mapping to CrossCodebaseSystemGraph fields is the
- * "C10 — Workspace-Level CAS" section of docs/CAMPS.md.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -32,13 +32,13 @@ export interface WASDimension {
   key: string;
   label: string;
   group: WGroup;
-  /** Measured count of cross-repo facts this dimension emits on the fixture. */
+
   emitted: number;
-  /** A few concrete emitted facts, for evidence. */
+
   examples: string[];
-  /** One-line statement of what single-repo tools fundamentally cannot do. */
+
   campABCannot: string;
-  /** The CrossCodebaseSystemGraph fields this dimension counts. */
+
   casFields: string[];
 }
 
@@ -55,7 +55,7 @@ export interface CampWASReport {
   campABCannot: string;
 }
 
-/** The first-class workspace-level-CAS fixture: a real ui + api + worker workspace. */
+
 const FIXTURE_DIR = path.resolve(
   __dirname,
   '..',
@@ -81,7 +81,7 @@ async function repoDirs(dir: string): Promise<string[]> {
   return out.sort();
 }
 
-/** Analyze every repo of the fixture and fuse them into one real workspace-level CAS graph. */
+
 async function buildRealWorkspaceGraph(): Promise<{
   graph: CrossCodebaseSystemGraph;
   repos: number;
@@ -101,7 +101,7 @@ function take(values: Array<string | undefined | null>, n = 3): string[] {
   return values.filter((v): v is string => Boolean(v && v.trim())).slice(0, n);
 }
 
-/** Count the distinct repos a set of cross-repo links spans (the "reposCrossed"). */
+
 function reposCrossedFromLinks(graph: CrossCodebaseSystemGraph): number {
   const repos = new Set<string>();
   for (const link of graph.links) {
@@ -112,18 +112,18 @@ function reposCrossedFromLinks(graph: CrossCodebaseSystemGraph): number {
     if (link.source_application_id) repos.add(`app:${link.source_application_id}`);
     if (link.target_application_id) repos.add(`app:${link.target_application_id}`);
   }
-  // If no cross-repo links fused, the workspace still spans its codebases.
+
   return Math.max(repos.size, graph.codebases.length);
 }
 
-/**
- * Build the W1–W8 dimensions by COUNTING emitted facts from the real graph.
- * Every `emitted` is derived from the graph — no hardcoded counts.
- */
+
+
+
+
 function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
   const dims: WASDimension[] = [];
 
-  // ---- W1 — Composition & topology -------------------------------------------
+
   const w1Emitted =
     graph.applications.length +
     graph.distribution_units.length +
@@ -155,7 +155,7 @@ function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
     ],
   });
 
-  // ---- W2 — Cross-repo integration seams -------------------------------------
+
   const w2Emitted =
     graph.interfaces.length +
     graph.application_links.length +
@@ -181,7 +181,7 @@ function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
     casFields: ['interfaces', 'application_links', 'integration_links', 'unmatched_interfaces'],
   });
 
-  // ---- W3 — Cross-repo data flow & lineage -----------------------------------
+
   const w3Emitted = graph.data_flow_paths.length;
   dims.push({
     key: 'data_flow_lineage',
@@ -199,7 +199,7 @@ function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
     casFields: ['data_flow_paths'],
   });
 
-  // ---- W4 — Workspace product understanding ----------------------------------
+
   const w4Emitted =
     graph.workspace_capabilities.length +
     graph.workspace_domains.length +
@@ -236,7 +236,7 @@ function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
     ],
   });
 
-  // ---- W5 — Ownership & activity ---------------------------------------------
+
   const ownershipKeys = Object.keys(graph.ownership ?? {}).length;
   const activitySignal =
     (graph.activity?.status && graph.activity.status !== 'unknown' ? 1 : 0) +
@@ -262,7 +262,7 @@ function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
     casFields: ['ownership', 'activity'],
   });
 
-  // ---- W6 — Telemetry (how it is running, cross-repo) ------------------------
+
   const telemetrySignal =
     (graph.telemetry?.status && graph.telemetry.status !== 'not-configured' ? 1 : 0) +
     (graph.telemetry?.observed_links ?? 0) +
@@ -287,7 +287,7 @@ function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
     casFields: ['telemetry', 'runtime_components', 'runtime_links'],
   });
 
-  // ---- W7 — Health, risk & priority ------------------------------------------
+
   const w7Emitted =
     graph.risk_areas.length +
     graph.priority_work_items.length +
@@ -309,7 +309,7 @@ function buildDimensions(graph: CrossCodebaseSystemGraph): WASDimension[] {
     casFields: ['risk_areas', 'priority_work_items', 'quality_flags', 'health'],
   });
 
-  // ---- W8 — Insights & detail views ------------------------------------------
+
   const w8Emitted = graph.system_insights.length + graph.inferred_insights.length;
   dims.push({
     key: 'insights',

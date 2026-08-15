@@ -3,22 +3,22 @@ import * as path from 'node:path';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { EmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/types';
 
-/**
- * Camp A on its OWN turf — natural-language semantic retrieval.
- *
- * This is the faithful Cursor / Augment / Roo recipe: chunk the codebase, embed
- * each chunk's RAW source text, embed the query, cosine-rank, return the top-k.
- * No structure, no comprehension — just "which code looks most like this query".
- *
- * It is held at full strength and judged on EXACTLY the same footing as Klauro:
- *   - the SAME node set (one chunk per function/method node), and
- *   - the SAME embedding model (the provider is passed in by the caller).
- * The ONLY thing that differs is the text that gets embedded — raw code here vs
- * Klauro's enriched node descriptions (name + intent + signature + context).
- * That isolates the single variable we claim to win on: comprehension. If Klauro
- * ranks the right node higher with an identical model, the lift is the
- * description, not the embedder — and not a fixture-specific bandaid.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export function cosineSim(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let dot = 0;
@@ -34,7 +34,7 @@ export function cosineSim(a: ArrayLike<number>, b: ArrayLike<number>): number {
   return denom ? dot / denom : 0;
 }
 
-/** Raw source text for a node: prefer the captured `source.raw`, else slice the file. */
+
 async function nodeRawCode(
   node: CASNode,
   repoPath: string,
@@ -61,29 +61,29 @@ async function nodeRawCode(
 
 export interface CompetitorRankingOptions {
   topK?: number;
-  /** Which nodes become chunks. Defaults to function/method nodes with a source file. */
+
   nodeFilter?: (n: CASNode) => boolean;
 }
 
-/** Picks the text that represents a node for embedding. The whole Camp-A-vs-Klauro
- *  question reduces to which text this returns: raw code, or an enriched description. */
+
+
 export type NodeTextSelector = (
   node: CASNode,
   repoPath: string,
   fileCache: Map<string, string[]>,
 ) => Promise<string> | string;
 
-/** Klauro's side of the same coin: embed the comprehension artifact, not the code. */
+
 export const descriptionText: NodeTextSelector = node =>
   [node.name, node.qualified_name, node.description].filter(Boolean).join(' — ');
 
-/**
- * Generic NL-retrieval ranker shared by both arms. Builds one document per node
- * via `textOf`, embeds all of them with the supplied provider, and ranks by
- * cosine to the query. Identical machinery for Camp A and Klauro — the only knob
- * is `textOf`, so any ranking difference is attributable to the text, not the
- * embedder or the scoring.
- */
+
+
+
+
+
+
+
 export async function rankNodesByText(
   cas: CASOutput,
   repoPath: string,
@@ -113,11 +113,11 @@ export async function rankNodesByText(
   return scored.slice(0, topK).map(s => s.id);
 }
 
-/**
- * Run the raw-code Camp A arm and return node ids ranked by cosine similarity to
- * the query. Scored against the same fixture (expected node ids) as every other
- * mode, so the head-to-head is apples-to-apples.
- */
+
+
+
+
+
 export async function rawCodeCompetitorRanking(
   cas: CASOutput,
   repoPath: string,

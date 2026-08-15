@@ -1,15 +1,15 @@
-/**
- * Camp-C OUT-OF-CATEGORY bench — GraphQL schema<->resolver wiring.
- *
- * codebase-memory detects GraphQL services and maps them to route->handler
- * edges, but it does not model WHICH resolver implements WHICH schema field.
- * scip/stack-graphs see functions; embeddings retrieve similar code. None emit
- * the schema-field -> resolver wiring (Query.user resolved_by the user resolver).
- *
- * Klauro's GraphQL analyzer emits a `resolved_by` edge per wired field — the
- * structured API fact nobody else has. Competitors read source to TRY (token
- * cost = source bytes) and still produce zero wiring.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { analyzeForBench } from './product-analysis';
@@ -37,7 +37,7 @@ async function sourceBytes(dir: string): Promise<number> {
   let t = 0;
   for (const f of await fs.readdir(dir)) {
     if (f === 'truth.json') continue;
-    try { const s = await fs.stat(path.join(dir, f)); if (s.isFile()) t += s.size; } catch { /* noop */ }
+    try { const s = await fs.stat(path.join(dir, f)); if (s.isFile()) t += s.size; } catch {   }
   }
   return t;
 }

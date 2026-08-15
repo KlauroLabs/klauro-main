@@ -24,7 +24,7 @@ function baseCas(overrides: any = {}): any {
       description_source: 'ai',
       description_generation: { attempted: true, status: 'ai_applied' },
     },
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap-user-lifecycle',
       name: 'User Lifecycle',
       description: 'Coordinates user registration, profile updates, and account state transitions so operators can manage access without duplicating authorization rules.',
@@ -55,7 +55,7 @@ function baseCas(overrides: any = {}): any {
       positive_examples: [{ file: 'src/users/users.service.ts' }],
       agent_guidance: { do: ['Follow constructor injection.'], avoid: [], validation: [] },
     }],
-    data_entities: [{ id: 'entity-user', name: 'User', fields: [{ name: 'id' }] }],
+    entities: [{ id: 'entity-user', name: 'User', fields: [{ name: 'id' }] }],
     domain_concepts: [{ name: 'User', appears_in: { nodes: ['node-2'] } }],
     entry_points: [{ id: 'entry-users', name: 'GET /users', type: 'http', handler: { file: 'src/users/users.controller.ts' } }],
     test_summary: { total_tests: 12, coverage: { lines: 82 } },
@@ -78,7 +78,7 @@ test('spot-read quality fails stale narrative, weak capabilities, missing patter
       description_source: 'reused',
       description_generation: { attempted: false, status: 'reused_previous', reason: 'ai-unavailable-on-full-rebuild', may_be_stale: true },
     },
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap-change-password',
       name: 'Changepassword Workflow',
       description: 'Changepassword Workflow handles operations for changepassword handlers.',
@@ -97,7 +97,7 @@ test('spot-read quality fails stale narrative, weak capabilities, missing patter
       positive_examples: [{ file: 'views/home/components/Card.tsx' }],
       agent_guidance: { do: [], avoid: [], validation: [] },
     }],
-    data_entities: [],
+    entities: [],
     domain_concepts: [],
     entry_points: [{ id: 'entry-test', name: 'test', type: 'test' }],
     test_summary: { total_tests: 10, coverage: {} },

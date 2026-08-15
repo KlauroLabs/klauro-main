@@ -13,7 +13,7 @@ interface MachineRepoResult {
   cas?: {
     nodes?: number;
     edges?: number;
-    system_capabilities?: number;
+    capabilities?: number;
     codebase_idioms?: number;
     behavioral_invariants?: number;
     primary_domain?: string;
@@ -159,10 +159,10 @@ function scoreNarrative(repo: MachineRepoResult, descriptionGate?: { score?: num
   const source = repo.cas?.description_source || '';
   const generation = repo.cas?.description_generation;
   const base = Number(descriptionGate?.score || 0);
-  // 'reused' is what the product actually emits when a prior trusted (ai/manual)
-  // description is carried forward (orchestrator sets description_source='reused');
-  // the usefulness review already trusts it (isTrustedDescriptionSource). The old
-  // 'reused-ai' value here matched nothing the product ever writes.
+
+
+
+
   const trusted = /^(ai|manual|reused|reused-ai|ai-reviewed-deterministic)$/i.test(source);
   if (trusted && descriptionGate?.status === 'pass') return clamp(Math.max(base, 90));
   if (generation?.attempted === false || /deterministic/i.test(source)) return clamp(Math.min(base || 65, 72));
@@ -179,7 +179,7 @@ function concernsFor(
   if (repo.usefulness_review?.status !== 'pass') concerns.push(`fail: usefulness review status is ${repo.usefulness_review?.status || 'missing'}`);
   if (architectureGate?.status === 'fail') concerns.push(`fail: architecture context weak (${architectureGate.detail || 'no detail'})`);
   if (descriptionGate?.status !== 'pass') concerns.push(`narrative debt: ${descriptionGate?.detail || 'description quality not proven'}`);
-  if ((repo.cas?.system_capabilities || 0) === 0 && repo.usefulness_review?.profile?.kind !== 'infrastructure') concerns.push('no capabilities for agent/product orientation');
+  if ((repo.cas?.capabilities || 0) === 0 && repo.usefulness_review?.profile?.kind !== 'infrastructure') concerns.push('no capabilities for agent/product orientation');
   if ((repo.cas?.codebase_idioms || 0) === 0) concerns.push('no repo-local idioms extracted');
   if ((repo.usefulness_review?.summary?.agent_context_tokens || 0) > 5000) concerns.push(`large agent context: ${repo.usefulness_review?.summary?.agent_context_tokens} estimated tokens`);
   return concerns;
@@ -188,7 +188,7 @@ function concernsFor(
 function strengthsFor(repo: MachineRepoResult, architectureGate?: { status?: ReviewStatus }): string[] {
   const strengths: string[] = [];
   if (repo.cas?.primary_domain) strengths.push(`domain: ${repo.cas.primary_domain}`);
-  if ((repo.cas?.system_capabilities || 0) > 0) strengths.push(`${repo.cas?.system_capabilities} capabilities`);
+  if ((repo.cas?.capabilities || 0) > 0) strengths.push(`${repo.cas?.capabilities} capabilities`);
   if ((repo.cas?.codebase_idioms || 0) > 0) strengths.push(`${repo.cas?.codebase_idioms} idioms`);
   if ((repo.cas?.behavioral_invariants || 0) > 0) strengths.push(`${repo.cas?.behavioral_invariants} invariants`);
   if (architectureGate?.status === 'pass') strengths.push('actionable architecture context');

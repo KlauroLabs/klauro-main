@@ -3,11 +3,9 @@ import type {
   CASCallChain,
   CASEdge,
   CASEntryPoint,
-  CASExitPoint,
   CASMethodCall,
   CASNode,
   CASOutput,
-  CASRuntimeStaticLink,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { RuntimeObservation } from './product';
 
@@ -109,7 +107,7 @@ export function validateCASContract(cas: CASOutput, observations: RuntimeObserva
   );
   const callChainsWithNodes = callChains.filter(chain =>
     chain.call_path.every(step => !step.node_id || nodeIds.has(step.node_id)) &&
-    (!chain.entry_point.entry_point_id || graphIds.has(chain.entry_point.entry_point_id))
+    hasValidCallChainEntry(chain, nodeIds, graphIds)
   );
   const matchedRuntimeObservations = observations.filter(observation => observation.correlation.status !== 'unmatched');
 
@@ -215,10 +213,10 @@ export function buildCASGoldenSnapshot(cas: CASOutput): CASGoldenSnapshot {
       call_chains: callChains.length,
       runtime_static_links: runtimeLinks.length,
       facts: facts.length,
-      data_entities: cas.data_entities?.length || 0,
+      entities: cas.entities?.length || 0,
       behavioral_invariants: cas.behavioral_invariants?.length || 0,
       journeys: cas.user_journeys?.length || 0,
-      capabilities: cas.system_capabilities?.length || 0,
+      capabilities: cas.capabilities?.length || 0,
       libraries: cas.libraries?.length || 0,
     },
     top_level_presence: {
@@ -284,7 +282,14 @@ function hasValidMethodCallNodes(nodeIds: Set<string>) {
 function hasValidCallChainNodes(nodeIds: Set<string>, graphIds: Set<string>) {
   return (chain: CASCallChain) =>
     chain.call_path.every(step => !step.node_id || nodeIds.has(step.node_id)) &&
-    (!chain.entry_point.entry_point_id || graphIds.has(chain.entry_point.entry_point_id));
+    hasValidCallChainEntry(chain, nodeIds, graphIds);
+}
+
+function hasValidCallChainEntry(chain: CASCallChain, nodeIds: Set<string>, graphIds: Set<string>): boolean {
+  const entryPointId = chain.entry_point.entry_point_id;
+  if (!entryPointId) return true;
+  if (graphIds.has(entryPointId)) return true;
+  return entryPointId.startsWith('synthflow:') && nodeIds.has(chain.entry_point.node_id);
 }
 
 function stableIds(items: Array<{ id: string }>): string[] {

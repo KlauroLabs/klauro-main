@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getRuntimeSdkPackage } from './runtime-sdk';
+import { getRuntimeSdkPackage, isRuntimeSdkPackageReady } from './runtime-sdk';
 
 function cas(frameworks: string[], runtime?: string, languages: string[] = []): CASOutput {
   return {
@@ -62,6 +62,17 @@ test('falls back to python by language when no web framework is detected', () =>
   assert.equal(out.install.command, 'pip install klauro-telemetry');
 });
 
+test('uses the dominant language for a polyglot repository without a supported framework', () => {
+  const fixture = cas([], undefined, []);
+  fixture.system.technologies!.languages = [
+    { name: 'TypeScript/JavaScript', percentage: 99.2, files: 1500 },
+    { name: 'Python', percentage: 0.8, files: 9 },
+  ];
+  const out = getRuntimeSdkPackage(fixture);
+  assert.equal(out.manifest.stack, 'node');
+  assert.equal(out.install.command, 'npm install @klauro/telemetry');
+});
+
 test('defaults to the Node package when nothing is detected', () => {
   const out = getRuntimeSdkPackage(cas([]));
   assert.equal(out.manifest.stack, 'node');
@@ -76,4 +87,5 @@ test('emits a pinned per-analysis contract file and correct verify endpoint', ()
   assert.ok(contractFile!.sha256.length === 64);
   assert.match(out.verify.endpoint, /\/api\/telemetry\/runtime-events\/<project id>/);
   assert.equal(out.transport.batch_key, 'events');
+  assert.equal(isRuntimeSdkPackageReady(out), true);
 });

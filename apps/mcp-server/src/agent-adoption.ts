@@ -55,21 +55,9 @@ export interface AgentTask {
   instructions?: string;
   success_criteria?: string[];
   response_profile?: 'standard' | 'minimal' | 'first-turn' | 'capsule-only';
-  /**
-   * Opt-out control for dynamic/heavy runtime context. "auto" (default)
-   * preserves the task-type-gated behavior exactly; "exclude" omits runtime
-   * telemetry (operational priorities, runtime static links) for a pure static
-   * view; "include" opts in. Resolved against KLAURO_CONTEXT_RUNTIME and the
-   * .klaurorc context.runtime default at the server boundary before it reaches
-   * here (param wins). See apps/mcp-server/src/context-filter.ts.
-   */
+
   runtime?: ContextRuntimeMode;
-  /**
-   * Named sections to omit from the response regardless of runtime mode, e.g.
-   * ["runtime","seams","topology"]. Aliases (telemetry, observations,
-   * communication_seams, ...) are accepted. Excluded sections are skipped, not
-   * blanked — a real token reduction.
-   */
+
   exclude_sections?: string[];
 }
 
@@ -304,16 +292,12 @@ export async function getAgentContext(cas: CASOutput, path: string, taskInput: A
   }
   fileReadPlan = augmentFileReadPlanWithTaskHints(cas, fileReadPlan, task, path).slice(0, 12);
   fileReadPlan = uniqueByFile([...explicitRelatedPathItems, ...fileReadPlan]).slice(0, 12);
-  // Runtime opt-out: when excluded, skip the telemetry load + priority build
-  // entirely (a real token/compute saving, not a blanked section) so the
-  // context is a pure static view. 'auto'/'include' keep today's gated behavior.
+
   const operationalPriorities = runtimeExcluded
     ? null
     : await buildOperationalPriorityContextForAgent(cas, path, task, selectedNode || undefined, fileReadPlan);
   fileReadPlan = prioritizeOperationalFileReadPlan(cas, task, operationalPriorities, fileReadPlan);
-  // Task-type-aware fabric weaving (communication seams, infra topology,
-  // consistency/CAP, bundled deployables). Synchronous static CAS reads, so safe
-  // even under runtime opt-out; additive and omitted when the facts are absent.
+
   const fabricContext = buildFabricContextForAgent(cas, task, selectedNode || undefined);
   const invariantImpact = assessBehavioralInvariantImpact(cas, {
     target: selectedNode?.id || targetQuery || task.target,
@@ -509,7 +493,7 @@ function descriptionCapabilityTarget(cas: CASOutput, task: AgentTask): { kind: s
   const query = String(task.target || inferTargetQueryFromTask(task) || '').trim();
   if (!query) return null;
   const queryTokens = meaningfulTokens(query);
-  const capability = (cas.system_capabilities || [])
+  const capability = (cas.capabilities || [])
     .map(item => ({
       item,
       score: meaningfulTokens([item.name, item.description, ...(item.related_domains || []), ...(item.related_entities || [])].join(' '))
@@ -614,9 +598,6 @@ async function buildOperationalPriorityContextForAgent(
     return rightSelected - leftSelected || right.priority_score - left.priority_score;
   }).slice(0, 5);
 
-  // Runtime node hotspots (highest error_rate / p95) for debug/perf tasks —
-  // reuses the observations already loaded above, so no extra telemetry read.
-  // Additive to the priorities ranking (raw per-endpoint reliability/latency).
   const runtimeHotspots = (task.task_type === 'debug' || task.task_type === 'runtime')
     ? buildRuntimeHotspotsForAgent(cas, sourceSet.observations)
     : undefined;
@@ -727,22 +708,12 @@ function operationalTaskText(task: AgentTask): string {
   ].filter(Boolean).join(' ');
 }
 
-// ---------------------------------------------------------------------------
-// Fabric context — task-type-aware weaving of communication seams, infra
-// topology, consistency/CAP posture, and runtime node hotspots into the primary
-// get_agent_context payload. Everything is additive (omitted when absent) and
-// links back to the full tool for detail. Kept compact; budget-aware via the
-// response_profile compaction that runs afterward.
-// ---------------------------------------------------------------------------
-
-/** Architecture/trace-shaped work wants the integration picture (seams + fit). */
 function isArchitectureShapedTask(task: Required<Pick<AgentTask, 'task_type'>> & AgentTask): boolean {
   if (task.task_type === 'trace' || task.task_type === 'review') return true;
   const text = operationalTaskText(task);
   return /\b(architect|system\s*fit|how it fits|topology|integrat|seam|boundary|end[- ]to[- ]end|data flow|deployab|service[- ]to[- ]service)\b/i.test(text);
 }
 
-/** Does this modify/trace task touch an integration boundary worth a seam note? */
 function touchesIntegrationBoundary(
   cas: CASOutput,
   task: Required<Pick<AgentTask, 'task_type'>> & AgentTask,
@@ -769,11 +740,6 @@ function touchesIntegrationBoundary(
   }));
 }
 
-/**
- * Build the task-type-aware fabric section. Synchronous CAS reads only; the
- * (async) runtime node hotspots are loaded separately and merged by the caller.
- * Returns undefined when nothing applicable is present.
- */
 function buildFabricContextForAgent(
   cas: CASOutput,
   task: Required<Pick<AgentTask, 'task_type'>> & AgentTask,
@@ -781,8 +747,6 @@ function buildFabricContextForAgent(
 ): Record<string, unknown> | undefined {
   const out: Record<string, unknown> = {};
 
-  // Architecture / trace / review -> the integration picture: seam summary,
-  // bundled deployables, infra topology, CAP flags. Pointers, not dumps.
   if (isArchitectureShapedTask(task)) {
     const seams = buildCommunicationSeamSummary(cas);
     if (seams) out.communication_seams = seams;
@@ -794,8 +758,6 @@ function buildFabricContextForAgent(
     if (consistency) out.consistency = consistency;
   }
 
-  // Modify/trace on a specific integration boundary -> the RELEVANT seam's
-  // modality + any CAP staleness note, so an edit knows its sync/async contract.
   if (task.task_type === 'modify' || task.task_type === 'trace') {
     const relevant = touchesIntegrationBoundary(cas, task, selectedNode);
     if (relevant) {
@@ -809,13 +771,6 @@ function buildFabricContextForAgent(
   return { ...out, detail_tools: ['get_communication_seams', 'get_product_map'] };
 }
 
-/**
- * Runtime node hotspots for debug/perf tasks — the highest error_rate / p95
- * targets from already-loaded telemetry observations. Extends (does not
- * duplicate) operational_priorities: priorities rank cross-signal work, this is
- * the raw per-endpoint reliability/latency leaderboard. Returns undefined when
- * no observations exist.
- */
 function buildRuntimeHotspotsForAgent(
   cas: CASOutput,
   observations: any[],
@@ -2149,14 +2104,6 @@ function compactFirstTurnFileReadPlan(plan: any): string[] {
     .filter(Boolean);
 }
 
-function compactFirstTurnValidation(plan: any): string[] {
-  const commands = Array.isArray(plan?.commands) ? plan.commands : [];
-  return commands
-    .map((item: any) => String(item.command || '').trim())
-    .filter(Boolean)
-    .slice(0, 2);
-}
-
 function compactFirstTurnExecution(brief: any) {
   if (!brief || typeof brief !== 'object') return undefined;
   return {
@@ -2712,7 +2659,6 @@ function agentContextScaleProfile(cas: CASOutput, context?: Record<string, any>)
     .filter(file => Boolean(file) && !isNonProductSourceText(file)));
   const productNodes = (cas.nodes || []).filter(node => !node.metadata?.is_test && !node.metadata?.is_generated && !isNonProductAgentTarget(node));
   const sourceTokens = estimateCasSourceTokens(cas, sourceFiles);
-  const filePlanCount = Array.isArray(context?.file_read_plan) ? context.file_read_plan.length : undefined;
   const selectedType = String(context?.selected_node?.type || '').toLowerCase();
   const targetText = [
     context?.task?.target,
@@ -2728,31 +2674,6 @@ function agentContextScaleProfile(cas: CASOutput, context?: Record<string, any>)
   return 'token-minimal';
 }
 
-function compactSmallRepoArchitectureContext(context: any) {
-  if (!context || typeof context !== 'object') return context || null;
-  return {
-    system_type: context.system_type,
-    architecture_budget: Array.isArray(context.architecture_budget) ? context.architecture_budget.slice(0, 2) : [],
-    patterns: Array.isArray(context.patterns) ? context.patterns.slice(0, 3).map((pattern: any) => ({
-      name: pattern.name,
-      confidence: pattern.confidence,
-    })) : [],
-    inventory_counts: compactNonZeroCounts(context.inventory_counts, 6),
-    inventory_examples: compactSmallArchitectureInventory(context.inventory_examples, 1),
-    relevant_inventory: compactSmallArchitectureInventory(context.relevant_inventory, 1),
-    pattern_decision_matrix: Array.isArray(context.pattern_decision_matrix) ? context.pattern_decision_matrix.slice(0, 3).map((item: any) => ({
-      pattern: item.pattern,
-      use_when: item.use_when,
-      owner_categories: Array.isArray(item.owner_categories) ? item.owner_categories.slice(0, 3) : item.owner_categories,
-    })) : [],
-    pattern_balance: context.pattern_balance ? {
-      status: context.pattern_balance.status,
-      risks: Array.isArray(context.pattern_balance.risks) ? context.pattern_balance.risks.slice(0, 1) : [],
-    } : null,
-    agent_rules: Array.isArray(context.agent_rules) ? context.agent_rules.slice(0, 2) : [],
-  };
-}
-
 function compactMinimalRisk(risk: any) {
   if (!risk || typeof risk !== 'object') return risk || null;
   return {
@@ -2760,10 +2681,7 @@ function compactMinimalRisk(risk: any) {
     risk_level: risk.risk?.risk_level || risk.risk_level || null,
     factors: Array.isArray(risk.risk?.risk_factors) ? risk.risk.risk_factors.slice(0, 2) : [],
     recommendations: Array.isArray(risk.risk?.recommendations) ? risk.risk.recommendations.slice(0, 2) : [],
-    // change_risk_context is assess_change_risk's scoped-to-this-change field
-    // (formerly the repo-wide change_risk_summary leaked verbatim — defect
-    // #2). `high`/`untested` here are counts of nodes actually in this
-    // change's blast radius, not repo-wide totals.
+
     summary: risk.change_risk_context ? {
       high: risk.change_risk_context.high_risk_nodes?.length ?? 0,
       untested: risk.change_risk_context.untested_critical_paths?.length ?? 0,
@@ -3149,10 +3067,7 @@ function compactMicroChecklist(checklist: any) {
 
 function compactRiskForMicroRepo(risk: any) {
   if (!risk || typeof risk !== 'object') return risk || null;
-  // change_risk_context is assess_change_risk's scoped-to-this-change field
-  // (see defect #2: the raw repo-wide change_risk_summary used to leak into
-  // this per-node payload). high_risk_nodes/untested_critical_paths here are
-  // already scoped to the change's blast radius, not repo-wide.
+
   const context = risk.change_risk_context;
   return {
     ...(risk.target_file_changed_since_analysis ? { target_file_changed_since_analysis: risk.target_file_changed_since_analysis } : {}),
@@ -3272,17 +3187,11 @@ function compactOperationalPrioritiesForAgent(context: any, limit: number) {
       recommendation: priority.recommendation,
     })),
     agent_guidance: Array.isArray(context.agent_guidance) ? context.agent_guidance.slice(0, 3) : context.agent_guidance,
-    // Preserve the compact runtime node hotspots (error_rate / p95) through the
-    // budget compactors — they are already a small top-N leaderboard.
+
     ...(context.runtime_hotspots ? { runtime_hotspots: context.runtime_hotspots } : {}),
   };
 }
 
-/**
- * Budget compaction for fabric_context — the fabric builder is already compact
- * (pointers, top-N), so this only trims list depth and passes it through the
- * budget profiles. Returns null when absent so compactors can omit the key.
- */
 function compactFabricContextForAgent(context: any): Record<string, unknown> | null {
   if (!context || typeof context !== 'object') return null;
   const out: Record<string, unknown> = {};
@@ -3462,7 +3371,7 @@ export function buildCapabilityMemoryForAgent(
     limit?: number;
   } = {}
 ) {
-  const capabilities = cas.system_capabilities || [];
+  const capabilities = cas.capabilities || [];
   const limit = Math.max(1, Math.min(options.limit || 8, 20));
   const taskText = [
     options.target || '',
@@ -3751,7 +3660,10 @@ async function resolveSemanticTargetCandidates(
   target: string,
 ): Promise<CASNode[]> {
   try {
-    const response = await semanticSearch(projectPath, target, { limit: 10 });
+    const response = await semanticSearch(projectPath, target, {
+      limit: 10,
+      getCas: async () => cas,
+    });
     if (response.degraded) return [];
     return response.results
       .map(result => cas.nodes.find(node => node.id === result.node_id))
@@ -3937,10 +3849,7 @@ function isAmbiguousTargetAlternative(node: CASNode): boolean {
 
 function summarizeRiskForAgent(risk: ReturnType<typeof assessChangeRisk> | null) {
   if (!risk) return null;
-  // assess_change_risk's per-node context field (change_risk_context) is
-  // ALREADY scoped to this change's blast radius (not the repo-wide summary
-  // change_risk_summary used to leak) — compactChangeRiskSummary further
-  // trims it to counts/top-8 for the agent-facing payload, same as before.
+
   const summary = (risk as any).change_risk_context as any;
   const compactSummary = compactChangeRiskSummary(summary);
 
@@ -3998,12 +3907,6 @@ function buildRiskContextForAgent(
     .slice(0, options.limit || 6)
     .map(risk => compactChangeRiskForAgent(risk, nodeById.get(risk.node_id)));
 
-  // Excludes node_ids already surfaced in `scopedRisks`/`target_risk` — without
-  // this, a target's own high-risk entry (or a file-scoped risk) gets
-  // duplicated verbatim into repo_top_risks whenever it also ranks in the
-  // repo-wide top-N, which it very often does (that's *why* it's scoped in).
-  // repo_top_risks is meant to be "other repo-wide risks for background",
-  // not a re-list of what top_risks already showed.
   const scopedNodeIds = new Set(uniqueRisks([
     ...(targetRisk ? [targetRisk] : []),
     ...fileRisks,
@@ -4345,7 +4248,7 @@ function enrichTargetQueryWithCapabilityEvidence(cas: CASOutput, target?: string
   if (looksLikeFileTarget(target)) return target;
   const targetTokens = meaningfulTokens(target);
   if (targetTokens.length === 0) return target;
-  const matchingCapability = (cas.system_capabilities || [])
+  const matchingCapability = (cas.capabilities || [])
     .filter(capability => targetLooksLikeCapabilityName(target, capability.name))
     .map(capability => ({
       capability,
@@ -4494,7 +4397,10 @@ function isNonProductAgentTarget(node: CASNode): boolean {
 
 function isNonProductSourceText(value: string): boolean {
   const text = value.replace(/\\/g, '/').toLowerCase();
-  return /(^|[/.])(fixtures?|__fixtures__|__mocks__|mocks?|samples?|examples?|generated|dist|build|coverage)([/.]|$)/.test(text) ||
+  const samplePath = /(^|[/.])(samples?|examples?)([/.]|$)/.test(text);
+  const jvmMainNamespace = /(^|\/)src\/main\/(java|kotlin|scala|groovy)\//.test(text);
+  return /(^|[/.])(fixtures?|__fixtures__|__mocks__|mocks?|generated|dist|build|coverage)([/.]|$)/.test(text) ||
+    (samplePath && !jvmMainNamespace) ||
     /(^|[/.])(\.klauro[^/]*|\.claude|\.codex|\.agents|worktrees?|agent-worktrees?)([/.]|$)/.test(text) ||
     /(^|[/.])legacy([/.]|$)/.test(text) ||
     /(^|[/.])(tests?|__tests__|spec|e2e|cypress|playwright)([/.]|$)/.test(text) ||
@@ -5081,11 +4987,6 @@ function taskHintFileScore(file: string, tokens: Set<string>): number {
 function taskHintFileLexicalOverlap(file: string, tokens: Set<string>): number {
   const fileTokens = tokenizeTaskHint(file);
   return [...tokens].filter(token => fileTokens.has(token)).length;
-}
-
-function targetLooksLikeDocumentationWork(text?: string): boolean {
-  const tokens = tokenizeTaskHint(String(text || ''));
-  return hasAny(tokens, ['doc', 'docs', 'documentation', 'readme', 'guide', 'usage', 'audit', 'proof', 'evidence', 'report']);
 }
 
 function targetLooksLikeDocumentationFirstWork(text?: string): boolean {
@@ -5720,6 +5621,23 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     gate('runtime-correlation', runtimeLinks > 0 ? 'pass' : 'warn', runtimeLinks > 0 ? 100 : 80, `${runtimeLinks} runtime static links`),
     gate('flow-coverage', hasFlowCoverage(flowCoverage) ? 'pass' : 'warn', hasFlowCoverage(flowCoverage) ? 100 : 80, flowCoverageDetail(flowCoverage)),
   ];
+
+  const capabilityCoverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
+  if (cas.ai_enrichment === 'ready' || capabilityCoverage) {
+    const capabilityCount = cas.product_map?.capabilities?.length || cas.capabilities?.length || 0;
+    const capabilityStatus: GateStatus = capabilityCount === 0 && cas.ai_enrichment === 'ready'
+      ? 'fail'
+      : capabilityCoverage?.status === 'accepted' ? 'pass' : 'warn';
+    const capabilityScore = capabilityStatus === 'pass' ? 100 : capabilityCount > 0 ? 85 : 0;
+    rawGates.push(gate(
+      'product-capabilities',
+      capabilityStatus,
+      capabilityScore,
+      capabilityCount > 0
+        ? `${capabilityCount} published product capabilities; catalog coverage ${capabilityCoverage?.status || 'unreported'}`
+        : 'AI comprehension completed without publishing any product capabilities',
+    ));
+  }
 
   const dominantUnanalyzed = dominantUnanalyzedLanguage(cas);
   if (dominantUnanalyzed) {

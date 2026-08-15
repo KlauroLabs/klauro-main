@@ -4,7 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { classifyComprehensionOutcome, requestConsumesMutationRateLimit, resolveHostedReleaseNodeRange, revisionMatchesSnapshot, stampRepoFacts, stampRepoFactsFromLastKnownOrMarkAbsent } from './remote-analyzer-service';
-import type { RemoteProjectRevision } from './remote-analyzer-protocol';
+import { analysisJobMetadata } from './analysis-job-metadata';
+import { REMOTE_ANALYSIS_PROTOCOL_VERSION, type RemoteAnalyzeRequest, type RemoteProjectRevision } from './remote-analyzer-protocol';
 import { getAnalysis } from './analyzer';
 import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { SourceManifest } from './remote-source';
@@ -75,6 +76,33 @@ test('status polling and other reads do not consume the hosted mutation rate lim
   assert.equal(requestConsumesMutationRateLimit('DELETE'), true);
 });
 
+test('background analysis metadata does not retain uploaded source files', () => {
+  const manifest: SourceManifest = {
+    generated_at: new Date().toISOString(),
+    root: '/repo',
+    file_count: 1,
+    total_bytes: 18,
+    excluded_directories: [],
+  };
+  const request: RemoteAnalyzeRequest = {
+    protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
+    project_path: '/repo',
+    snapshot: {
+      project_name: 'large-project',
+      snapshot_source: 'committed-head',
+      files: [{ path: 'src/index.ts', content: 'export const x = 1', hash: 'source-hash' }],
+      manifest,
+    },
+  };
+
+  const metadata = analysisJobMetadata(request);
+
+  assert.equal(metadata.displayName, 'large-project');
+  assert.equal(metadata.manifest, manifest);
+  assert.equal('snapshot' in metadata, false);
+  assert.equal('files' in metadata, false);
+});
+
 test('committed snapshot reuse requires the exact source digest when both sides provide one', () => {
   const revision: RemoteProjectRevision = {
     analysis_id: 'analysis',
@@ -103,6 +131,9 @@ test('committed snapshot reuse requires the exact source digest when both sides 
   assert.equal(revisionMatchesSnapshot(revision, manifest, 'abc123'), true);
   assert.equal(revisionMatchesSnapshot(revision, { ...manifest, snapshot_digest: 'digest-b' }, 'abc123'), false);
   assert.equal(revisionMatchesSnapshot(revision, manifest, 'different-commit'), false);
+  assert.equal(revisionMatchesSnapshot({ ...revision, analysis_focus: 'agent-fast' }, manifest, 'abc123', 'agent-fast'), true);
+  assert.equal(revisionMatchesSnapshot({ ...revision, analysis_focus: 'agent-fast' }, manifest, 'abc123', 'full'), false);
+  assert.equal(revisionMatchesSnapshot(revision, manifest, 'abc123', 'agent-fast'), false);
 });
 
 test('legacy revisions without a digest reuse only matching commit, branch, file count, and bytes', () => {

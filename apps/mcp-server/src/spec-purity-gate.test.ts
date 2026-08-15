@@ -23,7 +23,7 @@ test('catches a name NOT on the old static BENCHMARK_CORPUS_NAMES list via the s
   // shows up in a customer/benchmark-shaped sentence.
   const content = [
     '// A quick note while we were reviewing this path:',
-    "// this mirrors a bug we first saw in the customer repo griffintide,",
+    "// this mirrors a bug we first saw in the customer repo `griffintide`,",
     '// so keep the fix generic rather than special-cased.',
   ].join('\n');
   const violations = scanContentForViolations('apps/mcp-server/src/some-module.ts', content, new Set());

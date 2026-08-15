@@ -2,6 +2,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 
 export const CAS_SECTION_NAMES = [
   'identity',
+  'tree',
   'graph',
   'calls',
   'facts',
@@ -32,13 +33,17 @@ export interface CasSectionManifest {
 
 const IDENTITY_FIELDS = new Set([
   'cas_version',
+  'id',
+  'parent_id',
+  'label',
+  'composition_mode',
   'analysis_id',
   'analysis_timestamp',
   'analyzer_build',
-  // Analyzer IDENTITY, alongside analyzer_build: the reuse gate in
-  // remote-analyzer-service reads these to decide whether a stored analysis was
-  // produced by THIS analyzer, and it must be able to do so without loading the
-  // whole CAS. (Before this they fell through to 'supplemental'.)
+
+
+
+
   'parser_fingerprint',
   'derived_fingerprint',
   'base_commit',
@@ -55,6 +60,7 @@ const IDENTITY_FIELDS = new Set([
 ]);
 
 const EXPLICIT_SECTIONS: Partial<Record<string, CasSectionName>> = {
+  children: 'tree',
   nodes: 'graph',
   edges: 'graph',
   index: 'graph',
@@ -67,6 +73,7 @@ const EXPLICIT_SECTIONS: Partial<Record<string, CasSectionName>> = {
 
 export const CAS_SECTION_PROFILES = {
   identity: ['identity'],
+  tree: ['identity', 'tree'],
   summary: ['identity', 'comprehension', 'tests', 'runtime', 'quality'],
   system_overview: ['identity', 'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental'],
   graph_search: ['identity', 'graph'],
@@ -81,7 +88,7 @@ export function casSectionForField(field: string): CasSectionName {
   if (explicit) return explicit;
   if (/test|coverage|mock|fixture/i.test(field)) return 'tests';
   if (/runtime|telemetry|communication|consistency|deploy|distribution|infrastructure|cicd|pipeline/i.test(field)) return 'runtime';
-  if (/capabil|flow|journey|intent|domain|purpose|product|behavior_surface|semantic/i.test(field)) return 'comprehension';
+  if (/capabil|flow|step|entit|journey|intent|domain|purpose|product|behavior_surface|semantic|terminality/i.test(field)) return 'comprehension';
   if (/risk|health|pattern|architecture|idiom|invariant|security|quality|error|conflict|principle|paradigm|stability/i.test(field)) return 'quality';
   return 'supplemental';
 }

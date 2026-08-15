@@ -1,28 +1,4 @@
 #!/bin/sh
-#
-# Klauro CLI/MCP one-line installer.
-#
-#   curl -fsSL https://mcp.klauro.com/install | sh
-#
-# Installs a SELF-CONTAINED `klauro` binary — no Node.js, no npm, no native
-# compile step, on ANY machine. This is deliberate, not a convenience: Klauro
-# used to require a machine Node install in the 18-22 range because the
-# installer assumed npm install would compile a native tree-sitter parser.
-# That assumption was never true for this client — inspecting the published
-# tarball shows `dependencies: {}`, `optionalDependencies: {}`, and zero
-# `.node` binaries; the ONLY place "tree-sitter"/"Node 18-22" ever appeared
-# in the shipped code was the TEXT of this gate's own error message. The
-# native tree-sitter compile is real, but it happens on Klauro's analyzer
-# infrastructure, never on this machine — so the client no longer asks this
-# machine's Node version anything at all. The binary embeds its own runtime
-# (Node "single executable application" — see
-# apps/mcp-server/scripts/build-sea-binaries.mjs).
-#
-# Fallback: if no self-contained binary is published for this OS/arch, or the
-# download fails a checksum/smoke-test, this script falls back to the OLD
-# npm-based install — clearly labeled below as an EMERGENCY path, not the
-# primary one. That path still requires Node (any reasonably recent version;
-# no upper bound — see the same reasoning above) and npm.
 set -e
 
 KLAURO_URL="${KLAURO_URL:-https://mcp.klauro.com}"
@@ -34,7 +10,6 @@ echo "  ================"
 echo "  Installing the klauro CLI/MCP from ${KLAURO_URL}"
 echo ""
 
-# --- Detect platform ---------------------------------------------------
 OS_NAME="$(uname -s 2>/dev/null || echo unknown)"
 ARCH_NAME="$(uname -m 2>/dev/null || echo unknown)"
 
@@ -55,13 +30,6 @@ if [ -n "${OS_ID}" ] && [ -n "${ARCH_ID}" ]; then
 fi
 PLATFORM_KEY="$(echo "${PLATFORM_ID}" | tr '-' '_')"
 
-# --- Consult the release manifest --------------------------------------
-# Same manifest `klauro update` reads (apps/mcp-server/src/self-update.ts),
-# extended with flat `bin_<platform>_path` / `bin_<platform>_sha256` fields
-# specifically so this POSIX-sh installer can read them with sed, with no
-# JSON parser dependency. min_node/max_node may still appear in the manifest
-# for backward-compat with older CLIs reading it, but this script no longer
-# looks at them for anything.
 MANIFEST_JSON="$(curl -fsSL --max-time 10 "${KLAURO_URL}/dist/latest.json" 2>/dev/null || true)"
 COMPACT_MANIFEST="$(echo "${MANIFEST_JSON}" | tr -d ' \n\r\t')"
 
@@ -108,11 +76,6 @@ install_binary() {
 
   chmod +x "${TMP_BIN}"
 
-  # macOS: curl-downloaded files carry no com.apple.quarantine attribute (only
-  # browser/Mail-downloaded files do), so Gatekeeper does not block running
-  # this ad-hoc-signed binary. No notarization step is performed here; a
-  # future hardened-runtime + notarized release would remove even that
-  # caveat, but is not required for this install path to work.
   if ! "${TMP_BIN}" version >/dev/null 2>&1; then
     echo "  Downloaded binary failed a basic smoke test (klauro version)."
     return 1
@@ -122,24 +85,11 @@ install_binary() {
   mv "${TMP_BIN}" "${INSTALL_DIR}/klauro"
   trap - EXIT
   rm -rf "${TMP_DIR}"
-  # Say what happened, not how it was built. A customer never had a Node
-  # dependency to be relieved of, so "self-contained"/"no Node.js required"
-  # advertises a problem they never had — it is our implementation history,
-  # not their outcome.
   echo "  Installed klauro to ${INSTALL_DIR}/klauro"
   return 0
 }
 
-# --- npm fallback (emergency only) --------------------------------------
-# Reached only when no binary is published for this OS/arch, or the binary
-# download/verify/smoke-test failed. Requires Node + npm on this machine; no
-# upper Node-version bound (see the top-of-file note — the published tarball
-# has never had anything to compile, on any Node version).
 install_via_npm_fallback() {
-  # Tell the customer only what affects them: no build for their platform, so
-  # this route needs Node. Our own view of this path — that it is an emergency
-  # route, not the primary one, and that we would like their platform reported —
-  # is internal and belongs in the comment above, not in their terminal.
   echo ""
   echo "  No prebuilt klauro is available for ${OS_NAME}/${ARCH_NAME}."
   echo "  Installing via npm instead, which requires Node.js."
@@ -171,30 +121,9 @@ install_via_npm_fallback() {
   npm install -g "${KLAURO_URL}/dist/klauro-latest.tgz"
 }
 
-# --- PATH resolution takeover -------------------------------------------
-# A successful install that a stale `klauro` on PATH still shadows is not a
-# success — it is this script reporting an outcome it never verified. Two
-# earlier incidents (both self-inflicted, both silent) came from exactly
-# that shape: an operation says "done" without checking what a customer
-# would actually observe next. So this script does not stop at installing
-# a file; it resolves what `klauro` will really execute afterward, takes
-# over any shadowing copy it can positively prove is its own prior install,
-# and refuses to claim success if it cannot make that true.
-#
-# "Ours" is proven, not guessed by path location: every klauro-brand-owned
-# install this script knows how to produce is either (a) this script's own
-# binary under KLAURO_INSTALL_DIR, or (b) an npm/npm-adjacent shim symlink
-# whose link target resolves into the @klauro/mcp-server package (matching
-# apps/mcp-server/package.json's `name`/`bin` fields — see build-bundle.mjs
-# for the same package identity used to build the binary this script just
-# installed) or a Homebrew Cellar path for a klauro formula. A `klauro` this
-# script cannot positively identify is never touched, renamed, or removed —
-# only reported.
 KLAURO_OWNED_MARKERS="node_modules/@klauro/mcp-server /Cellar/klauro/"
 
 _klauro_path_entries() {
-  # Print every existing/linked "<dir>/klauro" found by walking $PATH in
-  # search order, one per line.
   _old_ifs="${IFS}"
   IFS=':'
   for _d in ${PATH}; do
@@ -210,8 +139,6 @@ _klauro_path_entries() {
 }
 
 _klauro_is_owned_symlink() {
-  # $1 = candidate path. True (0) only if it is a symlink whose target
-  # string matches a known klauro-brand install marker.
   [ -L "$1" ] || return 1
   _target="$(readlink "$1" 2>/dev/null || true)"
   [ -n "${_target}" ] || return 1
@@ -224,9 +151,6 @@ _klauro_is_owned_symlink() {
 }
 
 _klauro_canon() {
-  # Best-effort canonical absolute path for comparison purposes. Falls back
-  # to the literal string if the directory cannot be resolved (e.g. broken
-  # link), which is still a safe, honest comparison input.
   _p="$1"
   _dir="$(dirname "${_p}")"
   _base="$(basename "${_p}")"
@@ -235,9 +159,6 @@ _klauro_canon() {
 }
 
 _klauro_resolve_target() {
-  # $1 = a klauro path. Prints the file it will actually execute, following
-  # one level of symlink (sufficient for both the npm shim shape and the
-  # symlinks this script itself creates).
   _p="$1"
   if [ -L "${_p}" ]; then
     _t="$(readlink "${_p}" 2>/dev/null || true)"
@@ -251,9 +172,6 @@ _klauro_resolve_target() {
 }
 
 _klauro_version_of() {
-  # $1 = executable path. Side-effect-free, no network, no auth — safe to
-  # run against an arbitrary file named klauro (installed-cli.ts's `version`
-  # branch returns immediately with no I/O).
   "$1" version 2>/dev/null | tr -d '\n' | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
@@ -263,12 +181,6 @@ resolve_and_take_over_path() {
   NEW_BIN_CANON="$(_klauro_canon "${NEW_BIN}")"
 
   if [ -z "$(_klauro_path_entries)" ]; then
-    # Nothing named klauro is anywhere on the CURRENT shell's PATH — not a
-    # shadow, just a brand-new install whose directory this child process
-    # cannot retroactively add to the parent shell's already-inherited PATH.
-    # That is a real, honest restart requirement (handled by the PATH-setup
-    # step above), not the silent-failure class this function exists to
-    # catch. Nothing to take over, nothing to warn about.
     return 2
   fi
 
@@ -365,8 +277,6 @@ if [ "${INSTALLED_VIA}" != "binary" ]; then
   INSTALLED_VIA="npm"
 fi
 
-# --- PATH setup (binary install only — npm's global bin is already on most
-# people's PATH via their npm prefix) ------------------------------------
 if [ "${INSTALLED_VIA}" = "binary" ]; then
   case ":${PATH}:" in
     *":${INSTALL_DIR}:"*) ;;
@@ -392,9 +302,6 @@ if [ "${INSTALLED_VIA}" = "binary" ]; then
   esac
 fi
 
-# --- Resolve + take over: prove `klauro` actually runs what was just
-# installed, in THIS shell, right now. See resolve_and_take_over_path
-# above for what "ours" means and what happens when it is not. -----------
 if [ "${INSTALLED_VIA}" = "binary" ]; then
   set +e
   resolve_and_take_over_path

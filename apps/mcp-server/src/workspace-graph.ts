@@ -24,7 +24,7 @@ export interface WorkspaceGraphRepository {
     entry_points: number;
     exit_points: number;
     call_chains: number;
-    data_entities: number;
+    entities: number;
   };
   contracts: {
     provides_http: number;
@@ -182,7 +182,7 @@ function summarizeRepository(repository: { path: string; name: string; cas: CASO
       entry_points: cas.entry_points?.length || 0,
       exit_points: cas.exit_points?.length || 0,
       call_chains: cas.call_chains?.length || 0,
-      data_entities: cas.data_entities?.length || cas.database_schema?.entities?.length || 0,
+      entities: cas.entities?.length || cas.database_schema?.entities?.length || 0,
     },
     contracts: {
       provides_http: (cas.entry_points || []).filter(entry => entry.type === 'http' || entry.type === 'route').length,
@@ -239,7 +239,7 @@ function databaseNames(cas: CASOutput): string[] {
   return [
     ...(cas.system?.technologies?.databases || []),
     ...(cas.database_schema?.entities || []).map(entity => entity.name),
-    ...(cas.data_entities || []).map(entity => entity.name),
+    ...(cas.entities || []).map(entity => entity.name),
     ...(cas.exit_points || []).filter(exitPoint => exitPoint.type === 'database').map(exitPoint => exitPoint.target?.resource || exitPoint.name),
   ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index).slice(0, 50);
 }

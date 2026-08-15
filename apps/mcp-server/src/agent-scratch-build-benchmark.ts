@@ -1847,7 +1847,7 @@ async function scoreScratchWorkspace(
   const hasSingleSourceImports = /(from ['"].*(models|entities|domain|contracts)|import type .* from)/.test(content);
   const hasPackage = paths.includes('package.json');
   const hasCasGraph = (cas?.nodes?.length || 0) > 0 && (cas?.edges?.length || 0) > 0;
-  const capabilities = cas?.system_capabilities?.length || 0;
+  const capabilities = cas?.capabilities?.length || 0;
   const domainConcepts = cas?.domain_concepts?.length || 0;
   const requiredBoundariesPresent = [
     !scenario.score.needsEntry || hasRoutes || hasUi,
@@ -1957,7 +1957,7 @@ async function loadReferences(paths: string[]): Promise<GreenfieldReferenceAnaly
         cas,
       });
     } catch {
-      // Reference context is helpful but not required for the scratch proof.
+
     }
   }
   return references;
@@ -2224,8 +2224,8 @@ function formatScratchBuildMarkdown(report: ScratchBuildReport): string {
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     live: false,
-    // Scratch workspaces are debug dumps, not durable data (local-persistence
-    // doctrine): default under os.tmpdir(); pass --work-root to keep them.
+
+
     workRoot: path.join(os.tmpdir(), 'klauro-scratch-build-benchmark'),
     keepWorkspaces: true,
     references: [],

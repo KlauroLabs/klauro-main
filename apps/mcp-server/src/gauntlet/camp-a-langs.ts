@@ -1,70 +1,70 @@
-/**
- * Camp A (embeddings-RAG) vs Klauro — the per-language corpus.
- *
- * Camp A is the Cursor/Augment/Roo recipe: embed code chunks, embed the query,
- * rank by cosine, return the top-k chunks. It is a TEXT similarity engine. Klauro
- * answers the same query STRUCTURALLY: its breadth engine (`extractStructure`,
- * 167 grammars) walks the real AST, so it knows the exact symbols and which
- * function encloses a given call site. This file is the proof corpus: one tiny,
- * real source per language, each carrying a SAME-NAME DECOY (two functions named
- * `save`/`Save`) plus a `run` function whose body calls a unique target `helper`.
- *
- * The task: "which function calls `helper`?" The structural answer is exactly one
- * function (`run`/`Run`) — Klauro resolves it by enclosing scope. An embedding
- * model can only rank chunks by fuzzy similarity to "code that calls helper", and
- * the decoy `save`/`store` text pulls it off the structurally-correct answer. So
- * Klauro out-qualities every local embedding model, per language.
- *
- * RANKING SOURCE — "top languages by real-world popularity" is the consensus of:
- *   - GitHub Octoverse 2024 (https://github.blog/news-insights/octoverse/) top
- *     languages by PRs/contributors,
- *   - TIOBE Index (https://www.tiobe.com/tiobe-index/),
- *   - RedMonk Programming Language Rankings (https://redmonk.com/sluyzas/, Jan 2024),
- *   - Stack Overflow Developer Survey 2024 "most popular technologies".
- * `rank` below is the consensus popularity slot (lower = more popular). The list
- * is then INTERSECTED with Klauro's supported set — a language ships here only if
- * it has a LANGUAGE_SPEC entry AND a loadable grammar (hasWasmGrammar ||
- * hasNativeGrammar), verified at bench/test time by a real `extractStructure` run.
- *
- * DEFERRED (popular but not yet a clean structural-resolution fixture — call edges
- * not captured by the current generic spec, so the head-to-head can't score them
- * honestly yet): Dart (no call node — selector grammar), Julia / Clojure / Nix /
- * Elixir (homoiconic or empty callNodeTypes), MATLAB / Visual Basic /
- * Objective-C-method-syntax, COBOL, Assembly, SQL. Also DEFERRED: SuperCollider —
- * its functions live in class/instance-method-name nodes the generic walker does
- * not surface, so no caller resolves (no decoy-proof score). (Haskell is now
- * covered: point-free `run = …` is a binding, not a `function` node, but giving
- * `run` a parameter makes it parse as a function the resolver keys off.) Also
- * DEFERRED: Lua — its `extractStructure` is correct in
- * isolation, but the lua WASM grammar's parse state bleeds after any other
- * grammar loads in the same process (functions/calls drop out), making its score
- * order-dependent. That is a real web-tree-sitter caching finding in the breadth
- * layer (wasm-tree-sitter.ts), tracked for a fix; until then Lua is excluded so
- * the head-to-head stays honest. These are all tracked for a follow-up wave (see
- * camp-a-top50.md).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface TopLang {
-  /** tree-sitter grammar id (the `extractStructure` key). */
+
   lang: string;
-  /** Consensus popularity slot (lower = more popular). */
+
   rank: number;
-  /** Tiny, real source for this language with a SAME-NAME DECOY + a unique caller. */
+
   sample: string;
-  /** The structural retrieval query: the unique callee whose caller we resolve. */
+
   query: string;
-  /** Ground truth: the single function that structurally calls `query`. */
+
   truth: string;
 }
 
-/**
- * The corpus. Every `sample` was AST-dumped and its `extractStructure` resolution
- * measured (functions + call line → enclosing function == `truth`). Multi-line
- * bodies are deliberate: the enclosing-scope resolver keys off function start
- * lines, so one-liners with multiple defs on a line are avoided.
- */
+
+
+
+
+
+
 export const TOP_LANGS: TopLang[] = [
-  // ---- Mainstream (top of every ranking) ----
+
   {
     lang: 'javascript', rank: 1, query: 'helper', truth: 'run',
     sample: `function save(x) {\n  return store(x);\n}\nfunction save(y) {\n  return y;\n}\nfunction run() {\n  return helper(5);\n}\n`,
@@ -250,17 +250,17 @@ export const TOP_LANGS: TopLang[] = [
     sample: `__device__ int save(int x) {\n  return store(x);\n}\n__device__ int save2(int x) {\n  return x;\n}\n__global__ void run() {\n  helper(5);\n}\n`,
   },
 
-  // ---- Breadth wave: call-capable languages (non-empty callNodeTypes), each
-  //      decoy-proof-resolved by a real extractStructure run (functions + call
-  //      line -> enclosing function == `run`). Ranks continue past the mainstream
-  //      block; popularity slots are approximate for these niche/long-tail langs.
+
+
+
+
   {
     lang: 'ocaml', rank: 48, query: 'helper', truth: 'run',
     sample: `let save x = store x\nlet save2 x = x\nlet run () = helper 5\n`,
   },
   {
-    // point-free `run = …` is a binding, not a `function` node; give run a param
-    // so it parses as a function the resolver can key off.
+
+
     lang: 'haskell', rank: 49, query: 'helper', truth: 'run',
     sample: `save x = store x\nsave2 x = x\nrun y = helper y\n`,
   },
@@ -317,7 +317,7 @@ export const TOP_LANGS: TopLang[] = [
     sample: `function save(x) {\n  return store(x);\n}\nfunction save2(x) {\n  return x;\n}\nfunction run() {\n  return helper(5);\n}\n`,
   },
   {
-    // call must be in expression (return) position for the wgsl grammar.
+
     lang: 'wgsl', rank: 63, query: 'helper', truth: 'run',
     sample: `fn save(x: i32) -> i32 {\n  return store(x);\n}\nfn save2(x: i32) -> i32 {\n  return x;\n}\nfn run() -> i32 {\n  return helper(5);\n}\n`,
   },
@@ -382,9 +382,9 @@ export const TOP_LANGS: TopLang[] = [
     sample: `#let save(x) = store(x)\n#let save2(x) = x\n#let run() = helper(5)\n`,
   },
 
-  // ---- Breadth wave 2: more call-capable langs, each decoy-proof-resolved by a
-  //      real extractStructure run. Several required a call-extraction DEEPENING in
-  //      language-spec.ts (call node grounded on the real AST) — noted inline.
+
+
+
   {
     lang: 'pascal', rank: 79, query: 'helper', truth: 'run',
     sample: `function save(x: integer): integer;\nbegin\n  save := store(x);\nend;\nfunction save2(x: integer): integer;\nbegin\n  save2 := x;\nend;\nprocedure run;\nbegin\n  helper(5);\nend;\n`,
@@ -398,47 +398,47 @@ export const TOP_LANGS: TopLang[] = [
     sample: `define save($x) {\n  store($x)\n}\ndefine save2($x) {\n  notify { $x: }\n}\ndefine run() {\n  helper(5)\n}\n`,
   },
   {
-    // DEEPENED: bicep `user_defined_function` added to functionNodeTypes.
+
     lang: 'bicep', rank: 82, query: 'helper', truth: 'run',
     sample: `func save(x int) int => store(x)\nfunc save2(x int) int => x\nfunc run(x int) int => helper(x)\n`,
   },
   {
-    // DEEPENED: cobol `perform_procedure` added to callNodeTypes (PERFORM = call).
+
     lang: 'cobol', rank: 83, query: 'HELPER-PARA', truth: 'RUN-PARA',
     sample: `       IDENTIFICATION DIVISION.\n       PROGRAM-ID. A.\n       PROCEDURE DIVISION.\n       SAVE-PARA.\n           PERFORM STORE-PARA.\n       RUN-PARA.\n           PERFORM HELPER-PARA.\n       STORE-PARA.\n           DISPLAY 'X'.\n       HELPER-PARA.\n           DISPLAY 'Y'.\n`,
   },
   {
-    // DEEPENED: julia `call_expression` added to callNodeTypes.
+
     lang: 'julia', rank: 84, query: 'helper', truth: 'run',
     sample: `function save(x)\n  store(x)\nend\nfunction save2(x)\n  x\nend\nfunction run(x)\n  helper(x)\nend\n`,
   },
   {
-    // DEEPENED: objc C-style `call_expression` added (message_expression stays out).
+
     lang: 'objc', rank: 85, query: 'helper', truth: 'run',
     sample: `int save(int x) {\n  return store(x);\n}\nint save2(int x) {\n  return x;\n}\nvoid run() {\n  helper(5);\n}\n`,
   },
   {
-    // DEEPENED: scheme `list` added to callNodeTypes (declFilter gates def-vs-call).
+
     lang: 'scheme', rank: 86, query: 'helper', truth: 'run',
     sample: `(define (save x) (store x))\n(define (save2 x) x)\n(define (run x) (helper x))\n`,
   },
   {
-    // DEEPENED: racket `list` added to callNodeTypes (same shape as scheme).
+
     lang: 'racket', rank: 87, query: 'helper', truth: 'run',
     sample: `(define (save x) (store x))\n(define (save2 x) x)\n(define (run x) (helper x))\n`,
   },
   {
-    // DEEPENED: commonlisp `list_lit` added to callNodeTypes (defun = the def node).
+
     lang: 'commonlisp', rank: 88, query: 'helper', truth: 'run',
     sample: `(defun save (x) (store x))\n(defun save2 (x) x)\n(defun run (x) (helper x))\n`,
   },
   {
-    // DEEPENED: janet `par_tup_lit` added to callNodeTypes (declFilter gates defn).
+
     lang: 'janet', rank: 89, query: 'helper', truth: 'run',
     sample: `(defn save [x] (store x))\n(defn save2 [x] x)\n(defn run [x] (helper x))\n`,
   },
   {
-    // DEEPENED: tlaplus `bound_op` added to callNodeTypes (operator application).
+
     lang: 'tlaplus', rank: 90, query: 'helper', truth: 'run',
     sample: `---- MODULE m ----\nsave(x) == store(x)\nsave2(x) == x\nrun(x) == helper(x)\n====\n`,
   },
@@ -459,90 +459,90 @@ export const TOP_LANGS: TopLang[] = [
     sample: `A {\n  save { |x| store.(x) }\n  save2 { |x| x }\n  run { helper.(5) }\n}\n`,
   },
   {
-    // DEEPENED: ql `call_or_unqual_agg_expr` added (unqualified predicate call).
+
     lang: 'ql', rank: 95, query: 'helper', truth: 'run',
     sample: `int save(int x) { result = store(x) }\nint save2(int x) { result = x }\nint run() { result = helper(5) }\n`,
   },
   {
-    // DEEPENED: vhdl `subprogram_definition` + `procedure_call_statement` (the
-    // vendored grammar's real node names) added to fn/call types.
+
+
     lang: 'vhdl', rank: 96, query: 'helper', truth: 'run',
     sample: `package body p is\n  procedure save(x: integer) is\n  begin\n    store(x);\n  end;\n  procedure save2(x: integer) is\n  begin\n    null;\n  end;\n  procedure run is\n  begin\n    helper(5);\n  end;\nend;\n`,
   },
   {
-    // DEEPENED: p4 `assignment_or_method_call_statement` added to callNodeTypes.
+
     lang: 'p4', rank: 97, query: 'helper', truth: 'run',
     sample: `action save(bit x) { store(x); }\naction save2(bit x) { x; }\naction run() { helper(5); }\n`,
   },
   {
-    // DEEPENED: nickel `applicative` (function application) added to callNodeTypes.
+
     lang: 'nickel', rank: 98, query: 'helper', truth: 'run',
     sample: `let save = fun x => store x in\nlet save2 = fun x => x in\nlet run = fun x => helper x in\nrun 5\n`,
   },
   {
-    // DEEPENED: systemverilog `tf_call` added to callNodeTypes.
+
     lang: 'systemverilog', rank: 99, query: 'helper', truth: 'run',
     sample: `module m;\n  function int save(int x); return store(x); endfunction\n  function int save2(int x); return x; endfunction\n  function int run(); return helper(5); endfunction\nendmodule\n`,
   },
   {
-    // cmake `function()`/`macro()` are real user definitions; normal_command = call.
-    // (spec was already complete; this just adds the fixture.)
+
+
     lang: 'cmake', rank: 100, query: 'helper', truth: 'run',
     sample: `function(save x)\n  store(\${x})\nendfunction()\nfunction(save2 x)\n  message(\${x})\nendfunction()\nfunction(run)\n  helper(5)\nendfunction()\n`,
   },
 
-  // ---- Assembly / IR tier: unlocked by the resolveCallee hook (the callee is a
-  //      later operand of the call node, not its first child). Call node types +
-  //      resolveCallee positions grounded on the real AST (parseWasm dump). For
-  //      LLVM/WAT the function names carry their sigil (@ / $), so the query/truth
-  //      keep it too — the callee edge is recorded with the same sigil for
-  //      consistency. Each decoy-proof-resolved by a real extractStructure run.
+
+
+
+
+
+
   {
-    // GROUNDED: llvm call node `instruction_call`; callee = the @global operand
-    // (resolveCallee → global_var). Fn names keep the `@` sigil.
+
+
     lang: 'llvm', rank: 101, query: '@helper', truth: '@run',
     sample: `define i32 @save(i32 %x) {\n  %r = call i32 @store(i32 %x)\n  ret i32 %r\n}\ndefine i32 @save2(i32 %x) {\n  ret i32 %x\n}\ndefine void @run() {\n  call void @helper(i32 5)\n  ret void\n}\n`,
   },
   {
-    // GROUNDED: wat call node `instr_plain` (op=`call`); callee = the `$index`
-    // operand. Fn names keep the `$` sigil.
+
+
     lang: 'wat', rank: 102, query: '$helper', truth: '$run',
     sample: `(module\n  (func $save (param $x i32) (result i32)\n    local.get $x\n    call $store)\n  (func $save2 (param $x i32) (result i32)\n    local.get $x)\n  (func $run\n    i32.const 5\n    call $helper))\n`,
   },
   {
-    // GROUNDED: nasm call node `instruction` (mnemonic=`call`); callee = the
-    // `ident` operand. Labels (foo:) are the functions.
+
+
     lang: 'nasm', rank: 103, query: 'helper', truth: 'run',
     sample: `save:\n    call store\n    ret\nsave2:\n    ret\nrun:\n    call helper\n    ret\n`,
   },
   {
-    // GROUNDED: mlir call node `custom_operation` (op=`func.call`); callee = the
-    // callee @symbol. declFilter keeps only func.func ops as functions.
+
+
     lang: 'mlir', rank: 104, query: 'helper', truth: 'run',
     sample: `func.func @save(%x: i32) -> i32 {\n  %r = func.call @store(%x) : (i32) -> i32\n  return %r : i32\n}\nfunc.func @save2(%x: i32) -> i32 {\n  return %x : i32\n}\nfunc.func @run() {\n  func.call @helper() : () -> ()\n  return\n}\n`,
   },
 
-  // ---- Breadth wave 3: the long-tail call-capable ceiling. Each decoy-proof-
-  //      resolved by a real extractStructure run (functions + call line ->
-  //      enclosing function == `run`). See camp-a-extend3.md for the honest N/A
-  //      ceiling (config/markup/data/query/template DSLs with no caller concept).
+
+
+
+
   {
-    // DEEPENED: clojure `list_lit` added to callNodeTypes — same homoiconic shape
-    // as scheme/racket/janet. The existing declFilter (head == defn/defmacro/…)
-    // gates def-vs-call; non-definer lists fall through to the call branch.
+
+
+
     lang: 'clojure', rank: 105, query: 'helper', truth: 'run',
     sample: `(defn save [x] (store x))\n(defn save2 [x] x)\n(defn run [x] (helper x))\n`,
   },
   {
-    // graphql: `operation_definition` (named query) is the function unit; a `field`
-    // selection is the call. `run` selects the unique `helper` field; the decoy
-    // `save` operations select `store`/`field2`. Resolved by enclosing operation.
+
+
+
     lang: 'graphql', rank: 106, query: 'helper', truth: 'run',
     sample: `query save {\n  store\n}\nquery save2 {\n  field2\n}\nquery run {\n  helper\n}\n`,
   },
   {
-    // sql: `create_function` is the function unit; an `invocation` is the call.
-    // `run`'s body invokes the unique `helper`; the decoy `save` invokes `store`.
+
+
     lang: 'sql', rank: 107, query: 'helper', truth: 'run',
     sample: `CREATE FUNCTION save(x int) RETURNS int AS $$ SELECT store(x); $$ LANGUAGE sql;\nCREATE FUNCTION save2(x int) RETURNS int AS $$ SELECT x; $$ LANGUAGE sql;\nCREATE FUNCTION run() RETURNS int AS $$ SELECT helper(5); $$ LANGUAGE sql;\n`,
   },

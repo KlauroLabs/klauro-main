@@ -1,31 +1,31 @@
-/**
- * Intent-aware merge: when agents finish editing the same or related code,
- * reconcile by intent rather than textual 3-way diff. Git only answers
- * whether lines overlap — it merges silently even when changes are jointly
- * incoherent, and conflicts mechanically on overlap with zero understanding
- * of whether edits are actually compatible in intent.
- *
- * For each symbol touched by the fleet:
- *   - no conceptual conflict          -> auto_mergeable
- *   - conceptual conflict detected    -> needs_resolution (never silently
- *     auto-merged, even though it would pass a textual merge cleanly)
- *   - duplicate-work conflict detected -> duplicate_work
- *
- * Pure module: no IO. Imports from conceptual-conflict.ts rather than
- * redefining, so this is a thin reasoning layer, not a parallel implementation.
- *
- * planIntentMerge (unchanged) takes AgentInFlightState[] from wherever the
- * caller got it — still correct given a sound input, still right for a
- * single-participant workspace. planIntentMergeFromSubstrate builds that same
- * input from getAttributedInFlightState instead of ambient git diff, since a
- * shared-tree git diff is unsound once more than one participant is on it.
- * Symbols neither claim-attributed nor tiebreak-resolved are reported in an
- * explicit `unattributed` bucket — never guessed, never silently folded into
- * whichever agent happens to be asking.
- *
- * Both paths compute the mergeless metrics (merge_decisions_required,
- * surprises) on every MergePlan — see computeMergelessMetrics below.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import {
   detectConceptualConflicts,
@@ -38,6 +38,7 @@ import {
 } from './conceptual-conflict';
 import { getAttributedInFlightState } from './in-flight-substrate';
 import { persistSurprise } from './local-store';
+import { getMergelessMetrics, recordMergelessObservation, type MergelessMetrics } from './mergeless-metrics';
 
 export interface AutoMergeableEntry {
   symbol: string;
@@ -63,44 +64,44 @@ export interface MergePlanSummary {
   duplicates: number;
 }
 
-/**
- * A "surprise" (V3 §5/§9): a change that implies a PARTICIPANT hasn't seen
- * something relevant yet — specifically, a `contract-divergence` finding
- * (one agent changed a symbol's contract; another agent's in-flight code
- * calls/depends on it) that `passes_textual_merge`. Textual merge would land
- * this silently; the participant would first learn of it at merge time,
- * which is exactly the surprise the mergeless metric (§9: "surprise rate ->
- * 0") measures. Reuses `detectConceptualConflicts`'s own contract-divergence
- * detector rather than a parallel heuristic — cheap, since `needs_resolution`
- * already carries every conflict this symbol produced.
- */
+
+
+
+
+
+
+
+
+
+
+
 export interface SurpriseEntry {
   symbol: string;
   agents: string[];
   explanation: string;
 }
 
-/**
- * Push each computed surprise into the claim log, addressed to the AFFECTED
- * participant (W4 step 2: "kills learn-at-merge-time" — see
- * `local-store.ts persistSurprise`). `contract-divergence` findings always
- * carry `agents` as `[changer, affected]` (the detector's own construction —
- * `detectContractDivergence` pushes `[agentA.agent_id, agentB.agent_id]`
- * where A changed the contract and B is the caller-editor who'd be surprised
- * at merge time); a malformed entry with fewer than 2 agents is skipped
- * rather than guessed. Best-effort and non-fatal: a storage hiccup here must
- * never fail the merge-plan call itself, since the CALLER already has the
- * metrics in `surprises[]` regardless of whether persistence succeeds.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 async function pushSurprisesToLog(workspace: string, surprises: SurpriseEntry[]): Promise<void> {
   await Promise.all(
     surprises.map(async (s) => {
       const [changer, affected] = s.agents;
-      if (!changer || !affected) return; // malformed — never guess who's affected.
+      if (!changer || !affected) return;
       try {
         await persistSurprise(workspace, { symbol: s.symbol, changer, affected, explanation: s.explanation });
       } catch {
-        // best-effort ambient delivery; the caller already has surprises[] from the returned plan.
+
       }
     })
   );
@@ -111,24 +112,24 @@ export interface MergePlan {
   needs_resolution: NeedsResolutionEntry[];
   duplicate_work: DuplicateWorkEntry[];
   summary: MergePlanSummary;
-  /**
-   * THE V3 metrics (§5 "mergeless", §9 acceptance metrics) — measuring these
-   * is step 1 of driving them to 0, not a claim that they already are 0.
-   */
+
+
+
+
   merge_decisions_required: number;
   surprises: SurpriseEntry[];
 }
 
-/** Compute the V3 mergeless metrics from an already-classified plan (pure — no IO). */
+
 function computeMergelessMetrics(
   needs_resolution: NeedsResolutionEntry[],
   duplicate_work: DuplicateWorkEntry[]
 ): { merge_decisions_required: number; surprises: SurpriseEntry[] } {
-  // Every needs_resolution AND duplicate_work entry is, by construction, a
-  // genuine cross-participant decision a human/agent must make (§5: "merge
-  // decisions" are exactly the questions git's silent/mechanical merge can't
-  // answer) — auto_mergeable entries are explicitly NOT decisions (that's
-  // the whole point of the bucket).
+
+
+
+
+
   const merge_decisions_required = needs_resolution.length + duplicate_work.length;
   const surprises: SurpriseEntry[] = needs_resolution
     .filter((e) => e.conflict.kind === 'contract-divergence' && e.conflict.passes_textual_merge)
@@ -138,9 +139,9 @@ function computeMergelessMetrics(
 
 export interface PlanIntentMergeOptions extends DetectConceptualConflictsOptions {}
 
-// ---------------------------------------------------------------------------
-// Grouping: every symbol touched by the fleet, with each agent's change to it.
-// ---------------------------------------------------------------------------
+
+
+
 
 interface SymbolGroup {
   symbol: string;
@@ -163,27 +164,27 @@ function groupBySymbol(states: AgentInFlightState[]): Map<string, SymbolGroup> {
   return groups;
 }
 
-// ---------------------------------------------------------------------------
-// Compose-vs-conflict reasoning for the no-conceptual-conflict case.
-// ---------------------------------------------------------------------------
 
-/** Change kinds that are inherently additive/orthogonal-friendly: they extend
- *  behavior without redefining an existing contract or structure. */
+
+
+
+
+
 const ADDITIVE_KINDS = new Set<SymbolChangeKind>(['add', 'body']);
 
-/** Change kinds that redefine the symbol's shape — two agents both touching
- *  one of these on the SAME symbol are editing the same concern, not
- *  orthogonal concerns, even absent a detected conceptual conflict. */
+
+
+
 const SHAPE_KINDS = new Set<SymbolChangeKind>(['signature', 'return_type', 'nullability', 'param', 'rename', 'split', 'move', 'delete']);
 
-/**
- * Build a human-readable rationale for why a symbol's multi-agent changes
- * compose cleanly, naming both intents. Falls back to a generic "no
- * conceptual conflict detected" framing when the changes aren't a clean
- * textbook orthogonal-additive case (still auto-mergeable — the conceptual
- * detector found nothing incoherent — but the rationale is honest about not
- * having a sharper story).
- */
+
+
+
+
+
+
+
+
 function rationaleFor(group: SymbolGroup): string {
   const { entries } = group;
   if (entries.length === 1) {
@@ -211,10 +212,10 @@ function rationaleFor(group: SymbolGroup): string {
   }
 
   if (anyShapeKind) {
-    // A shape-changing edit exists but the conceptual detector found no
-    // divergence (e.g. only one agent touches the shape; others are additive
-    // and don't call it in an incompatible way, or the CAS shows no caller
-    // overlap). Still coherent — just not the purely-additive textbook case.
+
+
+
+
     return (
       `${agentNames.join(', ')} touch ${group.symbol} (including a shape-changing edit) but no ` +
       `conceptual conflict was detected between their intents — the changes are compatible as-is.`
@@ -227,24 +228,24 @@ function rationaleFor(group: SymbolGroup): string {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
 
-/**
- * Reconcile concurrently in-flight agent states by INTENT rather than by
- * textual diff. Consumes the same `AgentInFlightState[]` + CAS shape the
- * conceptual-conflict detector uses; does not redefine or duplicate that
- * detector's logic — it classifies each touched symbol using the detector's
- * output plus additive/orthogonality reasoning over `change_kind`.
- *
- * Precedence per symbol (a symbol can only land in ONE bucket):
- *   1. duplicate-work conflict detected      -> duplicate_work
- *   2. any other conceptual conflict detected -> needs_resolution
- *   3. otherwise                              -> auto_mergeable
- *      (covers both the "genuinely orthogonal, multi-agent" case and the
- *      trivial "only one agent touched it" case)
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function planIntentMerge(
   states: AgentInFlightState[],
   cas: ConflictCas,
@@ -253,20 +254,20 @@ export function planIntentMerge(
   const groups = groupBySymbol(states);
   const allConflicts = detectConceptualConflicts(states, cas, options);
 
-  // Index conflicts by symbol, split into duplicate-work vs. everything else.
+
   const duplicateConflictsBySymbol = new Map<string, ConceptualConflict>();
   const otherConflictsBySymbol = new Map<string, ConceptualConflict>();
   for (const conflict of allConflicts) {
-    // A conflict's `.symbol` field only names ONE side of the pair (e.g.
-    // duplicate-work's `bothAdd` case has two distinct symbol_ids for the same
-    // logical name — the detector records changeA's symbol_id and drops
-    // changeB's). Index by every symbol_id this conflict's OWN group touches
-    // instead of trusting `.symbol` alone: the primary group (matched by
-    // symbol_id), plus any group that (a) is touched by exactly this
-    // conflict's agent set and (b) shares the conflicting change's `name`
-    // with the primary group — the same correlation the detector itself used
-    // (bothAdd requires changeA.name === changeB.name) to find the pair in
-    // the first place.
+
+
+
+
+
+
+
+
+
+
     const primaryGroup = groups.get(conflict.symbol);
     const symbolIds = new Set<string>([conflict.symbol]);
     if (primaryGroup) {
@@ -275,9 +276,9 @@ export function planIntentMerge(
       for (const group of groups.values()) {
         if (symbolIds.has(group.symbol)) continue;
         const groupAgentIds = new Set(group.entries.map((e) => e.agent_id));
-        // The other group's agent(s) must all be part of THIS conflict's
-        // agent set (subset, not exact-equality — a group can be
-        // single-agent while the conflict spans a pair).
+
+
+
         const agentsWithinConflict = [...groupAgentIds].every((a) => conflictAgentSet.has(a));
         if (!agentsWithinConflict || groupAgentIds.size === 0) continue;
         const sharesName = group.entries.some((e) => primaryNames.has(e.change.name));
@@ -331,21 +332,19 @@ export function planIntentMerge(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Substrate-based path (W4 step 1) — re-based on the W0 attributed substrate
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface MergeAttributionInfo {
-  /** 'substrate' = built from getAttributedInFlightState (claim-scope + write-hook tiebreaker),
-   *  never ambient git diff. 'git-ambient' = the pre-W4 capture path (sound only at <=1 participant). */
-  source: 'substrate' | 'git-ambient';
-  /** Participants whose delta was attributed via an active claim's scope. */
+  source: 'participant-semantic-streams' | 'workspace-semantic-fallback';
+
   participants: number;
-  /** Deltas resolved via the write-hook's announced-edit/unclaimed-edit event log tiebreaker
-   *  (no active claim covered them, but the event log named exactly one agent). */
+
+
   tiebroken: number;
-  /** Deltas that could be attributed to neither an active claim nor the write-hook tiebreaker —
-   *  reported honestly, never guessed, never silently folded into whoever is asking. */
+
+
   unattributed: number;
 }
 
@@ -358,39 +357,40 @@ export interface UnattributedMergeSymbol {
 
 export interface SubstrateMergePlan extends MergePlan {
   attribution: MergeAttributionInfo;
-  /** The honest "we don't know whose this is" bucket — separate from `needs_resolution` (a KNOWN
-   *  cross-participant conflict) because these symbols were never attributed to any participant at
-   *  all, so there is no "who" to resolve a decision between yet. */
+
+
+
   unattributed_symbols: UnattributedMergeSymbol[];
+  mergeless_metrics: MergelessMetrics;
 }
 
-/**
- * Selection rule (documented on the `plan_intent_merge` tool description in
- * server.ts too): the git-ambient capture path is sound ONLY when at most one
- * participant is active on the workspace (§3.2 — attribution collapses the
- * moment a second participant's edits land on the same tree). Pass an
- * explicit `explicitUseSubstrate` to override (true forces substrate even for
- * a single participant, e.g. to dogfood/verify it; false forces git-ambient,
- * e.g. a caller that already validated single-participant-ness itself).
- * Omitted (undefined) auto-selects from the live active-participant count.
- */
+
+
+
+
+
+
+
+
+
+
 export function shouldUseSubstratePlan(
-  activeParticipantCount: number,
+  _activeParticipantCount: number,
   explicitUseSubstrate?: boolean
 ): boolean {
   if (explicitUseSubstrate !== undefined) return explicitUseSubstrate;
-  return activeParticipantCount > 1;
+  return true;
 }
 
-/**
- * Build a `MergePlan` from the W0 substrate (`getAttributedInFlightState`)
- * instead of ambient git diff / self-reported state. Per-participant
- * `AgentInFlightState`s come from claim-scope attribution PLUS the
- * write-hook's event-log tiebreaker for anything a claim didn't cover;
- * symbols resolved by neither are surfaced in `unattributed_symbols`,
- * honestly, never guessed. `planIntentMerge` itself (the classification core)
- * is reused UNCHANGED — this function only sources its input differently.
- */
+
+
+
+
+
+
+
+
+
 export async function planIntentMergeFromSubstrate(
   workspace: string,
   cas: ConflictCas,
@@ -398,11 +398,11 @@ export async function planIntentMergeFromSubstrate(
 ): Promise<SubstrateMergePlan> {
   const attributed = await getAttributedInFlightState(workspace);
 
-  // Fold both attribution sources into one AgentInFlightState per agent_id:
-  // claim-attributed changes (participants) plus write-hook-tiebroken changes
-  // for agents a claim didn't cover (or whose claim has since expired) — an
-  // agent can appear in both sources at once (e.g. still holds the claim AND
-  // has an older tiebroken edit outside its current scope).
+
+
+
+
+
   const changesByAgent = new Map<string, { intent: string; changes: SymbolChange[] }>();
   for (const p of attributed.participants) {
     if (p.delta.changes.length === 0) continue;
@@ -424,16 +424,29 @@ export async function planIntentMergeFromSubstrate(
 
   const plan = planIntentMerge(states, cas, options);
 
-  // W4 step 2: persist each surprise to the claim log, addressed to the
-  // affected participant — see `pushSurprisesToLog`. Only meaningful on the
-  // substrate path (this function), since `planIntentMerge` itself stays a
-  // pure, IO-free function per this module's own contract.
+
+
+
+
   await pushSurprisesToLog(workspace, plan.surprises);
+  if (attributed.participants.length + attributed.tiebroken.length + attributed.unattributed.length > 0) {
+    await recordMergelessObservation({
+      workspace,
+      observed_at: new Date().toISOString(),
+      attribution_source: attributed.attribution_source,
+      participant_count: attributed.participants.length + attributed.tiebroken.length,
+      changed_symbol_count: plan.summary.total_symbols,
+      merge_decisions_required: plan.merge_decisions_required,
+      surprise_count: plan.surprises.length,
+      unattributed_count: attributed.unattributed.length,
+    });
+  }
+  const mergelessMetrics = await getMergelessMetrics(workspace);
 
   return {
     ...plan,
     attribution: {
-      source: 'substrate',
+      source: attributed.attribution_source,
       participants: attributed.participants.length,
       tiebroken: attributed.tiebroken.length,
       unattributed: attributed.unattributed.length,
@@ -444,12 +457,13 @@ export async function planIntentMergeFromSubstrate(
       file: u.file,
       reason: u.reason,
     })),
+    mergeless_metrics: mergelessMetrics,
   };
 }
 
 export type { AgentInFlightState, ConceptualConflict, ConflictCas, SymbolChange };
 
-/** Re-exported so callers of the merge-plan surface don't need a second
- *  import from local-store.ts just to read back what `planIntentMergeFromSubstrate`
- *  persisted — see `local-store.ts` for the read-side implementation. */
+
+
+
 export { persistSurprise, readSurprisesFor, type SurpriseDetail } from './local-store';

@@ -281,9 +281,52 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
   // returns/handles/provides/supports), and none of the ungrounded product
   // frames the workspace-level-CAS quality gate rejects — so the real
   // enrichWorkspaceAnalysisNarrative pass accepts it and stamps source 'ai'.
-  const enrichedDescription = 'This workspace routes HTTP requests through the repo-reanalyze Python API service, records each request in the backend server, and returns computed handler results to the calling client. The API handles request processing, provides a single route surface, and supports the workspace backend behavior end to end.';
+  const enrichedDescription = 'Repo-reanalyze calculates totals through its observed application behavior and returns the resulting values. The workspace presents that total-calculation behavior, preserves its ownership by repo-reanalyze, and explains how callers retrieve the calculated result through the analyzed capability.';
   const originalGenerate = aiService.generateComponentDescription;
+  let delayedWorkspaceCall = false;
   aiService.generateComponentDescription = async (request: any) => {
+    const context = request?.additionalContext || {};
+    if (/cataloging the/i.test(String(context.task || ''))) {
+      const entities: Array<{ name?: string }> = Array.isArray(context.facts?.entities) ? context.facts.entities : [];
+      const candidateAreas: Array<{ name?: string }> = Array.isArray(context.facts?.candidate_route_areas) ? context.facts.candidate_route_areas : [];
+      const subjects = entities.length > 0 ? entities : candidateAreas;
+      return JSON.stringify({
+        capabilities: subjects.slice(0, 8).map(subject => ({
+          name: `Retrieve ${String(subject.name || 'calculated totals').replace(/([a-z])([A-Z])/g, '$1 $2')}`,
+          description: `Returns ${subject.name || 'calculated totals'} for the observed application workflow.`,
+          category: 'core',
+          entities: subject.name && entities.length > 0 ? [subject.name] : [],
+          journeys: [],
+        })),
+      });
+    }
+    const domainNames = Array.isArray(context.required_domain_names) ? context.required_domain_names : [];
+    const capabilityNames = Array.isArray(context.required_capability_names) ? context.required_capability_names : [];
+    if (Array.isArray(context.items) || /system_description/.test(String(context.task || ''))) {
+      const items: Array<{ id: string; name?: string }> = Array.isArray(context.items) ? context.items : [];
+      const grounding = [
+        ...(Array.isArray(context.structuralTokens) ? context.structuralTokens : []),
+        ...(Array.isArray(context.frameworks) ? context.frameworks : []),
+      ].slice(0, 6).join(', ') || 'registered application behavior';
+      return JSON.stringify({
+        system_description: `This system retrieves calculated totals through an observed application entry and returns them to callers. It connects each supported calculation to analyzed handler behavior grounded in ${grounding}. It executes the evidenced total calculation and returns the resulting value without inventing additional product behavior. The implementation exposes that calculation through its registered application behavior.`,
+        domain: 'total-calculation',
+        descriptions: items.map(item => ({ id: item.id, description: `${item.name || item.id} retrieves the calculated total and returns the result to callers.` })),
+        quality_check: { used_facts: [], unsupported_claims: [] },
+      });
+    }
+    const targetDomains: Array<{ name?: string; grounding_terms?: string[] }> = Array.isArray(context.target_domains) ? context.target_domains : [];
+    const targetCapabilities: Array<{ name?: string; grounding_terms?: string[] }> = Array.isArray(context.target_capabilities) ? context.target_capabilities : [];
+    if (targetDomains.length > 0 || targetCapabilities.length > 0) {
+      const describe = (target: { name?: string; grounding_terms?: string[] }) => {
+        const name = String(target.name || 'Totals');
+        return `${name} describes how repo-reanalyze retrieves calculated totals and returns those values to callers through its observed behavior.`;
+      };
+      return JSON.stringify({
+        domain_items: targetDomains.map(target => ({ name: target.name, description: describe(target) })),
+        capability_items: targetCapabilities.map(target => ({ name: target.name, description: describe(target) })),
+      });
+    }
     // Keep the manual rebuild in flight past the attach-triggered debounce.
     // This reproduces the production race where the debounce joined an
     // existing rebuild and left its dirty bit stranded forever.
@@ -294,23 +337,23 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     // if this mock's own elapsed time outlasts the debounce window itself.
     // Tied explicitly to KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS (set to '150'
     // above) with margin, rather than an unexplained magic number.
-    const debounceMs = Number(process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS) || 150;
-    await new Promise(resolve => setTimeout(resolve, debounceMs * 2));
-    const context = request?.additionalContext || {};
-    const domainNames = Array.isArray(context.required_domain_names) ? context.required_domain_names : [];
-    const capabilityNames = Array.isArray(context.required_capability_names) ? context.required_capability_names : [];
+    if (!delayedWorkspaceCall) {
+      delayedWorkspaceCall = true;
+      const debounceMs = Number(process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS) || 150;
+      await new Promise(resolve => setTimeout(resolve, debounceMs * 2));
+    }
     return JSON.stringify({
       description: enrichedDescription,
-      product_value_summary: 'Gives users one HTTP API service that routes requests to Python handlers and returns computed results.',
-      value_drivers: ['API-backed request handling'],
-      relationship_summary: ['client calls repo-reanalyze API over HTTP'],
+      product_value_summary: 'Totals from repo-reanalyze.',
+      value_drivers: ['Calculated total retrieval'],
+      relationship_summary: [],
       domain_items: domainNames.map((name: string) => ({
         name,
-        description: `${name} represents the Python API service and its request routing, handler execution, and returned results for this workspace.`,
+        description: `${name} describes how repo-reanalyze retrieves calculated totals and returns those values to callers through its observed behavior.`,
       })),
       capability_items: capabilityNames.map((name: string) => ({
         name,
-        description: `${name} routes API requests to the Python handler and returns its computed response to the calling client.`,
+        description: `${name} describes how repo-reanalyze retrieves calculated totals and returns those values to callers through its observed behavior.`,
       })),
     });
   };
@@ -334,7 +377,8 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
-    const repo = makeRepo(root, 'repo-reanalyze', 'def handler():\n    return 1\n');
+    const repo = makeRepo(root, 'repo-reanalyze', "from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get('/totals')\ndef calculate_total():\n    return {'total': 1}\n");
+    fs.writeFileSync(path.join(repo, 'requirements.txt'), 'fastapi==0.116.1\n');
     const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
     const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'repo-reanalyze',
@@ -352,19 +396,25 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     // Background rebuild + enrichment persist: poll until the record is ready
     // AND the narrative is AI-written (the deterministic first persist may be
     // observed as ready with enrichment still pending — progressive availability).
-    await waitFor(async () => {
-      const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
-      const body = JSON.parse(res.body);
-      return body.status === 'ready' && body.analysis?.workspace_narrative?.source === 'ai';
-    });
+    let lastWorkspaceBody: any;
+    try {
+      await waitFor(async () => {
+        const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+        const body = JSON.parse(res.body);
+        lastWorkspaceBody = body;
+        return body.status === 'ready' && body.analysis?.workspace_narrative?.source === 'ai';
+      });
+    } catch (error) {
+      assert.fail(`${error instanceof Error ? error.message : String(error)}: ${JSON.stringify(lastWorkspaceBody)}`);
+    }
     const readyRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
     const readyBody = JSON.parse(readyRes.body);
     assert.equal(readyBody.analysis.workspace_narrative.source, 'ai');
     // The enrichment pass may normalize punctuation (e.g. hyphens) in the
     // accepted description — match on content, not byte equality.
-    assert.match(readyBody.analysis.workspace_narrative.description, /routes HTTP requests through the repo.reanalyze Python API service/);
+    assert.match(readyBody.analysis.workspace_narrative.description, /calculates totals through its observed application behavior/);
     assert.equal(readyBody.analysis.workspace_narrative.degraded_reason, undefined);
-    assert.equal(readyBody.enrichment?.status, 'ai');
+    assert.equal(readyBody.enrichment?.status, 'ai', JSON.stringify({ enrichment: readyBody.enrichment, domains: readyBody.analysis.workspace_domains, capabilities: readyBody.analysis.workspace_capabilities }));
     assert.ok(readyBody.enrichment?.completed_at);
     assert.equal(readyBody.status, 'ready', 'a debounce that joins an in-flight rebuild must not strand the workspace in pending');
 

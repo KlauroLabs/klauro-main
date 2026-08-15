@@ -116,6 +116,47 @@ test('write-hook: a change under NO active claim records an unclaimed-edit event
   await fsp.rm(root, { recursive: true, force: true });
 });
 
+test('write-hook: overlapping claims produce an ambiguous observation without crediting either participant', async (t) => {
+  const coordDir = await freshCoordDir();
+  const root = await freshWorkspaceRoot();
+  const ws = 'ws-write-hook-overlap';
+  const now = new Date().toISOString();
+  for (const agentId of ['agent-a', 'agent-b']) {
+    await appendClaim(ws, {
+      claim_id: `${ws}:${agentId}`,
+      workspace_id: ws,
+      agent_id: agentId,
+      agent_kind: 'other',
+      scope: { repo: ws, paths: ['shared.ts'], symbols: [] },
+      intent: 'edit shared behavior',
+      status: 'active',
+      created_at: now,
+      ttl_ms: 60_000,
+      heartbeat_at: now,
+    });
+  }
+
+  const announced: unknown[] = [];
+  const ambiguous: Array<{ path: string; candidateAgentIds: string[] }> = [];
+  const handle = startWriteHook(root, ws, {
+    debounceMs: 30,
+    onAnnounce: (event) => announced.push(event),
+    onAmbiguousEdit: (event) => ambiguous.push(event),
+  });
+  t.after(() => handle.close());
+  await fsp.writeFile(path.join(root, 'shared.ts'), 'export const shared = true;\n', 'utf8');
+  await waitFor(() => ambiguous.length > 0);
+
+  assert.deepEqual(ambiguous[0], { path: 'shared.ts', candidateAgentIds: ['agent-a', 'agent-b'] });
+  assert.deepEqual(announced, []);
+  const event = (await readClaimLog(ws)).find((entry) => entry.kind === 'ambiguous-edit');
+  assert.deepEqual(event?.candidate_agent_ids, ['agent-a', 'agent-b']);
+  assert.equal((await getActiveClaims(ws)).filter((claim) => claim.intent.startsWith('write-hook:')).length, 0);
+
+  await fsp.rm(coordDir, { recursive: true, force: true });
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
 test('write-hook: excluded directories (node_modules, .git, dist) never announce or record anything', async (t) => {
   const coordDir = await freshCoordDir();
   const root = await freshWorkspaceRoot();

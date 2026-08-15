@@ -3,9 +3,12 @@ import * as os from 'os';
 import * as path from 'path';
 import type { TelemetryEvent } from './telemetry-ingestion';
 
+let proofStorage: string | undefined;
+
 async function main(): Promise<void> {
   process.env.KLAURO_EMBEDDING_ENABLED = 'false';
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-telemetry-proof-'));
+  proofStorage = storage;
   process.env.KLAURO_STORAGE_PATH = storage;
 
   const { analyzeForBench } = await import('./gauntlet/product-analysis');
@@ -111,15 +114,19 @@ async function main(): Promise<void> {
   }
 
   await fs.remove(storage);
+  proofStorage = undefined;
 
   if (failures.length > 0) {
-    console.error(`\nPROOF FAILED:\n  ${failures.join('\n  ')}`);
-    process.exit(1);
+    throw new Error(`PROOF FAILED:\n  ${failures.join('\n  ')}`);
   }
   console.log('\nPROOF PASSED: ingested telemetry drives an ingested-provenance priority with a resolvable static target.');
 }
 
 main().catch(error => {
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
+}).finally(async () => {
+  const { shutdownAnalysisWorker } = await import('./analyzer');
+  shutdownAnalysisWorker();
+  if (proofStorage) await fs.remove(proofStorage);
 });

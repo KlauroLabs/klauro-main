@@ -1,47 +1,47 @@
-/**
- * Ambient in-flight capture (Fabric-v2 #2, docs/SPEC-COORDINATION-FABRIC-V2.md
- * §1.7): the fabric CAPTURES what an agent is actually changing from the git
- * working-tree diff, instead of requiring the agent to hand-report a
- * `SymbolChange[]` to `check_conceptual_conflicts`.
- *
- * ALGORITHM (same-machine local capture — git + a lightweight TS/JS symbol
- * extractor over the working tree):
- *   1. `git diff --name-only <baseRef>` in `repoPath` to find changed files,
- *      filtered to extensions we can meaningfully analyze.
- *   2. For each changed file, get the BEFORE content via
- *      `git show <baseRef>:<file>` and the AFTER content from the working
- *      tree (the file may be new — no BEFORE — or deleted — no AFTER).
- *   3. Extract per-symbol signatures from both versions and diff them,
- *      emitting a `SymbolChange` (the exact type `conceptual-conflict.ts`
- *      already exports and consumes — imported, not redefined) per symbol
- *      that changed shape (signature/return-type/nullability/params),
- *      structure (rename/split/move/delete), or was added.
- *
- * HONESTY / SCOPE: full whole-project re-analysis of both git revisions would
- * be heavy and is not attempted here. This module only reads and parses the
- * CHANGED files themselves (incremental by construction — never touches
- * unchanged files), and only for languages where a signature can be extracted
- * cheaply and reliably:
- *   - TypeScript / JavaScript (.ts/.tsx/.js/.jsx/.mjs/.cjs): full symbol-level
- *     before/after diffing via the TypeScript compiler API (`ts.createSourceFile`,
- *     no type-checker/program needed — this is syntactic signature extraction,
- *     not full type inference), covering functions, methods, and arrow-function
- *     class properties/const bindings. Return-type annotations, parameter
- *     lists/optionality, and easily-observed nullability (`| null` / `| undefined`
- *     in the return type) are compared before vs after.
- *   - Every other language (and deletes): a graceful "unknown-change" fallback
- *     — the file is reported as changed with `change_kind: 'body'` and no
- *     before/after shape, so callers know something moved without this module
- *     fabricating a signature diff it cannot actually verify. This is a real,
- *     bounded win (TS/JS ambient contract detection) plus honest degradation
- *     everywhere else, not a fake full-language solution.
- *
- * Pure-ish: the only IO is `git` subprocess calls and reading the working-tree
- * files already on disk; no network, no coordination-store writes (that is
- * `in-flight-sync.ts` / server.ts's job — this module only produces the
- * `SymbolChange[]` for a caller to attach to an `InFlightSnapshot` or feed
- * directly to `detectConceptualConflicts`).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { execFile } from 'node:child_process';
 import * as fsp from 'node:fs/promises';
@@ -51,28 +51,28 @@ import * as ts from 'typescript';
 import type { SymbolChange, SymbolChangeKind, SymbolChangeShape } from './conceptual-conflict';
 
 export interface CaptureOpts {
-  /** Absolute path to the git repository working tree. */
+
   repoPath: string;
-  /** Git ref to diff against (the "before" state). Defaults to 'HEAD'. */
+
   baseRef?: string;
-  /**
-   * Stop after this many ANALYZABLE changed files. Absent = unbounded (the
-   * historical behavior every existing caller keeps). Callers on a latency
-   * budget — e.g. the wave-2 ambient contract sweep, which runs inside a
-   * fab_* tool response — pass a bound so a pathologically dirty tree
-   * (hundreds of uncommitted files, each TS-parsed) cannot turn an advisory
-   * observation into a slow call. Truncation is honest: the capture returns
-   * fewer changes, never fabricated ones.
-   */
+
+
+
+
+
+
+
+
+
   maxFiles?: number;
 }
 
-// "Analyzable" here means "worth reporting a change for at all" — broader than
-// the set we can syntactically signature-diff (TS_JS_EXTENSIONS below). Source
-// files in other mainstream languages still surface as an honest unknown-change
-// fallback (see unknownChangeFallback); this list exists to filter out clearly
-// non-source noise (lockfiles, images, etc.) rather than to gate signature
-// extraction, which TS_JS_EXTENSIONS alone controls.
+
+
+
+
+
+
 const ANALYZABLE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
   '.py', '.rb', '.go', '.rs', '.java', '.kt', '.swift', '.cs', '.cpp', '.cc', '.c', '.h', '.hpp',
@@ -84,8 +84,8 @@ const TS_JS_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'])
 function runGit(repoPath: string, args: string[]): Promise<{ stdout: string; code: number }> {
   return new Promise((resolve) => {
     execFile('git', ['-C', repoPath, ...args], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
-      // Non-zero exit (e.g. `show` on a path that doesn't exist at baseRef —
-      // a newly-added file) is expected and handled by callers; never reject.
+
+
       resolve({ stdout: stdout ?? '', code: error && typeof (error as any).code === 'number' ? (error as any).code : 0 });
     });
   });
@@ -111,7 +111,7 @@ async function listChangedFiles(repoPath: string, baseRef: string): Promise<Chan
     else if (code?.startsWith('D')) status = 'deleted';
     else if (code?.startsWith('R')) {
       status = 'renamed';
-      file = parts[2] || parts[1]; // renamed: old\tnew
+      file = parts[2] || parts[1];
     }
     if (file) files.push({ file, status });
   }
@@ -120,7 +120,7 @@ async function listChangedFiles(repoPath: string, baseRef: string): Promise<Chan
 
 async function readBeforeContent(repoPath: string, baseRef: string, file: string): Promise<string | undefined> {
   const { stdout, code } = await runGit(repoPath, ['show', `${baseRef}:${file}`]);
-  if (code !== 0) return undefined; // file didn't exist at baseRef (new file)
+  if (code !== 0) return undefined;
   return stdout;
 }
 
@@ -128,18 +128,18 @@ async function readAfterContent(repoPath: string, file: string): Promise<string 
   try {
     return await fsp.readFile(path.join(repoPath, file), 'utf8');
   } catch {
-    return undefined; // deleted in the working tree
+    return undefined;
   }
 }
 
-// ---------------------------------------------------------------------------
-// TS/JS lightweight symbol-signature extraction (syntactic — no Program/checker)
-// ---------------------------------------------------------------------------
+
+
+
 
 interface ExtractedSymbol {
   name: string;
-  /** Best-effort stable key: `<kind>:<name>` — good enough to match the same
-   *  symbol across before/after since we operate on a single file's AST. */
+
+
   key: string;
   signature: string;
   return_type?: string;
@@ -161,10 +161,10 @@ function typeNodeToString(node: ts.TypeNode | undefined, sourceText: string): st
   return sourceText.slice(node.pos, node.end).trim();
 }
 
-/** Nullability heuristic: does the return-type text mention `null`/`undefined`
- *  as a top-level union member? Purely textual — good enough for the common
- *  `T | null` / `T | undefined` shape this detector cares about; not full
- *  type-inference nullability (out of scope for syntactic extraction). */
+
+
+
+
 function looksNullable(returnType: string | undefined): boolean | undefined {
   if (returnType === undefined) return undefined;
   return /\bnull\b/.test(returnType) || /\bundefined\b/.test(returnType);
@@ -174,14 +174,14 @@ function paramListToStrings(params: ts.NodeArray<ts.ParameterDeclaration>, sourc
   return params.map((p) => sourceText.slice(p.pos, p.end).trim());
 }
 
-/**
- * Walk a source file and collect top-level and class-member function-shaped
- * symbols: function declarations, class methods, and arrow-function /
- * function-expression const bindings (`const foo = (x: number) => ...`).
- * Deliberately shallow (no nested-closure symbols) — this is a signature
- * extractor for the "does this symbol's public shape change" question, not a
- * full CAS builder.
- */
+
+
+
+
+
+
+
+
 function extractSymbols(sourceText: string, file: string): ExtractedSymbol[] {
   const sourceFile = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true, scriptKindFor(file));
   const out: ExtractedSymbol[] = [];
@@ -259,7 +259,7 @@ function classifyChange(before: ExtractedSymbol, after: ExtractedSymbol): { kind
   return { kind: 'body', changed: false };
 }
 
-/** Diff two versions of one TS/JS file's extracted symbols into `SymbolChange[]`. */
+
 function diffTsJsFile(file: string, beforeText: string | undefined, afterText: string | undefined): SymbolChange[] {
   const before = beforeText !== undefined ? extractSymbols(beforeText, file) : [];
   const after = afterText !== undefined ? extractSymbols(afterText, file) : [];
@@ -273,12 +273,12 @@ function diffTsJsFile(file: string, beforeText: string | undefined, afterText: s
     const beforeSym = beforeByKey.get(key);
     const symbol_id = `sym:${file}:${afterSym.name}`;
     if (!beforeSym) {
-      // New symbol — 'add'. (Could also be a rename of a deleted symbol;
-      // structural rename detection across a single file's symbol set is a
-      // reasonable follow-on but out of scope for this first pass — see
-      // detectStructuralDivergence in conceptual-conflict.ts, which this
-      // module's output is compatible with once a caller wires rename
-      // detection in.)
+
+
+
+
+
+
       changes.push({
         symbol_id,
         name: afterSym.name,
@@ -315,8 +315,8 @@ function diffTsJsFile(file: string, beforeText: string | undefined, afterText: s
   return changes;
 }
 
-/** Fallback for changed files in languages we don't syntactically diff: report
- *  the file changed without fabricating a signature diff. */
+
+
 function unknownChangeFallback(file: string, status: ChangedFile['status']): SymbolChange[] {
   if (status === 'deleted') {
     return [{
@@ -334,15 +334,15 @@ function unknownChangeFallback(file: string, status: ChangedFile['status']): Sym
   }];
 }
 
-/**
- * Capture what `repoPath`'s working tree actually changed relative to
- * `baseRef` (default `HEAD`) as `SymbolChange[]` — the same type
- * `detectConceptualConflicts` (conceptual-conflict.ts) consumes — with ZERO
- * agent self-reporting. TS/JS files get full syntactic before/after signature
- * diffing; every other analyzable-but-unsupported file, and deletes in any
- * language, degrade to an honest "unknown-change" (`body`/`delete`, no
- * before/after) rather than a fabricated diff.
- */
+
+
+
+
+
+
+
+
+
 export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolChange[]> {
   const repoPath = opts.repoPath;
   const baseRef = opts.baseRef ?? 'HEAD';
@@ -355,9 +355,9 @@ export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolC
     if (opts.maxFiles !== undefined && analyzed >= opts.maxFiles) break;
     const ext = path.extname(file);
     if (!ANALYZABLE_EXTENSIONS.has(ext)) {
-      // Non-source or genuinely unrecognized extension: skip silently (matches
-      // "filter to analyzable extensions" in the algorithm spec) rather than
-      // emitting noise for lockfiles, markdown, JSON config, etc.
+
+
+
       continue;
     }
     analyzed++;
@@ -385,8 +385,8 @@ export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolC
     ]);
 
     if (afterText === undefined) {
-      // Working-tree read failed unexpectedly (race/permissions) — degrade
-      // gracefully instead of throwing.
+
+
       changes.push(...unknownChangeFallback(file, status));
       continue;
     }
@@ -394,9 +394,9 @@ export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolC
     try {
       changes.push(...diffTsJsFile(file, beforeText, afterText));
     } catch {
-      // Parse failure (e.g. transient syntax error mid-edit) — never let a
-      // single file's parse error break the whole capture; degrade to
-      // unknown-change for that file only.
+
+
+
       changes.push(...unknownChangeFallback(file, status));
     }
   }

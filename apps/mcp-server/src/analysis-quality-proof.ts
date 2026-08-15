@@ -192,7 +192,7 @@ function describeDescription(cas: any): string {
 }
 
 function describeCapabilities(cas: any): string {
-  const names = (cas.system_capabilities || []).map((capability: any) => capability.name).filter(Boolean);
+  const names = (cas.capabilities || []).map((capability: any) => capability.name).filter(Boolean);
   return `${names.length}: ${names.slice(0, 6).join(', ') || 'none'}`;
 }
 
@@ -202,7 +202,7 @@ function describeDomain(cas: any): string {
 
 function describeEntities(cas: any): string {
   const entities = [
-    ...(cas.data_entities || []),
+    ...(cas.entities || []),
     ...((cas.database_schema?.entities || []) as any[]),
   ];
   const names = entities.map((entity: any) => entity.name).filter(Boolean);

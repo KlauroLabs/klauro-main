@@ -1,13 +1,13 @@
-/**
- * Test inventory — enumerates EVERY unit test in the suite for the gauntlet
- * docket UI. Static scan (no execution): finds every *.test.ts under src/,
- * extracts each test()/it() name, and groups by area so the dashboard can show
- * the full docket of what the suite covers, not just the integration scenarios.
- *
- * Deliberately offline + fast (string scan) so the UI can render it instantly
- * and so it can't be skewed by a flaky run. Counts are exact for the common
- * `test('name', ...)` / `it('name', ...)` forms used across this codebase.
- */
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -19,8 +19,8 @@ export interface TestEntry {
 }
 
 export interface TestFileInventory {
-  file: string;        // repo-relative path
-  area: string;        // grouping bucket
+  file: string;
+  area: string;
   count: number;
   skipped: number;
   tests: TestEntry[];
@@ -34,16 +34,16 @@ export interface TestInventory {
   areas: Array<{ area: string; file_count: number; test_count: number; files: TestFileInventory[] }>;
 }
 
-/** Matches test('name'...), it("name"...), test(`name`...), with optional t.skip etc. */
+
 const TEST_RE = /\b(?:test|it)(?:\.(skip|todo|only))?\s*\(\s*(['"`])((?:\\.|(?!\2).)*)\2/g;
-/** test('name', { skip: ... }, fn) form. */
+
 const SKIP_OPT_RE = /\bskip\s*:/;
 
 function deriveArea(relPath: string): string {
   const p = relPath.replace(/\\/g, '/');
   if (p.includes('/gauntlet/retrieval/')) return 'gauntlet · retrieval backends';
   if (p.includes('/gauntlet/')) return 'gauntlet · core';
-  // Bucket top-level src tests by a coarse subject from the filename.
+
   const base = path.basename(p).replace(/\.test\.ts$/, '');
   if (/listing|storage|analysis|workspace/.test(base)) return 'analysis & workspace listing';
   if (/agent|adoption|context|readiness|benchmark|live|idiom|capsule/.test(base)) return 'agent harness & benchmarks';
@@ -81,7 +81,7 @@ function scanFile(content: string): TestEntry[] {
     while ((m = TEST_RE.exec(line)) !== null) {
       const modifier = m[1];
       const rawName = m[3];
-      // Ignore nested describe/suite labels and obvious helper calls already excluded by \b(test|it).
+
       const skipped = modifier === 'skip' || modifier === 'todo' || SKIP_OPT_RE.test(line.slice(m.index));
       entries.push({
         name: rawName.replace(/\\(['"`])/g, '$1'),
@@ -94,8 +94,8 @@ function scanFile(content: string): TestEntry[] {
 }
 
 export async function buildTestInventory(srcRoot?: string): Promise<TestInventory> {
-  const root = srcRoot || path.resolve(__dirname, '..'); // apps/mcp-server/src
-  const repoRoot = path.resolve(root, '..'); // apps/mcp-server
+  const root = srcRoot || path.resolve(__dirname, '..');
+  const repoRoot = path.resolve(root, '..');
   const files = await listTestFiles(root);
 
   const fileInventories: TestFileInventory[] = [];
@@ -113,7 +113,7 @@ export async function buildTestInventory(srcRoot?: string): Promise<TestInventor
     });
   }
 
-  // Group by area, sorted by test count desc.
+
   const byArea = new Map<string, TestFileInventory[]>();
   for (const f of fileInventories) {
     if (!byArea.has(f.area)) byArea.set(f.area, []);

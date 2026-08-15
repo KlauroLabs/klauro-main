@@ -19,7 +19,7 @@ test('greenfield guidance exposes capability memory and reuse decisions before b
             type: 'service',
             technologies: { languages: [{ name: 'TypeScript/JavaScript', percentage: 100 }], frameworks: [] },
           },
-          system_capabilities: [
+          capabilities: [
             {
               id: 'portfolio-reporting',
               name: 'Portfolio Reporting',
@@ -54,7 +54,7 @@ test('greenfield guidance exposes capability memory and reuse decisions before b
           },
           enhanced_system_purpose: { primary_domain: 'portfolio-management' },
           domain_concepts: [],
-          data_entities: [],
+          entities: [],
           database_schema: { entities: [] },
         } as any,
       },

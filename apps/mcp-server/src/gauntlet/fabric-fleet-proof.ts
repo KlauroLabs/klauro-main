@@ -1,49 +1,49 @@
-/**
- * Fabric fleet proof (mission: prove, end-to-end and honestly, that a fleet
- * coordinating through the CONCEPTUAL fabric is more formidable than the
- * same fleet coordinating on files/symbols alone).
- *
- * This is a blackbox proof harness: it drives the REAL coordination API —
- * `coordination/local-store.ts` (appendClaim/getActiveClaims), `arbiter.ts`
- * (arbitrate), `coordination/conceptual-scope.ts` (buildConceptIndex,
- * deriveConceptualCoordinate(s), compareConceptualCoordinates), and
- * `coordination/partitioner.ts` (partitionTasks, groupTasksByConcept) —
- * never engine internals (no createOrchestrator/orchestrateAnalysis calls;
- * the CAS is loaded once via the already-cached `getAnalysis`, exactly the
- * same read path `server.ts`'s `conceptIndexForWorkspace` uses). Follows the
- * same isolated-KLAURO_COORD_DIR pattern as `coordination-demo.ts`.
- *
- * REAL flows/steps: computed from this repo's OWN cached analysis
- * (getAnalysis + getFlowConcepts against
- * /Users/michaelshattuck/dev/unravl/proof-of-concept), not a hand-built
- * fixture. 1000+ real flows exist here; we pick a handful of real
- * multi-step ones for the scenarios below and print their actual ids.
- *
- * HONEST LIMITATION surfaced by this harness (found while building it, not
- * papered over): neither this repo's nor zerac-api's real FlowConcept output
- * currently populates `entities` — `flow-concepts.ts` derives `entities` by
- * matching a flow's node ids against `cas.data_entities[].lifecycle`
- * toucher ids, and on both corpora those toucher-id namespaces (backend
- * `method_class_...` ids) never intersect the flow-index's namespace
- * (frontend `route_.../component_.../hook_usage_...` ids for this repo,
- * shell-entrypoint ids for zerac-api). So the "same entity, different
- * flows/files" conceptual-conflict case is API-complete and unit-tested
- * (conceptual-scope.test.ts) but NOT naturally reachable via DERIVED
- * coordinates on either real corpus today. This harness demonstrates that
- * case using DECLARED entities (`entities` passed explicitly to claim_work,
- * a first-class, documented input per the tool schema) layered on top of
- * two real, independently-derived flow coordinates — and says so plainly in
- * the output rather than fabricating a derived-entity hit.
- *
- * Run:
- *   npx tsx apps/mcp-server/src/gauntlet/fabric-fleet-proof.ts
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { getAnalysis } from '../analyzer';
+import { getAnalysis, runAnalysis } from '../analyzer';
 import * as query from '../query';
 import { arbitrate } from '../coordination/arbiter';
 import { appendClaim, getActiveClaims } from '../coordination/local-store';
@@ -53,15 +53,14 @@ import {
   deriveConceptualCoordinate,
   type ConceptIndex,
 } from '../coordination/conceptual-scope';
-import { partitionTasks, groupTasksByConcept, type PartitionTask, type PartitionCas } from '../coordination/partitioner';
+import { partitionTasks, type PartitionTask, type PartitionCas } from '../coordination/partitioner';
 import type { CasEdgeRef, ConceptualCoordinate, WorkspaceCapabilityRef, WorkClaim } from '../coordination/types';
 
-const REPO_PATH = '/Users/michaelshattuck/dev/unravl/proof-of-concept';
 const WORKSPACE_ID = 'fabric-fleet-proof-workspace';
 
-// ---------------------------------------------------------------------------
-// Narration plumbing (mirrors coordination-demo.ts)
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface TranscriptLine {
   property: number;
@@ -109,26 +108,33 @@ function nowClaim(partial: Partial<WorkClaim> & Pick<WorkClaim, 'claim_id' | 'ag
 const NO_CAS_EDGES: CasEdgeRef[] = [];
 const NO_WORKSPACE_CAPS: WorkspaceCapabilityRef[] = [];
 
-// ---------------------------------------------------------------------------
-// Real flow selection — picked once from this repo's real, cached analysis.
-// ---------------------------------------------------------------------------
+
+
+
 
 interface SelectedFlows {
   index: ConceptIndex;
   partitionCas: PartitionCas;
-  /** Two real, DIFFERENT steps of the SAME real flow (property 2's non-blocking case). */
+
   sameFlowStepA: { flow_id: string; step_id: string; symbol: string };
   sameFlowStepB: { flow_id: string; step_id: string; symbol: string };
-  /** A real second step of sameFlowStepA's flow used again for property 3's same-step conflict + property 4's dedup. */
+
   sameFlowSameStepSymbol: string;
-  /** A real, wholly different flow (disjoint from the two above) for property 1's "N disjoint tasks" map and property 5's partitioning. */
+
   disjointFlow: { flow_id: string; step_id: string; symbol: string };
-  /** A third real, distinct flow for partitioning/ambient-map breadth. */
+
   thirdFlow: { flow_id: string; step_id: string; symbol: string };
 }
 
-async function selectRealFlows(): Promise<SelectedFlows> {
-  const cas = await getAnalysis(REPO_PATH);
+async function selectRealFlows(repoPath: string): Promise<SelectedFlows> {
+  let cas;
+  try {
+    cas = await getAnalysis(repoPath);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith('No analysis found for:')) throw error;
+    await runAnalysis(repoPath);
+    cas = await getAnalysis(repoPath);
+  }
   const { flows } = query.getFlowConcepts(cas as any, { maxFlows: 2000 });
   const index = buildConceptIndex(flows);
 
@@ -145,14 +151,14 @@ async function selectRealFlows(): Promise<SelectedFlows> {
     files: [...files],
   };
 
-  // A real flow with >= 2 steps (route -> component -> hooks is the common shape here).
+
   const multiStep = flows.filter((f) => f.steps.length >= 2 && f.steps.every((s: any) => s.functions.length > 0));
   if (multiStep.length < 1) throw new Error('No multi-step real flow found — cannot demonstrate property 2/3 honestly.');
   const chosenFlow = multiStep[0];
   const stepA = chosenFlow.steps[0];
   const stepB = chosenFlow.steps[1];
 
-  // Two more real, structurally distinct flows for the disjoint-work cases.
+
   const others = flows.filter((f) => f.flow_id !== chosenFlow.flow_id && f.steps.length >= 1 && f.steps[0].functions.length > 0);
   if (others.length < 2) throw new Error('Need at least 2 other real flows for disjoint-work scenarios.');
   const disjoint = others[0];
@@ -169,10 +175,10 @@ async function selectRealFlows(): Promise<SelectedFlows> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Property 1 — always-on ambient awareness for N disjoint tasks, zero manual
-// annotation, zero required overlap.
-// ---------------------------------------------------------------------------
+
+
+
+
 
 async function property1(transcript: TranscriptLine[], sel: SelectedFlows): Promise<PropertyResult> {
   say(transcript, 1, 'Five agents claim work using ONLY paths/symbols (no flow_id/step_id declared) — the fabric derives conceptual coordinates for every one of them from real flow-concepts.');
@@ -205,10 +211,10 @@ async function property1(transcript: TranscriptLine[], sel: SelectedFlows): Prom
   return { property: 1, name: 'always-on-ambient-awareness', passed };
 }
 
-// ---------------------------------------------------------------------------
-// Property 2 — non-blocking parallelism: same flow, different steps => both
-// proceed, verdict is 'awareness' not a block.
-// ---------------------------------------------------------------------------
+
+
+
+
 
 async function property2(transcript: TranscriptLine[], sel: SelectedFlows): Promise<PropertyResult> {
   say(transcript, 2, `Agent A claims real step "${sel.sameFlowStepA.step_id}" of flow "${sel.sameFlowStepA.flow_id}".`);
@@ -255,11 +261,11 @@ async function property2(transcript: TranscriptLine[], sel: SelectedFlows): Prom
   return { property: 2, name: 'non-blocking-parallelism', passed };
 }
 
-// ---------------------------------------------------------------------------
-// Property 3 — real conceptual-conflict catch: (a) same step, same flow;
-// (b) cross-flow same-entity (declared, since no real corpus derives
-// populated entities — see module header).
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 async function property3(transcript: TranscriptLine[], sel: SelectedFlows): Promise<PropertyResult> {
   say(transcript, 3, `3a — SAME STEP case: two agents both declare flow "${sel.sameFlowStepA.flow_id}" / step "${sel.sameFlowStepA.step_id}" but via DIFFERENT symbols within that step's function set (would be textually disjoint if the step has >1 function; here we use the same anchor symbol both agents happen to touch, mirroring the real-world case of two agents both owning "the Charge step").`);
@@ -293,10 +299,10 @@ async function property3(transcript: TranscriptLine[], sel: SelectedFlows): Prom
   return { property: 3, name: 'real-conceptual-conflict-catch', passed };
 }
 
-// ---------------------------------------------------------------------------
-// Property 4 — dedup: two agents about to do the SAME conceptual work (same
-// flow+step) are caught as duplicate before both burn effort.
-// ---------------------------------------------------------------------------
+
+
+
+
 
 async function property4(transcript: TranscriptLine[], sel: SelectedFlows): Promise<PropertyResult> {
   say(transcript, 4, `Agent E claims real step "${sel.sameFlowStepA.step_id}" of flow "${sel.sameFlowStepA.flow_id}" with capability name "flow-work".`);
@@ -313,18 +319,25 @@ async function property4(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     intent: 'Implement the step-A behavior',
   }));
 
-  say(transcript, 4, 'Agent F is independently assigned the SAME step of the SAME flow (a fleet dispatcher mistake, or two agents grabbing the same ticket) — capability_work name matches, arbiter catches it as duplicate BEFORE agent F starts.');
+  say(transcript, 4, 'Agent F independently starts the SAME step of the SAME flow. Fabric identifies the duplicate intent while retaining both attributed streams so the participants can share discoveries and reconcile in realtime.');
   const claimFAttempt: WorkClaim = {
     ...nowClaim({
       claim_id: 'claim-f-dedup',
       agent_id: 'agent-F',
-      scope: { repo: WORKSPACE_ID, paths: [], symbols: [], capability: 'flow-work' },
+      scope: {
+        repo: WORKSPACE_ID,
+        paths: [],
+        symbols: [],
+        capability: 'flow-work',
+        concept: { flow_id: sel.sameFlowStepA.flow_id, step_id: sel.sameFlowStepA.step_id, source: 'declared' },
+      },
       intent: 'Implement the step-A behavior (again, unknowingly)',
     }),
     seq: 999,
   };
   const activeForF = await getActiveClaims(WORKSPACE_ID);
   const resultF = arbitrate(claimFAttempt, activeForF, NO_CAS_EDGES, NO_WORKSPACE_CAPS);
+  const claimF = await appendClaim(WORKSPACE_ID, claimFAttempt);
   say(transcript, 4, 'Agent F verdict (arbitrate, capability-name dedup)', {
     verdict: resultF.verdict,
     with_claim_id: resultF.with_claim?.claim_id,
@@ -338,22 +351,25 @@ async function property4(transcript: TranscriptLine[], sel: SelectedFlows): Prom
   });
   say(transcript, 4, 'Conceptual comparison confirms it is the SAME flow+step, not merely the same capability label', conceptCmp);
 
-  const passed = resultF.verdict === 'duplicate' && conceptCmp.verdict === 'conceptual_conflict' && conceptCmp.shared_step_id === sel.sameFlowStepA.step_id;
+  const retained = (await getActiveClaims(WORKSPACE_ID)).filter((claim) =>
+    claim.claim_id === claimE.claim_id || claim.claim_id === claimF.claim_id
+  );
+  const passed = resultF.verdict === 'duplicate' && conceptCmp.verdict === 'conceptual_conflict' && conceptCmp.shared_step_id === sel.sameFlowStepA.step_id && retained.length === 2;
   say(
     transcript,
     4,
     passed
-      ? 'Duplicate work caught before agent F burned any effort — both the literal capability-name dedup AND the conceptual same-flow-same-step signal agree.'
-      : 'UNEXPECTED: duplicate work was not caught.'
+      ? 'Duplicate intent is shared immediately and both attributed streams remain active. The capability-name and same-flow-same-step signals agree without becoming a gate.'
+      : 'UNEXPECTED: duplicate awareness or stream retention failed.'
   );
-  return { property: 4, name: 'dedup-before-effort', passed };
+  return { property: 4, name: 'duplicate-awareness-with-stream-retention', passed };
 }
 
-// ---------------------------------------------------------------------------
-// Property 5 — conceptual partitioning: plan_parallel_work / groupTasksByConcept
-// splits a real task set into conceptually-disjoint parallel batches on real
-// flow ids.
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 async function property5(transcript: TranscriptLine[], sel: SelectedFlows): Promise<PropertyResult> {
   const tasks: PartitionTask[] = [
@@ -370,10 +386,10 @@ async function property5(transcript: TranscriptLine[], sel: SelectedFlows): Prom
 
   const groups = result.concept_groups ?? [];
   const distinctFlowIds = new Set(tasks.map((t) => t.flow_id));
-  // task-1/task-2 deliberately share sameFlowStepA/B's flow_id (same real flow,
-  // different steps — the property-2 pair), so 4 tasks over 3 distinct real
-  // flows is the CORRECT expectation: one group of 2 (task-1+task-2, same
-  // flow) plus two singleton groups (task-3, task-4 on their own flows).
+
+
+
+
   const groupForSharedFlow = groups.find((g) => g.concept_id === sel.sameFlowStepA.flow_id);
   const passed =
     groups.length === distinctFlowIds.size &&
@@ -383,16 +399,16 @@ async function property5(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     transcript,
     5,
     passed
-      ? `4 tasks over 3 distinct real flows correctly split into 3 conceptual groups (task-1+task-2 co-located on their shared real flow; task-3 and task-4 each alone on their own real flow) — safe to route to 3 separate agents/waves with maximal confidence, independent of file-level coloring.`
+      ? `4 tasks over 3 distinct real flows produce 3 awareness groups. The shared-flow tasks remain separately attributable while receiving common context; the other flows remain independently visible. These groups inform collaboration and never prescribe routing, ownership, or execution order.`
       : 'UNEXPECTED: conceptual partitioning did not group real flows as expected.'
   );
   return { property: 5, name: 'conceptual-partitioning', passed };
 }
 
-// ---------------------------------------------------------------------------
-// Property 6 — the contrast: what the SAME fleet WITHOUT the fabric would
-// miss. Quantified against the exact scenarios above, honestly.
-// ---------------------------------------------------------------------------
+
+
+
+
 
 async function property6(transcript: TranscriptLine[], sel: SelectedFlows): Promise<PropertyResult> {
   say(transcript, 6, 'Re-running property 3b\'s cross-flow entity case through FILE/SYMBOL-ONLY collision logic (arbitrate with no concept at all) to show what a fabric-less fleet would see.');
@@ -418,7 +434,7 @@ async function property6(transcript: TranscriptLine[], sel: SelectedFlows): Prom
   );
   say(transcript, 6, 'The SAME pair through the conceptual fabric', conceptualVerdict);
 
-  const missedByFileOnly = fileOnlyVerdict.verdict === 'granted'; // no path/symbol/capability overlap at all -> silently granted
+  const missedByFileOnly = fileOnlyVerdict.verdict === 'granted';
   const caughtByFabric = conceptualVerdict.verdict === 'conceptual_conflict';
 
   say(transcript, 6, 'Re-running property 4\'s dedup WITHOUT the capability-name coincidence (agent F declares a DIFFERENT capability label, only the conceptual coordinate matches) — this is the harder, more realistic dedup case a label-matching-only fleet would miss entirely.');
@@ -449,24 +465,24 @@ async function property6(transcript: TranscriptLine[], sel: SelectedFlows): Prom
     transcript,
     6,
     passed
-      ? 'Confirmed: file/symbol-only coordination silently GRANTS both cases (a merge that will ship incoherent, and duplicated effort under a different label); the conceptual fabric catches both, using real flow ids from this repo\'s own analysis.'
+      ? 'Confirmed: file/symbol-only awareness cannot see either relationship. Conceptual Fabric surfaces both relationships from real flow ids while every participant remains free to continue and reconcile with shared context.'
       : 'Contrast did not hold as expected — see detail above.'
   );
   return { property: 6, name: 'fabric-vs-no-fabric-contrast', passed };
 }
 
-// ---------------------------------------------------------------------------
-// Runner
-// ---------------------------------------------------------------------------
 
-export async function run(): Promise<ProofRunResult> {
+
+
+
+export async function run(repoPath = process.cwd()): Promise<ProofRunResult> {
   const prevCoordDir = process.env.KLAURO_COORD_DIR;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-fabric-fleet-proof-'));
   process.env.KLAURO_COORD_DIR = tempDir;
 
   console.log('='.repeat(78));
   console.log('KLAURO FABRIC FLEET PROOF — conceptual coordination over REAL flows');
-  console.log(`repo analyzed: ${REPO_PATH}`);
+  console.log(`repo analyzed: ${repoPath}`);
   console.log(`workspace: ${WORKSPACE_ID}`);
   console.log(`isolated KLAURO_COORD_DIR: ${tempDir}`);
   console.log('='.repeat(78));
@@ -474,7 +490,7 @@ export async function run(): Promise<ProofRunResult> {
   const transcript: TranscriptLine[] = [];
   try {
     console.log('Selecting real flows from this repo\'s cached analysis (getAnalysis + getFlowConcepts)...');
-    const sel = await selectRealFlows();
+    const sel = await selectRealFlows(repoPath);
     console.log('Selected real flow/step ids:');
     console.log(JSON.stringify({
       sameFlowStepA: sel.sameFlowStepA,
@@ -520,7 +536,8 @@ export async function run(): Promise<ProofRunResult> {
 }
 
 export async function main(): Promise<void> {
-  const result = await run();
+  const repoPath = path.resolve(process.argv[2] || process.cwd());
+  const result = await run(repoPath);
   const failed = result.properties.filter((p) => !p.passed);
   if (failed.length > 0) {
     process.exitCode = 1;

@@ -1,27 +1,27 @@
-/**
- * Real, installed competitor arms — Camp B (structural) run at full strength.
- *
- * These are not proxies. `scip-typescript` is Sourcegraph's compiler-accurate
- * SCIP indexer (the same engine behind Sourcegraph code intelligence); `ctags`
- * is Universal Ctags. We run them exactly as a Camp-B user would and read their
- * real output, so any Klauro win is honest.
- *
- * What the head-to-head reveals:
- *   - On TS/JS who-calls, scip is compiler-accurate and will TIE Klauro on
- *     quality (you cannot out-correct ground truth). Klauro's edge there is
- *     tokens (the exact caller set vs an index/files to read) and breadth.
- *   - scip-typescript indexes ONLY TS/JS. On Go, Java, Kotlin, Swift, C/C++,
- *     Python — every other language Klauro resolves — scip returns nothing.
- *     That is the decisive, not-even-close gap, and it is a fact of the tool,
- *     not a handicap we imposed.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { execFileSync } from 'child_process';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as os from 'os';
 
-/** Locate the scip CLI (Sourcegraph), preferring the user's Go bin. Null if absent. */
+
 export function scipCliPath(): string | null {
   const candidates = [path.join(os.homedir(), 'go', 'bin', 'scip'), 'scip'];
   for (const c of candidates) {
@@ -29,7 +29,7 @@ export function scipCliPath(): string | null {
       execFileSync(c, ['--version'], { stdio: 'ignore' });
       return c;
     } catch {
-      /* keep trying */
+
     }
   }
   return null;
@@ -44,15 +44,15 @@ export function scipTypescriptAvailable(): boolean {
   }
 }
 
-/** Does this SCIP symbol name `Class#method`? scip-typescript encodes a method
- *  as `... ClassName#methodName().`, so matching on `Class#method` excludes the
- *  same-name decoy on another class — the compiler-accurate precision we expect. */
+
+
+
 function symbolNamesMethod(symbol: string, className: string, methodName: string): boolean {
   if (!symbol) return false;
-  // Tolerate generics / overload suffixes; require the exact Class#method boundary.
+
   const re = new RegExp(`[#.\\/]${className}#${methodName}\\b`);
   if (re.test(symbol)) return true;
-  // Some emits use `ClassName#methodName().` without a leading separator.
+
   return symbol.includes(`${className}#${methodName}`);
 }
 
@@ -63,12 +63,12 @@ export interface ScipCallersResult {
   available: true;
 }
 
-/**
- * Compiler-accurate Camp B who-calls: index with scip-typescript, then read the
- * SCIP occurrences. A non-definition (reference) occurrence of the target
- * `Class#method` symbol is a call site; its file is a caller file. Returns null
- * when the tool isn't installed or the project isn't TS/JS (scip's real limit).
- */
+
+
+
+
+
+
 export function scipCallers(
   dir: string,
   className: string,
@@ -80,19 +80,19 @@ export function scipCallers(
   const t0 = Date.now();
   const indexPath = path.join(dir, 'index.scip');
   try {
-    // Real indexing. --infer-tsconfig lets it handle a bare fixture dir.
+
     execFileSync('scip-typescript', ['index', '--infer-tsconfig', '--output', indexPath], {
       cwd: dir,
       stdio: 'ignore',
       timeout: 180_000,
     });
   } catch {
-    try { fs.removeSync(indexPath); } catch { /* noop */ }
-    return null; // not a TS/JS project, or no sources scip could index
+    try { fs.removeSync(indexPath); } catch {   }
+    return null;
   }
 
   let indexBytes = 0;
-  try { indexBytes = fs.statSync(indexPath).size; } catch { /* noop */ }
+  try { indexBytes = fs.statSync(indexPath).size; } catch {   }
 
   let json = '';
   try {
@@ -101,10 +101,10 @@ export function scipCallers(
       maxBuffer: 256 * 1024 * 1024,
     });
   } catch {
-    try { fs.removeSync(indexPath); } catch { /* noop */ }
+    try { fs.removeSync(indexPath); } catch {   }
     return null;
   }
-  try { fs.removeSync(indexPath); } catch { /* noop */ }
+  try { fs.removeSync(indexPath); } catch {   }
 
   const files = new Set<string>();
   try {
@@ -114,7 +114,7 @@ export function scipCallers(
       for (const occ of d.occurrences || []) {
         const sym: string = occ.symbol || '';
         const roles: number = occ.symbol_roles ?? occ.symbolRoles ?? 0;
-        const isDefinition = (roles & 1) === 1; // SymbolRole.Definition == 1
+        const isDefinition = (roles & 1) === 1;
         if (!isDefinition && symbolNamesMethod(sym, className, methodName)) {
           files.add(path.basename(rel));
         }
@@ -127,7 +127,7 @@ export function scipCallers(
   return { files: [...files], ms: Date.now() - t0, indexBytes, available: true };
 }
 
-/** GitHub stack-graphs (TS): syntactic name-resolution nav. Null if absent. */
+
 export function stackGraphsTsPath(): string | null {
   const candidates = [
     path.join(os.homedir(), '.local', 'bin', 'tree-sitter-stack-graphs-typescript'),
@@ -138,21 +138,21 @@ export function stackGraphsTsPath(): string | null {
       execFileSync(c, ['--version'], { stdio: 'ignore' });
       return c;
     } catch {
-      /* keep trying */
+
     }
   }
   return null;
 }
 
-/** Parse `has definition\n  <file>:<line>:<col>` from a stack-graphs query result. */
+
 function parseStackGraphDef(out: string): { file: string; line: number } | null {
   const m = out.match(/has definition\s*\n\s*([^\s:]+\.[A-Za-z0-9]+):(\d+):(\d+)/);
   if (!m) return null;
   return { file: m[1], line: parseInt(m[2], 10) };
 }
 
-/** Does a resolved definition belong to `className`.`methodName`? Scan upward from
- *  the def line for the nearest enclosing `class <Name>`. */
+
+
 function defBelongsToClass(
   defFile: string,
   defLine: number,
@@ -174,14 +174,14 @@ function defBelongsToClass(
   return false;
 }
 
-/**
- * stack-graphs who-calls: enumerate every `.method(` call site, resolve each to
- * its definition with the real stack-graphs query engine, and keep the sites
- * whose definition is `className`.`methodName`. Name-resolution is syntactic, so
- * on simple typed receivers it matches a compiler (a ceiling tie); it is TS/JS
- * only, so it cannot run on other languages. Returns null if the tool is absent
- * or there are no TS/JS sources.
- */
+
+
+
+
+
+
+
+
 export function stackGraphsCallers(
   dir: string,
   className: string,
@@ -207,11 +207,11 @@ export function stackGraphsCallers(
       timeout: 120_000,
     });
   } catch {
-    try { fs.removeSync(dbPath); } catch { /* noop */ }
+    try { fs.removeSync(dbPath); } catch {   }
     return null;
   }
 
-  // Enumerate call sites: `<recv>.<method>(` — record the method-name position.
+
   const callRe = new RegExp(`\\.\\s*${methodName}\\s*\\(`, 'g');
   const sites: Array<{ file: string; line: number; col: number }> = [];
   for (const file of entries) {
@@ -249,12 +249,12 @@ export function stackGraphsCallers(
     }
   }
 
-  try { fs.removeSync(dbPath); } catch { /* noop */ }
+  try { fs.removeSync(dbPath); } catch {   }
   return { files: [...callerFiles], ms: Date.now() - t0 };
 }
 
-/** DeusData codebase-memory-mcp — the serious Camp-B+ contender (tree-sitter +
- *  Hybrid LSP knowledge graph). Null if the binary isn't installed. */
+
+
 export function codebaseMemoryPath(): string | null {
   const candidates = [path.join(os.homedir(), '.local', 'bin', 'codebase-memory-mcp'), 'codebase-memory-mcp'];
   for (const c of candidates) {
@@ -262,19 +262,19 @@ export function codebaseMemoryPath(): string | null {
       execFileSync(c, ['--version'], { stdio: 'ignore' });
       return c;
     } catch {
-      /* keep trying */
+
     }
   }
   return null;
 }
 
-/**
- * codebase-memory who-calls: index the repo, then read get_architecture. Its
- * `boundaries` are package-level caller→callee edges; the callers of
- * `className` are the `from` packages of boundaries whose `to` is the class.
- * Map each caller package back to its source file. LSP-backed, so on TS this is
- * compiler-accurate — a ceiling tie with Klauro. Returns null if absent.
- */
+
+
+
+
+
+
+
 export function codebaseMemoryCallers(
   dir: string,
   className: string,
@@ -290,10 +290,10 @@ export function codebaseMemoryCallers(
   } catch {
     return null;
   }
-  // The project id is the slugified absolute path. codebase-memory PRESERVES
-  // underscores (slug charset [A-Za-z0-9_]); macOS temp dirs live under
-  // /var/folders/<x>_/..., so we must keep '_' or the project lookup misses and
-  // the competitor is silently under-read.
+
+
+
+
   const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
   let out = '';
   try {
@@ -315,12 +315,12 @@ export function codebaseMemoryCallers(
     .filter((b: any) => b.to === className)
     .map((b: any) => String(b.from));
 
-  // Resolve each caller package to its source file in the repo.
+
   let entries: string[] = [];
   try {
     entries = fs.readdirSync(dir);
   } catch {
-    /* noop */
+
   }
   const files = new Set<string>();
   for (const pkg of callerPkgs) {
@@ -330,15 +330,15 @@ export function codebaseMemoryCallers(
   return { files: [...files], ms: Date.now() - t0 };
 }
 
-/**
- * codebase-memory LIVE out-category arm. Indexes the fixture, then queries its
- * own knowledge graph for nodes of `label` via search_graph. This is the FAIR
- * head-to-head for Camp-C facts: codebase-memory advertises first-class `Route`
- * nodes, so we let it answer with its strongest tool. In practice its tree-sitter
- * indexer does not recognize framework route declarations (`app.get(...)`,
- * `@GetMapping`, `path(...)`), so it returns the names it DID find for that label
- * (often []), which the bench scores against the true facts. Null if not installed.
- */
+
+
+
+
+
+
+
+
+
 export function codebaseMemoryNodesByLabel(
   dir: string,
   label: string,
@@ -375,14 +375,14 @@ export function codebaseMemoryNodesByLabel(
   return { names, ms: Date.now() - t0 };
 }
 
-/**
- * codebase-memory edge-type inventory from get_architecture, run live. Used to
- * prove an out-category ABSENCE at full strength: its graph carries raw
- * structural edges (DEFINES/IMPORTS/USAGE/CALLS/DECORATES) but no ORM-cardinality
- * edge (OneToMany/ManyToOne) and no `renders` edge — so the directional ORM
- * relation and the component render tree are facts only Klauro produces, even
- * though codebase-memory indexed the very same code. Null if not installed.
- */
+
+
+
+
+
+
+
+
 export function codebaseMemoryEdgeTypes(dir: string): { types: string[]; ms: number } | null {
   const bin = codebaseMemoryPath();
   if (!bin) return null;
@@ -416,17 +416,17 @@ export function codebaseMemoryEdgeTypes(dir: string): { types: string[]; ms: num
   return { types, ms: Date.now() - t0 };
 }
 
-/** True for test/benchmark/type-declaration files whose declared functions are
- *  not project source symbols a Klauro user would ask about (mirrors the same
- *  non-source exclusion oss-study.ts already applies to codebase-memory). Keeps
- *  scip's symbol-name arm honest: a test-only helper name never manufactures a
- *  fake loss against Klauro's source-only extraction. */
+
+
+
+
+
 function isNonSourceScipFile(relPath: string): boolean {
   if (!relPath) return false;
   const p = relPath.toLowerCase();
-  // Note: real .d.ts files are NOT excluded — type-only declarations are still
-  // real project symbols. Only test/benchmark trees and *.test-d.ts (scip's
-  // type-testing convention) are excluded.
+
+
+
   return (
     p.includes('/test/') || p.startsWith('test/') ||
     p.includes('/tests/') || p.startsWith('tests/') ||
@@ -437,16 +437,16 @@ function isNonSourceScipFile(relPath: string): boolean {
   );
 }
 
-/**
- * SCIP whole-index symbol-NAME extraction (distinct from `scipCallers`, which
- * answers a single who-calls query). Indexes `dir` with scip-typescript and
- * returns the distinct local symbol names (function/method/class identifiers)
- * SCIP's occurrences carry — the same honest name-set-containment surface
- * oss-study.ts already uses for codebase-memory/ctags. Compiler-accurate on
- * TS/JS; returns null (never a fabricated empty win) when the tool isn't
- * installed or the project has no TS/JS sources scip-typescript can index —
- * that non-coverage is scip's real, documented limit, not a handicap we impose.
- */
+
+
+
+
+
+
+
+
+
+
 export function scipSymbolNames(dir: string): { names: string[]; ms: number } | null {
   const scip = scipCliPath();
   if (!scip || !scipTypescriptAvailable()) return null;
@@ -460,8 +460,8 @@ export function scipSymbolNames(dir: string): { names: string[]; ms: number } | 
       timeout: 180_000,
     });
   } catch {
-    try { fs.removeSync(indexPath); } catch { /* noop */ }
-    return null; // not a TS/JS project, or no sources scip could index
+    try { fs.removeSync(indexPath); } catch {   }
+    return null;
   }
 
   let json = '';
@@ -471,26 +471,26 @@ export function scipSymbolNames(dir: string): { names: string[]; ms: number } | 
       maxBuffer: 256 * 1024 * 1024,
     });
   } catch {
-    try { fs.removeSync(indexPath); } catch { /* noop */ }
+    try { fs.removeSync(indexPath); } catch {   }
     return null;
   }
-  try { fs.removeSync(indexPath); } catch { /* noop */ }
+  try { fs.removeSync(indexPath); } catch {   }
 
-  // SCIP symbol strings look like:
-  //   "scip-typescript npm . . src/`index.ts`/isPlainObject()."          -> function
-  //   "scip-typescript npm . . src/`index.ts`/MyClass#method()."         -> method
-  //   "scip-typescript npm . . src/`index.ts`/isPlainObject().(value)"   -> parameter (skip)
-  //   "scip-typescript npm . . test.js`/assert."                        -> plain value/require binding (skip)
-  // Only symbols whose final path segment ends in a call signature `()."`
-  // are function/method DECLARATIONS — matching Klauro's fnNames, which are
-  // `function`/`method` CAS nodes only, never plain variable bindings (a
-  // require() alias like `assert`/`isNumber` in a test file is not a function
-  // declaration Klauro tracks, and scip encodes it identically to one — the
-  // trailing `().` vs `.` is the only reliable signal). Definitions only
-  // (roles & 1), and non-source files (tests/benchmarks) are excluded the same
-  // way ctagsNames/codebaseMemoryNames exclude non-source tooling files, so a
-  // test-only helper never manufactures a fake loss against Klauro's
-  // source-only extraction.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const names = new Set<string>();
   try {
     const doc = JSON.parse(json);
@@ -513,10 +513,10 @@ export function scipSymbolNames(dir: string): { names: string[]; ms: number } | 
   return { names: [...names], ms: Date.now() - t0 };
 }
 
-/** Locate the Moderne CLI (`mod`), the OpenRewrite/LST-backed refactoring tool.
- *  Null if absent — this is the expected state on a machine without the Moderne
- *  toolchain installed (it ships via its own installer script, not a package
- *  manager formula). */
+
+
+
+
 export function moderneCliPath(): string | null {
   const candidates = [path.join(os.homedir(), '.moderne', 'cli', 'mod'), 'mod'];
   for (const c of candidates) {
@@ -524,15 +524,15 @@ export function moderneCliPath(): string | null {
       execFileSync(c, ['--version'], { stdio: 'ignore' });
       return c;
     } catch {
-      /* keep trying */
+
     }
   }
   return null;
 }
 
-/** Does a Java toolchain exist to run an OpenRewrite/Moderne LST build? Moderne's
- *  `mod build` shells out to Maven/Gradle under the hood, so both a JDK and a
- *  build tool must be present, in addition to the `mod` CLI itself. */
+
+
+
 export function javaBuildToolchainAvailable(): boolean {
   try {
     execFileSync('java', ['-version'], { stdio: 'ignore' });
@@ -544,7 +544,7 @@ export function javaBuildToolchainAvailable(): boolean {
       execFileSync(tool, ['--version'], { stdio: 'ignore' });
       return true;
     } catch {
-      /* keep trying */
+
     }
   }
   return false;
@@ -555,11 +555,11 @@ export interface ModerneAvailability {
   reason?: string;
 }
 
-/** Full Moderne/OpenRewrite availability check: the `mod` CLI AND a Java build
- *  toolchain (Maven or Gradle) it needs to produce an LST. Reports the precise
- *  reason it's unavailable so the arm can say e.g. "available:false (mod CLI not
- *  installed)" instead of a bare boolean — required by the WS-H/WS-I spec so we
- *  never silently skip without explanation. */
+
+
+
+
+
 export function moderneAvailability(): ModerneAvailability {
   const mod = moderneCliPath();
   if (!mod) return { available: false, reason: 'mod CLI not installed' };
@@ -569,17 +569,17 @@ export function moderneAvailability(): ModerneAvailability {
   return { available: true };
 }
 
-/**
- * Moderne/OpenRewrite LST symbol-NAME extraction. Builds a Lossless Semantic
- * Tree for `dir` via `mod build`, then reads back the declared type/method
- * names via `mod study` (or the LST's own listing, depending on installed
- * recipe set) so the comparison uses the SAME honest name-set-containment rule
- * as every other competitor arm in this file. Guarded by `moderneAvailability`
- * — returns null whenever the toolchain is not fully present so the caller can
- * report `available:false` with the precise reason instead of fabricating a
- * result. This function performs a REAL run when the toolchain is present; it
- * never synthesizes output.
- */
+
+
+
+
+
+
+
+
+
+
+
 export function moderneSymbolNames(dir: string): { names: string[]; ms: number } | null {
   const avail = moderneAvailability();
   if (!avail.available) return null;
@@ -589,23 +589,23 @@ export function moderneSymbolNames(dir: string): { names: string[]; ms: number }
   const t0 = Date.now();
   const lstDir = path.join(os.tmpdir(), `klauro-moderne-${process.pid}-${path.basename(dir)}`);
   try {
-    // `mod build` produces .jar LST artifacts under the target dir; a fresh temp
-    // dir keeps runs isolated and cleans up trivially.
+
+
     execFileSync(mod, ['build', dir, '--no-download'], {
       cwd: dir,
       stdio: 'ignore',
       timeout: 300_000,
     });
   } catch {
-    return null; // real build failure (no pom/build.gradle, network needed, etc.) — honest null
+    return null;
   } finally {
-    try { fs.removeSync(lstDir); } catch { /* noop */ }
+    try { fs.removeSync(lstDir); } catch {   }
   }
 
-  // `mod study` runs a recipe that lists declared types/methods; we ask for the
-  // FindMethods/FindTypes catalog recipes shipped with every Moderne install and
-  // parse their plaintext report for declared names. If the recipe set differs
-  // by install, this returns whatever names it can parse — never a fabricated set.
+
+
+
+
   let out = '';
   try {
     out = execFileSync(mod, ['study', dir, '--recipe', 'org.openrewrite.java.search.FindMethodDeclaration'], {
@@ -633,21 +633,21 @@ export function ctagsAvailable(): boolean {
   }
 }
 
-/**
- * ctags Camp B baseline. Universal Ctags is a DEFINITION indexer — it locates
- * where symbols are declared, not who calls them. The faithful "who-calls" a
- * ctags user can do is: find files that reference the method name (extras=+r).
- * It is name-based, so it cannot exclude a same-name decoy on another class —
- * exactly the precision wall Klauro's type resolution clears. Returns null if
- * ctags is absent.
- */
+
+
+
+
+
+
+
+
 export function ctagsCallers(dir: string, methodName: string): { files: string[]; ms: number } | null {
   if (!ctagsAvailable()) return null;
   const t0 = Date.now();
   let out = '';
   try {
-    // Reference tags (+r) emit one tag per use-site; field output is tab-separated:
-    //   name<TAB>file<TAB>...
+
+
     out = execFileSync(
       'ctags',
       ['-R', '--extras=+r', '--fields=+r', '-f', '-', dir],

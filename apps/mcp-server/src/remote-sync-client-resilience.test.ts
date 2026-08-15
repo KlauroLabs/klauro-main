@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
-import { analyzeCodebaseRemotely } from './remote-sync-client';
+import { analyzeCodebaseRemotely, waitForRemoteAnalysis } from './remote-sync-client';
 
 /**
  * Reproduces the live mcp.klauro.com bug: the CLI's remote upload path
@@ -210,4 +210,223 @@ test('parseRemoteResponse-equivalent: gzip content-encoding path still round-tri
   const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: 'test-token' });
   assert.equal(result.status, 'success');
   assert.ok(sawGzip, 'the large fixture snapshot should have been sent gzip-encoded');
+});
+
+test('analysis completion polling survives a transient server failure', async (t) => {
+  disableConnectorAuth(t);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-resilience-test-'));
+  const repo = makeGitFixtureRepo(root);
+  const analysisId = 'polling-resilience-analysis';
+  let statusRequests = 0;
+
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/analyze') {
+      await readRequestBody(req);
+      res.writeHead(202, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'accepted', analysis_id: analysisId, manifest: { files: [] } }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      statusRequests++;
+      if (statusRequests === 1) {
+        req.socket.destroy();
+        return;
+      }
+      if (statusRequests === 2) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'error', error: 'temporary read contention' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/export`) {
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({ system: { name: 'resilient' }, nodes: [], edges: [] }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ status: 'error', error: 'not found' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const serverUrl = `http://127.0.0.1:${address.port}`;
+
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: 'test-token', wait: true, analysisId });
+  assert.equal(result.status, 'success');
+  assert.ok(result.cas);
+  assert.equal(statusRequests, 3);
+});
+
+test('segmented CAS retrieval retries a dropped section response', async (t) => {
+  const analysisId = 'segmented-read-resilience';
+  let sectionRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        manifest_version: 1,
+        cas_version: '3.0.0',
+        analysis_id: analysisId,
+        analysis_timestamp: new Date().toISOString(),
+        sections: [{ name: 'identity', fields: ['system'] }],
+        logical_fields: ['system'],
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/sections/identity`) {
+      sectionRequests += 1;
+      if (sectionRequests === 1) {
+        req.socket.destroy();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({ system: { name: 'resilient-segmented-read' } }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+
+  const cas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    ['identity'],
+  );
+
+  assert.equal(cas.system.name, 'resilient-segmented-read');
+  assert.equal(sectionRequests, 2);
+});
+
+test('wait mode follows a structural response until pending comprehension completes', async (t) => {
+  disableConnectorAuth(t);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-resilience-test-'));
+  const repo = makeGitFixtureRepo(root);
+  const analysisId = 'pending-comprehension-analysis';
+  let statusRequests = 0;
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/analyze') {
+      await readRequestBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'success',
+        analysis_id: analysisId,
+        manifest: { files: [] },
+        cas: {
+          system: { name: 'structural' },
+          nodes: [],
+          edges: [],
+          ai_enrichment: 'pending',
+          layers_ready: { complete: false, layers: [{ layer: 'L5', status: 'pending' }] },
+        },
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      statusRequests++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/export`) {
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({
+        system: { name: 'complete' },
+        nodes: [],
+        edges: [],
+        ai_enrichment: 'ready',
+        layers_ready: { complete: true, layers: [{ layer: 'L5', status: 'ready' }] },
+      }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ status: 'error', error: 'not found' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const serverUrl = `http://127.0.0.1:${address.port}`;
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: 'test-token', wait: true, analysisId });
+  assert.equal(result.status, 'success');
+  assert.equal(result.cas?.ai_enrichment, 'ready');
+  assert.equal(result.cas?.layers_ready?.complete, true);
+  assert.equal(statusRequests, 1);
+});
+
+test('wait mode ignores a ready CAS from an older analysis revision', async (t) => {
+  disableConnectorAuth(t);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-resilience-test-'));
+  const repo = makeGitFixtureRepo(root);
+  const analysisId = 'revision-aware-analysis';
+  let statusRequests = 0;
+  let exportRequests = 0;
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/analyze') {
+      await readRequestBody(req);
+      res.writeHead(202, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'accepted', analysis_id: analysisId, analysis_revision: 2, manifest: { files: [] } }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      statusRequests++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId, analysis_revision: statusRequests === 1 ? 1 : 2 }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/export`) {
+      exportRequests++;
+      if (exportRequests === 1) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'error', error: 'Analysis is still populating' }));
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'x-klauro-cas-codec': 'none',
+        'x-klauro-analysis-revision': '2',
+      });
+      res.end(JSON.stringify({ system: { name: 'current' }, nodes: [], edges: [], ai_enrichment: 'ready' }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ status: 'error', error: 'not found' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const serverUrl = `http://127.0.0.1:${address.port}`;
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: 'test-token', wait: true, analysisId });
+  assert.equal(result.status, 'success');
+  assert.equal(result.analysis_revision, 2);
+  assert.equal(result.cas?.ai_enrichment, 'ready');
+  assert.equal(statusRequests, 3);
+  assert.equal(exportRequests, 2);
 });

@@ -181,9 +181,9 @@ function buildRepoMarkdown(cas: CASOutput, durationMs: number): string {
     lines.push('_No domain concepts detected._');
   }
   lines.push('');
-  // "Workflow" is not a stored CAS structure (docs/cas/SPECIFICATION.md
-  // §0.5.1) — the top user-facing journeys are the same read, sourced from
-  // `user_journeys` (the derived view over `flows`) instead.
+
+
+
   const journeys = (cas.user_journeys || [])
     .filter(journey => journey.journey_kind === 'user-facing')
     .slice(0, 8);
@@ -198,7 +198,7 @@ function buildRepoMarkdown(cas: CASOutput, durationMs: number): string {
     }
     lines.push('');
   }
-  const capabilities = (cas.system_capabilities || [])
+  const capabilities = (cas.capabilities || [])
     .filter(capability => capability.category === 'core')
     .slice(0, 8);
   if (capabilities.length > 0) {

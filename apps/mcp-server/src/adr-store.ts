@@ -1,11 +1,11 @@
-/**
- * Architecture Decision Records — persisted across sessions, structural parity
- * with codebase-memory's `manage_adr`. ADRs live alongside the analysis in the
- * project storage dir, so a decision recorded in one agent session is available
- * in the next. Klauro can additionally CHECK decisions against the live CAS
- * (does the code still follow the decision?) — comprehension a flat record store
- * has no concept of.
- */
+
+
+
+
+
+
+
+
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { getProjectStorageDir, writeJsonAtomic } from './storage';
@@ -19,7 +19,7 @@ export interface ADR {
   context?: string;
   decision: string;
   consequences?: string;
-  date: string; // ISO 8601
+  date: string;
   supersedes?: string;
 }
 
@@ -47,7 +47,7 @@ export interface SaveAdrInput {
   supersedes?: string;
 }
 
-/** Create or update an ADR. New ADRs get a sequential id (adr-0001, …). */
+
 export async function saveAdr(projectPath: string, input: SaveAdrInput): Promise<ADR> {
   const { adrs } = await getAdrs(projectPath);
   const id = input.id || `adr-${String(adrs.length + 1).padStart(4, '0')}`;
@@ -61,7 +61,7 @@ export async function saveAdr(projectPath: string, input: SaveAdrInput): Promise
     date: input.date || new Date().toISOString(),
     supersedes: input.supersedes,
   };
-  // If this supersedes another, mark that one superseded.
+
   if (record.supersedes) {
     const prev = adrs.find(a => a.id === record.supersedes);
     if (prev) prev.status = 'superseded';

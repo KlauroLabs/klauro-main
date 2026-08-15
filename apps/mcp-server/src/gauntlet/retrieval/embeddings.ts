@@ -1,18 +1,18 @@
-/**
- * Embeddings/RAG retrieval backend — semantic-retrieval proxy.
- *
- * The repo's own `semanticSearch` (src/semantic-search.ts) requires a
- * precomputed CAS + embedding store for the target repo, which we do NOT have
- * for an arbitrary repoPath handed to the gauntlet. So this backend implements
- * a self-contained, offline embedding proxy that needs no external API:
- *   - chunk each source file into ~60-line windows
- *   - build a TF-IDF vector per chunk over the chunk corpus
- *   - embed the query as a TF-IDF vector in the same space
- *   - rank chunks by cosine similarity, then dedupe to top-k distinct files
- *
- * This models how embeddings/RAG retrieval surfaces semantically-near code,
- * deterministically and reproducibly. The result note records which mode ran.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -63,7 +63,7 @@ export const embeddingsBackend: RetrievalBackend = {
       }
 
       const chunks: Chunk[] = [];
-      const df = new Map<string, number>(); // chunk-document frequency per term
+      const df = new Map<string, number>();
       for (const full of files) {
         if (chunks.length >= MAX_CHUNKS) break;
         let content: string;
@@ -74,7 +74,7 @@ export const embeddingsBackend: RetrievalBackend = {
         } catch {
           continue;
         }
-        if (CONTAINS_NUL(content)) continue; // skip binary
+        if (CONTAINS_NUL(content)) continue;
         const rel = path.relative(req.repoPath, full);
         for (const c of chunkFile(content)) {
           if (chunks.length >= MAX_CHUNKS) break;
@@ -92,7 +92,7 @@ export const embeddingsBackend: RetrievalBackend = {
       const N = chunks.length;
       const idf = (term: string): number => Math.log(1 + N / (1 + (df.get(term) || 0)));
 
-      // Query vector (TF-IDF) and its norm.
+
       const qtf = new Map<string, number>();
       for (const t of queryTokens) qtf.set(t, (qtf.get(t) || 0) + 1);
       const qvec = new Map<string, number>();
@@ -108,10 +108,10 @@ export const embeddingsBackend: RetrievalBackend = {
         return { backend: this.id, candidates: [], index_ms: Date.now() - start, note: `${MODE}: query terms absent from corpus` };
       }
 
-      // Best chunk per file by cosine similarity to the query.
+
       const bestByFile = new Map<string, { score: number; startLine: number }>();
       for (const c of chunks) {
-        // Only need to iterate query terms; non-query dims don't affect the dot product.
+
         let dot = 0;
         let cNorm = 0;
         for (const [term, f] of c.tf) {

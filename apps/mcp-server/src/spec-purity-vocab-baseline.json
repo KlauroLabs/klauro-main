@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-10T19:51:45.767Z",
+  "generated_at": "2026-08-13T08:01:46.555Z",
   "note": "Pre-existing large literal-array/regex-alternation shapes as of the day the spec-purity vocab-shape gate shipped. See spec-purity-vocab-shapes.ts. Regenerate only after reviewing what changed.",
   "entries": [
     {
@@ -96,51 +96,7 @@
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:177ef2wqdjco>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:18e8uzo4wwzl>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:18kmw4cvy4ef>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:18rieed12hoo>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:1d6mmqg63s2r>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:1qxfua05vzj0>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
       "name": "<inline:1u4pbpk8yg5x>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:4p7di41gwhsl>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:63u4s42fzwu8>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:lyjozolv9af4>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline:tk3eko2xp2ig>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "financeSignals"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
@@ -228,10 +184,6 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline:1556nhc1sldo>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "<inline:15webt81xek5>"
     },
     {
@@ -248,23 +200,11 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline:1b3w1jo5wac5>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "<inline:1ccjniqd0l4w>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline:1hdxff01xkz7>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "<inline:1hnjzw41gjt3>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline:1hwol5kqmthj>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
@@ -277,10 +217,6 @@
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "<inline:1pnsfxkg3i0w>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline:1rgy2l45hzx8>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
@@ -316,10 +252,6 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline:e69migk68dts>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "<inline:i5qghg1sics8>"
     },
     {
@@ -336,27 +268,7 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "behaviorWords"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "concreteConcepts"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "concreteRelationships"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "concreteTerms"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "CRYPTO_CHAIN_PATTERN"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "CRYPTO_RPC_PORTS"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
@@ -368,31 +280,11 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "genericActor"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "genericPenalty"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "hasConcreteProductTerms"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "hasConcreteVerb"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "hasEvidenceShape"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "mutationVerb"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "plumbingWord"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
@@ -401,10 +293,6 @@
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "PRESERVED_TECH_COMPOUNDS"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "productTerms"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
@@ -631,18 +519,6 @@
       "name": "SUPPORTED_EXTENSIONS"
     },
     {
-      "file": "apps/mcp-server/src/semantic-roles.ts",
-      "name": "<inline:11m00os1eh4z>"
-    },
-    {
-      "file": "apps/mcp-server/src/semantic-roles.ts",
-      "name": "<inline:1m6biuciecjk>"
-    },
-    {
-      "file": "apps/mcp-server/src/semantic-roles.ts",
-      "name": "<inline:1x7qpyk264id>"
-    },
-    {
       "file": "apps/mcp-server/src/semantic-search.ts",
       "name": "QUERY_STOPWORDS"
     },
@@ -781,10 +657,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
       "name": "PROJECT_SCOPE_TRIGGER_FILES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
-      "name": "SOURCE_EXTENSIONS"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/codebase-type.ts",
@@ -1036,10 +908,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:163l8chzvtds>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:189gas0150oo>"
     },
     {
@@ -1144,10 +1012,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:cgfquonc4qo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:cu9w8q1xjauw>"
     },
     {
@@ -1157,14 +1021,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:geoviomft7uo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:huozrgzqulo0>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:itp6p01w7rfu>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
@@ -1208,10 +1064,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:xkh4mo1n1nw8>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:xx9l1wx390xs>"
     },
     {
@@ -1240,10 +1092,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "genericConceptListEnding"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "highSignalType"
     },
     {
@@ -1253,10 +1101,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "INFRA_SEGMENT"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "isCriticalDomain"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
@@ -1283,7 +1127,7 @@
       "name": "sourceExtension"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/previous-description-validation.ts",
       "name": "typeClaimPattern"
     },
     {
@@ -1321,10 +1165,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/dotnet/wpf-analyzer.ts",
       "name": "isDbOperation"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/dotnet/wpf-analyzer.ts",
-      "name": "isDeviceOp"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/game/unity-analyzer.ts",
@@ -1365,10 +1205,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
       "name": "<inline:mm8ggs14h0yy>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
-      "name": "BUILTIN_NOT_EXIT_POINTS"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/qwik-analyzer.ts",
@@ -1487,10 +1323,6 @@
       "name": "<inline:mm8ggs14h0yy>"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
-      "name": "BUILTIN_NOT_EXIT_POINTS"
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/libraries/ai-stack-analyzer.ts",
       "name": "AI_PACKAGE_SIGNATURES"
     },
@@ -1545,14 +1377,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/libraries/state/reactive-streams-analyzer.ts",
       "name": "RXJS_OPERATORS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts",
-      "name": "<inline:hln8wtpwa9s0>"
-    },
-    {
-      "file": "packages/analyzer-core/src/middleware/input-sanitizer.ts",
-      "name": "<inline:qy631k19dbsw>"
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",

@@ -319,7 +319,7 @@ async function analyzeStage(options: {
       nodes: analysis.output.nodes.length,
       edges: analysis.output.edges.length,
       entry_points: analysis.output.entry_points?.length || 0,
-      capabilities: analysis.output.system_capabilities?.length || 0,
+      capabilities: analysis.output.capabilities?.length || 0,
       domain_concepts: analysis.output.domain_concepts?.length || 0,
       architecture_patterns: (analysis.output.architecture_summary?.architectural_patterns || [])
         .map(pattern => pattern.name)
@@ -909,7 +909,7 @@ async function loadReferences(paths: string[]): Promise<GreenfieldReferenceAnaly
         cas,
       });
     } catch {
-      // Greenfield dogfood can still run without optional reference repos.
+
     }
   }
   return references;
@@ -996,8 +996,8 @@ function tail(value: string): string {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    // Scratch workspaces are debug dumps, not durable data (local-persistence
-    // doctrine): default under os.tmpdir(); pass --output-root to keep them.
+
+
     outputRoot: path.join(os.tmpdir(), 'klauro-scratch-dogfood-build'),
     reportPath: '/tmp/klauro-scratch-dogfood-build.json',
     references: [],

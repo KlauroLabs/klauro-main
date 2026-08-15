@@ -1,32 +1,32 @@
-/**
- * Camps report — the three head-to-heads, MEASURED from the real engine.
- *
- * The gauntlet scenarios×arms matrix proves Klauro wins end-to-end agent tasks.
- * This report zooms into the three "camps" of competing approaches and shows the
- * HONEST shape of each win, computed live (never hardcoded):
- *
- *   Camp A — embeddings RAG (Cursor/Augment/Roo recipe): every locally-pulled
- *     embedding model is a competitor. They retrieve "code about X", not the
- *     caller set, so Klauro out-QUALITIES them. If Ollama/models are absent the
- *     camp is reported as unavailable (honest skip, no faked numbers).
- *
- *   Camp B — structural indexers (scip-typescript, stack-graphs, ctags,
- *     codebase-memory). On TS who-calls a compiler-accurate tool TIES Klauro at
- *     the quality ceiling — we record that as a ceiling tie, NOT a fake win — and
- *     Klauro wins on tokens + coverage (these tools are TS/JS-only). Any tool not
- *     installed is reported available:false and skipped.
- *
- *   Camp C — comprehension facts (route tables). Klauro emits a structured route
- *     table; embeddings + structural indexers have no route abstraction at all.
- *     Out-of-category: Klauro answers, the competition cannot. Aggregated over
- *     every framework-bench fixture.
- *
- *   Breadth — the supported-language count: LANGUAGE_SPECS whose grammar is
- *     loadable (wasm or native), i.e. the languages the breadth engine resolves.
- *
- * The whole report is cached in-process (it shells out to real indexers and is
- * expensive); the caller stamps generatedAt so this module never needs a clock.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -35,18 +35,15 @@ import { runCallersBench } from './primitive-bench';
 import {
   scipCliPath,
   scipTypescriptAvailable,
-  scipCallers,
   stackGraphsTsPath,
-  stackGraphsCallers,
   ctagsAvailable,
-  ctagsCallers,
   codebaseMemoryPath,
   codebaseMemoryCallers,
 } from './real-camp-arms';
 import { LANGUAGE_SPECS } from '../../../../packages/analyzer-core/src/analyzer/core/language-spec';
 import { hasWasmGrammar } from '../../../../packages/analyzer-core/src/analyzer/core/wasm-tree-sitter';
 import { hasNativeGrammar } from '../../../../packages/analyzer-core/src/analyzer/core/native-parse';
-// Camp A across the top ~50 languages (per-language structural-vs-embedding head-to-head).
+
 import { buildCampALangsReport } from './camp-a-langs-bench';
 
 type CampALangsReport = Awaited<ReturnType<typeof buildCampALangsReport>>;
@@ -54,8 +51,8 @@ type CampALangsReport = Awaited<ReturnType<typeof buildCampALangsReport>>;
 const PRIMITIVE_ROOT = path.resolve(__dirname, '../../fixtures/primitive-bench');
 const FW_ROOT = path.resolve(__dirname, '../../fixtures/framework-bench');
 const TS_FIXTURE = path.join(PRIMITIVE_ROOT, 'callers-ts');
-/** Known in-progress perl-wasm regression — excluded from campC gracefully so the
- *  report + tests stay green while it's fixed separately. */
+
+
 const PENDING_FIXTURES = new Set(['mojolicious-routes']);
 
 export interface CampAArm {
@@ -75,7 +72,7 @@ export interface CampBRow {
   ceilingTie: boolean;
   klauroTokens: number | null;
   competitorTokens: number | null;
-  tokenSaving: number | null; // fraction, e.g. 0.62 = 62% fewer tokens
+  tokenSaving: number | null;
   coverageNote: string;
 }
 
@@ -86,13 +83,13 @@ export interface CampCRow {
   routes: number;
   klauroTokens: number;
   competitorTokens: number;
-  tokenSaving: number; // fraction
+  tokenSaving: number;
   outOfCategoryWin: boolean;
 }
 
 export interface CampsReport {
   campA: { available: boolean; arms: CampAArm[]; note: string };
-  // Camp A extended to the top ~50 languages (per-language structural vs embedding).
+
   campALangs: CampALangsReport;
   campB: { rows: CampBRow[] };
   campC: { rows: CampCRow[]; pending: string[]; aggregate: { fixtures: number; meanKlauroF1: number; meanTokenSaving: number } };
@@ -105,25 +102,25 @@ function tokenSaving(klauro: number | null, competitor: number | null): number |
   return Math.max(0, (competitor - klauro) / competitor);
 }
 
-/** Tokens an arm reported, from a primitive-bench result. */
+
 function armTokens(arms: any[], armId: string): number | null {
   const a = arms.find(x => x.arm_id === armId);
   return a?.metrics?.tokens ?? null;
 }
 
-/**
- * Camp A + Camp B who-calls head-to-head on the TS fixture. We run the heavy
- * primitive bench (which invokes the real embedding models + scip/ctags/stack-
- * graphs) once and read its structured per-arm detail.
- */
+
+
+
+
+
 async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: CampsReport['campB'] }> {
-  // One real run with the full panel: embeddings (Camp A) + scip/ctags/stack-graphs.
+
   const bench = await runCallersBench(TS_FIXTURE, { heavyArms: true });
   const klauro = bench.detail.find(d => d.arm === 'klauro');
   const klauroF1 = klauro ? klauro.f1 : 0;
   const klauroTokens = armTokens(bench.arms, 'klauro');
 
-  // ---- Camp A: embeddings ----
+
   const embDetail = bench.detail.filter(d => d.arm.startsWith('embeddings-'));
   const campAArms: CampAArm[] = embDetail.map(d => ({
     arm: d.arm,
@@ -141,10 +138,10 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
       : 'Ollama / embedding models not available — Camp A skipped (honest), not faked.',
   };
 
-  // ---- Camp B: structural indexers ----
+
   const rows: CampBRow[] = [];
 
-  // scip-typescript (Sourcegraph, compiler-accurate). TS/JS only.
+
   {
     const available = !!scipCliPath() && scipTypescriptAvailable();
     const d = bench.detail.find(x => x.arm === 'scip-typescript');
@@ -162,7 +159,7 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
     });
   }
 
-  // stack-graphs (GitHub). TS/JS only.
+
   {
     const available = !!stackGraphsTsPath();
     const d = bench.detail.find(x => x.arm === 'stack-graphs');
@@ -180,7 +177,7 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
     });
   }
 
-  // ctags (Universal Ctags). Name-based; cannot exclude a same-name decoy.
+
   {
     const available = ctagsAvailable();
     const d = bench.detail.find(x => x.arm === 'ctags');
@@ -190,8 +187,8 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
       available,
       klauroF1,
       competitorF1: d ? d.f1 : 0,
-      // ctags is name-based: it cannot type-resolve, so a tie is genuine only if
-      // it actually hit F1 1.0 (it usually can't — it includes the decoy).
+
+
       ceilingTie: available && !!d && d.f1 === 1 && klauroF1 === 1,
       klauroTokens,
       competitorTokens: compTokens,
@@ -200,7 +197,7 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
     });
   }
 
-  // codebase-memory (DeusData; tree-sitter + Hybrid LSP). Run its own who-calls.
+
   {
     const available = !!codebaseMemoryPath();
     let competitorF1 = 0;
@@ -217,7 +214,7 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
           competitorF1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
         }
       } catch {
-        /* leave competitorF1 = 0; coverage note still records the contender */
+
       }
     }
     rows.push({
@@ -225,10 +222,10 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
       available,
       klauroF1,
       competitorF1,
-      // The strongest contender: LSP-backed, a genuine co-equal ceiling tie on TS.
+
       ceilingTie: available && competitorF1 === 1 && klauroF1 === 1,
       klauroTokens,
-      competitorTokens: null, // its CLI doesn't expose a comparable token budget here
+      competitorTokens: null,
       tokenSaving: null,
       coverageNote: 'Co-equal on TS who-calls (ceiling tie). The decisive edge is out-of-category: it has no route/ORM/render/pattern facts (Camp C).',
     });
@@ -237,7 +234,7 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
   return { campA, campB: { rows } };
 }
 
-/** Camp C: aggregate the route-table out-of-category win over every fixture. */
+
 async function buildCampC(): Promise<CampsReport['campC']> {
   let fixtures: string[] = [];
   try {
@@ -258,14 +255,14 @@ async function buildCampC(): Promise<CampsReport['campC']> {
       const r = await runRouteFactsBench(dir);
       const klauro = r.detail.find(d => d.arm === 'klauro');
       if (!klauro || klauro.f1 < 1) {
-        // Known in-progress regression (e.g. perl-wasm) — record as pending, don't
-        // let it sink the aggregate or the tests.
+
+
         pending.push(fixture);
         continue;
       }
       const kTokens = r.arms.find(a => a.arm_id === 'klauro')?.metrics?.tokens ?? 1;
-      // Competitors must read the source to attempt the question; their token cost
-      // is the largest competitor budget in the bench.
+
+
       const compTokens = Math.max(
         1,
         ...r.arms.filter(a => a.arm_id !== 'klauro').map(a => a.metrics?.tokens ?? 0),
@@ -281,8 +278,8 @@ async function buildCampC(): Promise<CampsReport['campC']> {
         outOfCategoryWin: true,
       });
     } catch {
-      // A fixture that throws (e.g. an in-progress grammar) is recorded as pending,
-      // never faked and never fatal.
+
+
       pending.push(fixture);
     }
   }
@@ -293,7 +290,7 @@ async function buildCampC(): Promise<CampsReport['campC']> {
   return { rows, pending, aggregate: { fixtures: fixturesRun, meanKlauroF1, meanTokenSaving } };
 }
 
-/** Best-effort language label from the fixture name (truth.json usually carries it). */
+
 function inferLanguage(fixture: string): string {
   const map: Record<string, string> = {
     express: 'TypeScript', nestjs: 'TypeScript', hono: 'TypeScript',
@@ -309,7 +306,7 @@ function inferLanguage(fixture: string): string {
   return map[base] || '—';
 }
 
-/** Breadth: LANGUAGE_SPECS whose grammar is loadable (wasm or native). */
+
 function buildBreadth(): CampsReport['breadth'] {
   const all = Object.keys(LANGUAGE_SPECS);
   const supported = all
@@ -323,10 +320,10 @@ function buildBreadth(): CampsReport['breadth'] {
 
 let cache: CampsReport | null = null;
 
-/**
- * Build (and cache) the Camps report. Pass a timestamp in — this module never
- * calls a clock so it stays deterministic and the caller (ui-server) stamps it.
- */
+
+
+
+
 export async function buildCampsReport(generatedAt = ''): Promise<CampsReport> {
   if (cache) return { ...cache, generatedAt: generatedAt || cache.generatedAt };
   const [{ campA, campB }, campC, campALangs] = await Promise.all([
@@ -339,7 +336,7 @@ export async function buildCampsReport(generatedAt = ''): Promise<CampsReport> {
   return cache;
 }
 
-/** Drop the in-process cache (tests / on-demand recompute). */
+
 export function resetCampsReportCache(): void {
   cache = null;
 }

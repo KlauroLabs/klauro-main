@@ -14,6 +14,7 @@ import {
   resolveSeaPlatformId,
 } from './cli';
 import { isNetworkUnreachableError, requireConnectorEntitlement, unreachableServerError } from './connector-auth';
+import { fetchHostedAnalysisState } from './status-report';
 
 // ---------------------------------------------------------------------------
 // §NODE-GATE-PHANTOM (2026-08-09): there is no longer an upper Node-version
@@ -200,6 +201,29 @@ test('buildAnalysisStatusLine: hosted no_analysis uses local wording (server con
   assert.match(line, /not analyzed/);
 });
 
+test('hosted project 404 is reported as inaccessible instead of stale local analysis', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'Project not found' }), {
+    status: 404,
+    headers: { 'content-type': 'application/json' },
+  });
+  try {
+    const hosted = await fetchHostedAnalysisState('https://example.test', 'token', 'prj_other_workspace');
+    assert.equal(hosted?.status, 'inaccessible');
+    const line = buildAnalysisStatusLine({
+      repoPath: '/repo',
+      hostedProjectId: 'prj_other_workspace',
+      hosted,
+      local: { analyzed: true, analysis_complete: true, system: 'Old Local Analysis', staleness: 'stale' },
+    });
+    assert.match(line, /inaccessible/);
+    assert.match(line, /another workspace/);
+    assert.doesNotMatch(line, /Old Local Analysis/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // P1: wrong/unreachable --server-url must NOT be misdiagnosed as an auth
 // problem ("Klauro account required. Run `klauro login`").
@@ -336,6 +360,10 @@ async function runInstallSh(options: {
     }
     if (options.existingKlauro.unwritableDir) {
       await fs.chmod(bin, 0o555);
+      if (process.getuid?.() === 0) {
+        await fs.chmod(dir, 0o755);
+        await fs.chmod(home, 0o777);
+      }
     }
   }
 
@@ -358,9 +386,11 @@ async function runInstallSh(options: {
     klauroUrl = `file://${dir}`;
   }
 
+  const unprivileged = options.existingKlauro?.unwritableDir && process.getuid?.() === 0;
   const result = spawnSync('sh', [installShPath], {
     encoding: 'utf8',
     timeout: 30000,
+    ...(unprivileged ? { uid: 65534, gid: 65534 } : {}),
     env: {
       PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
       HOME: home,

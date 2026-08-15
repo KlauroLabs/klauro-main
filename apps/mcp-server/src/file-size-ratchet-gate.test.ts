@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { checkRatchet, countLines } from './file-size-ratchet-gate';
+import { checkRatchet, countLines, findOversizedProductionSources } from './file-size-ratchet-gate';
 
 // The ratchet's whole value is that it FAILS on growth. A gate nobody proved red
 // is a gate that passes everything — the lesson from the native-parser precheck,
@@ -23,6 +23,24 @@ test('counts lines the way wc -l does, including a final unterminated line', () 
   assert.equal(countLines('a\n'), 1);
   assert.equal(countLines('a\nb\n'), 2);
   assert.equal(countLines('a\nb'), 2);
+});
+
+test('oversized production discovery is recursive and excludes tests and fixtures', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-discovery-'));
+  const sourceRoot = path.join(root, 'apps', 'mcp-server', 'src');
+  fs.mkdirSync(path.join(sourceRoot, 'nested'), { recursive: true });
+  fs.mkdirSync(path.join(sourceRoot, 'fixtures'), { recursive: true });
+  fs.writeFileSync(path.join(sourceRoot, 'nested', 'large.ts'), 'x\n'.repeat(4));
+  fs.writeFileSync(path.join(sourceRoot, 'large.test.ts'), 'x\n'.repeat(4));
+  fs.writeFileSync(path.join(sourceRoot, 'fixtures', 'large.ts'), 'x\n'.repeat(4));
+  try {
+    assert.deepEqual(findOversizedProductionSources(root, 3), [{
+      file: path.join('apps', 'mcp-server', 'src', 'nested', 'large.ts'),
+      ceiling: 4,
+    }]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('fails when a file grows past its ceiling', () => {

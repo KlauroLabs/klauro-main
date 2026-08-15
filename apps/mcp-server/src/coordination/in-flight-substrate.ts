@@ -1,35 +1,36 @@
-/**
- * In-flight substrate (docs/SPEC-COORDINATION-FABRIC-V3.md §3, §8 row W0).
- * Reads the persisted `track:'in-flight'` CAS snapshot (dirty working tree)
- * back out for coordination, instead of git-ambient capture or agent
- * self-reports, both attribution-fragile on a shared working tree.
- *
- *   1. getInFlightSemanticDelta — semantic delta between committed and
- *      dirty-working-tree analyses (by identity, not text line). Whole-tree,
- *      unattributed by construction.
- *   2. getAttributedInFlightState — attributes that delta to the workspace's
- *      currently-active claims. A symbol is attributed only when it falls in
- *      exactly one active claim's scope.
- *   3. detectConceptualConflictsFromSubstrate — re-bases the existing
- *      conflict detectors on the attributed per-participant deltas from (2).
- *
- * Honest limitation: the in-flight track is per-project, not per-participant,
- * so a shared working tree's raw delta is still "everyone's work" until
- * attributed. getAttributedInFlightState treats a changed symbol as
- * attributable only when exactly one active claim covers it — zero or
- * multiple covering claims both land in `unattributed`, never guessed.
- *
- * Also consults the full claim log (including expired/superseded write-hook
- * announcements) as a tiebreaker for anything that would otherwise be
- * unattributed: if exactly one distinct agent ever touched the delta's file,
- * it resolves to `tiebroken` (never folded into `participants`, since it
- * doesn't correspond to a live claim). Two-or-more or zero agents stay in
- * `unattributed`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import type { CASNode, CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 import { loadAnalysis } from '../storage';
 import { getActiveClaims, readClaimLog, type ClaimLogEntry } from './local-store';
+import { readParticipantInFlightSnapshots, type ParticipantInFlightSnapshot } from './participant-in-flight-store';
 import type { WorkClaim } from './types';
 import {
   detectConceptualConflicts,
@@ -42,9 +43,9 @@ import {
   type SymbolChangeShape,
 } from './conceptual-conflict';
 
-// ---------------------------------------------------------------------------
-// Semantic delta model
-// ---------------------------------------------------------------------------
+
+
+
 
 export type SemanticSymbolDeltaKind = 'added' | 'removed' | 'changed';
 
@@ -54,14 +55,14 @@ export interface SemanticSymbolDelta {
   file?: string;
   type?: string;
   kind: SemanticSymbolDeltaKind;
-  /** Which structural facets differ (only present for kind==='changed'), e.g. ['signature','return_type']. */
+
   fields_changed?: string[];
 }
 
 export interface EntryPointDelta {
   id: string;
   name: string;
-  kind: 'added' | 'removed';
+  kind: 'added' | 'removed' | 'touched';
 }
 
 export interface FlowTouch {
@@ -78,7 +79,7 @@ export interface CapabilityTouch {
 export interface InFlightSemanticDelta {
   workspace: string;
   participant_id: string;
-  /** false when there is no in-flight (dirty working tree) analysis to read at all. */
+
   available: boolean;
   reason?: string;
   main_present: boolean;
@@ -87,18 +88,18 @@ export interface InFlightSemanticDelta {
   entry_points: EntryPointDelta[];
   flows_touched: FlowTouch[];
   capabilities_touched: CapabilityTouch[];
-  /**
-   * The delta, pre-shaped as `SymbolChange[]` — ready to drop straight into
-   * `detectConceptualConflicts` (via an `AgentInFlightState`) alongside any
-   * other participant's changes. One entry per non-'removed'-without-shape
-   * symbol delta; see `toSymbolChange`.
-   */
+
+
+
+
+
+
   changes: SymbolChange[];
 }
 
-// ---------------------------------------------------------------------------
-// Node/entry-point comparison helpers
-// ---------------------------------------------------------------------------
+
+
+
 
 function nodeSignatureString(node: CASNode): string | undefined {
   const sig = node.signature;
@@ -110,7 +111,7 @@ function nodeSignatureString(node: CASNode): string | undefined {
   return `(${params})${sig.return_type ? `: ${sig.return_type}` : ''}`;
 }
 
-/** Best-effort nullability read off a return-type annotation string. Undefined when there's no return type to read. */
+
 function nodeReturnNullable(node: CASNode): boolean | undefined {
   const rt = node.signature?.return_type;
   if (rt === undefined) return undefined;
@@ -126,14 +127,14 @@ function nodeToShape(node: CASNode): SymbolChangeShape {
   };
 }
 
-/**
- * Semantic node diff between two CAS node sets, by node id. Mirrors the same
- * facets `AnalyzerOrchestrator.buildChangeReport` (packages/analyzer-core)
- * compares for its own incremental-analysis change reports (metadata /
- * signature / location) — reused here in shape rather than reinvented, since
- * that method is private to the orchestrator and not directly callable on
- * two already-loaded `CASOutput`s.
- */
+
+
+
+
+
+
+
+
 function diffNodes(mainNodes: CASNode[], inflightNodes: CASNode[]): SemanticSymbolDelta[] {
   const mainById = new Map(mainNodes.map((n) => [n.id, n]));
   const inflightById = new Map(inflightNodes.map((n) => [n.id, n]));
@@ -229,27 +230,27 @@ function flowsTouchedBy(cas: CASOutput | null, changedNodeIds: Set<string>): Flo
 }
 
 function capabilitiesTouchedBy(cas: CASOutput | null, changedEntryPointIds: Set<string>): CapabilityTouch[] {
-  if (!cas?.system_capabilities) return [];
+  if (!cas?.capabilities) return [];
   const touched: CapabilityTouch[] = [];
-  for (const cap of cas.system_capabilities) {
+  for (const cap of cas.capabilities) {
     const hits = (cap.operations || []).some((op) => changedEntryPointIds.has(op.entry_point_id));
     if (hits) touched.push({ id: cap.id, name: cap.name });
   }
   return touched;
 }
 
-// ---------------------------------------------------------------------------
-// (1) getInFlightSemanticDelta — whole-tree (unattributed) semantic delta
-// ---------------------------------------------------------------------------
 
-/**
- * The semantic delta between a project's committed (`main`) analysis and its
- * dirty-working-tree (`in-flight`) analysis. `participantId` is carried
- * through for labeling/logging only at this layer — this function itself
- * reads the WHOLE-TREE delta (there is only one `in-flight` track per
- * project, see the module doc's honesty note); attribution to a specific
- * participant happens one layer up, in `getAttributedInFlightState`.
- */
+
+
+
+
+
+
+
+
+
+
+
 export async function getInFlightSemanticDelta(
   workspacePath: string,
   participantId: string
@@ -260,7 +261,6 @@ export async function getInFlightSemanticDelta(
   ]);
 
   const mainPresent = Boolean(mainCas);
-  const inflightPresent = Boolean(inflightCas);
 
   if (!inflightCas) {
     return {
@@ -309,62 +309,63 @@ export async function getInFlightSemanticDelta(
   };
 }
 
-// ---------------------------------------------------------------------------
-// (2) getAttributedInFlightState — attribute the whole-tree delta to claims
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface UnattributedSymbolDelta extends SemanticSymbolDelta {
-  /** 'unclaimed' = no active claim's scope covers this symbol/file.
-   *  'overlapping-claims' = TWO OR MORE active claims' scopes cover it — on a
-   *  shared tree we cannot tell whose edit it actually is, so (per the
-   *  module's honesty note) it is surfaced here rather than assigned to
-   *  either claimant. */
+
+
+
+
+
   reason: 'unclaimed' | 'overlapping-claims';
   overlapping_agents?: string[];
 }
 
 export interface AttributedParticipantState {
   agent_id: string;
-  claim_id: string;
+  claim_id?: string;
   intent: string;
   scope_paths: string[];
   scope_symbols: string[];
-  /** This participant's ATTRIBUTED slice of the workspace's whole-tree in-flight delta — only the
-   *  symbols/changes that fall in this participant's claim scope AND no other active claim's scope. */
+
+
   delta: InFlightSemanticDelta;
 }
 
-/**
- * A delta resolved via the write-hook's event log (announced-edit or
- * unclaimed-edit-with-a-named-detector) rather than an active claim's scope —
- * the SECOND attribution source (W4 step 1). Kept separate from
- * `AttributedParticipantState` because it does not correspond to a live
- * claim (the announcing claim may since have expired/been superseded), and
- * separate from `unattributed` because it IS resolved to exactly one agent.
- */
+
+
+
+
+
+
+
+
 export interface TiebrokenSymbolDelta extends SemanticSymbolDelta {
   agent_id: string;
-  /** 'announced-edit' = a claim-log entry (any status) whose scope covers this file names the
-   *  agent (announceEdit / a regular claim / the write-hook's auto-announce all produce these).
-   *  'unclaimed-edit' = a `recordUnclaimedEdit` event log entry for this exact file named a real
-   *  agent via `detectedBy` (not the 'unknown' default). */
+
+
+
+
   via: 'announced-edit' | 'unclaimed-edit';
-  /** The pre-shaped SymbolChange for this delta, ready to fold into an `AgentInFlightState` for
-   *  `planIntentMerge`/`detectConceptualConflicts`, same shape `AttributedParticipantState.delta.changes` uses. */
+
+
   change: SymbolChange;
 }
 
 export interface AttributedInFlightState {
   workspace: string;
+  attribution_source: 'participant-semantic-streams' | 'workspace-semantic-fallback';
   available: boolean;
   reason?: string;
   participants: AttributedParticipantState[];
-  /** Deltas resolved via the write-hook's announced-edit/unclaimed-edit event log when no single
-   *  active claim covered them (W4 step 1 — the 2nd attribution source; see `TiebrokenSymbolDelta`). */
+
+
   tiebroken: TiebrokenSymbolDelta[];
-  /** Changes present in the raw in-flight delta that could not be honestly attributed to exactly one
-   *  active participant NOR resolved by the write-hook tiebreaker (see `UnattributedSymbolDelta.reason`).
-   *  Never silently assigned. */
+
+
+
   unattributed: UnattributedSymbolDelta[];
 }
 
@@ -372,7 +373,7 @@ function normalizeForPathMatch(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
 }
 
-/** True when `file` is `scopePath` itself, or lives under it (directory-prefix match). */
+
 function fileWithinScopePath(file: string, scopePath: string): boolean {
   const nf = normalizeForPathMatch(file);
   const ns = normalizeForPathMatch(scopePath);
@@ -387,22 +388,111 @@ function claimCoversSymbol(claim: WorkClaim, delta: SemanticSymbolDelta): boolea
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// Write-hook event log tiebreaker (W4 step 1 — the 2nd attribution source)
-// ---------------------------------------------------------------------------
+function semanticDeltaFromChange(change: SymbolChange): SemanticSymbolDelta {
+  const kind: SemanticSymbolDeltaKind = change.change_kind === 'add'
+    ? 'added'
+    : change.change_kind === 'delete'
+      ? 'removed'
+      : 'changed';
+  return {
+    symbol_id: change.symbol_id,
+    name: change.name,
+    file: change.file,
+    kind,
+    fields_changed: kind === 'changed' ? [change.change_kind] : undefined,
+  };
+}
 
-/**
- * Every distinct agent_id the FULL claim log (all statuses — an expired or
- * superseded announcement is still evidence of who wrote there, unlike
- * `getActiveClaims`) names for `file`, split by which kind of event named it:
- *  - `announced`: any log entry (kind !== 'unclaimed-edit' — i.e. an ordinary
- *    claim OR an `announceEdit` edit-lock, which is what the write-hook's
- *    auto-announce path produces) whose scope.paths covers `file`.
- *  - `unclaimedNamed`: a `recordUnclaimedEdit` ('unclaimed-edit') entry for
- *    this exact file whose `agent_id` is a real detected agent, not the
- *    'unknown' default (an anonymous unclaimed-edit event names nobody, so it
- *    is never a tiebreak candidate).
- */
+function nodeIdsForChange(cas: CASOutput | null, change: SymbolChange): string[] {
+  if (!cas) return [];
+  const exact = cas.nodes.find((node) => node.id === change.symbol_id);
+  if (exact) return [exact.id];
+  const file = normalizeForPathMatch(change.file);
+  return cas.nodes
+    .filter((node) => normalizeForPathMatch(node.source?.file ?? '') === file)
+    .filter((node) => node.name === change.name || node.name.endsWith(`.${change.name}`))
+    .map((node) => node.id);
+}
+
+async function deltaFromParticipantSnapshot(
+  workspace: string,
+  snapshot: ParticipantInFlightSnapshot
+): Promise<InFlightSemanticDelta> {
+  const [main, inflight] = await Promise.all([
+    loadAnalysis(workspace, { preferCache: true, track: 'main' }).catch(() => null),
+    loadAnalysis(workspace, { preferCache: true, track: 'in-flight' }).catch(() => null),
+  ]);
+  const cas = inflight ?? main;
+  const changes = snapshot.changes ?? [];
+  const changedNodeIds = new Set(changes.flatMap((change) => nodeIdsForChange(cas, change)));
+  const touchedFlows = flowsTouchedBy(cas, changedNodeIds);
+  const touchedEntryPointIds = new Set((cas?.entry_points ?? [])
+    .filter((entryPoint) => changedNodeIds.has(entryPoint.source_node) || changedNodeIds.has(entryPoint.handler?.node_id ?? ''))
+    .map((entryPoint) => entryPoint.id));
+  const touchedCapabilities = (cas?.capabilities ?? [])
+    .filter((capability) => capability.operations.some((operation) => touchedEntryPointIds.has(operation.entry_point_id)))
+    .map((capability) => ({ id: capability.id, name: capability.name }));
+  const entryPoints = (cas?.entry_points ?? [])
+    .filter((entryPoint) => touchedEntryPointIds.has(entryPoint.id))
+    .map((entryPoint) => ({ id: entryPoint.id, name: entryPoint.name, kind: 'touched' as const }));
+  return {
+    workspace,
+    participant_id: snapshot.agent_id,
+    available: true,
+    main_present: Boolean(main),
+    inflight_present: Boolean(inflight),
+    symbols: changes.map(semanticDeltaFromChange),
+    entry_points: entryPoints,
+    flows_touched: touchedFlows,
+    capabilities_touched: touchedCapabilities,
+    changes,
+  };
+}
+
+async function participantSnapshotState(
+  workspace: string,
+  claims: WorkClaim[],
+  snapshots: ParticipantInFlightSnapshot[]
+): Promise<AttributedInFlightState> {
+  const participants = await Promise.all(snapshots.map(async (snapshot): Promise<AttributedParticipantState> => {
+    const agentClaims = claims.filter((candidate) => candidate.agent_id === snapshot.agent_id);
+    const claim = agentClaims.find((candidate) => (candidate.scope.paths?.length ?? 0) > 0 || (candidate.scope.symbols?.length ?? 0) > 0)
+      ?? agentClaims[0];
+    return {
+      agent_id: snapshot.agent_id,
+      claim_id: claim?.claim_id,
+      intent: claim?.intent ?? '',
+      scope_paths: claim?.scope.paths ?? [],
+      scope_symbols: claim?.scope.symbols ?? [],
+      delta: await deltaFromParticipantSnapshot(workspace, snapshot),
+    };
+  }));
+  return {
+    workspace,
+    attribution_source: 'participant-semantic-streams',
+    available: true,
+    participants,
+    tiebroken: [],
+    unattributed: [],
+  };
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function tiebreakCandidatesForFile(
   log: ClaimLogEntry[],
   file: string
@@ -414,20 +504,20 @@ function tiebreakCandidatesForFile(
     if (!paths.some((p) => fileWithinScopePath(file, p))) continue;
     if (entry.kind === 'unclaimed-edit') {
       if (entry.agent_id && entry.agent_id !== 'unknown') unclaimedNamed.add(entry.agent_id);
-    } else {
+    } else if (entry.kind !== 'ambiguous-edit' && entry.kind !== 'surprise') {
       announced.add(entry.agent_id);
     }
   }
   return { announced, unclaimedNamed };
 }
 
-/**
- * Resolve as many `unattributed` deltas as honestly possible using the
- * write-hook's event log as a tiebreaker (W4 step 1). Returns the deltas that
- * WERE resolved (`tiebroken`) separately from the ones that remain genuinely
- * unattributable (`stillUnattributed`) — a delta with 0 or 2+ distinct naming
- * agents in the event log is left alone, never guessed.
- */
+
+
+
+
+
+
+
 async function applyWriteHookTiebreaker(
   workspace: string,
   raw: InFlightSemanticDelta,
@@ -439,8 +529,8 @@ async function applyWriteHookTiebreaker(
   try {
     log = await readClaimLog(workspace);
   } catch {
-    // No claim log at all (fresh workspace) — nothing to tiebreak with; every
-    // unattributed delta stays that way. Never a hard failure of this path.
+
+
     return { tiebroken: [], stillUnattributed: unattributed };
   }
 
@@ -473,33 +563,45 @@ async function applyWriteHookTiebreaker(
   return { tiebroken, stillUnattributed };
 }
 
-/**
- * Attribute a workspace's whole-tree in-flight semantic delta to its
- * currently-active claims (`local-store.ts` `getActiveClaims` — NEVER
- * ambient `git diff`, per the module's cardinal rule). A symbol is
- * attributed to a participant only when EXACTLY ONE active claim's scope
- * covers it; zero or 2+ covering claims land in `unattributed` instead of
- * being guessed. `workspace` doubles as the project path, matching every
- * other call site in this codebase (claims are always scoped `repo:
- * workspace`, and `getAnalysis(workspace)` reads the same path).
- */
+
+
+
+
+
+
+
+
+
+
 export async function getAttributedInFlightState(
   workspace: string,
   options: { nowMs?: number } = {}
 ): Promise<AttributedInFlightState> {
-  const [claims, raw] = await Promise.all([
+  const [claims, snapshots] = await Promise.all([
     getActiveClaims(workspace, options.nowMs),
-    getInFlightSemanticDelta(workspace, '__whole_tree__'),
+    readParticipantInFlightSnapshots(workspace, { nowMs: options.nowMs, attributableOnly: true }),
   ]);
+  if (snapshots.length > 0) return participantSnapshotState(workspace, claims, snapshots);
+
+  const raw = await getInFlightSemanticDelta(workspace, '__whole_tree__');
 
   if (!raw.available) {
-    return { workspace, available: false, reason: raw.reason, participants: [], tiebroken: [], unattributed: [] };
+    return {
+      workspace,
+      attribution_source: 'workspace-semantic-fallback',
+      available: false,
+      reason: raw.reason,
+      participants: [],
+      tiebroken: [],
+      unattributed: [],
+    };
   }
   if (claims.length === 0) {
     const wholeTreeUnattributed = raw.symbols.map((s): UnattributedSymbolDelta => ({ ...s, reason: 'unclaimed' as const }));
     const { tiebroken, stillUnattributed } = await applyWriteHookTiebreaker(workspace, raw, wholeTreeUnattributed);
     return {
       workspace,
+      attribution_source: 'workspace-semantic-fallback',
       available: true,
       reason: 'no active claims in this workspace — the in-flight delta exists but nobody has claimed any scope to attribute it to',
       participants: [],
@@ -508,7 +610,7 @@ export async function getAttributedInFlightState(
     };
   }
 
-  // For each changed symbol, which claims' scopes cover it?
+
   const coveringAgentsBySymbol = new Map<string, string[]>();
   for (const delta of raw.symbols) {
     const covering = claims.filter((c) => claimCoversSymbol(c, delta)).map((c) => c.agent_id);
@@ -522,7 +624,7 @@ export async function getAttributedInFlightState(
     });
     const mySymbolIds = new Set(mySymbols.map((s) => s.symbol_id));
     const myChanges = raw.changes.filter((c) => mySymbolIds.has(c.symbol_id));
-    const myEntryPoints = raw.entry_points; // entry points are workspace-wide awareness, not claim-scoped (no per-EP claim scope exists yet)
+    const myEntryPoints = raw.entry_points;
 
     return {
       agent_id: claim.agent_id,
@@ -538,10 +640,10 @@ export async function getAttributedInFlightState(
         inflight_present: raw.inflight_present,
         symbols: mySymbols,
         entry_points: myEntryPoints,
-        // Awareness-only, deliberately workspace-wide rather than claim-narrowed here (§4: "awareness is
-        // never gated") — narrowing flows/capabilities to a participant's OWN claimed symbols would need
-        // call_path/operation membership re-computed per participant, which isn't built yet; passing the
-        // raw whole-tree set through is honest (no fake per-participant split) and still useful context.
+
+
+
+
         flows_touched: raw.flows_touched,
         capabilities_touched: raw.capabilities_touched,
         changes: myChanges,
@@ -560,26 +662,33 @@ export async function getAttributedInFlightState(
 
   const { tiebroken, stillUnattributed } = await applyWriteHookTiebreaker(workspace, raw, unattributedBeforeTiebreak);
 
-  return { workspace, available: true, participants, tiebroken, unattributed: stillUnattributed };
+  return {
+    workspace,
+    attribution_source: 'workspace-semantic-fallback',
+    available: true,
+    participants,
+    tiebroken,
+    unattributed: stillUnattributed,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// (3) detectConceptualConflictsFromSubstrate — re-based crown jewel
-// ---------------------------------------------------------------------------
 
-/**
- * detectConceptualConflicts (conceptual-conflict.ts) is unchanged — only the
- * input source changes: reads the attributed per-participant deltas from
- * getAttributedInFlightState instead of git-ambient capture or self-reported
- * markers. A participant whose changes are unattributable contributes no
- * AgentInFlightState entry, rather than being silently folded into whoever
- * happens to be asking.
- *
- * Folds `tiebroken` deltas in at the same weight as claim-attributed ones —
- * an agent can appear via both `participants` and `tiebroken`, merged onto
- * one state entry rather than two competing entries. `unattributed` deltas
- * remain excluded — still honest, never guessed.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function detectConceptualConflictsFromSubstrate(
   workspace: string,
   cas: ConflictCas,
@@ -612,8 +721,8 @@ export async function detectConceptualConflictsFromSubstrate(
   const states: AgentInFlightState[] = [...stateByAgent.values()];
 
   if (states.length < 2) {
-    // Need at least two participants with attributed changes for any
-    // cross-participant detector to have something to compare.
+
+
     return { conflicts: [], attributed };
   }
 

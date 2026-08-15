@@ -12,6 +12,8 @@ import { describeHttpFailure, findErrorCode, hostedFetch, redactUrl, unwrapCause
 import { checkRunningBundleStaleness } from './bundle-staleness';
 import { getBuildIdentity } from './installed-client-runtime';
 import * as watcher from './watcher';
+import { summarizeUploadManifest } from './upload-manifest-summary';
+export { summarizeUploadManifest } from './upload-manifest-summary';
 
 export const INSTALLED_TOOL_NAMES = [
   'analyze_codebase', 'sync_codebase_remote', 'get_upload_manifest', 'resolve_agent_analysis',
@@ -21,18 +23,18 @@ export const INSTALLED_TOOL_NAMES = [
   'get_codebase_idioms', 'get_behavioral_invariants', 'validate_codebase_idioms',
   'validate_behavioral_invariants', 'run_answer_pack', 'get_agent_revision_tracks', 'start_watch', 'stop_watch',
   'get_watch_status', 'list_watches', 'poll_watch_changes',
-  // Coordination fabric (task #130): advisory same-machine-or-cross-machine
-  // awareness claims over the hosted /v1/coordination/* API — the product's
-  // stated moat, previously wired into server.ts (the hosted-only MCP
-  // surface) but never reachable from this shipped client.
+
+
+
+
   'get_module_health',
   'fab_claim_work', 'fab_extend', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work',
   'check_conceptual_conflicts', 'plan_intent_merge', 'plan_parallel_work',
-  // Account-workspace (parent-CAS) composition: the guided customer path
-  // SPECIFICATION.md §0.12 item 7 says does not exist yet — these wrap the
-  // already-hosted /api/workspaces/* endpoints (auto-rebuilt server-side),
-  // giving an agent an analyze_codebase-shaped flow for "I have several
-  // repos" (list_workspaces -> run_workspace_analysis -> get_workspace_analysis).
+
+
+
+
+
   'list_workspaces', 'run_workspace_analysis', 'get_workspace_analysis',
 ] as const;
 
@@ -53,32 +55,32 @@ const symbolChangeSchema = z.object({
   }).optional(),
 });
 
-/**
- * Hard ceiling on any single tool response from this surface.
- *
- * Generous on purpose: real analysis slices are large and this must never clip a
- * legitimate answer. It exists to catch the UNBOUNDED case — a tool that
- * serialises an entire collection — which is a defect, not a big answer.
- */
+
+
+
+
+
+
+
 const MAX_TOOL_RESPONSE_CHARS = 400_000;
 
-/**
- * Every tool on this surface returns through here, which makes it the one place
- * a response-size budget can be enforced for all of them at once.
- *
- * Measured 2026-08-11: `get_upload_manifest` returned 4,234,202 characters
- * (21,737 file paths) against a real ML repo, on the tool agents are told to call
- * BEFORE uploading. It blew the caller's context — the agent got an error and no
- * manifest, so the tool was worse than absent. That tool is now summarised at
- * source, but nothing stopped the NEXT unbounded tool from doing the same thing,
- * and this surface has 40+ of them.
- *
- * So: bound it here rather than trusting 40 handlers to each remember. An
- * over-budget response is replaced by an honest, actionable error naming the tool
- * and the size — never a silently truncated payload, which would be a
- * plausible-looking half-answer, and this codebase has spent a day proving that a
- * confident partial answer is worse than a clear failure.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function json(value: unknown, toolName?: string) {
   const text = JSON.stringify(value);
   if (text.length > MAX_TOOL_RESPONSE_CHARS) {
@@ -103,85 +105,24 @@ function json(value: unknown, toolName?: string) {
   return { content: [{ type: 'text' as const, text }] };
 }
 
-/** Files/exclusions listed verbatim before the rollup takes over. Enough to
- *  eyeball that the right KIND of file was picked; the counts carry the rest. */
-const MANIFEST_SAMPLE_LIMIT = 25;
-/** Directory rows kept, largest first — a long tail of 1-file directories tells
- *  a customer nothing the totals do not. */
-const MANIFEST_DIRECTORY_LIMIT = 25;
 
-/**
- * Bounds `get_upload_manifest` and, more usefully, answers the question a
- * customer actually asks of it.
- *
- * Measured 2026-08-11 on a real ML repo: the raw manifest serialised to
- * 4,234,202 characters / 21,737 file paths, which no agent can consume — on the
- * one tool agents are instructed to call before uploading. Worse, the answer was
- * in there and unfindable: 21,381 of those paths sat under an installed
- * `site-packages` tree. The rollup surfaces that in a single row.
- *
- * Counts and byte totals are exact; only the per-file enumeration is capped, and
- * the response says how many rows it dropped so nothing looks complete when it
- * is not.
- */
-export function summarizeUploadManifest(manifest: Record<string, any>): Record<string, unknown> {
-  const files: Array<{ path?: string; bytes?: number }> = Array.isArray(manifest.files) ? manifest.files : [];
-  const excluded: Array<{ path?: string; reason?: string }> = Array.isArray(manifest.excluded) ? manifest.excluded : [];
 
-  const byDirectory = new Map<string, { files: number; bytes: number }>();
-  for (const file of files) {
-    // Group by the top TWO segments: one segment buries everything under `src`,
-    // while the full path is what made this unreadable in the first place.
-    const segments = String(file.path || '').split('/');
-    const key = segments.length > 1 ? segments.slice(0, 2).join('/') : (segments[0] || '.');
-    const row = byDirectory.get(key) || { files: 0, bytes: 0 };
-    row.files += 1;
-    row.bytes += Number(file.bytes) || 0;
-    byDirectory.set(key, row);
-  }
-  const directories = [...byDirectory.entries()]
-    .map(([directory, row]) => ({ directory, files: row.files, bytes: row.bytes }))
-    .sort((a, b) => b.files - a.files || a.directory.localeCompare(b.directory));
 
-  const exclusionReasons = new Map<string, number>();
-  for (const entry of excluded) {
-    const reason = String(entry.reason || 'unknown');
-    exclusionReasons.set(reason, (exclusionReasons.get(reason) || 0) + 1);
-  }
 
-  const { files: _files, excluded: _excluded, ...rest } = manifest;
-  return {
-    ...rest,
-    file_count: files.length,
-    total_bytes: files.reduce((sum, file) => sum + (Number(file.bytes) || 0), 0),
-    excluded_count: excluded.length,
-    excluded_by_reason: Object.fromEntries([...exclusionReasons.entries()].sort((a, b) => b[1] - a[1])),
-    largest_directories: directories.slice(0, MANIFEST_DIRECTORY_LIMIT),
-    directories_omitted: Math.max(0, directories.length - MANIFEST_DIRECTORY_LIMIT),
-    files_sample: files.slice(0, MANIFEST_SAMPLE_LIMIT).map(file => file.path),
-    files_omitted_from_sample: Math.max(0, files.length - MANIFEST_SAMPLE_LIMIT),
-    note: 'Counts and byte totals are exact. Per-file rows are sampled — use largest_directories to see where the bulk sits, and .klauroignore to exclude what you do not want uploaded.',
-  };
-}
-
-/** Test seam for the response budget above. The budget guards every tool on this
- *  surface, so it needs a test — but `json` is internal by design, and exporting
- *  the real thing beats duplicating its logic in a test where the copy could
- *  drift from what ships. */
 export function jsonForTest(value: unknown, toolName?: string) {
   return json(value, toolName);
 }
 
-/**
- * Every hosted read tool routes through hostedProjectGet, and every hosted
- * query tool through hostedProjectQuery. That makes these two functions the
- * product's entire failure surface for agents: whatever they throw is what an
- * agent sees for ALL hosted tools at once. Both therefore go through
- * hosted-transport.ts, which retries transport faults and reports the
- * unwrapped cause, the target URL, and a remediation — never a bare
- * `fetch failed` or a bare status number, neither of which gives an agent a
- * next step.
- */
+
+
+
+
+
+
+
+
+
+
 async function hostedProjectGet(projectPath: string, suffix: string, params: Record<string, unknown> = {}) {
   const loaded = await loadKlauroConfig(projectPath);
   const serverUrl = resolveAnalyzerUrl(loaded)!.replace(/\/+$/, '');
@@ -224,15 +165,15 @@ async function hostedProjectQuery(projectPath: string, tool: string, args: Recor
   return payload.result;
 }
 
-/**
- * Coordination-fabric and account-workspace calls are not scoped to one
- * bound project's analysis (unlike hostedProjectGet/Query above) — they hit
- * the hosted server's own `/v1/coordination/*` and `/api/workspaces/*`
- * surfaces directly, using the same server URL + Bearer token resolution as
- * every other hosted call in this file. `path` is only used to resolve which
- * hosted server/credential to talk to (via .klaurorc); it is never uploaded
- * or analyzed.
- */
+
+
+
+
+
+
+
+
+
 async function hostedServerAndToken(projectPath: string): Promise<{ serverUrl: string; token: string | undefined; projectId: string | undefined }> {
   const loaded = await loadKlauroConfig(projectPath);
   const serverUrl = resolveAnalyzerUrl(loaded)!.replace(/\/+$/, '');
@@ -263,19 +204,19 @@ async function hostedCoordinationGet(projectPath: string, route: string, params:
   return readHostedJson(response, { url: url.toString(), operation });
 }
 
-/** Default coordination workspace id: an explicit `workspace` argument wins;
- *  otherwise the bound hosted project id (stable across machines for the
- *  same repo) so agents on the same project land in the same room without
- *  having to agree on a string out of band. */
+
+
+
+
 async function resolveCoordinationWorkspace(projectPath: string, explicitWorkspace: string | undefined): Promise<string> {
   if (explicitWorkspace && explicitWorkspace.trim()) return explicitWorkspace.trim();
   const { projectId } = await hostedServerAndToken(projectPath);
   return projectId || path.basename(projectPath);
 }
 
-/** Parse a 2xx hosted body. A truncated or non-JSON 2xx body (an edge that
- *  answered instead of the server, or a connection cut mid-stream) must not
- *  surface as a parser error with no indication of where it came from. */
+
+
+
 async function readHostedJson(response: Response, context: { url: string; operation: string }): Promise<unknown> {
   const text = await response.text();
   try {
@@ -349,26 +290,26 @@ const taskSchema = z.object({
   runtime: z.enum(['auto', 'include', 'exclude']).optional(), exclude_sections: z.array(z.string()).optional(),
 });
 
-/** Messages that name no cause and imply no next step. An agent that receives
- *  one of these is stuck: it cannot tell a misconfiguration from an outage
- *  from a credential problem, and has nothing to act on. */
+
+
+
 const OPAQUE_ERROR_MESSAGES = new Set(['fetch failed', 'failed to fetch', 'network error', 'terminated', 'other side closed', '']);
 
 export function isOpaqueErrorMessage(message: string): boolean {
   return OPAQUE_ERROR_MESSAGES.has(message.trim().toLowerCase());
 }
 
-/**
- * Last line of defence on the tool surface.
- *
- * The per-callsite work in hosted-transport.ts covers the paths this file
- * owns, but a tool handler can reach code that raises its own bare transport
- * rejection. Rather than trust every present and future callsite, every
- * handler is wrapped: any error whose message names no cause is re-reported
- * with the tool name, the unwrapped `cause` chain, and a remediation before it
- * leaves the process. The invariant this enforces is that no opaque message
- * can reach an agent, whatever a callsite forgets.
- */
+
+
+
+
+
+
+
+
+
+
+
 export function withTransparentErrors<T extends (...args: any[]) => any>(registerFn: T): T {
   return ((name: string, config: unknown, handler: (...args: any[]) => any) =>
     registerFn(name, config, async (...args: any[]) => {
@@ -399,18 +340,18 @@ export function createServer(): McpServer {
     description: 'Upload a filtered source snapshot for hosted Klauro analysis. No analyzer executes locally.',
     inputSchema: {
       path: z.string(),
-      // task #132: mirrors `klauro analyze --force` — bypasses BOTH the
-      // server's snapshot/analyzer-identity reuse gate and the AI response
-      // cache, so a caller asking for a fresh analysis actually gets one
-      // (including regenerated AI names/descriptions), not a silent replay
-      // of a prior result.
+
+
+
+
+
       force: z.boolean().optional().describe('Bypass the server\'s snapshot-reuse gate AND the AI response cache, forcing a genuinely fresh analysis even if the last uploaded snapshot is unchanged.'),
-      // task #134: `path` resolving to a folder that structurally looks like
-      // several unrelated projects (no Git repo/manifest of its own, multiple
-      // nested repos beneath it) refuses with an explanatory error unless
-      // this is explicitly set — there is no terminal here to prompt on, so
-      // this call fails loudly instead. Set it only after you've confirmed
-      // `path` is really the folder you intend to upload wholesale.
+
+
+
+
+
+
       confirm_scope: z.boolean().optional().describe('Confirms uploading `path` even though it looks like a container of several unrelated projects rather than one project. Omit/false refuses that upload with an explanatory error instead of silently proceeding.'),
     },
   }, async ({ path, force, confirm_scope }: any) => json(await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force), confirmScope: Boolean(confirm_scope) })));
@@ -426,27 +367,27 @@ export function createServer(): McpServer {
   register('get_upload_manifest', {
     description: 'Preview which source files would be uploaded, as counts plus a per-directory breakdown and a sample. Reads files but performs no parsing or analysis.',
     inputSchema: { path: z.string(), dirty_tree: z.boolean().optional() },
-    // Measured 2026-08-11 on a real ML repo: this returned 4,234,202 characters —
-    // 21,737 individual file paths — because it serialised the raw manifest. Every
-    // other tool on this surface is budgeted; this one handed a customer's coding
-    // agent a 4MB payload that blows its context, on the tool agents are told to
-    // call BEFORE uploading. A preview nobody can read is not a preview.
-    //
-    // The per-directory rollup is also what a customer actually needs: on that
-    // same repo it says "21,381 files under a site-packages tree" in one line,
-    // which is the answer to "why is my upload enormous?" that 21,737 paths bury.
+
+
+
+
+
+
+
+
+
   }, async ({ path, dirty_tree }: any) => json(summarizeUploadManifest(await buildUploadManifest(path, dirty_tree ? 'dirty-tree' : 'full'))));
 
   register('resolve_agent_analysis', {
     description: 'Resolve the bound hosted project and return its analysis readiness and compact hosted summary.',
     inputSchema: { path: z.string() },
-    // Agents call this first to orient, so it is the one place a stale client
-    // build reaches the consumer that would otherwise act on stale behaviour
-    // without ever seeing the stderr warning emitted at startup.
+
+
+
   }, async ({ path }: any) => {
     const status = await hostedProjectGet(path, '/analysis-status') as Record<string, unknown>;
     let staleness: { note: string | null } = { note: null };
-    try { staleness = checkRunningBundleStaleness(__dirname); } catch { /* never fail a read on the guard */ }
+    try { staleness = checkRunningBundleStaleness(__dirname); } catch {   }
     return json(staleness.note ? { ...status, client_build_warning: staleness.note } : status);
   });
 
@@ -583,10 +524,10 @@ export function createServer(): McpServer {
     },
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'get_module_health', args)));
 
-  // -- Coordination fabric (advisory, over the hosted /v1/coordination/* API) --
-  // Same product surface as server.ts's fab_* tools; thin HTTP calls only, no
-  // local claim store or CAS blast-radius expansion runs on this machine —
-  // that enrichment already lives server-side behind these same routes.
+
+
+
+
 
   register('fab_claim_work', {
     description: 'ADVISORY awareness claim (CLI-parity for `fab.ts claim`) — announces intent to peers over the hosted coordination fabric, never blocks or queues, takes no lease. The claim always succeeds; overlap with another agent\'s active claim comes back as `conflicts`/`warning` inline. Call fab_release_work when done.',
@@ -714,12 +655,12 @@ export function createServer(): McpServer {
     return json(result);
   });
 
-  // -- Account-workspace (parent-CAS) composition --
-  // Wraps the already-hosted /api/workspaces/* endpoints (auto-rebuilt
-  // server-side on member-project analysis landing). This is the reachable
-  // customer path SPECIFICATION.md §0.12 item 7 says is missing: an
-  // analyze_codebase-shaped flow for composing several analyzed repos into
-  // one queryable parent analysis.
+
+
+
+
+
+
 
   register('list_workspaces', {
     description: 'List the hosted account workspaces (groups of analyzed projects) visible to the signed-in Klauro account, each with its member project count. Use to find a workspace_id for run_workspace_analysis/get_workspace_analysis.',

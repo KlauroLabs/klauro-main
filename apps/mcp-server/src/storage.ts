@@ -5,15 +5,14 @@ import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { execFile, spawnSync } from 'child_process';
 import { promisify } from 'util';
+import { getHeapStatistics } from 'v8';
+import pLimit from 'p-limit';
 import type {
   CASOutput,
   IncrementalState,
   FileAnalysisResult,
   ChangeHistoryEntry,
-  ChangeReport,
-  INCREMENTAL_STATE_VERSION,
 } from '../../../packages/analyzer-core/src/types/cas.types';
-import { CAS_VERSION } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { RuntimeObservation } from './product';
 import { mirrorArtifactsToS3 } from './s3-artifacts';
 import type { AnalysisTrack } from './track';
@@ -22,15 +21,21 @@ import { resolveAnalysisScope, filterEntriesToScope, filterWorkspaceGraphsToScop
 import {
   createCasSectionManifest,
   hydrateCasSections,
+  selectCasSections,
   selectExactCasSection,
   type CasSectionManifest,
   type CasSectionName,
 } from './cas-sections';
+import { materializeDeployableCasTree } from './deployable-analysis';
+import { readZstdJson } from './zstd-json';
+import { describeAnalysisVersion, type AnalysisVersionInfo } from './analysis-version';
+import { resolveSegmentedAnalysis, segmentedAnalysisRoot, writeSegmentedAnalysis } from './segmented-analysis-storage';
+export { MINIMUM_COMPATIBLE_CAS_VERSION, parseCasVersion, compareCasVersions, describeAnalysisVersion } from './analysis-version';
+export type { AnalysisVersionInfo, AnalysisVersionStatus } from './analysis-version';
 
 const execFileAsync = promisify(execFile);
 const brotliCompressAsync = promisify(zlib.brotliCompress);
 const brotliDecompressAsync = promisify(zlib.brotliDecompress);
-const ZSTD_MAX_BUFFER = 1024 * 1024 * 1024;
 type JsonStorageCodec = 'none' | 'brotli' | 'zstd';
 
 const DEFAULT_STORAGE_PATH = path.join(
@@ -57,80 +62,12 @@ export interface AnalysisEntry {
   edge_count: number;
   cas_version?: string;
   layers_ready?: CASOutput['layers_ready'];
-  /** Which analysis track this entry belongs to. Defaults to 'main' (legacy). */
+
   track?: AnalysisTrack;
-  /** Analyzed commit SHA, when the output carried one. */
+
   base_commit?: string;
-  /** Analyzed branch, when the output carried one. */
+
   branch?: string;
-}
-
-export const MINIMUM_COMPATIBLE_CAS_VERSION = '1.6.0';
-
-export type AnalysisVersionStatus = 'current' | 'older-compatible' | 'newer-compatible' | 'unsupported' | 'newer-major';
-
-export interface AnalysisVersionInfo {
-  stored_version: string;
-  current_version: string;
-  minimum_compatible_version: string;
-  status: AnalysisVersionStatus;
-}
-
-export function parseCasVersion(version: string | undefined): [number, number, number] | null {
-  if (!version) return null;
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-export function compareCasVersions(a: string | undefined, b: string | undefined): number {
-  const left = parseCasVersion(a) || [0, 0, 0];
-  const right = parseCasVersion(b) || [0, 0, 0];
-  for (let index = 0; index < 3; index++) {
-    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
-  }
-  return 0;
-}
-
-export function describeAnalysisVersion(storedVersion: string | undefined): AnalysisVersionInfo {
-  const stored = parseCasVersion(storedVersion) ? (storedVersion as string).trim() : '0.0.0';
-  const current = parseCasVersion(CAS_VERSION) || [0, 0, 0];
-  const parsed = parseCasVersion(stored) || [0, 0, 0];
-
-  let status: AnalysisVersionStatus;
-  if (parsed[0] > current[0]) {
-    status = 'newer-major';
-  } else if (compareCasVersions(stored, MINIMUM_COMPATIBLE_CAS_VERSION) < 0) {
-    // The floor is MINIMUM_COMPATIBLE_CAS_VERSION, not "same major digit as
-    // current". A stored major line strictly below current's used to also
-    // force 'unsupported' here (`parsed[0] < current[0] || ...`), which was
-    // dormant and harmless while CAS_VERSION stayed on the 1.x line — no
-    // real analysis could have a lower major than 1. It went live the moment
-    // CAS_VERSION crossed a major boundary (1.11.0 -> 2.0.0 -> 2.1.0,
-    // 2026-08-09): every already-stored 1.x analysis at or above the 1.6.0
-    // floor (e.g. 1.9.0, 1.10.0) started misclassifying as 'unsupported'
-    // instead of 'older-compatible', which silently cut off buildSummary's
-    // degrade-notice (gated on 'older-compatible') and made
-    // assertAnalysisVersionSupported start hard-throwing on perfectly
-    // degradable analyses. Caught by nightly-eval's version-skew suite plus
-    // this file's own pre-existing 'describeAnalysisVersion classifies
-    // stored versions against the floor' test, both of which already
-    // asserted the floor-only contract below.
-    status = 'unsupported';
-  } else if (compareCasVersions(stored, CAS_VERSION) === 0) {
-    status = 'current';
-  } else if (compareCasVersions(stored, CAS_VERSION) > 0) {
-    status = 'newer-compatible';
-  } else {
-    status = 'older-compatible';
-  }
-
-  return {
-    stored_version: stored,
-    current_version: CAS_VERSION,
-    minimum_compatible_version: MINIMUM_COMPATIBLE_CAS_VERSION,
-    status,
-  };
 }
 
 export function getAnalysisVersionInfo(cas: CASOutput): AnalysisVersionInfo {
@@ -196,7 +133,7 @@ function getStoragePath(): string {
   if (resolvedDefaultStoragePath) return resolvedDefaultStoragePath;
   try {
     fs.ensureDirSync(DEFAULT_STORAGE_PATH);
-    fs.accessSync(DEFAULT_STORAGE_PATH, fs.constants.W_OK);
+    fs.accessSync(DEFAULT_STORAGE_PATH, fs.constants.R_OK);
     resolvedDefaultStoragePath = DEFAULT_STORAGE_PATH;
   } catch {
     const userId = typeof process.getuid === 'function' ? String(process.getuid()) : 'user';
@@ -271,17 +208,6 @@ export async function pruneOrphanedTmpFiles(options: { maxAgeMs?: number; root?:
 
 const DEFAULT_ORPHANED_LOCK_MAX_AGE_MS = 60 * 60 * 1000;
 
-/**
- * Remove per-project store directories that contain ONLY a stale
- * `analysis.lock`. withProjectAnalysisLock ensures the project dir and writes
- * the lock BEFORE any analysis artifact exists; a process killed in that
- * window leaves a lock-only directory behind forever (observed in the wild:
- * ~/.klauro/analyses/f7701b18…-1da636e01772 holding nothing but
- * analysis.lock). The lock itself would be broken as stale on the next
- * acquire for the SAME project, but a one-off aborted path never gets a next
- * acquire — so sweep them here, gated on the same staleness rules as
- * acquireStorageLock (dead pid on this host, or older than the age cap).
- */
 export async function pruneOrphanedLockOnlyDirs(options: { maxAgeMs?: number; root?: string } = {}): Promise<{ removed: string[] }> {
   const root = options.root || getStoragePath();
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_ORPHANED_LOCK_MAX_AGE_MS;
@@ -305,26 +231,13 @@ export async function pruneOrphanedLockOnlyDirs(options: { maxAgeMs?: number; ro
     if (children.length !== 1 || children[0] !== 'analysis.lock') continue;
     const lockPath = path.join(dirPath, 'analysis.lock');
     const state = await readStorageLockState(lockPath);
-    // Unreadable lock file (racing writer) is left alone; only a demonstrably
-    // stale lock (dead pid on this host / other-host leftovers / too old) is
-    // reclaimed, mirroring acquireStorageLock's rules.
+
     if (state && !isStorageLockStale(state, maxAgeMs)) continue;
     await fs.remove(dirPath).catch(() => undefined);
     removed.push(dirPath);
   }
   return { removed };
 }
-
-// =============================================================================
-// ADVISORY FILE LOCKING
-// =============================================================================
-//
-// Multiple MCP server processes share one store under the default user-scope
-// install. Mutations of shared files (index.json) and whole-analysis runs are
-// guarded by advisory lock files holding the owner pid, hostname, and acquire
-// time. Stale locks (dead pid on the same host, or older than the age cap) are
-// broken automatically; waiting is bounded so a lock can never deadlock a
-// caller, only fail with a clear error.
 
 interface StorageLockInfo {
   pid: number;
@@ -385,13 +298,9 @@ function storageLockAgeMs(state: StorageLockState): number {
 function isStorageLockStale(state: StorageLockState, staleMs: number): boolean {
   if (storageLockAgeMs(state) > staleMs) return true;
   if (!state.info) return false;
-  // Same host: the holder is reclaimable only once its pid is gone.
+
   if (state.info.hostname === os.hostname()) return !isProcessAlive(state.info.pid);
-  // Different host: in this single-container deployment a lock stamped with another
-  // hostname is a prior container generation left behind by a deploy recreate — the
-  // holder is definitively gone, so reclaim it immediately instead of waiting out the
-  // age window (the deploy-orphaned-lock stall). If this ever runs multi-container,
-  // this branch must instead consult a shared liveness signal.
+
   return true;
 }
 
@@ -435,9 +344,7 @@ export async function acquireStorageLock(lockPath: string, options: StorageLockO
       };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      // ENOENT: the parent directory vanished between the caller's ensureDir
-      // and this open — a concurrent releaser prunes empty (artifact-less)
-      // project dirs (see withProjectAnalysisLock's cleanup). Recreate and retry.
+
       if (code === 'ENOENT') {
         await fs.ensureDir(path.dirname(lockPath));
         continue;
@@ -498,15 +405,12 @@ export async function withProjectAnalysisLock<T>(projectPath: string, fn: () => 
 }
 
 async function removeProjectDirIfEmpty(projectDir: string): Promise<void> {
-  // Don't leave a lock-only directory behind when the analysis produced no
-  // artifacts (e.g. it threw before writing anything): an empty project dir
-  // here would otherwise persist as store noise forever (the orphaned
-  // analysis.lock-only entry pattern — see pruneOrphanedLockOnlyDirs).
+
   try {
     const remaining = await fs.readdir(projectDir);
     if (remaining.length === 0) await fs.remove(projectDir);
   } catch {
-    // best-effort cleanup only
+
   }
 }
 
@@ -514,20 +418,6 @@ export type ProjectAnalysisLockAttempt<T> =
   | { acquired: true; value: T }
   | { acquired: false };
 
-/**
- * Zero-wait variant of withProjectAnalysisLock: if analysis.lock is currently
- * held by a live (non-stale) holder, this returns `{ acquired: false }`
- * immediately instead of waiting out the full lock timeout. Built for the L0
- * fast-path index save (see analyzeProjectLayered in analyzer.ts) — that save
- * is a nice-to-have seconds-scale availability optimization, not load-bearing:
- * a full analysis already queued/running on this same project will supersede
- * whatever the L0 stub would have written moments later anyway, so it is
- * never worth blocking on a busy lock. Reclaiming a genuinely stale lock still
- * happens (that's not "waiting", it's dead-holder cleanup), so this only ever
- * short-circuits the case that used to burn the full KLAURO_ANALYSIS_LOCK_WAIT_MS
- * (default 10 min, but a shorter override was seen stalling 120s in prod)
- * before giving up.
- */
 export async function withProjectAnalysisLockIfAvailable<T>(
   projectPath: string,
   fn: () => Promise<T>
@@ -542,9 +432,7 @@ export async function withProjectAnalysisLockIfAvailable<T>(
       purpose: `Analysis of ${projectPath}`,
     });
   } catch {
-    // Lock is actively held by a live (non-stale) holder — a zero-wait miss,
-    // not a failure. Caller's fallback (the full analysis pipeline) is
-    // expected to supersede whatever this attempt would have written.
+
     return { acquired: false };
   }
   try {
@@ -575,9 +463,13 @@ async function saveIndex(index: AnalysisIndex): Promise<void> {
   });
 }
 
+function atomicTempPath(filePath: string, suffix: string): string {
+  return `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(8).toString('hex')}.${suffix}`;
+}
+
 export async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 2 }): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = atomicTempPath(filePath, 'tmp');
   try {
     try {
       if (shouldStreamJson(value, options.spaces)) {
@@ -604,8 +496,8 @@ async function writeCompressedJsonAtomic(filePath: string, value: unknown, optio
   }
 
   await fs.ensureDir(path.dirname(filePath));
-  const jsonTmpPath = `${filePath}.${process.pid}.${Date.now()}.json.tmp`;
-  const compressedTmpPath = `${filePath}.${process.pid}.${Date.now()}.compressed.tmp`;
+  const jsonTmpPath = atomicTempPath(filePath, 'json.tmp');
+  const compressedTmpPath = atomicTempPath(filePath, 'compressed.tmp');
   try {
     await writeJsonAtomic(jsonTmpPath, value, options);
     await compressJsonFile(jsonTmpPath, compressedTmpPath, codec);
@@ -621,7 +513,7 @@ async function compressLegacyJsonArtifact(basePath: string): Promise<void> {
   if (!extension || !(await fs.pathExists(basePath))) return;
   const targetPath = `${basePath}${extension}`;
   if (await fs.pathExists(targetPath)) return;
-  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = atomicTempPath(targetPath, 'tmp');
   try {
     await compressJsonFile(basePath, tmpPath, compressionCodecForPath(targetPath));
     await fs.move(tmpPath, targetPath, { overwrite: false });
@@ -631,18 +523,17 @@ async function compressLegacyJsonArtifact(basePath: string): Promise<void> {
   }
 }
 
-async function readJsonMaybeCompressed(filePath: string): Promise<any> {
+async function readJsonMaybeCompressed(
+  filePath: string,
+  options: { maxBufferedZstdBytes?: number } = {},
+): Promise<any> {
   const resolved = await resolveJsonStoragePath(filePath);
   if (!resolved) {
     throw new Error(`JSON file not found: ${filePath}`);
   }
 
   if (resolved.endsWith('.json.zst')) {
-    const { stdout } = await execFileAsync('zstd', ['-q', '-d', '-c', resolved], {
-      encoding: 'buffer',
-      maxBuffer: ZSTD_MAX_BUFFER,
-    });
-    return JSON.parse(stdout.toString('utf8'));
+    return readZstdJson(resolved, { maxBufferedCompressedBytes: options.maxBufferedZstdBytes });
   }
 
   if (resolved.endsWith('.json.br')) {
@@ -740,14 +631,7 @@ function shouldStreamJson(value: unknown, spaces?: number): boolean {
     (candidate.method_calls?.length || 0) +
     (candidate.analysis_facts?.length || 0) +
     (candidate.test_gaps?.length || 0);
-  // At spaces:0 the streamed writer's output is byte-identical to
-  // fs.writeJson (JSON.stringify + trailing newline — verified byte-for-byte
-  // on a 258MB whale CAS), and it yields to the event loop on stream
-  // backpressure instead of one giant synchronous JSON.stringify macrotask.
-  // Stream mid-size graphs too so analysis saves never block the in-process
-  // HTTP server for seconds. Indented writes (spaces:2 index/metadata files)
-  // keep the legacy threshold: streaming would drop their indentation, so it
-  // stays a last resort for oversized payloads only.
+
   const threshold = spaces === 0 ? 10_000 : 100_000;
   return graphItems > threshold;
 }
@@ -849,10 +733,11 @@ function parsedAnalysisCacheMaxEntries(): number {
 }
 
 function parsedAnalysisCacheMaxBytes(): number {
-  return parsePositiveIntegerEnv('KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES', 256 * 1024 * 1024);
+  const heapBound = Math.floor(getHeapStatistics().heap_size_limit / 4);
+  return parsePositiveIntegerEnv('KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES', heapBound);
 }
 
-function estimateParsedAnalysisBytes(output: CASOutput): number {
+export function estimateParsedAnalysisBytes(output: CASOutput): number {
   const cas = output as CASOutput & {
     method_calls?: unknown[];
     analysis_facts?: unknown[];
@@ -911,68 +796,67 @@ async function rememberLoadedAnalysis(projectPath: string, filePath: string, out
   }
 }
 
-interface SegmentedAnalysisPointer {
-  manifest_version: 1;
-  revision: string;
-}
-
-function segmentedAnalysisRoot(filePath: string): string {
-  return `${filePath}.sections`;
-}
-
-async function writeSegmentedAnalysis(filePath: string, output: CASOutput): Promise<void> {
-  const root = segmentedAnalysisRoot(filePath);
-  const revision = `rev-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
-  const revisionDir = path.join(root, revision);
-  const tmpDir = `${revisionDir}.tmp`;
-  const extension = compressedJsonExtension();
-  const manifest = createCasSectionManifest(output);
+async function getValidCachedAnalysis(projectPath: string, filePath: string): Promise<CASOutput | null> {
+  const cached = loadedAnalysisCache.get(projectPath);
+  if (!cached || cached.filePath !== filePath) return null;
   try {
-    await fs.ensureDir(tmpDir);
-    for (const descriptor of manifest.sections) {
-      const sectionFile = `${descriptor.name}.json${extension}`;
-      const sectionPath = path.join(tmpDir, sectionFile);
-      await writeCompressedJsonAtomic(sectionPath, selectExactCasSection(output, descriptor.name), { spaces: 0 });
-      const stat = await fs.stat(sectionPath);
-      descriptor.file = sectionFile;
-      descriptor.bytes = stat.size;
-    }
-    await writeJsonAtomic(path.join(tmpDir, 'manifest.json'), manifest, { spaces: 2 });
-    await fs.ensureDir(root);
-    await fs.move(tmpDir, revisionDir, { overwrite: false });
-    await writeJsonAtomic(path.join(root, 'current.json'), {
-      manifest_version: 1,
-      revision,
-    } satisfies SegmentedAnalysisPointer, { spaces: 2 });
-    const revisions = (await fs.readdir(root).catch(() => []))
-      .filter(name => name.startsWith('rev-'))
-      .sort()
-      .reverse();
-    for (const stale of revisions.slice(2)) await fs.remove(path.join(root, stale)).catch(() => undefined);
-  } finally {
-    await fs.remove(tmpDir).catch(() => undefined);
-  }
-}
-
-async function resolveSegmentedAnalysis(filePath: string): Promise<{ directory: string; manifest: CasSectionManifest } | null> {
-  const root = segmentedAnalysisRoot(filePath);
-  try {
-    const pointer = await fs.readJson(path.join(root, 'current.json')) as SegmentedAnalysisPointer;
-    if (pointer.manifest_version !== 1 || !pointer.revision) return null;
-    const directory = path.join(root, pointer.revision);
-    const manifest = await fs.readJson(path.join(directory, 'manifest.json')) as CasSectionManifest;
-    if (manifest.manifest_version !== 1) return null;
-    return { directory, manifest };
+    const stat = await fs.stat(filePath);
+    if (stat.mtimeMs !== cached.mtimeMs || stat.size !== cached.size) return null;
+    loadedAnalysisCache.delete(projectPath);
+    loadedAnalysisCache.set(projectPath, cached);
+    return cached.output;
   } catch {
     return null;
   }
 }
 
-/**
- * Index key for a (projectPath, track) pair. The 'main' track keeps the bare
- * projectPath key so all existing single-path lookups/deletes are unchanged;
- * other tracks get a distinct key so they coexist without overwriting main.
- */
+const segmentedWriteGeneration = new Map<string, number>();
+const pendingSegmentedWrites = new Set<Promise<void>>();
+const pendingSegmentedWriteFlushes = new Set<() => void>();
+const DEFAULT_DEFERRED_SEGMENT_WRITE_DELAY_MS = 30_000;
+
+function beginSegmentedWriteGeneration(filePath: string): number {
+  const generation = (segmentedWriteGeneration.get(filePath) || 0) + 1;
+  segmentedWriteGeneration.set(filePath, generation);
+  return generation;
+}
+
+function isSegmentedWriteCurrent(filePath: string, generation: number): boolean {
+  return segmentedWriteGeneration.get(filePath) === generation;
+}
+
+function scheduleSegmentedAnalysisWrite(filePath: string, output: CASOutput, generation: number, delayMs: number): void {
+  let pending: Promise<void>;
+  pending = new Promise<void>(resolve => {
+    let started = false;
+    let timer: NodeJS.Timeout;
+    const start = () => {
+      if (started) return;
+      started = true;
+      clearTimeout(timer);
+      pendingSegmentedWriteFlushes.delete(start);
+      void writeSegmentedAnalysis(
+        filePath,
+        output,
+        compressedJsonExtension(),
+        writeCompressedJsonAtomic,
+        writeJsonAtomic,
+        () => isSegmentedWriteCurrent(filePath, generation),
+      ).catch(error => {
+        console.warn(`[Klauro] deferred segmented analysis write failed for ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+      }).finally(resolve);
+    };
+    pendingSegmentedWriteFlushes.add(start);
+    timer = setTimeout(start, Math.max(0, delayMs));
+  }).finally(() => pendingSegmentedWrites.delete(pending));
+  pendingSegmentedWrites.add(pending);
+}
+
+export async function waitForPendingSegmentedWrites(): Promise<void> {
+  for (const flush of [...pendingSegmentedWriteFlushes]) flush();
+  await Promise.all([...pendingSegmentedWrites]);
+}
+
 function analysisIndexKey(projectPath: string, track: AnalysisTrack): string {
   return track === 'main' ? projectPath : `${projectPath}#${track}`;
 }
@@ -980,81 +864,70 @@ function analysisIndexKey(projectPath: string, track: AnalysisTrack): string {
 export async function saveAnalysis(
   projectPath: string,
   output: CASOutput,
-  track: AnalysisTrack = 'main'
+  track: AnalysisTrack = 'main',
+  options: { deferSegmentedWrite?: boolean; segmentedWriteDelayMs?: number } = {},
 ): Promise<AnalysisEntry> {
   const storagePath = await ensureStorageDir();
   const fileName = `${projectSlug(projectPath)}${trackSuffix(track)}.json${compressedJsonExtension()}`;
   const filePath = path.join(storagePath, fileName);
-
-  // SAVE SUB-STEP TIMING. Pipeline attribution reached this function by
-  // elimination: on prod (5,284-file / 92k-node repo) worker=338.6s, of which
-  // rest=238.7s, of which the orchestrator's own breakdown accounts for 176.4s —
-  // leaving ~62s in persistence with nothing measuring it. This CAS is serialized
-  // TWICE here (whole + compressed, then again segmented), so the split matters
-  // before touching either: a "save is slow" guess is how three earlier attempts
-  // at latency today aimed at the wrong stage.
-  const wholeStartedAt = Date.now();
-  await writeCompressedJsonAtomic(filePath, output, { spaces: 0 });
-  const wholeMs = Date.now() - wholeStartedAt;
-  // Write the segmented sidecar ONCE, when the CAS is actually complete.
-  //
-  // Measured on prod (92,586 nodes / 135,974 edges): FIVE saveAnalysis calls per
-  // analysis — the progressive pipeline persists L0, then each layer as it lands,
-  // which is a real feature (early queryability + crash durability). Each save
-  // was rebuilding the whole sidecar from scratch: 34.9s of the run's 68.2s total
-  // serialization, and only the LAST rebuild is ever read.
-  //
-  // Safe because the sidecar is DERIVED, not authoritative — the catch below has
-  // always said so, and the whole compressed file above is written on every save
-  // regardless. So an intermediate save that skips segments still leaves a fully
-  // readable analysis; readers just lose section-narrowing until the run finishes.
-  //
-  // Gated on the DATA, not a flag threaded through callers, so no call site can
-  // forget it and a future caller inherits the behaviour: complete -> write,
-  // explicitly incomplete -> skip, absent (non-layered/incremental paths that
-  // never populate layers_ready) -> write, preserving the old behaviour exactly.
   const layersReady = output.layers_ready;
   const segmentsWorthWriting = !layersReady || layersReady.complete === true;
+  const persistedOutput = segmentsWorthWriting ? materializeDeployableCasTree(output) : output;
+  const segmentedGeneration = beginSegmentedWriteGeneration(filePath);
+  await fs.remove(path.join(segmentedAnalysisRoot(filePath), 'current.json')).catch(() => undefined);
+
+  const wholeStartedAt = Date.now();
+  await writeCompressedJsonAtomic(filePath, persistedOutput, { spaces: 0 });
+  const wholeMs = Date.now() - wholeStartedAt;
+
   const segmentedStartedAt = Date.now();
-  if (segmentsWorthWriting) {
+  if (segmentsWorthWriting && !options.deferSegmentedWrite) {
     try {
-      await writeSegmentedAnalysis(filePath, output);
+      await writeSegmentedAnalysis(
+        filePath,
+        persistedOutput,
+        compressedJsonExtension(),
+        writeCompressedJsonAtomic,
+        writeJsonAtomic,
+        () => isSegmentedWriteCurrent(filePath, segmentedGeneration),
+      );
     } catch (error) {
       console.warn(`[Klauro] segmented analysis write failed for ${projectPath}; authoritative analysis remains available: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   const segmentedMs = Date.now() - segmentedStartedAt;
-  // Only log when it is actually material — a small repo saving in 40ms does not
-  // need a line per save, but a whale spending a minute here must be visible.
+
   if (wholeMs + segmentedMs >= 1000) {
-    console.error(
-      `[Klauro] saveAnalysis(${track}): whole=${wholeMs}ms ` +
-      `segmented=${segmentsWorthWriting ? `${segmentedMs}ms` : 'skipped(incomplete)'} ` +
-      `nodes=${(output.nodes || []).length} edges=${(output.edges || []).length}`,
-    );
-  }
-  // Only the 'main' track participates in the path-keyed loaded-analysis cache,
-  // which is keyed by projectPath and read back by default (main) loads.
-  if (track === 'main') {
-    await rememberLoadedAnalysis(projectPath, filePath, output);
+    process.stderr.write(`${JSON.stringify({
+      event: 'analysis_save_slow',
+      track,
+      whole_ms: wholeMs,
+      segmented_ms: segmentsWorthWriting ? segmentedMs : null,
+      nodes: (persistedOutput.nodes || []).length,
+      edges: (persistedOutput.edges || []).length,
+    })}\n`);
   }
 
-  const frameworks = output.system.technologies?.frameworks?.map(f => f.name) || [];
+  if (track === 'main') {
+    await rememberLoadedAnalysis(projectPath, filePath, persistedOutput);
+  }
+
+  const frameworks = persistedOutput.system.technologies?.frameworks?.map(f => f.name) || [];
 
   const entry: AnalysisEntry = {
-    name: output.system.name,
+    name: persistedOutput.system.name,
     path: projectPath,
     file: fileName,
-    analyzed_at: output.analysis_timestamp,
-    system_type: output.system.type,
+    analyzed_at: persistedOutput.analysis_timestamp,
+    system_type: persistedOutput.system.type,
     frameworks,
-    node_count: output.nodes.length,
-    edge_count: output.edges.length,
-    cas_version: output.cas_version,
-    ...(output.layers_ready ? { layers_ready: output.layers_ready } : {}),
+    node_count: persistedOutput.nodes.length,
+    edge_count: persistedOutput.edges.length,
+    cas_version: persistedOutput.cas_version,
+    ...(persistedOutput.layers_ready ? { layers_ready: persistedOutput.layers_ready } : {}),
     track,
-    ...(output.base_commit ? { base_commit: output.base_commit } : {}),
-    ...(output.branch ? { branch: output.branch } : {}),
+    ...(persistedOutput.base_commit ? { base_commit: persistedOutput.base_commit } : {}),
+    ...(persistedOutput.branch ? { branch: persistedOutput.branch } : {}),
   };
 
   await withIndexLock(async () => {
@@ -1063,36 +936,35 @@ export async function saveAnalysis(
     await saveIndex(index);
   });
 
+  if (segmentsWorthWriting && options.deferSegmentedWrite) {
+    scheduleSegmentedAnalysisWrite(
+      filePath,
+      persistedOutput,
+      segmentedGeneration,
+      options.segmentedWriteDelayMs ?? DEFAULT_DEFERRED_SEGMENT_WRITE_DELAY_MS,
+    );
+  }
+
   return entry;
 }
 
-/**
- * Resolve the on-disk analysis file a load for `projectPath` would read,
- * honoring the same track selection and legacy-filename fallbacks as
- * loadAnalysis (which delegates here — single source of truth, no drift).
- */
 async function resolveAnalysisFileForLoad(
   projectPath: string,
   requestedTrack?: AnalysisTrack
 ): Promise<string | null> {
   const index = await loadIndex();
-  // Default view (no explicit track): the agent's current working state
-  // (in-flight) when one exists, else the shared committed baseline (main). An
-  // explicit track is honored exactly. This keeps a dirty-tree sync readable by
-  // default while never letting it clobber the preserved main analysis.
+
   const track: AnalysisTrack = requestedTrack
     ?? (index.analyses[analysisIndexKey(projectPath, 'in-flight')] ? 'in-flight' : 'main');
-  // Track-specific entry; for 'main' this is the legacy bare-path key.
+
   const entry = index.analyses[analysisIndexKey(projectPath, track)];
-  // Backward compat: a legacy 'main' analysis may only exist under the bare
-  // path key, which analysisIndexKey('main') already returns — no extra work.
+
   if (!entry) return null;
 
   const storagePath = getStoragePath();
   const filePath = path.join(storagePath, entry.file);
   let resolved = await resolveJsonStoragePath(filePath);
-  // Backward compat: if a track-specific file is missing for 'main', fall back
-  // to the legacy on-disk filename (no track suffix).
+
   if (!resolved && track === 'main') {
     const legacyName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
     resolved = await resolveJsonStoragePath(path.join(storagePath, legacyName));
@@ -1121,38 +993,38 @@ export async function loadAnalysisSections(
   const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
   if (!resolved) return null;
   const requested = [...new Set<CasSectionName>(['identity', ...sections])];
+  const cached = await getValidCachedAnalysis(projectPath, resolved);
+  if (cached) return selectCasSections(cached, requested);
   const segmented = await resolveSegmentedAnalysis(resolved);
   if (!segmented) {
     const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
     const parts = requested.map(section => selectExactCasSection(legacy, section));
     return hydrateCasSections(parts);
   }
-
   const descriptorByName = new Map(segmented.manifest.sections.map(section => [section.name, section]));
-  const parts: Partial<CASOutput>[] = [];
-  for (const section of requested) {
+  const requestedCompressedBytes = requested.reduce((sum, section) => sum + (descriptorByName.get(section)?.bytes || 0), 0);
+  const memoryBoundRead = requestedCompressedBytes > 16 * 1024 * 1024;
+  const readSection = pLimit(memoryBoundRead ? 1 : 4);
+  const parts = (await Promise.all(requested.map(section => readSection(async () => {
     const descriptor = descriptorByName.get(section);
-    // Absent from the manifest means the analysis genuinely has zero fields
-    // in that section (createCasSectionManifest drops empty sections) — not
-    // a defect, so skip silently. A descriptor that IS listed but whose file
-    // is unreadable/missing/corrupt is a real gap: fail loudly naming the
-    // section rather than quietly returning a partial CAS that looks complete.
-    if (!descriptor) continue;
+    if (!descriptor) return undefined;
     if (!descriptor.file) {
       throw new Error(`Segmented CAS section '${section}' is listed in the manifest for ${resolved} but has no file recorded`);
     }
     const sectionPath = path.join(segmented.directory, descriptor.file);
     let sectionData: Partial<CASOutput>;
     try {
-      sectionData = await readJsonMaybeCompressed(sectionPath) as Partial<CASOutput>;
+      sectionData = await readJsonMaybeCompressed(sectionPath, {
+        maxBufferedZstdBytes: memoryBoundRead ? 0 : undefined,
+      }) as Partial<CASOutput>;
     } catch (error) {
       throw new Error(`Segmented CAS section '${section}' (${sectionPath}) could not be read: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (sectionData == null) {
       throw new Error(`Segmented CAS section '${section}' (${sectionPath}) is missing or empty on disk`);
     }
-    parts.push(sectionData);
-  }
+    return sectionData;
+  })))).filter((part): part is Partial<CASOutput> => Boolean(part));
   return hydrateCasSections(parts);
 }
 
@@ -1175,6 +1047,31 @@ export interface AnalysisExportArtifact {
   bytes: number;
 }
 
+export async function resolveSegmentedAnalysisExportManifest(
+  projectPath: string,
+  options?: { track?: AnalysisTrack },
+): Promise<CasSectionManifest | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  return (await resolveSegmentedAnalysis(resolved))?.manifest || null;
+}
+
+export async function resolveAnalysisSectionExportArtifact(
+  projectPath: string,
+  section: CasSectionName,
+  options?: { track?: AnalysisTrack },
+): Promise<AnalysisExportArtifact | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  const segmented = await resolveSegmentedAnalysis(resolved);
+  const descriptor = segmented?.manifest.sections.find(item => item.name === section);
+  if (!segmented || !descriptor?.file || path.basename(descriptor.file) !== descriptor.file) return null;
+  const filePath = path.join(segmented.directory, descriptor.file);
+  const stat = await fs.stat(filePath).catch(() => null);
+  if (!stat) return null;
+  return { filePath, codec: compressionCodecForPath(filePath), bytes: stat.size };
+}
+
 export async function resolveAnalysisExportArtifact(
   projectPath: string,
   options?: { track?: AnalysisTrack },
@@ -1186,15 +1083,6 @@ export async function resolveAnalysisExportArtifact(
   return { filePath: resolved, codec: compressionCodecForPath(resolved), bytes: stat.size };
 }
 
-/**
- * Cheap version fingerprint of the stored analysis for `projectPath`:
- * `mtimeMs:size` of the exact file loadAnalysis would read (same track
- * selection, same legacy fallbacks). Changes on every saveAnalysis rewrite —
- * including each layer stamp of an in-flight reanalyze — so it is a safe
- * (invalidates at least as often as needed) cache key for any response that
- * is a pure function of the stored CAS. Returns null when no analysis file
- * resolves; callers must then bypass their cache.
- */
 export async function getAnalysisFileFingerprint(
   projectPath: string,
   options?: { track?: AnalysisTrack }
@@ -1217,28 +1105,37 @@ export async function loadAnalysis(
   if (!resolved) return null;
 
   if (options?.preferCache) {
-    const cached = loadedAnalysisCache.get(projectPath);
-    if (cached && cached.filePath === resolved) {
-      try {
-        const stat = await fs.stat(resolved);
-        if (stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
-          loadedAnalysisCache.delete(projectPath);
-          loadedAnalysisCache.set(projectPath, cached);
-          return tagAnalysisVersion(cached.output);
-        }
-      } catch {
-        // fall through to a fresh read
-      }
-    }
-    const output = await readJsonMaybeCompressed(resolved);
+    const cached = await getValidCachedAnalysis(projectPath, resolved);
+    if (cached) return tagAnalysisVersion(cached);
+    const output = await loadCompleteAnalysis(projectPath, resolved, options.track);
     if (output) {
       await rememberLoadedAnalysis(projectPath, resolved, output);
     }
     return output ? tagAnalysisVersion(output) : output;
   }
 
-  const output = await readJsonMaybeCompressed(resolved);
+  const output = await loadCompleteAnalysis(projectPath, resolved, options?.track);
   return output ? tagAnalysisVersion(output) : output;
+}
+
+async function loadCompleteAnalysis(
+  projectPath: string,
+  resolved: string,
+  track?: AnalysisTrack,
+): Promise<CASOutput | null> {
+  const segmented = await resolveSegmentedAnalysis(resolved);
+  if (segmented) {
+    try {
+      return await loadAnalysisSections(
+        projectPath,
+        segmented.manifest.sections.map(section => section.name),
+        track ? { track } : undefined,
+      ) as CASOutput | null;
+    } catch (error) {
+      console.warn(`[Klauro] segmented analysis read failed for ${projectPath}; using authoritative analysis: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return await readJsonMaybeCompressed(resolved) as CASOutput;
 }
 
 export async function listAnalyses(options: { scopeCwd?: string } = {}): Promise<AnalysisEntry[]> {
@@ -1248,20 +1145,6 @@ export async function listAnalyses(options: { scopeCwd?: string } = {}): Promise
   return filterEntriesToScope(entries, scope);
 }
 
-/**
- * Same as listAnalyses, but also returns the resolved scope so a caller can
- * surface "scoped to workspace X" (or explicitly report unscoped) without
- * ever naming what was filtered out. Use this in any tool handler that wants
- * to be honest about isolation; listAnalyses() alone stays the drop-in
- * choke point for existing callers.
- *
- * `scopeCwd` lets a caller anchor the scope on a specific requested path
- * (e.g. resolve_agent_analysis's `path` argument) instead of the MCP
- * process's own process.cwd() — see agent-project-map.ts for why: the
- * process cwd is not necessarily the repo the caller is asking about, and
- * scoping by the wrong directory can fail open to 'machine' (unscoped) even
- * when the REQUESTED path has a real workspace binding of its own.
- */
 export async function listAnalysesWithScope(options: { scopeCwd?: string } = {}): Promise<{ entries: AnalysisEntry[]; scope: Awaited<ReturnType<typeof resolveAnalysisScope>> }> {
   const index = await loadIndex();
   const entries = Object.values(index.analyses);
@@ -1549,7 +1432,7 @@ async function pruneAgenticBenchmarkReports(directory: string): Promise<void> {
       }
     }
   } catch {
-    // Ignore pruning errors; benchmarks are proof artifacts, not the primary data path.
+
   }
 }
 
@@ -1658,10 +1541,6 @@ export async function loadGoldenSnapshot(projectPath: string): Promise<{
   return fs.readJson(snapshotPath);
 }
 
-// =============================================================================
-// PROPOSAL PREVIEW STORAGE
-// =============================================================================
-
 export async function saveProposalPreviewArtifact(input: {
   preview: Omit<ProposalPreviewArtifact, 'artifacts'>;
   planText: string;
@@ -1743,10 +1622,6 @@ export async function loadProposalPreviewPayload(id = 'latest'): Promise<{
   };
 }
 
-// =============================================================================
-// INCREMENTAL ANALYSIS STORAGE
-// =============================================================================
-
 const INCREMENTAL_STATE_VERSION_CURRENT = '1.0.0';
 
 export function getProjectStorageDir(projectPath: string): string {
@@ -1826,10 +1701,6 @@ export async function deleteIncrementalState(
   }
 }
 
-// =============================================================================
-// FILE CACHE STORAGE
-// =============================================================================
-
 export async function saveFileCache(
   projectPath: string,
   contentHash: string,
@@ -1899,10 +1770,6 @@ export async function getFileCacheSize(projectPath: string): Promise<{
     return { files: 0, bytes: 0 };
   }
 }
-
-// =============================================================================
-// CHANGE HISTORY STORAGE
-// =============================================================================
 
 const MAX_HISTORY_ENTRIES = 1000;
 
@@ -2000,10 +1867,6 @@ export async function clearChangeHistory(projectPath: string): Promise<void> {
   }
 }
 
-// =============================================================================
-// ANALYSIS SNAPSHOTS (for time travel)
-// =============================================================================
-
 const DEFAULT_MAX_SNAPSHOTS = 10;
 const DEFAULT_MAX_SNAPSHOT_BYTES_PER_PROJECT = 512 * 1024 * 1024;
 
@@ -2080,7 +1943,13 @@ export async function saveAnalysisSnapshot(
   const snapshotPath = path.join(snapshotsDir, `${snapshotId}.json${compressedJsonExtension()}`);
 
   const current = loadedAnalysisCache.get(projectPath);
-  if (current?.output === output && current.filePath.endsWith(compressedJsonExtension())) {
+  const persistedOutput = materializeDeployableCasTree(output);
+  const matchesCurrent = current && (
+    current.output === output ||
+    current.output.analysis_id === persistedOutput.analysis_id &&
+      current.output.analysis_timestamp === persistedOutput.analysis_timestamp
+  );
+  if (matchesCurrent && current.filePath.endsWith(compressedJsonExtension())) {
     const tempPath = `${snapshotPath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
     try {
       await fs.copyFile(current.filePath, tempPath);
@@ -2090,7 +1959,7 @@ export async function saveAnalysisSnapshot(
       throw error;
     }
   } else {
-    await writeCompressedJsonAtomic(snapshotPath, output, { spaces: 0 });
+    await writeCompressedJsonAtomic(snapshotPath, persistedOutput, { spaces: 0 });
   }
 
   await pruneOldSnapshots(snapshotsDir);
@@ -2128,7 +1997,7 @@ async function pruneOldSnapshots(snapshotsDir: string): Promise<void> {
       }
     }
   } catch {
-    // Ignore pruning errors
+
   }
 }
 
@@ -2153,7 +2022,7 @@ export async function loadAnalysisSnapshot(
 
 export async function listAnalysisSnapshots(
   projectPath: string
-): Promise<Array<{ id: string; timestamp: string }>> {
+): Promise<Array<{ id: string; timestamp: string; saved_at: string }>> {
   try {
     const projectDir = getProjectStorageDir(projectPath);
     const snapshotsDir = path.join(projectDir, 'snapshots');
@@ -2163,7 +2032,7 @@ export async function listAnalysisSnapshots(
     }
 
     const files = await fs.readdir(snapshotsDir);
-    const snapshots: Array<{ id: string; timestamp: string }> = [];
+    const snapshots: Array<{ id: string; timestamp: string; saved_at: string }> = [];
 
     for (const file of files) {
       if (!isAnalysisSnapshotFile(file)) {
@@ -2173,7 +2042,8 @@ export async function listAnalysisSnapshots(
       const id = stripJsonStorageExtension(file);
       const timestamp = decodeSnapshotTimestamp(id);
       if (timestamp) {
-        snapshots.push({ id, timestamp });
+        const stat = await fs.stat(path.join(snapshotsDir, file));
+        snapshots.push({ id, timestamp, saved_at: stat.mtime.toISOString() });
       }
     }
 
@@ -2210,10 +2080,6 @@ export async function getAnalysisAt(
 
   return null;
 }
-
-// =============================================================================
-// RUNTIME OBSERVATION STORAGE
-// =============================================================================
 
 const MAX_RUNTIME_OBSERVATIONS = 5000;
 

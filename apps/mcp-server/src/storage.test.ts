@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync } from 'node:child_process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   clearLoadedAnalysisCache,
@@ -16,7 +17,10 @@ import {
   resolveAnalysisExportArtifact,
   saveAnalysis,
   saveCrossCodebaseSystemGraph,
+  waitForPendingSegmentedWrites,
+  writeJsonAtomic,
 } from './storage';
+import { materializeDeployableCasTree } from './deployable-analysis';
 
 function casFixture(id: string): CASOutput {
   return {
@@ -120,7 +124,7 @@ test('segmented storage hydrates exact CAS and targeted reads omit unrequested d
     await saveAnalysis(project, cas);
     const manifest = await loadAnalysisSectionManifest(project);
     assert.ok(manifest?.sections.some(section => section.name === 'graph'));
-    assert.deepEqual(await loadCompleteAnalysisFromSections(project), cas);
+    assert.deepEqual(await loadCompleteAnalysisFromSections(project), materializeDeployableCasTree(cas));
 
     const graph = await loadAnalysisSections(project, ['graph']);
     assert.deepEqual(graph?.nodes, cas.nodes);
@@ -130,7 +134,53 @@ test('segmented storage hydrates exact CAS and targeted reads omit unrequested d
     const artifact = await resolveAnalysisExportArtifact(project);
     assert.ok(artifact);
     assert.ok(artifact!.bytes > 0);
+    await fs.writeFile(artifact!.filePath, 'invalid authoritative payload');
+    clearLoadedAnalysisCache();
+    assert.deepEqual(await loadAnalysis(project), materializeDeployableCasTree(cas));
   });
+});
+
+test('queries use an existing read-only default analysis store', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-readonly-home-'));
+  const storagePath = path.join(home, '.klauro', 'analyses');
+  const project = '/tmp/read-only-project';
+  const cas = casFixture('read-only');
+  await fs.ensureDir(storagePath);
+  await fs.writeJson(path.join(storagePath, 'analysis.json'), cas);
+  await fs.writeJson(path.join(storagePath, 'index.json'), {
+    analyses: {
+      [project]: {
+        name: cas.system.name,
+        path: project,
+        file: 'analysis.json',
+        analyzed_at: cas.analysis_timestamp,
+        system_type: cas.system.type,
+        frameworks: [],
+        node_count: cas.nodes.length,
+        edge_count: cas.edges.length,
+        cas_version: cas.cas_version,
+        track: 'main',
+      },
+    },
+  });
+  await fs.chmod(storagePath, 0o555);
+  try {
+    const stdout = execFileSync(process.execPath, [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '--eval',
+      `const module = await import('./src/storage.ts'); const value = await (module.loadAnalysis || module.default.loadAnalysis)(${JSON.stringify(project)}); process.stdout.write(value?.analysis_id || 'missing');`,
+    ], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, HOME: home, KLAURO_STORAGE_PATH: '' },
+      encoding: 'utf8',
+    });
+    assert.equal(stdout, 'read-only');
+  } finally {
+    await fs.chmod(storagePath, 0o755);
+    await fs.remove(home);
+  }
 });
 
 test('a missing/corrupt segmented section file fails loudly, naming the section, instead of returning a silently partial CAS', async () => {
@@ -148,11 +198,53 @@ test('a missing/corrupt segmented section file fails loudly, naming the section,
     const pointer = await fs.readJson(path.join(sectionsRoot, 'current.json'));
     const sectionPath = path.join(sectionsRoot, pointer.revision, graphDescriptor!.file!);
     await fs.writeFile(sectionPath, 'not valid json{{{');
+    clearLoadedAnalysisCache();
 
     await assert.rejects(
       () => loadAnalysisSections(project, ['graph']),
       /section 'graph'/,
     );
+  });
+});
+
+test('section reads project a valid parsed CAS cache without reopening segmented files', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/segmented-cached-project';
+    const cas = casFixture('segmented-cached');
+    const entry = await saveAnalysis(project, cas);
+    const manifest = await loadAnalysisSectionManifest(project);
+    const graphDescriptor = manifest?.sections.find(section => section.name === 'graph');
+    assert.ok(graphDescriptor?.file);
+
+    const sectionsRoot = path.join(storagePath, `${entry.file}.sections`);
+    const pointer = await fs.readJson(path.join(sectionsRoot, 'current.json'));
+    const sectionPath = path.join(sectionsRoot, pointer.revision, graphDescriptor.file);
+    await fs.writeFile(sectionPath, 'not valid json{{{');
+
+    const graph = await loadAnalysisSections(project, ['graph']);
+    assert.deepEqual(graph?.nodes, cas.nodes);
+    assert.equal(graph?.method_calls, undefined);
+
+    clearLoadedAnalysisCache();
+    await assert.rejects(
+      () => loadAnalysisSections(project, ['graph']),
+      /section 'graph'/,
+    );
+  });
+});
+
+test('a deferred segmented write preserves immediate cache reads and durable cold section reads', async () => {
+  await withStoragePath(async () => {
+    const project = '/tmp/deferred-segmented-project';
+    const first = casFixture('deferred-first');
+    const second = casFixture('deferred-second');
+    await saveAnalysis(project, first);
+    await saveAnalysis(project, second, 'main', { deferSegmentedWrite: true, segmentedWriteDelayMs: 0 });
+
+    assert.equal((await loadAnalysisSections(project, ['graph']))?.analysis_id, 'deferred-second');
+    await waitForPendingSegmentedWrites();
+    clearLoadedAnalysisCache();
+    assert.equal((await loadAnalysisSections(project, ['graph']))?.analysis_id, 'deferred-second');
   });
 });
 
@@ -174,6 +266,29 @@ test('a segmented write failure never invalidates the authoritative analysis', a
     clearLoadedAnalysisCache();
     assert.equal((await loadAnalysis(project))?.analysis_id, 'after-segment-failure');
     assert.ok(warnings.some(message => message.includes('segmented analysis write failed')));
+  });
+});
+
+test('atomic storage writes remain valid under same-process concurrency', async () => {
+  await withStoragePath(async storagePath => {
+    const jsonPath = path.join(storagePath, 'concurrent.json');
+    await Promise.all(Array.from({ length: 64 }, (_, index) => writeJsonAtomic(jsonPath, { index })));
+    const stored = await fs.readJson(jsonPath);
+    assert.equal(typeof stored.index, 'number');
+    assert.ok(stored.index >= 0 && stored.index < 64);
+
+    const project = '/tmp/concurrent-segmented-project';
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(String(message));
+    try {
+      await Promise.all(Array.from({ length: 16 }, (_, index) => saveAnalysis(project, casFixture(`concurrent-${index}`))));
+    } finally {
+      console.warn = originalWarn;
+    }
+    clearLoadedAnalysisCache();
+    assert.match((await loadAnalysis(project))?.analysis_id || '', /^concurrent-\d+$/);
+    assert.equal(warnings.filter(message => message.includes('segmented analysis write failed')).length, 0);
   });
 });
 

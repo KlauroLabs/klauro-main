@@ -14,8 +14,9 @@ test('cold working-tree stream preserves every manifest and file fact', async ()
   try {
     const legacy = await buildSourceSnapshot(root);
     const plan = await buildStreamingSourceSnapshot(root);
-    const parsed = await decode(createAnalyzeUploadRequest({ project_id: 'p', project_path: root, snapshot: plan, async: true }));
+    const parsed = await decode(createAnalyzeUploadRequest({ project_id: 'p', project_path: root, snapshot: plan, async: true, analysis_focus: 'agent-fast' }));
     assert.equal(parsed.protocol_version, REMOTE_ANALYSIS_PROTOCOL_VERSION);
+    assert.equal(parsed.analysis_focus, 'agent-fast');
     assert.deepEqual(parsed.snapshot.files, legacy.files);
     assert.deepEqual(withoutTime(parsed.snapshot.manifest), withoutTime(legacy.manifest));
     assert.equal(parsed.snapshot.snapshot_source, legacy.snapshot_source);

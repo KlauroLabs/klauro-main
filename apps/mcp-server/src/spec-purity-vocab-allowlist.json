@@ -1,0 +1,82 @@
+{
+  "entries": [
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:1w8tat8nc8w0>",
+      "category": "closed-technical-taxonomy",
+      "reason": "UI interaction mechanisms are rejected as product-purpose evidence; they never generate a capability."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:j4hcxg1fkds3>",
+      "category": "linguistic-noise",
+      "reason": "Function words are removed from evidence-derived narrative vocabulary."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "genericProductTail",
+      "category": "quality-rejection-taxonomy",
+      "reason": "Generic mechanism nouns reject ungrounded descriptions and cannot create or rank product purpose."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:c4s0ggxuf5z4>",
+      "category": "closed-technical-taxonomy",
+      "reason": "Code-artifact role suffixes prevent implementation mechanisms from being promoted to managed product entities."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:1j7lzqg1c43c>",
+      "category": "closed-technical-taxonomy",
+      "reason": "Code-artifact role segments prevent implementation mechanisms from being promoted to managed product entities."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:t6yrhk1kofb4>",
+      "category": "closed-technical-taxonomy",
+      "reason": "Transport and registration nouns are removed when extracting a subject from source-backed entry points."
+    },
+    {
+      "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
+      "name": "EVIDENCE_STOP_WORDS",
+      "category": "linguistic-noise",
+      "reason": "Generic software nouns are excluded while verifying that reported domains are grounded by source evidence."
+    },
+    {
+      "file": "apps/mcp-server/src/analyzer.ts",
+      "name": "PURPOSE_EVIDENCE_STOP_WORDS",
+      "category": "linguistic-noise",
+      "reason": "Generic software nouns are excluded from evidence-drift comparison and cannot generate purpose."
+    },
+    {
+      "file": "apps/mcp-server/src/connector-auth.ts",
+      "name": "<inline:1ddtxzo118to>",
+      "category": "closed-runtime-taxonomy",
+      "reason": "Node and operating-system network error codes classify transport unavailability for recovery guidance."
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "name": "WORKSPACE_SEMANTIC_STOP_WORDS",
+      "category": "linguistic-noise",
+      "reason": "Generic connective and software words are excluded from evidence-overlap checks and cannot generate workspace concepts."
+    },
+    {
+      "file": "apps/mcp-server/src/deployable-analysis.ts",
+      "name": "BARE_TOOLING_NOUNS",
+      "category": "closed-technical-taxonomy",
+      "reason": "Packaging and deployment mechanism nouns prevent duplicate evidence shells from becoming deployable product units."
+    },
+    {
+      "file": "apps/mcp-server/src/workspace-passive-data.ts",
+      "name": "writes",
+      "category": "closed-operation-taxonomy",
+      "reason": "Data mutation verbs interpret source-derived operation names only to establish publisher direction."
+    },
+    {
+      "file": "apps/mcp-server/src/workspace-passive-data.ts",
+      "name": "reads",
+      "category": "closed-operation-taxonomy",
+      "reason": "Data query verbs interpret source-derived operation names only to establish listener direction."
+    }
+  ]
+}

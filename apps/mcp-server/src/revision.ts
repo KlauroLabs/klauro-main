@@ -1,12 +1,12 @@
-/**
- * Revision identity — the basis for "never out of sync" caching.
- *
- * The local cache is a read-through cache over the VPS (source of truth), keyed by
- * the EXACT analyzed revision, not by project path. A committed revision is immutable
- * per commit SHA, so a cache hit for that SHA is provably current; in-flight work is
- * content-hashed, so any edit changes the key. This module computes the current repo
- * revision and the per-track cache key. See docs/KLAURO-PRODUCT-MODEL.md.
- */
+
+
+
+
+
+
+
+
+
 
 import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
@@ -15,7 +15,7 @@ export interface RepoRevision {
   branch: string | null;
   head_sha: string | null;
   dirty: boolean;
-  /** Stable hash of working-tree changes (status + diff). Null when clean. */
+
   dirty_hash: string | null;
 }
 
@@ -32,10 +32,10 @@ function git(projectPath: string, args: string[]): string | null {
   }
 }
 
-/** Current revision identity for a working copy, or null when it is not a git repo. */
+
 export function getRepoRevision(projectPath: string): RepoRevision | null {
   const head = git(projectPath, ['rev-parse', 'HEAD']);
-  if (head === null) return null; // not a git repo (or git unavailable)
+  if (head === null) return null;
   const branch = git(projectPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const status = git(projectPath, ['status', '--porcelain']) ?? '';
   const dirty = status.length > 0;
@@ -47,22 +47,22 @@ export function getRepoRevision(projectPath: string): RepoRevision | null {
   return { branch: branch || null, head_sha: head, dirty, dirty_hash };
 }
 
-/**
- * The per-track cache key. Committed (clean tree) → projectId@branch@sha (immutable).
- * In-flight (dirty) → adds the working-tree hash so any edit yields a new key.
- */
+
+
+
+
 export function revisionCacheKey(projectId: string, rev: RepoRevision): string {
   const base = `${projectId}@${rev.branch || 'detached'}@${rev.head_sha || 'none'}`;
   return rev.dirty && rev.dirty_hash ? `${base}+wip-${rev.dirty_hash}` : base;
 }
 
 export type RevisionMatch =
-  | 'committed-current' // HEAD == analyzed SHA, clean tree → cache hit is provably current
-  | 'in-flight'         // HEAD == analyzed SHA but tree is dirty → working overlay applies
-  | 'behind'            // HEAD moved past the analyzed SHA → fetch the newer revision
-  | 'unknown';          // not a git repo / no analyzed SHA → fall back to mtime freshness
+  | 'committed-current'
+  | 'in-flight'
+  | 'behind'
+  | 'unknown';
 
-/** Compare a cached analysis's revision against the current working copy. */
+
 export function compareRevision(
   analyzedSha: string | null | undefined,
   current: RepoRevision | null,

@@ -22,7 +22,7 @@ function fixtureCas(): CASOutput {
     edges: [{ id: 'e1', source: 'n1', target: 'n1', type: 'calls' }],
     method_calls: [{ caller_id: 'n1', caller_node: 'n1', target_node: 'n1', call_details: { method_name: 'run' } }],
     analysis_facts: [{ id: 'f1', subject_id: 'n1', kind: 'test' }],
-    system_capabilities: [{ id: 'c1', name: 'Run analysis' }],
+    capabilities: [{ id: 'c1', name: 'Run analysis' }],
     test_summary: { total: 1 },
     runtime_static_links: [{ node_id: 'n1' }],
     risks: [{ id: 'r1', title: 'Risk' }],
@@ -49,6 +49,28 @@ test('targeted graph hydration excludes heavy unrelated sections', () => {
   assert.strictEqual(selected.method_calls, undefined);
   assert.strictEqual(selected.analysis_facts, undefined);
   assert.strictEqual(selected.runtime_static_links, undefined);
+});
+
+test('tree hydration carries recursive children without loading the parent graph', () => {
+  const child = {
+    ...fixtureCas(),
+    id: 'cas:child',
+    parent_id: 'cas:root',
+    label: 'child',
+    analysis_id: 'analysis-child',
+  };
+  const cas = {
+    ...fixtureCas(),
+    id: 'cas:root',
+    parent_id: null,
+    label: 'root',
+    composition_mode: 'composed' as const,
+    children: [child],
+  };
+  const selected = selectCasSections(cas, CAS_SECTION_PROFILES.tree);
+  assert.deepStrictEqual(selected.children, [child]);
+  assert.equal(selected.id, 'cas:root');
+  assert.equal(selected.nodes, undefined);
 });
 
 test('section parser rejects unknown names and deduplicates valid names', () => {

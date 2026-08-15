@@ -1,16 +1,16 @@
-/**
- * Proposals + new-project builds — user-driven additions to the gauntlet.
- *
- * Two persisted, user-facing collections:
- *  - user scenarios: ideas you propose from the UI that become runnable
- *    scenarios (merged with the built-in catalog).
- *  - project builds: "build a new project of size N" requests, run by agents
- *    across arms (Klauro / competitor / nothing) and scored on quality, success,
- *    speed, tokens. Projected by default (grounded in a size model); a live
- *    backend (greenfield benchmark) overlays measured numbers when configured.
- *
- * Persisted under ~/.klauro/gauntlet/ so they survive restarts.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as os from 'os';
 import * as path from 'path';
@@ -23,9 +23,9 @@ function dir(): string { return path.join(os.homedir(), '.klauro', 'gauntlet'); 
 function userScenariosFile(): string { return path.join(dir(), 'user-scenarios.json'); }
 function projectBuildsFile(): string { return path.join(dir(), 'project-builds.json'); }
 
-// ---------------------------------------------------------------------------
-// User-proposed scenarios.
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface UserScenario {
   id: string;
@@ -67,14 +67,14 @@ export async function addUserScenario(input: Partial<UserScenario>, now: string)
   return { ok: true, scenario };
 }
 
-// ---------------------------------------------------------------------------
-// New-project builds.
-// ---------------------------------------------------------------------------
+
+
+
 
 export type ProjectSize = 'tiny' | 'small' | 'medium' | 'large';
 
-/** Approx node-count a freshly built project of each size reaches — the size
- *  model that grounds the projected build metrics. */
+
+
 const SIZE_NODES: Record<ProjectSize, number> = { tiny: 120, small: 600, medium: 2500, large: 9000 };
 
 export interface ProjectBuildArm {
@@ -101,11 +101,11 @@ export async function listProjectBuilds(): Promise<ProjectBuild[]> {
   try { return await fs.readJson(projectBuildsFile()); } catch { return []; }
 }
 
-/**
- * Project the per-arm outcome of building a new project of a given size. Greenfield
- * builds resemble cross-repo work in retrieval cost, so we reuse that calibration;
- * success tracks command/validation likelihood, modeled from quality.
- */
+
+
+
+
+
 function projectBuild(size: ProjectSize): { arms: ProjectBuildArm[]; win: boolean } {
   const repo: RepoFact = { name: 'new-project', nodes: SIZE_NODES[size], edges: Math.round(SIZE_NODES[size] * 0.6) };
   const arms: ProjectBuildArm[] = [];

@@ -78,8 +78,8 @@ export async function runDescriptionQualityBenchmark(options: { outputPath?: str
     const storedCas = await loadAnalysis(root);
     const sourceChecks = [
       storedCas?.nodes.find(node => node.name === 'EvidenceReviewService') as any,
-      storedCas?.system_capabilities?.find(capability => capability.name === 'Evidence Review') as any,
-      storedCas?.data_entities?.find(entity => entity.name === 'EvidenceRequest') as any,
+      storedCas?.capabilities?.find(capability => capability.name === 'Evidence Review') as any,
+      storedCas?.entities?.find(entity => entity.name === 'EvidenceRequest') as any,
       storedCas?.entry_points?.find(entry => entry.name === 'Approve Evidence Request') as any,
     ].filter(Boolean);
     results.push({
@@ -198,7 +198,7 @@ function buildDescriptionBenchmarkCas(root: string): CASOutput {
       metadata: {},
     }],
     edges: [],
-    data_entities: [{
+    entities: [{
       id: 'entity-evidence-request',
       name: 'EvidenceRequest',
       fields: [{ name: 'controlId' }, { name: 'reviewerId' }, { name: 'status' }],
@@ -213,7 +213,7 @@ function buildDescriptionBenchmarkCas(root: string): CASOutput {
       security: { requires_auth: true },
       criticality: 'high',
     }] as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap-evidence-review',
       name: 'Evidence Review',
       description: 'Evidence Review tracks review decisions for submitted evidence.',

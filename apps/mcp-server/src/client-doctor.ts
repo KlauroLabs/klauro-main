@@ -5,34 +5,34 @@ import { checkNodeVersionForUpdate, fetchReleaseManifest, isRunningAsSeaBinary, 
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from './remote-analyzer-protocol';
 
-/**
- * `klauro doctor`'s CUSTOMER-facing diagnostic set. Deliberately NOT
- * environment-doctor.ts: that module inspects the DEVELOPER package layout
- * (scripts/environment-checks.mjs, dist/index.cjs bundle contents, local
- * analysis-heap/AI-provider/zstd settings) — none of which exists or applies
- * on a customer machine ("Analysis, CAS construction (repo- and workspace-level), graphs, proposals,
- * embeddings, and AI execute only on Klauro infrastructure" — installed-cli.ts
- * usage text). Also lives outside cli.ts/installed-cli.ts, same reason as
- * self-update.ts: a module both entry points import cannot silently drift.
- *
- * Checks the things that actually strand a customer:
- *  - node version vs the range the server publishes for native builds
- *  - auth/token state and age (server session TTL is 14 days)
- *  - server reachability + analysis-protocol match
- *  - installed CLI version vs the published latest
- *  - MCP client registration (Claude/Cursor config + entry-point boot probe)
- */
 
-/** Server session TTL. Must track remote-analyzer-service.ts's 401 remediation
- *  text ("session TTL is 14 days") — that file is never bundled into the
- *  installed client (build-bundle.mjs's forbidden list), so the number is
- *  duplicated here rather than imported; the 401 remediation test in
- *  installed-cli-ops-commands.test.ts also asserts the string "14 days"
- *  appears there, so the two can't quietly drift apart unnoticed. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export const SESSION_TOKEN_TTL_DAYS = 14;
 
-/** Warn this many days before a token is expected to expire, so `doctor`
- *  catches an about-to-strand session before it actually fails a request. */
+
+
 const TOKEN_EXPIRY_WARN_DAYS = 11;
 
 export interface ClientDoctorReport {
@@ -108,8 +108,8 @@ export async function checkServerHealth(serverUrl: string, fetchImpl: typeof fet
   const body = await response.json().catch(() => ({})) as HealthResponse;
   const reachDetail = `Reachable: ${serverUrl} (${body.service || 'klauro-api'} ${body.version || 'unknown version'}${body.build?.git_sha ? `, ${body.build.git_sha}` : ''}).`;
   if (typeof body.required_protocol_version !== 'number') {
-    // Older server build predating the /health protocol field — reachable,
-    // just can't confirm protocol compatibility from this endpoint alone.
+
+
     return checkResult('server-reachability', 'pass', `${reachDetail} Server does not report a protocol version on /health (older build); protocol match unconfirmed.`);
   }
   if (body.required_protocol_version !== REMOTE_ANALYSIS_PROTOCOL_VERSION) {
@@ -137,9 +137,9 @@ export function evaluateCliVersion(current: string, manifest: ReleaseManifest | 
 }
 
 export function evaluateNodeVersionForClient(nodeVersion: string, _manifest: ReleaseManifest | null): EnvironmentCheck {
-  // Self-contained (Node SEA) binary: the running "Node" IS the klauro
-  // binary's embedded runtime, not something the machine installed or could
-  // be short of — there is nothing to check.
+
+
+
   if (isRunningAsSeaBinary()) {
     return checkResult('node-version', 'pass', `Running the self-contained klauro binary (embedded Node ${nodeVersion}); no machine Node install required.`);
   }

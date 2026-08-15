@@ -1,21 +1,21 @@
-/**
- * Shared-code rollup bench — validates the cross-deployable shared-code rollup
- * built in cross-codebase-analysis.ts (`buildSharedCodeRollup`, surfaced as
- * `WorkspaceAnalysisGraph.shared_code_rollup`).
- *
- * THE GAP (docs/SPEC-ENTITY-MODEL.md, dogfooded on zerac-api): a monorepo's
- * `libs/*` shared code is detected as usage (cross-repo/cross-app import
- * volume) but was never rolled up into a queryable field answering "which
- * shared lib does each deployable depend on, and what surface does it use."
- *
- * This bench runs a REAL analysis (via analyzeForBench, the same blackbox
- * entry point used elsewhere in gauntlet/ — no engine internals imported) on
- * a small fixture monorepo with one shared lib (`libs/auth`) consumed by two
- * deployables (`apps/service-a`, `apps/service-b`) with a partially
- * overlapping symbol surface, then asserts the rollup composes correctly:
- * both consumers appear, usage/consumed-surface is non-empty, and blast
- * radius correctly attributes each symbol to the deployables using it.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as path from 'path';
 import { analyzeForBench } from './product-analysis';

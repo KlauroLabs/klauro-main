@@ -240,7 +240,7 @@ test('manual element descriptions reject generic filler word salad that the vali
     edges: [],
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap_zerac',
       name: 'Zerac Management',
       description: 'Zerac Management covers process paths; spans zerac.',
@@ -295,7 +295,7 @@ test('manual element descriptions reject file coordination summaries from local 
     edges: [],
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap_contexts',
       name: 'Agent Contexts',
       description: 'Agent Contexts turns graph matches and tests into compact coding context for agents.',
@@ -536,7 +536,7 @@ test('manual capability description prompt omits internal helper operations', as
     edges: [],
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap_contexts',
       name: 'Agent Contexts',
       description: 'Agent Contexts turns graph matches and tests into compact coding context for agents.',
@@ -627,7 +627,7 @@ test('manual capability prompt derives behavior hints and excludes test-helper s
     edges: [],
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap_skill_management',
       name: 'Skill Management',
       description: 'Skill Management covers validate, read, update, analyze paths; spans scripts, agents, and auto reply.',
@@ -730,7 +730,7 @@ test('manual capability prompt marks generic analyzer-derived names so AI uses b
     edges: [],
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap_mutation_management',
       name: 'Mutation Management',
       description: 'Mutation Management covers mutation paths.',
@@ -813,7 +813,7 @@ test('manual capability descriptions repair generic analyzer-derived subject pre
     edges: [],
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap_mutation_management',
       name: 'Mutation Management',
       description: 'Mutation Management covers mutation paths.',
@@ -868,7 +868,7 @@ function groundingCas(purpose: Record<string, unknown> = {}, dataEntities: unkno
       supporting_workflow_ids: [],
       ...purpose,
     },
-    data_entities: dataEntities,
+    entities: dataEntities,
   } as unknown as CASOutput;
 }
 

@@ -305,7 +305,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(scopedSectionsBody.sub_cas_node_id, apiUnit.id);
     assert.equal(scopedSectionsBody.cas.nodes.length, 3, 'scoped sections must carry the unit slice, not the repo');
     assert.equal(scopedSectionsBody.cas.method_calls, undefined, 'unrequested sections stay out of a scoped read');
-    assert.equal(scopedSectionsBody.cas.system_capabilities, undefined, 'comprehension was not requested');
+    assert.equal(scopedSectionsBody.cas.capabilities, undefined, 'comprehension was not requested');
     const scopedSectionsRepeat = await request(
       port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&sub_cas_node_id=${apiUnit.id}`, undefined, token);
     assert.equal(scopedSectionsRepeat.body, scopedSections.body, 'repeat scoped sections read is served byte-identically');

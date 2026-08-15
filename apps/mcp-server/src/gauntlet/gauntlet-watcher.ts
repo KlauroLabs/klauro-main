@@ -1,21 +1,21 @@
-/**
- * Gauntlet watcher — auto-run the incremental gauntlet when a repo changes.
- *
- * This wraps the existing file watcher (watcher.ts) and the incremental gauntlet
- * (incremental-gauntlet.ts) into an installable, persistent unit: install one on
- * a repo, and every time the watcher's incremental analysis completes (or a file
- * changes), we run the incremental gauntlet for THAT change and record the
- * quality/token/speed delta. The result is a time series of Klauro's advantage on
- * understanding the repo's changes, maintained automatically.
- *
- * Robustness contract (the watcher must outlive failures):
- *  - The event handler never throws: a failed incremental run is logged and
- *    swallowed so it cannot kill the watch.
- *  - Watchers are de-duplicated per repoPath: installing twice reuses the live one.
- *  - Config is persisted to ~/.klauro/gauntlet/watchers.json so it survives
- *    restarts; startInstalledWatchers() re-installs enabled ones on boot and is
- *    idempotent + never throws if a repo path is gone (skip + log).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as os from 'os';
 import * as path from 'path';
@@ -32,9 +32,9 @@ import {
 import { listAnalyses } from '../storage';
 import { runIncrementalGauntlet, type IncrementalChange } from './incremental-gauntlet';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface GauntletWatcher {
   id: string;
@@ -43,18 +43,18 @@ export interface GauntletWatcher {
   watchId: string;
   installedAt: string;
   enabled: boolean;
-  /** Number of incremental gauntlet runs this watcher has triggered. */
+
   runs: number;
 }
 
 export interface GauntletWatcherStatus extends GauntletWatcher {
-  /** Live watch status (null if the underlying watch is gone). */
+
   watch: WatchStatus | null;
 }
 
-// ---------------------------------------------------------------------------
-// Persistence
-// ---------------------------------------------------------------------------
+
+
+
 
 function gauntletDir(): string {
   return path.join(os.homedir(), '.klauro', 'gauntlet');
@@ -78,17 +78,17 @@ async function writeWatchers(watchers: GauntletWatcher[]): Promise<void> {
   await fs.writeJson(watchersFile(), watchers, { spaces: 2 });
 }
 
-// ---------------------------------------------------------------------------
-// Live run-count tracking + event wiring
-// ---------------------------------------------------------------------------
 
-/** In-memory run counters keyed by watcher id (config is persisted lazily). */
+
+
+
+
 const runCounts = new Map<string, number>();
-/** watchId -> the listener we attached, so we don't double-subscribe. */
+
 const wiredWatchIds = new Set<string>();
 
 function changeFromEvent(payload: any): IncrementalChange | undefined {
-  // 'analysis-complete' carries a full ChangeReport; 'file-change' is lighter.
+
   const cr = payload?.changeReport;
   if (cr?.summary) {
     return {
@@ -105,7 +105,7 @@ function changeFromEvent(payload: any): IncrementalChange | undefined {
   return undefined;
 }
 
-/** Pull the latest change off the live watch status as a fallback. */
+
 function changeFromStatus(watchId: string): IncrementalChange | undefined {
   const status = getWatchStatus(watchId);
   const last = status?.recentChanges?.[0];
@@ -119,11 +119,11 @@ function changeFromStatus(watchId: string): IncrementalChange | undefined {
   };
 }
 
-/**
- * Subscribe (once) to watcher events for this watchId and run the incremental
- * gauntlet on each. The handler NEVER throws — a failed run must not kill the
- * watch — and is fire-and-forget so a slow projection doesn't block the emitter.
- */
+
+
+
+
+
 function wireWatch(gw: GauntletWatcher): void {
   if (wiredWatchIds.has(gw.watchId)) return;
   wiredWatchIds.add(gw.watchId);
@@ -133,7 +133,7 @@ function wireWatch(gw: GauntletWatcher): void {
   const handler = (payload: any) => {
     if (!payload || payload.watchId !== gw.watchId) return;
     const change = changeFromEvent(payload) || changeFromStatus(gw.watchId);
-    // Fire-and-forget; isolate every failure.
+
     void (async () => {
       try {
         await runIncrementalGauntlet({ repoName: gw.repoName, change });
@@ -141,8 +141,8 @@ function wireWatch(gw: GauntletWatcher): void {
         runCounts.set(gw.id, next);
         await bumpPersistedRunCount(gw.id, next);
       } catch (err) {
-        // Swallow: the watcher survives a failed incremental run.
-        // eslint-disable-next-line no-console
+
+
         console.error(
           `[gauntlet-watcher] incremental run failed for ${gw.repoName}:`,
           err instanceof Error ? err.message : String(err)
@@ -151,8 +151,8 @@ function wireWatch(gw: GauntletWatcher): void {
     })();
   };
 
-  // We only have analysis-complete for the real ripple; file-change is a
-  // coarser trigger that falls back to the latest recorded change.
+
+
   emitter.on('analysis-complete', handler);
 }
 
@@ -165,13 +165,13 @@ async function bumpPersistedRunCount(id: string, runs: number): Promise<void> {
       await writeWatchers(watchers);
     }
   } catch {
-    /* best-effort */
+
   }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+
+
+
 
 async function resolveRepoName(repoPath: string): Promise<string> {
   const normalized = path.resolve(repoPath);
@@ -183,21 +183,21 @@ async function resolveRepoName(repoPath: string): Promise<string> {
   return match?.name || path.basename(normalized);
 }
 
-/**
- * Install a gauntlet watcher on a repo: resolve its analyzed name, start the file
- * watch, wire the incremental gauntlet to fire on change, and persist config.
- * De-duplicated per repoPath — installing again returns the existing one.
- */
+
+
+
+
+
 export async function installGauntletWatcher(repoPath: string): Promise<GauntletWatcher> {
   const normalized = path.resolve(repoPath);
 
-  // Reuse an existing enabled watcher on the same path.
+
   const existing = (await readWatchers()).find(
     w => path.resolve(w.repoPath) === normalized && w.enabled
   );
   if (existing) {
     runCounts.set(existing.id, existing.runs || 0);
-    wireWatch(existing); // idempotent
+    wireWatch(existing);
     return existing;
   }
 
@@ -224,7 +224,7 @@ export async function installGauntletWatcher(repoPath: string): Promise<Gauntlet
   return gw;
 }
 
-/** Merge persisted config with the live watch status for each watcher. */
+
 export async function listGauntletWatchers(): Promise<GauntletWatcherStatus[]> {
   const watchers = await readWatchers();
   return watchers.map(w => {
@@ -237,7 +237,7 @@ export async function listGauntletWatchers(): Promise<GauntletWatcherStatus[]> {
   });
 }
 
-/** Stop the underlying watch, mark disabled, persist. */
+
 export async function stopGauntletWatcher(id: string): Promise<{ ok: boolean }> {
   const watchers = await readWatchers();
   const idx = watchers.findIndex(w => w.id === id);
@@ -247,7 +247,7 @@ export async function stopGauntletWatcher(id: string): Promise<{ ok: boolean }> 
   try {
     stopWatch(gw.watchId);
   } catch {
-    /* underlying watch may already be gone */
+
   }
   wiredWatchIds.delete(gw.watchId);
 
@@ -256,11 +256,11 @@ export async function stopGauntletWatcher(id: string): Promise<{ ok: boolean }> 
   return { ok: true };
 }
 
-/**
- * Re-install all persisted enabled watchers on server boot so they auto-run.
- * Idempotent (reuses live watches per path) and never throws — a missing repo
- * path is skipped + logged, not fatal.
- */
+
+
+
+
+
 export async function startInstalledWatchers(): Promise<{ started: number }> {
   const watchers = await readWatchers();
   let started = 0;
@@ -269,17 +269,17 @@ export async function startInstalledWatchers(): Promise<{ started: number }> {
     if (!w.enabled) continue;
     try {
       if (!(await fs.pathExists(w.repoPath))) {
-        // eslint-disable-next-line no-console
+
         console.warn(`[gauntlet-watcher] skip ${w.repoName}: path gone (${w.repoPath})`);
         continue;
       }
-      // startWatch de-dupes per path; re-attach the live watchId and re-wire.
+
       const { watchId } = startWatch(w.repoPath);
       const refreshed: GauntletWatcher = { ...w, watchId };
       runCounts.set(refreshed.id, w.runs || 0);
       wireWatch(refreshed);
 
-      // Persist the (possibly new) watchId back.
+
       const all = await readWatchers();
       const idx = all.findIndex(x => x.id === w.id);
       if (idx >= 0) {
@@ -288,7 +288,7 @@ export async function startInstalledWatchers(): Promise<{ started: number }> {
       }
       started++;
     } catch (err) {
-      // eslint-disable-next-line no-console
+
       console.error(
         `[gauntlet-watcher] failed to start watcher ${w.repoName}:`,
         err instanceof Error ? err.message : String(err)

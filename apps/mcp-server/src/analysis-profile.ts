@@ -43,11 +43,6 @@ export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): An
   const nodeTypes = new Set(productNodes.map(node => node.type));
   const systemFrameworks = (cas.system?.technologies?.frameworks || []).map(framework => framework.name.toLowerCase());
   const productFrameworks = productNodes.map(node => String(node.metadata?.framework || '').toLowerCase()).filter(Boolean);
-  const frameworks = [...systemFrameworks, ...productFrameworks];
-  const languages = [
-    ...(cas.system?.technologies?.languages || []).map(language => language.name.toLowerCase()),
-    ...productNodes.map(node => String(node.metadata?.language || '').toLowerCase()).filter(Boolean),
-  ];
   const manifests = readManifestHints(projectPath);
   const evidence: string[] = [];
 
@@ -67,11 +62,11 @@ export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): An
   const hasCli = entryTypes.has('cli') || /\b(command|cli|bin|commander|yargs|click|cobra)\b/i.test(text) || manifests.hasBin;
   const hasFrontend = entryTypes.has('page') || entryTypes.has('route') || hasProductFrontendFramework || manifests.hasFrontend || (hasSystemFrontendFramework && !hasCli);
   const hasHttp = entryTypes.has('http') || hasProductHttpFramework || (hasSystemHttpFramework && !hasCli && !hasFrontend);
-  // No raw-text "electron" fallback: node names/files merely MENTIONING electron
-  // (e.g. an analyzer product that supports Electron apps — Klauro itself) must not
-  // classify as desktop-app. Real Electron apps always carry the structured
-  // signals: the electron dependency/config (manifests.hasDesktop) or an
-  // electron/tauri framework detection on nodes.
+
+
+
+
+
   const hasDesktop = manifests.hasDesktop || hasWpfDesktopShape || hasProductDesktopFramework || (hasSystemDesktopFramework && !hasCli);
   const hasProductDart = productNodes.some(node => String(node.metadata?.language || '').toLowerCase().includes('dart') || (node.source?.file || '').endsWith('.dart'));
   const hasMobile = hasProductDart || nodeTypes.has('mobile_screen') || manifests.hasFlutter || /\/(android|ios|macos)\b/i.test(projectPath);

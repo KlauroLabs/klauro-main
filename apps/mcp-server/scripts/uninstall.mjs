@@ -102,8 +102,8 @@ print('Klauro uninstall: OK');
 process.exit(0);
 
 function removeClaudeRegistration() {
-  // claude mcp remove without --scope removes from the first scope it finds;
-  // registrations can exist in several scopes, so sweep until get fails.
+
+
   const scopes = ['user', 'project', 'local'];
   let lastError = '';
   for (let attempt = 0; attempt < scopes.length + 1; attempt++) {

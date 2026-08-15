@@ -112,32 +112,32 @@ async function runAnalysisGauntletSuite(): Promise<SuiteResult> {
     });
 }
 
-/**
- * TASK #107 (capability-catalog latency defect, 2026-07-30): the AI-enrichment
- * stage (which includes the capability-catalog call) had NO hard cutoff and no
- * gate watching its wall-clock — the same "sits unenforced until someone acts"
- * shape as the historical graph-integrity-warning rot (17,295 warnings ignored
- * for months). Per-phase timing already exists
- * (`output.timings.stages.ai_enrichment`, `KLAURO_DEBUG_ANALYZER_PHASES`) — this
- * wires that EXISTING, already-persisted number into the EXISTING nightly gate
- * rather than inventing a new report nobody reads.
- *
- * Runs one small real analysis through the product's own HTTP path
- * (analyzeForBench — same blackbox helper analysis-gauntlet uses, never
- * imports orchestrator internals) and asserts the AI-enrichment stage and the
- * total analysis duration stay under the documented product ceilings:
- *   - HARD FAIL >180s total (the product's absolute worst-case budget: the
- *     entire analysis, not just this stage, must never exceed 3 minutes).
- *   - HARD FAIL >150s ai_enrichment (must leave headroom for the rest of the
- *     pipeline inside the 180s ceiling).
- *   - WARN >60s ai_enrichment (the documented "60s hard max for average-class
- *     repos" figure; a small fixture exceeding it on an otherwise-healthy
- *     provider is a regression worth a human look, even before it's a hard
- *     failure).
- * These are regression tripwires (in the spirit of coverage-gate.ts's
- * documented floors), not a target to shave toward — a healthy run on this
- * small fixture is expected to finish in single-digit seconds.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function runAiCatalogLatencyBudgetSuite(): Promise<SuiteResult> {
   const fixturePath = path.join(PACKAGE_ROOT, 'fixtures', 'analysis-truth', 'express-mongoose');
   const HARD_MAX_TOTAL_MS = 180_000;
@@ -401,13 +401,13 @@ function runVersionSkewSuite(): { result: SuiteResult; checks: AnswerPackCheck[]
   return { result, checks };
 }
 
-// #113: this used to also seed the vocabulary from KLAURO_SELF_CAPABILITY_NAMES
-// / KLAURO_SELF_CAPABILITY_DESCRIPTIONS — hand-written maps the orchestrator
-// used to MANUFACTURE capability names/descriptions for Klauro's own repo
-// (never AI/evidence-derived). Those maps are gone (product source must not
-// special-case one repo's vocabulary), so there is no curated vocabulary left
-// to check for. The one surviving check is the literal brand mention, which
-// is a legitimate cross-contamination signal independent of any curated list.
+
+
+
+
+
+
+
 export function buildKlauroVocabulary(): string[] {
   return ['Klauro'];
 }
@@ -418,7 +418,7 @@ function vocabularyTermAppearsIn(term: string, text: string): boolean {
 }
 
 export function collectProductSurfaceText(cas: CASOutput): Record<string, string> {
-  const capabilities = cas.system_capabilities || [];
+  const capabilities = cas.capabilities || [];
   const productMap = getProductMap(cas, { format: 'markdown' }) as { markdown?: string };
   return {
     capability_names: capabilities.map(capability => capability.name).join('\n'),
@@ -440,12 +440,12 @@ export function findVocabularyLeaks(cas: CASOutput): Array<{ term: string; secti
   return leaks;
 }
 
-// #113: this used to also assert a "positive control" — that Klauro's own
-// self-analysis STILL contains its curated capability names. That check
-// validated the doctrine violation itself (manufactured vocabulary showing up
-// in the self-analysis was treated as the PASSING case), so it is removed
-// along with the maps it depended on. What is left is the legitimate
-// direction only: foreign repos must not pick up Klauro's own brand vocabulary.
+
+
+
+
+
+
 export function evaluateVocabIsolationChecks(input: {
   foreign: Array<{ name: string; cas: CASOutput | null }>;
 }): AnswerPackCheck[] {

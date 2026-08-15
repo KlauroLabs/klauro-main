@@ -1,18 +1,18 @@
-/**
- * Camp-C OUT-OF-CATEGORY bench — UI component trees + props.
- *
- * A structural graph sees a React component as a function and `<UserCard/>` as,
- * at best, an import or a usage. Measured live against codebase-memory-mcp on the
- * fixture: its edge types are DEFINES/CONTAINS_FILE/CALLS/IMPORTS/USAGE — there is
- * NO `renders` edge and NO props concept. It can tell you App imports UserCard; it
- * cannot tell you App RENDERS UserCard, nor that UserCard takes 2 props.
- *
- * Klauro's React analyzer emits the component tree as `renders` edges plus a prop
- * count per component — the structured UI fact nobody else models.
- *
- * Honest scoring: competitors read the source to TRY (token cost = source bytes)
- * and still produce zero render-tree edges.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -22,7 +22,7 @@ import type { ArmResult, WinVerdict } from './report-schema';
 
 interface ComponentTruth {
   task: 'component-tree';
-  /** Each "Parent renders Child" edge the UI defines. */
+
   expected_tree: string[];
 }
 
@@ -53,7 +53,7 @@ async function sourceBytes(dir: string): Promise<number> {
       const st = await fs.stat(path.join(dir, f));
       if (st.isFile()) total += st.size;
     } catch {
-      /* noop */
+
     }
   }
   return total;

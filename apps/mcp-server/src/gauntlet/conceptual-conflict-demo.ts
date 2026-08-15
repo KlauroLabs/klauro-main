@@ -1,22 +1,22 @@
-/**
- * Conceptual-conflict demo: proves the crown-jewel claim of
- * docs/SPEC-COORDINATION-FABRIC-V2.md §1.7 — that detectConceptualConflicts()
- * catches incoherent-but-textually-mergeable concurrent edits that git,
- * linters, and code review would NOT catch on their own.
- *
- * Builds a small real fixture, runs it through analyzeForBench() (the product,
- * blackbox, same as every other gauntlet bench — see product-analysis.ts) to
- * get a genuine CAS with real call-graph edges, then constructs 5 two-agent
- * scenarios against that CAS:
- *   (a) nullability contract-divergence (getUser: User|null -> User)
- *   (b) return-type retype (amount cents -> Money, a caller still does *100)
- *   (c) structural split (render -> render + renderHeader, new caller of old render)
- *   (d) duplicate-work (both agents add retry logic to the same handler)
- *   (e) non-conflict control (two disjoint, unrelated changes -> zero conflicts)
- *
- * Isolation: the fixture lives under os.tmpdir(), same as analyzeForBench's own
- * analyzer-server dataDir — no ~/.klauro state is touched.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as os from 'os';
@@ -60,7 +60,7 @@ async function buildFixture(): Promise<string> {
   return dir;
 }
 
-/** Resolve a CAS node id by its human name (the fixture's function names). */
+
 function idFor(cas: ConflictCas, name: string): string {
   const node = cas.nodes.find((n) => n.name === name);
   if (!node) throw new Error(`fixture CAS missing expected node: ${name}`);
@@ -88,8 +88,8 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
     const realCas = await analyzeForBench(fixtureDir);
     cas = { nodes: realCas.nodes.map((n) => ({ id: n.id, name: n.name })), edges: realCas.edges as any };
 
-    // Sanity-dogfood the same call-graph shape the detector consumes: confirm
-    // getCallers surfaces renderProfile as a caller of getUser via the CAS.
+
+
     const getUserId = idFor(cas, 'getUser');
     const callers = getCallers(realCas, getUserId, 1, 10);
     if (!callers.callers.some((c) => c.name === 'renderProfile')) {
@@ -101,8 +101,8 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
 
   const scenarios: DemoScenarioResult[] = [];
 
-  // (a) nullability contract-divergence: getUser retyped non-null while
-  // renderProfile (a real caller per the CAS) is concurrently edited.
+
+
   {
     const states: AgentInFlightState[] = [
       {
@@ -142,10 +142,10 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
     });
   }
 
-  // (b) return-type retype: amount cents -> Money, a caller still does *100
-  // (billingHandler itself is the "caller" of the conceptual cents contract
-  // here — modeled as a caller-of-contract via a synthetic caller node so the
-  // detector's caller-graph path is exercised the same way as scenario (a)).
+
+
+
+
   {
     const states: AgentInFlightState[] = [
       {
@@ -175,9 +175,9 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
         ],
       },
     ];
-    // renderCaller doesn't call billingHandler in the fixture graph, so wire a
-    // synthetic edge for this scenario to model "B edits a real caller of the
-    // retyped symbol" without needing a second fixture/analysis round-trip.
+
+
+
     const casWithSyntheticCallEdge: ConflictCas = {
       nodes: cas.nodes,
       edges: [...cas.edges, { source: idFor(cas, 'renderCaller'), target: idFor(cas, 'billingHandler'), type: 'calls' }],
@@ -192,8 +192,8 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
     });
   }
 
-  // (c) structural split: render -> render + renderHeader; a new caller
-  // references the old monolithic render().
+
+
   {
     const states: AgentInFlightState[] = [
       {
@@ -234,7 +234,7 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
     });
   }
 
-  // (d) duplicate-work: both agents add retry logic to the same handler.
+
   {
     const states: AgentInFlightState[] = [
       {
@@ -272,7 +272,7 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
     });
   }
 
-  // (e) non-conflict control: two genuinely disjoint, unrelated changes.
+
   {
     const states: AgentInFlightState[] = [
       {
@@ -314,12 +314,12 @@ export async function runConceptualConflictDemo(): Promise<ConceptualConflictDem
 if (require.main === module) {
   runConceptualConflictDemo()
     .then((report) => {
-      // eslint-disable-next-line no-console
+
       console.log(JSON.stringify(report, null, 2));
       console.log(report.summary);
     })
     .catch((err) => {
-      // eslint-disable-next-line no-console
+
       console.error(err);
       process.exitCode = 1;
     });

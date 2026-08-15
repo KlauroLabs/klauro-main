@@ -1,44 +1,44 @@
-/**
- * Camp-C ROUTE head-to-head — Klauro get_route_table vs the REAL installed
- * codebase-memory-mcp binary (DeusData), at full strength.
- *
- * This is NOT a pure out-of-category bench. codebase-memory's README advertises
- * "HTTP routes" + "cross-service HTTP linking", and its graph schema carries a
- * first-class `Route` node label (search_graph hint: "Available labels: ...,
- * Route, ..."). So we give it its best shot at the EXACT same question Klauro
- * answers — "what method/path routes does this service expose?" — over the same
- * framework-bench fixtures, scored against the same truth.json.
- *
- * How codebase-memory is driven at its BEST (verified empirically):
- *   - `cli index_repository {repo_path}` — real tree-sitter + graph index.
- *   - Route read: `search_graph {project, label:"Route"}` is the surfacing query.
- *     NOTE: `node_type` is NOT an effective filter (passing node_type:"Route"
- *     returns ALL nodes — it is ignored); `label` is the real filter. We also
- *     tried `label:"Endpoint"`/`"HttpRoute"` (empty — not in cbm's schema) and
- *     `get_architecture` (no routes/endpoints section: only node_labels /
- *     edge_types / packages / file_tree). So `label:"Route"` is cbm's ceiling.
- *   - Each Route node carries `method` + `name` (path). We parse method from the
- *     `method` field (fallback: qualified_name `__route__METHOD__path`), path
- *     from `name`, and CANONICALIZE path params to Klauro's `:id` form
- *     ({id}/<int:id>/<id> -> :id) so cbm is scored at its most generous.
- *
- * Measured reality (give the competitor its best, never fake a Klauro win):
- *   - cbm extracts Route nodes for 4 of 34 fixtures: fastapi, flask, quarkus,
- *     spring. For the other 30 (express, gin, gorilla, fiber, axum, actix, rails,
- *     laravel, ktor, micronaut, vapor, gorouter, http4s, kemal, genie, compojure,
- *     dream, apexrest, mojolicious, django, nestjs, symfony, ...) it returns ZERO
- *     Route nodes — Klauro out-of-category wins.
- *   - fastapi: cbm's normalized set == truth (F1 1.0) -> honest tie-ceiling.
- *   - flask: cbm emits `ANY /users` + `ANY /users/:id` (wrong verb, misses the
- *     GET+POST split) -> low F1 -> Klauro win.
- *   - quarkus / spring: cbm drops the class-level `@Path/@RequestMapping("/users")`
- *     prefix -> `GET /`, `POST /`, `DELETE /(:id)` -> low F1 -> Klauro win.
- *
- * Verdict per framework:
- *   - tie-ceiling : cbm returns a route set whose F1 >= Klauro's (honest ceiling).
- *   - win         : cbm returns fewer/no routes (F1 strictly lower, incl. empty).
- *   - loss        : cbm STRICTLY beats Klauro on route F1 -> surface LOUD, deepen.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -64,7 +64,7 @@ export interface CampCRouteFrameworkResult {
   cbmRoutes: string[];
   cbmF1: number;
   cbmTokens: number;
-  /** Which cbm query surfaced routes (or 'none'). */
+
   cbmSource: string;
   verdict: RouteVerdict;
   tokenSaving: number;
@@ -108,20 +108,20 @@ function toTokens(bytes: number): number {
   return Math.max(1, Math.round(bytes / 4));
 }
 
-/** Canonicalize framework path params to Klauro's `:id` form so cbm is scored at
- *  its most generous: {id} / {name} / <int:id> / <id> / :id all -> :id. */
+
+
 function canonicalizePath(p: string): string {
   let s = p;
-  s = s.replace(/\{[^}]*\}/g, ':id');           // {id}, {name}
-  s = s.replace(/<[^>]*:([A-Za-z_]\w*)>/g, ':$1'); // <int:id> -> :id (drop converter)
-  s = s.replace(/<([A-Za-z_]\w*)>/g, ':$1');     // <id> -> :id
-  // collapse any remaining param token (already :x) — and normalize :name -> :id
+  s = s.replace(/\{[^}]*\}/g, ':id');
+  s = s.replace(/<[^>]*:([A-Za-z_]\w*)>/g, ':$1');
+  s = s.replace(/<([A-Za-z_]\w*)>/g, ':$1');
+
   s = s.replace(/:[A-Za-z_]\w*/g, ':id');
   if (!s.startsWith('/')) s = '/' + s;
   return s;
 }
 
-/** Klauro: framework analyzer -> route table directly. */
+
 async function klauroRoutes(dir: string): Promise<{ routes: string[]; bytes: number }> {
   const cas: any = await analyzeForBench(dir);
   const rt: any = getRouteTable(cas, { limit: 500 });
@@ -129,11 +129,11 @@ async function klauroRoutes(dir: string): Promise<{ routes: string[]; bytes: num
   return { routes: [...new Set(routes)], bytes: Buffer.byteLength(routes.join('\n'), 'utf8') };
 }
 
-/**
- * codebase-memory at its BEST: index the fixture, then read Route nodes via every
- * plausible query and keep the richest result. Returns the parsed route set, the
- * output bytes, and which query surfaced them.
- */
+
+
+
+
+
 function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: string } {
   const bin = codebaseMemoryPath();
   if (!bin) return { routes: [], bytes: 0, source: 'none' };
@@ -151,11 +151,11 @@ function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: stri
     return { routes: [], bytes: 0, source: 'none' };
   }
   if (!project) {
-    // Fall back to cbm's slug convention (preserves underscores).
+
     project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
   }
 
-  // Give cbm every plausible route-surfacing query; keep the best (most routes).
+
   let best: { routes: string[]; bytes: number; source: string } = { routes: [], bytes: 0, source: 'none' };
 
   const trySearch = (params: Record<string, unknown>, src: string) => {
@@ -177,7 +177,7 @@ function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: stri
     const routes: string[] = [];
     for (const r of results) {
       if (String(r.label) !== 'Route') continue;
-      // method: prefer explicit field; else parse qualified_name `__route__METHOD__path`.
+
       let method = r.method ? String(r.method).toUpperCase() : '';
       let rawPath = r.name != null ? String(r.name) : '';
       const qn = String(r.qualified_name || '');
@@ -191,14 +191,14 @@ function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: stri
     if (uniq.length > best.routes.length) best = { routes: uniq, bytes, source: src };
   };
 
-  // label is the real filter; node_type is ignored by cbm (returns all nodes).
+
   trySearch({ label: 'Route' }, 'search_graph{label:Route}');
   trySearch({ node_type: 'Route' }, 'search_graph{node_type:Route}');
   trySearch({ label: 'Endpoint' }, 'search_graph{label:Endpoint}');
   trySearch({ label: 'HttpRoute' }, 'search_graph{label:HttpRoute}');
 
-  // get_architecture: look for any routes/endpoints/http section (cbm has none today,
-  // but probe so a future cbm version is read at full strength).
+
+
   try {
     const arch = execFileSync(bin, ['cli', 'get_architecture', JSON.stringify({ project })], {
       encoding: 'utf8',
@@ -219,7 +219,7 @@ function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: stri
       best = { routes: uniq, bytes: Buffer.byteLength(jsonLine, 'utf8'), source: 'get_architecture' };
     }
   } catch {
-    /* no architecture route section */
+
   }
 
   return best;
@@ -227,16 +227,16 @@ function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: stri
 
 let cached: CampCRoutesVsCbmReport | null = null;
 
-/**
- * Build the Camp-C ROUTE head-to-head vs the real codebase-memory binary.
- *
- * Signature for central integration (camps-bench.ts / dashboard.html):
- *   import { buildCampCRoutesVsCbmReport } from './camp-c-routes-cbm';
- *   const report = await buildCampCRoutesVsCbmReport();
- *   // report.available === false when the cbm binary is not installed.
- *
- * Result is cached in-process after the first build.
- */
+
+
+
+
+
+
+
+
+
+
 export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmReport> {
   if (cached) return cached;
 
@@ -250,7 +250,7 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
     try {
       truth = await fs.readJson(path.join(dir, 'truth.json'));
     } catch {
-      continue; // no truth.json -> skip
+      continue;
     }
     const truthRoutes = [...new Set(truth.true_routes)];
 
@@ -266,8 +266,8 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
     else verdict = 'win';
 
     const klauroTokens = toTokens(kl.bytes);
-    // cbm pays for its index/search output; if it surfaced nothing, model the read
-    // cost as the source bytes it had to ingest to (fail to) answer.
+
+
     let cbmTokens: number;
     if (cbm.routes.length > 0) {
       cbmTokens = toTokens(cbm.bytes);
@@ -279,7 +279,7 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
           const st = await fs.stat(path.join(dir, f));
           if (st.isFile()) srcBytes += st.size;
         }
-      } catch { /* noop */ }
+      } catch {   }
       cbmTokens = toTokens(srcBytes);
     }
     const tokenSaving = cbmTokens > 0 ? (cbmTokens - klauroTokens) / cbmTokens : 0;
@@ -315,7 +315,7 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
       klauroWins,
       ties,
       losses,
-      // winRate counts honest ties-or-wins (Klauro never loses) over all frameworks.
+
       winRate: frameworks ? (klauroWins + ties) / frameworks : 0,
       meanKlauroF1: mean(results.map(r => r.klauroF1)),
       meanCbmF1: mean(results.map(r => r.cbmF1)),
@@ -326,7 +326,7 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
   return cached;
 }
 
-/** Test/diagnostic hook: clear the in-process cache. */
+
 export function __resetCampCRoutesVsCbmCache(): void {
   cached = null;
 }

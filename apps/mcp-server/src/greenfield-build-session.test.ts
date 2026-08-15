@@ -169,7 +169,7 @@ function uiHeavyReferenceCas(): any {
     ],
     edges: [],
     analyzer_contributions: [],
-    system_capabilities: [],
+    capabilities: [],
     architecture_summary: {
       architectural_patterns: [{
         name: 'Component/Page UI',

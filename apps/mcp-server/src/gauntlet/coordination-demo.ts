@@ -1,21 +1,21 @@
-/**
- * Coordination Fabric demo (§WS-DEMO, docs/SPEC-COORDINATION-FABRIC.md).
- *
- * A repeatable, narrated, in-process simulation of a fleet of agents sharing
- * ONE workspace on ONE machine — the LOCAL tier (§1.1). Drives the committed,
- * already-working coordination modules as-is:
- *   - coordination/local-store.ts  (appendClaim, getActiveClaims, getPresence,
- *     announceEdit, checkEditLock, attributeChange)
- *   - coordination/arbiter.ts      (arbitrate)
- *   - coordination/collision.ts    (detectCollisions)
- *   - coordination/types.ts        (WorkClaim, InFlightSnapshot, ...)
- *
- * Each run uses an isolated `KLAURO_COORD_DIR` temp dir so it never touches a
- * real `~/.klauro/coordination/` store and can be re-run any number of times.
- *
- * Run narrated end to end:
- *   npx tsx src/gauntlet/coordination-demo.ts
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -34,18 +34,18 @@ import type { CasEdgeRef, InFlightSnapshot, WorkspaceCapabilityRef, WorkClaim } 
 
 const WORKSPACE_ID = 'coordination-demo-workspace';
 
-/** Small inline CAS-edge fixture — just enough to exercise blast-radius overlap. */
+
 const CAS_EDGES: CasEdgeRef[] = [
   { id: 'e1', source: 'CheckoutService.submitOrder', target: 'PricingEngine.computeTotal', type: 'calls' },
   { id: 'e2', source: 'PricingEngine.computeTotal', target: 'CheckoutService.submitOrder', type: 'called_by' },
 ];
 
-/** Small inline workspace-level-CAS-capability fixture — just enough to exercise capability matching. */
+
 const WORKSPACE_CAPABILITIES: WorkspaceCapabilityRef[] = [
   { id: 'cap-1', name: 'checkout-refactor', project_ids: ['proj-checkout'] },
 ];
 
-/** One line of the structured transcript the demo returns (and the test asserts on). */
+
 export interface TranscriptLine {
   scenario: 1 | 2 | 3 | 4;
   label: string;
@@ -88,7 +88,7 @@ function nowClaim(partial: Partial<WorkClaim> & Pick<WorkClaim, 'claim_id' | 'ag
   };
 }
 
-/** Scenario 1 — duplicate work prevented via claim_work/check_collision semantics. */
+
 async function scenario1(transcript: TranscriptLine[]): Promise<ScenarioResult> {
   say(transcript, 1, 'Agent A claims capability "checkout-refactor" (claim_work -> arbitrate).');
   const claimA = await appendClaim(WORKSPACE_ID, nowClaim({
@@ -128,7 +128,7 @@ async function scenario1(transcript: TranscriptLine[]): Promise<ScenarioResult> 
   return { scenario: 1, name: 'duplicate-work-prevented', verdict: resultB.verdict, passed };
 }
 
-/** Scenario 2 — edit collision prevented on a shared working tree, plus a disjoint-path control. */
+
 async function scenario2(transcript: TranscriptLine[]): Promise<ScenarioResult> {
   say(transcript, 2, "Agent A announces an edit lock on ['src/auth/login.ts'] before writing.");
   await announceEdit(WORKSPACE_ID, 'agent-A', ['src/auth/login.ts'], {
@@ -193,7 +193,7 @@ async function scenario2(transcript: TranscriptLine[]): Promise<ScenarioResult> 
   };
 }
 
-/** Scenario 3 — in-flight contract-drift warning across two agents' in-flight state. */
+
 async function scenario3(transcript: TranscriptLine[]): Promise<ScenarioResult> {
   say(transcript, 3, "Agent A's in-flight diff changes the OrderDTO field type (mid-edit, uncommitted).");
   const inFlightA: InFlightSnapshot = {
@@ -230,7 +230,7 @@ async function scenario3(transcript: TranscriptLine[]): Promise<ScenarioResult> 
   return { scenario: 3, name: 'in-flight-contract-drift-warning', verdict: passed ? 'drift' : 'no-drift', passed };
 }
 
-/** Scenario 4 — change attribution: who touched this path and why. */
+
 async function scenario4(transcript: TranscriptLine[]): Promise<ScenarioResult> {
   say(transcript, 4, "attributeChange('src/auth/login.ts') — who touched this and why?");
   const attribution = await attributeChange(WORKSPACE_ID, 'src/auth/login.ts');
@@ -248,11 +248,11 @@ async function scenario4(transcript: TranscriptLine[]): Promise<ScenarioResult> 
   return { scenario: 4, name: 'change-attribution', verdict: passed ? 'attributed' : 'unattributed', passed };
 }
 
-/**
- * Run all four scenarios against a fresh, isolated `KLAURO_COORD_DIR` temp
- * dir, returning a structured transcript + per-scenario pass/fail verdicts.
- * Safe to call repeatedly — each call gets its own temp dir and workspace log.
- */
+
+
+
+
+
 export async function run(): Promise<DemoRunResult> {
   const prevCoordDir = process.env.KLAURO_COORD_DIR;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-coordination-demo-'));
@@ -305,7 +305,7 @@ export async function main(): Promise<void> {
   }
 }
 
-// Run narrated when invoked directly: `npx tsx src/gauntlet/coordination-demo.ts`.
+
 const isMain =
   process.argv[1] &&
   (process.argv[1].endsWith('coordination-demo.ts') || process.argv[1].endsWith('coordination-demo.js'));

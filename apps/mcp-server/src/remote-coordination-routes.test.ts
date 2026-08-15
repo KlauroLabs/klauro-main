@@ -11,6 +11,7 @@ import {
   remoteActive,
   remoteCheck,
   remoteClaim,
+  remoteExtend,
   remoteRelease,
   RemoteFabricError,
 } from './coordination/remote-transport';
@@ -31,14 +32,14 @@ interface Booted {
   restoreEnv: () => void;
 }
 
-async function bootService(): Promise<Booted> {
+async function bootService(options: { rateLimitPerMinute?: number; fabricRateLimitPerMinute?: number } = {}): Promise<Booted> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-remote-coord-'));
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = path.join(root, 'remote-data');
   process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
 
-  const server = createRemoteAnalyzerHttpServer({ dataDir: path.join(root, 'remote-data'), token: TOKEN });
+  const server = createRemoteAnalyzerHttpServer({ dataDir: path.join(root, 'remote-data'), token: TOKEN, ...options });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as { port: number };
   return {
@@ -65,6 +66,33 @@ test('coordination routes require the analyzer Bearer token', async () => {
       body: JSON.stringify({ mode: 'advisory', workspace: 'ws-auth', agent_id: 'a', intent: 'x' }),
     });
     assert.equal(post.status, 401);
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
+test('Fabric uses a separately bounded mutation budget sized for fleet bursts', async () => {
+  const boot = await bootService({ rateLimitPerMinute: 1, fabricRateLimitPerMinute: 2 });
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
+  const publish = (agentId: string) => fetch(`${boot.baseUrl}/v1/coordination/in-flight`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      workspace: 'ws-rate-budget',
+      agent_id: agentId,
+      base_commit: 'base',
+      diff_context: '{}',
+      attribution_source: 'participant-worktree',
+      changes: [],
+    }),
+  });
+  try {
+    assert.equal((await publish('agent-1')).status, 200);
+    assert.equal((await publish('agent-2')).status, 200);
+    const limited = await publish('agent-3');
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json() as { error: string }).error, 'Fabric update rate limit exceeded');
   } finally {
     boot.server.close();
     boot.restoreEnv();
@@ -128,15 +156,127 @@ test('two-machine advisory flow: A claims -> B check sees conflict -> B claim wa
   }
 });
 
+test('two machines retain distinct semantic streams while editing the same symbol', async () => {
+  const boot = await bootService();
+  const config = { baseUrl: boot.baseUrl, token: TOKEN };
+  const workspace = 'ws-overlapping-semantic-streams';
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
+  try {
+    await remoteClaim(config, {
+      workspace,
+      agentId: 'agent-A',
+      intent: 'refine shared result',
+      paths: ['src/shared.ts'],
+    });
+    await remoteClaim(config, {
+      workspace,
+      agentId: 'agent-B',
+      intent: 'refine shared result',
+      paths: ['src/shared.ts'],
+    });
+    const publish = (agentId: string, returnType: string) => fetch(`${boot.baseUrl}/v1/coordination/in-flight`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        workspace,
+        agent_id: agentId,
+        base_commit: 'base',
+        diff_context: '{}',
+        attribution_source: 'participant-worktree',
+        changes: [{
+          symbol_id: 'sym:shared',
+          name: 'shared',
+          file: 'src/shared.ts',
+          change_kind: 'return_type',
+          before: { return_type: 'A' },
+          after: { return_type: returnType },
+        }],
+      }),
+    });
+    const [publishedA, publishedB] = await Promise.all([publish('agent-A', 'B'), publish('agent-B', 'C')]);
+    assert.equal(publishedA.status, 200);
+    assert.equal(publishedB.status, 200);
+
+    const stateResponse = await fetch(`${boot.baseUrl}/v1/coordination/state?workspace=${workspace}`, { headers });
+    assert.equal(stateResponse.status, 200);
+    const state = await stateResponse.json() as {
+      in_flight: Array<{ agent_id: string; attribution_source: string; changes_count: number }>;
+    };
+    assert.deepEqual(state.in_flight.map((snapshot) => snapshot.agent_id).sort(), ['agent-A', 'agent-B']);
+    assert.ok(state.in_flight.every((snapshot) => snapshot.attribution_source === 'participant-worktree'));
+    assert.ok(state.in_flight.every((snapshot) => snapshot.changes_count === 1));
+    const active = await remoteActive(config, workspace);
+    assert.deepEqual(active.in_flight?.map((snapshot) => snapshot.agent_id).sort(), ['agent-A', 'agent-B']);
+
+    const conflictsResponse = await fetch(`${boot.baseUrl}/v1/coordination/conceptual-conflicts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ workspace, agent_id: 'agent-A', intent: 'refine shared result', changes: [] }),
+    });
+    assert.equal(conflictsResponse.status, 200);
+    const conflicts = await conflictsResponse.json() as {
+      substrate: { participants: number; unattributed: number };
+      conflicts: Array<{ kind: string; agents: string[] }>;
+    };
+    assert.deepEqual(conflicts.substrate, { participants: 2, unattributed: 0 });
+    assert.ok(conflicts.conflicts.some((conflict) => conflict.kind === 'duplicate-work'));
+
+    const planResponse = await fetch(`${boot.baseUrl}/v1/coordination/intent-merge`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ workspace, agent_id: 'agent-A' }),
+    });
+    assert.equal(planResponse.status, 200);
+    const metricsResponse = await fetch(`${boot.baseUrl}/v1/coordination/metrics?workspace=${workspace}`, { headers });
+    assert.equal(metricsResponse.status, 200);
+    const metrics = await metricsResponse.json() as {
+      observation_count: number;
+      merge_decisions_required: number;
+      merge_decision_rate: number;
+    };
+    assert.equal(metrics.observation_count, 1);
+    assert.equal(metrics.merge_decisions_required, 1);
+    assert.equal(metrics.merge_decision_rate, 1);
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
+test('cross-machine advisory claims surface conceptual overlap across disjoint files', async () => {
+  const boot = await bootService();
+  const config = { baseUrl: boot.baseUrl, token: TOKEN };
+  const workspace = 'ws-conceptual-overlap';
+  try {
+    await remoteClaim(config, {
+      workspace,
+      agentId: 'agent-A',
+      intent: 'tighten record constraints',
+      paths: ['src/write.ts'],
+      concept: { flow_id: 'flow-write', step_id: 'persist', entities: ['Record'], source: 'declared' },
+    });
+    const second = await remoteClaim(config, {
+      workspace,
+      agentId: 'agent-B',
+      intent: 'change record validation',
+      paths: ['src/validate.ts'],
+      concept: { flow_id: 'flow-read', step_id: 'validate', entities: ['Record'], source: 'declared' },
+    });
+
+    assert.equal(second.conflicts.length, 0);
+    assert.equal(second.conceptual_awareness?.length, 1);
+    assert.equal(second.conceptual_awareness?.[0].agent_id, 'agent-A');
+    assert.equal(second.conceptual_awareness?.[0].verdict, 'conceptual_conflict');
+    assert.deepEqual(second.conceptual_awareness?.[0].shared_entities, ['Record']);
+    const active = await remoteActive(config, workspace);
+    assert.deepEqual(active.active.map((claim) => claim.concept?.entities?.[0]), ['Record', 'Record']);
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
 test('#57 regression: releasing an ADVISORY claim by its echoed claim_id actually releases it (not a false "released")', async () => {
-  // Repro (live, mcp.klauro.com, 2026-07-18, pre-fix): POST /v1/coordination/claim
-  // {mode:'advisory', ...} -> granted, response includes claim_id. POSTing that
-  // SAME claim_id back to /v1/coordination/release used to fall into the
-  // ENFORCED grant-manager release path (releaseGrant), whose lookup wraps the
-  // id as `grant:<ws>:<claim_id>` — which never matches an advisory claim's
-  // unwrapped stored claim_id. releaseGrant found nothing and no-op'd, but the
-  // route still answered `{status:'released'}` unconditionally: a false
-  // success, with the claim silently remaining active until its 30m TTL.
   const boot = await bootService();
   const config = { baseUrl: boot.baseUrl, token: TOKEN };
   const ws = 'ws-issue-57';
@@ -251,6 +391,98 @@ test('20 concurrent remote claims across 2 simulated machines: none lost, distin
   }
 });
 
+test('100 mixed participants sustain attributed semantic work with zero merge decisions or surprises', async () => {
+  const boot = await bootService();
+  const config = { baseUrl: boot.baseUrl, token: TOKEN };
+  const workspace = 'ws-hundred-participant-proof';
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
+  const participants = Array.from({ length: 100 }, (_, index) => ({
+    agentId: `${index % 2 === 0 ? 'human' : 'agent'}-${index}`,
+    path: `src/area-${index}.ts`,
+    symbol: `sym:area-${index}`,
+  }));
+  const startedAt = performance.now();
+  try {
+    const claims = await Promise.all(participants.map((participant) => remoteClaim(config, {
+      workspace,
+      agentId: participant.agentId,
+      intent: `improve area ${participant.symbol}`,
+      paths: [participant.path],
+      concept: { entities: [`entity-${participant.symbol}`], source: 'declared' },
+    })));
+    assert.equal(new Set(claims.map((claim) => claim.seq)).size, participants.length);
+
+    const publications = await Promise.all(participants.map((participant) => fetch(`${boot.baseUrl}/v1/coordination/in-flight`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        workspace,
+        agent_id: participant.agentId,
+        base_commit: 'base',
+        diff_context: '{}',
+        attribution_source: 'participant-worktree',
+        changes: [{
+          symbol_id: participant.symbol,
+          name: participant.symbol,
+          file: participant.path,
+          change_kind: 'body',
+          after: { semantic_hash: participant.symbol },
+        }],
+      }),
+    })));
+    const publicationStatuses = publications.reduce<Record<number, number>>((counts, response) => {
+      counts[response.status] = (counts[response.status] || 0) + 1;
+      return counts;
+    }, {});
+    assert.deepEqual(publicationStatuses, { 200: participants.length });
+
+    const active = await remoteActive(config, workspace);
+    assert.equal(active.count, participants.length);
+    assert.equal(active.in_flight?.length, participants.length);
+
+    for (let round = 0; round < 5; round += 1) {
+      const response = await fetch(`${boot.baseUrl}/v1/coordination/intent-merge`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ workspace, agent_id: `observer-${round}` }),
+      });
+      assert.equal(response.status, 200);
+      const result = await response.json() as {
+        plan: {
+          summary: { total_symbols: number; auto: number; conflicts: number; duplicates: number };
+          merge_decisions_required: number;
+          surprises: unknown[];
+        };
+      };
+      const plan = result.plan;
+      assert.deepEqual(plan.summary, { total_symbols: 100, auto: 100, conflicts: 0, duplicates: 0 });
+      assert.equal(plan.merge_decisions_required, 0);
+      assert.equal(plan.surprises.length, 0);
+    }
+
+    const metricsResponse = await fetch(`${boot.baseUrl}/v1/coordination/metrics?workspace=${workspace}`, { headers });
+    assert.equal(metricsResponse.status, 200);
+    const metrics = await metricsResponse.json() as {
+      observation_count: number;
+      participant_observations: number;
+      changed_symbol_observations: number;
+      merge_decision_rate: number;
+      surprise_rate: number;
+      unattributed_changes: number;
+    };
+    assert.equal(metrics.observation_count, 5);
+    assert.equal(metrics.participant_observations, 500);
+    assert.equal(metrics.changed_symbol_observations, 500);
+    assert.equal(metrics.merge_decision_rate, 0);
+    assert.equal(metrics.surprise_rate, 0);
+    assert.equal(metrics.unattributed_changes, 0);
+    assert.ok(performance.now() - startedAt < 30_000);
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
 test('transport surfaces RemoteFabricError on unreachable host and bad token (degrade signal for callers)', async () => {
   // Unreachable: nothing listens on this port.
   await assert.rejects(
@@ -288,25 +520,35 @@ test('getRemoteFabConfig: unset FAB_REMOTE_URL means local mode (zero breaking c
 test('advisory claim route carries produces/consumes additively onto the server board', async () => {
   const boot = await bootService();
   try {
-    const res = await fetch(`${boot.baseUrl}/v1/coordination/claim`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
-      body: JSON.stringify({
-        mode: 'advisory',
-        workspace: 'ws-contracts',
-        agent_id: 'producer',
-        intent: 'build the outcome record',
-        paths: ['src/outcomes.ts'],
-        produces: [{ kind: 'export', name: 'buildOutcomeRecord', path: 'src/outcomes.ts', signature: '(ws: string) => OutcomeRecord[]' }],
-        consumes: ['getBoardInfo'],
-      }),
+    const config = { baseUrl: boot.baseUrl, token: TOKEN };
+    const res = await remoteClaim(config, {
+      workspace: 'ws-contracts',
+      agentId: 'producer',
+      intent: 'build the outcome record',
+      paths: ['src/outcomes.ts'],
+      produces: [{ kind: 'export', name: 'buildOutcomeRecord', path: 'src/outcomes.ts', signature: '(ws: string) => OutcomeRecord[]' }],
+      consumes: ['getBoardInfo'],
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.verdict, 'granted');
 
     const { getActiveClaims } = await import('./coordination/local-store');
     const [claim] = await getActiveClaims('ws-contracts');
     assert.equal(claim.produces?.[0].name, 'buildOutcomeRecord');
     assert.deepEqual(claim.consumes, ['getBoardInfo']);
+
+    const extended = await remoteExtend(config, {
+      workspace: 'ws-contracts',
+      claimId: res.claim_id,
+      addPaths: ['src/records.ts'],
+      addProduces: [{ kind: 'type', name: 'OutcomeRecord', path: 'src/records.ts' }],
+      addConsumes: ['loadWorkspace'],
+    });
+    assert.deepEqual(extended.paths, ['src/outcomes.ts', 'src/records.ts']);
+    assert.deepEqual(extended.produces.map((contract) => contract.name).sort(), ['OutcomeRecord', 'buildOutcomeRecord']);
+    assert.deepEqual(extended.consumes.sort(), ['getBoardInfo', 'loadWorkspace']);
+    const active = await remoteActive(config, 'ws-contracts');
+    const producer = active.active.find((entry) => entry.agent_id === 'producer');
+    assert.deepEqual(producer?.produces?.map((contract) => contract.name).sort(), ['OutcomeRecord', 'buildOutcomeRecord']);
 
     // A legacy client sending neither is byte-identical to before: no empty
     // arrays materialize on the board.

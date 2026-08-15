@@ -12,7 +12,7 @@ import {
   validateAgentChange,
 } from './agent-workflow';
 import { buildArchitectureContextForAgent, evaluateAgentReadiness, formatExecutionCapsule, getAgentStartContext, getAgentToolPlan, getAgentContext } from './agent-adoption';
-import { benchmarkAgentContextCodecs, formatAgentContextCapsule, parseAgentContextCapsule } from './agent-context-codec';
+import { benchmarkAgentContextCodecs, parseAgentContextCapsule } from './agent-context-codec';
 import { ingestTelemetryBatch } from './telemetry-ingestion';
 
 test('openAgentWorkbench returns a product-level context for agent work', async () => {
@@ -927,6 +927,27 @@ test('agent context honors explicit file path targets before semantic fallback',
   });
 });
 
+test('agent context resolves explicit paths whose namespace resembles sample code', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.nodes = [node(
+      'controller_UserController',
+      'UserController',
+      'controller',
+      'src/main/java/com/example/UserController.java',
+      1,
+    )];
+
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'modify',
+      target: 'src/main/java/com/example/UserController.java',
+    });
+
+    assert.equal(context.selected_node?.id, 'controller_UserController');
+    assert.equal(context.target_resolution.gaps.length, 0);
+  });
+});
+
 test('agent context keeps explicit related paths ahead of generic semantic matches', async () => {
   await withWorkspace(async workspace => {
     const context = await getAgentContext(fixtureCas(), workspace, {
@@ -1245,6 +1266,32 @@ test('readiness has no language coverage gate when no unanalyzed language domina
 
     const context = getAgentStartContext(cas, workspace);
     assert.equal(context.readiness.language_coverage_note, undefined);
+  });
+});
+
+test('readiness rejects completed comprehension with no published product capabilities', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.ai_enrichment = 'ready';
+    cas.capabilities = [];
+    if (cas.product_map) cas.product_map.capabilities = [];
+    cas.enhanced_system_purpose = {
+      ...(cas.enhanced_system_purpose || {}),
+      capability_catalog_coverage: {
+        evidence_families: 12,
+        published_capabilities: 0,
+        minimum_published_capabilities: 4,
+        status: 'rejected',
+        reason: 'catalog omitted grounded evidence families',
+      },
+    } as any;
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    const capabilityGate = readiness.gates.find(item => item.id === 'product-capabilities');
+
+    assert.equal(capabilityGate?.status, 'fail');
+    assert.equal(readiness.agent_context_ready, false);
+    assert.ok(readiness.adoption_gaps.some(gap => gap.startsWith('product-capabilities:')));
   });
 });
 
@@ -1822,7 +1869,7 @@ function fixtureCas(): CASOutput {
       untested_critical_paths: [],
       recent_hotspots: [],
     },
-    system_capabilities: [
+    capabilities: [
       {
         id: 'capability-users',
         name: 'Tenant-scoped user management',

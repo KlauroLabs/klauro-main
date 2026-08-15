@@ -39,21 +39,21 @@ type Candidate = {
   actionable: number;
   exactPaths: number;
   promptNative: number;
-  /**
-   * Deterministic encoder-cost class used for the score's speed term.
-   * Wall-clock encode timing (encode_ms_per_1000) is still MEASURED and
-   * REPORTED, but it must never feed balanced_score: Date.now() noise under
-   * machine load flipped score orderings (the historical K15 test flake — a
-   * loaded box pushed K15's 1000-encode loop past 100ms, zeroing its speed
-   * term while a luckier-timed K14 kept points, flipping the recommendation).
-   * 'text' = plain string assembly (the fast class), 'binary' = compression /
-   * base64 pipelines (gzip, packed proxies — the slow class this term exists
-   * to penalize).
-   */
+
+
+
+
+
+
+
+
+
+
+
   encodeCost: 'text' | 'binary';
 };
 
-/** Deterministic speed score per encoder-cost class (replaces wall-clock ms in balanced_score). */
+
 const ENCODE_COST_SPEED_SCORE: Record<Candidate['encodeCost'], number> = {
   text: 95,
   binary: 50,
@@ -101,8 +101,8 @@ export function benchmarkAgentContextCodecs(context: any): {
         candidate.actionable * 0.19 +
         candidate.exactPaths * 0.12 +
         candidate.promptNative * 0.10 +
-        // Deterministic speed term: encoder-cost CLASS, not wall-clock timing.
-        // timing.msPer1000 stays reported (encode_ms_per_1000) but score-inert.
+
+
         ENCODE_COST_SPEED_SCORE[candidate.encodeCost] * 0.04
       );
       return {
@@ -1522,13 +1522,8 @@ function percentReduction(baseline: number, current: number): number {
 }
 
 function buildBenchmarkGates(results: AgentContextCodecBenchmarkResult[]): AgentContextCodecBenchmarkGate[] {
-  const k10 = resultByName(results, 'k10-agent-context-language');
-  const k11 = resultByName(results, 'k11-agent-context-language');
-  const k12 = resultByName(results, 'k12-agent-context-language');
-  const k13 = resultByName(results, 'k13-agent-context-language');
   const k14 = resultByName(results, 'k14-agent-context-language');
   const k15 = resultByName(results, 'k15-agent-context-language');
-  const k9 = resultByName(results, 'k9-agent-context-language');
   const minJson = resultByName(results, 'min-json');
   const jsonb = resultByName(results, 'jsonb-rowset');
   const protobuf = resultByName(results, 'protobuf-text');

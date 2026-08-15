@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findArchitectureSystemTypeProblems, findDomainBreadthProblems, findWeakDescriptionReasons, getDescriptionEnrichmentTargets, reviewAnalysisUsefulnessStatic, scoreArchitectureAgentContext, scoreDescriptionQuality, scoreDuplicationAvoidance } from './analysis-usefulness-review';
+import { findArchitectureSystemTypeProblems, findDomainBreadthProblems, findWeakDescriptionReasons, getDescriptionEnrichmentTargets, reviewAnalysisUsefulnessStatic, scoreArchitectureAgentContext, scoreCapabilityMap, scoreDescriptionQuality, scoreDuplicationAvoidance } from './analysis-usefulness-review';
 
 test('usefulness review flags framework-only architecture identity for MCP analyzer monorepos', () => {
   const cas: any = {
@@ -190,13 +190,13 @@ test('usefulness review flags incidental short and auth capability labels in des
 
 test('usefulness review flags auth/login domain when broader product entities dominate', () => {
   const cas: any = {
-    system_capabilities: [
+    capabilities: [
       { name: 'Login Management' },
       { name: 'Product Management' },
       { name: 'Post Management' },
       { name: 'Company Source Management' },
     ],
-    data_entities: [
+    entities: [
       { name: 'ProductConnection' },
       { name: 'CompanySourceLog' },
     ],
@@ -231,7 +231,7 @@ test('usefulness review flags parser and HTTP artifact capability labels in desc
       core_concepts: ['product', 'company-source', 'record'],
     },
     domain_concepts: [{ name: 'product' }, { name: 'company-source' }],
-    system_capabilities: [{ name: 'Product Management' }, { name: 'Company Source Management' }],
+    capabilities: [{ name: 'Product Management' }, { name: 'Company Source Management' }],
   } as any, {
     kind: 'backend-service',
     confidence: 0.9,
@@ -256,7 +256,7 @@ test('usefulness review does not treat legitimate account management as parser a
       core_concepts: ['account', 'cart', 'checkout', 'order'],
     },
     domain_concepts: [{ name: 'account' }, { name: 'checkout' }],
-    system_capabilities: [{ name: 'Account Management' }, { name: 'Order Management' }],
+    capabilities: [{ name: 'Account Management' }, { name: 'Order Management' }],
   } as any, {
     kind: 'frontend-app',
     confidence: 0.9,
@@ -282,7 +282,7 @@ test('usefulness review accepts command-line interface claims when CAS has CLI e
     },
     domain_concepts: [{ name: 'standup' }, { name: 'project' }],
     entry_points: [{ id: 'cli', type: 'cli', name: 'manage.py command' }],
-    system_capabilities: [{ name: 'Standup Management' }],
+    capabilities: [{ name: 'Standup Management' }],
   } as any, {
     kind: 'backend-service',
     confidence: 0.9,
@@ -307,7 +307,7 @@ test('usefulness review grounds short package names through integration evidence
       core_concepts: ['account', 'cart', 'checkout', 'order'],
     },
     domain_concepts: [{ name: 'account' }, { name: 'checkout' }],
-    system_capabilities: [{ name: 'Account Management' }, { name: 'Checkout Management' }],
+    capabilities: [{ name: 'Account Management' }, { name: 'Checkout Management' }],
     external_services: [{ name: 'Jose', type: 'library' }, { name: 'Apollo Angular', type: 'library' }],
   } as any, {
     kind: 'frontend-app',
@@ -340,7 +340,7 @@ test('usefulness review grounds short proper nouns in repo languages, frameworks
       core_concepts: ['order', 'shift', 'incident', 'location'],
     },
     domain_concepts: [{ name: 'order' }, { name: 'shift' }],
-    system_capabilities: [{ name: 'Order Management' }, { name: 'Shift Management' }],
+    capabilities: [{ name: 'Order Management' }, { name: 'Shift Management' }],
     libraries: [{ name: 'activerecord' }],
   } as any, {
     kind: 'backend-service',
@@ -368,7 +368,7 @@ test('usefulness review grounds short proper nouns in the repo name and entity v
     },
     domain_concepts: [{ name: 'module' }, { name: 'provider' }],
     database_schema: { entities: [{ name: 'Deck' }] },
-    system_capabilities: [{ name: 'Resource Provisioning' }],
+    capabilities: [{ name: 'Resource Provisioning' }],
   } as any, {
     kind: 'infrastructure',
     confidence: 0.9,
@@ -394,7 +394,7 @@ test('usefulness review still flags short proper nouns with no grounding in the 
       core_concepts: ['order', 'shift', 'incident', 'location'],
     },
     domain_concepts: [{ name: 'order' }, { name: 'shift' }],
-    system_capabilities: [{ name: 'Order Management' }],
+    capabilities: [{ name: 'Order Management' }],
   } as any, {
     kind: 'backend-service',
     confidence: 0.9,
@@ -435,7 +435,7 @@ test('description quality gate accepts AI-backed descriptions that orient agents
       description_generation: { status: 'ai_applied', attempted: true },
     },
     domain_concepts: [{ name: 'agent context' }, { name: 'idiom guidance' }],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'work-contexts',
         name: 'Agent Contexts',
@@ -478,6 +478,52 @@ test('description quality gate accepts AI-backed descriptions that orient agents
   assert.equal(gate.status, 'pass');
 });
 
+test('description quality rejects PascalCase program types presented as product outcomes', () => {
+  const profile: any = {
+    kind: 'backend-service', confidence: 0.9, evidence: [],
+    expectations: { entry_points: 'required', call_chains: 'required', behavioral_invariants: 'required', security: 'required', runtime_correlation: 'optional', flow_coverage: 'required' },
+  };
+  const gate = scoreDescriptionQuality({
+    enhanced_system_purpose: {
+      primary_domain: 'code-analysis', core_concepts: ['codebase', 'analysis'],
+      inferred_description: 'The platform analyzes codebases and explains their architecture, relationships, risks, and behavior so engineering teams can make informed changes with traceable evidence.',
+      description_source: 'ai', description_generation: { status: 'ai_applied', attempted: true },
+    },
+    capabilities: [{
+      id: 'analysis', name: 'Analyze codebases', category: 'core', criticality: 'high',
+      description: 'Analyzes codebases into ErdLayouts and RawResults so users can inspect code relationships and structures.',
+      description_source: 'ai', description_generation: { status: 'ai_applied', attempted: true },
+      operations: [{ action: 'analyze' }], related_entities: ['entity_layout'], related_domains: ['code-analysis'],
+    }],
+  } as any, profile);
+
+  assert.notEqual(gate.status, 'pass');
+  assert.match(gate.detail, /implementation detail restatement/);
+});
+
+test('capability map rejects a published catalog below its structural family minimum', () => {
+  const profile: any = {
+    kind: 'backend-service', confidence: 0.9, evidence: [],
+    expectations: { entry_points: 'required', call_chains: 'required', behavioral_invariants: 'required', security: 'required', runtime_correlation: 'optional', flow_coverage: 'required' },
+  };
+  const gate = scoreCapabilityMap({
+    enhanced_system_purpose: {
+      capability_catalog_coverage: {
+        evidence_families: 5, published_capabilities: 2, minimum_published_capabilities: 3,
+        status: 'rejected', reason: 'catalog collapsed distinct evidence families',
+      },
+    },
+    capabilities: [
+      { name: 'Analyze codebases', description: 'Explains codebase behavior and relationships.', operations: [{ action: 'analyze' }] },
+      { name: 'Assess changes', description: 'Explains likely effects before implementation.', operations: [{ action: 'assess' }] },
+    ],
+    user_journeys: [{ id: 'journey' }],
+  } as any, profile);
+
+  assert.equal(gate.status, 'fail');
+  assert.match(gate.detail, /catalog collapsed/);
+});
+
 test('description quality gate flags over-narrow connector descriptions for broad capabilities', () => {
   const profile: any = {
     kind: 'backend-service',
@@ -500,7 +546,7 @@ test('description quality gate flags over-narrow connector descriptions for broa
       description_source: 'ai',
       description_generation: { status: 'ai_applied', attempted: true },
     },
-    system_capabilities: [
+    capabilities: [
       {
         id: 'chat',
         name: 'Chat Management',
@@ -573,7 +619,7 @@ test('description quality gate treats AI-reviewed deterministic capability fallb
       description_generation: { status: 'ai_applied', attempted: true },
     },
     domain_concepts: [{ name: 'resource' }, { name: 'module' }],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'resource-ecr-api',
         name: 'Resource Aws Ecr Api Management',
@@ -619,7 +665,7 @@ test('description quality gate fails rejected AI fallbacks that leak structural 
       description_generation: { status: 'ai_applied', attempted: true },
     },
     domain_concepts: [{ name: 'agent context' }, { name: 'idiom guidance' }],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'greenfield',
         name: 'Greenfield Planning',
@@ -687,7 +733,7 @@ test('description quality gate fails CAS inventory summaries that repeat labels 
       description_generation: { status: 'ai_applied', attempted: true },
     },
     domain_concepts: [{ name: 'driver' }, { name: 'invoice' }, { name: 'fuel' }],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'drivers',
         name: 'Driver Management',
@@ -759,7 +805,7 @@ test('description quality gate accepts hedged descriptions that acknowledge a do
       description_generation: { status: 'ai_applied', attempted: true },
     },
     domain_concepts: [{ name: 'asset' }, { name: 'pipeline' }],
-    system_capabilities: [],
+    capabilities: [],
   } as any, profile);
 
   assert.doesNotMatch(gate.detail, /system description weak/);
@@ -794,7 +840,7 @@ test('description quality gate warns when the description ignores a dominant una
       description_generation: { status: 'ai_applied', attempted: true },
     },
     domain_concepts: [{ name: 'asset' }, { name: 'pipeline' }],
-    system_capabilities: [],
+    capabilities: [],
   } as any, profile);
 
   assert.match(gate.detail, /description does not acknowledge that Ruby \(79% of source\) is not analyzed/);
@@ -820,7 +866,7 @@ test('agent-fast usefulness review requires default AI summary and capability de
         purpose: 'ai-enrichment',
         default_phase: true,
         description: 'Required default AI summary and primary capability pass',
-        outputs: ['enhanced_system_purpose.inferred_description', 'system_capabilities.description'],
+        outputs: ['enhanced_system_purpose.inferred_description', 'capabilities.description'],
         agent_value: 'Grounded system and capability orientation',
         visualization_value: 'Overview descriptions',
         can_run_later: false,
@@ -833,7 +879,7 @@ test('agent-fast usefulness review requires default AI summary and capability de
       description_source: 'ai',
       description_generation: { status: 'ai_applied', attempted: true },
     },
-    system_capabilities: [
+    capabilities: [
       {
         id: 'orders',
         name: 'Order Management',
@@ -878,7 +924,7 @@ test('external-integration-evidence gate flags command-shaped fragments claimed 
       inferred_description: 'A test utility library that centers on shared assertion helpers for .NET projects across the suite.',
       core_concepts: ['test', 'utility'],
     },
-    system_capabilities: [{ name: 'Test Utilities', related_entities: [], related_domains: [], operations: [] }],
+    capabilities: [{ name: 'Test Utilities', related_entities: [], related_domains: [], operations: [] }],
     domain_concepts: [{ name: 'test', appears_in: { nodes: [], entry_points: [], entities: [] } }],
     architecture_summary: { system_type: 'library', architectural_patterns: [], architectural_inventory: {} },
     analyzer_contributions: [],
@@ -922,7 +968,7 @@ test('usefulness review fails disorganized CAS graphs with fixture pollution and
       inferred_description: 'A user management backend service with clear source-level evidence for account workflows and operational user behavior.',
       core_concepts: ['user', 'account'],
     },
-    system_capabilities: [
+    capabilities: [
       { name: 'User Management', related_entities: [], related_domains: [], operations: [] },
     ],
     domain_concepts: [
@@ -963,7 +1009,7 @@ test('usefulness review accepts organized evidence-backed CAS graphs', () => {
       inferred_description: 'An order management API service that exposes order workflows through controllers, service-layer behavior, and entity-backed persistence.',
       core_concepts: ['order', 'workflow'],
     },
-    system_capabilities: [
+    capabilities: [
       { name: 'Order Management', related_entities: ['entity'], related_domains: ['order'], operations: [{ action: 'read' }] },
     ],
     domain_concepts: [
@@ -1169,7 +1215,7 @@ test('architecture agent context gate requires actionable pattern placement guid
 
 test('duplication review treats infrastructure inventory as the duplicate-work surface', () => {
   const gate = scoreDuplicationAvoidance({
-    system_capabilities: [{ id: 'capability-infra', name: 'Manage infrastructure', description: 'Manage cloud infrastructure.' }],
+    capabilities: [{ id: 'capability-infra', name: 'Manage infrastructure', description: 'Manage cloud infrastructure.' }],
     workflows: [],
     architecture_summary: {
       architectural_inventory: {
@@ -1219,7 +1265,7 @@ test('description quality gate fails full-review narrative when AI was never att
       description_source: 'deterministic',
       description_generation: { status: 'ai_skipped', attempted: false },
     },
-    system_capabilities: [
+    capabilities: [
       {
         id: 'file-workflow',
         name: 'File Workflow',
@@ -1249,7 +1295,7 @@ test('description enrichment targets point UI and agents at the next weak narrat
       description_source: 'ai',
       description_generation: { status: 'ai_applied', attempted: true },
     },
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap_contexts',
         name: 'Agent Contexts',
@@ -1295,7 +1341,7 @@ test('description enrichment targets point UI and agents at the next weak narrat
     edges: [
       { id: 'edge-dispatch', source: 'node-dispatch-controller', target: 'node-dispatch-service', type: 'calls' },
     ],
-    data_entities: [
+    entities: [
       {
         id: 'entity-driver',
         name: 'Driver',

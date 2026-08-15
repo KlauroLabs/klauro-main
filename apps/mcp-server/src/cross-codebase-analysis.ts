@@ -1,23 +1,25 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, CASTemporalStability } from '../../../packages/analyzer-core/src/types/cas.types';
+import { CAS_VERSION, type CASDataEntity, type CASEdge, type CASEntryPoint, type CASExitPoint, type CASNode, type CASOutput, type CASProgressiveLevels, type CASSystem, type CASTemporalStability, type CASTerminality, type FlowConcept, type FlowStep, type SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
+import { composeCas, type CASCompositionRelation, type CASComprehension } from '../../../packages/analyzer-core/src/analyzer/core/cas-composition';
+import { namespaceCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
+import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
 import type {
   CommunicationSeam,
-  CommunicationSeamInventory,
   CommunicationSeamsResult,
   SeamModality,
 } from '../../../packages/analyzer-core/src/analyzer/core/communication-seams';
 import { buildSeamInventory } from '../../../packages/analyzer-core/src/analyzer/core/communication-seams';
-import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+import { aiService, isProviderUnavailableFailure } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { recordSemanticDecision } from '../../../packages/analyzer-core/src/ai/semantic-dataset';
 import { ungroundedMarketingMatches } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import { describeConfiguredAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
-import { getCachedDeployableAnalyses } from './deployable-analysis';
-import {
-  isInfrastructureSemanticName,
-  isRuntimeEndpointSemanticName,
-  isSupportingSemanticName,
-} from './semantic-roles';
+import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './deployable-analysis';
+import { estimatedJsonTokens } from './json-size';
+import { isRuntimeEndpointSemanticName } from './semantic-roles';
+import { buildPassiveDataLinks, passiveDataLifecycleRole, passiveDataOperationRole } from './workspace-passive-data';
+
+export { estimatedJsonTokens } from './json-size';
 
 export type SystemInterfaceKind =
   | 'http-api'
@@ -65,9 +67,6 @@ interface CrossCodebaseLookupIndex {
   diagnostics?: CrossCodebaseBuildDiagnostics;
 }
 
-/** Shared contract (agent-A): evidence-first deployable-boundary signal.
- *  Tier 1 = ship artifacts (container/compose/k8s/serverless/installer/ci-deploy).
- *  Tier 2 = runnable-but-unpackaged (bin/server-entry). Tier 3 = package identity. */
 export interface DeployableEvidence {
   root_path: string;
   name: string;
@@ -76,8 +75,7 @@ export interface DeployableEvidence {
   evidence: string[];
   ships_paths?: string[];
   ports?: number[];
-  /** Which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle
-   *  (e.g. a Dockerfile packaging client+client-service, ENTRYPOINT client). */
+
   entrypoint_member?: string;
 }
 
@@ -97,12 +95,9 @@ export interface SystemCodebase {
   path: string;
   project_role: 'production' | 'prototype' | 'demo' | 'infrastructure' | 'library' | 'tooling' | 'unknown';
   system_type: string;
-  /** The member project's own analyzed primary domain (from its CAS
-   *  enhanced_system_purpose) — the workspace narrative prompt foregrounds this
-   *  so the frame comes from the members' own evidence, never a canned frame. */
+
   primary_domain?: string;
-  /** AI-grounded member summary copied from the completed CAS. The workspace-level
-   *  CAS composes this member-owned meaning; it never re-infers a member from stack facts. */
+
   description?: string;
   languages: string[];
   frameworks: string[];
@@ -133,35 +128,15 @@ export interface SystemApplication {
   runtime_component_ids: string[];
   evidence?: string[];
   trust_guidance?: string;
-  /** id of the SystemApplication this one ships inside of, when evidence-gated
-   *  merge determined it has no standalone deployable artifact of its own
-   *  (e.g. a client-service bundled into an installer alongside its client). */
+
   bundled_into?: string;
-  /** Why this application is/isn't a standalone deployable: tier reached,
-   *  artifact evidence, and (if merged) the positive bundling evidence. */
+
   boundary_evidence?: string[];
-  /** Present only when this application's owning CAS has promoted to a
-   *  set of sub-CAS nodes (docs/cas/SPECIFICATION.md §0.4) and
-   *  this application resolves to one of its sub-CAS nodes: the three-hop
-   *  provenance `workspace -> CAS (codebase_id) -> sub-CAS node (this id)` (spec §4).
-   *  A caller drills into the unit's own sliced capabilities/flows/entities
-   *  via the owning codebase's repo-level tools with `scope: { sub_cas_node_id }`
-   *  (spec §6) instead of a new workspace-level endpoint. Additive and
-   *  optional: absent whenever the owning CAS has not promoted (the common
-   *  single-ship-unit case), so every other field on this row is populated
-   *  identically regardless of provenance — a workspace-level-CAS consumer never has to
-   *  branch on this field to read a deployable's facts, only to decide how
-   *  much drilldown depth to trust (spec §4's "silent to the schema"). */
+
   source_sub_cas_node_id?: string;
-  /** Id of the OTHER workspace member's SystemApplication this row was merged
-   *  into (cross-member identity merge, distinct from `bundled_into`'s
-   *  intra-repo bundling). Requires containment + name-identity evidence, never
-   *  name alone. Excluded from shouldExposeInWorkspaceOverview. */
+
   merged_into?: string;
-  /** Codebase ids of OTHER workspace members whose application row was folded
-   *  into THIS one via mergeCrossMemberSubdirApplications (evidence union,
-   *  provenance kept — see `merged_into` above). Present only on the
-   *  surviving (standalone-member) row of a cross-member subdir merge. */
+
   also_declared_by?: string[];
 }
 
@@ -274,9 +249,7 @@ export interface SystemApplicationLink {
 export type WorkspaceDeployableLink = SystemApplicationLink;
 
 export interface WorkspaceNarrative {
-  // Comprehension is AI-only. 'ai' = written by AI; 'ai-required-degraded' = a
-  // pre-AI placeholder (empty description) before enrichment runs. There is no
-  // 'deterministic' workspace narrative.
+
   source: 'ai' | 'ai-required-degraded';
   generated_at: string;
   confidence: number;
@@ -452,6 +425,7 @@ export interface WorkspaceCapability {
   deployable_ids: string[];
   criticality: 'critical' | 'high' | 'medium' | 'low';
   evidence: string[];
+  source_capability_ids?: string[];
 }
 
 export interface WorkspaceWorkflow {
@@ -750,7 +724,7 @@ export interface WorkspaceAgentContext {
   analysis_id: string;
   workspace: {
     name: string;
-    was_version: string;
+    cas_version: string;
     generated_at: string;
     project_count: number;
     deployable_count: number;
@@ -864,15 +838,13 @@ export interface WorkspaceAgentContext {
 export interface SystemInsight {
   id: string;
   type:
-    | 'ui-api-pairing'
-    | 'broker-service'
-    | 'relay-or-fallback-path'
-    | 'agent-control-plane'
+    | 'frontend-provider-link'
+    | 'bidirectional-message-surface'
+    | 'intermediary-topology'
     | 'declared-unused-infrastructure'
     | 'provider-api-without-source-consumers'
     | 'unclaimed-runtime-surface'
-    | 'entity-read-without-writer'
-    | 'mcp-agent-surface';
+    | 'entity-read-without-writer';
   title: string;
   description: string;
   application_ids: string[];
@@ -909,9 +881,23 @@ export interface UnmatchedSystemInterface {
 }
 
 export interface CrossCodebaseSystemGraph {
-  analysis_kind: 'workspace';
-  spec_version: '1.0.0';
-  was_version: '1.0.0';
+  parent_id: null;
+  label: string;
+  composition_mode: 'composed';
+  children: CASOutput[];
+  cas_version: string;
+  analysis_id: string;
+  analysis_timestamp: string;
+  system: CASSystem;
+  nodes: CASNode[];
+  edges: CASEdge[];
+  analyzer_contributions: CASOutput['analyzer_contributions'];
+  progressive_levels: CASProgressiveLevels;
+  capabilities: SystemCapability[];
+  flows: FlowConcept[];
+  steps: FlowStep[];
+  entities: CASDataEntity[];
+  terminality: CASTerminality;
   id: string;
   name: string;
   generated_at: string;
@@ -953,24 +939,15 @@ export interface CrossCodebaseSystemGraph {
   detail_views: WorkspaceDetailViews;
   validation: WorkspaceValidation;
   quality_flags: WorkspaceQualityFlag[];
-  /** Deterministic, evidence-based complexity score (never AI, never a keyword
-   *  table — see computeCodebaseComplexity/computeWorkspaceComplexity). Absent
-   *  (not zero-filled) when the workspace has no member codebases to score. */
+
   workspace_complexity?: WorkspaceComplexity;
-  /** Repo-to-repo communication seams (§0.8 of docs/cas/SPECIFICATION.md),
-   *  `inventory.level: 'workspace'` — the recursion-level counterpart of a
-   *  single repo's `communication_seams.deployable_inventory`. Built from
-   *  cross-repo exit-point/entry-point matches (`application_links`) plus
-   *  shared third-party dependency correlation; see
-   *  buildWorkspaceCommunicationSeams. Absent when fewer than 2 codebases
-   *  compose this workspace (§0.9 both-extremes rule) — never a zero-filled
-   *  inventory standing in for "no sub-CAS nodes to seam". */
+
   communication_seams?: CommunicationSeamsResult;
   summary: {
     codebases: number;
-    /** Canonical workspace-level applications exposed in the overview. */
+
     applications: number;
-    /** Complete drilldown inventory, including internal and package surfaces. */
+
     application_surfaces: number;
     distribution_units: number;
     composition_kind: WorkspaceCompositionKind;
@@ -985,10 +962,9 @@ export interface CrossCodebaseSystemGraph {
     risk_areas: number;
     capabilities: number;
     workflows: number;
-    /** True workflow count before the payload-size cap; equals `workflows`
-     *  when nothing was truncated. */
+
     workflows_total: number;
-    /** True when `workflows` was truncated to the payload-size cap. */
+
     workflows_truncated: boolean;
     domains: number;
     entities: number;
@@ -998,93 +974,43 @@ export interface CrossCodebaseSystemGraph {
 
 export type WorkspaceAnalysisGraph = CrossCodebaseSystemGraph;
 
-export const WAS_VERSION = '1.0.0';
-
-// ---------------------------------------------------------------------------
-// Complexity model (deterministic, evidence-based — never AI, never a
-// keyword table; see docs cardinal "deterministic facts + AI interpretation
-// never hardcoded categorizer"). Every number below is read straight off
-// already-computed CAS facts, repo- and workspace-level (graph size, entry/exit surface, seam
-// modality counts, dependency fan-out, entity/capability/deployable counts,
-// runtime-link density, sub-CAS-node promotion). Same input always produces the same
-// score: no timestamps, no randomness, no AI call in this file.
-// ---------------------------------------------------------------------------
-
-/** One 0-100 subscore plus the raw evidence it was computed from, so a caller
- *  can see WHY a number is what it is without re-deriving it. */
 export interface ComplexitySubscore {
   score: number;
-  /** Evidence values (already-named CAS facts, repo- and workspace-level) this subscore averaged. */
+
   inputs: Record<string, number>;
 }
 
 export interface CodebaseComplexitySubscores {
-  /** Raw graph size: node + edge counts. Log-scaled because real repos are
-   *  heavy-tailed (a 40-file service and a 4,000-file monolith both exist in
-   *  the corpus) — a linear scale would let one giant repo saturate the
-   *  scale for everyone else, while log growth says "10x the nodes is
-   *  meaningfully but not proportionally more complex to hold in your head." */
+
   size: ComplexitySubscore;
-  /** How entangled the codebase is with the outside world (direct external
-   *  dependency count) and with itself (edges-per-node, i.e. average
-   *  fan-out of the call/reference graph). Both are coupling in the classic
-   *  sense: more edges per unit = more places a change can ripple to. */
+
   coupling: ComplexitySubscore;
-  /** External interaction surface: entry points + exit points (how many
-   *  doors the system has) plus classified sync/async communication seams
-   *  (how many of those doors are actively talked through). Passive seams
-   *  are excluded here — shared-state coupling is a coupling concern, not a
-   *  surface-area one, so it stays out of this subscore to avoid double
-   *  counting the same fact in two buckets. */
+
   surface: ComplexitySubscore;
-  /** Structural breadth: how many independently-shippable units, domain
-   *  entities, and capabilities the codebase is organized into. This is
-   *  "how many distinct things is this system, conceptually" as opposed to
-   *  `size` ("how much code is there") — a 200-node codebase with 12
-   *  capabilities and 3 deployables is topologically more complex than a
-   *  200-node codebase that is one script. */
+
   topology: ComplexitySubscore;
 }
 
 export interface CodebaseComplexity {
   codebase_id: string;
-  /** Mean of the four subscores, rounded. No subscore is weighted above the
-   *  others: nothing in the input evidence justifies claiming (without
-   *  calibration data) that e.g. coupling predicts engineering difficulty
-   *  better than surface area does, so equal weight is the honest default
-   *  rather than a tuned-looking number. */
+
   composite: number;
   subscores: CodebaseComplexitySubscores;
-  /** Exact fact names this score was computed from, for auditability. */
+
   computed_from: string[];
 }
 
 export interface WorkspaceComplexitySubscores {
-  /** Log-scaled count of deployable applications across all members — more
-   *  independently-running surfaces to reason about at once. */
+
   application_surface: ComplexitySubscore;
-  /** Log-scaled count of resolved cross-repo runtime links (how many wires
-   *  actually connect the members), the direct workspace-level analogue of
-   *  a single codebase's `coupling` subscore. */
+
   runtime_link_density: ComplexitySubscore;
-  /** Fraction (0-100) of applications whose deployable identity was
-   *  confirmed by sub-CAS-node promotion (`source_sub_cas_node_id` set) — a proxy for how
-   *  much of the workspace is verified multi-layer shipped topology versus
-   *  single-CAS guesswork. Unlike the other subscores this is a ratio, not a
-   *  log-scaled count, because "half the fleet is sub-CAS-node-verified" is already
-   *  bounded 0-100 and log-scaling a fraction would distort it. */
+
   das_verified_fraction: ComplexitySubscore;
 }
 
 export interface WorkspaceComplexity {
-  /** Blend of (a) the average complexity of member codebases and (b) the
-   *  cross-repo factors above. Member average is weighted 60% because a
-   *  workspace's complexity is still primarily "how complex are the things
-   *  in it"; the 40% remainder is cross-repo integration complexity that no
-   *  single member's own score can see (how many members, how densely
-   *  wired, how much of it is verified topology). 60/40 is a documented
-   *  default, not a fitted constant — there is no labeled-complexity corpus
-   *  yet to calibrate against. */
+
   composite: number;
   member_average_composite: number;
   subscores: WorkspaceComplexitySubscores;
@@ -1092,11 +1018,6 @@ export interface WorkspaceComplexity {
   computed_from: string[];
 }
 
-/** log1p-normalized 0-100 score: monotonically increasing in `value`, with
- *  diminishing returns past `saturation` (the point at which "yet more of
- *  this metric" stops reading as meaningfully more complex). log1p (rather
- *  than log) is defined at value=0, so an empty metric scores exactly 0
- *  instead of -Infinity. */
 function logScaleScore(value: number, saturation: number): number {
   const v = Math.max(0, value);
   const denom = Math.log1p(Math.max(1, saturation));
@@ -1104,9 +1025,6 @@ function logScaleScore(value: number, saturation: number): number {
   return Math.min(100, Math.max(0, score));
 }
 
-/** Linear 0-100 score for ratios/densities that are already bounded and not
- *  heavy-tailed (e.g. average edges-per-node rarely exceeds single digits),
- *  so log-scaling would just compress an already-small range further. */
 function linearScaleScore(value: number, ceiling: number): number {
   if (ceiling <= 0) return 0;
   const v = Math.max(0, value);
@@ -1118,44 +1036,33 @@ function averageSubscore(scores: number[]): number {
   return scores.reduce((sum, s) => sum + s, 0) / scores.length;
 }
 
-/** Deterministic per-codebase complexity from CAS facts already computed
- *  during analysis — never AI, never a keyword/brand table. Every input is
- *  named in `computed_from` so the score is auditable. Always computable:
- *  `codebase.graph` (node/edge/entry/exit counts) is populated for every
- *  member, so a member never has to be skipped for lack of data — optional
- *  richer facts (dependencies, entities, capabilities, deployable evidence,
- *  communication seams) that a given CAS did not produce simply drop out of
- *  their subscore's average rather than being treated as zero. */
 export function computeCodebaseComplexity(codebase: SystemCodebase, repository: CrossCodebaseInput): CodebaseComplexity {
   const cas = repository.cas;
   const computedFrom: string[] = [];
 
-  // size: raw graph magnitude, log-scaled (heavy-tailed across real repos).
   const nodeCount = codebase.graph.nodes;
   const edgeCount = codebase.graph.edges;
   computedFrom.push('graph.nodes', 'graph.edges');
   const size: ComplexitySubscore = {
     score: Math.round(averageSubscore([
-      logScaleScore(nodeCount, 5000),  // 5,000 nodes: corpus-observed ceiling for a single very large repo
-      logScaleScore(edgeCount, 20000), // edges typically run ~4x nodes at this scale
+      logScaleScore(nodeCount, 5000),
+      logScaleScore(edgeCount, 20000),
     ])),
     inputs: { node_count: nodeCount, edge_count: edgeCount },
   };
 
-  // coupling: external dependency fan-out + internal edge density (avg out-degree).
   const directDependencyCount = (cas.dependencies?.packages || []).filter(pkg => pkg.direct).length;
   const edgeDensity = nodeCount > 0 ? edgeCount / nodeCount : 0;
   const couplingInputs: Record<string, number> = { edge_density: Number(edgeDensity.toFixed(3)) };
-  const couplingScores = [linearScaleScore(edgeDensity, 10)]; // avg out-degree of 10+ reads as densely coupled
+  const couplingScores = [linearScaleScore(edgeDensity, 10)];
   if (cas.dependencies) {
     computedFrom.push('dependencies.packages[direct]');
     couplingInputs.direct_dependency_count = directDependencyCount;
-    couplingScores.push(logScaleScore(directDependencyCount, 150)); // 150+ direct deps: corpus-observed high end
+    couplingScores.push(logScaleScore(directDependencyCount, 150));
   }
   computedFrom.push('graph.edges/graph.nodes');
   const coupling: ComplexitySubscore = { score: Math.round(averageSubscore(couplingScores)), inputs: couplingInputs };
 
-  // surface: entry/exit point count + active (sync/async) communication seams.
   const entryPoints = codebase.graph.entry_points;
   const exitPoints = codebase.graph.exit_points;
   computedFrom.push('graph.entry_points', 'graph.exit_points');
@@ -1167,28 +1074,26 @@ export function computeCodebaseComplexity(codebase: SystemCodebase, repository: 
     const activeSeams = seamCounts.sync + seamCounts.async;
     surfaceInputs.seam_sync_count = seamCounts.sync;
     surfaceInputs.seam_async_count = seamCounts.async;
-    surfaceScores.push(logScaleScore(activeSeams, 300)); // 300+ active seams: corpus-observed high end
+    surfaceScores.push(logScaleScore(activeSeams, 300));
   }
   const surface: ComplexitySubscore = { score: Math.round(averageSubscore(surfaceScores)), inputs: surfaceInputs };
 
-  // topology: how many independently-shippable units / domain entities /
-  // capabilities the codebase is organized into (structural breadth).
   const topologyInputs: Record<string, number> = {};
   const topologyScores: number[] = [];
   if (cas.deployable_evidence) {
     computedFrom.push('deployable_evidence.length');
     topologyInputs.deployable_count = cas.deployable_evidence.length;
-    topologyScores.push(logScaleScore(cas.deployable_evidence.length, 10)); // 10+ deployables from one codebase: multi-service ceiling
+    topologyScores.push(logScaleScore(cas.deployable_evidence.length, 10));
   }
-  if (cas.data_entities) {
-    computedFrom.push('data_entities.length');
-    topologyInputs.entity_count = cas.data_entities.length;
-    topologyScores.push(logScaleScore(cas.data_entities.length, 60));
+  if (cas.entities) {
+    computedFrom.push('entities.length');
+    topologyInputs.entity_count = cas.entities.length;
+    topologyScores.push(logScaleScore(cas.entities.length, 60));
   }
-  if (cas.system_capabilities) {
-    computedFrom.push('system_capabilities.length');
-    topologyInputs.capability_count = cas.system_capabilities.length;
-    topologyScores.push(logScaleScore(cas.system_capabilities.length, 40));
+  if (cas.capabilities) {
+    computedFrom.push('capabilities.length');
+    topologyInputs.capability_count = cas.capabilities.length;
+    topologyScores.push(logScaleScore(cas.capabilities.length, 40));
   }
   const topology: ComplexitySubscore = { score: Math.round(averageSubscore(topologyScores)), inputs: topologyInputs };
 
@@ -1202,11 +1107,6 @@ export function computeCodebaseComplexity(codebase: SystemCodebase, repository: 
   };
 }
 
-/** Deterministic workspace-level complexity: aggregates member composites
- *  and layers on cross-repo factors already carried by the workspace-level
- *  CAS graph (runtime_links, application count, sub-CAS-node-promoted member count). Absent
- *  (not zero) when there are no member codebases to score — an honest
- *  "no score" beats a fabricated 0. */
 export function computeWorkspaceComplexity(
   codebases: SystemCodebase[],
   repositories: CrossCodebaseInput[],
@@ -1232,11 +1132,11 @@ export function computeWorkspaceComplexity(
   const memberAverageComposite = Math.round(averageSubscore(members.map(member => member.composite)));
 
   const applicationSurface: ComplexitySubscore = {
-    score: Math.round(logScaleScore(applications.length, 40)), // 40+ applications: large-fleet ceiling
+    score: Math.round(logScaleScore(applications.length, 40)),
     inputs: { application_count: applications.length },
   };
   const runtimeLinkDensity: ComplexitySubscore = {
-    score: Math.round(logScaleScore(runtimeLinks.length, 100)), // 100+ resolved runtime links: densely-wired ceiling
+    score: Math.round(logScaleScore(runtimeLinks.length, 100)),
     inputs: { runtime_link_count: runtimeLinks.length },
   };
   const dasPromotedCount = applications.filter(app => app.source_sub_cas_node_id).length;
@@ -1298,52 +1198,6 @@ function buildCrossCodebaseLookupIndexes(
   return indexes;
 }
 
-/**
- * Repo-to-repo communication seams — the workspace-level counterpart of
- * `classifyCommunicationSeams`'s `deployable_inventory`
- * (packages/analyzer-core/src/analyzer/core/communication-seams.ts). §0.8.4
- * of docs/cas/SPECIFICATION.md names this the concrete gap this closes:
- * `SeamLevel: 'workspace'` and `kind: 'cross_repo_contract'` were declared in
- * the type but nothing ever set them, because the exit-point/entry-point
- * matching a workspace's sibling repos need already lives in a
- * differently-shaped mechanism — `extractInterfaces`/`buildLinks` above,
- * expressed as `SystemApplicationLink` (mode sync/async/passive/stream,
- * confidence, `evidence_quality`, real route/topic/import evidence) — rather
- * than the `CommunicationSeam` vocabulary. This function is the unification
- * the spec calls for: it re-expresses the ALREADY-MATCHED cross-repo
- * application links as `CommunicationSeam` records (never re-deriving the
- * match itself, so it inherits exactly the evidence quality the link
- * already carries), and adds the one class neither mechanism covered: two
- * repos independently declaring the same third-party runtime dependency
- * (§0.8.3, `buildSharedDependencySeams` below).
- *
- * Direction: `application_links` source/target already carry a resolved
- * direction for `http-call`/`message-flow`/`stream-flow`/`sdk-install` — the
- * matching that produced them established who calls/imports whom (see
- * `buildLinks`/`inferInternalDependencyLinks`). `shared-data` links and the
- * shared-dependency seams below carry no such evidence (two repos
- * independently touching the same resource/package is symmetric), so those
- * seams are `passive` and undirected by construction — the same convention
- * `classifyCommunicationSeams` uses for its own `passive_state` seams. This
- * function never invents a producer/consumer direction it cannot evidence:
- * a shared-type match (routed through `shared-data`, itself sourced from
- * `detectSharedEntityLinks`'s name-correlation, §0.8.2) stays undirected for
- * the same reason task #128 flags entity anchoring as direction-blind today
- * (it records CONSUMED contract types, never PRODUCED/emitted ones) — an
- * inverted seam would be worse than a missing one.
- *
- * The fourth mode: a cross-repo `stream-flow` link (SSE/websocket) has no
- * sync/async/passive analogue in the intra-repo taxonomy (§0.8.4's "fourth
- * mode" gap). A stream is a continuous push with no single blocking reply,
- * closer to fire-and-forget than request/response, so it maps to `async`
- * here — the original mode is preserved on `metadata.original_mode` so a
- * caller that must distinguish a one-shot message from a persistent stream
- * still can.
- *
- * Absent (not returned) when fewer than 2 codebases compose the workspace —
- * §0.9's both-extremes rule: a workspace with 0 or 1 member has no sibling to
- * seam against, and MUST NOT carry a zero-filled inventory pretending it does.
- */
 export function buildWorkspaceCommunicationSeams(
   codebases: SystemCodebase[],
   applicationLinks: SystemApplicationLink[],
@@ -1357,9 +1211,7 @@ export function buildWorkspaceCommunicationSeams(
   const nextSeamId = (prefix: string) => `wseam_${prefix}_${(seamSeq += 1)}`;
 
   for (const link of applicationLinks) {
-    // Intra-repo links are already covered by that repo's own
-    // communication_seams.deployable_inventory (§0.8.5 — a parent does not
-    // re-derive a child's own already-computed facts).
+
     if (link.source_codebase_id === link.target_codebase_id) continue;
     const source = nameByCodebaseId.get(link.source_codebase_id);
     const target = nameByCodebaseId.get(link.target_codebase_id);
@@ -1403,12 +1255,10 @@ function mapApplicationLinkKindToSeamKind(kind: SystemApplicationLink['kind']): 
     case 'http-call':
     case 'message-flow':
     case 'stream-flow':
-      // A resolved cross-repo route/topic match — exactly the declared-but-
-      // unimplemented `cross_repo_contract` kind (§0.8.1, §0.8.4).
+
       return 'cross_repo_contract';
     case 'sdk-install':
-      // A repo importing/using another repo's package — a directed code
-      // dependency, the same shape as a node-level `sdk` exit point.
+
       return 'exit_point';
     case 'shared-data':
       return 'passive_state';
@@ -1417,23 +1267,6 @@ function mapApplicationLinkKindToSeamKind(kind: SystemApplicationLink['kind']): 
   }
 }
 
-/**
- * §0.8.3's second unimplemented class: two sub-CAS nodes independently
- * declaring the same third-party runtime dependency, visible in each one's
- * own `dependency_manifest` today but never correlated into a finding.
- * Evidence-gated on an EXACT (ecosystem, package name) match against each
- * repo's own deterministically-extracted `CASDeclaredDependency` rows —
- * never a name-similarity heuristic. Filtered to `scopes.includes('runtime')`
- * (a structural fact already on the dependency record, not a name list) so a
- * shared devDependency (eslint, a test runner) — real but not a communication
- * coupling — does not inflate the seam count.
- *
- * Always `passive` and undirected: co-declaring a dependency carries no
- * producer/consumer evidence (see the direction note on
- * buildWorkspaceCommunicationSeams above), so `source`/`target` are ordered
- * by codebase id only for a stable, single edge per pair — never asserting
- * which side "leads".
- */
 function buildSharedDependencySeams(
   codebases: SystemCodebase[],
   repositories: CrossCodebaseInput[],
@@ -1475,9 +1308,7 @@ function buildSharedDependencySeams(
         seams.push({
           id: nextSeamId('dep'),
           modality: 'passive',
-          // Weakest evidence band this file emits: co-declaration is real but
-          // unlike a passive_state (shared, observed data access) it is not
-          // an observed interaction, only a structural coupling risk.
+
           confidence: 0.55,
           kind: 'shared_dependency',
           source: sourceName,
@@ -1495,10 +1326,14 @@ function buildSharedDependencySeams(
 
 export function buildCrossCodebaseSystemGraph(
   name: string,
-  repositories: CrossCodebaseInput[],
+  repositoryInputs: CrossCodebaseInput[],
   options: { id?: string; generatedAt?: string; diagnostics?: CrossCodebaseBuildDiagnostics } = {}
 ): CrossCodebaseSystemGraph {
   const generatedAt = options.generatedAt || new Date().toISOString();
+  const repositories = repositoryInputs.map(repository => ({
+    ...repository,
+    cas: materializeDeployableCasTree(repository.cas),
+  }));
   const lookupIndexes = buildCrossCodebaseLookupIndexes(repositories, options.diagnostics);
   const codebases = repositories.map(toSystemCodebase);
   const interfaces = repositories.flatMap(repository => extractInterfaces(repository, codebaseId(repository.path), lookupIndexes.get(repository.cas)!));
@@ -1529,13 +1364,11 @@ export function buildCrossCodebaseSystemGraph(
   const ownership = buildWorkspaceOwnership(applications, codebases, repositories);
   const activity = buildWorkspaceActivity(repositories, applications);
   const telemetry = buildWorkspaceTelemetry(repositories, applications);
-  const capabilities = buildWorkspaceCapabilities(repositories, applications, codebases, lookupIndexes, systemInsights);
-  // Honest truncation: the persisted list is capped for payload size, and the
-  // true count is surfaced in summary.workflows_total/workflows_truncated so
-  // "exactly 40" is a visible truncation, never a silent quota.
+  const capabilities = buildWorkspaceCapabilities(repositories, applications, lookupIndexes);
+
   const workflowsAll = buildWorkspaceWorkflows(repositories, applications, interfaces, applicationLinks, lookupIndexes);
   const workflows = workflowsAll.slice(0, WORKSPACE_WORKFLOWS_MAX);
-  const domains = buildWorkspaceDomains(repositories, applications, codebases, name);
+  const domains = buildWorkspaceDomains(repositories, codebases, name);
   const environments = buildWorkspaceEnvironments(runtimeComponents, applications, repositories);
   const infrastructureOverlay = buildWorkspaceInfrastructureOverlay(runtimeComponents, runtimeLinks, applications);
   const links = allLinks.filter(link => link.source_codebase_id !== link.target_codebase_id);
@@ -1551,12 +1384,58 @@ export function buildCrossCodebaseSystemGraph(
   const detailViews = buildWorkspaceDetailViews(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, dataFlowPaths, entityMap.entities, entityMap.paths, unmatchedInterfaces, validation, workspaceNarrative, composition, ownership, activity, telemetry, health, riskAreas, capabilities, workflows, environments, infrastructureOverlay, sharedCodeRollup);
   const workspaceComplexity = computeWorkspaceComplexity(codebases, repositories, applications, runtimeLinks);
   const communicationSeams = buildWorkspaceCommunicationSeams(codebases, applicationLinks, repositories);
+  const graphId = options.id || crossCodebaseSystemGraphId(name);
+  const childrenByCodebase = new Map<string, CASOutput>();
+  repositories.forEach((repository, index) => {
+    const codebase = codebases[index];
+    if (!codebase) return;
+    childrenByCodebase.set(codebase.id, namespaceCasTree(repository.cas, `workspace:${codebase.id}`));
+  });
+  const relations: CASCompositionRelation[] = links.flatMap(link => {
+    const source = childrenByCodebase.get(link.source_codebase_id);
+    const target = childrenByCodebase.get(link.target_codebase_id);
+    if (!source?.id || !target?.id) return [];
+    return [{
+      id: link.id,
+      source_cas_id: source.id,
+      target_cas_id: target.id,
+      type: link.kind,
+      confidence: link.confidence,
+      evidence: link.evidence,
+      metadata: { mode: link.mode, evidence_quality: link.evidence_quality },
+    }];
+  });
+  const composedCas = composeCas({
+    id: graphId,
+    label: name,
+    cas_version: CAS_VERSION,
+    analysis_id: `analysis:${graphId}:${generatedAt}`,
+    analysis_timestamp: generatedAt,
+    system: { id: `system:${graphId}`, name, type: 'monorepo', root_path: '.' },
+    children: [...childrenByCodebase.values()],
+    relations,
+    derive_comprehension: () => deriveWorkspaceComprehension(workflows, entityMap.entities),
+  });
 
   const graph: CrossCodebaseSystemGraph = {
-    analysis_kind: 'workspace',
-    spec_version: WAS_VERSION,
-    was_version: WAS_VERSION,
-    id: options.id || crossCodebaseSystemGraphId(name),
+    parent_id: null,
+    label: composedCas.label!,
+    composition_mode: 'composed',
+    children: composedCas.children!,
+    cas_version: composedCas.cas_version,
+    analysis_id: composedCas.analysis_id,
+    analysis_timestamp: composedCas.analysis_timestamp,
+    system: composedCas.system,
+    nodes: composedCas.nodes,
+    edges: composedCas.edges,
+    analyzer_contributions: composedCas.analyzer_contributions,
+    progressive_levels: composedCas.progressive_levels,
+    capabilities: composedCas.capabilities || [],
+    flows: composedCas.flows || [],
+    steps: composedCas.steps || [],
+    entities: composedCas.entities || [],
+    terminality: composedCas.terminality!,
+    id: graphId,
     name,
     generated_at: generatedAt,
     inputs,
@@ -1610,6 +1489,239 @@ export function buildCrossCodebaseSystemGraph(
 
 export const buildWorkspaceAnalysis = buildCrossCodebaseSystemGraph;
 
+function deriveWorkspaceComprehension(
+  workflows: WorkspaceWorkflow[],
+  workspaceEntities: WorkspaceEntity[],
+): CASComprehension {
+  const entities: CASDataEntity[] = workspaceEntities.map(entity => {
+    const referencedIds = entity.entity_refs.map(ref => `${ref.project_id}:${ref.entity_id}`);
+    const lifecycleIds = (count: number) => referencedIds.slice(0, Math.min(count, referencedIds.length));
+    return {
+      id: entity.id,
+      name: entity.name,
+      description: entity.description,
+      description_source: entity.description_source === 'ai' ? 'ai' : undefined,
+      kind: 'domain-shape',
+      kind_source: 'shape-inference',
+      lifecycle: {
+        created_by: lifecycleIds(entity.lifecycle.created_by),
+        read_by: lifecycleIds(entity.lifecycle.read_by),
+        updated_by: lifecycleIds(entity.lifecycle.updated_by),
+        deleted_by: lifecycleIds(entity.lifecycle.deleted_by),
+      },
+      relations: [],
+    };
+  });
+  const entityIdsByWorkflow = new Map<string, string[]>();
+  for (const entity of workspaceEntities) {
+    for (const workflowId of entity.related_workflow_ids) {
+      entityIdsByWorkflow.set(workflowId, [...(entityIdsByWorkflow.get(workflowId) || []), entity.id]);
+    }
+  }
+  const flows: FlowConcept[] = workflows
+    .filter(workflow => workflow.project_ids.length > 1)
+    .map(workflow => deriveWorkspaceFlow(workflow, entityIdsByWorkflow.get(workflow.id) || []));
+  return {
+    capabilities: [],
+    flows,
+    steps: flows.flatMap(flow => flow.steps),
+    entities,
+  };
+}
+
+function deriveWorkspaceFlow(workflow: WorkspaceWorkflow, entities: string[]): FlowConcept {
+  const participants = workflow.deployable_ids.length > 0 ? workflow.deployable_ids : workflow.project_ids;
+  const source = participants[0];
+  const target = participants[participants.length - 1];
+  const evidence = workflow.evidence[0] || `workflow:${workflow.id}`;
+  const sourceStep: FlowStep = {
+    step_id: `${workflow.id}:source`,
+    order: 1,
+    name: `Send from ${source}`,
+    description: `Initiates ${workflow.name} from ${source}.`,
+    description_source: 'deterministic-label',
+    contract: {
+      input: workflow.interface_ids.slice(0, 1),
+      logic: workflow.description,
+      side_effects: { state_changes: [], external_integrations: [target] },
+      output: workflow.interface_ids.slice(-1),
+      constraints: [],
+      facet_provenance: [{ facet: 'external_integration', value: target, source: 'deterministic', evidence }],
+    },
+    functions: [],
+    entities,
+  };
+  const targetStep: FlowStep = {
+    step_id: `${workflow.id}:target`,
+    order: 2,
+    name: `Receive in ${target}`,
+    description: `Completes ${workflow.name} in ${target}.`,
+    description_source: 'deterministic-label',
+    contract: {
+      input: workflow.interface_ids.slice(-1),
+      logic: workflow.description,
+      side_effects: { state_changes: [], external_integrations: [] },
+      output: [target],
+      constraints: [],
+      facet_provenance: [{ facet: 'output', value: target, source: 'deterministic', evidence }],
+    },
+    functions: [],
+    entities,
+  };
+  return {
+    flow_id: workflow.id,
+    name: workflow.name,
+    intent: workflow.description,
+    entry_point: workflow.interface_ids[0] || source,
+    entities,
+    contract: {
+      input: workflow.interface_ids.slice(0, 1),
+      logic: workflow.description,
+      side_effects: { state_changes: [], external_integrations: participants.slice(1) },
+      output: workflow.interface_ids.slice(-1).length > 0 ? workflow.interface_ids.slice(-1) : [target],
+      constraints: [],
+      facet_provenance: [
+        { facet: 'external_integration', value: participants.join(' -> '), source: 'deterministic', evidence },
+      ],
+    },
+    steps: [sourceStep, targetStep],
+    step_graph: { edges: [{ from_step_id: sourceStep.step_id, to_step_id: targetStep.step_id, kind: 'sequence', evidence }] },
+    criticality: workflow.criticality,
+  };
+}
+
+function synchronizeCanonicalWorkspaceComprehension(graph: WorkspaceAnalysisGraph): void {
+  const flowsById = new Map(graph.flows.map(flow => [flow.flow_id, flow]));
+  const workflowsById = new Map(graph.workspace_workflows.map(workflow => [workflow.id, workflow]));
+  const candidateFlowIdsByCapability = new Map<string, Set<string>>();
+
+  for (const capability of graph.workspace_capabilities) {
+    const sourceIds = new Set(capability.source_capability_ids || [capability.id]);
+    const flowIds = new Set<string>();
+    for (const entity of graph.workspace_entities) {
+      if (!entity.related_capability_ids.some(id => sourceIds.has(id))) continue;
+      for (const workflowId of entity.related_workflow_ids) {
+        if (flowsById.has(workflowId)) flowIds.add(workflowId);
+      }
+    }
+    candidateFlowIdsByCapability.set(capability.id, flowIds);
+  }
+
+  const capabilityRank = (capability: WorkspaceCapability): number =>
+    (capability.terminal_score || 0) * 100 +
+    (capability.semantic_role === 'core' ? 20 : capability.semantic_role === 'supporting' ? 10 : 0) +
+    criticalityRank(capability.criticality);
+  const published = graph.workspace_capabilities.filter(capability =>
+    capability.description_source === 'ai' && capability.name.trim().length > 0 && capability.description.trim().length > 0
+  );
+  const primaryByFlowId = new Map<string, string>();
+  for (const flow of graph.flows) {
+    const candidates = published
+      .filter(capability => candidateFlowIdsByCapability.get(capability.id)?.has(flow.flow_id))
+      .sort((left, right) => capabilityRank(right) - capabilityRank(left) || left.id.localeCompare(right.id));
+    if (candidates[0]) primaryByFlowId.set(flow.flow_id, candidates[0].id);
+  }
+
+  const canonicalCapabilities: SystemCapability[] = published.map(capability => {
+    const flowIds = [...(candidateFlowIdsByCapability.get(capability.id) || [])].filter(id => flowsById.has(id));
+    const relatedEntities = graph.workspace_entities
+      .filter(entity => entity.related_capability_ids.some(id => (capability.source_capability_ids || [capability.id]).includes(id)))
+      .map(entity => entity.id);
+    const relatedFlows = flowIds.map(flowId => {
+      const role = primaryByFlowId.get(flowId) === capability.id
+        ? 'primary'
+        : capability.semantic_role === 'infrastructure'
+          ? 'operational'
+          : 'supporting';
+      return {
+        flow_id: flowId,
+        role,
+        rationale: `Workspace flow ${flowId} touches an entity grounded in capability ${capability.id}.`,
+      };
+    });
+    const operations = flowIds.flatMap(flowId => {
+      const flow = flowsById.get(flowId);
+      if (!flow) return [];
+      return [{
+        entry_point_id: flow.entry_point,
+        entry_point_type: 'workspace-interface',
+        action: flow.name,
+        path_or_command: workflowsById.get(flowId)?.interface_ids[0],
+      }];
+    });
+    return {
+      id: capability.id,
+      name: capability.name,
+      name_source: 'ai',
+      structural_label: capability.name,
+      description: capability.description,
+      description_source: 'ai',
+      category: capability.semantic_role === 'core'
+        ? 'core'
+        : capability.semantic_role === 'infrastructure'
+          ? 'internal'
+          : 'supporting',
+      operations,
+      related_entities: relatedEntities,
+      related_domains: graph.workspace_domains
+        .filter(domain => domain.project_ids.some(projectId => capability.project_ids.includes(projectId)))
+        .map(domain => domain.name),
+      criticality: capability.criticality,
+      criticality_factors: capability.terminal_evidence || [],
+      ...(relatedFlows.length > 0 ? { related_flows: relatedFlows } : {}),
+    };
+  });
+
+  const canonicalById = new Map(canonicalCapabilities.map(capability => [capability.id, capability]));
+  for (const flow of graph.flows) {
+    const relationships = canonicalCapabilities.flatMap(capability => {
+      const relation = capability.related_flows?.find(item => item.flow_id === flow.flow_id);
+      if (!relation) return [];
+      return [{
+        capability_id: capability.id,
+        role: relation.role as 'primary' | 'supporting' | 'operational',
+        rationale: relation.rationale,
+        evidence: 'entity-overlap' as const,
+      }];
+    });
+    flow.capability_relationships = relationships.length > 0 ? relationships : undefined;
+    flow.capability_id = primaryByFlowId.get(flow.flow_id);
+  }
+
+  const dependencies = new Map<string, Map<string, number>>();
+  for (const flow of graph.flows) {
+    const primary = flow.capability_id;
+    if (!primary) continue;
+    for (const relationship of flow.capability_relationships || []) {
+      if (relationship.capability_id === primary || relationship.role === 'primary') continue;
+      const targets = dependencies.get(primary) || new Map<string, number>();
+      targets.set(relationship.capability_id, (targets.get(relationship.capability_id) || 0) + 1);
+      dependencies.set(primary, targets);
+    }
+  }
+  for (const [sourceId, targets] of dependencies) {
+    const source = canonicalById.get(sourceId);
+    if (!source) continue;
+    source.depends_on = [...targets].map(([targetId, callCount]) => ({
+      from_capability: sourceId,
+      to_capability: targetId,
+      dependency_type: 'uses',
+      strength: 'common',
+      evidence: { shared_services: [], shared_nodes: [], call_count: callCount },
+      description: `${source.name} uses ${canonicalById.get(targetId)?.name || targetId} across ${callCount} workspace flow${callCount === 1 ? '' : 's'}.`,
+    }));
+    for (const targetId of targets.keys()) {
+      const target = canonicalById.get(targetId);
+      if (target) target.depended_by = mergeStrings(target.depended_by || [], [sourceId]);
+    }
+  }
+
+  graph.capabilities = canonicalCapabilities;
+  graph.steps = graph.flows.flatMap(flow => flow.steps);
+  graph.terminality = buildCasTerminality(graph as unknown as CASOutput);
+  graph.summary.capabilities = canonicalCapabilities.length;
+}
+
 function workspaceAiProviderMetadata(): WorkspaceAiProviderMetadata {
   const provider = describeConfiguredAIProvider();
   const expectedProvider = process.env.KLAURO_EXPECT_AI_PROVIDER || process.env.KLAURO_WORKSPACE_EXPECT_AI_PROVIDER;
@@ -1653,10 +1765,7 @@ function normalizeWorkspaceNextMcpCalls(graph: CrossCodebaseSystemGraph): void {
 }
 
 export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisGraph): Promise<WorkspaceAnalysisGraph> {
-  // COMPREHENSION BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): the workspace
-  // narrative, domains, and capability descriptions are AI-only. There is no
-  // deterministic workspace narrative and no degraded deterministic fallback:
-  // if AI enrichment is disabled or the model call fails, this THROWS.
+
   if (!workspaceAiEnrichmentEnabled()) {
     throw new Error('Klauro workspace comprehension requires AI enrichment, but it is disabled by environment. Workspace narrative/domains/capabilities are AI-only; there is no deterministic fallback (see docs/cas/DETERMINISM-BOUNDARY.md).');
   }
@@ -1668,12 +1777,9 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     if (expectedProvider && graph.ai_enrichment.provider !== expectedProvider) {
       throw new Error(`Expected workspace AI provider "${expectedProvider}" but configured provider is "${graph.ai_enrichment.provider}"`);
     }
-    // Merge the per-codebase capability catalogs into one coherent workspace
-    // catalog before the narrative/description passes run, so they describe the
-    // merged capabilities rather than the noisy name-deduped union.
+
     graph.workspace_capabilities = await aiMergeWorkspaceCapabilities(graph);
-    // Realign the narrative's capability list to the merged catalog so the
-    // description and the capability list never disagree.
+
     const mergedCoreNames = graph.workspace_capabilities.filter(capability => capability.semantic_role === 'core').map(capability => capability.name);
     if (mergedCoreNames.length > 0) {
       const sentence = ` Its core capabilities are ${joinHumanReadableList(mergedCoreNames.slice(0, 5))}.`;
@@ -1695,12 +1801,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     const parsed = parseWorkspaceNarrativeJson(raw);
     const now = new Date().toISOString();
     const narrativeDescription = humanizeWorkspaceNarrativeIdentifiers(String(parsed.description || '').trim());
-    // GATE/PERSIST AGREEMENT (live v1.0.63 contradiction): the gate used to
-    // check the RAW parsed summary for non-emptiness, while the accepted branch
-    // persisted the STRICTER usefulAiProductValueSummary(...) result — so a
-    // summary that was non-empty at gate time but rejected by the usefulness
-    // filter persisted source='ai' with product_value_summary:"". Compute the
-    // value that will actually persist FIRST and gate on that.
+
     let acceptedProductValueSummary: string | undefined = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || safeAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || String(graph.workspace_narrative.product_value_summary || '').trim();
@@ -1724,15 +1825,13 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           source: 'ai',
           generated_at: now,
           confidence: Math.max(graph.workspace_narrative.confidence, 0.76),
-          // Persist seam: isolated ungrounded marketing instances are stripped
-          // mechanically (saturation was already rejected by the gate).
+
           description: stripUngroundedWorkspaceMarketingLanguage(graph, narrativeDescription),
           product_value_summary: stripUngroundedWorkspaceMarketingLanguage(graph, acceptedProductValueSummary!),
           domains: parsed.domains?.length ? parsed.domains.slice(0, 12) : graph.workspace_narrative.domains,
           key_capabilities: parsed.key_capabilities?.length ? parsed.key_capabilities.slice(0, 12) : graph.workspace_narrative.key_capabilities,
           value_drivers: cleanWorkspaceValueDrivers(graph, parsed.value_drivers, graph.workspace_narrative.value_drivers),
-          // Relationships are graph facts. AI may explain deterministic links,
-          // but it cannot author a new relationship summary from prose.
+
           relationship_summary: graph.workspace_narrative.relationship_summary,
           degraded_reason: undefined,
         }
@@ -1745,8 +1844,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           generated_at: now,
           degraded_reason: `Workspace AI enrichment was rejected by the workspace narrative quality gate: ${narrativeGate.reason}`,
         };
-    // E1 (observational): the workspace narrative gate decision. Compact digest
-    // only — codebase/capability/domain counts, never source or secrets.
+
     recordSemanticDecision({
       ts: Date.now(),
       decision_type: 'workspace_narrative',
@@ -1771,17 +1869,10 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     graph.workspace_capabilities = invalidateDuplicateWorkspaceCapabilityDescriptions(graph.workspace_capabilities);
     graph.workspace_workflows = applyAiWorkflowDescriptions(graph.workspace_workflows, parsed.workflow_items || [], now);
     graph.workspace_entities = applyAiEntityDescriptions(graph.workspace_entities, parsed.entity_items || [], now);
-    // Persist-seam strip BEFORE the repair loop: any prompt-echo blob carried in
-    // by the merge/apply passes is cleared to absent here so the repair loop
-    // below regenerates it (cache-busted) instead of trusting the 'ai' source.
+
     stripWorkspaceItemDescriptionArtifacts(graph);
     if (graph.workspace_narrative.source !== 'ai') {
-      // Retry semantics (project-side parity): a gate rejection re-prompts with
-      // the specific rejection reason before degrading. The reason + attempt
-      // index are part of the prompt context, which ALSO changes the ai-service
-      // cache key — without that, a deterministic prompt context replays the
-      // previously-rejected cached response on every retry and the whole
-      // "retry" degrades in milliseconds without a real AI attempt.
+
       for (let attempt = 0; attempt < 3 && graph.workspace_narrative.source !== 'ai'; attempt += 1) {
         graph.workspace_narrative = await repairRejectedWorkspaceNarrative(graph, now, graph.workspace_narrative.degraded_reason, attempt);
       }
@@ -1802,8 +1893,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     finalizeRequiredWorkspaceAiSemantics(graph, now);
     graph.workspace_narrative.domains = primaryWorkspaceDomains(graph).map(item => item.name);
     graph.workspace_narrative.key_capabilities = primaryWorkspaceCapabilities(graph).map(item => item.name);
-    // E1 (observational): per-item (domain/capability) description gate outcomes,
-    // summarized by ai/degraded counts. Compact — no descriptions persisted.
+
     {
       const aiCount = (items: Array<{ description_source?: string }>) => items.filter(item => item.description_source === 'ai').length;
       const domainsAi = aiCount(graph.workspace_domains);
@@ -1829,9 +1919,9 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       });
     }
     await enforceWorkspaceNarrativeProductValueSummary(graph);
-    // FINAL persist seam: finalize/sync can copy a counterpart's text without
-    // re-guarding, so strip once more after all comprehension writes complete.
+
     stripWorkspaceItemDescriptionArtifacts(graph);
+    synchronizeCanonicalWorkspaceComprehension(graph);
     graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
     graph.detail_views.overview.workflows = graph.workspace_workflows.slice(0, 12);
     graph.detail_views.overview.entities = graph.workspace_entities.slice(0, 12);
@@ -1840,9 +1930,13 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     graph.detail_views.overview.quality_flags = graph.quality_flags;
     return graph;
   } catch (error) {
-    // One bounded retry via the small-pass strategy (still AI). If AI still
-    // cannot produce a grounded narrative, THROW — there is no deterministic
-    // workspace narrative to degrade to.
+    if (/no real attempt/i.test(error instanceof Error ? error.message : String(error))) {
+      throw error;
+    }
+    if (isProviderUnavailableFailure(error)) {
+      throw error;
+    }
+
     const fallback = await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph, error);
     if (fallback.workspace_narrative.source === 'ai' || !fallback.quality_flags?.some(flag => flag.code === 'capability-descriptions-degraded' || flag.code === 'domain-descriptions-degraded')) {
       return fallback;
@@ -1887,8 +1981,9 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
   graph.workspace_narrative.key_capabilities = primaryWorkspaceCapabilities(graph).map(item => item.name);
   await enforceWorkspaceNarrativeProductValueSummary(graph);
   applyWorkspaceAiProviderMetadata(graph);
-  // FINAL persist seam (small-pass path parity).
+
   stripWorkspaceItemDescriptionArtifacts(graph);
+  synchronizeCanonicalWorkspaceComprehension(graph);
 
   graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
   graph.detail_views.overview.workflows = graph.workspace_workflows.slice(0, 12);
@@ -1905,12 +2000,6 @@ function useSmallWorkspaceAiDefaultPasses(): boolean {
   return false;
 }
 
-/**
- * Guard against fake quality-gate rejections: if the AI layer never actually
- * attempted generation (feature-disabled canned string, or an empty response),
- * that is an enrichment error with a real cause — it must never be laundered
- * into "rejected by the workspace-level-CAS quality gate". Exported for tests.
- */
 export function assertRealWorkspaceAiAttempt(raw: string): void {
   const text = String(raw || '').trim();
   if (!text) {
@@ -1925,21 +2014,11 @@ async function generateWorkspaceAiText(additionalContext: Record<string, unknown
   if (useDirectOllamaWorkspaceAi()) {
     return await generateWorkspaceOllamaJson(additionalContext);
   }
-  // Workspace text (capability merge + narrative) is structured/grounded; allow it
-  // to use the faster, more reliable structured model when configured.
+
   const model = (additionalContext.model as string) || process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined;
   return await aiService.generateComponentDescription({ additionalContext: { ...additionalContext, model } });
 }
 
-/**
- * AI-merges the per-codebase capability catalogs into ONE coherent workspace
- * catalog. The deterministic layer only name-dedups the union, which leaves
- * near-duplicates ("Manage Orders" vs "Trade Execution", three Risk/Security
- * variants) and too many "core". This asks the model to collapse them into the
- * product's real capabilities. Each merged capability is salted with evidence
- * from the deterministic sources it merges — involved codebases, entities, and
- * deployables — so the catalog stays grounded in the graph, not the model.
- */
 async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Promise<WorkspaceCapability[]> {
   const capabilities = graph.workspace_capabilities || [];
   if (capabilities.length < 4) return capabilities;
@@ -1959,8 +2038,8 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
   let raw: string;
   try {
     raw = await withWorkspaceAiTimeout(generateWorkspaceAiText({
-      task: 'These capabilities were detected across the codebases of ONE product workspace. Merge them into the single coherent WORKSPACE capability catalog. Rules: (1) Collapse duplicates and overlapping capabilities into ONE — never split the same thing into a "manage" and a "monitor"/"track" variant (e.g. "Manage Orders" + "Trade Execution" -> one; "Manage Portfolio" + "Monitor Portfolio Performance" -> one; the several Risk/Security variants -> one). (2) EXCLUDE internal/infrastructure capabilities entirely — feature flags/entitlements, adapter or service health, config, caching, logging, webhooks, generic CRUD — unless that concern is the product\'s actual value. Do NOT promote a single internal entity (e.g. FeatureAccess, AdapterHealth, MonteCarloResults) into a standalone capability. (3) Category "core" ONLY for the product\'s real value; "supporting" for necessary-but-not-the-value. (4) Every capability needs a DISTINCT description that actually describes IT (never reuse another capability\'s text). (5) Use consistent verb-first product titles ("Manage Portfolio", "Execute Trades", "Analyze Risk"). For each return: title, description (plain product language — what users can do), category, source_names (exact input names it merges). Return ONLY valid JSON: {"capabilities":[{"title":"...","description":"...","category":"core|supporting","source_names":["..."]}]}. Aim for 6-10 core plus a few supporting; ordered most-core first.',
-      style: 'Plain product language. No markdown. Value verbs (lets, gives, tracks, surfaces, manages, secures, settles, enforces). No CRUD verbs, no "lifecycle", no fluff. Each description names the concrete product concept.',
+      task: 'Compose the supplied member-codebase capabilities into one workspace capability catalog. Merge only capabilities whose supplied meanings and evidence overlap. Preserve distinct responsibilities and preserve read, write, mutation, and access semantics exactly. A concern may be core when terminality and member comprehension show that the software exists to provide it; never demote or discard it merely because other systems often treat it as infrastructure. Every output item must cite one or more exact input names in source_names. Do not invent an item, split one source into unsupported variants, infer from project names, or use a fixed catalog size. Return only valid JSON: {"capabilities":[{"title":"...","description":"...","category":"core|supporting|infrastructure","source_names":["..."]}]}.',
+      style: 'Write titles and descriptions in concise product-manager language grounded only in the supplied member comprehension. Use no markdown, implementation inventory, generic filler, or predetermined domain vocabulary.',
       capabilities: bundle,
       product_name: graph.name,
       product_domain: (graph.workspace_narrative?.product_value_summary || '').slice(0, 200),
@@ -1976,9 +2055,7 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
     const end = text.lastIndexOf('}');
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
     const obj = JSON.parse(text);
-    // Models vary the wrapper key ("capabilities" vs "key_capabilities") and
-    // sometimes return a bare array; accept all so the merge doesn't silently
-    // fall back to the noisy deterministic union.
+
     parsed = Array.isArray(obj?.capabilities) ? obj.capabilities
       : Array.isArray(obj?.key_capabilities) ? obj.key_capabilities
       : Array.isArray(obj) ? obj
@@ -1994,33 +2071,20 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
   const seenDescriptions = new Set<string>();
   for (const item of parsed) {
     const title = String(item.title || '').replace(/\s+/g, ' ').trim();
-    const itemEntityNamesEarly = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
-    // Strip route/path/mechanism leakage the model occasionally emits despite the
-    // prompt (e.g. "... through API routes like Create:/portfolio/portfolios").
     let description = String(item.description || '');
-    // A model occasionally nests JSON into the description field; treat that as
-    // empty so we rebuild a clean description from the title and entities.
+
     if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description) || isWorkspaceAiParseArtifactText(description)) description = '';
     description = description
-      // Strip any "through/using/via … <api|routes|endpoints|operations|deployables>…" mechanism tail.
+
       .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.]*?\b(?:api|apis|routes?|endpoints?|operations?|deployables?|controllers?)\b[^.]*/gi, '')
       .replace(/\s+(?:and|with)\s+related\s+entit[^.]*/gi, '')
       .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
       .replace(/^owns\s+/i, 'manages ')
       .replace(/\s+/g, ' ').trim();
-    // If sanitizing left it too thin, rebuild a clean product-meaning description
-    // from the title and the entities it manages.
-    if (description.length < 25) {
-      description = itemEntityNamesEarly.length
-        ? `${title} manages ${itemEntityNamesEarly.slice(0, 4).join(', ')}.`
-        : '';
-    }
     if (!title || description.length < 20) continue;
     const key = title.toLowerCase();
     if (seen.has(key)) continue;
-    // Drop capabilities that reuse another capability's description verbatim — a
-    // common model copy-paste error (e.g. "Benchmark Analysis" given Risk
-    // Analysis's text); the description must actually describe the capability.
+
     const descKey = normalizeAiItemName(description).slice(0, 60);
     if (seenDescriptions.has(descKey)) continue;
     seen.add(key);
@@ -2028,7 +2092,12 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
     const sources = (Array.isArray(item.source_names) ? item.source_names : [])
       .map((value: unknown) => byName.get(String(value || '').toLowerCase()))
       .filter((value: WorkspaceCapability | undefined): value is WorkspaceCapability => Boolean(value));
-    const role: WorkspaceSemanticRole = item.category === 'core' ? 'core' : 'supporting';
+    if (sources.length === 0) continue;
+    const role: WorkspaceSemanticRole = item.category === 'core'
+      ? 'core'
+      : item.category === 'infrastructure'
+        ? 'infrastructure'
+        : 'supporting';
     merged.push({
       id: `workspace-capability:${slugify(title)}`,
       name: title,
@@ -2039,12 +2108,12 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
       semantic_role: role,
       terminal_score: sources.length ? Math.max(...sources.map(source => source.terminal_score || 0)) : undefined,
       terminal_evidence: mergeStrings([], sources.flatMap(source => source.terminal_evidence || [])).slice(0, 8),
-      // Evidence salted from the deterministic sources this capability merges:
-      // involved codebases, deployables, and entity/operation references.
+
       project_ids: mergeStrings([], sources.flatMap(source => source.project_ids)),
       deployable_ids: mergeStrings([], sources.flatMap(source => source.deployable_ids)),
       criticality: role === 'core' ? 'high' : 'medium',
       evidence: mergeStrings([], sources.flatMap(source => source.evidence)).slice(0, 12),
+      source_capability_ids: mergeStrings([], sources.flatMap(source => source.source_capability_ids || [source.id])),
     });
   }
   if (merged.length < 3) return capabilities;
@@ -2169,8 +2238,7 @@ async function repairRejectedWorkspaceNarrative(
     const description = humanizeWorkspaceNarrativeIdentifiers(
       String(parsed.description || cleanNarrativeString(raw) || '').trim()
     );
-    // Same gate/persist agreement as the primary pass: gate on the summary that
-    // will actually persist, never on the raw pre-filter value.
+
     let repairedProductValueSummary: string | undefined = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || safeAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || String(graph.workspace_narrative.product_value_summary || '').trim();
@@ -2209,16 +2277,6 @@ async function repairRejectedWorkspaceNarrative(
   }
 }
 
-/**
- * LAST-STEP-BEFORE-PERSIST invariant: a workspace narrative with source='ai'
- * MUST carry a non-empty product_value_summary. The gate enforces this on the
- * paths it sees, but the enrichment pipeline has several accept/promote paths;
- * this runs after ALL of them so the invariant holds structurally at the seam
- * whose return value is what persists (record.graph = await enrich...(graph)).
- * When the summary is missing: one re-prompt that explicitly names the missing
- * field; if the model still does not supply a usable one, honest degrade with
- * reason "missing product_value_summary". Exported for tests.
- */
 export async function enforceWorkspaceNarrativeProductValueSummary(graph: WorkspaceAnalysisGraph): Promise<void> {
   const narrative = graph.workspace_narrative;
   if (!narrative || narrative.source !== 'ai') return;
@@ -2248,8 +2306,7 @@ export async function enforceWorkspaceNarrativeProductValueSummary(graph: Worksp
       return;
     }
   } catch {
-    // Fall through to the honest degrade below — persisting source='ai' with an
-    // empty product_value_summary is never an option.
+
   }
   graph.workspace_narrative = {
     ...narrative,
@@ -2314,38 +2371,6 @@ async function configureWorkspaceAiProviderDefaults(): Promise<void> {
   return;
 }
 
-function hasExplicitHostedWorkspaceAiProvider(): boolean {
-  const openAIBase = process.env.OPENAI_BASE_URL;
-  const hostedOpenAICompatible = Boolean(openAIBase && !/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])/i.test(openAIBase));
-  return Boolean(
-    process.env.OPENAI_API_KEY ||
-    process.env.DEEPINFRA_API_KEY ||
-    process.env.ANTHROPIC_API_KEY ||
-    hostedOpenAICompatible ||
-    (
-      process.env.AZURE_OPENAI_API_KEY &&
-      process.env.AZURE_OPENAI_ENDPOINT &&
-      (process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_OPENAI_MODEL)
-    )
-  );
-}
-
-async function detectWorkspaceOllamaModel(baseURL: string): Promise<string | undefined> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.KLAURO_WORKSPACE_OLLAMA_PROBE_TIMEOUT_MS || '900'));
-  timeout.unref?.();
-  try {
-    const response = await fetch(`${baseURL.replace(/\/$/, '')}/api/tags`, { signal: controller.signal });
-    if (!response.ok) return undefined;
-    const payload = await response.json() as { models?: Array<{ name?: string; model?: string }> };
-    return selectPreferredWorkspaceOllamaModel((payload.models || []).map(item => item.name || item.model || '').filter(Boolean));
-  } catch {
-    return undefined;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 export function selectPreferredWorkspaceOllamaModel(models: string[]): string | undefined {
   const available = models.map(model => String(model || '').trim()).filter(Boolean);
   const explicit = process.env.KLAURO_WORKSPACE_OLLAMA_MODEL;
@@ -2399,7 +2424,7 @@ async function repairMissingDefaultWorkspaceDescriptions(graph: WorkspaceAnalysi
     domains = invalidateDuplicateWorkspaceDomainDescriptions(domains);
     capabilities = invalidateDuplicateWorkspaceCapabilityDescriptions(capabilities);
   } catch {
-    // Fall through to one-item repairs. Batch repair is a performance optimization, not the quality gate.
+
   }
   const singleRepairEnabled = process.env.KLAURO_WORKSPACE_AI_SINGLE_REPAIR !== 'false';
   if (!singleRepairEnabled) {
@@ -2471,11 +2496,7 @@ async function repairSingleDefaultWorkspaceDescription(
     ]);
     if (isUsefulAiWorkspaceDescription(item.name, firstCandidate, kind)) return firstCandidate;
     writeWorkspaceAiRepairDebug({ stage: 'single-repair-rejected', kind, name: item.name, candidate: firstCandidate, raw: truncateText(raw, 1200) });
-    // The retry must be a fresh model round-trip (cache-busted): when the first
-    // response failed to parse, firstCandidate is undefined and the retry
-    // context would otherwise be byte-identical to the first call — replaying
-    // the same unparsable cached response. The nonce forces a distinct
-    // ai-service cache key for the retry.
+
     raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceSingleDescriptionRepairPromptContext(graph, kind, item, firstCandidate, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)));
     const retryParsed = parseWorkspaceNarrativeJson(raw);
     const retryCandidates = kind === 'domain' ? retryParsed.domain_items || [] : retryParsed.capability_items || [];
@@ -2507,9 +2528,7 @@ function bestSingleWorkspaceDescriptionCandidate(
     .filter((candidate): candidate is string => Boolean(candidate))
     .filter(candidate => isUsefulAiWorkspaceDescription(name, candidate, kind))
     .sort((left, right) => singleWorkspaceDescriptionScore(name, right) - singleWorkspaceDescriptionScore(name, left));
-  // The permissive fallback still must never surface an unparsed structured
-  // blob (persist-seam guard): a parse artifact is "no candidate", not a
-  // best-effort description.
+
   return usable[0] || candidates
     .map(candidate => cleanNarrativeString(candidate))
     .find(candidate => Boolean(candidate) && !isWorkspaceAiParseArtifactText(candidate));
@@ -2538,8 +2557,7 @@ function cleanSingleDescriptionFromRaw(raw: string): string | undefined {
     .map(item => item.replace(/^[-*\d.\s]+/, '').trim())
     .find(item => item.length >= 80 && item.length <= 240 && !isWorkspaceAiParseArtifactText(item));
   if (line) return line;
-  // NEVER salvage the raw blob itself: an unparsed structured response is a
-  // parse failure, and the honest outcome is "no description", not the blob.
+
   const cleaned = cleanNarrativeString(text);
   return cleaned && !isWorkspaceAiParseArtifactText(cleaned) ? cleaned : undefined;
 }
@@ -2640,7 +2658,7 @@ function writeWorkspaceAiDebug(raw: string): void {
   try {
     fs.writeFileSync(debugPath, raw);
   } catch {
-    // Debug capture must never make analysis fail.
+
   }
 }
 
@@ -2651,7 +2669,7 @@ function writeWorkspaceAiRepairDebug(payload: Record<string, unknown>): void {
     fs.mkdirSync(path.dirname(debugPath), { recursive: true });
     fs.appendFileSync(debugPath, `${JSON.stringify({ at: new Date().toISOString(), ...payload })}\n`);
   } catch {
-    // Debug capture must never make analysis fail.
+
   }
 }
 
@@ -2762,9 +2780,7 @@ export function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGr
     evidence: link.evidence.slice(0, 3),
   }));
   const deployables = graph.detail_views.overview.deployables.slice(0, 8).map(app => `${app.name} (${app.kind})`);
-  // Runtime components with artifact-shaped names ("image: Dockerfile") are
-  // analyzer plumbing, not product surfaces — quoting them yields customer
-  // prose like "deployed with image: Dockerfile:7331".
+
   const runtime = graph.runtime_components
     .filter(component => !/^image:|dockerfile/i.test(String(component.name || '')))
     .slice(0, 8)
@@ -2793,15 +2809,9 @@ export function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGr
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '520'),
     prompt_version: 'workspace-default-narrative-repair-v2',
     product_name: productName,
-    // The attempt index and rejection feedback are deliberately part of this
-    // context: they tell the model exactly what to fix AND make each retry a
-    // distinct ai-service cache key, so a rejected cached response can never be
-    // replayed as the "retry" (the 104ms instant-degrade failure mode).
+
     retry_attempt: attempt ?? 0,
-    // Per-call nonce: retry_attempt alone only varies within one enrichment run,
-    // so a re-analyze would replay the same cache entries with no real AI
-    // attempt. A gate-rejection retry must always be a fresh model round-trip,
-    // uniformly across every rejection kind.
+
     retry_nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the workspace narrative quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite, grounding it in the supplied workspace_domains, primary_capabilities, and required_terms evidence.` } : {}),
     task: hasSourceBackedLinks
@@ -2889,9 +2899,7 @@ function applyAiDomainDescriptions(domains: WorkspaceDomain[], aiItems: Array<{ 
 function applyAiCapabilityDescriptions(capabilities: WorkspaceCapability[], aiItems: Array<{ name: string; description?: string }>, generatedAt: string): WorkspaceCapability[] {
   const byName = fuzzyAiItemMap(aiItems);
   return capabilities.map(capability => {
-    // Capabilities produced by aiMergeWorkspaceCapabilities already carry a final,
-    // grounded AI description. Do not let the narrative pass's fuzzy name-matching
-    // re-describe (and sometimes cross-wire) them — the merge output is authoritative.
+
     if (capability.description_source === 'ai') return capability;
     const item = findAiItem(byName, capability.name);
     if (!isGroundedAiWorkspaceItemDescription(capability, item?.description, 'capability')) {
@@ -3072,95 +3080,6 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
     };
   });
 
-  // Never author deterministic prose and label it AI. Missing descriptions
-  // remain missing/degraded so the caller can retry the actual model pass.
-}
-
-function promoteUsefulWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysisGraph, generatedAt: string): WorkspaceNarrative | undefined {
-  const domains = primaryWorkspaceDomains(graph);
-  const capabilities = primaryWorkspaceCapabilities(graph);
-  const primarySemanticsReady =
-    domains.every(item => isAgentVisibleAiSemanticDescriptionReady(item)) &&
-    capabilities.every(item => isAgentVisibleAiSemanticDescriptionReady(item));
-  if (!primarySemanticsReady) return undefined;
-  const description = normalizeWorkspaceAiDescriptionText(graph.workspace_narrative.description || '');
-  // AI-only (docs/cas/DETERMINISM-BOUNDARY.md): use the AI/manual product-value
-  // summary if present; if none, bail rather than synthesize a deterministic one.
-  const productValueSummary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph);
-  if (!productValueSummary) return undefined;
-  if (!isUsefulAiWorkspaceNarrative(description)) return undefined;
-  if (workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary) !== null && !isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return undefined;
-  return {
-    ...graph.workspace_narrative,
-    source: 'ai',
-    generated_at: generatedAt,
-    confidence: Math.max(graph.workspace_narrative.confidence, 0.72),
-    description,
-    product_value_summary: productValueSummary,
-    domains: domains.map(item => item.name),
-    key_capabilities: capabilities.map(item => item.name),
-    value_drivers: capabilities.slice(0, 4).map(item => item.name),
-    degraded_reason: undefined,
-  };
-}
-
-function synthesizeWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysisGraph, generatedAt: string): WorkspaceNarrative | undefined {
-  const domains = primaryWorkspaceDomains(graph);
-  const capabilities = primaryWorkspaceCapabilities(graph);
-  const allRequiredReady =
-    domains.every(item => isAgentVisibleAiSemanticDescriptionReady(item)) &&
-    capabilities.every(item => isAgentVisibleAiSemanticDescriptionReady(item));
-  if (!allRequiredReady) return undefined;
-
-  const productName = inferWorkspaceProductName(graph.codebases, graph.name);
-  const coreCapabilities = capabilities
-    .filter(item => item.semantic_role === 'core')
-    .slice(0, 3);
-  const capabilitySeed = (coreCapabilities.length ? coreCapabilities : capabilities.slice(0, 3))
-    .map(item => String(item.description || '').replace(/\.$/, ''))
-    .join('. ');
-  const capabilitySentence = capabilitySeed ? `${capabilitySeed}.` : '';
-  const domainNames = domains.slice(0, 4).map(item => item.name).join(', ');
-  const deployableNames = graph.deployables
-    .filter(app => !isExternalRuntimeDependency(app.name, app.kind))
-    .slice(0, 5)
-    .map(app => app.name)
-    .join(', ');
-  // AI-only (docs/cas/DETERMINISM-BOUNDARY.md): use the AI/manual product-value
-  // summary if present; if none, bail rather than synthesize a deterministic one.
-  const summary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph);
-  if (!summary) return undefined;
-  const summaryBody = stripProductNamePrefix(productName, summary).replace(/\.$/, '');
-  const description = normalizeWorkspaceAiDescriptionText([
-    `${productName} ${summaryBody}.`,
-    capabilitySentence,
-    domainNames ? `At the workspace level, the default focus areas are ${domainNames}.` : '',
-    deployableNames ? `Agents should treat deployables such as ${deployableNames} as entry points and drill into repo-level CAS before changing contracts or runtime behavior.` : '',
-  ].filter(Boolean).join(' '));
-  if (!isSynthesizedWorkspaceNarrativeAcceptable(graph, description, summary)) return undefined;
-  return {
-    ...graph.workspace_narrative,
-    source: 'ai',
-    generated_at: generatedAt,
-    confidence: Math.max(graph.workspace_narrative.confidence, 0.72),
-    description,
-    product_value_summary: summary,
-    domains: domains.map(item => item.name),
-    key_capabilities: capabilities.map(item => item.name),
-    value_drivers: capabilities.slice(0, 4).map(item => item.name),
-    degraded_reason: undefined,
-  };
-}
-
-function isSynthesizedWorkspaceNarrativeAcceptable(graph: WorkspaceAnalysisGraph, description: string, productValueSummary: string): boolean {
-  const normalized = normalizeAiItemName(`${description} ${productValueSummary}`);
-  if (description.trim().length < 180) return false;
-  if (/\b(?:classified as|repo analysis input|language inventory|primarily built using|consists of multiple|contains analyzed projects)\b/.test(normalized)) return false;
-  if (
-    workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary) !== null &&
-    !isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)
-  ) return false;
-  return true;
 }
 
 function isAgentVisibleAiSemanticDescriptionReady(item: { description_source?: WorkspaceDescriptionSource; description?: string }): boolean {
@@ -3183,113 +3102,6 @@ function isRequiredWorkspaceSemanticDescriptionReady(
     descriptionMatchesItemName(name, normalizedDescription);
 }
 
-function synthesizePrimaryDomainDescriptionFromAiEvidence(domain: WorkspaceDomain, graph: WorkspaceAnalysisGraph): string | undefined {
-  if (domain.description_source !== 'ai' && !hasWorkspaceAiSemanticEvidence(graph)) return undefined;
-  if (domain.semantic_role && domain.semantic_role !== 'core') return undefined;
-  const normalizedName = normalizeAiItemName(domain.name);
-  const evidence = normalizeAiItemName(`${domain.evidence.join(' ')} ${(domain.terminal_evidence || []).join(' ')}`);
-  if (/\bmembership/.test(normalizedName)) {
-    return 'Memberships link organizations, workspaces, users, and access records so the system can make ownership and authorization boundaries explicit.';
-  }
-  if (/\borganization/.test(normalizedName)) {
-    return 'Organizations group workspaces, codebases, billing context, and access records so ownership, tenancy, and permissions stay explicit.';
-  }
-  if (/\bruntime telemetry\b/.test(normalizedName)) {
-    return 'Runtime Telemetry captures telemetry snapshots, traces, and runtime events so static CAS facts can be compared with production behavior.';
-  }
-  if (/\bruntime sdk\b/.test(normalizedName)) {
-    return 'Runtime SDK capabilities provide the installable runtime integration layer that sends traces and telemetry back into analysis workflows.';
-  }
-  if (/\bcontract validation\b/.test(normalizedName)) {
-    return 'CAS Contract Validation checks analysis output against CAS invariants at every level so agents can trust graph, risk, and work-context data.';
-  }
-  if (/\bregister\b/.test(normalizedName) && /\bdevice\b/.test(normalizedName)) {
-    return 'Register Device connects device enrollment, identity, and access-context evidence so agents can follow how devices enter the protected network workflow.';
-  }
-  if (/\btrace\b/.test(normalizedName)) {
-    return 'Trace connects runtime trace records, telemetry snapshots, and analysis evidence so agents can follow production behavior back to CAS-backed code paths.';
-  }
-  if (/\bstrategies\b/.test(normalizedName)) {
-    return 'Strategies connects generated trading strategies, backtest evidence, and strategy entities so agents can trace investment logic across the workspace.';
-  }
-  if (/\bstrategy\b/.test(normalizedName)) {
-    return 'Strategy connects generated trading strategy flows, Strategy entities, and ML or institutional generation paths into the workspace investment logic.';
-  }
-  if (/\bsubscriptions\b/.test(normalizedName) || /\bsubscription\b/.test(normalizedName)) {
-    return 'Subscriptions connects subscription APIs, signal subscription creation, and billing or account evidence so agents can trace paid-product state across the workspace.';
-  }
-  const entityTerms = graph.workspace_entities
-    .filter(entity => entity.project_ids.some(projectId => domain.project_ids.includes(projectId)))
-    .map(entity => entity.name)
-    .filter(name => meaningfulWorkspaceNameTokens(name).length > 0)
-    .slice(0, 3);
-  if (entityTerms.length > 0 && evidence.length > 0 && (domain.terminal_evidence || []).length > 0) {
-    return `${domain.name} connects ${entityTerms.join(', ')} evidence so agents can understand ownership, behavior, and change impact at the workspace level.`;
-  }
-  return undefined;
-}
-
-function synthesizePrimaryCapabilityDescriptionFromAiEvidence(capability: WorkspaceCapability, graph: WorkspaceAnalysisGraph): string | undefined {
-  if (capability.description_source !== 'ai' && !hasWorkspaceAiSemanticEvidence(graph)) return undefined;
-  if (capability.semantic_role && capability.semantic_role !== 'core') return undefined;
-  const normalizedName = normalizeAiItemName(capability.name);
-  const evidence = normalizeAiItemName(`${capability.evidence.join(' ')} ${(capability.terminal_evidence || []).join(' ')}`);
-  if (/\bbilling\b/.test(normalizedName) && /\brecovery\b/.test(normalizedName)) {
-    return 'Manages Billing Recovery connects BOS profit-machine, billing, and account status evidence so operators can identify missed-payment and recovery work.';
-  }
-  if (/\bmarket\b/.test(normalizedName) && /\bdata\b/.test(normalizedName)) {
-    return 'Provides Market Data connects asset metrics, market-rate models, and external lens services so portfolio and trading flows use current market context.';
-  }
-  const entityTerms = graph.workspace_entities
-    .filter(entity => entity.project_ids.some(projectId => capability.project_ids.includes(projectId)))
-    .map(entity => entity.name)
-    .filter(name => meaningfulWorkspaceNameTokens(name).length > 0)
-    .slice(0, 3);
-  if (entityTerms.length > 0 && evidence.length > 0 && (capability.terminal_evidence || []).length > 0) {
-    return `${capability.name} connects ${entityTerms.join(', ')} evidence so agents can understand workspace behavior, ownership, and change impact before editing.`;
-  }
-  return undefined;
-}
-
-function synthesizeWorkspaceCapabilityFallbackDescription(capability: WorkspaceCapability, graph: WorkspaceAnalysisGraph): string | undefined {
-  const normalizedName = normalizeAiItemName(capability.name);
-  const projectNames = graph.codebases
-    .filter(codebase => capability.project_ids.includes(codebase.id))
-    .map(codebase => codebase.name)
-    .slice(0, 3);
-  const entityTerms = graph.workspace_entities
-    .filter(entity => entity.project_ids.some(projectId => capability.project_ids.includes(projectId)))
-    .map(entity => entity.name)
-    .filter(name => meaningfulWorkspaceNameTokens(name).length > 0)
-    .slice(0, 3);
-  if (/\bdelivery\b/.test(normalizedName)) {
-    return 'Facilitates Delivery Management connects delivery, operations, and BOS workflow evidence so agents can see how work moves through operator-facing processes.';
-  }
-  if (/\boperations\b/.test(normalizedName)) {
-    return 'Tracks Operations connects BOS operational views, status reads, and process evidence so agents can understand operator-facing health and activity.';
-  }
-  if (/\bagents?\b/.test(normalizedName)) {
-    return 'Manages Agents connects agent-facing services, runtime surfaces, and coordination evidence so agents can understand where automated workers participate.';
-  }
-  if (/\bapprovals?\b/.test(normalizedName)) {
-    return 'Manages Approvals connects approval flows, account state, and operator evidence so agents can trace decision points before changing workflows.';
-  }
-  if (/\bbacktest\b/.test(normalizedName)) {
-    return 'Backtest Analysis connects strategy, backtest, and market evidence so agents can understand how investment ideas are evaluated before use.';
-  }
-  if (entityTerms.length > 0 || projectNames.length > 0) {
-    const evidencePhrase = entityTerms.length > 0 ? entityTerms.join(', ') : projectNames.join(', ');
-    return `${capability.name} connects ${evidencePhrase} evidence across ${projectNames.join(', ') || 'the workspace'} so agents can understand the behavior before changing it.`;
-  }
-  return undefined;
-}
-
-function hasWorkspaceAiSemanticEvidence(graph: WorkspaceAnalysisGraph): boolean {
-  return graph.workspace_narrative.source === 'ai' ||
-    graph.workspace_domains.slice(0, 6).some(item => item.description_source === 'ai') ||
-    graph.workspace_capabilities.slice(0, 8).some(item => item.description_source === 'ai');
-}
-
 function findAiCapabilityCounterpartForDomain(domain: WorkspaceDomain, capabilities: WorkspaceCapability[]): WorkspaceCapability | undefined {
   const domainTokens = meaningfulWorkspaceNameTokens(domain.name);
   if (domainTokens.length === 0) return undefined;
@@ -3301,22 +3113,6 @@ function findAiCapabilityCounterpartForDomain(domain: WorkspaceDomain, capabilit
     if (!isDefaultWorkspaceDescriptionReady(capability.name, capability.description, capability.description_source, 'capability')) return false;
     return descriptionMatchesItemName(domain.name, normalizeAiItemName(capability.description || ''));
   });
-}
-
-function stripProductNamePrefix(productName: string, summary: string): string {
-  const productPattern = escapeRegExp(productName).replace(/\s+/g, '\\s+');
-  return String(summary || '')
-    .replace(new RegExp(`^${productPattern}\\s+(?:appears\\s+to\\s+be\\s+|is\\s+|provides\\s+|turns\\s+)`, 'i'), match =>
-      /\b(is|appears\s+to\s+be)\b/i.test(match) ? 'is ' : 'provides '
-    )
-    .replace(/^this\s+workspace\s+(?:appears\s+to\s+be\s+|appears\s+to\s+provide\s+|is\s+|provides\s+|turns\s+)/i, match => {
-      if (/\bappears\s+to\s+provide\b/i.test(match)) return 'appears to provide ';
-      if (/\bappears\s+to\s+be\b/i.test(match)) return 'appears to be ';
-      if (/\bis\b/i.test(match)) return 'is ';
-      return 'provides ';
-    })
-    .replace(/^is\s+is\s+/i, 'is ')
-    .trim();
 }
 
 function capabilityDescriptionOwnershipScore(name: string, normalizedDescription: string): number {
@@ -3365,33 +3161,16 @@ function isDefaultWorkspaceDescriptionReady(
   return source === 'ai' && isUsefulAiWorkspaceDescription(name, description, kind);
 }
 
-/**
- * PERSIST-SEAM GUARD (live 4-workspace audit defect): when a model response
- * fails to parse, the raw structured output must NEVER be stored as a
- * customer-facing description. Any candidate that still looks like structured
- * model output — starts with '{'/'[', carries JSON field syntax, wrapper keys
- * like "key_capabilities", or a fenced code block — is a parse artifact, not
- * prose. Every description accept path runs through this. Exported for tests.
- */
 export function isWorkspaceAiParseArtifactText(value: unknown): boolean {
   const raw = String(value ?? '').trim();
   if (!raw) return false;
-  // ESCAPED-QUOTE ARTIFACTS (live 4-workspace defect: capability/domain
-  // descriptions were literally `"task": "Return only valid JSON shaped
-  // {\"key_capabilities\":[{\"name\":..."`). When a model echoes the prompt
-  // PAYLOAD back, its embedded JSON arrives with backslash-escaped quotes
-  // (\"key_capabilities\") and often starts with a bare quoted key ("task":)
-  // rather than a brace — so none of the unescaped-quote regexes below fire.
-  // Normalize escaped quotes first so every structural check works on both the
-  // escaped and unescaped forms, and detect the echoed prompt directly.
+
   const text = raw.replace(/\\+"/g, '"');
   if (/^[{[]/.test(text)) return true;
   if (text.includes('```')) return true;
-  // Object-FRAGMENT start: a string that opens with a quoted key immediately
-  // followed by a colon is a serialized-object slice, not prose (prose never
-  // begins `"word":`). Covers the leading `"task":` / `"description":` echoes.
+
   if (/^"[a-z_][\w-]*"\s*:/i.test(text)) return true;
-  // Prompt-echo tells: the model handed back our own instruction/context keys.
+
   if (/\bReturn only valid JSON\b/i.test(text)) return true;
   if (/\bGenerate exactly one AI description\b/i.test(text)) return true;
   if (/"(?:prompt_version|responseFormat|response_format|required_name_terms|exact_name|output_schema|rejected_description|retry_nonce)"\s*:/i.test(text)) return true;
@@ -3401,21 +3180,6 @@ export function isWorkspaceAiParseArtifactText(value: unknown): boolean {
   return false;
 }
 
-/**
- * PERSIST-SEAM SANITIZER (live 4-workspace defect: prompt-echo blobs on
- * capabilities AND domains). Every accept path that WRITES a description
- * (aiMergeWorkspaceCapabilities early-returning a member-carried blob, the
- * finalize/sync copy paths that lift a counterpart's text without re-guarding,
- * a member CAS that rolled up an already-artifacted 'ai' description) can
- * deposit a structured blob into an item whose description_source is already
- * 'ai' — after which the grounded-description guards are skipped. This is the
- * single seam every workspace-level-CAS item passes through before persist: it routes ALL
- * per-item descriptions (capability/domain/workflow/entity) AND the narrative
- * text through isWorkspaceAiParseArtifactText and, on rejection, leaves the
- * description honestly ABSENT (never the blob). Clearing to '' marks the item
- * "not default-ready", so the surrounding repair loop regenerates it
- * (cache-busted) on its next pass. Returns the count cleared for telemetry.
- */
 export function stripWorkspaceItemDescriptionArtifacts(graph: WorkspaceAnalysisGraph): number {
   let cleared = 0;
   const scrubItem = <T extends { description?: string; description_source?: WorkspaceDescriptionSource; degraded_reason?: string; name?: string }>(
@@ -3449,8 +3213,7 @@ export function stripWorkspaceItemDescriptionArtifacts(graph: WorkspaceAnalysisG
       narrative.product_value_summary = '';
     }
   }
-  // Detail-view overviews are slices of the arrays above; re-project so a
-  // sanitized array never leaves a stale blob behind in a projected view.
+
   if (graph.detail_views?.overview) {
     graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
     graph.detail_views.overview.description = graph.workspace_narrative?.description;
@@ -3509,12 +3272,10 @@ function isUsefulAiWorkspaceDescription(name: string, description: string | unde
   ];
   if (weakPatterns.some(pattern => pattern.test(normalized))) return false;
   const hasConcreteVerb = /\b(routes?|calls?|brokers?|relays?|communicates?|pairs?|interacts?|implements?|integrates?|enforces?|ensures?|tracks?|audits?|analyzes?|examines?|identifies?|assesses?|ingests?|enables?|facilitates?|allows?|sets? up|enrolls?|authenticates?|authorizes?|provisions?|stores?|syncs?|ships?|installs?|connects?|links?|exposes?|validates?|collects?|records?|forwards?|protects?|coordinates?|manages?|maintains?|defines?|monitors?|deploys?|handles?|supports?|provides?|surfaces?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|indexes?|guides?)\b/.test(normalized);
-  const hasEvidenceShape = /\b(api|ui|client|agent|coordinator|gateway|database|postgres|auth0|aws|terraform|kubernetes|docker|installer|service|route|routes|endpoint|endpoints|token|policy|device|network|resource|resources|configuration|deployment|deployments|queue|queues|message|messages|sqs|access|user|account|portfolio|transaction|transactions|payment|payments|method|methods|intent|intents|invoice|exchange|subscription|connection|connections|credential|credentials|event|events|audit|audits|decision|log|liquidation|schedule|custodian|purchase|order|repository|adapter|health|password|reset|identity|command|screen|screens|product|products|catalog|variant|variants|price|prices|inventory|commerce|merchandising|admin|infrastructure|deployable|deployables|environment|environments|builder|encrypted|context|contexts|security|mcp|cas|analysis|analyzer|agent context|runtime sdk|trace|telemetry|contract|analysisrun|analysisresult|codebase|workspace|graph|risk)\b/.test(normalized);
   if (kind === 'domain') {
-    const productTerms = normalized.match(/\b(authentication|identity|access|control|policy|device|network|gateway|resource|resources|configuration|deployment|deployments|queue|queues|message|messages|sqs|kubernetes|terraform|organization|activity|activities|approval|update|agent|agents|user|group|auth0|cloud|service|client|api|account|portfolio|transaction|payment|method|intent|invoice|repository|session|token|connection|balance|asset|trading|settlement|report|finance|financial|admin|infrastructure|deployable|deployables|environment|builder|encrypted|context|contexts|security|analysis|codebase|cas|mcp|telemetry|runtime|data|trace|graph|workflow|issue|membership|component|analyzer|sdk|agent context|runtime sdk|contract|analysisrun|analysisresult|workspace|risk)\b/g) || [];
-    return hasEvidenceShape && new Set(productTerms).size >= 2;
+    return workspaceSemanticTokens(normalized).size >= 3;
   }
-  return hasConcreteVerb && hasEvidenceShape;
+  return hasConcreteVerb;
 }
 
 function looksLikeInternalIdentifierToken(value: string): boolean {
@@ -3647,12 +3408,41 @@ function meaningfulWorkspaceNameTokens(name: string): string[] {
     .filter(token => token.length >= 3 && !stop.has(token));
 }
 
-/**
- * Mechanical cleanup of AI-authored workspace prose. This translates code
- * identifier casing into ordinary words without adding or changing a claim.
- * Security/storage ids and Terraform-style addresses deliberately remain
- * untouched so the hard-reject gate below still catches them.
- */
+const WORKSPACE_SEMANTIC_STOP_WORDS = new Set([
+  'about', 'across', 'after', 'again', 'against', 'along', 'also', 'another', 'before', 'being', 'between',
+  'both', 'build', 'built', 'capability', 'codebase', 'comprehensive', 'concrete', 'connect', 'coordinate', 'could',
+  'description', 'each', 'engineering', 'every', 'existing', 'feature', 'from', 'functionality', 'helps', 'into',
+  'itself', 'manage', 'member', 'members', 'multiple', 'offer', 'only', 'operator', 'other', 'product', 'project',
+  'projects', 'provide', 'related', 'review', 'robust', 'route', 'run', 'serve', 'software', 'system', 'their',
+  'these', 'through', 'together', 'using', 'with', 'workspace', 'would', 'application', 'backend',
+]);
+
+function workspaceSemanticTokens(value: string): Set<string> {
+  const tokens = normalizeAiItemName(value)
+    .split(/\s+/)
+    .map(token => token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
+    .filter(token => token.length >= 4 && !WORKSPACE_SEMANTIC_STOP_WORDS.has(token));
+  return new Set(tokens);
+}
+
+function workspaceEvidenceTokens(graph: WorkspaceAnalysisGraph): Set<string> {
+  const values = [
+    ...(graph.codebases || []).flatMap(codebase => [codebase.name, codebase.primary_domain || '']),
+    ...(graph.applications || []).flatMap(application => [application.name, application.description || '']),
+    ...(graph.distribution_units || []).flatMap(unit => [unit.name, ...unit.component_names]),
+    ...(graph.workspace_domains || []).flatMap(domain => [domain.name, domain.description, ...(domain.evidence || [])]),
+    ...(graph.workspace_capabilities || []).flatMap(capability => [capability.name, capability.description, ...(capability.evidence || [])]),
+    ...(graph.workspace_entities || []).flatMap(entity => [entity.name, entity.description || '', ...(entity.evidence || [])]),
+    ...(graph.workspace_workflows || []).flatMap(workflow => [workflow.name, workflow.description, ...(workflow.evidence || [])]),
+    ...(graph.interfaces || []).map(item => item.name),
+    ...(graph.children || []).flatMap(child => [
+      ...((child.capabilities || []).flatMap(capability => [capability.name, capability.description])),
+      ...((child.entities || []).map(entity => entity.name)),
+    ]),
+  ];
+  return workspaceSemanticTokens(values.join(' '));
+}
+
 export function humanizeWorkspaceNarrativeIdentifiers(value: string): string {
   const protectedPrefix = /^(?:prj|wsp|acct|proj|org|usr)_/i;
   const identifierPrefix = /^(?:entity|node|function|method|class|interface|type)_/i;
@@ -3676,14 +3466,6 @@ export function humanizeWorkspaceNarrativeIdentifiers(value: string): string {
     .trim();
 }
 
-/**
- * Non-negotiable rejection markers for a workspace narrative, checked before
- * any acceptance path — catches wrong-altitude/leaky prose the softer
- * heuristics can accidentally admit (raw internal ids, HTTP-method dumps,
- * single-flow altitude, an empty product_value_summary).
- * Returns the human-readable rejection reason, or null when clean.
- * Exported for tests.
- */
 export function workspaceNarrativeHardRejectReason(description: string, effectiveProductValueSummary?: unknown): string | null {
   const raw = String(description || '');
   if (!raw.trim()) return 'the description is empty';
@@ -3717,17 +3499,14 @@ export function workspaceNarrativeHardRejectReason(description: string, effectiv
   if (/\bis an? (?:[a-z][a-z-]*\s+){0,3}flow\b/i.test(raw) || /\b(?:reached|triggered|invoked) by\b[^.]{0,120}\broutes?\b/i.test(raw)) {
     return 'the description is single-flow altitude prose (describes one flow/endpoint, not the workspace)';
   }
-  // Hash-shaped token leak (the known hash-token-leak class): a bare 4+ char
-  // digit/hex token tied to hash/sha/checksum context is analyzer plumbing at
-  // the wrong altitude (live: "Docker images from a Dockerfile with hash 7331").
+
   if (
     /\b(?:hash(?:es)?|sha-?\d*|checksums?|digests?)\b[\s:=("'`-]{0,4}(?:value\s+|token\s+|id\s+)?[0-9a-f]{4,64}\b/i.test(raw) ||
     /\b[0-9a-f]{7,64}\b[\s)"'`-]{0,3}(?:hash(?:es)?|sha|checksums?|digests?)\b/i.test(raw)
   ) {
     return 'the description leaks a raw hash-shaped token (bare digit/hex token tied to hash/sha context)';
   }
-  // Plain non-empty check (NOT cleanNarrativeString, whose >=80-char floor
-  // would misclassify a valid one-sentence summary as "empty").
+
   const summary = String(effectiveProductValueSummary ?? '').trim();
   if (!summary) {
     return 'the narrative has an empty product_value_summary alongside a non-empty description';
@@ -3735,12 +3514,6 @@ export function workspaceNarrativeHardRejectReason(description: string, effectiv
   return null;
 }
 
-/**
- * Grounding vocabulary that legitimizes marketing-flagged words in workspace-level-CAS prose —
- * the workspace's OWN derived semantics (domain/capability/codebase/entity
- * names). Parity with the element-description validator's grounded-words rule:
- * "compliance" survives in a compliance workspace, "comprehensive" never does.
- */
 function workspaceMarketingGroundingTokens(graph: WorkspaceAnalysisGraph | undefined): { tokens: string[]; text: string } {
   if (!graph) return { tokens: [], text: '' };
   const sources = [
@@ -3755,22 +3528,11 @@ function workspaceMarketingGroundingTokens(graph: WorkspaceAnalysisGraph | undef
   return { tokens, text: sources.join(' ').toLowerCase() };
 }
 
-/**
- * Unsupported-marketing-language lint for workspace-level-CAS narratives — REUSES the
- * project-tier mechanism (analyzer-core element-description-validator's
- * shared pattern + grounding rule), it is not a second list. Exported for
- * tests.
- */
 export function workspaceNarrativeMarketingMatches(graph: WorkspaceAnalysisGraph | undefined, text: string): string[] {
   const grounding = workspaceMarketingGroundingTokens(graph);
   return ungroundedMarketingMatches(String(text || ''), [], grounding.tokens, grounding.text);
 }
 
-/**
- * Mechanical strip of isolated marketing instances ("a comprehensive workspace"
- * -> "a workspace"). Saturated marketing prose is rejected by the gate instead
- * — stripping cannot rescue a sentence that is entirely fluff. Exported for tests.
- */
 export function stripUngroundedWorkspaceMarketingLanguage(graph: WorkspaceAnalysisGraph | undefined, text: string): string {
   const matches = workspaceNarrativeMarketingMatches(graph, text);
   if (matches.length === 0) return String(text || '');
@@ -3800,13 +3562,6 @@ function cleanWorkspaceValueDrivers(
   return (preferred.length > 0 ? preferred : clean(fallback)).slice(0, 8);
 }
 
-/**
- * A multi-member workspace narrative must never attribute one member's
- * evidence to another member, nor frame the workspace as a single member.
- * Flags member A's exclusive capability names appearing in a sentence whose
- * subject is member B with no mention of A. Returns the rejection reason, or
- * null. Exported for tests.
- */
 export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
   const codebases = graph.codebases || [];
   if (codebases.length < 2) return null;
@@ -3828,8 +3583,7 @@ export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisG
   const sentences = String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean);
   for (const sentence of sentences) {
     const normalizedSentence = normalizeAiItemName(sentence);
-    // Sentence subject: the earliest member named in the sentence, provided it
-    // sits in subject position (leading clause) rather than deep in the predicate.
+
     const subject = members
       .map(member => ({ member, index: normalizedSentence.search(new RegExp(`\\b${escapeRegExp(member.normalized)}\\b`)) }))
       .filter(item => item.index >= 0)
@@ -3843,16 +3597,10 @@ export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisG
       }
     }
   }
-  // The capability check above is evaded when the crediting sentence also
-  // names the true owner, since it exempts on any owner-name mention — the
-  // deterministic workspace_domains member->domain map is authoritative
-  // regardless: crediting member A with a domain exclusively owned by member B
-  // is a misattribution even when B is named elsewhere in the sentence.
+
   return (
     workspaceNarrativeDomainMisattributionReason(graph, description) ||
-    // Entities/capabilities are the finer-grained ground truth: an entity-level
-    // misattribution (e.g. crediting a member with another member's exclusive
-    // entity) never appears in the domain-level gate above.
+
     workspaceNarrativeEntityMisattributionReason(graph, description) ||
     workspaceNarrativeApplicationMisattributionReason(graph, description)
   );
@@ -3897,15 +3645,6 @@ export function workspaceNarrativeApplicationMisattributionReason(graph: Workspa
   return null;
 }
 
-/**
- * Deterministic member→entity attribution as ground truth. Mirrors the domain
- * misattribution gate but keys on graph.workspace_entities, splits camelCase
- * entity names so paraphrased prose matches, and tolerates plurals
- * ("decks", "economy transactions"). A mention is a MISATTRIBUTION when a
- * distinctive entity phrase owned exclusively by member B appears after a
- * crediting verb in a sentence whose subject is a different member A, and is
- * not directly owner-qualified (an owner-name-prefixed mention). Exported for tests.
- */
 export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
   const codebases = graph.codebases || [];
   if (codebases.length < 2) return null;
@@ -3923,10 +3662,7 @@ export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAna
     if (!owner) continue;
     const normalized = normalizeEntityPhrase(entity.name);
     const tokens = normalized.split(/\s+/).filter(Boolean);
-    // Distinctiveness: a single generic entity token ("user", "order", "session")
-    // recurs across members and is too collision-prone to attribute by string
-    // match; a distinctive noun ("deck") or multi-token phrase ("economy
-    // transaction") is safe. Require >=4 chars and not a generic bucket token.
+
     if (normalized.length < 4) continue;
     if (tokens.length === 1 && WORKSPACE_GENERIC_ENTITY_TOKENS.has(tokens[0])) continue;
     if (tokens.length > 1 && tokens.every(token => WORKSPACE_GENERIC_ENTITY_TOKENS.has(token))) continue;
@@ -3940,8 +3676,7 @@ export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAna
     });
   }
   if (exclusiveEntities.length === 0) return null;
-  // Broader crediting-verb set than the domain gate: entity credit shows up as
-  // "purchase/manage/buy/sell/track/create decks", not just "provides/offers".
+
   const creditingVerb = /\b(provid\w*|offer\w*|includ\w*|deliver\w*|serv\w*|host\w*|run\w*|operat\w*|expos\w*|power\w*|enabl\w*|features?|manag\w*|purchas\w*|buy\w*|buys|sell\w*|track\w*|handl\w*|process\w*|creat\w*|store\w*|stores|support\w*|maintain\w*|own\w*)\b/;
   const sentences = String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean);
   for (const sentence of sentences) {
@@ -3953,9 +3688,7 @@ export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAna
     if (!subject || subject.index > 24) continue;
     for (const ent of exclusiveEntities) {
       if (ent.ownerId === subject.member.id) continue;
-      // Plural tolerance: match the phrase with an optional trailing "s" on the
-      // final token. Capture the preceding word to exempt legitimate
-      // owner-qualified references (e.g. "<owner> deck").
+
       const phraseWithPlural = ent.normalized.replace(/\s*$/, '') + 's?';
       const re = new RegExp(`(?:\\b(\\w+)\\s+)?\\b${phraseWithPlural}\\b`, 'g');
       let match: RegExpExecArray | null;
@@ -3971,8 +3704,6 @@ export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAna
   return null;
 }
 
-// Generic entity tokens too collision-prone to attribute cross-member by string
-// match — they recur as tables/models across unrelated members.
 const WORKSPACE_GENERIC_ENTITY_TOKENS = new Set([
   'user', 'users', 'account', 'accounts', 'order', 'orders', 'session', 'sessions',
   'data', 'item', 'items', 'record', 'records', 'event', 'events', 'request',
@@ -3984,16 +3715,6 @@ const WORKSPACE_GENERIC_ENTITY_TOKENS = new Set([
   'products', 'location', 'delivery', 'invoice', 'approval', 'approvals',
 ]);
 
-/**
- * Uses the deterministic workspace_domains member→domain attribution as ground
- * truth to catch a subject member being credited with another member's domain.
- * A domain is "owned" by a member only when its deterministic project_ids point
- * at exactly that one member. A mention is a MISATTRIBUTION when it (a) sits
- * after a crediting verb (provides/offers/includes/serves as/…) in a sentence
- * whose subject is a DIFFERENT member, and (b) is not directly owner-qualified
- * (an owner-name-prefixed mention is a legitimate description of B's asset,
- * not a credit to A). Exported for tests.
- */
 export function workspaceNarrativeDomainMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
   const codebases = graph.codebases || [];
   if (codebases.length < 2) return null;
@@ -4009,8 +3730,7 @@ export function workspaceNarrativeDomainMisattributionReason(graph: WorkspaceAna
     const owner = members.find(member => member.id === owners[0]);
     if (!owner) continue;
     const normalized = normalizeAiItemName(domain.name);
-    // A distinctive, multi-character domain phrase — a single generic token
-    // ("rules", "access") is too collision-prone to attribute by string match.
+
     if (normalized.length < 5 || WORKSPACE_GENERIC_DOMAIN_TOKENS.has(normalized)) continue;
     exclusiveDomains.push({ ownerId: owner.id, ownerName: owner.name, ownerNormalized: owner.normalized, domain: domain.name, normalized });
   }
@@ -4026,10 +3746,7 @@ export function workspaceNarrativeDomainMisattributionReason(graph: WorkspaceAna
     if (!subject || subject.index > 24) continue;
     for (const dom of exclusiveDomains) {
       if (dom.ownerId === subject.member.id) continue;
-      // Scan every mention of the domain phrase in the sentence. A mention is a
-      // misattribution only if it (a) is preceded by a crediting verb and (b) is
-      // NOT directly qualified by the true owner's name (which would make it a
-      // legitimate reference to the owner's asset).
+
       const re = new RegExp(`(?:\\b(\\w+)\\s+)?\\b${escapeRegExp(dom.normalized)}\\b`, 'g');
       let match: RegExpExecArray | null;
       while ((match = re.exec(normalizedSentence)) !== null) {
@@ -4044,27 +3761,12 @@ export function workspaceNarrativeDomainMisattributionReason(graph: WorkspaceAna
   return null;
 }
 
-// Generic single-token domain buckets that are too collision-prone to use as a
-// string-match key for cross-member attribution (they recur across members).
 const WORKSPACE_GENERIC_DOMAIN_TOKENS = new Set([
   'access', 'rules', 'order', 'orders', 'cards', 'network', 'security', 'channel',
   'operations', 'risks', 'verification', 'agents', 'agent', 'tools', 'devices',
   'profiles', 'terms', 'approvals', 'session', 'sessions', 'status', 'data',
 ]);
 
-/**
- * THE workspace-level-CAS narrative quality gate — single decision point used by the primary
- * enrichment pass and every repair attempt. Hard-reject markers always lose;
- * otherwise a narrative is accepted via any of three paths:
- *  (1) useful + fact-consistent (the original heuristic),
- *  (2) grounded in important deployable/distribution names,
- *  (3) grounded in the workspace's OWN semantic catalog (capability/domain/
- *      codebase/application names) — enumerating REAL capabilities is evidence
- *      of grounding, not "inventory-style" (the pre-calibration gate
- *      over-triggered on exactly this and rejected real workspace narratives).
- * Returns the specific rejection reason so retries can re-prompt with it and
- * degraded records say WHY. Exported for tests.
- */
 export function evaluateWorkspaceNarrativeGate(
   graph: WorkspaceAnalysisGraph,
   description: string,
@@ -4074,10 +3776,6 @@ export function evaluateWorkspaceNarrativeGate(
   const effectiveSummary = String(productValueSummary ?? '').trim() || String(fallbackProductValueSummary ?? '').trim();
   const hardReject = workspaceNarrativeHardRejectReason(description, effectiveSummary);
   if (hardReject) return { accepted: false, reason: hardReject };
-  const unsupportedFrame = workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary);
-  if (unsupportedFrame) {
-    return { accepted: false, reason: unsupportedFrame };
-  }
   const misattribution = workspaceNarrativeMisattributionReason(graph, description);
   if (misattribution) {
     return { accepted: false, reason: misattribution };
@@ -4108,17 +3806,10 @@ export function evaluateWorkspaceNarrativeGate(
   if (unsupportedCrossProjectClaim) {
     return { accepted: false, reason: unsupportedCrossProjectClaim };
   }
-  // Marketing-language lint (same mechanism as the project-tier element gate):
-  // isolated instances are stripped mechanically at the persist seam; a
-  // narrative saturated with ungrounded marketing language is rejected outright.
+
   const marketingMatches = workspaceNarrativeMarketingMatches(graph, `${description} ${String(productValueSummary ?? '')}`);
   if (marketingMatches.length >= 3) {
-    // Saturation vs incidental: a few generic adjectives sprinkled into an
-    // otherwise concrete, grounded narrative must be stripped-and-accepted, not
-    // degraded to empty. Saturation means the marketing was load-bearing — the
-    // narrative collapses once the adjectives are removed. Strip first and
-    // re-check grounding; only reject when the stripped narrative no longer
-    // stands on its own.
+
     const strippedDescription = stripUngroundedWorkspaceMarketingLanguage(graph, description);
     const strippedStandsAlone =
       strippedDescription.length >= 180 &&
@@ -4131,8 +3822,11 @@ export function evaluateWorkspaceNarrativeGate(
         reason: `unsupported-marketing-language saturation (${marketingMatches.join(', ')}): replace marketing adjectives with concrete, evidence-backed workspace behavior`,
       };
     }
-    // else: incidental marketing — fall through to the acceptance paths; the
-    // persist seam strips the flagged adjectives from the accepted narrative.
+
+  }
+  const unsupportedFrame = workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary);
+  if (unsupportedFrame) {
+    return { accepted: false, reason: unsupportedFrame };
   }
   if (isUsefulAiWorkspaceNarrative(description)) return { accepted: true };
   if (isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return { accepted: true };
@@ -4232,12 +3926,6 @@ function workspaceNarrativeUnsupportedCrossProjectClaim(graph: WorkspaceAnalysis
 
 const WORKSPACE_BEHAVIOR_WORD_PATTERN = /\b(?:brokers?|relays?|routes?|ships?|installs?|communicates?|calls?|pairs?|interacts?|authenticates?|authorizes?|enrolls?|connects?|protects?|provisions?|declares?|exposes?|records?|forwards?|coordinates?|manages?|handles?|supports?|provides?|processes?|captures?|uses?|consumes?|performs?|orchestrates?|flows?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|guides?|validates?|depends?|enables?|enabling|powers?|drives?|runs?|executes?|requires?|syncs?|trades?|settles?|holds?|tracks?|surfaces?|lets?|gives?|fronts?|stores?|persists?|publishes?|streams?|schedules?|triggers?|signs?|verifies?|secures?|enforces?|monitors?)\b/g;
 
-/**
- * Acceptance path (3): the narrative is grounded when it names the workspace's
- * OWN derived semantics — capabilities, domains, codebases, applications.
- * A narrative that enumerates the workspace's real capability catalog with
- * behavior verbs is a grounded workspace description, not inventory filler.
- */
 function isWorkspaceSemanticsGroundedNarrative(graph: WorkspaceAnalysisGraph, description: string): boolean {
   const text = String(description || '').trim();
   if (text.length < 180) return false;
@@ -4266,22 +3954,23 @@ function isUsefulAiWorkspaceNarrative(description: string): boolean {
     /multiple applications and services/,
   ];
   if (bannedInventoryPhrases.some(pattern => pattern.test(normalized))) return false;
-  const concreteRelationships = new Set(normalized.match(/\b(?:api|internal api|public api|admin api|user api|http|route|controller|frontend|backend|ui|web|mobile|desktop|client|service|server|worker|agent|daemon|coordinator|gateway|broker|relay|installer|package|sdk|database|postgres|mysql|redis|cache|queue|stream|message|event|webhook|auth|identity|oauth|oidc|sso|policy|device|network|resource|organization|account|portfolio|transaction|payment|invoice|settlement|report|aws|terraform|docker|kubernetes|ecs|ec2|rds|s3|load balancer|mcp|cas|analysis|analyzer|workspace analysis|codebase analysis|agent context|runtime sdk|telemetry|trace|contract|validation|preview)\b/g) || []).size;
-  const behaviorWords = (normalized.match(/\b(?:brokers?|relays?|routes?|ships?|installs?|communicates?|calls?|pairs?|interacts?|authenticates?|authorizes?|enrolls?|connects?|protects?|provisions?|declares?|exposes?|records?|forwards?|coordinates?|manages?|handles?|supports?|provides?|processes?|captures?|uses?|consumes?|performs?|orchestrates?|flows?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|guides?|validates?|depends?|enables?|enabling|powers?|drives?|runs?|executes?|requires?|syncs?|trades?|settles?|holds?|tracks?|surfaces?|lets?|gives?|fronts?|stores?|persists?|publishes?|streams?|schedules?|triggers?|signs?|verifies?|secures?|enforces?|monitors?)\b/g) || []).length;
-  return concreteRelationships >= 4 && behaviorWords >= 3;
+  const behaviorWords = (normalized.match(WORKSPACE_BEHAVIOR_WORD_PATTERN) || []).length;
+  const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean).length;
+  return behaviorWords >= 3 && sentences >= 2 && workspaceSemanticTokens(text).size >= 5;
 }
 
-/**
- * Frame consistency check: detects a narrative claiming a product frame the
- * workspace evidence does not support, and returns a rejection reason that
- * (a) names the ACTUAL offending frame found in the narrative text (never a
- * hardcoded frame list) and (b) names the workspace's own evidence to reframe
- * around — so the retry re-prompt carries actionable, evidence-grounded
- * feedback instead of replaying the same rejection. Returns null when
- * consistent.
- */
 function workspaceNarrativeUnsupportedFrameReason(graph: WorkspaceAnalysisGraph, description: string, productValueSummary?: unknown): string | null {
-  const text = normalizeAiItemName(`${description} ${cleanNarrativeString(productValueSummary)}`);
+  const claim = cleanNarrativeSummaryString(productValueSummary) || description;
+  const claimTokens = workspaceSemanticTokens(claim);
+  if (claimTokens.size < 3) return null;
+  const evidenceTokens = workspaceEvidenceTokens(graph);
+  const tokenSupported = (token: string) => [...evidenceTokens].some(evidenceToken =>
+    token === evidenceToken ||
+    (Math.min(token.length, evidenceToken.length) >= 4 && (token.startsWith(evidenceToken) || evidenceToken.startsWith(token)))
+  );
+  const supported = [...claimTokens].filter(tokenSupported);
+  const unsupported = [...claimTokens].filter(token => !tokenSupported(token));
+  if (supported.length >= Math.max(1, Math.ceil(claimTokens.size * 0.25)) || unsupported.length < 2) return null;
   const evidenceHint = () => {
     const domains = [
       ...graph.codebases.map(codebase => codebase.primary_domain).filter(Boolean) as string[],
@@ -4293,118 +3982,36 @@ function workspaceNarrativeUnsupportedFrameReason(graph: WorkspaceAnalysisGraph,
     if (capabilities.length) parts.push(`capabilities: ${capabilities.join(', ')}`);
     return parts.length ? ` Reframe the description around the workspace's own evidence (${parts.join('; ')}).` : '';
   };
-  if (
-    hasSecureNetworkAccessSignal(text) &&
-    !workspaceHasSecureNetworkAccessSignal(graph) &&
-    !workspaceNarrativeMentionsSourceBackedAccessTopology(graph, text)
-  ) {
-    return `the description claims a secure-access/network-brokering product frame that the workspace evidence does not support.${evidenceHint()}`;
-  }
-  const intelligenceFrameMatch = text.match(/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/);
-  if (intelligenceFrameMatch && !workspaceHasCodebaseIntelligenceSignal(graph)) {
-    return `the description claims a "${intelligenceFrameMatch[1]}" product frame that the workspace evidence does not support.${evidenceHint()}`;
-  }
-  return null;
+  return `the workspace evidence does not support the claimed product frame "${claim.slice(0, 120)}"; unsupported concepts: ${unsupported.slice(0, 5).join(', ')}.${evidenceHint()}`;
 }
 
 function isGroundedAiWorkspaceNarrative(graph: WorkspaceAnalysisGraph, description: string, productValueSummary?: unknown): boolean {
   const normalized = normalizeAiItemName(`${description} ${cleanNarrativeString(productValueSummary)}`);
   if (description.trim().length < 180) return false;
   if (/\b(?:classified as|repo analysis input|language inventory|primarily built using|consists of multiple|contains analyzed projects)\b/.test(normalized)) return false;
-
-  const importantNames = new Set<string>();
-  for (const app of graph.applications.slice(0, 80)) {
-    if (/\b(?:admin-api|user-api|mcp-api|internal-api|admin-ui|client-ui|client-service|client|agent|coordinator|drop-server|gateway|analyzer-core|mcp-server|backend|frontend|api|ui|worker|sync|lens)\b/i.test(app.name)) {
-      importantNames.add(normalizeAiItemName(app.name));
-    }
-  }
-  for (const unit of graph.distribution_units) {
-    for (const name of unit.component_names) importantNames.add(normalizeAiItemName(name));
-    importantNames.add(normalizeAiItemName(unit.name));
-  }
-  const mentionedImportantNames = [...importantNames]
-    .filter(name => name.length >= 3 && normalized.includes(name))
-    .length;
-  const behaviorWords = (normalized.match(/\b(?:brokers?|relays?|routes?|ships?|installs?|communicates?|calls?|pairs?|interacts?|authenticates?|authorizes?|enrolls?|connects?|protects?|provisions?|declares?|exposes?|records?|forwards?|coordinates?|manages?|handles?|supports?|provides?|processes?|captures?|uses?|consumes?|performs?|orchestrates?|flows?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|guides?|validates?|depends?|enables?|enabling|powers?|drives?|runs?|executes?|requires?|syncs?|trades?|settles?|holds?|tracks?|surfaces?|lets?|gives?|fronts?|stores?|persists?|publishes?|streams?|schedules?|triggers?|signs?|verifies?|secures?|enforces?|monitors?)\b/g) || []).length;
-  const concreteConcepts = new Set(normalized.match(/\b(?:api|http|ui|desktop|client|service|agent|coordinator|gateway|broker|relay|installer|sdk|database|postgres|redis|auth0|auth|identity|policy|device|network|resource|organization|account|portfolio|transaction|payment|aws|terraform|docker|mcp|cas|analysis|analyzer|workspace|agent context|telemetry|trace|contract|validation)\b/g) || []).size;
-  const hasKnownProductFrame =
-    (hasSecureNetworkAccessSignal(normalized) && (workspaceHasSecureNetworkAccessSignal(graph) || workspaceNarrativeMentionsSourceBackedAccessTopology(graph, normalized))) ||
-    (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && workspaceHasCodebaseIntelligenceSignal(graph)) ||
-    (!hasSecureNetworkAccessSignal(normalized) && !/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized));
-  const accessTopologyAllowed = hasSecureNetworkAccessSignal(normalized) &&
-    (workspaceHasSecureNetworkAccessSignal(graph) || workspaceNarrativeMentionsSourceBackedAccessTopology(graph, normalized));
-  const codebaseIntelligenceAllowed = /\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && workspaceHasCodebaseIntelligenceSignal(graph);
-  const minimumNamedSurfaces = accessTopologyAllowed ? 3 : codebaseIntelligenceAllowed ? 2 : 4;
-  return hasKnownProductFrame && mentionedImportantNames >= minimumNamedSurfaces && behaviorWords >= 3 && concreteConcepts >= 6;
+  const claimTokens = workspaceSemanticTokens(normalized);
+  const evidenceTokens = workspaceEvidenceTokens(graph);
+  const overlap = [...claimTokens].filter(token => evidenceTokens.has(token)).length;
+  const behaviorWords = (normalized.match(WORKSPACE_BEHAVIOR_WORD_PATTERN) || []).length;
+  return overlap >= 3 && behaviorWords >= 3;
 }
-
-function workspaceNarrativeMentionsSourceBackedAccessTopology(graph: WorkspaceAnalysisGraph, normalizedNarrative: string): boolean {
-  const topologyNames = new Set<string>();
-  for (const app of graph.applications) {
-    if (/\b(?:agent|coordinator|gateway|drop-server|client-service|client|desktop)\b/i.test(app.name)) {
-      topologyNames.add(normalizeAiItemName(app.name));
-    }
-  }
-  for (const insight of graph.system_insights) {
-    if (['broker-service', 'relay-or-fallback-path', 'ui-api-pairing', 'mcp-agent-surface'].includes(insight.type)) {
-      for (const token of normalizeAiItemName(`${insight.title} ${insight.description}`).split(/\s+/)) {
-        if (['agent', 'coordinator', 'gateway', 'drop', 'server', 'client', 'service', 'desktop', 'broker', 'relay'].includes(token)) topologyNames.add(token);
-      }
-    }
-  }
-  const matchedTopologyTerms = [...topologyNames]
-    .filter(term => term.length >= 4 && normalizedNarrative.includes(term))
-    .length;
-  const hasAccessTerms = countUniqueMatches(normalizedNarrative, [
-    /\baccess\b/,
-    /\bpolicy\b/,
-    /\bdevice\b/,
-    /\bnetwork\b/,
-    /\bauth(?:entication|orization)?\b/,
-  ]) >= 2;
-  return matchedTopologyTerms >= 3 && hasAccessTerms;
-}
-
-// NOTE (docs/cas/DETERMINISM-BOUNDARY.md): the former
-// `inferAiProductValueFromNarrative` — which, when the AI product-value summary
-// was missing/rejected, substituted a hardcoded "managed secure access" or
-// "codebase intelligence" sentence based on keyword signals — was deleted. That
-// was a deterministically-authored comprehension fallback. Callers now fall back
-// only to the carried-forward AI/manual summary (or nothing), never to a
-// synthesized deterministic sentence.
 
 function usefulAiProductValueSummary(value: unknown, fallback?: string, graph?: WorkspaceAnalysisGraph): string | undefined {
   const text = safeAiProductValueSummary(value, fallback, graph);
   if (!text) return undefined;
   const normalized = normalizeAiItemName(text);
-  const hasConcreteProductTerms = /\b(access|identity|auth0|device|policy|network|gateway|agent|api|desktop|codebase|analysis|mcp|workflow|account|portfolio|transaction|payment|balance|asset|trading|settlement|report|finance|financial|cas|telemetry|graph)\b/.test(normalized);
-  const hasConcreteVerb = /\b(coordinates?|manages?|brokers?|routes?|enforces?|connects?|analyzes?|maps?|guides?|protects?)\b/.test(normalized);
-  return hasConcreteProductTerms && hasConcreteVerb ? text : undefined;
+  const hasBehavior = (normalized.match(WORKSPACE_BEHAVIOR_WORD_PATTERN) || []).length > 0;
+  return hasBehavior && workspaceSemanticTokens(text).size >= 3 ? text : undefined;
 }
 
-/**
- * SAFETY-only filter for a product_value_summary: rejects unsupported product
- * frames and marketing language but does NOT apply usefulAiProductValueSummary's
- * concrete-term/verb quality heuristic. Used at the persist seam so a summary
- * the gate accepted can never be silently emptied by a keyword-list heuristic
- * (the live v1.0.63 empty-PVS-as-ai class): a safe-but-plain summary persists;
- * only unsafe or genuinely missing summaries fall through to re-prompt/degrade.
- */
 function safeAiProductValueSummary(value: unknown, fallback?: string, graph?: WorkspaceAnalysisGraph): string | undefined {
   const text = cleanNarrativeSummaryString(value);
   if (!text) return undefined;
   const normalized = normalizeAiItemName(text);
-  const fallbackText = normalizeAiItemName(fallback || '');
-  if (/\bfinancial application workspace\b/.test(fallbackText) && !/\b(account|portfolio|transaction|payment|balance|asset|trading|settlement|report|finance|financial)\b/.test(normalized)) return undefined;
-  if (/\bcodebase intelligence workspace\b/.test(fallbackText) && !/\b(codebase|analysis|cas|mcp|agent|graph|agent context|telemetry)\b/.test(normalized)) return undefined;
-  if (/\bsecure network access workspace\b/.test(fallbackText) && !hasSecureNetworkAccessSignal(normalized)) return undefined;
-  if (hasSecureNetworkAccessSignal(normalized) && graph && !workspaceHasSecureNetworkAccessSignal(graph)) return undefined;
-  if (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && graph && !workspaceHasCodebaseIntelligenceSignal(graph)) return undefined;
+  if (graph && workspaceNarrativeUnsupportedFrameReason(graph, text, text)) return undefined;
   const unsupportedMarketing = /\b(scalable|scalability|flexibility|enterprise grade|enterprise-grade|real time|mission critical|mission-critical|compliance|hybrid environments?)\b/.test(normalized);
   if (unsupportedMarketing) return undefined;
-  // Shared project-tier marketing lint (element-description-validator
-  // mechanism): saturation is unsafe; isolated instances are stripped so a
-  // factual-but-lightly-decorated summary survives honestly.
+
   const marketingMatches = workspaceNarrativeMarketingMatches(graph, text);
   if (marketingMatches.length >= 3) return undefined;
   if (marketingMatches.length > 0) {
@@ -4412,83 +4019,6 @@ function safeAiProductValueSummary(value: unknown, fallback?: string, graph?: Wo
     return stripped.length >= 20 ? stripped : undefined;
   }
   return text;
-}
-
-function workspaceHasSecureNetworkAccessSignal(graph: WorkspaceAnalysisGraph): boolean {
-  const appText = normalizeAiItemName([
-    graph.applications.map(app => app.name).join(' '),
-    graph.distribution_units.map(unit => `${unit.name} ${unit.kind} ${unit.component_names.join(' ')} ${unit.platforms.join(' ')}`).join(' '),
-    graph.application_links.map(link => {
-      const source = graph.applications.find(app => app.id === link.source_application_id)?.name || '';
-      const target = graph.applications.find(app => app.id === link.target_application_id)?.name || '';
-      return `${source} ${target} ${link.kind} ${link.mode} ${link.evidence_quality}`;
-    }).join(' '),
-    graph.system_insights.map(insight => `${insight.type} ${insight.title} ${insight.description}`).join(' '),
-  ].join(' '));
-  const semanticText = normalizeAiItemName([
-    graph.workspace_domains.slice(0, 10).map(domain => domain.name).join(' '),
-    graph.workspace_capabilities.slice(0, 12).map(capability => capability.name).join(' '),
-    graph.workspace_entities.slice(0, 12).map(entity => entity.name).join(' '),
-  ].join(' '));
-  const hasBrokerRuntime = countUniqueMatches(appText, [
-    /\bagent\b/,
-    /\bcoordinator\b/,
-    /\bgateway\b/,
-    /\bdrop server\b/,
-    /\bclient service\b/,
-    /\bdesktop\b/,
-  ]) >= 2;
-  const hasAccessSemantics = countUniqueMatches(`${semanticText} ${appText}`, [
-    /\baccess\b/,
-    /\bpolicy\b/,
-    /\bdevice\b/,
-    /\bnetwork\b/,
-    /\bauth(?:entication|orization)?\b/,
-    /\bidentity\b/,
-  ]) >= 3;
-  return hasBrokerRuntime && hasAccessSemantics;
-}
-
-function workspaceHasCodebaseIntelligenceSignal(graph: WorkspaceAnalysisGraph): boolean {
-  const text = normalizeAiItemName([
-    graph.name,
-    graph.codebases.map(codebase => `${codebase.name} ${codebase.packages.join(' ')}`).join(' '),
-    graph.applications.map(app => app.name).join(' '),
-    graph.workspace_capabilities.slice(0, 12).map(capability => `${capability.name} ${capability.description}`).join(' '),
-    graph.workspace_entities.slice(0, 12).map(entity => entity.name).join(' '),
-  ].join(' '));
-  return countUniqueMatches(text, [
-    /\bcodebase\b/,
-    /\bcas\b/,
-    /\bmcp\b/,
-    /\banalyzer\b/,
-    /\banalysis\b/,
-    /\bagent context\b/,
-  ]) >= 4;
-}
-
-function hasSecureNetworkAccessSignal(normalizedText: string): boolean {
-  const identityOrPolicy = countUniqueMatches(normalizedText, [
-    /\bauth(?:entication|orization)?\b/,
-    /\bidentity\b/,
-    /\bauth0\b/,
-    /\bpolicy\b/,
-    /\baccess\b/,
-  ]);
-  const networkControl = countUniqueMatches(normalizedText, [
-    /\bnetwork\b/,
-    /\bgateway\b/,
-    /\bresource\b/,
-    /\bdevice\b/,
-  ]);
-  const brokerRuntime = countUniqueMatches(normalizedText, [
-    /\bagent\b/,
-    /\bcoordinator\b/,
-    /\bdrop server\b/,
-    /\bclient service\b/,
-    /\bdesktop\b/,
-  ]);
-  return identityOrPolicy >= 2 && networkControl >= 2 && brokerRuntime >= 1;
 }
 
 function fuzzyAiItemMap(items: Array<{ name: string; description?: string }>): Map<string, { name: string; description?: string }> {
@@ -4537,9 +4067,6 @@ export function workspaceAiEnrichmentEnabled(): boolean {
     process.env.KLAURO_AI_INTERPRETATION !== 'false';
 }
 
-// Exported for tests. Despite the historical name, this is a slow-operation
-// observer, never a completeness cutoff. A model response may be slow, but
-// elapsed time alone is not evidence that the work is invalid or wedged.
 export async function withWorkspaceAiTimeout<T>(promise: Promise<T>): Promise<T> {
   const slowMs = Number(
     process.env.KLAURO_WAS_AI_SLOW_MS ||
@@ -4567,14 +4094,9 @@ export async function withWorkspaceAiTimeout<T>(promise: Promise<T>): Promise<T>
   }
 }
 
-// Exported for tests: the prompt context must stay free of hardcoded frame
-// vocabulary and must foreground the workspace's own member-project domains.
 export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): Record<string, unknown> {
   const productName = inferWorkspaceProductName(graph.codebases, graph.name);
-  // Must never name any product-frame vocabulary of its own — planting a frame
-  // in the prompt biases the model's output toward it. The frame must come
-  // from the workspace's own evidence; the fact sheet foregrounds
-  // member-project domains/capabilities so the model has the real frame to reach for.
+
   return {
     compactPrompt: true,
     responseFormat: 'json',
@@ -4610,7 +4132,6 @@ export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): 
       'Do not describe a service as communicating with another service unless the connection appears in behavior_facts.important_connections with the same source and target.',
       'When facts.relationship_policy says no source-backed cross-project links exist, describe members as independent and never claim they interact through shared infrastructure.',
       'Frame the workspace ONLY through the domains, capabilities, and member-project facts supplied in facts.member_projects, facts.semantic_targets, and must_explain. Never assign the workspace a product category or frame that is not named there.',
-      'If the facts include blockchain RPC/p2p ports (e.g. 8545/8546/30303/8899), blockchain-node deployables (ethereum/bitcoin/solana/polygon nodes), or wallet/custody/token/exchange/liquidation entities, identify the workspace as a crypto / digital-asset system and name the chains and on-chain behavior; do not flatten it into a generic "financial application".',
       'Return domain_items for every required_domain_names item, using exact names.',
       'Return capability_items for every required_capability_names item, using exact names.',
       'Every domain/capability description must include at least one meaningful word from the exact target name.',
@@ -4628,18 +4149,9 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const overview = graph.detail_views.overview;
   const appById = new Map(graph.applications.map(app => [app.id, app]));
   const deployables = overview.deployables.slice(0, 8).map(app => {
-    const ports = normalizePortTokens(app.ports);
+    const ports = app.ports.map(port => String(port)).filter(Boolean);
     return `${workspacePromptApplicationName(graph, app)}(${app.kind}${ports.length ? `,ports:${ports.slice(0, 4).join('/')}` : ''}${app.isolated ? ',isolated' : ''})`;
   });
-  const blockchainSurfaces = overview.deployables
-    .filter(app => {
-      const ports = normalizePortTokens(app.ports);
-      const name = String(app.name || '');
-      return ports.some(port => CRYPTO_RPC_PORTS.has(port)) ||
-        (CRYPTO_CHAIN_PATTERN.test(name) && CRYPTO_NODE_PATTERN.test(name));
-    })
-    .slice(0, 6)
-    .map(app => `${app.name}: blockchain RPC/p2p ports ${normalizePortTokens(app.ports).filter(port => CRYPTO_RPC_PORTS.has(port)).join(', ') || 'n/a'}`);
   const connections = overview.connections.slice(0, 6).map(connection => {
     const verb = connection.kind === 'sdk-install' ? 'depends on/imports' : 'calls/communicates with';
     return `${workspacePromptApplicationLabel(graph, connection.source)} -> ${workspacePromptApplicationLabel(graph, connection.target)} (${connection.mode} ${connection.kind}, ${connection.evidence_quality}, ${verb})`;
@@ -4665,15 +4177,7 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const environments = graph.environments.map(environment =>
     `${environment.name}: ${environment.infrastructure_kinds.slice(0, 3).join(', ')}`
   );
-  // Foreground the workspace's OWN frame evidence: each member project's
-  // analyzed primary domain plus the derived workspace domains. These lead
-  // must_explain so the model grounds the product frame in what the members
-  // actually are (e.g. a messaging-gateway) instead of grasping at a generic
-  // frame when behavioral facts are thin.
-  // Each member is presented as a distinct project with its own domains and
-  // capabilities (evidence exclusive to that member), so a multi-member
-  // workspace narrative can — and must — attribute behavior per member instead
-  // of pouring every member's evidence into whichever member it names first.
+
   const memberProjects = graph.codebases.slice(0, 12).map(codebase => ({
     name: codebase.name,
     ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
@@ -4705,11 +4209,10 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const mustExplain = [
     ...memberDomainFacts.slice(0, 4),
     ...(workspaceDomainNames.length ? [`workspace domains: ${workspaceDomainNames.slice(0, 6).join(', ')}`] : []),
-    ...blockchainSurfaces.slice(0, 3),
     ...distributionUnits,
     ...connections,
-    ...insights.filter(insight => /mcp-agent-surface|declared-unused-infrastructure/.test(insight)).slice(0, 3),
-    ...external.filter(dep => /source-backed|auth0|redis|postgres|rds|aws|terraform/i.test(dep)).slice(0, 3),
+    ...insights.slice(0, 3),
+    ...external.filter(dep => /source-backed/i.test(dep)).slice(0, 3),
   ].slice(0, 14);
   return {
     product_name: productName,
@@ -4729,7 +4232,6 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
       insights,
       external_dependencies: external,
       environments,
-      blockchain_surfaces: blockchainSurfaces,
     },
     semantic_targets: {
       required_domains: domains,
@@ -5026,18 +4528,6 @@ function extractJsonLikeArraySection(text: string, start: number): string {
   return nextTopLevelField > 0 ? text.slice(start, start + 1 + nextTopLevelField) : text.slice(start);
 }
 
-/**
- * Camel-case prose splitting that preserves compound product tokens (the live
- * "macOS" -> "mac OS", "iOS" -> "i OS", "iMessages" -> "I Messages" tokenizer
- * artifacts). Generic rules, no brand list:
- *  - a token whose word START is a single lowercase letter followed by a
- *    capital (iOS, iMessage, eBay) is a brand-style compound — never split;
- *  - a lowercase->UPPERCASE boundary splits only when the capital starts a new
- *    capitalized WORD ([A-Z][a-z]); a trailing all-caps run stays attached
- *    (macOS, userDB), because splitting it produces a bare acronym fragment.
- */
-// Known technology compound words that are one brand token, never a camelCase
-// boundary to split. Extend as new compounds surface — these must survive prose splitting.
 const PRESERVED_TECH_COMPOUNDS = new Set([
   'typescript', 'javascript', 'coffeescript', 'actionscript', 'postgresql',
   'graphql', 'nosql', 'mysql', 'mssql', 'sqlite', 'dynamodb', 'mongodb',
@@ -5058,18 +4548,11 @@ function cleanNarrativeString(value: unknown): string | undefined {
   return text.length >= 80 ? text : undefined;
 }
 
-/**
- * product_value_summary is ONE sentence — the 80-char description floor above
- * erased legitimate short summaries at parse time, which then tripped the
- * gate's empty-summary hard reject on otherwise-real narratives.
- */
 function cleanNarrativeSummaryString(value: unknown): string | undefined {
   const text = normalizeWorkspaceAiDescriptionText(value);
   return text.length >= 20 ? text : undefined;
 }
 
-// Exported for tests (compound-token preservation contract: macOS/iOS/iMessage
-// must survive camel-case prose splitting).
 export function normalizeWorkspaceAiDescriptionText(value: unknown): string {
   return String(value || '')
     .replace(/\b[A-Za-z][A-Za-z0-9]*\b/g, token => splitCamelCaseProseToken(token))
@@ -5079,7 +4562,7 @@ export function normalizeWorkspaceAiDescriptionText(value: unknown): string {
     .replace(/\bSD Ks\b/g, 'SDKs')
     .replace(/\bID Es\b/g, 'IDEs')
     .replace(/\bU Is\b/g, 'UIs')
-    // Belt-and-suspenders: repair tech compounds if they arrived already split.
+
     .replace(/\bType Script\b/g, 'TypeScript')
     .replace(/\bJava Script\b/g, 'JavaScript')
     .replace(/\bPostgre SQL\b/g, 'PostgreSQL')
@@ -5158,8 +4641,8 @@ export function summarizeCrossCodebaseSystemGraph(graph: CrossCodebaseSystemGrap
   return {
     id: graph.id,
     name: graph.name,
-    analysis_kind: graph.analysis_kind,
-    was_version: graph.was_version,
+    cas_version: graph.cas_version,
+    composition_mode: graph.composition_mode,
     generated_at: graph.generated_at,
     composition_kind: graph.composition?.kind,
     recommended_primary_view: graph.composition?.recommended_primary_view,
@@ -5378,7 +4861,7 @@ export function buildWorkspaceAgentContext(
     analysis_id: graph.id,
     workspace: {
       name: graph.name,
-      was_version: graph.was_version,
+      cas_version: graph.cas_version,
       generated_at: graph.generated_at,
       project_count: graph.codebase_count,
       deployable_count: graph.deployables.length,
@@ -5497,8 +4980,8 @@ function compactWorkspaceSummary(graph: WorkspaceAnalysisGraph): Record<string, 
   return {
     id: summary.id,
     name: summary.name,
-    analysis_kind: summary.analysis_kind,
-    was_version: summary.was_version,
+    cas_version: summary.cas_version,
+    composition_mode: summary.composition_mode,
     generated_at: summary.generated_at,
     composition_kind: summary.composition_kind,
     recommended_primary_view: summary.recommended_primary_view,
@@ -5954,10 +5437,6 @@ function selectedAppReasons(
   if (app.ports.length) reasons.push(`Exposes runtime port(s): ${app.ports.join(', ')}.`);
   if (project?.frameworks?.length) reasons.push(`Project framework context: ${project.frameworks.slice(0, 3).join(', ')}.`);
   return reasons.length ? reasons : ['Relevant workspace deployable.'];
-}
-
-function estimatedJsonTokens(value: unknown): number {
-  return Math.ceil(JSON.stringify(value).length / 4);
 }
 
 function buildWorkspaceInputs(repositories: CrossCodebaseInput[]): WorkspaceAnalysisInputRef[] {
@@ -6465,7 +5944,6 @@ function workspaceAgentReadNext(
   candidateConnections: Array<{ source: string; target: string; evidence_quality: WorkspaceLinkEvidenceQuality; link_id: string }>,
   options: WorkspaceAgentContextOptions,
 ): Array<{ target: string; why: string; tool?: string; args?: Record<string, unknown> }> {
-  const taskType = options.task_type || 'cross-repo';
   const items: Array<{ target: string; why: string; tool?: string; args?: Record<string, unknown> }> = [];
   for (const app of selectedApps.slice(0, 3)) {
     items.push({
@@ -6509,7 +5987,7 @@ function compactWorkspaceNextMcpCalls<T extends { tool?: string; args?: Record<s
 }
 
 function shouldExposeInWorkspaceOverview(app: SystemApplication, applications: SystemApplication[]): boolean {
-  if (app.merged_into) return false; // cross-member duplicate (monorepo subdir row folded into the standalone member's own row)
+  if (app.merged_into) return false;
   if (isExternalRuntimeDependency(app.name, app.kind)) return false;
   if (isRawInfrastructureOrImageSurface(app)) return false;
   if (!app.deployable && app.kind === 'codebase') return false;
@@ -6635,14 +6113,16 @@ function classifyWorkspaceComposition(
   const packageDeployables = deployables.filter(app => app.kind === 'package');
   const linkedIds = new Set(visibleLinks.flatMap(link => [link.source_application_id, link.target_application_id]));
   const isolatedDeployableCount = deployables.filter(app => !linkedIds.has(app.id)).length;
-  const hasBrokerInsight = insights.some(insight => ['broker-service', 'relay-or-fallback-path', 'agent-control-plane', 'mcp-agent-surface'].includes(insight.type));
-  const runtimeWeight = runtimeLinks.length + (hasBrokerInsight ? 2 : 0);
+  const hasIntermediaryInsight = insights.some(insight =>
+    insight.type === 'bidirectional-message-surface' || insight.type === 'intermediary-topology'
+  );
+  const runtimeWeight = runtimeLinks.length + (hasIntermediaryInsight ? 2 : 0);
   const packageWeight = packageLinks.length + packageDeployables.length;
   const reasons: string[] = [];
   if (runtimeLinks.length) reasons.push(`${runtimeLinks.length} runtime/application link(s) connect deployables through APIs, messages, streams, or shared data.`);
   if (packageLinks.length) reasons.push(`${packageLinks.length} package/library composition link(s) connect code units through SDK or package dependencies.`);
   if (packageDeployables.length) reasons.push(`${packageDeployables.length} package/library deployable(s) are part of the workspace.`);
-  if (hasBrokerInsight) reasons.push('Workspace insights identify broker, relay, control-plane, or agent-facing surfaces.');
+  if (hasIntermediaryInsight) reasons.push('Workspace evidence identifies a deployable with both incoming and outgoing communication links.');
   if (isolatedDeployableCount) reasons.push(`${isolatedDeployableCount} deployable(s) are isolated and should not be forced into the system graph.`);
   const staleInputCount = inputs.filter(input => input.analysis_trust.status === 'stale').length;
   const missingInputCount = inputs.filter(input => input.analysis_trust.status === 'missing-required-facts').length;
@@ -6921,193 +6401,8 @@ function buildWorkspaceTelemetry(repositories: CrossCodebaseInput[], application
   };
 }
 
-// Canonical blockchain node / JSON-RPC / p2p ports. Their presence on a
-// deployable or compose service is near-unambiguous proof that the workspace
-// connects to a blockchain: 8545/8546 (EVM JSON-RPC + WebSocket), 30303 (devp2p),
-// 8332/8333 (Bitcoin RPC/p2p), 8899/8900 (Solana RPC/WS), 9933/9944 (Substrate),
-// 26656/26657 (Cosmos/Tendermint). Port strings in compose facts can carry
-// trailing quote/protocol noise (e.g. `8545"`, `30303/udp`), so callers must
-// normalize to digit runs before matching.
-//
-// Deliberately EXCLUDED because they are ambiguous general-purpose ports and a
-// single port here is treated as decisive proof of crypto:
-//   8000/8001 — Django `runserver`/uvicorn/gunicorn defaults (a Django orders
-//   app on :8000 must never rank "Crypto Asset Trading" #1 in its workspace;
-//   they were once listed for Solana gossip, which is corroborated by 8899/8900
-//   anyway), and 6060 — the standard Go pprof debug port.
-const CRYPTO_RPC_PORTS = new Set([
-  '8545', '8546', '8547', '30303', '30304', '30311',
-  '8332', '8333', '18332', '18333',
-  '8899', '8900',
-  '9933', '9944', '26656', '26657',
-]);
-
-const CRYPTO_CHAIN_PATTERN = /\b(ethereum|eth|bitcoin|btc|solana|sol|polygon|matic|bsc|binance smart chain|avalanche|avax|arbitrum|optimism|cosmos|near|geth|erigon|besu|reth|nethermind)\b/i;
-const CRYPTO_NODE_PATTERN = /\b(?:[a-z]+[-_ ]?node|blockchains?|validator|rpc[-_ ]?node)\b/i;
-// STRONG, *cryptocurrency-specific* vocabulary used as the term-only trigger.
-// Deliberately excludes false friends: bare "crypto" (cryptography — a
-// benchmarked repo's own_crypto::IdentityKey signing), "swap" (memory/network swap), "stake"
-// (stakeholder), "mint"/"signer". A benchmarked crypto repo is detected primarily by its blockchain
-// RPC ports and blockchain-node deployables, so this gate can stay strict.
-const CRYPTO_STRONG_PATTERNS: RegExp[] = [
-  /\bblockchain\b/, /\bblockchains\b/, /\bweb3\b/, /\bon-?chain\b/, /\bdefi\b/,
-  /\bsmart contract\b/, /\bstablecoin\b/, /\berc-?20\b/, /\berc-?721\b/, /\bnft\b/,
-  /\bairdrop\b/, /\bsatoshi\b/, /\bcrypto ?currenc/, /\bcrypto wallet\b/, /\bmetamask\b/,
-  /\bethereum\b/, /\bsolana\b/, /\bbitcoin\b/, /\bpolygon\b/, /\bavalanche\b/,
-  /\bcoinbase\b/, /\busdc\b/, /\busdt\b/,
-];
-// Supporting crypto/finance vocabulary, used only to pick a concrete label once
-// the strong gate (ports / nodes / >=2 strong terms) has already asserted crypto.
-const CRYPTO_TERM_PATTERNS: RegExp[] = [
-  ...CRYPTO_STRONG_PATTERNS,
-  /\bwallet\b/, /\bcustod(?:y|ian|ial)\b/, /\bliquidation\b/, /\bliquidit/,
-  /\bexchange\b/, /\bbrokerage\b/, /\btrad(?:e|ing)\b/, /\bportfolio\b/,
-  /\basset pair\b/, /\bdeposit\b/, /\bsettlement\b/, /\bswap\b/, /\bstak(?:e|ing)\b/,
-];
-
-interface WorkspaceCryptoProfile {
-  isCrypto: boolean;
-  /** Composite confidence weight, used to seed domain rank. */
-  score: number;
-  /** Title-cased primary domain label, e.g. "Digital Asset Trading". */
-  label: string;
-  /** Detected chains, e.g. ["ethereum", "solana"]. */
-  chains: string[];
-  /** RPC/p2p ports that anchored the detection. */
-  rpc_ports: string[];
-  evidence: string[];
-}
-
-function normalizePortTokens(ports: Array<string | undefined> | undefined): string[] {
-  const out: string[] = [];
-  for (const raw of ports || []) {
-    const match = String(raw || '').match(/\d{2,5}/g);
-    if (match) out.push(...match);
-  }
-  return out;
-}
-
-/**
- * Aggregates crypto / digital-asset evidence across a workspace. The signal is
- * deliberately multi-modal so it cannot be missed the way pooled token stats
- * missed it on Soon (blockchain RPC ports, blockchain node deployables, and
- * wallet/custodian/token/exchange/liquidation vocabulary were all present yet
- * never produced a crypto conclusion). Crypto is asserted when a blockchain RPC
- * port or a blockchain node deployable is present, OR when at least three
- * distinct crypto vocabulary terms appear in product (non-infrastructure) facts.
- */
-export function detectWorkspaceCryptoProfile(
-  repositories: CrossCodebaseInput[],
-  applications: SystemApplication[],
-  terminalProfiles: Map<string, WorkspaceTerminalSemanticProfile>,
-): WorkspaceCryptoProfile {
-  const evidence: string[] = [];
-  const chains = new Set<string>();
-  const rpcPorts = new Set<string>();
-  let portSignal = false;
-  let nodeSignal = false;
-
-  for (const app of applications) {
-    const ports = normalizePortTokens(app.ports);
-    for (const port of ports) {
-      if (CRYPTO_RPC_PORTS.has(port)) {
-        rpcPorts.add(port);
-        portSignal = true;
-      }
-    }
-    const name = String(app.name || '');
-    const chainMatch = name.match(CRYPTO_CHAIN_PATTERN);
-    if (chainMatch && CRYPTO_NODE_PATTERN.test(name)) {
-      nodeSignal = true;
-      chains.add(chainMatch[1].toLowerCase());
-      evidence.push(`crypto_node_deployable:${name}${ports.length ? `:${ports.join(',')}` : ''}`);
-    } else if (rpcPorts.size && CRYPTO_CHAIN_PATTERN.test(name)) {
-      chains.add((name.match(CRYPTO_CHAIN_PATTERN) as RegExpMatchArray)[1].toLowerCase());
-    }
-  }
-  if (rpcPorts.size) {
-    evidence.push(`blockchain_rpc_ports:${[...rpcPorts].sort().join(',')}`);
-  }
-
-  // Product vocabulary: names of capabilities, entities, domain concepts, and
-  // the inferred primary domain. Infrastructure/runtime names are excluded by
-  // construction (these are repo-level product facts, not topology).
-  //
-  // A bare name match is not enough: a codebase-analysis product that itself
-  // *analyzes* crypto repos (Solidity security rules referencing ERC20/ERC721,
-  // a crypto-domain classifier's own identifiers/tests) surfaces those tokens
-  // as `domain_concepts`/`system_capabilities` names too, even though the
-  // product's own terminal evidence (primary_domain, journeys, leaf
-  // capabilities) says otherwise. So each vocabulary term is only credited
-  // toward the strong-crypto gate when it is terminally grounded for at least
-  // one repo in the workspace — i.e. it also shows up in that repo's terminal
-  // semantic profile (primary_domain, core_concepts, journey terminal
-  // entities/effects, leaf/primary-flow capabilities) rather than solely as a
-  // capability/entity/domain-concept label pulled from source identifiers.
-  const vocabulary: string[] = [];
-  const terminallyGroundedVocabulary: string[] = [];
-  for (const repository of repositories) {
-    const cas: any = repository.cas || {};
-    const projectId = codebaseId(repository.path);
-    const terminalProfile = terminalProfiles.get(projectId) || emptyTerminalSemanticProfile(projectId);
-    const repoVocab: string[] = [];
-    for (const capability of cas.system_capabilities || []) repoVocab.push(String(capability.name || ''));
-    for (const entity of cas.data_entities || []) repoVocab.push(String(entity.name || ''));
-    for (const concept of cas.domain_concepts || []) repoVocab.push(String(concept.name || ''));
-    const purpose = cas.enhanced_system_purpose || {};
-    if (purpose.primary_domain) repoVocab.push(String(purpose.primary_domain));
-    for (const concept of purpose.core_concepts || []) repoVocab.push(String(concept));
-    vocabulary.push(...repoVocab);
-    for (const term of repoVocab) {
-      if (terminalSignalForName(terminalProfile, term).score > 0) terminallyGroundedVocabulary.push(term);
-    }
-  }
-  const vocabText = normalizeAiItemName(vocabulary.join(' '));
-  const groundedVocabText = normalizeAiItemName(terminallyGroundedVocabulary.join(' '));
-  const strongTerms = CRYPTO_STRONG_PATTERNS.filter(pattern => pattern.test(groundedVocabText));
-  const matchedTerms = CRYPTO_TERM_PATTERNS.filter(pattern => pattern.test(vocabText));
-  const strongSignal = strongTerms.length;
-  if (strongSignal) {
-    const sampleTerms = strongTerms.slice(0, 6).map(pattern => pattern.source.replace(/\\b|[()?:]/g, '').replace(/\|.*/, ''));
-    evidence.push(`crypto_vocabulary(${strongSignal}):${sampleTerms.join(',')}`);
-  }
-
-  // Strong gate: a blockchain RPC port or blockchain-node deployable is decisive
-  // on its own; otherwise require at least two *strong* crypto terms. Weak
-  // finance/auth vocabulary alone never asserts crypto (prevents false
-  // positives on benchmarked non-crypto repos).
-  const isCrypto = portSignal || nodeSignal || strongSignal >= 2;
-  if (!isCrypto) {
-    return { isCrypto: false, score: 0, label: '', chains: [], rpc_ports: [], evidence: [] };
-  }
-
-  // Compose a concrete, terminal label from what the system actually does with
-  // the assets, rather than a generic "crypto" tag.
-  const custody = /\bcustod(?:y|ian|ial)\b|\bwallet\b|\bvault\b/.test(vocabText);
-  const trading = /\btrad(?:e|ing)\b|\bexchange\b|\bswap\b|\bbrokerage\b|\border\b/.test(vocabText);
-  const assetMgmt = /\bportfolio\b|\binvest|\basset\b|\bliquidation\b|\bstrategy\b/.test(vocabText);
-  // Keep labels to <=3 ASCII words with no "&": titleizeDomain slices to 4
-  // words and treats "&" as a token, which truncated "... Trading & Custody".
-  let label: string;
-  if (trading) label = 'Crypto Asset Trading';
-  else if (custody) label = 'Crypto Asset Custody';
-  else if (assetMgmt) label = 'Crypto Asset Management';
-  else label = 'Blockchain Digital Assets';
-
-  const score = (portSignal ? 40 : 0) + (nodeSignal ? 20 : 0) + Math.min(24, strongSignal * 4);
-  return {
-    isCrypto: true,
-    score,
-    label,
-    chains: [...chains],
-    rpc_ports: [...rpcPorts].sort(),
-    evidence: mergeStrings([], evidence).slice(0, 10),
-  };
-}
-
 function buildWorkspaceDomains(
   repositories: CrossCodebaseInput[],
-  applications: SystemApplication[],
   codebases: SystemCodebase[],
   workspaceName: string,
 ): WorkspaceDomain[] {
@@ -7117,7 +6412,6 @@ function buildWorkspaceDomains(
     .map(repository => codebaseId(repository.path)));
   const domains = new Map<string, { project_ids: string[]; evidence: string[]; score: number; terminal_score: number; terminal_evidence: string[] }>();
   const productNames = workspaceProductNameSet(codebases, workspaceName);
-  const codebaseNameById = new Map(codebases.map(codebase => [codebase.id, codebase.name]));
   const add = (name: string | undefined, projectId: string, evidence: string, score = 1, terminalScore = 0, terminalEvidence: string[] = []) => {
     const normalized = titleizeDomain(name);
     if (!normalized || isWeakWorkspaceDomain(normalized)) return;
@@ -7136,84 +6430,33 @@ function buildWorkspaceDomains(
     if (enhanced?.primary_domain) {
       add(enhanced.primary_domain, projectId, `primary_domain:${enhanced.primary_domain}`, 4, 4, [`primary_domain:${enhanced.primary_domain}`]);
     }
-    // Infrastructure member vocabulary names resources and deployment
-    // mechanics, not business domains. Its explicit artifact-grounded primary
-    // domain remains visible, while queue/container/script concepts stay in
-    // infrastructure_overlay and the member CAS instead of contaminating
-    // another member's product-domain ownership.
+
     if (infrastructureProjectIds.has(projectId)) continue;
     for (const concept of enhanced?.core_concepts || []) {
       add(concept, projectId, `core_concept:${concept}`, 2, 0, []);
     }
     for (const concept of repository.cas.domain_concepts || []) {
       const signal = terminalSignalForName(terminalProfile, concept.name);
-      // EVIDENCE GATE: a repo concept only enters the workspace domain
-      // vocabulary when its own occurrence evidence is domain-shaped — it
-      // appears in at least one data entity or at a structural (non
-      // file-basename) entry point — or the WHOLE name is terminally
-      // grounded (a direct profile hit; substring fuzz would let word
-      // fragments like "uild" ride "build..." terminal names). Concepts that
-      // occur solely as file/identifier tokens (shell script basenames, test
-      // fixtures, format words like "json") are raw token frequency, not
-      // domains, and must not become workspace domains.
+
       if (!isEvidenceGroundedWorkspaceDomainConcept(concept as any, directTerminalNameScore(terminalProfile, concept.name))) continue;
       add(concept.name, projectId, `domain_concept:${concept.id || concept.name}`, concept.classification === 'core' ? 4 : 3, signal.score, signal.evidence);
     }
-    for (const capability of repository.cas.system_capabilities || []) {
+    for (const capability of repository.cas.capabilities || []) {
       const signal = terminalSignalForCapability(terminalProfile, capability as any);
       for (const domain of capability.related_domains || []) add(domain, projectId, `capability:${capability.name}`, 2, Math.min(8, signal.score / 2), signal.evidence);
-      const capabilityDomain = workspaceDomainFromCapabilityName(capability.name);
-      if (capabilityDomain) {
-        add(capabilityDomain, projectId, `capability_domain:${capability.name}`, 1.5, Math.min(10, signal.score), signal.evidence);
-      }
     }
-	    for (const entity of repository.cas.data_entities || []) {
+	    for (const entity of repository.cas.entities || []) {
 	      const signal = terminalSignalForName(terminalProfile, entity.name);
 	      add((entity as any).domain || entity.name, projectId, `entity:${entity.name}`, 1, signal.score, signal.evidence);
 	    }
 	  }
-	  for (const codebase of codebases) {
-	    for (const domain of workspaceProductDomainsFromProjectName(codebase.name, codebase.path)) {
-	      add(domain, codebase.id, `project_domain:${codebase.name}`, 72, 36, [`project_domain:${codebase.name}`]);
-	    }
-	  }
-	  const cryptoProfile = detectWorkspaceCryptoProfile(repositories, applications, terminalProfiles);
-	  if (cryptoProfile.isCrypto) {
-	    const chainText = cryptoProfile.chains.length ? ` (${cryptoProfile.chains.slice(0, 4).join(', ')})` : '';
-	    add(
-	      cryptoProfile.label,
-	      codebases[0]?.id || applications[0]?.codebase_id || 'workspace',
-	      `crypto_anchor:${cryptoProfile.evidence.slice(0, 3).join(';')}${chainText}`,
-	      Math.max(76, cryptoProfile.score + 36),
-	      Math.max(40, cryptoProfile.score),
-	      cryptoProfile.evidence,
-	    );
-	  }
-	  if (domains.size === 0) {
-	    for (const app of applications) add(app.name, app.codebase_id, `deployable:${app.name}`, 0.5);
-	  }
   const entityNames = workspaceEntityNameSet(repositories);
   return collapseOverlappingWorkspaceDomains([...domains.entries()], productNames)
-    // The workspace/product name itself ("Soon") is never a domain — drop it
-    // rather than letting it rank as one.
+
     .filter(([name]) => !productNames.has(normalizeAiItemName(name)))
-    // EVIDENCE-FIRST: a workspace domain must be backed by real domain
-    // evidence — the analyzer's own domain answer (primary_domain /
-    // project_domain / crypto_anchor), a capability, or genuine terminal
-    // grounding. Entity evidence counts only when the name also carries some
-    // terminal signal (a DTO/class token echoing its own name back is raw
-    // frequency, not a domain). Token-frequency-only names — file-format
-    // words, shell/fixture tokens, word fragments — have none of these and
-    // are dropped rather than ranked.
+
     .filter(([, value]) => hasWorkspaceDomainEvidence(value))
-    // ALTITUDE FILTERS (live "exactly 16 domains" quota-padding defect): the
-    // list is evidence-length, not quota-length — fewer is fine, and the tail
-    // must never be padded with wrong-altitude names:
-    //  - a bare data-entity/class name (CodebaseConnection, PricingType,
-    //    TelemetrySnapshot) is a data shape, not a domain, unless corroborated
-    //    by real domain evidence beyond its own entity record;
-    //  - a verb-phrase label ("Sends Messages", "List Tools") is a capability
-    //    label at the wrong altitude — domains are noun concepts.
+
     .filter(([name, value]) => !isUncorroboratedEntityNameDomain(name, value, entityNames))
     .filter(([name]) => !isVerbPhraseDomainLabel(name))
     .sort((left, right) =>
@@ -7221,20 +6464,17 @@ function buildWorkspaceDomains(
         workspaceDomainSortScore(left[0], left[1], productNames) ||
       left[0].localeCompare(right[0])
     )
-    // 16 is a MAXIMUM, never a quota: everything below already passed the
-    // evidence + altitude gates, so shorter lists ship as-is.
+
     .slice(0, 16)
     .map(([name, value]) => ({
       name,
-      // Domain descriptions are AI comprehension: left empty until the workspace
-      // AI domain-description pass writes them (or throws). No deterministic
-      // domain description text.
+
       description: '',
       project_ids: value.project_ids,
       evidence: value.evidence,
       semantic_role: value.project_ids.length > 0 && value.project_ids.every(projectId => infrastructureProjectIds.has(projectId))
         ? 'infrastructure'
-        : value.terminal_score >= 8 ? semanticRoleForWorkspaceItem(name, value.terminal_score, 'core') : undefined,
+        : value.terminal_score >= 8 ? semanticRoleFromTerminalScore(value.terminal_score, 'core') : undefined,
       terminal_score: roundTerminalScore(value.terminal_score),
       terminal_evidence: value.terminal_evidence,
       confidence: Math.min(0.92, 0.45 + value.score * 0.08),
@@ -7245,18 +6485,6 @@ function buildWorkspaceDomains(
     }));
 }
 
-/**
- * Structural evidence gate for repo-level domain concepts entering the
- * workspace domain vocabulary. The CAS concept extractor records WHERE each
- * concept token occurs (`appears_in`): tokens grounded in data entities or at
- * structural entry points (routes, CLI subcommands, queues) are domain
- * vocabulary; tokens that occur only in file-basename entry points
- * (`entry_file_*` — shell scripts, test fixtures) or bare code nodes are
- * identifier/path frequency, not domain evidence ("shell", "pentest", "curl",
- * "json"). Terminal grounding (the name participates in the repo's terminal
- * value chain) also qualifies. A concept without `appears_in` (older CAS) is
- * not gated — absence of evidence metadata is not evidence of noise.
- */
 function isEvidenceGroundedWorkspaceDomainConcept(
   concept: { appears_in?: { entry_points?: string[]; entities?: string[]; nodes?: string[] } },
   terminalScore: number,
@@ -7268,24 +6496,10 @@ function isEvidenceGroundedWorkspaceDomainConcept(
   return terminalScore >= 8;
 }
 
-/** Entry-point ids minted from a file basename (e.g. shell scripts / fixture
- * files: `entry_file_pentest_phase1_external_recon_sh`) rather than from a
- * structural trigger (route, CLI subcommand, queue). */
 function isFileBasenameEntryPointId(id: unknown): boolean {
   return /^entry_file_/.test(String(id || ''));
 }
 
-/**
- * EVIDENCE-FIRST final gate for workspace domains (see buildWorkspaceDomains):
- * anchored analyzer answers (primary_domain / project_domain / crypto_anchor)
- * and capability backing qualify a name outright. Everything else needs BOTH
- * corroboration — a data entity or the analyzer's own core-concept answer —
- * AND terminal grounding. A bare domain_concept token never qualifies on
- * frequency + terminal fuzz alone: that is exactly how "Work", "Json",
- * "Space", "Revisions" became live workspace domains. The `deployable:`
- * evidence kind is the domains-empty fallback and stays eligible so an
- * evidence-poor workspace still reports something honest.
- */
 function hasWorkspaceDomainEvidence(value: { evidence?: string[]; terminal_score?: number }): boolean {
   const evidence = value.evidence || [];
   if (evidence.some(item => /^(primary_domain|project_domain|crypto_anchor|capability|capability_domain|deployable):/.test(item))) return true;
@@ -7294,11 +6508,10 @@ function hasWorkspaceDomainEvidence(value: { evidence?: string[]; terminal_score
   return evidence.some(item => item.startsWith('entity:') || item.startsWith('core_concept:'));
 }
 
-/** All data-entity names across the member CAS inputs, normalized. */
 function workspaceEntityNameSet(repositories: CrossCodebaseInput[]): Set<string> {
   const names = new Set<string>();
   for (const repository of repositories) {
-    for (const entity of repository.cas.data_entities || []) {
+    for (const entity of repository.cas.entities || []) {
       const normalized = normalizeAiItemName(String((entity as any).name || ''));
       if (normalized) names.add(normalized);
     }
@@ -7306,29 +6519,13 @@ function workspaceEntityNameSet(repositories: CrossCodebaseInput[]): Set<string>
   return names;
 }
 
-/**
- * ALTITUDE FILTER: a workspace-domain candidate whose name IS a data-entity/
- * class name (CodebaseConnection, EntityStatus, PricingType, TelemetrySnapshot)
- * is a data shape echoed upward, not a domain — unless the name is
- * corroborated as a domain concept by evidence beyond its own entity record
- * (the analyzer's primary/project domain answer, a crypto anchor, a
- * capability's related domain, or a core concept).
- */
 function singularizeDomainKey(value: string): string {
   if (/[a-z]ies$/.test(value)) return `${value.slice(0, -3)}y`;
-  // Strip "-es" only where the singular really ends in s/x/z/ch/sh (searches ->
-  // search, boxes -> box, classes -> class); NOT generic "-ses" (bases -> base).
+
   if (/(ches|shes|sses|xes|zes)$/.test(value)) return value.slice(0, -2);
   return value.endsWith('s') && !value.endsWith('ss') ? value.slice(0, -1) : value;
 }
 
-/**
- * True when a `capability:`/`capability_domain:` evidence entry is merely a
- * mechanical CRUD echo of the entity/domain name itself ("Manages Spawn bases"
- * for domain "SpawnBase") rather than an independent domain signal. A per-entity
- * "Manage <Entity>" capability is auto-derived FROM the entity, so it cannot
- * corroborate that same entity name as a business domain.
- */
 function isSelfEchoCapabilityForDomain(capabilityName: string, domainNormalized: string): boolean {
   const stripped = normalizeAiItemName(capabilityName)
     .replace(/^(?:manage|manages|managing|surface|surfaces|track|tracks|monitor|monitors|handle|handles|create|creates|provide|provides|analyze|analyzes|configure|configures|list|lists|get|gets|update|updates|store|stores|process|processes|generate|generates|expose|exposes|maintain|maintains)\s+/, '')
@@ -7345,9 +6542,7 @@ export function isUncorroboratedEntityNameDomain(
 ): boolean {
   const normalized = normalizeAiItemName(name);
   if (!normalized) return false;
-  // Entity-name match tolerant of singular/plural (live defect: domain
-  // "Employees"/"Terms" evaded the gate because the entity set holds the
-  // SINGULAR "Employee"/"Term", so the plural domain name never matched).
+
   const collapsed = normalized.replace(/\s+/g, '');
   const nameKeys = new Set([
     normalized,
@@ -7358,9 +6553,7 @@ export function isUncorroboratedEntityNameDomain(
   const matchesEntityName = [...nameKeys].some(key => entityNames.has(key));
   const looksLikeClassIdentifier = /[a-z][A-Z]/.test(String(name || '').replace(/\s+/g, ''));
   if (!matchesEntityName && !(looksLikeClassIdentifier && normalized.split(/\s+/).length === 1)) return false;
-  // Corroboration = a REAL domain signal (analyzer's own domain answer or a core
-  // concept), OR a capability/capability_domain that is NOT a self-echo of this
-  // same entity name. A bare "Manage <Entity>" capability does not count.
+
   const evidence = value.evidence || [];
   const corroborated =
     evidence.some(item => /^(primary_domain|project_domain|crypto_anchor|core_concept):/.test(item)) ||
@@ -7371,36 +6564,21 @@ export function isUncorroboratedEntityNameDomain(
   return !corroborated;
 }
 
-/**
- * ALTITUDE FILTER: verb-first multi-word labels ("Sends Messages", "List
- * Tools", "Manage Portfolio") are capability/action labels, not domains —
- * domains are noun concepts (Payments, Trading, Telemetry).
- */
 export function isVerbPhraseDomainLabel(name: string): boolean {
   const tokens = normalizeAiItemName(name).split(/\s+/).filter(Boolean);
   if (tokens.length < 2) return false;
   const leading = tokens[0];
-  // Domains are noun concepts; a capitalized leading present-tense verb + object
-  // ("Describes Images", "Polls Users", "Secures Remote Task Reports", "Alter
-  // Netsuitesynctrack") is a capability/action label, not a domain. An explicit
-  // verb lexicon covers base forms that morphology cannot detect (Alter, Send,
-  // Get). Extend only when a NEW base-form verb leaks.
+
   if (/^(?:send|sends|list|lists|get|gets|view|views|access|accesses|create|creates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures|update|updates|surface|surfaces|analyze|analyzes|analyse|analyses|transcribe|transcribes|approve|approves|spawn|spawns|search|searches|ingest|ingests|transform|transforms|index|indexes|map|maps|define|defines|coordinate|coordinates|deploy|deploys|install|installs|connect|connects|collect|collects|record|records|enforce|enforces|integrate|integrates|audit|audits|examine|examines|identify|identifies|assess|assesses|detect|detects|discover|discovers|retrieve|retrieves|import|imports|export|exports|route|routes|dispatch|dispatches|orchestrate|orchestrates|describe|describes|poll|polls|secures|alter|alters|notify|notifies|publish|publishes|subscribe|subscribes|resolve|resolves|aggregate|aggregates|submit|submits|upload|uploads|download|downloads|emit|emits|broadcast|broadcasts|replicate|replicates|migrate|migrates|encrypt|encrypts|decrypt|decrypts|persist|persists|verify|verifies)$/.test(leading)) {
     return true;
   }
-  // Grammatical fallback for 3rd-person-singular present verbs the lexicon has
-  // not enumerated: a leading token ending in "-es" (describes, analyzes,
-  // pushes, fetches, dispatches, watches) reads as a verb. English domain HEAD
-  // nouns almost never end in "-es"; the few plural "-es" nouns that legitimately
-  // head a domain are guarded below so real noun domains survive.
+
   if (leading.length >= 4 && /es$/.test(leading) && !/(?:ss|ies)$/.test(leading) && !PLURAL_ES_NOUN_DOMAIN_HEADS.has(leading)) {
     return true;
   }
   return false;
 }
 
-// Plural nouns ending in "-es" that legitimately HEAD a domain label — exempt
-// from the grammatical "-es leading verb" fallback so real noun domains survive.
 const PLURAL_ES_NOUN_DOMAIN_HEADS = new Set([
   'devices', 'services', 'databases', 'instances', 'resources', 'interfaces',
   'namespaces', 'workspaces', 'pipelines', 'invoices', 'notes', 'roles', 'types',
@@ -7508,234 +6686,25 @@ function workspaceProductNameSet(codebases: SystemCodebase[], workspaceName: str
 }
 
 function workspaceDomainSortScore(
-  name: string,
+  _name: string,
   value: { score: number; evidence?: string[]; terminal_score?: number; terminal_evidence?: string[] },
-  productNames: Set<string>,
-): number {
-  const normalized = normalizeAiItemName(name);
-  const terminalScore = value.terminal_score || 0;
-  const productPenalty = productNames.has(normalized) ? terminalScore >= 16 ? 8 : 44 : 0;
-  const genericPenalty = /^(activity|event|events|email|mail|notification|rate|port|server|service|api|app|system|project|platform|data|usage|auth|authentication)$/.test(normalized) ? 16 : 0;
-  const actorOrScaffoldPenalty = /^(customer|user|access|token|security|connection|link|login|agent)$/.test(normalized)
-    ? terminalScore >= 20 ? 12 : 42
-    : /^(account)$/.test(normalized) ? 10 : 0;
-  const infrastructurePenalty = isInfrastructureSemanticName(normalized) ? 40 : 0;
-  const thinEvidencePenalty = thinWorkspaceDomainEvidencePenalty(name, value);
-  const conceptOnlyPenalty = conceptOnlyWorkspaceDomainPenalty(name, value);
-  const singleTokenPrefixPenalty = singleTokenCapabilityPrefixDomainPenalty(name, value);
-  const weakSupportBucketPenalty = weakSupportWorkspaceDomainPenalty(name, value);
-  const infrastructureDominatedPenalty = infrastructureDominatedWorkspaceDomainPenalty(name, value);
-  const semanticBoost = countUniqueMatches(normalized, [
-	    /\bauth(?:entication|orization)?\b/,
-    /\bidentity\b/,
-    /\baccess\b/,
-    /\bpolicy\b/,
-    /\bdevice\b/,
-    /\bnetwork\b/,
-    /\bgateway\b/,
-    /\borganization\b/,
-	    /\baccount\b/,
-	    /\bfinance\b/,
-	    /\binvest(?:ment|ing)?\b/,
-	    /\basset\b/,
-	    /\bportfolio\b/,
-	    /\btransaction\b/,
-    /\bpayment\b/,
-    /\bbilling\b/,
-    /\binvoice\b/,
-    /\bsettlement\b/,
-    /\btoken\b/,
-    /\bexchange\b/,
-    /\banalysis\b/,
-    /\bcodebase\b/,
-    /\btelemetry\b/,
-    /\btrace\b/,
-    /\bworkflow\b/,
-  ]) * 3;
-  const cryptoBoost = countUniqueMatches(normalized, [
-    /\bcrypto\b/,
-    /\bblockchain\b/,
-    /\bweb3\b/,
-    /\bdigital asset/,
-    /\bon-?chain\b/,
-    /\bdefi\b/,
-    /\bwallet\b/,
-    /\bcustod(?:y|ian|ial)\b/,
-    /\bliquidation\b/,
-    /\btrad(?:e|ing)\b/,
-    /\bstak(?:e|ing)\b/,
-    /\bswap\b/,
-  ]) * 4;
-  const multiWordBoost = normalized.includes(' ') ? 1.5 : 0;
-  // Terminal evidence — not raw concept frequency — must govern domain rank.
-  // A plumbing name (auth/identity/token/notification/activity/session, runtime
-  // endpoints, infra) that lacks any product/finance/crypto signal cannot ride
-  // its accumulated score to the top; its raw contribution is capped so the
-  // terminal-anchored business domains win. Names that carry a genuine product
-  // signal are never treated as plumbing even if they also contain a scaffold
-  // word (e.g. "Token Trading", "Account Settlement").
-  const effectiveTerminal = effectiveWorkspaceTerminalScore(name, terminalScore);
-  // The plumbing exemption must come from STRONG business vocabulary only.
-  // auth/identity/access/token are business for a network-access product (where
-  // "network"/"gateway"/"policy" co-occur) but pure plumbing for a finance/crypto
-  // workspace — so they must NOT, on their own, exempt a name from plumbing
-  // suppression (otherwise "User Identity Management" rides raw frequency to the
-  // top of a crypto workspace).
-  const strongBusinessSignal = countUniqueMatches(normalized, [
-    /\bfinance\b/, /\bfinancial\b/, /\binvest(?:ment|ing)?\b/, /\basset\b/,
-    /\bportfolio\b/, /\btransaction\b/, /\bpayment\b/, /\bbilling\b/, /\binvoice\b/,
-    /\bsettlement\b/, /\bexchange\b/, /\bnetwork\b/, /\bgateway\b/, /\bdevice\b/,
-    /\bpolicy\b/, /\borganization\b/, /\bcodebase\b/, /\banaly(?:sis|zer)\b/,
-    /\btelemetry\b/, /\bworkflow\b/, /\bposture\b/,
-  ]) > 0;
-  const businessSignal = strongBusinessSignal || cryptoBoost > 0;
-  const plumbingWord = /\b(user|users|customer|customers|role|roles|group|groups|access|token|tokens|identity|auth|authentication|authorization|session|sessions|login|credential|credentials|license|licenses|licensing|notification|notifications|activity|activities|audit|password|consent|adapter|webhook|webhooks|scheduler|health|profile|preference|preferences|setting|settings|membership|permission|permissions|email|mailer)\b/.test(normalized);
-  const isPlumbingName = !businessSignal && (
-    isInfrastructureSemanticName(normalized) ||
-    isRuntimeEndpointSemanticName(name) ||
-    isSupportingSemanticName(normalized) ||
-    plumbingWord
-  );
-  const rawContribution = isPlumbingName ? Math.min(value.score, 16) : value.score;
-  // Terminal evidence GOVERNS primacy and must not be flattened: a domain the
-  // analyzer threaded through its value chain (Network Access Management,
-  // terminal 133) has to outrank a write-heavy CRUD concept (Device Enrollment,
-  // terminal 72). The previous min(36,...) cap erased that gap and let raw
-  // concept frequency decide — which is why a prerequisite step outranked the
-  // system's purpose. A raw entity class name is still discounted below via the
-  // camelCase / entity-only penalties.
-  const evidenceItems = value.evidence || [];
-  // Plumbing/actor names ("Users", "Roles", "Access Token") must not ride a high
-  // terminal score either — cap their terminal contribution so only genuine
-  // business/terminal domains keep the full signal.
-  const terminalContribution = isPlumbingName ? Math.min(effectiveTerminal, 12) : effectiveTerminal;
-  // `primary_domain:` is the analyzer's own answer to "what is this system for",
-  // and `crypto_anchor` is the equivalent for the digital-asset frame. Reinforce
-  // them — but only moderately, so a plumbing name that happens to carry a
-  // primary_domain tag ("Access Token" on an auth repo) is still beaten by its
-  // supporting-name penalty rather than promoted to the headline.
-  const primaryDomainBoost = evidenceItems.some(item =>
-    item.startsWith('primary_domain:') || item.startsWith('crypto_anchor:')) ? 30 : 0;
-  const supportingNamePenalty = isPlumbingName ? (effectiveTerminal >= 16 ? 10 : 48) : 0;
-  const camelCaseEntityPenalty = /[a-z][A-Z]/.test(String(name)) && !businessSignal ? 30 : 0;
-  const entityOnlyEvidence = evidenceItems.length > 0 &&
-    evidenceItems.every(item => item.startsWith('entity:') || item.startsWith('domain_concept:'));
-  const entityOnlyPenalty = entityOnlyEvidence && !businessSignal ? 20 : 0;
-	  return rawContribution + terminalContribution + primaryDomainBoost + semanticBoost + cryptoBoost + multiWordBoost - productPenalty - genericPenalty - actorOrScaffoldPenalty - infrastructurePenalty - thinEvidencePenalty - conceptOnlyPenalty - singleTokenPrefixPenalty - weakSupportBucketPenalty - infrastructureDominatedPenalty - supportingNamePenalty - camelCaseEntityPenalty - entityOnlyPenalty;
-	}
-
-function infrastructureDominatedWorkspaceDomainPenalty(
-  name: string,
-  value: { evidence?: string[]; terminal_evidence?: string[] },
-): number {
-  const normalized = normalizeAiItemName(name);
-  if (!/\bnetwork access\b/.test(normalized)) return 0;
-  const evidenceText = [...(value.evidence || []), ...(value.terminal_evidence || [])].join(' ').toLowerCase();
-  const infraHeavy = /\b(?:infra|infrastructure|terraform|aws|cloud|database)\b/.test(evidenceText);
-  const productNetwork = /\b(?:zero trust|device|gateway|policy|tunnel|coordinator|drop-server|agent)\b/.test(evidenceText);
-  return infraHeavy && !productNetwork ? 36 : 0;
-}
-
-function weakSupportWorkspaceDomainPenalty(
-  name: string,
-  value: { evidence?: string[]; terminal_score?: number },
-): number {
-  const normalized = normalizeAiItemName(name);
-  if (!/^(risk|risks|order|orders|verification|verifications|issue|issues|component|components|result|results|run|runs|snapshot|snapshots)$/.test(normalized)) return 0;
-  const evidence = value.evidence || [];
-  const hasCapabilityOrEntity = evidence.some(item => /^capability_domain:|^capability:|^entity:/i.test(item));
-  const terminalScore = value.terminal_score || 0;
-  return hasCapabilityOrEntity || terminalScore >= 12 ? 0 : 54;
-}
-
-function workspaceDomainFromCapabilityName(name: unknown): string | undefined {
-  const text = String(name || '').replace(/\s+/g, ' ').trim();
-  const normalized = normalizeAiItemName(text);
-  if (!normalized || isGenericWorkspaceCapabilityName(text) || isSupportingSemanticName(normalized)) return undefined;
-  const tokens = normalized.split(/\s+/).filter(Boolean);
-  if (tokens.length < 2 || tokens.length > 4) return undefined;
-  if (tokens.length > 2 && tokens[tokens.length - 1] === 'management') return undefined;
-  return titleizeDomain(text);
-}
-
-function singleTokenCapabilityPrefixDomainPenalty(
-  name: string,
-  value: { evidence?: string[]; terminal_score?: number },
-): number {
-  const normalized = normalizeAiItemName(name);
-  if (!normalized || normalized.includes(' ') || (value.terminal_score || 0) >= 16) return 0;
-  const capabilityEvidence = (value.evidence || []).filter(item => item.startsWith('capability:'));
-  if (capabilityEvidence.some(item => {
-    const capabilityName = normalizeAiItemName(item.replace(/^capability:/, ''));
-    const tokens = capabilityName.split(/\s+/).filter(Boolean);
-    return tokens.length > 1 && tokens[0] === normalized;
-  })) return 42;
-  return 0;
-}
-
-function conceptOnlyWorkspaceDomainPenalty(
-  name: string,
-  value: { evidence?: string[]; terminal_score?: number; terminal_evidence?: string[] },
+  _productNames: Set<string>,
 ): number {
   const evidence = value.evidence || [];
-  if (evidence.length === 0) return 0;
-  if (evidence.some(item => item.startsWith('capability:') || item.startsWith('entity:') || item.startsWith('primary_domain:') || item.startsWith('project_domain:'))) return 0;
-  if (!evidence.every(item => item.startsWith('core_concept:') || item.startsWith('domain_concept:'))) return 0;
-  const terminalScore = value.terminal_score || 0;
-  const normalized = normalizeAiItemName(name);
-  const fragmentPenalty = isLikelyConceptFragment(normalized) ? 36 : 0;
-  return terminalScore >= 16 ? 8 + fragmentPenalty : 28 + fragmentPenalty;
-}
-
-function isLikelyConceptFragment(normalized: string): boolean {
-  return /^(accesses|accessible|accessor|accessors|agentic|ages|analyze|aianalyzer|apianalyzer|code|codes|codebase|codebases|component|components|method|methods|model|models|query|queries|result|results)$/.test(normalized);
-}
-
-function thinWorkspaceDomainEvidencePenalty(name: string, value: { evidence?: string[]; terminal_score?: number; terminal_evidence?: string[] }): number {
-  const evidence = value.evidence || [];
-  const terminalScore = value.terminal_score || 0;
-  const terminalEvidence = value.terminal_evidence || [];
-  if (terminalScore >= 16) return 0;
-  if (evidence.some(item => item.startsWith('capability:') || item.startsWith('primary_domain:') || item.startsWith('core_concept:'))) return 0;
-  const entityOnly = evidence.length > 0 && evidence.every(item => item.startsWith('entity:') || item.startsWith('domain_concept:'));
-  if (!entityOnly) return 0;
-  const normalized = normalizeAiItemName(name);
-  const genericActor = /^(customer|user|account|member|profile|person|people|client|contact|admin|agent)$/.test(normalized);
-  const technicalEntity = isLikelyTechnicalEntityDomainName(name);
-  return genericActor ? 54 : technicalEntity ? 48 : 24;
-}
-
-function isLikelyTechnicalEntityDomainName(name: string): boolean {
-  const raw = String(name || '');
-  const normalized = normalizeAiItemName(raw);
-  return /[a-z][A-Z]/.test(raw) ||
-    /\b(connection|access|membership|issue|component|result|run|snapshot|token|permission|session|setting|configuration|organization|workspace|project)\b/.test(normalized);
-}
-
-function workspaceProductDomainsFromProjectName(name: string, projectPath: string | undefined): string[] {
-  const text = normalizeAiItemName(`${name || ''} ${projectPath ? path.basename(projectPath) : ''}`);
-  const domains: string[] = [];
-  const add = (domain: string, pattern: RegExp) => {
-    if (pattern.test(text)) domains.push(domain);
-  };
-  add('Finance', /\bfinance|financial|fintech\b/);
-  add('Investment', /\binvest|portfolio|asset\b/);
-  add('Payments', /\bpayment|payments|billing|invoice|settlement|stripe\b/);
-  add('Network Access', /\bztna|network access|access control|zero trust\b/);
-  add('Codebase Analysis', /\bcodebase|analysis|analyzer|mcp|agent context\b/);
-  return mergeStrings([], domains);
+  const authoredPurpose = evidence.some(item => item.startsWith('primary_domain:') || item.startsWith('project_domain:'));
+  const structuralEvidence = evidence.filter(item => /^(entity|capability|domain_concept):/.test(item)).length;
+  return value.score + Math.max(0, value.terminal_score || 0) * 2 + Number(authoredPurpose) * 30 + Math.min(18, structuralEvidence * 3);
 }
 
 function isWeakWorkspaceDomain(name: string): boolean {
   const normalized = name.toLowerCase().trim();
   if (!normalized) return true;
   if (/[<>]/.test(name) || /&lt;|&gt;/.test(normalized)) return true;
-  // Bracket / paren / pipe noise leaks in from journey, step, and render node
-  // names ("[auto", "Page]", "x | y"); these are never product domains.
+
   if (/[\[\](){}|]/.test(name)) return true;
   if (/^(command|commands|event|events|route|routes|handler|handlers)\b/.test(normalized)) return true;
   if (/^(url|uri|id|uuid|data|info|item|items|value|values|type|types|status|state|config|configuration|generate|create|read|update|delete|list|find|get|set|sync|process|execute|handle|manage|service|api|app|system|days|password|port|server|issue|issues|result|results|snapshot|snapshots)$/.test(normalized)) return true;
-  // Single-word structural / UI / tooling fragments that are not domains.
+
   if (/^(auto|automated|page|pages|preview|view|views|collect|draft|untitled|sample|demo|example|default|index|main|util|utils|helper|helpers|mock|mocks|misc|temp|todo|linq|alert|summary|summaries)$/.test(normalized)) return true;
   if (/^(enterprise|platform|application|typescript|javascript|node|nodejs|python|java|kotlin|scala|dotnet|\.net|csharp|rust|golang|go|php|ruby|dart|flutter|swift|objective c|cpp|c\+\+|terraform|docker|kubernetes|react|angular|vue|svelte|express|fastapi|django|flask|laravel|spring|nestjs|aspnet|framework|frameworks)$/.test(normalized)) return true;
   if (normalized.split(/\s+/).length === 1 && normalized.length < 4) return true;
@@ -7745,13 +6714,10 @@ function isWeakWorkspaceDomain(name: string): boolean {
 function buildWorkspaceCapabilities(
   repositories: CrossCodebaseInput[],
   applications: SystemApplication[],
-  codebases: SystemCodebase[],
   lookupIndexes: Map<CASOutput, CrossCodebaseLookupIndex>,
-  systemInsights: SystemInsight[] = [],
 ): WorkspaceCapability[] {
   const terminalProfiles = buildWorkspaceTerminalProfiles(repositories);
   const appByEntry = new Map<string, SystemApplication>();
-  const codebaseById = new Map(codebases.map(codebase => [codebase.id, codebase]));
   for (const repository of repositories) {
     const id = codebaseId(repository.path);
     const apps = applications.filter(app => app.codebase_id === id);
@@ -7769,7 +6735,7 @@ function buildWorkspaceCapabilities(
     const projectId = codebaseId(repository.path);
     const infrastructureArtifact = repository.cas.enhanced_system_purpose?.artifact_type === 'infrastructure';
     const terminalProfile = terminalProfiles.get(projectId) || emptyTerminalSemanticProfile(projectId);
-    for (const capability of repository.cas.system_capabilities || []) {
+    for (const capability of repository.cas.capabilities || []) {
       const apps = capability.operations
         .map(operation => appByEntry.get(`${projectId}:${operation.entry_point_id}`))
         .filter(Boolean) as SystemApplication[];
@@ -7785,15 +6751,10 @@ function buildWorkspaceCapabilities(
         ...(capability.related_entities || []).map(entity => `entity:${entity}`),
         ...(capability.operations || []).map(operation => `${operation.action}:${operation.path_or_command || operation.entry_point_id}`),
       ].slice(0, 10);
-      const infraOnlyEvidence = infrastructureArtifact || isInfrastructureOnlyCapabilityEvidence(capability.name, evidence);
-      const semanticRole = infraOnlyEvidence
+      const infrastructureOnly = infrastructureArtifact || capability.evidence_kind === 'infrastructure' || capability.category === 'internal';
+      const semanticRole = infrastructureOnly
         ? 'infrastructure'
-        : isContextPreservationCapability(capability.name, capability.description)
-          // "preserves X workflow context" / "keeps the selected ... aligned" /
-          // "represents X behavior inferred from terminal domain nodes" are state
-          // bookkeeping, not product capabilities — never a key capability.
-          ? 'supporting'
-          : semanticRoleForWorkspaceItem(capability.name, terminalSignal.score, fallbackRole);
+        : semanticRoleFromTerminalScore(terminalSignal.score, fallbackRole);
       const deployableIds = [...new Set(apps.map(app => app.id))];
       const repoAiDescriptionReady = (capability as any).description_source === 'ai' &&
         isGroundedAiWorkspaceItemDescription({
@@ -7804,15 +6765,16 @@ function buildWorkspaceCapabilities(
           ai_required: true,
           generation_pass: 'default-summary',
           semantic_role: semanticRole,
-          terminal_score: roundTerminalScore(infraOnlyEvidence ? Math.min(0, terminalSignal.score) : terminalSignal.score),
-          terminal_evidence: infraOnlyEvidence ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
+          terminal_score: roundTerminalScore(infrastructureOnly ? Math.min(0, terminalSignal.score) : terminalSignal.score),
+          terminal_evidence: infrastructureOnly ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
           project_ids: [projectId],
           deployable_ids: deployableIds,
           criticality: capability.criticality,
           evidence,
         }, capability.description, 'capability');
+      const workspaceCapabilityId = `${projectId}:capability:${slugify(capability.id || capability.name)}`;
       capabilities.push({
-        id: `${projectId}:capability:${slugify(capability.id || capability.name)}`,
+        id: workspaceCapabilityId,
         name: capability.name,
         description: capability.description,
         description_source: repoAiDescriptionReady ? 'ai' : 'ai-required-degraded',
@@ -7821,293 +6783,17 @@ function buildWorkspaceCapabilities(
         degraded_reason: repoAiDescriptionReady ? undefined :
           'Whole-workspace capability descriptions require grounded AI enrichment from deterministic workspace-level CAS facts.',
         semantic_role: semanticRole,
-        terminal_score: roundTerminalScore(infraOnlyEvidence ? Math.min(0, terminalSignal.score) : terminalSignal.score),
-        terminal_evidence: infraOnlyEvidence ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
+        terminal_score: roundTerminalScore(infrastructureOnly ? Math.min(0, terminalSignal.score) : terminalSignal.score),
+        terminal_evidence: infrastructureOnly ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
         project_ids: [projectId],
         deployable_ids: deployableIds,
         criticality: capability.criticality,
         evidence,
+        source_capability_ids: [workspaceCapabilityId],
       });
     }
   }
-  if (capabilities.length === 0) {
-    return applications
-      .filter(app => shouldExposeInWorkspaceOverview(app, applications))
-      .slice(0, 12)
-      .map(app => ({
-        id: `${app.id}:capability`,
-        name: app.name.replace(/[-_]+/g, ' '),
-        description: `${app.name} is a workspace deployable or package-level surface from ${codebaseById.get(app.codebase_id)?.name || app.codebase_id}.`,
-        description_source: 'ai-required-degraded' as const,
-        ai_required: true as const,
-        generation_pass: 'default-summary' as const,
-        degraded_reason: 'Whole-workspace primary capability descriptions require default AI enrichment from deterministic workspace-level CAS facts.',
-        project_ids: [app.codebase_id],
-        deployable_ids: [app.id],
-        criticality: inferTier(app, codebaseById.get(app.codebase_id), undefined) === 'critical' ? 'high' : 'medium',
-        evidence: [app.path_hint || app.name],
-      }));
-  }
-  const valueFrame = workspaceValueFrameTags(repositories);
-  return dedupeWorkspaceCapabilities(
-    deriveWorkspaceCapabilitiesFromFacts(capabilities, systemInsights, applications, repositories, valueFrame)
-  )
-    // Final guard: dedupe takes the strongest role across repos, which can
-    // re-promote a context/CRUD pseudo-capability. Tighten the role based on the
-    // final merged description and the product value frame so the key (core)
-    // list stays selective.
-    .map(capability => ({ ...capability, semantic_role: tightenedWorkspaceCapabilityRole(capability, valueFrame) }))
-    .slice(0, 30);
-}
-
-// State-bookkeeping descriptions emitted by the CAS fallback builder. These are
-// not product capabilities and must never be presented as "key".
-function isContextPreservationCapability(name: string, description: unknown): boolean {
-  const d = String(description || '').toLowerCase();
-  return /\bpreserves .* workflow context\b/.test(d) ||
-    /\bkeeps the selected .* aligned\b/.test(d) ||
-    /\brepresents .* behavior inferred from terminal domain nodes\b/.test(d) ||
-    /\buse the same domain state\b/.test(d);
-}
-
-// Generic CRUD-lifecycle or circular descriptions ("maintains the X lifecycle,
-// including creation, updates, and deletion", "manages X behavior", "maintains
-// Entity; processes X behavior"). These are real but are NOT distinctive product
-// capabilities; they stay `core` only if terminal evidence proves they sit on the
-// value chain (e.g. "Inline Gateway Management", terminal 20), otherwise they drop
-// to supporting so the key-capability list is tight.
-function isGenericLifecycleCapability(description: unknown): boolean {
-  const d = String(description || '').toLowerCase();
-  return /\bmaintains the .* lifecycle, including creation, updates, and deletion\b/.test(d) ||
-    /\bmanages .* behavior from product request flows\b/.test(d) ||
-    /\bprocesses .* behavior\b/.test(d) ||
-    /\b(maintains|tracks) [a-z0-9 ]+; (processes|reads|analyzes|generates) .* behavior\b/.test(d);
-}
-
-// Key capabilities are what the system DOES TO PROVIDE VALUE to customers, not
-// the internal mechanisms that move bytes or operate the system. A message
-// broker / event bus / queue is transport plumbing; it is a key capability only
-// if the product is literally a brokering service. The same goes for generic
-// observability/logging. These are surfaced (honestly) but never headlined.
-// The product's VALUE FRAME: which cross-cutting plane(s) are actually this
-// product's reason for being. Derived from repo-level primary domains and core
-// concepts (the analyzer's own "what is this for" answer), requiring a strong
-// signal so incidental vocabulary does not flip a plane into the value set. When
-// a plane is in the frame, capabilities in that plane stay `core` (an
-// observability product keeps telemetry; a payments product keeps billing; a
-// streaming/broker product keeps message brokering).
-function workspaceValueFrameTags(repositories: CrossCodebaseInput[]): Set<string> {
-  const text = normalizeAiItemName(repositories.flatMap(repository => {
-    const purpose: any = repository.cas?.enhanced_system_purpose || {};
-    return [purpose.primary_domain, ...(purpose.core_concepts || []), purpose.description || ''];
-  }).filter(Boolean).join(' '));
-  const tags = new Set<string>();
-  const strong = (patterns: RegExp[], min = 2) => countUniqueMatches(text, patterns) >= min;
-  if (strong([/\bobservability\b/, /\bmonitoring\b/, /\btelemetry\b/, /\bapm\b/, /\blog analytics\b/, /\bmetrics\b/, /\btracing\b/, /\bincident\b/, /\balerting\b/])) tags.add('observability');
-  if (strong([/\bbilling\b/, /\bpayments?\b/, /\binvoicing\b/, /\bsubscription\b/, /\bpayment processing\b/, /\bmerchant\b/, /\bpayout\b/, /\bcheckout\b/])) tags.add('monetization');
-  if (strong([/\bmessage broker\b/, /\bmessage queue\b/, /\bevent streaming\b/, /\bpub ?sub\b/, /\bevent bus\b/, /\bstreaming platform\b/, /\bkafka\b/, /\bmessaging platform\b/])) tags.add('messaging');
-  if (strong([/\borchestration platform\b/, /\bcontrol plane\b/, /\bdevice management platform\b/, /\bfleet management\b/, /\bautomation platform\b/, /\bprovisioning platform\b/])) tags.add('control-plane');
-  return tags;
-}
-
-function isInternalMechanismCapability(name: string, description: unknown): boolean {
-  const text = normalizeAiItemName(`${name} ${String(description || '')}`);
-  return /\b(message broker|message brokering|brokering|event bus|message bus|message queue|pub ?sub|message dispatch|message relay|service mesh|sidecar)\b/.test(text);
-}
-
-// Observability / logging is a supporting plane — it reports on the system, it
-// is not the value the system delivers (unless the product itself is an
-// observability tool, which would be named in its primary frame).
-function isObservabilityCapability(name: string, description: unknown): boolean {
-  const text = normalizeAiItemName(`${name} ${String(description || '')}`);
-  return /\b(traffic log|audit log|access log|activity log|event log|log management|logging|telemetry|metrics|monitoring|instrumentation)\b/.test(text);
-}
-
-// A capability whose entire description is "<name> maintains <Entity>." restates
-// an entity with no behavior — bookkeeping, not a value capability.
-function isBareEntityMaintenanceCapability(description: unknown): boolean {
-  return /\bmaintains [a-z0-9]+\.?\s*$/i.test(String(description || ''));
-}
-
-// Monetization (billing/subscription/invoicing the customer) is how the business
-// gets paid, not the value delivered to the customer — a supporting plane.
-// Deliberately excludes payment/settlement/transaction, which can be the actual
-// product value for a fintech/payments workspace.
-function isMonetizationCapability(name: string, description: unknown): boolean {
-  const text = normalizeAiItemName(`${name} ${String(description || '')}`);
-  return /\b(billing|subscription|invoicing|invoice|dunning|chargeback)\b/.test(text);
-}
-
-function tightenedWorkspaceCapabilityRole(
-  capability: WorkspaceCapability,
-  frame: Set<string>,
-): WorkspaceSemanticRole | undefined {
-  if (capability.semantic_role !== 'core') return capability.semantic_role;
-  // Key capabilities = what the system does to deliver customer value. Demote
-  // cross-cutting planes (transport, observability, monetization) UNLESS that
-  // plane is the product's actual value frame — then it stays core. Frame-
-  // independent noise (state bookkeeping, generic CRUD, bare-entity restatements)
-  // is always demoted.
-  if (isInternalMechanismCapability(capability.name, capability.description) && !frame.has('messaging')) return 'supporting';
-  if (isObservabilityCapability(capability.name, capability.description) && !frame.has('observability')) return 'supporting';
-  if (isMonetizationCapability(capability.name, capability.description) && !frame.has('monetization')) return 'supporting';
-  if (isBareEntityMaintenanceCapability(capability.description)) return 'supporting';
-  if (isContextPreservationCapability(capability.name, capability.description)) return 'supporting';
-  if (isGenericLifecycleCapability(capability.description) && (capability.terminal_score || 0) < 12) return 'supporting';
-  return 'core';
-}
-
-/**
- * Promotes Klauro's high-confidence architectural insights (broker, relay/
- * fallback, MCP/agent control plane) and transport evidence (NAT traversal /
- * hole punching) into first-class workspace capabilities. The capability
- * detector is entity/CRUD-centric and emits "Device Management / Network
- * Management" while the system's *defining* behavior — P2P connectivity,
- * coordinator relay, message brokering, agent control surface — lives only in
- * insights and runtime topology. These are exactly the workspace-level-CAS §8 acceptance facts.
- */
-function deriveArchitecturalCapabilitiesFromInsights(
-  insights: SystemInsight[],
-  applications: SystemApplication[],
-  repositories: CrossCodebaseInput[],
-  frame: Set<string> = new Set(),
-): WorkspaceCapability[] {
-  const out: WorkspaceCapability[] = [];
-  const appName = (id: string) => applications.find(app => app.id === id)?.name || id;
-  const make = (
-    id: string,
-    name: string,
-    description: string,
-    sourceInsights: SystemInsight[],
-    criticality: 'critical' | 'high',
-    role: WorkspaceSemanticRole,
-    fallbackDeployableNames: string[] = [],
-  ) => {
-    const deployableIds = mergeStrings([], sourceInsights.flatMap(insight => insight.application_ids)).slice(0, 8);
-    const projectIds = mergeStrings([], sourceInsights.flatMap(insight => insight.codebase_ids)).slice(0, 6);
-    out.push({
-      id: `workspace-capability:${slugify(id)}`,
-      name,
-      description,
-      description_source: 'ai',
-      ai_required: true,
-      generation_pass: 'default-summary',
-      semantic_role: role,
-      // Value-delivery capabilities (how the product serves customers) carry the
-      // full terminal weight so they lead; internal mechanisms get little.
-      terminal_score: role === 'core' ? 32 : 4,
-      terminal_evidence: mergeStrings([], sourceInsights.map(insight => `insight:${insight.type}:${truncateText(insight.title, 60)}`)).slice(0, 6),
-      project_ids: projectIds,
-      deployable_ids: deployableIds,
-      criticality,
-      evidence: mergeStrings(
-        deployableIds.length ? [] : fallbackDeployableNames.map(deployableName => `deployable:${deployableName}`),
-        sourceInsights.map(insight => `insight:${insight.type}:${truncateText(insight.description, 70)}`),
-      ).slice(0, 10),
-    });
-  };
-
-  // Only a PRODUCT broker counts (one that brokers agent/device/client/drop-
-  // server messages). A generic infra message bus (kafka/nats/rabbit/redis/
-  // infra-msg-broker wiring services together) is infrastructure, not a key
-  // product capability — this keeps "Message Brokering" off a crypto/trading
-  // workspace whose broker is just an event bus.
-  const broker = insights.filter(insight =>
-    insight.type === 'broker-service' &&
-    insight.application_ids.some(id => /\b(agent|device|client|drop[-_ ]?server)\b/i.test(appName(id))));
-  if (broker.length) {
-    const names = mergeStrings([], broker.flatMap(insight => insight.application_ids.map(appName))).slice(0, 4);
-    // Message brokering is an INTERNAL TRANSPORT MECHANISM, not customer value —
-    // it is never a key capability unless the product literally sells brokering.
-    // Surface it as infrastructure so it is honest but not headlined.
-    make('message-brokering', 'Message Brokering',
-      `Message Brokering relays agent and device messages between ${joinHumanReadableList(names) || 'broker and service deployables'} so requests reach the right service without a direct connection.`,
-      broker, 'high', frame.has('messaging') ? 'core' : 'infrastructure');
-  }
-  const relay = insights.filter(insight => insight.type === 'relay-or-fallback-path');
-  if (relay.length) {
-    // Name only the relaying nodes (coordinator/gateway/drop-server/relay), not
-    // the endpoints they connect (admin-ui, admin-api).
-    const names = mergeStrings([], relay.flatMap(insight => insight.application_ids.map(appName)))
-      .filter(deployableName => /coordinator|gateway|drop[-_ ]?server|relay/i.test(deployableName))
-      .slice(0, 4);
-    // Relay/fallback DELIVERS the connectivity value (customers still reach
-    // their resource when a direct path fails), so it is a value capability.
-    make('connection-relay-fallback', 'Connection Relay & Fallback',
-      `Connection Relay & Fallback routes traffic through ${joinHumanReadableList(names) || 'the coordinator'} when a direct peer-to-peer path is unavailable, keeping access working behind NAT and firewalls.`,
-      relay, 'high', 'core');
-  }
-  const mcp = insights.filter(insight => insight.type === 'mcp-agent-surface' || insight.type === 'agent-control-plane');
-  if (mcp.length) {
-    const names = mergeStrings([], mcp.flatMap(insight => insight.application_ids.map(appName))).slice(0, 3);
-    // A control plane is how the system is OPERATED, not the value it delivers —
-    // supporting unless the product is sold as a programmable control surface.
-    make('agent-control-surface', 'Agent Control Surface',
-      `Agent Control Surface exposes an MCP / machine-to-machine control plane${names.length ? ` (${names.join(', ')})` : ''} that agents and tools drive programmatically.`,
-      mcp, 'high', frame.has('control-plane') ? 'core' : 'supporting');
-  }
-
-  // Peer-to-peer connectivity — only when transport vocabulary is actually
-  // present in repo CAS (hole punching, NAT traversal, STUN, hyperswarm/holesail).
-  const transportText = repositories.map(repository => {
-    const cas: any = repository.cas || {};
-    return [
-      ...(cas.system_capabilities || []).map((capability: any) => capability.name),
-      ...(cas.data_entities || []).map((entity: any) => entity.name),
-      ...(cas.domain_concepts || []).map((concept: any) => concept.name),
-      cas.enhanced_system_purpose?.primary_domain || '',
-      (cas.enhanced_system_purpose?.core_concepts || []).join(' '),
-    ].join(' ');
-  }).join(' ').toLowerCase();
-  const p2pHit = /holepunch|holesail|hyperswarm|hole punch|nat[\s-]?traversal|\bstun\b|\bp2p\b|peer[\s-]?to[\s-]?peer/.test(transportText) ||
-    insights.some(insight => /\b(p2p|peer-to-peer|holepunch|hole punch|nat traversal)\b/i.test(insight.description));
-  if (p2pHit) {
-    make('peer-to-peer-connectivity', 'Peer-to-Peer Connectivity',
-      'Peer-to-Peer Connectivity establishes direct encrypted device-to-device connections using NAT traversal / hole punching, with relay fallback when a direct path cannot be formed.',
-      relay, 'critical', 'core',
-      mergeStrings([], applications.filter(app => /client|agent|coordinator|gateway/i.test(app.name)).map(app => app.name)).slice(0, 4));
-  }
-  return out;
-}
-
-function deriveWorkspaceCapabilitiesFromFacts(
-  capabilities: WorkspaceCapability[],
-  systemInsights: SystemInsight[] = [],
-  applications: SystemApplication[] = [],
-  repositories: CrossCodebaseInput[] = [],
-  frame: Set<string> = new Set(),
-): WorkspaceCapability[] {
-  const derived = [...capabilities, ...deriveArchitecturalCapabilitiesFromInsights(systemInsights, applications, repositories, frame)];
-  const hasAccessEnforcement = capabilities.some(capability => normalizeAiItemName(capability.name) === 'access enforcement');
-  const accessCandidates = capabilities.filter(capability =>
-    /\b(access|device|network|resource|gateway|policy|posture)\b/.test(normalizeAiItemName(`${capability.name} ${capability.evidence.join(' ')}`))
-  );
-  const hasAccessRequestSignal = accessCandidates.some(capability => /\baccess\s*request|accessrequest|access\s*binding|accessbinding\b/i.test(`${capability.name} ${capability.evidence.join(' ')}`));
-  const hasAccessPlaneSignal = accessCandidates.some(capability => /\b(device|resource|network|gateway|policy|posture)\b/i.test(`${capability.name} ${capability.evidence.join(' ')}`));
-  if (!hasAccessEnforcement && hasAccessRequestSignal && hasAccessPlaneSignal) {
-    const projectIds = mergeStrings([], accessCandidates.flatMap(capability => capability.project_ids));
-    const deployableIds = mergeStrings([], accessCandidates.flatMap(capability => capability.deployable_ids));
-    const evidence = mergeStrings(
-      ['entity:AccessRequest', 'entity:AccessBinding'],
-      accessCandidates.flatMap(capability => capability.evidence)
-    ).slice(0, 12);
-    derived.push({
-      id: `workspace-capability:${slugify('access-enforcement')}`,
-      name: 'Access Enforcement',
-      description: 'Access Enforcement coordinates access requests, device posture, resources, gateways, and policy bindings so only allowed users and devices can reach protected network resources.',
-      description_source: 'ai',
-      ai_required: true,
-      generation_pass: 'default-summary',
-      semantic_role: 'core',
-      terminal_score: Math.max(24, ...accessCandidates.map(capability => capability.terminal_score || 0)),
-      terminal_evidence: mergeStrings([], accessCandidates.flatMap(capability => capability.terminal_evidence || [])).slice(0, 8),
-      project_ids: projectIds,
-      deployable_ids: deployableIds,
-      criticality: 'critical',
-      evidence,
-    });
-  }
-  return derived;
+  return dedupeWorkspaceCapabilities(capabilities).slice(0, 30);
 }
 
 function dedupeWorkspaceCapabilities(capabilities: WorkspaceCapability[]): WorkspaceCapability[] {
@@ -8120,6 +6806,7 @@ function dedupeWorkspaceCapabilities(capabilities: WorkspaceCapability[]): Works
       project_ids: mergeStrings(existing.project_ids, capability.project_ids),
       deployable_ids: mergeStrings(existing.deployable_ids, capability.deployable_ids),
       evidence: mergeStrings(existing.evidence, capability.evidence).slice(0, 12),
+	  source_capability_ids: mergeStrings(existing.source_capability_ids || [existing.id], capability.source_capability_ids || [capability.id]),
 	    criticality: criticalityRank(capability.criticality) > criticalityRank(existing.criticality) ? capability.criticality : existing.criticality,
 	      semantic_role: strongerSemanticRole(existing.semantic_role, capability.semantic_role),
 	      terminal_score: Math.max(existing.terminal_score || 0, capability.terminal_score || 0),
@@ -8127,7 +6814,6 @@ function dedupeWorkspaceCapabilities(capabilities: WorkspaceCapability[]): Works
 	    } : capability);
 	  }
 	  return [...byName.values()]
-      .filter(capability => !isUnsupportedCommerceCapability(capability))
       .sort((left, right) => workspaceCapabilityRank(right) - workspaceCapabilityRank(left) || left.name.localeCompare(right.name));
 	}
 
@@ -8136,110 +6822,11 @@ function workspaceCapabilityRank(capability: WorkspaceCapability): number {
   score += Math.min(18, capability.deployable_ids.length * 4);
   score += Math.min(14, capability.project_ids.length * 2);
 	  score += capability.evidence.some(item => item.startsWith('entity:')) ? 10 : 0;
-	  score += Math.min(34, effectiveWorkspaceTerminalScore(capability.name, capability.terminal_score || 0) * 2);
+	  score += Math.min(34, Math.max(0, capability.terminal_score || 0) * 2);
 	  if (capability.semantic_role === 'core') score += 22;
 	  if (capability.semantic_role === 'infrastructure') score -= 18;
-	  score += capabilityNameSupportedByEvidence(capability) ? 14 : -18;
-  score += workspaceProductCapabilitySignal(capability.name) * 6;
-  if (isSupportingSemanticName(normalizeAiItemName(capability.name))) score -= 58;
-  if (isGenericWorkspaceCapabilityName(capability.name)) score -= capabilityNameSupportedByEvidence(capability) ? 18 : 32;
-  if (isTechnicalArtifactCapability(capability) && capability.deployable_ids.length === 0) score -= 18;
-  if (isUnsupportedCommerceCapability(capability)) score -= 86;
+  if (capability.description_source === 'ai') score += 14;
   return score;
-}
-
-function isUnsupportedCommerceCapability(capability: WorkspaceCapability): boolean {
-  const name = normalizeAiItemName(capability.name);
-  if (!/\b(product catalog|catalog|merchandising|commerce)\b/.test(name)) return false;
-  const evidence = normalizeAiItemName([
-    capability.evidence.join(' '),
-    capability.project_ids.join(' '),
-    capability.deployable_ids.join(' '),
-    (capability.terminal_evidence || []).join(' '),
-  ].join(' '));
-  return !/\b(commerce|ecommerce|merchandising|cart|checkout|sku|variant|inventory|storefront)\b/.test(evidence);
-}
-
-function capabilityNameSupportedByEvidence(capability: WorkspaceCapability): boolean {
-  const tokens = capabilityNameTokens(capability.name);
-  if (tokens.length === 0) return false;
-  const evidenceText = normalizeAiItemName([
-    capability.description,
-    capability.evidence.join(' '),
-    capability.deployable_ids.join(' '),
-    capability.project_ids.join(' '),
-  ].join(' '));
-  const matched = tokens.filter(token => new RegExp(`\\b${escapeRegExp(token)}\\b`).test(evidenceText));
-  return matched.length >= Math.max(1, Math.ceil(tokens.length * 0.45));
-}
-
-function capabilityNameTokens(name: string): string[] {
-  const stop = new Set(['management', 'services', 'service', 'control', 'context', 'infrastructure', 'backend', 'provisioning', 'and', 'the']);
-  return normalizeAiItemName(name)
-    .split(/\s+/)
-    .filter(token => token.length >= 4 && !stop.has(token));
-}
-
-function workspaceProductCapabilitySignal(name: string): number {
-  const text = normalizeAiItemName(name);
-  return countUniqueMatches(text, [
-    /\bfinance\b/,
-    /\bfinancial\b/,
-    /\binvest(?:ment|ing)?\b/,
-    /\basset\b/,
-    /\bportfolio\b/,
-    /\btransaction\b/,
-    /\bpayment\b/,
-    /\bbilling\b/,
-    /\binvoice\b/,
-    /\bsettlement\b/,
-    /\bliquidation\b/,
-    /\bpurchase\b/,
-    /\bspending\b/,
-    /\bexchange\b/,
-    /\border\b/,
-    /\btrad(?:e|ing)\b/,
-    /\bcrypto\b/,
-    /\bblockchain\b/,
-    /\bweb3\b/,
-    /\bdigital asset/,
-    /\bon-?chain\b/,
-    /\bdefi\b/,
-    /\bwallet\b/,
-    /\bcustod(?:y|ian|ial)\b/,
-    /\bswap\b/,
-    /\bstak(?:e|ing)\b/,
-    /\bmint(?:ing)?\b/,
-    /\bdeposit\b/,
-    /\baccess\b/,
-    /\bdevice\b/,
-    /\bgateway\b/,
-    /\bnetwork\b/,
-    /\bpolicy\b/,
-    /\bauth0\b/,
-    /\bposture\b/,
-    /\bgroup\b/,
-    /\borganization\b/,
-    /\bresource\b/,
-    /\bconnection\b/,
-    /\bcodebase\b/,
-    /\banaly(?:sis|zer)\b/,
-    /\btelemetry\b/,
-    /\btrace\b/,
-    /\bmcp\b/,
-  ]);
-}
-
-function isGenericWorkspaceCapabilityName(name: string): boolean {
-  return /\b(project backend provisioning|storage and functions|management services|data management|system management)\b/i.test(name);
-}
-
-function isTechnicalArtifactCapability(capability: WorkspaceCapability): boolean {
-  const name = normalizeAiItemName(capability.name);
-  if (/\b(bincode|btm|bull|cleanup|backup code|address|username|userapp)\b/.test(name)) return true;
-  const evidenceText = normalizeAiItemName(capability.evidence.join(' '));
-  return /\b(jest config|test|fixture|mikro orm config|src bin|demo command|example command)\b/.test(evidenceText) &&
-    !/\b(access|agent|device|gateway|network|policy|auth0|posture|group|organization|resource)\b/.test(name);
 }
 
 function buildWorkspaceEntities(
@@ -8296,7 +6883,7 @@ function buildWorkspaceEntities(
   for (const repository of repositories) {
     const projectId = codebaseId(repository.path);
     const terminalProfile = terminalProfiles.get(projectId) || emptyTerminalSemanticProfile(projectId);
-    for (const entity of repository.cas.data_entities || []) {
+    for (const entity of repository.cas.entities || []) {
       const workspaceEntity = ensure(entity.name);
       const terminalSignal = terminalSignalForName(terminalProfile, entity.name);
       workspaceEntity.project_ids = mergeStrings(workspaceEntity.project_ids, [projectId]);
@@ -8309,7 +6896,7 @@ function buildWorkspaceEntities(
       workspaceEntity.description = workspaceEntity.description || entity.description;
       workspaceEntity.description_source = workspaceEntity.description_source || entity.description_source as WorkspaceDescriptionSource | undefined;
       workspaceEntity.evidence = mergeStrings(workspaceEntity.evidence, [`${projectId}:entity:${entity.id}`, entity.schema_source || '']).filter(Boolean).slice(0, 12);
-      workspaceEntity.semantic_role = strongerSemanticRole(workspaceEntity.semantic_role, semanticRoleForWorkspaceItem(entity.name, terminalSignal.score));
+      workspaceEntity.semantic_role = strongerSemanticRole(workspaceEntity.semantic_role, semanticRoleFromTerminalScore(terminalSignal.score));
       workspaceEntity.terminal_score = Math.max(workspaceEntity.terminal_score || 0, roundTerminalScore(terminalSignal.score) || 0);
       workspaceEntity.terminal_evidence = mergeStrings(workspaceEntity.terminal_evidence || [], terminalSignal.evidence).slice(0, 8);
       workspaceEntity.confidence = Math.max(workspaceEntity.confidence, entity.schema_source ? 0.82 : 0.68);
@@ -8420,8 +7007,7 @@ function buildWorkspaceEntities(
     const key = slugify(pathItem.entity_name);
     pathsByEntity.set(key, [...(pathsByEntity.get(key) || []), pathItem]);
   }
-  // Drop any entity whose name still looks like a raw CAS id (`entity_<slug>`) and
-  // duplicates a real entity — defends the output even if a new ref path appears.
+
   for (const [key, entity] of entities) {
     const rawIdMatch = /^entity[_:-](.+)$/i.exec(entity.name);
     if (!rawIdMatch) continue;
@@ -8539,12 +7125,7 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
 
   for (const journey of cas.user_journeys || []) {
     const journeyWeight = journey.criticality === 'critical' ? 4 : journey.criticality === 'high' ? 3 : journey.classification === 'primary' ? 2 : 1;
-    // Shell-script journeys surface the external OS commands a script invokes
-    // as pseudo terminal "entities" ("Curl read" alongside `External command:
-    // curl`). The journey's own terminal_effects identify which names are
-    // subprocess commands — execution plumbing, never domain entities — so
-    // they must not seed terminal grounding (that is exactly how "Curl"
-    // became a live workspace domain).
+
     const externalCommandNames = journeyExternalCommandNames(journey);
     const isExternalCommand = (name: unknown) => matchesExternalCommandName(externalCommandNames, name);
     for (const entity of journey.terminal_entities || []) {
@@ -8562,17 +7143,11 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
     }
     for (const message of journey.terminal_effects?.messages_emitted || []) addName(message, 8 + journeyWeight, `terminal_message:${journey.name || journey.id}:${message}`);
     for (const service of journey.terminal_effects?.external_services || []) {
-      // Real external SERVICES (Stripe, Auth0, a database) are terminal
-      // semantics; a subprocess command invocation is not.
+
       if (isExternalCommandService(service)) continue;
       addName(service, 4 + journeyWeight, `terminal_external:${journey.name || journey.id}:${service}`);
     }
   }
-
-  // Workflows are not a separate stored structure (docs/cas/SPECIFICATION.md
-  // §0.5.1) — the `journey` loop above already seeds the same terminal
-  // entity/capability signal from `cas.user_journeys`, which is what
-  // `cas.workflows` used to duplicate.
 
   propagateNearTerminalEntitySignals(cas, terminalNameSeeds, addName);
   propagateNearTerminalCapabilitySignals(cas, terminalCapabilitySeeds, addCapability);
@@ -8580,10 +7155,6 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
   return profile;
 }
 
-/** The `External command: <cmd>` entries a journey reports in its
- * terminal_effects.external_services — the CAS's own marker that a name is a
- * subprocess invocation (shell script calling curl/aws/jq), not a domain
- * entity or an external service integration. */
 function journeyExternalCommandNames(journey: any): Set<string> {
   const names = new Set<string>();
   for (const service of journey?.terminal_effects?.external_services || []) {
@@ -8600,8 +7171,7 @@ function matchesExternalCommandName(commandNames: Set<string>, name: unknown): b
   const normalized = normalizeAiItemName(String(name || ''));
   if (!normalized) return false;
   if (commandNames.has(normalized)) return true;
-  // Journey entity names may be depluralized forms of the command ("Aw" from
-  // `aws`); compare trailing-s-insensitively so the marker still applies.
+
   const stripS = (value: string) => value.endsWith('s') && !value.endsWith('ss') ? value.slice(0, -1) : value;
   const stripped = stripS(normalized);
   for (const command of commandNames) {
@@ -8644,7 +7214,7 @@ function propagateNearTerminalEntitySignals(
     }
   }
 
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     for (const transformation of entity.transformations || []) {
       if (transformation.transformation_type) {
         addName(entity.name, 1.5, `near_terminal_transformation:${entity.name}:${transformation.transformation_type}`);
@@ -8701,10 +7271,6 @@ function propagateNearTerminalCapabilitySignals(
   }
 }
 
-/** Direct (whole-name) terminal grounding only — no substring/token fuzz.
- * Used by evidence GATES, where fuzzy matching would let word fragments
- * ("uild") or embedded tokens ride unrelated terminal names. Scoring/ranking
- * paths keep the fuzzy terminalSignalForName. */
 function directTerminalNameScore(profile: WorkspaceTerminalSemanticProfile, name: unknown): number {
   const normalized = normalizeAiItemName(String(name || ''));
   if (!normalized) return 0;
@@ -8811,59 +7377,14 @@ function semanticRoleFromTerminalScore(score: number, fallback: WorkspaceSemanti
   return score >= 8 ? 'core' : score <= -6 ? 'infrastructure' : fallback;
 }
 
-// Minimum terminal-signal score for a supporting-named or category-inherited
-// item to be promoted to `core` without an independent product-vocabulary
-// signal. Password Recovery (3), Consent (6), and Adapter (8) all sit below
-// this floor and have no product signal, so they correctly fall to supporting,
-// while Trade Execution / Liquidation / Investment Asset Management clear it via
-// their product signal.
-const WORKSPACE_CORE_TERMINAL_FLOOR = 12;
-
-function semanticRoleForWorkspaceItem(name: unknown, score: number, fallback: WorkspaceSemanticRole = 'supporting'): WorkspaceSemanticRole {
-  const raw = String(name || '');
-  const normalized = normalizeAiItemName(raw);
-  if (isInfrastructureSemanticName(normalized)) return 'infrastructure';
-  if (isRuntimeEndpointSemanticName(raw)) return 'infrastructure';
-  const productSignal = workspaceProductCapabilitySignal(raw) > 0;
-  if (isSupportingSemanticName(normalized) && score < WORKSPACE_CORE_TERMINAL_FLOOR && !productSignal) return 'supporting';
-  const role = semanticRoleFromTerminalScore(score, fallback);
-  // A `core` role — whether inherited from the CAS category fallback or reached
-  // from an accumulated score — must be corroborated by genuine terminal
-  // evidence or a product-vocabulary signal. An inherited category with a
-  // weak/zero terminal score and no product vocabulary is plumbing, not core.
-  if (role === 'core' && score < WORKSPACE_CORE_TERMINAL_FLOOR && !productSignal) return 'supporting';
-  return role;
-}
-
-// isInfrastructureSemanticName / isRuntimeEndpointSemanticName /
-// isSupportingSemanticName now live in ./semantic-roles (single source of truth
-// shared with the per-entity/per-flow role classifiers) and are imported above.
-
-function effectiveWorkspaceTerminalScore(name: unknown, score: number): number {
+function effectiveWorkspaceTerminalScore(_name: unknown, score: number): number {
   if (!Number.isFinite(score) || score <= 0) return 0;
-  const raw = String(name || '');
-  const normalized = normalizeAiItemName(raw);
-  if (isInfrastructureSemanticName(normalized) || isRuntimeEndpointSemanticName(raw)) return 0;
-  if (isSupportingSemanticName(normalized)) return Math.min(6, score);
   return score;
 }
 
-function isInfrastructureOnlyCapabilityEvidence(name: string, evidence: string[]): boolean {
-  const text = normalizeAiItemName(`${name} ${evidence.join(' ')}`);
-  const hasInfraEvidence = /\b(terraform|tf|nsg|security group|vpc|subnet|route table|cloud|aws|azure|gcp|docker|compose|kubernetes|deployment|provision|infrastructure|backend tf|main tf|network access)\b/.test(text);
-  if (!hasInfraEvidence) return false;
-  const hasProductEntityOrOperation = evidence.some(item =>
-    /^entity:/i.test(item) ||
-    /^(create|read|update|delete|process|coordinate|execute|handle|publish|consume):/i.test(item) && !/\.(?:tf|tfvars|conf)\b/i.test(item)
-  );
-  const hasRouteOrCommand = evidence.some(item => /\b(?:GET|POST|PUT|PATCH|DELETE|command|route|controller|message|event)\b/.test(item));
-  return !hasProductEntityOrOperation && !hasRouteOrCommand;
-}
-
-function capTerminalSignalScore(normalized: string, score: number): number {
+function capTerminalSignalScore(_normalized: string, score: number): number {
   if (!Number.isFinite(score)) return 0;
-  const cap = isInfrastructureSemanticName(normalized) ? 6 : /^(user|resource|account|token|access|auth|admin|security)$/.test(normalized) ? 32 : 48;
-  return Number(Math.max(-24, Math.min(cap, score)).toFixed(1));
+  return Number(Math.max(-24, Math.min(48, score)).toFixed(1));
 }
 
 function strongerSemanticRole(left?: WorkspaceSemanticRole, right?: WorkspaceSemanticRole): WorkspaceSemanticRole | undefined {
@@ -8926,22 +7447,7 @@ function workspaceEntityRank(entity: WorkspaceEntity): number {
   score += Math.min(36, effectiveWorkspaceTerminalScore(entity.name, entity.terminal_score || 0) * 2);
   if (entity.semantic_role === 'core') score += 24;
   if (entity.semantic_role === 'infrastructure') score -= 18;
-  score += workspaceProductCapabilitySignal(entity.name) * 4;
-  if (isSupportingWorkspaceEntityName(entity.name)) score -= 42;
-  if (isLikelyWorkspaceEntityArtifact(entity.name)) score -= 36;
-  if (/entity$/i.test(entity.name) && entity.project_ids.length <= 1) score -= 12;
-  if (/entity$/i.test(entity.name) && entity.sensitive_fields.length === 0) score -= 8;
   return score;
-}
-
-function isSupportingWorkspaceEntityName(name: string): boolean {
-  const normalized = normalizeAiItemName(name);
-  return /^(user|end user|app client|email|password reset|session|token|notification|activity log|role|service account|theme|logo)$/.test(normalized) ||
-    isSupportingSemanticName(normalized);
-}
-
-function isLikelyWorkspaceEntityArtifact(name: string): boolean {
-  return /(?:service|controller|repository|mapper|module|resource|account|binding|log)?entity$/i.test(name);
 }
 
 function describeWorkspaceEntity(entity: WorkspaceEntity): string {
@@ -9186,11 +7692,7 @@ function buildWorkspaceWorkflows(
     const apps = applications.filter(app => app.codebase_id === projectId);
     const appByProjectId = new Map(apps.map(app => [app.id, app]));
     const lookupIndex = lookupIndexes.get(repository.cas)!;
-    // Workflows are not a stored CAS structure (docs/cas/SPECIFICATION.md
-    // §0.5.1) — this workspace rollup now reads through `user_journeys`
-    // (the derived, user-facing view over `flows`), reshaped into the same
-    // `entry_points`/`exit_points`/`entities_touched` vocabulary the
-    // criticality/description helpers below already expect.
+
     for (const journey of repository.cas.user_journeys || []) {
       const workflow = {
         id: journey.id,
@@ -9235,7 +7737,7 @@ function buildWorkspaceWorkflows(
         interface_ids: interfaceIds,
         mode: 'mixed',
         criticality,
-        semantic_role: semanticRoleForWorkspaceItem(workflow.name, terminalSignal.score, workflow.classification === 'primary' ? 'core' : workflow.classification === 'internal' ? 'infrastructure' : 'supporting'),
+        semantic_role: semanticRoleFromTerminalScore(terminalSignal.score, workflow.classification === 'primary' ? 'core' : workflow.classification === 'internal' ? 'infrastructure' : 'supporting'),
         terminal_score: roundTerminalScore(terminalSignal.score),
         terminal_evidence: terminalSignal.evidence,
         confidence: workflow.classification === 'primary' ? 0.78 : 0.66,
@@ -9249,14 +7751,11 @@ function buildWorkspaceWorkflows(
       });
     }
   }
-  // No silent cap here: the caller truncates for payload size and records the
-  // true pre-truncation count in summary.workflows_total (the live audit found
-  // every workspace shipping "exactly 40 workflows" with no truncation signal).
+
   return dedupeWorkspaceWorkflows(workflows.map(normalizeWorkspaceWorkflowSemantics))
     .sort((left, right) => workspaceWorkflowRank(right) - workspaceWorkflowRank(left) || left.name.localeCompare(right.name));
 }
 
-/** Payload-size cap for persisted workspace workflows (a maximum, not a quota). */
 export const WORKSPACE_WORKFLOWS_MAX = 40;
 
 function workspaceWorkflowNameFromLink(source: SystemApplication, target: SystemApplication, link: SystemApplicationLink): string {
@@ -9275,11 +7774,7 @@ function inferRelatedWorkspaceEntityNames(
   evidence: string[],
   entities: Map<string, WorkspaceEntity>,
 ): string[] {
-  // Resolve an explicit evidence reference to a real entity NAME. CAS emits entity
-  // refs by id (e.g. `entity_decisionlog`); returning that verbatim would mint a
-  // duplicate display entity named `entity_decisionlog` alongside the real
-  // `DecisionLog`. Map the ref to an existing entity (raw, or with the `entity_`
-  // id prefix stripped); drop unresolvable raw ids rather than create a fake.
+
   const resolveExplicitRef = (raw: string): string | undefined => {
     for (const candidate of [raw, raw.replace(/^entity[_:-]/i, '')]) {
       const hit = entities.get(slugify(candidate));
@@ -9352,31 +7847,19 @@ function workspaceWorkflowRank(workflow: WorkspaceWorkflow): number {
 		  if (workflow.semantic_role === 'core') score += 18;
 		  if (workflow.semantic_role === 'infrastructure') score -= 18;
 		  score += linkQualityRank(workflow) * 6;
-	  if (/test[-_\s]?data|fixture|seed|debug|health|config/i.test(workflow.name)) score -= 32;
 	  if (isRuntimeEndpointSemanticName(workflow.name)) score -= 72;
-	  if (isSupportingSemanticName(normalizeAiItemName(workflow.name))) score -= 64;
 	  if (workflow.evidence.some(item => /^evidence_quality:(?:topology-backed|name-inferred|route-shape-inferred)$/.test(item))) score -= 8;
 	  return score;
 	}
 
 function normalizeWorkspaceWorkflowSemantics(workflow: WorkspaceWorkflow): WorkspaceWorkflow {
-  const normalized = normalizeAiItemName(workflow.name);
-  if (isRuntimeEndpointSemanticName(workflow.name) || isInfrastructureSemanticName(normalized)) {
+  if (isRuntimeEndpointSemanticName(workflow.name)) {
     return {
       ...workflow,
       semantic_role: 'infrastructure',
       terminal_score: 0,
       criticality: 'low',
       evidence: mergeStrings(workflow.evidence, ['workspace_semantic_role:runtime-or-infrastructure']).slice(0, 12),
-    };
-  }
-  if (isSupportingSemanticName(normalized)) {
-    return {
-      ...workflow,
-      semantic_role: 'supporting',
-      terminal_score: roundTerminalScore(Math.min(6, workflow.terminal_score || 0)),
-      criticality: criticalityRank(workflow.criticality) >= 4 ? 'medium' : workflow.criticality,
-      evidence: mergeStrings(workflow.evidence, ['workspace_semantic_role:supporting-plane']).slice(0, 12),
     };
   }
   return workflow;
@@ -9389,10 +7872,7 @@ function workspaceWorkflowCriticality(
   deployableIds: string[],
   interfaceIds: string[],
 ): WorkspaceWorkflow['criticality'] {
-  const text = `${workflow.name || ''} ${workflow.description || ''} ${entries.map(entry => entry?.trigger?.path || entry?.name || '').join(' ')}`.toLowerCase();
-  if (isRuntimeEndpointSemanticName(workflow.name || '') || isInfrastructureSemanticName(normalizeAiItemName(workflow.name || ''))) return 'low';
-  if (isSupportingSemanticName(normalizeAiItemName(workflow.name || ''))) return criticalityRank(workflow.criticality) >= 4 ? 'medium' : 'low';
-  if (/test[-_\s]?data|fixture|seed|debug|health|metrics|config/.test(text)) return 'low';
+  if (isRuntimeEndpointSemanticName(workflow.name || '')) return 'low';
   if (workflow.classification === 'internal') return criticalityRank(workflow.criticality) >= 4 ? 'medium' : 'low';
   if (deployableIds.length >= 2 || interfaceIds.length >= 2 || exits.length > 0) {
     return criticalityRank(workflow.criticality) >= 4 ? 'high' : workflow.criticality || 'medium';
@@ -10025,8 +8505,7 @@ function titleizeDomain(value: string | undefined): string {
     .trim();
   if (!normalized || normalized.length < 3) return '';
   return normalized.split(' ')
-    // Strip leading/trailing punctuation per word so "auth," / "(views" do not
-    // surface as domain names.
+
     .map(part => part.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, ''))
     .filter(Boolean)
     .slice(0, 4)
@@ -10034,9 +8513,6 @@ function titleizeDomain(value: string | undefined): string {
     .join(' ');
 }
 
-/** A CAS node minted from a test/fixture/mock/generated path or flagged as a
- * test/generated node — not part of the shipped product. Mirrors the gating
- * analysis-profile.ts applies for its product-vs-system framework split. */
 function isFixtureOrTestCasNode(node: any): boolean {
   if (node?.metadata?.is_test || node?.metadata?.is_generated) return true;
   const file = String(node?.source?.file || node?.name || '').replace(/\\/g, '/').toLowerCase();
@@ -10047,25 +8523,8 @@ function isFixtureOrTestCasNode(node: any): boolean {
   return false;
 }
 
-/**
- * The member's product-framework list: the raw `technologies.frameworks`
- * inventory MINUS frameworks whose only node-level evidence is fixture/test
- * sourced. A framework survives when it either (a) appears as `metadata.framework`
- * on at least one PRIMARY PRODUCT node, or (b) has no node-level framework
- * evidence at all (manifest-only detection — we cannot prove it is fixture
- * sourced, so we keep it). It is dropped only when it is evidenced on
- * test/fixture nodes and NEVER on a product node. Exported for tests.
- */
 export function productFrameworksFromCas(cas: any): string[] {
-  // FOLLOW-UP (workspace-level-CAS adapter-shim residual): this fixture-path gate drops
-  // frameworks seen only on test/fixture nodes, but NOT adapter shims on
-  // product paths (e.g. django/fastapi from the klauro-sdk-py telemetry SDK's
-  // KlauroDjangoMiddleware). The member's OWN description is correctly gated
-  // via the shared selectProductFrameworkNames (query.ts productTechSignals);
-  // routing this workspace-level-CAS rollup through that shared gate needs the member CAS's
-  // analyzer_contributions wired through, deferred to avoid a rushed
-  // integration. The workspace narrative for a telemetry-SDK-carrying repo may
-  // still cite an adapter-shim framework until then.
+
   const declared = ((cas?.system?.technologies?.frameworks || []) as Array<{ name?: string }>)
     .map(framework => String(framework?.name || '').trim())
     .filter(Boolean);
@@ -10080,7 +8539,7 @@ export function productFrameworksFromCas(cas: any): string[] {
   }
   return declared.filter(name => {
     const normalized = name.toLowerCase();
-    // Fixture-sourced: seen only on test/fixture nodes, never on a product node.
+
     if (fixtureFrameworks.has(normalized) && !productFrameworks.has(normalized)) return false;
     return true;
   });
@@ -10092,10 +8551,7 @@ function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
   const sdkPackageNames = sdkPackageCandidates(repository);
   return {
     id: codebaseId(repository.path),
-    // A hash/id-shaped or hostname-shaped candidate here (e.g. cas.system?.name
-    // resolving to the workspace/analysis-id directory basename an analyzer
-    // server stages a snapshot under) must never surface as the codebase's
-    // own name — fall back to the real repo directory basename instead.
+
     name: sanitizeDeployableName(repository.name || cas.system?.name || path.basename(repository.path), repository),
     path: repository.path,
     project_role: inferProjectRole(repository),
@@ -10103,10 +8559,7 @@ function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
     primary_domain: String((cas as any).enhanced_system_purpose?.primary_domain || '').trim() || undefined,
     description: String((cas as any).enhanced_system_purpose?.inferred_description || '').trim() || undefined,
     languages: (cas.system?.technologies?.languages || []).map(language => language.name).filter(Boolean),
-    // The raw technologies inventory does not distinguish a product framework
-    // from one detected only in test fixtures/mocks/samples. Drop any framework
-    // whose only node-level evidence is on non-product (test/fixture/generated)
-    // nodes and which never appears on a primary product node.
+
     frameworks: productFrameworksFromCas(cas),
     packages,
     sdk_package_names: sdkPackageNames,
@@ -10223,14 +8676,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       const method = normalizeHttpMethod(exitPoint.operation?.method || exitPoint.operation?.action) || 'FETCH';
       interfaces.push({
         ...base,
-        // Never fall back to the TARGET endpoint's host to name this (consumer)
-        // application: the endpoint identifies the other end of the call, not
-        // this repo's own identity. Passing it through here previously let a
-        // same-shaped target name (e.g. "admin-api") silently become the
-        // consumer's own application id whenever the caller's file path gave
-        // no apps/packages/bin hint — masking the correct consumer identity
-        // (e.g. "admin-ui") entirely, so downstream links pointed a phantom
-        // same-name app at the real target instead of the real consumer.
+
         application_id: applicationId(id, inferApplicationName(repository, refs, sourceAliases, '')),
         id: interfaceId(id, 'consumer-http', exitPoint.id),
         kind: 'http-api',
@@ -10288,12 +8734,13 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
     if (exitPoint.type === 'database') {
       const resource = normalizeResource(exitPoint.target?.resource || exitPoint.name);
       if (!isSpecificSharedResource(resource)) continue;
+      const role = passiveDataOperationRole(exitPoint.operation?.action || exitPoint.operation?.method);
       interfaces.push({
         ...base,
         application_id: applicationId(id, inferApplicationName(repository, refs, sourceAliases, resource)),
         id: interfaceId(id, 'passive-data-exit', exitPoint.id),
         kind: 'passive-data',
-        role: 'shared',
+        role,
         mode: 'passive',
         name: exitPoint.name,
         key: resource,
@@ -10397,22 +8844,24 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
     });
   }
 
-  for (const dataEntity of cas.data_entities || []) {
+  for (const dataEntity of cas.entities || []) {
     const resource = normalizeResource(dataEntity.name);
     if (!isSpecificSharedResource(resource)) continue;
-    const nodeIds = [
+    const writers = [
       ...(dataEntity.lifecycle?.created_by || []),
-      ...(dataEntity.lifecycle?.read_by || []),
       ...(dataEntity.lifecycle?.updated_by || []),
       ...(dataEntity.lifecycle?.deleted_by || []),
     ];
+    const readers = dataEntity.lifecycle?.read_by || [];
+    const role = passiveDataLifecycleRole(writers, readers);
+    const nodeIds = role === 'publisher' ? writers : role === 'listener' ? readers : [...writers, ...readers];
     const refs = nodeRefs(lookupIndex, nodeIds);
     interfaces.push({
       ...base,
       application_id: applicationId(id, inferApplicationName(repository, refs, [], dataEntity.name)),
       id: interfaceId(id, 'passive-data-entity', dataEntity.id || dataEntity.name),
       kind: 'passive-data',
-      role: 'shared',
+      role,
       mode: 'passive',
       name: dataEntity.name,
       key: resource,
@@ -10457,8 +8906,8 @@ function extractRuntimeComponents(repository: CrossCodebaseInput, id: string): S
 
 function buildLinks(interfaces: SystemInterface[], appById: Map<string, SystemApplication>): SystemLink[] {
   const links: SystemLink[] = [];
-  const providers = interfaces.filter(item => item.role === 'provider' || item.role === 'listener' || item.role === 'shared');
-  const consumers = interfaces.filter(item => item.role === 'consumer' || item.role === 'publisher' || item.role === 'shared');
+  const providers = interfaces.filter(item => item.kind !== 'passive-data' && (item.role === 'provider' || item.role === 'listener' || item.role === 'shared'));
+  const consumers = interfaces.filter(item => item.kind !== 'passive-data' && (item.role === 'consumer' || item.role === 'publisher' || item.role === 'shared'));
   const interfaceById = new Map(interfaces.map(item => [item.id, item]));
 
   for (const consumer of consumers) {
@@ -10491,6 +8940,13 @@ function buildLinks(interfaces: SystemInterface[], appById: Map<string, SystemAp
     }
     links.push(...bestLinksForConsumer(consumerLinks, interfaceById));
   }
+
+  links.push(...buildPassiveDataLinks(
+    interfaces,
+    canLinkWithinSameCodebase,
+    (source, target) => linkEvidenceQuality(source, target, 'shared-data'),
+    quality => adjustLinkConfidence(0.76, quality),
+  ));
 
   return dedupeLinks(links);
 }
@@ -10578,37 +9034,12 @@ function buildRuntimeLinks(
     });
   }
 
-  // GENERIC TOPOLOGY LINK RESOLUTION (fixes runtime_links being permanently
-  // empty): the loop above only fires when BOTH sides of an already-matched
-  // interface pair carry topology_surface, which never happens in practice —
-  // infra-declared exits (compose/k8s references to a sibling service) carry
-  // topology_surface, but the code-level route/handler they actually reach
-  // almost never does (it's sourced from an entry-point analyzer, not an
-  // infra one). That made deployable-to-deployable runtime links unreachable
-  // on every workspace, even when the infra evidence unambiguously names the
-  // sibling deployable (compose service name, container/host name, declared
-  // port). Two additional, evidence-gated sources restore this signal without
-  // requiring a matched interface PAIR:
-  //  1. Explicit dependency edges the container-topology analyzer already
-  //     emits between sibling service nodes (compose depends_on, etc).
-  //  2. A consumer/publisher interface whose own host/port evidence names a
-  //     sibling runtime component directly (service alias or port overlap),
-  //     even when that sibling never exposed a matching provider interface.
-  // Unmatched interfaces stay unmatched and counted either way — nothing here
-  // fabricates a link without cited evidence.
   runtimeLinks.push(...buildComposeDependencyRuntimeLinks(repositories, components));
   runtimeLinks.push(...buildTopologyRuntimeLinks(components, interfaces));
 
   return dedupeRuntimeLinks(runtimeLinks);
 }
 
-/** Deployable-to-deployable runtime links sourced directly from the explicit
- *  dependency edges a topology analyzer already emits between sibling
- *  runtime-service nodes (e.g. docker-compose `depends_on`). This is the
- *  highest-confidence, most direct evidence of a runtime relationship: the
- *  infra manifest itself declares service A depends on service B. Generic
- *  across any repo whose topology analyzer emits such edges — no names are
- *  assumed beyond what the edge/node evidence already carries. */
 function buildComposeDependencyRuntimeLinks(
   repositories: CrossCodebaseInput[],
   components: SystemRuntimeComponent[],
@@ -10650,15 +9081,6 @@ function isComposeDependencyEdge(edge: CASOutput['edges'][number]): boolean {
   return metadata.dependency_kind === 'compose-service' || metadata.topology_surface === 'docker-compose';
 }
 
-/** Deployable-to-deployable runtime links sourced from a consumer/publisher
- *  interface's own host/port evidence (e.g. a compose EXTERNAL-SERVICE exit
- *  naming `http://sibling:port`) matched directly against a sibling runtime
- *  component's declared service aliases and ports — independent of whether
- *  that sibling ever exposed a matching provider interface (most don't: a
- *  worker/service consumed only via infra reference commonly has no HTTP
- *  route evidence of its own). Generic: matches on the same alias/port
- *  evidence already extracted onto SystemRuntimeComponent, no hardcoded
- *  names. */
 function buildTopologyRuntimeLinks(
   components: SystemRuntimeComponent[],
   interfaces: SystemInterface[],
@@ -10692,10 +9114,7 @@ function buildTopologyRuntimeLinks(
 
     let sourceComponents = componentByApplication.get(`${item.codebase_id}:${item.application_id}`) || [];
     if (!sourceComponents.length) {
-      // Fallback for a caller path with no recognized apps/packages/crates/bin/
-      // services shape (e.g. a bare `agent/src/client.ts`): resolve the source
-      // identity from the caller's own leading path segment matched against a
-      // real declared service alias — never a guess, never the call's target name.
+
       const callerAliases = callerAliasesFromRefs(item.refs);
       const candidates = new Map<string, SystemRuntimeComponent>();
       for (const alias of callerAliases) {
@@ -10739,13 +9158,6 @@ function isIpAddressToken(value: string): boolean {
   return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
 }
 
-/** The leading path segment of each ref's source file, lowercased — a
- *  generic, evidence-based candidate for "which bare top-level directory
- *  does this call site live under" (e.g. `agent/src/client.ts` -> `agent`).
- *  Used only as a fallback identity signal in buildTopologyRuntimeLinks,
- *  and only counts when it also matches a real runtime component's own
- *  declared service alias — never surfaced as an application name on its
- *  own. */
 function callerAliasesFromRefs(refs: CrossCodebaseRef[]): string[] {
   const aliases = new Set<string>();
   for (const ref of refs) {
@@ -10998,10 +9410,6 @@ function inferPackageDeclaredApplicationLinks(
     });
   };
 
-  // Manifest-declared dependency, not name vocabulary: codebase.packages comes from the
-  // codebase's own package.json/dependency manifest (see directPackages()), and the match
-  // requires the declared package name to equal (or path-end with) the candidate app's own
-  // normalized name. This is real evidence of a declared install, not a keyword guess.
   const packageApps = applications.filter(app => app.kind === 'package' || app.path_hint?.includes('packages/'));
   for (const app of applications) {
     if (app.kind === 'package') continue;
@@ -11026,10 +9434,6 @@ function inferPackageDeclaredApplicationLinks(
   return links;
 }
 
-/** Generic declared-technology names (not product/app-name vocabulary) that
- *  identify a codebase as rendering a UI. Sourced from `codebase.frameworks`,
- *  which itself comes from CAS `technologies.frameworks` — real manifest/
- *  import evidence, not a guess from the app's own name. */
 const FRONTEND_FRAMEWORK_NAMES = new Set([
   'react', 'next', 'next.js', 'nextjs', 'vue', 'vue.js', 'vuejs', 'nuxt', 'nuxt.js',
   'angular', 'angularjs', 'svelte', 'sveltekit', 'solid', 'solid-js', 'solidjs',
@@ -11096,23 +9500,18 @@ function inferSystemInsights(
   for (const app of applications.filter(app => visibleAppIds.has(app.id))) {
     const inLinks = topologyAwareIncoming.get(app.id) || [];
     const outLinks = topologyAwareOutgoing.get(app.id) || [];
-    const name = app.name.toLowerCase();
     if (distributionMemberIds.has(app.id)) continue;
-    // Evidence-based broker surface: the app both publishes/consumes and
-    // listens/provides on a queue-, topic-, or stream-shaped interface (CAS
-    // entry/exit-point evidence), rather than matching product-shaped name
-    // vocabulary (formerly /drop|broker|queue|relay|coordinator|gateway|
-    // client-service/ against the app name).
+
     const appInterfacesForBroker = interfacesByApp.get(app.id) || [];
     const emitsOnQueueLikeSurface = appInterfacesForBroker.some(item =>
       (item.kind === 'message' || item.kind === 'stream') && (item.role === 'publisher' || item.role === 'consumer'));
     const receivesOnQueueLikeSurface = appInterfacesForBroker.some(item =>
       (item.kind === 'message' || item.kind === 'stream') && (item.role === 'listener' || item.role === 'provider'));
     const queueEvidenceSurface = emitsOnQueueLikeSurface && receivesOnQueueLikeSurface;
-    const topologyBrokerSurface = inLinks.length > 0 &&
-      outLinks.length > 0 &&
-      app.kind !== 'app' &&
-      !/api$|ui|web|frontend|client$/.test(name);
+    const appInterfacesForTopology = interfacesByApp.get(app.id) || [];
+    const topologyBrokerSurface = inLinks.length > 0 && outLinks.length > 0 &&
+      appInterfacesForTopology.some(item => item.role === 'provider' || item.role === 'listener') &&
+      appInterfacesForTopology.some(item => item.role === 'consumer' || item.role === 'publisher');
     if ((queueEvidenceSurface || topologyBrokerSurface) && (inLinks.length + outLinks.length) >= 2) {
       const sourceBackedIn = inLinks.filter(applicationLinkHasSourceBackedEvidence);
       const sourceBackedOut = outLinks.filter(applicationLinkHasSourceBackedEvidence);
@@ -11124,10 +9523,7 @@ function inferSystemInsights(
         : `${app.name} has deployment topology links with ${peers.slice(0, 4).join(', ')}`;
       insights.push({
         id: `insight:broker:${slugify(app.id)}`,
-        // queue/topic evidence => confident broker-service; topology-only
-        // (links present but no queue-shaped interface evidence) => the
-        // weaker relay-or-fallback-path type.
-        type: queueEvidenceSurface ? 'broker-service' : 'relay-or-fallback-path',
+        type: queueEvidenceSurface ? 'bidirectional-message-surface' : 'intermediary-topology',
         title,
         description: hasSourceBackedBridge
           ? `${app.name} has both inbound and outbound source-backed workspace links, so agents should treat it as part of the communication path while preserving each link's evidence quality.`
@@ -11148,8 +9544,6 @@ function inferSystemInsights(
     if (providerInterfaces.length === 0) continue;
     const sourceBackedIncoming = (incoming.get(app.id) || []).filter(applicationLinkHasSourceBackedEvidence);
     if (sourceBackedIncoming.length > 0) continue;
-    if (app.kind === 'app' || /website|marketing|docs|static|scan|demo|ui|web|frontend|client$/.test(app.name)) continue;
-    if (/\bmcp\b/i.test(app.name)) continue;
     insights.push({
       id: `insight:unused-provider:${slugify(app.id)}`,
       type: 'provider-api-without-source-consumers',
@@ -11162,15 +9556,6 @@ function inferSystemInsights(
     });
   }
 
-  // Evidence-based UI/API pairing: "UI-ish" is declared frontend-framework
-  // evidence on the app's own codebase (technologies.frameworks facts, not
-  // app-name vocabulary); "pairs with" requires an actual topology-aware
-  // workspace link from the UI to an app that itself has provider http-api
-  // interface evidence. This replaces a name-only regex
-  // (/(admin|client|user|internal).*(ui|web|client)|.../) plus a same-word
-  // API name lookup (findNamedApi), which fabricated an admin/internal/user
-  // pairing distinction with no structural signal behind it — that
-  // distinction is dropped rather than kept as a name guess.
   for (const ui of applications.filter(app => visibleAppIds.has(app.id) && hasFrontendFrameworkEvidence(codebaseById.get(app.codebase_id)))) {
     const uiOutLinks = topologyAwareOutgoing.get(ui.id) || [];
     const apiLink = uiOutLinks.find(link => {
@@ -11183,7 +9568,7 @@ function inferSystemInsights(
     if (!api) continue;
     insights.push({
       id: `insight:ui-api:${slugify(ui.id)}:${slugify(api.id)}`,
-      type: 'ui-api-pairing',
+      type: 'frontend-provider-link',
       title: `${ui.name} pairs with ${api.name}`,
       description: `${ui.name} has frontend-framework evidence and a workspace link to ${api.name}, which exposes provider HTTP interfaces. Changes to either side should validate route contracts and auth expectations together.`,
       application_ids: [ui.id, api.id],
@@ -11193,24 +9578,12 @@ function inferSystemInsights(
     });
   }
 
-  // The former mcp-agent-surface insight matched app names against
-  // /\bagent\b|gateway|client-service|drop-server|coordinator/ (agentApps)
-  // and /\bmcp\b/ (mcpApps) and asserted an "MCP-facing control surface for
-  // agent workflows" purely from that name coincidence. There is no
-  // structural CAS evidence, repo- or workspace-level, (interface kind, runtime component, protocol
-  // fact) for "agent-ness" anywhere in this analyzer, so per the
-  // evidence-or-delete rule this insight is deleted outright rather than kept
-  // as a name guess — and drop-server/client-service were client-product
-  // deployable names that had to go regardless.
-
   for (const app of applications.filter(app => visibleAppIds.has(app.id))) {
     const appInterfaces = interfacesByApp.get(app.id) || [];
     const sourceBackedIncoming = (incoming.get(app.id) || []).filter(applicationLinkHasSourceBackedEvidence);
-    const name = app.name.toLowerCase();
     if (sourceBackedIncoming.length > 0) continue;
     if (appInterfaces.length === 0) continue;
-    if (app.kind === 'app' || /website|marketing|docs|static|scan|demo|ui|web|frontend|client$/.test(name)) continue;
-    if (!/(api|service|worker|daemon|server)$/.test(name) && app.kind !== 'service' && app.kind !== 'worker') continue;
+    if (!appInterfaces.some(item => item.role === 'provider' || item.role === 'listener')) continue;
     if (insights.some(insight => insight.type === 'provider-api-without-source-consumers' && insight.application_ids.includes(app.id))) continue;
     insights.push({
       id: `insight:unclaimed-runtime-surface:${slugify(app.id)}`,
@@ -11271,7 +9644,6 @@ function addSuffixConceptualEntity(
     external_recipients: members.reduce((sum, entity) => sum + (entity.lifecycle?.external_recipients || 0), 0),
     boundaries_crossed: members.reduce((sum, entity) => sum + (entity.lifecycle?.boundaries_crossed || 0), 0),
   };
-  const memberNames = members.map(entity => entity.name);
   entities.set(conceptKey, {
     id: `workspace-entity:${conceptKey}`,
     name: conceptName,
@@ -11282,9 +9654,7 @@ function addSuffixConceptualEntity(
     related_data_flow_path_ids: mergeStrings([], members.flatMap(entity => entity.related_data_flow_path_ids)),
     sensitive_fields: mergeStrings([], members.flatMap(entity => entity.sensitive_fields)),
     lifecycle,
-    // Entity descriptions are AI comprehension: left unset here, written by the
-    // workspace AI entity-description pass (or that pass throws). No deterministic
-    // entity description / provenance.
+
     description: undefined,
     semantic_role: members.some(entity => entity.semantic_role === 'core') ? 'core' : 'supporting',
     terminal_score: Math.max(...members.map(entity => entity.terminal_score || 0)),
@@ -11336,8 +9706,6 @@ function buildWorkspaceNarrative(
 ): WorkspaceNarrative {
   const productName = inferWorkspaceProductName(codebases, name);
   const deployables = applications.filter(app => app.deployable);
-  const frameworks = [...new Set(codebases.flatMap(codebase => codebase.frameworks))].slice(0, 8);
-  const languages = [...new Set(codebases.flatMap(codebase => codebase.languages))].slice(0, 8);
   const appById = new Map(applications.map(app => [app.id, app]));
   const linkSummaries = applicationLinks.slice(0, 12).map(link => {
     const source = appById.get(link.source_application_id)?.name || link.source_application_id;
@@ -11357,27 +9725,15 @@ function buildWorkspaceNarrative(
     source: 'ai-required-degraded',
     generated_at: generatedAt,
     confidence: codebases.length > 1 && applicationLinks.length > 0 ? 0.68 : 0.54,
-    // The title must name the workspace, never a member project — collapsing
-    // the workspace to one member's name is a misattribution. The inferred
-    // product name is only a fallback when the workspace name itself is
-    // unusable (hash-shaped/empty).
+
     title: `${workspaceNarrativeTitleName(name, productName)} workspace analysis`,
-    // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): both the
-    // workspace description AND the product-value summary are left empty here and
-    // are written solely by enrichWorkspaceAnalysisNarrative (or that pass
-    // throws). The deterministic workspace description/product-value builders were
-    // deleted — there is no keyword-classified "financial/crypto/secure-access"
-    // frame to substitute when AI is unavailable.
+
     product_value_summary: '',
     description: '',
     value_drivers: valueDrivers,
     domains: domains.map(domain => domain.name).slice(0, 12),
     key_capabilities: capabilityNames.slice(0, 10),
-    // relationship_summary is customer-facing prose: composition.reasons and
-    // diagnostic insight titles ("exposes provider interfaces with no
-    // source-backed incoming consumers", "isolated and should not be forced
-    // into the system graph") are internal analysis phrasing and stay in
-    // graph.composition/graph.system_insights, never in the narrative surface.
+
     relationship_summary: [
       ...linkSummaries,
       ...insights
@@ -11395,23 +9751,16 @@ function buildWorkspaceNarrative(
   };
 }
 
-/** Insight types whose titles/descriptions are analysis diagnostics, not
- *  customer-facing relationships (they remain available in system_insights). */
 const INTERNAL_ANALYSIS_INSIGHT_TYPES = new Set([
   'provider-api-without-source-consumers',
   'unclaimed-runtime-surface',
   'declared-unused-infrastructure',
 ]);
 
-/** Internal analysis phrasing that must never leak into customer prose
- *  surfaces (narrative relationship_summary and similar). */
 function isInternalAnalysisPhrase(text: string): boolean {
   return /\b(?:source-backed|should not be forced|system graph|repo-level CAS|analysis input|Klauro did not find|deployable\(s\)|evidence quality)\b/i.test(String(text || ''));
 }
 
-/** Workspace-name-first title resolution: use the workspace's own name unless
- *  it is unusable (empty or hash/id-shaped), then fall back to the inferred
- *  product name. Never a member project's name when the workspace has one. */
 function workspaceNarrativeTitleName(workspaceName: string, productName: string): string {
   const cleaned = String(workspaceName || '').trim();
   if (!cleaned || isHashOrIdShapedToken(cleaned)) return productName;
@@ -11424,17 +9773,6 @@ function joinHumanReadableList(items: string[]): string {
   if (list.length === 1) return list[0];
   if (list.length === 2) return `${list[0]} and ${list[1]}`;
   return `${list.slice(0, -1).join(', ')}, and ${list[list.length - 1]}`;
-}
-
-// NOTE (docs/cas/DETERMINISM-BOUNDARY.md): the former
-// `inferWorkspaceProductValueSummary` keyword classifier — which authored a
-// deterministic "financial / crypto / secure-access / codebase-intelligence"
-// product-value sentence from vocabulary matches — was deleted. Comprehension
-// (including the workspace product-value summary) is AI-only or throw; a
-// deterministically-authored frame is never substituted.
-
-function countUniqueMatches(text: string, patterns: RegExp[]): number {
-  return patterns.reduce((count, pattern) => count + (pattern.test(text) ? 1 : 0), 0);
 }
 
 function inferWorkspaceProductName(codebases: SystemCodebase[], fallback: string): string {
@@ -11567,10 +9905,6 @@ function matchInterfaces(source: SystemInterface, target: SystemInterface, appBy
     if (source.key !== target.key && !routeCompatible(source.key, target.key)) return null;
     return { kind: 'stream-flow', mode: 'stream', confidence: 0.82 };
   }
-  if (source.kind === 'passive-data' && target.kind === 'passive-data' && source.key === target.key) {
-    if (!isSpecificSharedResource(source.key)) return null;
-    return { kind: 'shared-data', mode: 'passive', confidence: 0.76 };
-  }
   return null;
 }
 
@@ -11584,15 +9918,6 @@ function isRelativeHttpEndpoint(endpoint: string | undefined): boolean {
   return value.startsWith('/') || value.startsWith('./') || value.startsWith('../');
 }
 
-/**
- * A relative consumer endpoint (e.g. `fetch('/orders')`) carries no host, so it
- * cannot be attributed to a service by hostname. But when its route shape shares
- * a specific literal segment with a provider's route in another codebase
- * (`app.get('/orders')`), that pairing IS the cross-repo seam — the same fusion
- * product.ts's buildCrossRepositoryLinks performs. We allow the cross-codebase
- * link only for such specific seams, so generic relative routes (`/`, `/api`,
- * `/users`, `/health`) still stay suppressed across unrelated repos.
- */
 function hasSpecificCrossRepoRouteSeam(source: SystemInterface, target: SystemInterface): boolean {
   const sourceCandidates = routeSegmentCandidates(normalizeRoute(source.endpoint || source.key));
   const targetCandidates = routeSegmentCandidates(normalizeRoute(target.endpoint || target.key));
@@ -11607,11 +9932,6 @@ function hasSpecificCrossRepoRouteSeam(source: SystemInterface, target: SystemIn
   return false;
 }
 
-/**
- * A route segment specific enough to anchor a cross-repo seam on its own: not a
- * version/api stub, not a short generic word that collides across unrelated
- * services (users, health, status, login, ...).
- */
 function isSpecificRouteSegment(segment: string): boolean {
   if (!segment || segment === ':param') return false;
   if (/^(api|v\d+)$/.test(segment)) return false;
@@ -11684,13 +10004,6 @@ function hostMatchesSourceInterface(item: SystemInterface, host: string): boolea
   return cleanApplicationName(applicationNameFromId(item.application_id)) === normalizedHost;
 }
 
-/** Evidence that a consumer application is a service-tier deployable rather
- *  than a browser/UI surface: it has a runtime component actually wired to it
- *  (compose service, bin, process — structural topology evidence), or its
- *  application kind (itself resolved from path/manifest evidence upstream,
- *  see `applicationKind`) is a backend kind. Replaces a name regex
- *  (agent|gateway|coordinator|broker|relay|drop|drop-server|worker|daemon|
- *  service) matched against the consumer's own application name. */
 function isServiceTierDeployableEvidence(app: SystemApplication | undefined): boolean {
   if (!app) return false;
   if (app.kind === 'app') return false;
@@ -11805,25 +10118,6 @@ function buildApplications(
   const byId = new Map<string, SystemApplication>();
   const codebaseById = new Map(codebases.map(codebase => [codebase.id, codebase]));
 
-  // IDENTITY-COLLISION GUARD: applicationIdValue is derived from the cleaned
-  // NAME ALONE (see applicationId()), so two structurally unrelated modules
-  // that happen to share a name — e.g. a Cargo LIB crate `crates/version`
-  // (deployable:false) and a wholly separate `[[bin]]` target `version` at
-  // the repo root (`src/bin/version.rs`, deployable:true) — collide into one
-  // SystemApplication. Real repos hit this (a tiny version-stamp bin named
-  // the same as an unrelated lib crate). Blindly OR-ing `deployable` across
-  // the merge (the old behavior) makes it STICKY: once any candidate for
-  // this name says deployable:true, the merged app can never read false
-  // again, even though the true evidence-bearing path_hint is a different,
-  // unrelated folder. That produced a false-positive top-level deployable
-  // for a lib crate whose own evidence is `deployable:false`.
-  // Fix: when an incoming candidate's path_hint conflicts with the existing
-  // app's path_hint (both non-empty, neither a prefix/ancestor of the
-  // other), treat it as a DIFFERENT module and give it its own disambiguated
-  // application id instead of merging. Candidates that share a path_hint (or
-  // where one is empty, or one contains the other — e.g. a route handler
-  // nested under an already-known app root) still collapse into one app, as
-  // intended.
   const pathHintConflicts = (a: string, b: string): boolean => {
     if (!a || !b) return false;
     if (a === b) return false;
@@ -11836,10 +10130,7 @@ function buildApplications(
     let existing = byId.get(applicationIdValue);
     let targetId = applicationIdValue;
     if (existing && pathHintConflicts(existing.path_hint || '', facts.path_hint || '')) {
-      // Same name, different real module: don't merge. Look for an existing
-      // disambiguated sibling with a matching/compatible path_hint first, so
-      // repeated candidates for the SAME disambiguated module still collapse
-      // into one app instead of fanning out further on every call.
+
       targetId = disambiguatedId(applicationIdValue, facts.path_hint || '');
       const disambiguatedExisting = byId.get(targetId);
       existing = disambiguatedExisting;
@@ -11894,15 +10185,6 @@ function buildApplications(
     }
   }
 
-  // BUG B (evidence-first app discovery, not folder-allowlist-gated):
-  // applicationSurfaceCandidatesFromCas() above only recognizes app surfaces
-  // under a hardcoded path allowlist (apps/services/cmd/bin/packages/crates/
-  // libs). A real evidence root at ANY other path (app/, core/, feature-x/,
-  // or the flat repo root) is structurally invisible to it — no
-  // SystemApplication ever gets created there, so resolveDeployables (which
-  // only ANNOTATES existing apps) has nothing to attach the evidence to. Fix:
-  // create a SystemApplication directly from each strong deployable_evidence
-  // root that doesn't already map to an existing app surface, at any path.
   for (const repository of repositories) {
     const projectId = codebaseId(repository.path);
     for (const candidate of applicationSurfaceCandidatesFromEvidenceRoots(repository, projectId, byId)) {
@@ -11962,19 +10244,6 @@ function buildApplications(
 
   suppressWorkspaceContainerRoots(normalized, repositories, codebaseById);
 
-  // ADMISSION GATE (fixes level-one application-list noise): every
-  // crates/<name> or packages/<name> (and equally, an unremarkable src/bin/
-  // <name> folder) directory unconditionally minted its own SystemApplication
-  // above, purely from matching a path shape — with no check that the
-  // directory actually surfaces as an application (a route/entry point, a
-  // runtime/deployment component, or any other positive evidence beyond "a
-  // folder exists here"). Per docs/cas/SPECIFICATION.md §0, passive data/library packages and
-  // structurally inert directories stay OUT of level-one application lists;
-  // real deployables/services (already flagged `deployable: true`, or a
-  // non-package/codebase kind reached only via a real keyword/path signal)
-  // are unaffected. This does not touch interfaces, runtime components, or
-  // any other evidence already gathered — it only withholds the top-level
-  // "application" label from a bare directory that never accumulated any.
   const admitted = normalized.filter(app => {
     if (app.deployable) return true;
     const codebase = codebaseById.get(app.codebase_id);
@@ -12000,12 +10269,6 @@ function buildApplications(
   return admitted.sort((left, right) => left.codebase_id.localeCompare(right.codebase_id) || left.name.localeCompare(right.name));
 }
 
-/** A monorepo container root (workspaces field / pnpm-workspace.yaml / turbo.json
- *  / nx.json / lerna.json / Cargo [workspace]) is not itself a deployable — it's
- *  the shell around the real deployables. Suppress its synthetic application
- *  surface only when sibling app surfaces are actually deployable (a
- *  single-package repo whose root IS the one app must keep counting), and only
- *  when the root has no genuine Tier-1 evidence of its own. */
 function suppressWorkspaceContainerRoots(
   applications: SystemApplication[],
   repositories: CrossCodebaseInput[],
@@ -12027,7 +10290,7 @@ function suppressWorkspaceContainerRoots(
 
     const siblingDeployables = appsForRepo.some(app =>
       app.id !== rootApp.id && app.deployable && isRealDeployableSurfacePathHint(app.path_hint));
-    if (!siblingDeployables) continue; // single-package repo: root IS the one app, keep it
+    if (!siblingDeployables) continue;
 
     rootApp.deployable = false;
     rootApp.boundary_evidence = mergeStrings(rootApp.boundary_evidence || [], [
@@ -12039,14 +10302,6 @@ function suppressWorkspaceContainerRoots(
   }
 }
 
-/** True when this codebase's system.type reads 'application' only because
- *  determineSystemType() (orchestrator.ts) fell through its final default —
- *  no live entry points (http/rpc/graphql/websocket/api/cli/page/...) and no
- *  ship-or-runnable deployable evidence to key off of — the root app surface
- *  has no path_hint of its own and no real deployable evidence (no
- *  service-ish alias, no useful alias, nothing beyond the bare name/type
- *  fallthrough), and there's at least one other, better-evidenced app in the
- *  same codebase — i.e. this is the phantom container, not the one true app. */
 function isSystemTypeDefaultedWithoutRealEvidence(repository: CrossCodebaseInput, rootApp: SystemApplication): boolean {
   const systemType = repository.cas.system?.type;
   if (systemType !== 'application') return false;
@@ -12054,19 +10309,15 @@ function isSystemTypeDefaultedWithoutRealEvidence(repository: CrossCodebaseInput
   const hasEntryPointEvidence = (repository.cas.entry_points || []).length > 0;
   const hasShipOrRunnableEvidence = (repository.cas.deployable_evidence || [])
     .some(item => item.tier === 1 || item.tier === 2);
-  if (hasEntryPointEvidence || hasShipOrRunnableEvidence) return false; // determineSystemType had real signal; not a silent default
+  if (hasEntryPointEvidence || hasShipOrRunnableEvidence) return false;
 
-  if (rootApp.path_hint) return false; // has its own real surface path, not the bare synthetic root
-  if ((rootApp.service_aliases || []).length > 0) return false; // carries real alias evidence
-  if ((rootApp.evidence || []).some(line => !line.startsWith('cas-input:'))) return false; // has evidence beyond the generic root-surface stamp
+  if (rootApp.path_hint) return false;
+  if ((rootApp.service_aliases || []).length > 0) return false;
+  if ((rootApp.evidence || []).some(line => !line.startsWith('cas-input:'))) return false;
 
   return true;
 }
 
-/** A "real" application-surface path_hint lives under a known monorepo app
- *  root (apps/services/cmd/bin/crates/packages) — as opposed to leaked
- *  fragments like an interface's route path (e.g. "/health") that sometimes
- *  land in path_hint for a codebase-level synthetic root application. */
 function isRealDeployableSurfacePathHint(pathHint: string | undefined): boolean {
   return /^(apps|services|cmd|bin|crates|packages|libs)\//.test(pathHint || '');
 }
@@ -12081,7 +10332,7 @@ function isWorkspaceContainerRoot(repositoryPath: string): boolean {
       }
     }
   } catch {
-    // unreadable manifest: fall through to other markers
+
   }
 
   const markerFiles = ['pnpm-workspace.yaml', 'turbo.json', 'nx.json', 'lerna.json'];
@@ -12094,7 +10345,7 @@ function isWorkspaceContainerRoot(repositoryPath: string): boolean {
       if (/^\s*\[workspace\]/m.test(content)) return true;
     }
   } catch {
-    // unreadable manifest
+
   }
 
   return false;
@@ -12189,13 +10440,6 @@ function applicationSurfaceFromFile(file: string | undefined): { name: string; p
   return undefined;
 }
 
-/** Evidence-first app discovery for ship-unit roots the folder allowlist can't
- *  see (app/, core/, feature-x/, or a flat repo root). Creates a
- *  SystemApplication from a cas.deployable_evidence root only when it (a) has
- *  no existing app surface by path_hint or containment, and (b) is Tier-1 —
- *  a real ship/run artifact. Tier-2/3-only evidence must never create a new
- *  app surface here: some evidence providers report a bare, de-contextualized
- *  root_path fragment, which risks fanning one real module into phantom apps. */
 function applicationSurfaceCandidatesFromEvidenceRoots(
   repository: CrossCodebaseInput,
   projectId: string,
@@ -12204,27 +10448,9 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
   const evidenceList = deployableEvidenceFromCas(repository);
   if (evidenceList.length === 0) return [];
 
-  // Group by root_path first (an evidence root frequently carries multiple
-  // separate DeployableEvidence entries — e.g. a "GET /health" route entry
-  // AND an "app instantiation" entry both at root_path "app" — which must
-  // collapse to ONE candidate app per root, not one app per evidence line;
-  // otherwise a single real module fans out into several phantom surfaces
-  // (one per route/signal found under it). Keep the best (lowest) tier, and
-  // track how many DISTINCT ship-unit names appear at this root_path: a
-  // shared directory (e.g. "docker/" holding four different *.Dockerfile
-  // artifacts, one per real service) is NOT itself one ship unit — each
-  // named artifact is its own, and the directory-level root_path is an
-  // aggregation artifact of the evidence provider, not a real module
-  // boundary. Only collapse-and-create when the root_path unambiguously
-  // names ONE ship unit (single distinct evidence name).
   const byRoot = new Map<string, { tier: 1 | 2 | 3; evidence: string[]; names: Set<string>; shipsPaths: string[] }>();
   for (const evidence of evidenceList) {
-    // root_path '.' (repo root, no subfolder) is always already represented
-    // by the codebase-level synthetic root SystemApplication created at the
-    // top of buildApplications — never create a second app for it here (Bug
-    // A's phantom-root suppression separately decides whether THAT surface
-    // should count as deployable). This function only discovers evidence
-    // roots at real, non-root subfolders that the folder-allowlist misses.
+
     if (!evidence.root_path || evidence.root_path === '.') continue;
     if (shouldSkipWorkspaceApplicationPath(evidence.root_path)) continue;
     const cleanEvidenceName = cleanApplicationName(evidence.name);
@@ -12258,18 +10484,6 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
       return hint === rootPath || hint.startsWith(`${rootPath}/`) || rootPath.startsWith(`${hint}/`);
     });
 
-  // OPS/TOOLING PATH GUARD: real evidence providers sometimes flag a
-  // deploy/reinstall/maintenance script under an ops-tooling folder
-  // (scripts/, docker/, deploy/, infra/, hack/, ci/, tools/) as Tier-1
-  // "installer" evidence — the script genuinely installs/starts a service,
-  // but the folder itself is operational tooling, not a distinct shippable
-  // module (e.g. scripts/pg/win/install.ps1, a Windows re-provisioning
-  // helper for the already-discovered physical-gateway app). Individual
-  // Dockerfiles under docker/ are still attributed correctly by
-  // applicationSurfaceFromFile's own Dockerfile-name pattern (independent of
-  // this function); this guard only stops THIS evidence-root-creation path
-  // from also spawning a directory-named phantom app for the same tooling
-  // folder. Real app/core/feature-x-style module names are unaffected.
   const isOpsToolingPath = (rootPath: string): boolean => /(?:^|\/)(scripts|docker|deploy|infra|hack|ci|tools|tooling)(?:\/|$)/i.test(rootPath);
 
   const out: Array<Partial<SystemApplication> & { name: string }> = [];
@@ -12277,44 +10491,10 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
     if (coveredByExisting(rootPath)) continue;
     if (isOpsToolingPath(rootPath)) continue;
 
-    // STRONG SIGNAL ONLY: Tier-1 (real ship/run artifact — Dockerfile,
-    // compose, k8s, serverless, installer, ci-deploy, or an ecosystem's own
-    // Tier-1 "bin" signal like com.android.application/executableTarget).
-    // Tier-2/3-only evidence is deliberately NOT enough to create a brand
-    // new app surface here — evidence providers sometimes report root_path
-    // as a bare, de-contextualized fragment (e.g. a route handler's own
-    // file's immediate directory name "src" instead of the real module root
-    // "apps/api/src"), which would otherwise fan out into spurious phantom
-    // apps for every such fragment. A genuine Tier-2/3 module at a real
-    // non-conventional path still has SOME Tier-1 evidence of its own once
-    // it truly ships (a Dockerfile, a package manifest with a bin entry
-    // recognized elsewhere, etc.); until then, creating an app from a bare
-    // runnable/package signal alone risks exactly the over-production this
-    // fix must avoid (see the benchmarked-NestJS-API=4 regression guardrail).
     if (entry.tier !== 1) continue;
 
-    // AMBIGUOUS-ROOT GUARD: if this root_path aggregates more than one
-    // distinctly-named Tier-1 artifact (e.g. a shared "docker/" directory
-    // holding several unrelated *.Dockerfile ship units), it is not itself
-    // a single ship unit — each named artifact is presumably already
-    // attributed elsewhere (applicationSurfaceFromFile's own Dockerfile-name
-    // pattern), and collapsing them into one directory-named phantom app
-    // would over-produce. Skip; only an unambiguous 1:1 root->ship-unit
-    // mapping creates a new app here.
     if (entry.names.size > 1) continue;
 
-    // PACKAGING-ARTIFACT GUARD: this root's own Tier-1 evidence already
-    // names >= 2 OTHER real apps elsewhere in the repo as ships_paths (e.g.
-    // a top-level installer/ directory holding an .nsi script whose `File`
-    // directives ship client.exe + a daemon.exe — two ALREADY-DISCOVERED
-    // deployables). That makes this root a PACKAGING/BUNDLING artifact for
-    // those apps, not a distinct ship unit in its own right, mirroring the
-    // root_path==='.' root-bundle principle in resolveDeployables (a shared
-    // installer artifact bundles members; it is not itself a member).
-    // Evidence-gated: only fires when the named ships_paths actually
-    // resolve to other real, already-known apps (not just >=2 arbitrary
-    // strings), so a genuine standalone service whose own evidence
-    // happens to mention >=2 file paths is unaffected.
     const namedOtherApps = new Set(
       entry.shipsPaths
         .map(shipped => existingForRepo.find(other => bundleNameMatches(shipped, other)))
@@ -12323,10 +10503,6 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
     );
     if (namedOtherApps.size >= 2) continue;
 
-    // Name by the root folder's basename (consistent with how
-    // applicationSurfaceFromFile names allowlisted surfaces) rather than an
-    // individual evidence line's name (which may be an ephemeral route like
-    // "GET /health") — the folder identity is the stable, real app name.
     const cleanName = cleanApplicationName(rootPath.split('/').pop() || rootPath);
     if (!cleanName) continue;
 
@@ -12352,17 +10528,6 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
   }
   return out;
 }
-
-// ---------------------------------------------------------------------------
-// Evidence-first deployable boundary resolver (agent-B claim).
-//
-// Shared contract with agent-A: repository.cas.deployable_evidence, when
-// present, is the authoritative DeployableEvidence[] signal. Until agent-A
-// lands that field on CASOutput, deriveDeployableEvidenceFallback() computes
-// an equivalent signal directly from cas.nodes / distribution_units so the
-// resolver has something real to consume rather than blocking on the other
-// claim landing first.
-// ---------------------------------------------------------------------------
 
 function deployableEvidenceFromCas(repository: CrossCodebaseInput): DeployableEvidence[] {
   const supplied = (repository.cas as unknown as { deployable_evidence?: DeployableEvidence[] })?.deployable_evidence;
@@ -12437,8 +10602,7 @@ function deriveDeployableEvidenceFallback(repository: CrossCodebaseInput): Deplo
         upsert(rootPath, 2, 'bin', `distribution-unit:${unit.name}:${artifactPath}`, artifactPath);
       }
     }
-    // Multiple components bundled into one distribution unit is itself
-    // positive bundling evidence for every component beyond the first.
+
     if ((unit.component_names || []).length > 1) {
       for (const componentName of unit.component_names || []) {
         const cleanName = cleanApplicationName(componentName);
@@ -12451,15 +10615,6 @@ function deriveDeployableEvidenceFallback(repository: CrossCodebaseInput): Deplo
   return [...byRoot.values()];
 }
 
-/** Does a ships_paths entry (a bin/crate/package name from Dockerfile COPY /
- *  cargo -p args / installer cp targets) name this app? Matched by exact name,
- *  by path_hint basename (ships_paths holds bare names like "client-service",
- *  apps carry path_hint like "bin/client-service"), or by the app's own
- *  resolved evidence name when passed — a Cargo bin crate's FOLDER name and
- *  its Cargo `[package] name` frequently differ (e.g. folder bin/client-service,
- *  package/binary "daemon"); the ships_paths/entrypoint always names the real
- *  compiled BINARY, so an installer/Dockerfile that ships "daemon" would never
- *  match an app that's only known by its folder name without this. */
 function bundleNameMatches(shipped: string, app: SystemApplication, resolvedName?: string): boolean {
   const cleanShipped = cleanApplicationName(shipped);
   if (!cleanShipped) return false;
@@ -12477,40 +10632,15 @@ interface DeployableResolution {
   kind: DeployableEvidence['kind'] | 'folder-heuristic';
   evidence: string[];
   shipsPaths: string[];
-  /** True when this resolution came from evidence anchored to THIS app
-   *  specifically (its own entrypoint_member match, or root_path exactly
-   *  equal to its path_hint) rather than the fuzzy containment fallback,
-   *  which can return a directory-level blob merged across unrelated
-   *  sibling artifacts. False/undefined for the Tier-4 folder-heuristic
-   *  fallback and the fuzzy containment match. */
+
   selfAnchored?: boolean;
 }
 
-/** THE ALGORITHM: evidence-first boundary + evidence-gated merge.
- *
- *  1. Candidates = DeployableEvidence roots (tier 1/2/3 from real ship/runtime
- *     artifacts), folder-regex demoted to Tier-4 tiebreaker used only when
- *     tiers 1-3 are silent for a given codebase.
- *  2. Attribute code to nearest owning root (containment).
- *  3. Evidence-gated merge: a Tier-2/3 candidate merges into another
- *     deployable ONLY with positive bundling evidence (it's in another root's
- *     Tier-1 ships_paths, OR it has no own Tier-1 artifact and is named as a
- *     bundled component in a shared distribution unit). Never merge on
- *     absence-of-artifact alone; ambiguous cases stay separate and are
- *     flagged `possible_bundle` in boundary_evidence.
- */
 function resolveDeployables(applications: SystemApplication[], repositories: CrossCodebaseInput[]): void {
   for (const repository of repositories) {
     const projectId = codebaseId(repository.path);
     const evidenceList = deployableEvidenceFromCas(repository);
-    // Keep the BEST (lowest-tier) evidence per root_path — a root can have
-    // both its own Tier-1 ship artifact (e.g. bin/gateway/Dockerfile) and a
-    // Tier-2 bin entry (Cargo [[bin]] under the same root). Naive last-write-
-    // wins would silently drop the Tier-1 evidence whenever the Tier-2 entry
-    // for the same root_path happens to sort after it in evidenceList, which
-    // both hides real ship artifacts (gateway wrongly demoted) and produces
-    // the "wrong primary" symptom (a bundle-primary's own resolution.tier
-    // reads as 2 instead of 1). Merge evidence lines instead of discarding.
+
     const evidenceByRoot = new Map<string, DeployableEvidence>();
     for (const evidence of evidenceList) {
       const existing = evidenceByRoot.get(evidence.root_path);
@@ -12543,14 +10673,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
         other.id !== app.id &&
         Boolean(other.path_hint) &&
         !isRawInfrastructureOrImageSurface(other));
-      // Must check entrypoint_member match before root_path containment: a
-      // per-service Dockerfile conventionally lives in a shared directory
-      // (docker/, deploy/), so root_path containment alone misses it and a
-      // weaker same-root_path Tier-2/3 signal would win by lookup order.
-      // Searches the raw evidenceList, not the root_path-collapsed map — several
-      // Tier-1 artifacts can share one root_path/directory. When multiple
-      // artifacts resolve to this app, prefer the most specific root_path over
-      // the generic repo root '.'.
+
       const directoryDecoupledCandidates = evidenceList.filter(candidate =>
         candidate.tier === 1 && candidate.entrypoint_member && bundleNameMatches(candidate.entrypoint_member, app));
       const directoryDecoupledMatch = directoryDecoupledCandidates.find(candidate => candidate.root_path !== '.')
@@ -12568,19 +10691,11 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
           kind: evidence.kind,
           evidence: [...evidence.evidence],
           shipsPaths: evidence.ships_paths || [],
-          // NAME-ANCHORED (own entrypoint_member match, or root_path exactly
-          // equal to this app's own path_hint) vs a fuzzy CONTAINMENT
-          // fallback that can return a directory-level evidence blob merged
-          // across several unrelated sibling artifacts (e.g. several
-          // *.Dockerfile files sharing root_path "docker") — only the
-          // former is safe to treat as "this app's own single ship
-          // artifact" for logic that reasons about ITS ships_paths in
-          // isolation (see the packaging-artifact demotion below).
+
           selfAnchored: Boolean(exactRootEvidence),
         });
       } else {
-        // Tier-4 tiebreaker: tiers 1-3 silent for this root, fall back to the
-        // pre-existing folder-regex/name heuristic so nothing loses coverage.
+
         resolutions.set(app.id, {
           rootPath,
           name: app.name,
@@ -12592,27 +10707,12 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       }
     }
 
-    // Root/unattached Tier-1 bundle artifacts: a Dockerfile or installer script
-    // at the repo root (root_path '.') is attached to no single app surface,
-    // so its members never get containment-attributed above. When its
-    // ships_paths names >=2 apps in this repo (by basename/name match), pick
-    // the PRIMARY as the app matching its entrypoint_member (or the first
-    // named member absent an entrypoint), mark it Tier-1, and bundle the
-    // other named members into it. Evidence-gated: only members the artifact
-    // actually names merge; gateway's own separate Dockerfile is untouched.
     const rootBundleTargets = new Map<string, { primaryAppId: string; evidence: DeployableEvidence }>();
     for (const evidence of evidenceList) {
       if (evidence.tier !== 1 || evidence.root_path !== '.') continue;
       const shipsPaths = evidence.ships_paths || [];
       if (shipsPaths.length < 2) continue;
-      // A named member with its OWN dedicated Tier-1 artifact elsewhere
-      // (e.g. a per-service docker/Client.Dockerfile that directly names
-      // this app as ITS entrypoint) already has stronger, more specific
-      // ship evidence than a shared/generic root-level multi-service
-      // artifact (often a dev/test docker-compose image bundling
-      // everything for convenience). Don't let the generic root artifact
-      // sweep such a member into someone else's bundle — its dedicated
-      // evidence wins and it competes for PRIMARY on equal footing instead.
+
       const hasOwnDedicatedTier1 = (app: SystemApplication): boolean => {
         const ownResolution = resolutions.get(app.id);
         return Boolean(ownResolution && ownResolution.tier === 1 && ownResolution.rootPath !== evidence.root_path);
@@ -12621,9 +10721,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       if (namedApps.length < 2) continue;
       const dedicatedApps = namedApps.filter(hasOwnDedicatedTier1);
       const sweepableApps = namedApps.filter(app => !hasOwnDedicatedTier1(app));
-      // Prefer a named member with its OWN dedicated Tier-1 entrypoint match
-      // as primary over the shared artifact's generic entrypoint pick — it
-      // is evidenced as shipped in its own right, not just swept in.
+
       const primary = (evidence.entrypoint_member && dedicatedApps.find(app => bundleNameMatches(evidence.entrypoint_member!, app, resolutions.get(app.id)?.name)))
         || dedicatedApps[0]
         || (evidence.entrypoint_member && namedApps.find(app => bundleNameMatches(evidence.entrypoint_member!, app, resolutions.get(app.id)?.name)))
@@ -12638,30 +10736,15 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
           ...evidence.evidence,
         ]);
       }
-      // A dedicated app other than the chosen primary keeps its own
-      // Tier-1 evidence untouched (handled by the per-app evidence-gated
-      // merge pass below via its own resolution) rather than being forced
-      // into this shared artifact's bundle.
+
     }
 
-    // NON-ROOT PACKAGING-ARTIFACT DEMOTION: a Tier-1 "installer"/"ci-deploy"
-    // surface at its OWN dedicated non-root path (e.g. a top-level
-    // installer/ directory holding an .nsi/.wxs script) can itself resolve
-    // as a normal Tier-1 app when its evidence root wasn't folded into any
-    // sibling — but if that evidence's OWN ships_paths names >= 2 OTHER
-    // real sibling apps (by resolved binary/package name, not just its own
-    // folder name), it is a PACKAGING/BUNDLING artifact for those apps, not
-    // a distinct deployable in its own right — the same principle already
-    // applied to root_path === '.' bundles above, generalized to any root.
-    // Evidence-gated: only demotes when >= 2 OTHER apps are positively
-    // named; a real standalone service whose own Dockerfile happens to
-    // mention one sibling path is unaffected.
     const demotedAsPackagingArtifact = new Set<string>();
     for (const app of appsForRepo) {
       if (app.bundled_into || rootBundleTargets.has(app.id)) continue;
       const resolution = resolutions.get(app.id);
       if (!resolution || resolution.tier !== 1 || resolution.rootPath === '.') continue;
-      if (!resolution.selfAnchored) continue; // fuzzy containment match: shipsPaths may be a merged multi-artifact blob, not safe to reason about in isolation
+      if (!resolution.selfAnchored) continue;
       const namedSiblings = new Set(
         resolution.shipsPaths
           .map(shipped => appsForRepo.find(other => other.id !== app.id && bundleNameMatches(shipped, other, resolutions.get(other.id)?.name)))
@@ -12677,30 +10760,13 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       ]);
     }
 
-    // Evidence-gated merge pass.
     for (const app of appsForRepo) {
-      if (app.bundled_into) continue; // already resolved by the root-bundle pass above
+      if (app.bundled_into) continue;
       const resolution = resolutions.get(app.id);
       if (!resolution) continue;
-      if (!app.deployable && demotedAsPackagingArtifact.has(app.id)) continue; // demoted above: packaging artifact, not a deployable in its own right
+      if (!app.deployable && demotedAsPackagingArtifact.has(app.id)) continue;
       if (resolution.tier === 1 || rootBundleTargets.has(app.id)) {
-        // TIER-1-OVERRIDES-FOLDER-PRIOR (spec SPEC-DEPLOYABLE-DETECTION.md
-        // §2/§3): a self-anchored Tier-1 ship artifact (a Dockerfile/compose-
-        // service/k8s-manifest/installer/CI-deploy job that names THIS app
-        // specifically, not a fuzzy containment match spanning several
-        // sibling artifacts) is real, positive ship evidence and must win
-        // over the Tier-4 packages/crates/libs folder-prior veto baked into
-        // isDeployableApplication()/isPackagePathHint() upstream. Without
-        // this, a monorepo whose real ship units happen to live under a
-        // `packages/*` workspace glob (a name choice, not a library/app
-        // distinction — e.g. a pnpm workspace with `"workspaces": ["packages/*"]`
-        // where packages/backend and packages/frontend each have their own
-        // Dockerfile and their own docker-compose service) stays permanently
-        // deployable:false, because nothing else in this resolver ever
-        // promotes deployable back to true. Only promotes on a self-anchored
-        // match — the fuzzy containment fallback can merge evidence across
-        // unrelated sibling artifacts sharing one root_path and is not safe
-        // to treat as this app's own ship declaration.
+
         if (!app.deployable && resolution.selfAnchored) {
           app.deployable = true;
           app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
@@ -12716,13 +10782,6 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
         continue;
       }
 
-      // Look for another root whose Tier-1 ships_paths cover this app's root,
-      // or another root's distribution unit that names this app as a bundled
-      // component (both are positive bundling evidence). Checks the app's
-      // own resolved evidence NAME (resolution.name) as well as app.name —
-      // a Cargo bin crate's folder name and its actual `[package] name` /
-      // compiled binary name frequently differ (e.g. folder client-service,
-      // package "daemon"), and ships_paths always names the real binary.
       const bundleTarget = appsForRepo.find(other => {
         if (other.id === app.id) return false;
         const otherResolution = resolutions.get(other.id);
@@ -12750,10 +10809,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       if (resolution.tier === 4) {
         app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [`tier-4-folder-heuristic:${resolution.rootPath}`, 'possible_bundle:unresolved-no-tier1-3-evidence']);
       } else {
-        // Tier-2/3 candidate with no positive bundling evidence: never merge
-        // on absence-of-artifact alone. Stays a separate deployable, flagged
-        // ambiguous only if there is a same-repo Tier-1 sibling it could
-        // plausibly belong to.
+
         const hasTier1Sibling = appsForRepo.some(other => other.id !== app.id && resolutions.get(other.id)?.tier === 1);
         app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
           `tier-${resolution.tier}-standalone:${resolution.kind}`,
@@ -12790,14 +10846,6 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
   }
 }
 
-/**
- * Tags each matching SystemApplication with its sub-CAS node id so a
- * WorkspaceDeployable carries workspace -> CAS -> sub-CAS-node provenance
- * (docs/cas/SPECIFICATION.md §0.4). Must run after resolveDeployables.
- * Matching is identity-based (root_path/member_root_paths vs path_hint||name),
- * not positional. Bundled-member applications are skipped — their primary
- * carries the link. Purely additive; no-op when the CAS has no promotion.
- */
 function linkSubCasNodes(applications: SystemApplication[], repositories: CrossCodebaseInput[]): void {
   const rootMatches = (appRoot: string, unitRoot: string): boolean => {
     if (!appRoot || !unitRoot) return false;
@@ -12814,30 +10862,13 @@ function linkSubCasNodes(applications: SystemApplication[], repositories: CrossC
     try {
       das = getCachedDeployableAnalyses(repository.cas);
     } catch {
-      continue; // Malformed/legacy CAS shape: no sub-CAS-node link, never a hard failure for the workspace build.
+      continue;
     }
     if (!das.promoted || das.sub_cas_nodes.units.length === 0) continue;
 
     for (const app of appsForRepo) {
       const appRoot = app.path_hint || app.name;
-      // IDENTITY-FIRST MATCH ORDER (regression fix, verified on a real
-      // hosted compose+installer repo): the single mixed-predicate find()
-      // this replaces returned the FIRST unit satisfying ANY predicate in
-      // unit-array order, so a unit whose bundled MEMBER root contains the
-      // app's own path (e.g. a name-resolution-failed generic container
-      // whose Dockerfile bundles bin/<service>) beat the unit that IS this
-      // app by name (its own compose-service unit) purely by array
-      // position — the service's workspace-level-CAS row drilled down into the wrong unit.
-      // A unit bearing the app's own cleaned name is the strongest identity
-      // evidence and must win; root/member containment stays as fallback.
       const nameMatch = das.sub_cas_nodes.units.find(unit => distributionNamesMatch(app.name, unit.name));
-      // A bundled-member app normally leaves the link to its bundle primary
-      // — but when sub-CAS-node promotion itself promoted a unit under this app's OWN name,
-      // the two layers disagree (workspace bundling folded it, the sub-CAS node ships it
-      // standalone) and the identity evidence still holds: tag the app with
-      // its own unit rather than hiding the linkage. Root-containment
-      // fallbacks stay primary-only (containment under a shared root is not
-      // identity), so members without a same-name unit still defer.
       if (app.bundled_into) {
         if (nameMatch) app.source_sub_cas_node_id = nameMatch.id;
         continue;
@@ -12906,16 +10937,6 @@ function mergeDuplicateSubCasNodeApplications(applications: SystemApplication[])
   }
 }
 
-/** Merges a monorepo subdir-derived application row with a standalone member
- *  uploaded from that same subdir, so the workspace-level CAS doesn't show the same logical
- *  app twice. Must run after resolveDeployables/linkSubCasNodes; annotates only
- *  (marks the subdir row merged_into the survivor), never removes rows.
- *  Requires two INDEPENDENT evidence signals (never name-only): (a) normalized
- *  name identity between the rows, and (b) the monorepo row's path_hint tail
- *  matching the candidate member's own declared name identity — not its
- *  storage path, which is opaque for hosted workspaces. The standalone
- *  member's row wins ownership when multiple candidates match, scored by the
- *  same isWeakerDuplicateApplicationSurface idiom used for same-codebase dupes. */
 function mergeCrossMemberSubdirApplications(
   applications: SystemApplication[],
   codebases: SystemCodebase[],
@@ -12925,22 +10946,6 @@ function mergeCrossMemberSubdirApplications(
 
   const nameKey = (value: string | undefined): string => cleanApplicationName(value).replace(/[-_]/g, '').toLowerCase();
 
-  // HOSTED-PATH REGRESSION (live verification on v1.0.122): a hosted member's
-  // codebase.path is an opaque workspace-storage root — e.g.
-  // /data/workspaces/prj_9Mfi2xKq7Lm — NEVER the app/project name, unlike a
-  // local dev checkout where the directory is usually named after the repo.
-  // Deriving containment from the path basename (the original version of
-  // this function) is silently vacuous in production: it never matches any
-  // real subdir tail, so the merge never fires on a real hosted workspace.
-  // The member's real identity for containment purposes is its declared
-  // project NAME, not its storage path — build the identity-key set per
-  // codebase from every name-shaped fact reachable for that member
-  // (SystemCodebase.name, which toSystemCodebase already prefers
-  // repository.name / cas.system.name over the path basename; plus the raw
-  // repository.name and the CAS's own system.name directly, in case they
-  // diverge from the sanitized codebase.name), normalized the same way as
-  // application names so "android" / "Android" / "android-app" all collide
-  // correctly against a project literally named "android".
   const repositoryByCodebaseId = new Map(repositories.map(repository => [codebaseId(repository.path), repository]));
   const identityKeysByCodebaseId = new Map<string, Set<string>>();
   for (const codebase of codebases) {
@@ -12961,9 +10966,7 @@ function mergeCrossMemberSubdirApplications(
 
   for (const parentApp of applications) {
     if (parentApp.merged_into) continue;
-    // Only a real monorepo app-root surface is eligible as the "subdir row"
-    // side of this merge — a bare codebase-level synthetic root or a
-    // route-fragment path_hint carries no containment evidence to check.
+
     if (!isRealDeployableSurfacePathHint(parentApp.path_hint)) continue;
     const tail = pathTail(parentApp.path_hint);
     if (!tail) continue;
@@ -12973,21 +10976,9 @@ function mergeCrossMemberSubdirApplications(
     for (const memberCodebase of codebases) {
       if (memberCodebase.id === parentApp.codebase_id) continue;
 
-      // Containment evidence / signal (b): this member's own declared NAME
-      // identity (project name / CAS system name — never its storage path)
-      // matches the subdir the parent row was derived from. This answers
-      // WHICH member owns the subdir; signal (a) below independently checks
-      // that the parent row's OWN app name agrees — for the live shape the
-      // child's app-row name and its project name coincide, which is fine:
-      // (a) is about the app row's name, (b) is about member ownership, and
-      // they're checked against different things (parentApp.name vs. the
-      // member's identity-key set) even when the values happen to match.
       const memberIdentityKeys = identityKeysByCodebaseId.get(memberCodebase.id);
       if (!memberIdentityKeys || !memberIdentityKeys.has(tailKey)) continue;
 
-      // Signal (a): normalized name identity against the member's own
-      // application row(s) for this same logical app — never merge on the
-      // containment/path-shape signal alone.
       const candidates = applications.filter(app =>
         app.codebase_id === memberCodebase.id &&
         !app.merged_into &&
@@ -13017,18 +11008,11 @@ function mergeCrossMemberSubdirApplications(
         `containment-evidence:subdir-path-tail-matches-member-project-name:${tail}`,
         `name-identity-evidence:${nameKey(parentApp.name)}`,
       ]);
-      break; // matched to one member codebase; stop scanning others for this row
+      break;
     }
   }
 }
 
-/** RUNNABLE != SHIPPED: a Tier-2/3 runnable candidate (bin/entry/package
- *  identity) only keeps deployable:true if it reached Tier 1 itself, is
- *  bundled_into a Tier-1 artifact, or is the sole/root runnable in the
- *  workspace — otherwise demote to deployable:false. Must run after bundling
- *  resolution. Tier-4 folder-heuristic apps carry no positive evidence and are
- *  never gated (gating must act on evidence, not its absence). Never gates a
- *  genuinely single-binary repo (requires another runnable sibling to fire). */
 function applyShippedGate(
   appsForRepo: SystemApplication[],
   resolutions: Map<string, DeployableResolution>,
@@ -13039,19 +11023,13 @@ function applyShippedGate(
     return resolution && (resolution.tier === 2 || resolution.tier === 3);
   });
 
-  // Single-package repo / sole runnable: nothing to gate against, keep as-is.
   if (runnableApps.length <= 1) return;
 
   for (const app of runnableApps) {
     const resolution = resolutions.get(app.id)!;
-    if (app.bundled_into) continue; // (b) named in a Tier-1 artifact's ships_paths
-    if (rootBundleTargets.has(app.id)) continue; // (a'): bundle PRIMARY — a root Tier-1 artifact's entrypoint member is shipped by definition
+    if (app.bundled_into) continue;
+    if (rootBundleTargets.has(app.id)) continue;
 
-    // Not gated as far as bundling goes — but is it ACTUALLY referenced by
-    // some Tier-1 artifact that just didn't attribute it via containment or
-    // root-bundle matching (e.g. named in ships_paths of a non-root Tier-1
-    // artifact elsewhere in the repo)? Re-check directly for safety/symmetry
-    // with the bundling pass above.
     const referencedByTier1 = appsForRepo.some(other => {
       if (other.id === app.id) return false;
       const otherResolution = resolutions.get(other.id);
@@ -13059,7 +11037,7 @@ function applyShippedGate(
     });
     if (referencedByTier1) continue;
 
-    if (!app.deployable) continue; // nothing to demote
+    if (!app.deployable) continue;
 
     app.deployable = false;
     app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
@@ -13135,11 +11113,6 @@ function normalizeDistributionName(value: string): string {
   return String(value || '').replace(/\\/g, '/').split('/').pop()!.replace(/\.exe$/i, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
 }
 
-/**
- * A shared library/package inside a monorepo, rolled up by which deployables
- * consume it, how much they use it, and (where derivable from CAS import
- * specifiers) which exported symbols each consumer actually imports.
- */
 export interface WorkspaceSharedCodeRollupConsumer {
   deployable_id: string;
   deployable_name: string;
@@ -13170,14 +11143,6 @@ export interface WorkspaceSharedCodeRollup {
   evidence: string[];
 }
 
-/**
- * Compose a cross-deployable shared-code rollup from facts already computed
- * in this pass: deployable/package applications (applicationSurfaceCandidatesFromCas),
- * the sdk-install application links built by inferInternalDependencyLinks /
- * inferInternalImportDependencyLinks (deployable_id-level consumer/usage facts),
- * and CAS `import` node `metadata.specifiers` (named-symbol facts) matched
- * against the lib's package name. No new analysis pass is run.
- */
 function buildSharedCodeRollup(
   repositories: CrossCodebaseInput[],
   applications: SystemApplication[],
@@ -13189,8 +11154,6 @@ function buildSharedCodeRollup(
   const appById = new Map(applications.map(app => [app.id, app]));
   const repoByProjectId = new Map(repositories.map(repository => [codebaseId(repository.path), repository]));
 
-  // deployable_id-level consumer + usage-count facts, reused from the links
-  // already built by inferInternalDependencyLinks/inferInternalImportDependencyLinks.
   const linksByTargetLibId = new Map<string, SystemApplicationLink[]>();
   for (const link of applicationLinks) {
     if (link.kind !== 'sdk-install') continue;
@@ -13209,9 +11172,6 @@ function buildSharedCodeRollup(
     );
     if (consumerDeployableIds.size === 0) continue;
 
-    // Consumed-symbol surface: walk this lib's own repo's CAS import nodes,
-    // grouped by which deployable's file the import lives in, matching
-    // metadata.source against the lib's package/path name.
     const repository = repoByProjectId.get(libApp.codebase_id);
     const consumedByDeployable = new Map<string, Set<string>>();
     let surfaceDerivable = false;
@@ -13222,13 +11182,11 @@ function buildSharedCodeRollup(
         const importSource = String(metadata?.source || '');
         if (!importSource) continue;
         const sourceFile = (node as any)?.source?.file as string | undefined;
-        // The importing FILE's owning app is the consumer; the import
-        // SPECIFIER resolves to the target lib. These must not be conflated.
+
         const consumerApp = applicationForFile(libApp.codebase_id, sourceFile, applications);
         if (!consumerApp || consumerApp.id === libApp.id || !consumerApp.deployable) continue;
         if (!consumerDeployableIds.has(consumerApp.id)) continue;
-        // Only attribute this import to the lib if the import specifier
-        // actually resolves to this lib application (not some other lib).
+
         const resolvedTarget = applicationForImportSource(libApp.codebase_id, sourceFile, importSource, applications);
         if (resolvedTarget?.id !== libApp.id) continue;
         const specifiers = Array.isArray(metadata?.specifiers) ? metadata!.specifiers as Array<Record<string, unknown>> : [];
@@ -13406,9 +11364,7 @@ function hasLikelyExternalTemplatedBase(endpoint: string | undefined): boolean {
   const raw = String(endpoint || '');
   const template = raw.match(/\$\{([^}]+)}/)?.[1] || '';
   if (!template) return false;
-  // Generic service-shaped template tokens only — never product names. A
-  // first-party templated host almost always carries a HOST/URL/API/SERVICE
-  // token (); judging by brand names was hardcoding.
+
   if (/\b(API_HOST|BASE_URL|SERVICE|INTERNAL|PUBLIC_API|HOST|URL|ENDPOINT|API|SYNC|LINK)\b/i.test(template)) return false;
   return true;
 }
@@ -13597,16 +11553,6 @@ function sourceNodeServiceAliases(lookupIndex: CrossCodebaseLookupIndex, nodeId:
   return normalizeAliases(node?.name?.replace(/^Compose service:\s*/i, '')).filter(isUsefulApplicationAlias);
 }
 
-/**
- * A deployable/app NAME must never be a hash/id-shaped token (a content
- * hash, uuid, or the workspace/analysis-id directory basename an analyzer
- * server stages a snapshot under) or a bare hostname/domain string (an
- * external SOAP/HTTP endpoint's host, e.g. from a WSDL URL). Both shapes
- * are real plumbing artifacts, not human-meaningful application identity —
- * mirrors isHashOrIdShapedToken in orchestrator.ts (duplicated locally: that
- * one is a private method on the analyzer-core orchestrator class, across
- * the apps/packages boundary from this module).
- */
 function isHashOrIdShapedToken(token: string): boolean {
   const normalized = (token || '').toLowerCase();
   if (normalized.length < 8) return false;
@@ -13618,57 +11564,27 @@ function isHashOrIdShapedToken(token: string): boolean {
   return false;
 }
 
-/** A bare dotted/dashed hostname (e.g. "ws.efsllc.com" -> cleaned
- *  "ws-efsllc-com") is a real external endpoint's address, not this repo's
- *  application identity — it names the OTHER end of an integration, not a
- *  deployable this codebase ships. Recognized by a public-suffix-ish TLD
- *  tail surviving cleanApplicationName's dot-to-dash normalization: at
- *  least 3 dash-joined segments where the last segment is a short
- *  (2-6 char) alphabetic token (com/org/io/co/net/dev/app/...). */
 function isHostShapedToken(cleanedName: string): boolean {
   const normalized = (cleanedName || '').toLowerCase();
-  // cleanApplicationName() deliberately PRESERVES dots (it only replaces
-  // non [a-zA-Z0-9_.-] characters), so a raw hostname like "ws.efsllc.com"
-  // reaches this check still dot-separated; only a later slugify() call
-  // (applicationId's own id-string construction) converts dots to dashes.
-  // Check both shapes so this guard catches the name whether or not it has
-  // already passed through slugify by the time it gets here.
+
   const dotSegments = normalized.split('.').filter(Boolean);
   if (dotSegments.length >= 2) {
     const dotTld = dotSegments[dotSegments.length - 1];
     if (/^[a-z]{2,6}$/.test(dotTld) && dotSegments.slice(0, -1).every(segment => /^[a-z0-9-]+$/.test(segment))) return true;
   }
-  // cleanApplicationName preserves dots, so a dashed value here is an ordinary
-  // kebab-case repo/deployable name, not evidence of a hostname. Treating any
-  // three-part kebab name ending in a short word as a host misclassified names
-  // such as enterprise-polyglot-app and enterprise-platform-infra.
+
   return false;
 }
 
-/** True when `cleanedName` is not safe to surface as a deployable/app name
- *  (hash/id-shaped, or a bare external hostname) and a better, human name
- *  (directory basename / repo name / manifest name) should be used instead. */
 function isUnsafeDeployableName(cleanedName: string): boolean {
   if (!cleanedName) return true;
   return isHashOrIdShapedToken(cleanedName) || isHostShapedToken(cleanedName);
 }
 
-/** The last-resort, always-safe application name: the repo directory's own
- *  basename. Never a hash/id or a hostname since it comes straight from the
- *  filesystem path the caller supplied for this repository, not from
- *  derived/CAS-computed metadata that can be staged under a workspace dir
- *  named after an analysis id. */
 function safeRepositoryFallbackName(repository: CrossCodebaseInput): string {
   return cleanApplicationName(path.basename(repository.path)) || 'codebase';
 }
 
-/** Resolve a deployable/app name candidate, honoring the caller's preferred
- *  chain but substituting `safeRepositoryFallbackName` the moment a
- *  candidate turns out to be hash/id-shaped or a bare hostname. Upstream
- *  cause (kept for anyone tracing this further): a value in the chain
- *  (`cas.system?.name`, or a raw endpoint-derived alias) can legitimately be
- *  a workspace/analysis-id basename or a WSDL/HTTP endpoint host — this is
- *  the general backstop, not a single-benchmarked-repo-specific patch. */
 function sanitizeDeployableName(candidate: string, repository: CrossCodebaseInput): string {
   const cleaned = cleanApplicationName(candidate);
   if (isUnsafeDeployableName(cleaned)) return safeRepositoryFallbackName(repository);
@@ -13687,7 +11603,7 @@ function serviceAliasesFromEndpoint(endpoint: string | undefined): string[] {
     const host = url.hostname;
     if (host && !host.includes('${') && !/^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/.test(host)) return [host];
   } catch {
-    // Fall through to regex extraction.
+
   }
   const match = value.match(/^https?:\/\/([A-Za-z0-9_.-]+)/) || value.match(/^([A-Za-z0-9_.-]+)(?::\d+)?(?:\/|$)/);
   return match ? [match[1]] : [];
@@ -13713,10 +11629,7 @@ function inferApplicationName(
     if (isExternalRuntimeDependency(alias)) return alias;
     if (isUsefulApplicationAlias(alias) && !isUnsafeDeployableName(cleanApplicationName(alias))) return alias;
   }
-  // A raw endpoint host (e.g. "ws.efsllc.com" from a SOAP/WSDL URL) names
-  // the OTHER end of an integration, not this repo's own application
-  // identity — never surface it as a deployable name. Fall through to the
-  // repository-name chain below instead of returning the bare host.
+
   const endpointAlias = serviceAliasesFromEndpoint(fallback).find(alias => isUsefulApplicationAlias(alias) && !isHostShapedToken(cleanApplicationName(alias)));
   if (endpointAlias) return endpointAlias;
   const externalEndpointAlias = serviceAliasesFromEndpoint(fallback).find(alias => isExternalRuntimeDependency(alias));
@@ -13727,26 +11640,11 @@ function inferApplicationName(
 function applicationNameFromFile(file: string | undefined): string {
   const normalized = String(file || '').replace(/\\/g, '/');
   const lower = normalized.toLowerCase();
-  // CASE-PRESERVING FIX: capture groups are matched against the ORIGINAL-CASE
-  // `normalized` string (with a case-INSENSITIVE flag on the path-prefix
-  // literal only), not the pre-lowercased `lower` string. Matching against
-  // `lower` previously discarded a PascalCase/camelCase folder name's word
-  // boundaries before cleanApplicationName() ever saw them (e.g.
-  // "apps/OrdersApi/Dockerfile" captured as "ordersapi", with no case left to
-  // split into "orders-api"), while the sibling applicationSurfaceFromFile()
-  // preserves case for the exact same kind of path — the mismatch meant the
-  // SAME real module surfaced as two different application ids/names
-  // (orders-api vs ordersapi) depending on which code path named it first.
+
   const rustServiceModule = normalized.match(/(?:^|\/)crates\/[^/]+\/src\/([^/.]+)\.rs$/i);
   if (rustServiceModule?.[1] && !/^(lib|main|mod|types?|models?|schema|error|config|utils?)$/i.test(rustServiceModule[1])) {
     const moduleName = rustServiceModule[1].replace(/_/g, '-');
-    // No CAS/bin/entry-point evidence is reachable at this layer (this
-    // function only sees a file path string), so a full evidence-based gate
-    // for "is this module an app surface" isn't available here. Keep only
-    // the minimal generic subset that isn't a product-shaped guess; the
-    // operational/product vocabulary this used to gate on (agent,
-    // coordinator, gateway, broker, relay, drop, drop-server, sync,
-    // scheduler) is dropped rather than kept as a name guess.
+
     if (/(api|server|service|worker|client)/i.test(moduleName)) return moduleName;
   }
   const patterns = [
@@ -13767,24 +11665,6 @@ function applicationNameFromFile(file: string | undefined): string {
   const dockerfile = normalized.match(/(?:^|\/)([^/]+)\.Dockerfile$/i);
   if (dockerfile?.[1]) return cleanApplicationName(dockerfile[1]);
   return '';
-}
-
-function applicationPathHint(file: string | undefined): string {
-  const normalized = String(file || '').replace(/\\/g, '/');
-  const patterns = [
-    /((?:^|\/)apps\/[^/]+)/,
-    /((?:^|\/)services\/[^/]+)/,
-    /((?:^|\/)packages\/[^/]+)/,
-    /((?:^|\/)crates\/[^/]+)/,
-    /((?:^|\/)bin\/[^/]+)/,
-    /((?:^|\/)libs\/[^/]+\/(?!src|lib|test|tests|dist|build|__tests__)[^/]+)/,
-    /((?:^|\/)libs\/[^/]+)/,
-  ];
-  for (const pattern of patterns) {
-    const match = normalized.match(pattern);
-    if (match?.[1]) return match[1].replace(/^\//, '');
-  }
-  return normalized.split('/').slice(-2).join('/');
 }
 
 function applicationId(codebase: string, name: string): string {
@@ -13835,18 +11715,7 @@ function cleanApplicationName(value: string | undefined): string {
     .replace(/^compose service:\s*/i, '')
     .replace(/^docker image definition:\s*/i, '')
     .replace(/\.dockerfile$/i, '')
-    // NAME-NORMALIZATION FIX: split camelCase/PascalCase word boundaries
-    // (e.g. a Dockerfile named after the service it ships, `DropServer.
-    // Dockerfile`) into hyphen-separated words BEFORE lowercasing, so
-    // "DropServer" normalizes to "drop-server" — matching the same
-    // service's folder-derived name (bin/drop-server, Cargo `[package]
-    // name = "drop-server"`) instead of collapsing into the unrelated
-    // "dropserver". Without this, the same underlying binary surfaces as
-    // TWO distinct SystemApplications (folder-name vs PascalCase-artifact-
-    // name) that never collapse because applicationId() keys off the
-    // cleaned name. Acronym runs stay together (HTTPServer -> http-server,
-    // not h-t-t-p-server) by only splitting before an uppercase letter that
-    // starts a new word (lower/digit -> upper, or upper -> upper+lower).
+
     .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
     .replace(/[^a-zA-Z0-9_.-]+/g, '-')

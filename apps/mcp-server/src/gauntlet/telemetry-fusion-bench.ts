@@ -1,16 +1,16 @@
-/**
- * BLACKBOX bench for WS-A telemetry fusion — asserts fuseTelemetry() produces
- * the correct hot/slow/error RuntimeFacts on the right CAS nodes from a batch
- * of OTEL-ish spans, and honestly rejects a decoy span (no matching route) as
- * unmatched rather than force-fitting it.
- *
- * This bench is a pure fixture-CAS test: it does NOT import the analyzer
- * engine (no createOrchestrator/orchestrateAnalysis/analyzeProject) and does
- * NOT set any AI/model env — fuseTelemetry/correlateRuntimeEvent are
- * deterministic structural correlation, no AI involved. The fixture CAS below
- * stands in for "a stored analysis" the way a real workspace's CAS would look
- * after `analyze_codebase`; production wiring loads the real one from storage.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 import { fuseTelemetry, type RuntimeFact, type TelemetrySpan } from '../telemetry-fusion';
@@ -26,9 +26,9 @@ export interface TelemetryFusionBenchFixture {
   name: string;
   cas: CASOutput;
   spans: TelemetrySpan[];
-  /** Spans expected to correlate, keyed by (service, endpoint). */
+
   expected: TelemetryFusionBenchExpectation[];
-  /** Spans expected to be rejected as unmatched (decoys). */
+
   expected_unmatched: Array<{ service: string; endpoint: string }>;
 }
 
@@ -41,7 +41,7 @@ export interface TelemetryFusionBenchResult {
   mismatches: string[];
 }
 
-/** The fixture used by the bench: one entry point, one exit point, one decoy span with no static match. */
+
 export function buildFixture(): TelemetryFusionBenchFixture {
   const cas: CASOutput = {
     cas_version: '1.7.0',
@@ -87,13 +87,13 @@ export function buildFixture(): TelemetryFusionBenchFixture {
   } as unknown as CASOutput;
 
   const spans: TelemetrySpan[] = [
-    // hot: high call volume, low latency, on the real entry point
+
     { service: 'orders-api', endpoint: '/api/orders', method: 'GET', duration_ms: 40, count: 800 },
-    // slow: latency crosses the slow threshold, on the same entry point
+
     { service: 'orders-api', endpoint: '/api/orders', method: 'GET', duration_ms: 2200, count: 5 },
-    // error: on the exit point (outbound payment call)
+
     { service: 'payments', endpoint: '/v1/charges', method: 'POST', error: true, count: 2 },
-    // DECOY: no such route/service in the CAS — must be rejected, not force-fit.
+
     { service: 'ghost-service', endpoint: '/v9/nonexistent', method: 'GET', duration_ms: 9999, count: 9999 },
   ];
 

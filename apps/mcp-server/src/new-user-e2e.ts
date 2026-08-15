@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
+import { shutdownAnalysisWorker } from './analyzer';
 
 interface StepResult {
   name: string;
@@ -34,87 +35,103 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-new-user-e2e-'));
   const repo = path.join(root, 'repo');
-  const storage = path.join(root, 'storage');
+  const installPrefix = path.join(root, 'install');
+  const packDir = path.join(root, 'pack');
   const remoteData = path.join(root, 'remote-data');
+  const npmCache = path.join(root, 'npm-cache');
   const results: StepResult[] = [];
   const env = {
     ...process.env,
     HOME: path.join(root, 'home'),
-    KLAURO_STORAGE_PATH: storage,
+    USERPROFILE: path.join(root, 'home'),
+    npm_config_cache: npmCache,
+    NPM_CONFIG_CACHE: npmCache,
+    KLAURO_STORAGE_PATH: path.join(root, 'storage'),
     KLAURO_REMOTE_ANALYZER_DATA: remoteData,
     KLAURO_SMOKE_MAX_STARTUP_MS: process.env.KLAURO_SMOKE_MAX_STARTUP_MS || '3000',
   };
   fs.mkdirSync(env.HOME, { recursive: true });
+  fs.mkdirSync(npmCache, { recursive: true });
+  fs.mkdirSync(packDir, { recursive: true });
   fs.cpSync(fixturePath, repo, { recursive: true });
   initGitRepo(repo, env);
 
+  let server: ReturnType<typeof createRemoteAnalyzerHttpServer> | undefined;
   try {
-    results.push(runStep('deterministic install plus first value', () => {
-      const result = run(process.execPath, [
-        path.join(packageRoot, 'scripts', 'install.mjs'),
-        repo,
-        '--no-register',
-        '--rebuild',
-        '--first-value',
-      ], env, 8 * 60 * 1000);
-      assertOutput(result, /Klauro install: OK/);
-      assertOutput(result, /First value summary:/);
-      assertOutput(result, /Graph: \d+ nodes, \d+ edges/);
-      return 'installer built the bundle, skipped external registration, analyzed the repo, and produced an agent context summary';
+    results.push(runStep('build customer artifact', () => {
+      const result = run('npm', ['run', 'build'], env, 3 * 60 * 1000);
+      assertOutput(result, /Built installed client/);
+      return 'built the lightweight customer bundle';
     }));
 
-    const cliPath = path.join(packageRoot, 'dist', 'cli.cjs');
+    let tarball = '';
+    results.push(runStep('pack and install from customer tarball', () => {
+      const packed = run('npm', ['pack', path.join(packageRoot, '.customer-package'), '--pack-destination', packDir, '--json'], env);
+      const payload = parseJson(packed.stdout) as Array<{ filename: string }>;
+      tarball = path.join(packDir, payload[0].filename);
+      run('npm', ['install', '--ignore-scripts', '--prefix', installPrefix, tarball], env);
+      const packagePath = path.join(installPrefix, 'node_modules', '@klauro', 'mcp-server');
+      if (fs.existsSync(path.join(packagePath, 'node_modules'))) throw new Error('Installed package unexpectedly contains dependencies');
+      return `installed ${path.basename(tarball)} with no package-local dependencies`;
+    }));
+
+    const installedPackage = path.join(installPrefix, 'node_modules', '@klauro', 'mcp-server');
+    const cliPath = path.join(installedPackage, 'dist', 'cli.cjs');
+    const mcpPath = path.join(installedPackage, 'dist', 'index.cjs');
     results.push(runStep('installed CLI is executable', () => {
       const result = run(process.execPath, [cliPath, '--version'], env);
-      assertOutput(result, /klauro /);
+      assertOutput(result, /\d+\.\d+\.\d+\+/);
       return result.stdout.trim();
     }));
 
-    const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
+    const activeServer = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
+    server = activeServer;
+    await new Promise<void>(resolve => activeServer.listen(0, '127.0.0.1', resolve));
+    const address = activeServer.address();
     if (!address || typeof address !== 'object') throw new Error('Remote analyzer did not bind to a local port');
     const serverUrl = `http://127.0.0.1:${address.port}`;
 
-    try {
-      results.push(await runStepAsync('remote analyzer project init', async () => {
-        const result = await runAsync(process.execPath, [
-          cliPath,
-          'init',
-          repo,
-          '--server-url',
-          serverUrl,
-          '--force',
-          '--json',
-        ], env);
-        const payload = parseJson(result.stdout);
-        if (!payload.config?.analyzer?.serverUrl) throw new Error('Expected .klaurorc analyzer.serverUrl to be set');
-        return `.klaurorc points at ${payload.config.analyzer.serverUrl}`;
-      }));
+    results.push(await runStepAsync('account registration', async () => {
+      const result = await runAsync(process.execPath, [cliPath, 'login', '--server-url', serverUrl, '--email', 'beta@example.test', '--password', 'beta-password-123', '--register', '--json'], env);
+      const payload = parseJson(result.stdout);
+      if (payload.status !== 'signed-in') throw new Error(`Expected signed-in, got ${payload.status}`);
+      return 'registered and stored the beta@example.test session';
+    }));
 
-      let analysisId = '';
-      results.push(await runStepAsync('hosted analyzer full analysis', async () => {
-        const result = await runAsync(process.execPath, [cliPath, 'analyze', repo, '--json'], env, 8 * 60 * 1000);
-        const payload = parseJson(result.stdout);
-        if (payload.status !== 'success') throw new Error(`Expected success, got ${payload.status}`);
-        if ((payload.cas?.nodes?.length || 0) <= 0) throw new Error('Remote analysis returned no nodes');
-        analysisId = payload.analysis_id;
-        return `${payload.analysis_type} remote analysis returned ${payload.cas.nodes.length} nodes and ${payload.cas.edges.length} edges`;
-      }));
+    results.push(await runStepAsync('remote analyzer project init', async () => {
+      const result = await runAsync(process.execPath, [cliPath, 'init', repo, '--server-url', serverUrl, '--force', '--json'], env);
+      const payload = parseJson(result.stdout);
+      if (payload.status !== 'ready' || !payload.project_id || !fs.existsSync(payload.config_file)) {
+        throw new Error('Expected init to create a config and bind a hosted project');
+      }
+      return `.klaurorc binds project ${payload.project_id}`;
+    }));
 
-      results.push(await runStepAsync('hosted analyzer incremental sync', async () => {
-        const appFile = path.join(repo, 'app', 'main.py');
-        fs.appendFileSync(appFile, '\n\n@app.get("/readyz")\ndef readyz():\n    return {"ready": True}\n', 'utf8');
-        const result = await runAsync(process.execPath, [cliPath, 'remote-sync', repo, '--analysis-id', analysisId, '--json'], env, 8 * 60 * 1000);
-        const payload = parseJson(result.stdout);
-        if (payload.status !== 'success') throw new Error(`Expected success, got ${payload.status}`);
-        if (!payload.change_report) throw new Error('Remote sync did not return a change_report');
-        if (!JSON.stringify(payload.cas.entry_points || []).includes('readyz')) throw new Error('Incremental CAS did not include the new readyz route');
-        return `incremental sync returned ${payload.change_report.summary.filesModified + payload.change_report.summary.filesAdded} changed file(s)`;
-      }));
-    } finally {
-      await new Promise<void>(resolve => server.close(() => resolve()));
-    }
+    results.push(await runStepAsync('hosted analyzer full analysis', async () => {
+      const result = await runAsync(process.execPath, [cliPath, 'analyze', repo, '--wait', '--json'], env, 8 * 60 * 1000);
+      const payload = parseJson(result.stdout);
+      if (payload.status !== 'success') throw new Error(`Expected success, got ${payload.status}`);
+      if ((payload.cas?.nodes?.length || 0) <= 0) throw new Error('Remote analysis returned no nodes');
+      return `${payload.analysis_type} remote analysis returned ${payload.cas.nodes.length} nodes and ${payload.cas.edges.length} edges`;
+    }));
+
+    results.push(await runStepAsync('installed MCP first context', async () => {
+      const payload = await callMcpTool(mcpPath, 'get_agent_start_context', { path: repo }, env);
+      if (payload.error) throw new Error(String(payload.error));
+      if (!JSON.stringify(payload).includes('system')) throw new Error('Agent start context did not include system context');
+      return 'installed MCP returned hosted system context';
+    }));
+
+    results.push(await runStepAsync('hosted analyzer incremental sync', async () => {
+      const appFile = path.join(repo, 'app', 'main.py');
+      fs.appendFileSync(appFile, '\n\n@app.get("/readyz")\ndef readyz():\n    return {"ready": True}\n', 'utf8');
+      const result = await runAsync(process.execPath, [cliPath, 'remote-sync', repo, '--wait', '--json'], env, 8 * 60 * 1000);
+      const payload = parseJson(result.stdout);
+      if (payload.status !== 'success') throw new Error(`Expected success, got ${payload.status}`);
+      if (!payload.change_report) throw new Error('Remote sync did not return a change_report');
+      if (!JSON.stringify(payload.cas?.entry_points || []).includes('readyz')) throw new Error('Incremental CAS did not include the new readyz route');
+      return `incremental sync returned ${payload.change_report.summary.filesModified + payload.change_report.summary.filesAdded} changed file(s)`;
+    }));
 
     const totalMs = Date.now() - startedAt;
     if (totalMs > maxTotalMs) {
@@ -128,10 +145,60 @@ async function main(): Promise<void> {
     }
     process.stdout.write(formatReport(report));
   } finally {
+    if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
+    shutdownAnalysisWorker();
     if (process.env.KLAURO_KEEP_NEW_USER_E2E !== 'true') {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }
+}
+
+function callMcpTool(bundlePath: string, tool: string, args: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [bundlePath], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`MCP tool ${tool} timed out: ${trim(stderr)}`));
+    }, 120_000);
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.stdout.on('data', chunk => {
+      stdout += chunk.toString();
+      let newline = stdout.indexOf('\n');
+      while (newline >= 0) {
+        const line = stdout.slice(0, newline).trim();
+        stdout = stdout.slice(newline + 1);
+        newline = stdout.indexOf('\n');
+        if (!line) continue;
+        const message = JSON.parse(line);
+        if (message.id !== 2) continue;
+        clearTimeout(timer);
+        child.kill();
+        if (message.error) {
+          reject(new Error(message.error.message || JSON.stringify(message.error)));
+          return;
+        }
+        const text = message.result?.content?.[0]?.text;
+        try {
+          resolve(typeof text === 'string' ? JSON.parse(text) : message.result);
+        } catch {
+          resolve({ text });
+        }
+        return;
+      }
+    });
+    child.on('error', error => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.stdin.write([
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'klauro-new-user-e2e', version: '1' } } }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } }),
+      '',
+    ].join('\n'));
+  });
 }
 
 function runStep(name: string, fn: () => string): StepResult {

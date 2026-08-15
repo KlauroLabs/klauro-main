@@ -53,6 +53,7 @@ test('fast/bench groups partition every test by ROLE, not by directory, without 
     'src/agent-greenfield-benchmark.test.ts',
     'src/runtime-impact-benchmark.test.ts',
     'src/incremental-benchmark-copy.test.ts',
+    'src/incremental-locality-benchmark.test.ts',
   ];
   const benchFiles = new Set(bench.files.map(item => item.file));
   const fastFiles = new Set(fast.files.map(item => item.file));

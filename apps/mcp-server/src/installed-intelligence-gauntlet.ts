@@ -88,21 +88,25 @@ export async function buildInstalledIntelligenceGauntlet(args: Args): Promise<In
   const telemetryOverlay = telemetryOverlayReport;
   const workspaceEmitted = campWASReport.dimensions.filter((dimension: any) => Number(dimension.emitted || 0) > 0).length;
   const campCHeadToHead = campCFullReport.dimensions.filter((dimension: any) => dimension.mode === 'head-to-head');
+  const campCComplete = campCHeadToHead.length > 0
+    && campCFullReport.aggregate.headToHead.dimensions === campCHeadToHead.length
+    && campCHeadToHead.every((dimension: any) => dimension.attemptedFixtures > 0 && dimension.failedFixtures === 0 && dimension.fixtures === dimension.attemptedFixtures);
 
   const gates: Gate[] = [
     gate('installed-intelligence:live-report-present', Boolean(liveReport), args.liveReportPath),
     gate('installed-intelligence:live-agent-quality', numberOrNegInf(liveSummary.average_quality_delta) >= 0, `${liveSummary.average_quality_delta ?? 'n/a'} average live quality delta`),
     gate('installed-intelligence:live-agent-token-discipline', numberOrNegInf(liveSummary.average_token_reduction_percentage) >= 0, `${liveSummary.average_token_reduction_percentage ?? 'n/a'}% average live token reduction`),
     gate('installed-intelligence:live-agent-speed', numberOrNegInf(liveSummary.average_time_reduction_percentage) >= 0, `${liveSummary.average_time_reduction_percentage ?? 'n/a'}% average live speed improvement`),
-    gate('installed-intelligence:camp-b-structural-no-losses', !campBStructural || campBStructural.losses === 0, `${campBStructural?.losses ?? 'unavailable'} structural losses vs codebase-memory`),
-    gate('installed-intelligence:camp-c-routes-no-losses', !campCRoutes || campCRoutes.losses === 0, `${campCRoutes?.losses ?? 'unavailable'} route losses vs codebase-memory`),
-    gate('installed-intelligence:depth-taint-no-losses', !depthTaint || depthTaint.losses === 0, `${depthTaint?.losses ?? 'unavailable'} taint/data-flow losses vs codebase-memory`),
-    gate('installed-intelligence:depth-dispatch-no-losses', !depthDispatch || depthDispatch.losses === 0, `${depthDispatch?.losses ?? 'unavailable'} dispatch losses vs codebase-memory`),
-    gate('installed-intelligence:depth-contract-drift-no-losses', !depthContractDrift || depthContractDrift.losses === 0, `${depthContractDrift?.losses ?? 'unavailable'} contract-drift losses vs codebase-memory`),
-    gate('installed-intelligence:depth-behavioral-diff-no-losses', !depthBehavioralDiff || depthBehavioralDiff.losses === 0, `${depthBehavioralDiff?.losses ?? 'unavailable'} behavioral-diff losses vs codebase-memory`),
+    gate('installed-intelligence:camp-b-structural-no-losses', Boolean(campBStructural) && campBStructural?.losses === 0, `${campBStructural?.losses ?? 'unavailable'} structural losses vs codebase-memory`),
+    gate('installed-intelligence:camp-c-routes-no-losses', Boolean(campCRoutes) && campCRoutes?.losses === 0, `${campCRoutes?.losses ?? 'unavailable'} route losses vs codebase-memory`),
+    gate('installed-intelligence:depth-taint-no-losses', Boolean(depthTaint) && depthTaint?.losses === 0, `${depthTaint?.losses ?? 'unavailable'} taint/data-flow losses vs codebase-memory`),
+    gate('installed-intelligence:depth-dispatch-no-losses', Boolean(depthDispatch) && depthDispatch?.losses === 0, `${depthDispatch?.losses ?? 'unavailable'} dispatch losses vs codebase-memory`),
+    gate('installed-intelligence:depth-contract-drift-no-losses', Boolean(depthContractDrift) && depthContractDrift?.losses === 0, `${depthContractDrift?.losses ?? 'unavailable'} contract-drift losses vs codebase-memory`),
+    gate('installed-intelligence:depth-behavioral-diff-no-losses', Boolean(depthBehavioralDiff) && depthBehavioralDiff?.losses === 0, `${depthBehavioralDiff?.losses ?? 'unavailable'} behavioral-diff losses vs codebase-memory`),
     gate('installed-intelligence:telemetry-overlay-no-losses', telemetryOverlay.losses === 0, `${telemetryOverlay.losses} telemetry overlay losses`),
     gate('installed-intelligence:workspace-emits-cross-repo-facts', workspaceEmitted >= 6, `${workspaceEmitted}/${campWASReport.dimensions.length} WAS dimensions emitted`),
-    gate('installed-intelligence:camp-c-full-never-loses', campCFullReport.aggregate.headToHead.allWin === true, `${campCHeadToHead.length} Camp C head-to-head dimensions`),
+    gate('installed-intelligence:camp-c-full-complete', campCComplete, `${campCFullReport.aggregate.headToHead.dimensions}/${campCHeadToHead.length} complete Camp C head-to-head dimensions`),
+    gate('installed-intelligence:camp-c-full-never-loses', campCComplete && campCFullReport.aggregate.headToHead.allWin === true, `${campCHeadToHead.length} Camp C head-to-head dimensions`),
   ];
 
   const passed = gates.filter(item => item.status === 'pass').length;
@@ -130,6 +134,15 @@ export async function buildInstalledIntelligenceGauntlet(args: Args): Promise<In
       camp_b_structural_vs_codebase_memory: campBStructural,
       camp_c_routes_vs_codebase_memory: campCRoutes,
       camp_c_full: campCFullReport.aggregate,
+      camp_c_full_dimensions: campCFullReport.dimensions.map(dimension => ({
+        key: dimension.key,
+        mode: dimension.mode,
+        fixtures: dimension.fixtures,
+        attempted_fixtures: dimension.attemptedFixtures,
+        failed_fixtures: dimension.failedFixtures,
+        all_win: dimension.allWin,
+        note: dimension.note,
+      })),
       depth_taint_vs_codebase_memory: depthTaint,
       depth_dispatch_vs_codebase_memory: depthDispatch,
       depth_contract_drift_vs_codebase_memory: depthContractDrift,

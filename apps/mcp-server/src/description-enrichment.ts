@@ -64,44 +64,44 @@ export async function generateElementDescription(input: {
   return result;
 }
 
-/**
- * In-memory enrichment session: one load, N description applications against
- * the SAME cas object, and bounded persists — instead of the naive per-target
- * pattern (load full CAS, apply one description, save full CAS, reload full
- * CAS to read it back) that a batch caller like the narrative-enrichment
- * runner used to repeat once per target. On a large CAS (tens of thousands of
- * nodes) that per-target reload is a full brotli-decompress + JSON.parse of
- * the whole analysis file, thousands of times over, which is what turned a
- * documentation backfill into multi-CPU-hour "hangs" — see
- * analysis-narrative-enrichment-runner.ts for the caller-side fix.
- *
- * Staleness: a concurrent analyze_codebase/reanalyze can replace the on-disk
- * CAS mid-session (new analysis_id, new file). persistEnrichmentSession
- * detects this via the file fingerprint (mtimeMs:size) captured at open time
- * and after each of *this* session's own writes; if the fingerprint changed
- * out from under us, we abort rather than silently overwrite a newer analysis
- * with an in-memory copy built from a stale one.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export interface EnrichmentSession {
   projectPath: string;
   cas: CASOutput;
   analysisId: string | undefined;
-  /** Fingerprint of the on-disk file as of the last successful read or write
-   *  this session performed; used to detect a concurrent replacement. */
+
+
   lastKnownFingerprint: string | null;
   dirty: boolean;
   pendingCount: number;
   lastPersistedAt: number;
-  /** Set once a staleness conflict is detected; the session stops accepting
-   *  further persists (callers should re-open a fresh session). */
+
+
   aborted: boolean;
   abortReason?: string;
 }
 
 export interface EnrichmentSessionOptions {
-  /** Persist after this many applied descriptions accumulate unsaved. Default 25. */
+
   persistEveryCount?: number;
-  /** Persist after this many ms have elapsed since the last persist. Default 10_000. */
+
   persistEveryMs?: number;
 }
 
@@ -150,13 +150,13 @@ export async function generateElementDescriptionInSession(
   return result;
 }
 
-/**
- * Flushes the session's in-memory CAS to disk if dirty, first checking that
- * nothing else has replaced the on-disk analysis since this session last read
- * or wrote it. On a detected conflict, marks the session aborted and throws
- * instead of merging/overwriting — the caller's in-memory copy was built from
- * a now-superseded analysis and cannot be trusted to merge correctly.
- */
+
+
+
+
+
+
+
 export async function persistEnrichmentSession(session: EnrichmentSession): Promise<{ persisted: boolean }> {
   if (session.aborted) return { persisted: false };
   if (!session.dirty) return { persisted: false };
@@ -176,7 +176,7 @@ export async function persistEnrichmentSession(session: EnrichmentSession): Prom
   return { persisted: true };
 }
 
-/** Final flush; safe to call even if nothing is pending or the session already aborted. */
+
 export async function closeEnrichmentSession(session: EnrichmentSession): Promise<{ persisted: boolean }> {
   if (session.aborted || !session.dirty) return { persisted: false };
   return persistEnrichmentSession(session);
@@ -446,10 +446,10 @@ export async function applyStoredElementDescriptions(projectPath: string, cas: C
   let changed = false;
   for (const key of keys) {
     const entry = store.entries[key];
-    // Flow/step descriptions are not CAS residents — they join at the query
-    // layer (get_flow_concepts aiDescriptions via loadStoredFlowDescriptions);
-    // re-resolving them here would recompute the whole flow set per entry for
-    // an application that cannot stick to the CAS anyway.
+
+
+
+
     if (entry.target_kind === 'flow') continue;
     const resolved = await resolveTarget(projectPath, cas, entry.target_id, entry.target_kind);
     if (!resolved || resolved.fingerprint !== entry.fingerprint) {
@@ -483,9 +483,9 @@ async function resolveTarget(
   target: string,
   targetKind?: DescriptionTargetKind,
 ): Promise<ResolvedTarget | null> {
-  // 'flow' joins the default candidate list only when the target is
-  // flow-id-shaped (flow::<chain|ep>[::stepN]) — resolving flows means
-  // recomputing the flow set, too heavy to attempt for every free-text lookup.
+
+
+
   const flowShaped = /^flow::|::step\d+$/.test(target);
   const candidateKinds: DescriptionTargetKind[] = targetKind
     ? [targetKind]
@@ -505,11 +505,11 @@ async function resolveTargetByKind(projectPath: string, cas: CASOutput, target: 
     return node ? buildNodeTarget(projectPath, cas, node, kind === 'service' ? 'service' : 'node') : null;
   }
   if (kind === 'entity') {
-    const entity = (cas.data_entities || []).find(e => e.id === target || matches(e.name));
+    const entity = (cas.entities || []).find(e => e.id === target || matches(e.name));
     return entity ? buildGenericTarget(projectPath, 'entity', entity.id, entity.name, entity, entity.schema_source) : null;
   }
   if (kind === 'capability') {
-    const capability = (cas.system_capabilities || []).find(c => c.id === target || matches(c.name));
+    const capability = (cas.capabilities || []).find(c => c.id === target || matches(c.name));
     return capability ? buildGenericTarget(projectPath, 'capability', capability.id, capability.name, capability, undefined, cas) : null;
   }
   if (kind === 'entry_point') {
@@ -517,10 +517,10 @@ async function resolveTargetByKind(projectPath: string, cas: CASOutput, target: 
     return entryPoint ? buildGenericTarget(projectPath, 'entry_point', entryPoint.id, entryPoint.name, entryPoint, entryPoint.handler?.file) : null;
   }
   if (kind === 'flow') {
-    // Flow/step targets: matched against the SAME union flow set
-    // get_flow_concepts serves (bounded — enrichment only ever targets the
-    // top capability-linked flows, never thousands). A step target is the
-    // step_id; a flow target is the flow_id or a name match.
+
+
+
+
     const flows = computeFlowConcepts(cas, { maxFlows: 400 });
     for (const flow of flows) {
       if (flow.flow_id === target || matches(flow.name)) {
@@ -595,10 +595,10 @@ async function buildGenericTarget(
   };
 }
 
-/** Resolve a FLOW (or one of its STEPS) as a description target. The target
- *  object is the ephemeral computed flow/step — persistence lives in the
- *  description store, joined back by get_flow_concepts (query layer) via
- *  loadStoredFlowDescriptions; nothing is written onto the CAS. */
+
+
+
+
 async function buildFlowTarget(projectPath: string, flow: FlowConcept, step: FlowStep | undefined): Promise<ResolvedTarget> {
   const id = step ? step.step_id : flow.flow_id;
   const name = step ? `${flow.name} — ${step.name}` : flow.name;
@@ -653,13 +653,13 @@ async function buildFlowTarget(projectPath: string, flow: FlowConcept, step: Flo
   };
 }
 
-/**
- * Stored AI descriptions for FLOWS and STEPS (kind 'flow'), keyed by
- * flow_id/step_id — the join input for get_flow_concepts' aiDescriptions
- * option (the caller of the interpretive nameStep seam). Invalidated entries
- * are excluded; when the store is empty this returns an empty map and the
- * flow output stays fully deterministic.
- */
+
+
+
+
+
+
+
 export async function loadStoredFlowDescriptions(projectPath: string): Promise<Map<string, { description: string }>> {
   const out = new Map<string, { description: string }>();
   const store = await loadDescriptionStore(projectPath).catch(() => undefined);
@@ -725,13 +725,13 @@ async function promptFacts(projectPath: string, kind: DescriptionTargetKind, tar
     };
   }
   if (kind === 'entity') {
-    // FULL evidence bundle (user doctrine: entity descriptions are authored
-    // LAST, grounded in fields + ORM relations + lineage + the capabilities/
-    // journeys that use the entity — never a bare field list). `target` here
-    // is the CASDataEntity itself; the ORM relation graph and capability
-    // membership live elsewhere on the CAS and are joined in by name/id.
+
+
+
+
+
     const relations = cas ? buildEntityRelationIndex(cas).byEntityNameLower.get(String(target.name || '').toLowerCase()) || [] : [];
-    const servingCapabilities = (cas?.system_capabilities || [])
+    const servingCapabilities = (cas?.capabilities || [])
       .filter(capability => (capability.related_entities || []).includes(target.id))
       .map(capability => capability.name);
     return {
@@ -820,7 +820,7 @@ function capabilityEvidenceTerms(target: any, cas?: CASOutput): string[] {
   const terms = new Set<string>();
   for (const domain of target.related_domains || []) addEvidenceTerm(terms, domain);
   for (const entityId of target.related_entities || []) {
-    const entity = (cas?.data_entities || []).find(candidate => candidate.id === entityId);
+    const entity = (cas?.entities || []).find(candidate => candidate.id === entityId);
     addEvidenceTerm(terms, entity?.name || entityId);
   }
   for (const operation of target.operations || []) {
@@ -982,16 +982,6 @@ async function fingerprintTarget(projectPath: string, context: Record<string, un
     .digest('hex');
 }
 
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableValue);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([, child]) => child !== undefined && typeof child !== 'function')
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => [key, stableValue(child)])
-  );
-}
 
 function stableFingerprintValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableFingerprintValue);
@@ -1043,33 +1033,33 @@ export function validateDescription(description: string, target: Pick<ResolvedTa
   const relatedEntityIds = Array.isArray((target.target as any)?.related_entities)
     ? (target.target as any).related_entities.filter((id: unknown): id is string => typeof id === 'string')
     : [];
-  const entityNamesById = new Map((cas?.data_entities || []).map(entity => [entity.id, entity.name]));
+  const entityNamesById = new Map((cas?.entities || []).map(entity => [entity.id, entity.name]));
   return validateElementDescription(description, {
     name: target.name,
     kind: target.kind,
     relatedDomains: [...(relatedDomains || []), ...derivedDomains],
     relatedEntities: relatedEntityIds.map((id: string) => entityNamesById.get(id) || id),
-    // Same grounding sources as the system description validator: domain
-    // vocabulary legitimizes marketing-flagged words (e.g. "compliance" in a
-    // compliance-domain codebase).
+
+
+
     domainVocabulary: [
       cas?.enhanced_system_purpose?.primary_domain,
       ...(cas?.enhanced_system_purpose?.core_concepts || []),
       cas?.enhanced_system_purpose?.inferred_description,
     ].filter((term): term is string => Boolean(term && term !== 'unknown')),
   }, {
-    // Capabilities are reviewed against a 50-char floor by the usefulness
-    // review gate; generating shorter text would pass here and fail review.
+
+
     minLength: target.kind === 'capability' ? 50 : 35,
     maxLength: 800,
   });
 }
 
 function capabilityDerivedGroundingTerms(target: any, cas?: CASOutput): string[] {
-  // Operation-derived concepts are legitimate grounding for ANY capability,
-  // not just generic-named ones: the description prompt feeds these behavior
-  // hints to the AI, so the scaffold gate must accept text grounded in them
-  // (a sentence built from supplied operation evidence is not "ungrounded").
+
+
+
+
   if (!target?.operations?.length && !isGenericAnalyzerCapabilityName(target?.name)) return [];
   const terms = new Set<string>();
   for (const operation of target?.operations || []) {
@@ -1118,9 +1108,6 @@ function overNarrowCapabilitySourceClaim(description: string, target: any): stri
   return undefined;
 }
 
-function isUsefulDescription(description: string, target: ResolvedTarget, cas?: CASOutput): boolean {
-  return validateDescription(description, target, cas).ok;
-}
 
 function applyDescriptionToTarget(target: any, description: string, generatedAt: string, reason: string): void {
   target.description = description;
@@ -1169,10 +1156,10 @@ async function saveDescriptionStore(projectPath: string, store: DescriptionStore
   await fs.writeJson(file, store, { spaces: 2 });
 }
 
-/** Exported for cache fingerprinting (remote-analyzer-service response cache):
- * getAnalysis() joins this store onto the CAS via applyStoredElementDescriptions,
- * so any response cached as a pure function of getAnalysis() must include this
- * file's stat in its version key. */
+
+
+
+
 export function descriptionStorePath(projectPath: string): string {
   return path.join(getProjectStorageDir(projectPath), 'element-descriptions.json');
 }

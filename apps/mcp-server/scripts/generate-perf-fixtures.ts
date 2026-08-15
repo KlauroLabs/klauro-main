@@ -1,16 +1,16 @@
-/**
- * Generates the two pinned reference fixtures used by perf-budget.ts:
- *   fixtures/perf-budget/small  (~150 files)
- *   fixtures/perf-budget/medium (~500 files)
- *
- * Both are deterministic (no randomness, no network, no timestamps) realistic
- * TS/Express+React apps: an Express API with routes/controllers/services/
- * models, and a React frontend with pages/components/hooks calling that API.
- * Run once to materialize; the OUTPUT is committed, not the generator's
- * runtime behavior, so re-running must reproduce byte-identical trees.
- *
- * Usage: tsx scripts/generate-perf-fixtures.ts
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'fs-extra';
 import * as path from 'path';
 
@@ -18,12 +18,12 @@ const FIXTURES_ROOT = path.resolve(__dirname, '..', 'fixtures', 'perf-budget');
 
 interface FixtureSpec {
   name: 'small' | 'medium';
-  resourceCount: number; // each resource contributes ~1 route file, 1 controller, 1 service, 1 model, 1 page, 1 component, 1 hook, 1 test = 8 files
+  resourceCount: number;
 }
 
 const SPECS: FixtureSpec[] = [
-  { name: 'small', resourceCount: 14 }, // 14*10 = 140 generated + 6 fixed scaffolding = 146
-  { name: 'medium', resourceCount: 49 }, // 49*10 = 490 generated + 6 fixed scaffolding = 496
+  { name: 'small', resourceCount: 14 },
+  { name: 'medium', resourceCount: 49 },
 ];
 
 function pascalCase(s: string): string {

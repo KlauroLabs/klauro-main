@@ -119,7 +119,7 @@ test('machine analysis quality grounds short proper nouns in technologies', () =
       description_generation: { status: 'ai_skipped' },
     },
     domain_concepts: [{ name: 'identity' }, { name: 'security' }],
-    system_capabilities: [
+    capabilities: [
       { name: 'Identity Management' },
       { name: 'Password Management' },
     ],
@@ -165,7 +165,7 @@ test('machine analysis quality accepts rich architectures when pattern balance n
       description_generation: { status: 'ai_skipped' },
     },
     domain_concepts: [{ name: 'patient' }, { name: 'measurement' }],
-    system_capabilities: [{ name: 'Clinical Measurements' }, { name: 'Patient Records' }],
+    capabilities: [{ name: 'Clinical Measurements' }, { name: 'Patient Records' }],
     architecture_summary: {
       architectural_patterns: patterns,
       architectural_inventory: {

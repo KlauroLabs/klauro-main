@@ -111,10 +111,10 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
       break;
     }
     const projectPath = String(review.path || '');
-    // One load for the whole repo's target batch, not one per target: this
-    // session's in-memory cas is mutated directly by each description
-    // generation and only flushed to disk on a bounded cadence (see
-    // description-enrichment.ts openEnrichmentSession/persistEnrichmentSession).
+
+
+
+
     let session: EnrichmentSession | null = await openEnrichmentSession(projectPath);
     if (!session) continue;
     let cas = session.cas;
@@ -142,11 +142,11 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
         break reviewLoop;
       }
       if (!session || session.aborted) {
-        // Lost the in-memory session (a system refresh failed to reopen one,
-        // or a concurrent analyze/reanalyze replaced the CAS mid-batch and
-        // persistEnrichmentSession aborted rather than clobber it). Stop this
-        // repo's batch here rather than continuing against nothing/stale
-        // state; the remaining targets stay queued for a future run.
+
+
+
+
+
         results.push({
           repo: String(review.repo || path.basename(projectPath)),
           path: projectPath,
@@ -192,12 +192,12 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
           continue;
         }
         try {
-          // runAnalysis regenerates and saves a brand-new CAS on disk under
-          // this same session's nose; the in-memory session.cas is now stale
-          // by construction (different analysis_id), so drop it without a
-          // final persist (nothing pending is lost — this branch never wrote
-          // through the session) and re-open fresh from what runAnalysis just
-          // saved before continuing the batch.
+
+
+
+
+
+
           await withAnalysisFocus('ui-overview', () => runAnalysis(projectPath, { forceFull: false }));
           session = await openEnrichmentSession(projectPath);
           const afterCas = session?.cas ?? null;
@@ -215,10 +215,10 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
             target_removed_from_queue: !remainingTarget,
             after_reasons: remainingTarget?.reasons.slice(0, 4),
           });
-          // A system refresh regenerates the CAS, so capabilities may have been
-          // renamed; the pre-refresh queue for this repo would then chase stale
-          // names ("Could not find capability matching: ..."). Requeue the rest
-          // of this repo's budget from the refreshed target list.
+
+
+
+
           if (afterCas) {
             const processedKeys = new Set(targets.slice(0, targetIndex + 1).map(targetKey));
             const staleTailLength = targets.length - targetIndex - 1;
@@ -244,9 +244,9 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
 
       try {
         const generated = await withAnalysisFocus('ui-overview', () => generateDescriptionForRunnerTarget(session!, target));
-        // No reload: generateElementDescriptionInSession mutated session.cas
-        // in place, so it already reflects this target's applied description
-        // (and any prior ones in this batch) without a disk round-trip.
+
+
+
         const afterCas = session.cas;
         const after = afterCas
           ? reviewAnalysisUsefulnessStatic(afterCas, projectPath, base.repo, 'ui-overview')
@@ -278,22 +278,22 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
           target_removed_from_queue: false,
           error: errorMessage(error),
         });
-        // A thrown persistEnrichmentSession abort means the on-disk analysis
-        // was replaced underneath us; stop this repo's batch rather than
-        // keep applying descriptions to an in-memory cas nobody will read.
+
+
+
         if (session?.aborted) break;
       }
     }
     } finally {
-      // Bounded persistence means the session can be carrying unflushed
-      // descriptions when the target loop ends (normal completion, maxTargets
-      // cutoff, or a mid-repo `break reviewLoop`); flush them here so a run
-      // never silently drops generated descriptions it already paid AI cost
-      // for. No-ops if already flushed, aborted, or nothing is pending. Swallow
-      // (rather than throw from) a conflict detected only at this final flush
-      // so it can never mask an in-flight loop-control exception (e.g. the
-      // max-runtime `break reviewLoop` above) — the next run's queue still
-      // covers whatever this flush failed to persist.
+
+
+
+
+
+
+
+
+
       if (session) await closeEnrichmentSession(session).catch(() => undefined);
     }
   }
@@ -494,7 +494,7 @@ function resolveDescriptionSubject(target: DescriptionEnrichmentTarget, cas: CAS
   const targetId = target.target_id || String(target.suggested_args?.target || '');
   const targetName = target.target;
   if (target.target_kind === 'capability') {
-    const capability = (cas.system_capabilities || []).find(item => item.id === targetId || item.name === targetName) || {
+    const capability = (cas.capabilities || []).find(item => item.id === targetId || item.name === targetName) || {
       id: targetId,
       name: targetName,
     };
@@ -502,7 +502,7 @@ function resolveDescriptionSubject(target: DescriptionEnrichmentTarget, cas: CAS
   }
   if (target.target_kind === 'entity') {
     const entity = [
-      ...(cas.data_entities || []),
+      ...(cas.entities || []),
       ...((cas.database_schema?.entities || []) as any[]),
     ].find(item => item.id === targetId || item.name === targetName) || {
       id: targetId,

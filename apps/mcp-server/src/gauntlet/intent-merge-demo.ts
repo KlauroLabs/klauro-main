@@ -1,24 +1,24 @@
-/**
- * Intent-merge demo: proves Fabric-v2 #1's "art of merge" claim (§1.7
- * SPEC-COORDINATION-FABRIC-V2, primitive 5) — that reconciling concurrent
- * agent edits by INTENT surfaces a different (and better) verdict than a
- * textual 3-way merge would.
- *
- * Git only ever asks "do the lines overlap?". This demo builds a real CAS
- * (via analyzeForBench, same blackbox product path every other gauntlet demo
- * uses — see product-analysis.ts) and constructs 4 scenarios against it:
- *   (a) two agents make orthogonal additive edits to the SAME function
- *       (retry + logging on processPayment) -> auto_mergeable, both composed
- *   (b) a genuine conceptual conflict (A drops nullability, B relies on it
- *       via a real CAS caller edge) -> needs_resolution, NOT auto-merged
- *       even though it would pass a textual merge cleanly
- *   (c) duplicate work (both agents add the same retry wrapper) -> duplicate_work
- *   (d) fully disjoint edits -> everything auto_mergeable
- *
- * The headline: git would have silently merged (a) [fine, lucky] AND (b)
- * [not fine — ships a bug] identically, since both are textually disjoint
- * diffs. Intent-merge tells them apart.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as os from 'os';
@@ -95,7 +95,7 @@ export async function runIntentMergeDemo(): Promise<IntentMergeDemoReport> {
 
   const scenarios: DemoScenarioResult[] = [];
 
-  // (a) two agents add orthogonal additive changes to the SAME function.
+
   {
     const symbol = idFor(cas, 'processPayment');
     const states: AgentInFlightState[] = [
@@ -119,8 +119,8 @@ export async function runIntentMergeDemo(): Promise<IntentMergeDemoReport> {
     });
   }
 
-  // (b) genuine conceptual conflict: A drops nullability, B relies on it via
-  // a real CAS caller edge (renderProfile calls getUser).
+
+
   {
     const symbol = idFor(cas, 'getUser');
     const states: AgentInFlightState[] = [
@@ -155,7 +155,7 @@ export async function runIntentMergeDemo(): Promise<IntentMergeDemoReport> {
     });
   }
 
-  // (c) duplicate work: both agents add the same retry wrapper.
+
   {
     const states: AgentInFlightState[] = [
       {
@@ -178,7 +178,7 @@ export async function runIntentMergeDemo(): Promise<IntentMergeDemoReport> {
     });
   }
 
-  // (d) disjoint edits -> all auto_mergeable.
+
   {
     const states: AgentInFlightState[] = [
       {
@@ -216,12 +216,12 @@ export async function runIntentMergeDemo(): Promise<IntentMergeDemoReport> {
 if (require.main === module) {
   runIntentMergeDemo()
     .then((report) => {
-      // eslint-disable-next-line no-console
+
       console.log(JSON.stringify(report, null, 2));
       console.log(report.summary);
     })
     .catch((err) => {
-      // eslint-disable-next-line no-console
+
       console.error(err);
       process.exitCode = 1;
     });

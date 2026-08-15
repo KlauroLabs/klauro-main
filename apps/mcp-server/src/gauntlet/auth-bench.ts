@@ -1,16 +1,16 @@
-/**
- * Camp-C OUT-OF-CATEGORY bench — route AUTH / guards ("which endpoints are
- * protected, and by what").
- *
- * Beyond the route SET, Klauro's route table carries each route's auth status and
- * the guard/middleware enforcing it (Express `requireAuth` middleware, NestJS
- * `@UseGuards(AuthGuard)`, etc.). "Which of these endpoints require auth" is a
- * security-review question every Camp-A/Camp-B tool is blind to — they have no
- * route concept, let alone its protection state.
- *
- * Fixture = a route source dir + truth.json:
- *   { "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"] }
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -52,7 +52,7 @@ async function sourceBytes(dir: string): Promise<number> {
   return total;
 }
 
-/** Klauro: route table → the protected (auth=true) routes as "METHOD path". */
+
 async function klauroProtected(dir: string): Promise<{ routes: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
   const cas: any = await analyzeForBench(dir);
@@ -78,7 +78,7 @@ export async function runRouteAuthBench(fixtureDir: string): Promise<AuthBenchRe
     { arm: 'klauro', protected_routes: kl.routes, f1: klQ / 100, bytes: kl.bytes, can_answer: true },
   ];
 
-  // No route concept → no auth concept. Un-attempted (categorical Camp-C win).
+
   for (const armId of ['codebase-memory', 'scip-typescript', 'stack-graphs', 'embeddings-nomic']) {
     arms.push({ arm_id: armId, mode: 'engine', attempted: false, metrics: { quality: 0, time_ms: 1, tokens: toTokens(srcBytes) }, source: `auth-bench:route-auth:${armId}` });
     detail.push({ arm: armId, protected_routes: [], f1: 0, bytes: srcBytes, can_answer: false });

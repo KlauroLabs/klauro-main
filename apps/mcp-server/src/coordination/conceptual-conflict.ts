@@ -1,30 +1,30 @@
-/**
- * Conceptual-conflict detection (§1.7 of docs/SPEC-COORDINATION-FABRIC-V2.md,
- * "the conflict hierarchy"): the fabric's crown-jewel value.
- *
- * Textual/merge conflicts (same lines edited) are git's job — cheap, visible,
- * mechanical, NOT this module's concern. A CONCEPTUAL conflict is two
- * locally-valid changes that are JOINTLY INCOHERENT: each change compiles,
- * passes review, and merges cleanly on its own, but together they break the
- * system. Detecting this requires code SEMANTICS (the CAS call graph + types)
- * plus agent INTENT — exactly the two things git/linters/textual-merge don't
- * have, and exactly what this coordination fabric uniquely carries.
- *
- * Cardinal rule (see CLAUDE.md "Klauro deterministic facts + AI"): deterministic
- * structural facts first, AI interpretation optional flavor, never the core.
- * Detectors 1-4 below are fully deterministic and stand on their own with zero
- * AI. Detector 5 (invariant-conflict) is AI-flavored and MUST degrade to a
- * no-op when no interpreter is supplied — never gates the other four.
- *
- * Pure module: no IO, no transport, no storage reads. Callers pass in the
- * AgentInFlightState list and a CAS-shaped object (via query.ts helpers or a
- * raw { nodes, edges } shape); see conceptual-conflict-demo.ts for a real
- * end-to-end example against an analyzeForBench() CAS.
- */
 
-// ---------------------------------------------------------------------------
-// Input model
-// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export type SymbolChangeKind =
   | 'signature'
@@ -43,10 +43,10 @@ export interface SymbolChangeShape {
   return_type?: string;
   nullable?: boolean;
   name?: string;
-  /** For 'split': the new symbol_ids this symbol was divided into. */
+
   split_into?: string[];
-  /** For 'body': a coarse tag of what the body edit does, used by the
-   *  behavior-drift heuristic (detector 4). Purely additive/best-effort. */
+
+
   body_tags?: BodyTag[];
 }
 
@@ -79,31 +79,31 @@ export interface ConceptualConflict {
   severity: 'high' | 'medium' | 'low';
   agents: string[];
   symbol: string;
-  /**
-   * BOTH sides of the conflicting pair's symbol_ids, additive to `symbol`
-   * (kept for backward compat — existing consumers reading `.symbol` are
-   * unaffected). `symbol` only ever named one side (e.g. duplicate-work's
-   * both-add case has two distinct symbol_ids for the same logical name;
-   * contract-divergence has the changed symbol plus the caller being edited).
-   * `symbol_ids` carries every symbol_id involved in this specific finding,
-   * in the order the detector discovered them. Always non-empty and always
-   * includes `symbol` as its first element.
-   */
+
+
+
+
+
+
+
+
+
+
   symbol_ids?: string[];
   file?: string;
-  /** Human-readable WHY it's incoherent — not just "these overlap". */
+
   explanation: string;
-  /** true = git would NOT catch this (the whole point of this detector). */
+
   passes_textual_merge: boolean;
   evidence: string[];
 }
 
-/**
- * Minimal CAS shape this module needs: nodes with id/name and edges with
- * source/target/type ("calls" edges specifically). Matches the real CASOutput
- * (see query.ts) structurally, so a real CAS can be passed directly, or a
- * lightweight fixture built by hand.
- */
+
+
+
+
+
+
 export interface ConflictCasNode {
   id: string;
   name: string;
@@ -120,28 +120,28 @@ export interface ConflictCas {
   edges: ConflictCasEdge[];
 }
 
-// ---------------------------------------------------------------------------
-// Optional AI-flavored invariant interpreter (detector 5). Deterministic
-// detectors 1-4 never depend on this; absence of an interpreter simply
-// disables detector 5 (clean degrade, per the cardinal rule).
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 export interface InvariantAssertion {
   symbol: string;
   invariant: 'idempotent' | 'immutable' | 'non-null' | string;
 }
 
-/** Pluggable, optional. Given an agent's declared intent, extract any
- *  invariant assertions it makes ("now idempotent", "always non-null", ...).
- *  Returns [] when nothing is asserted or when no interpreter is wired up. */
+
+
+
 export type InvariantInterpreter = (intent: string, symbol: string) => InvariantAssertion[];
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
-/** Callers of `symbolNameOrId` one hop back, via CAS "calls" edges. Matches
- *  by node id OR name so callers can pass either a symbol_id or a bare name. */
+
+
+
+
+
 function getCallerIds(cas: ConflictCas, symbolNameOrId: string): string[] {
   const nodesById = new Map(cas.nodes.map((n) => [n.id, n]));
   const targetIds = new Set<string>();
@@ -155,8 +155,8 @@ function getCallerIds(cas: ConflictCas, symbolNameOrId: string): string[] {
     if (edge.type !== 'calls') continue;
     if (targetIds.has(edge.target)) callerIds.add(edge.source);
   }
-  // Resolve to names too, so callers whose changes reference a node by name
-  // (rather than id) still match.
+
+
   const resolved = new Set<string>();
   for (const id of callerIds) {
     resolved.add(id);
@@ -188,19 +188,19 @@ function contractShapeChanged(before?: SymbolChangeShape, after?: SymbolChangeSh
   return notes;
 }
 
-// ---------------------------------------------------------------------------
-// Detector 1: contract-divergence
-// ---------------------------------------------------------------------------
 
-/**
- * Agent A changes symbol X's signature/return_type/nullability/params. Agent
- * B's in-flight changes include a CALLER of X (by the CAS call graph) that B
- * is editing without accounting for the new contract. The canonical example:
- * A retypes `getUser(): User | null` to `getUser(): User` (or vice versa);
- * B is concurrently editing a caller that still does `if (!getUser())`.
- * Git sees two disjoint, individually-valid diffs and merges them cleanly —
- * passes_textual_merge is always true here; that IS the point.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 function detectContractDivergence(
   states: AgentInFlightState[],
   cas: ConflictCas
@@ -256,9 +256,9 @@ function detectContractDivergence(
   return findings;
 }
 
-// ---------------------------------------------------------------------------
-// Detector 2: duplicate-work
-// ---------------------------------------------------------------------------
+
+
+
 
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'to', 'for', 'of', 'and', 'or', 'add', 'in', 'on', 'with',
@@ -284,10 +284,10 @@ function intentOverlaps(a: string, b: string): boolean {
   return smaller > 0 && shared / smaller >= 0.34;
 }
 
-/**
- * A and B both change the SAME symbol with overlapping intent, or both ADD a
- * symbol with the same name — the fleet is doing the same work twice.
- */
+
+
+
+
 function detectDuplicateWork(states: AgentInFlightState[]): ConceptualConflict[] {
   const findings: ConceptualConflict[] = [];
   const seen = new Set<string>();
@@ -334,15 +334,15 @@ function detectDuplicateWork(states: AgentInFlightState[]): ConceptualConflict[]
   return findings;
 }
 
-// ---------------------------------------------------------------------------
-// Detector 3: structural-divergence
-// ---------------------------------------------------------------------------
 
-/**
- * Agent A renames/splits/moves/deletes symbol X. Agent B ADDs a new reference
- * or caller to the OLD X (old name, or the old monolithic form) — B is
- * building on a structure A is actively dissolving.
- */
+
+
+
+
+
+
+
+
 function detectStructuralDivergence(states: AgentInFlightState[]): ConceptualConflict[] {
   const findings: ConceptualConflict[] = [];
   const seen = new Set<string>();
@@ -351,8 +351,8 @@ function detectStructuralDivergence(states: AgentInFlightState[]): ConceptualCon
     for (const changeA of agentA.changes) {
       if (!STRUCTURAL_KINDS.has(changeA.change_kind)) continue;
 
-      // Names that no longer resolve after A's change: the pre-change name,
-      // plus (for renames) the before.name if present.
+
+
       const dissolvedNames = new Set<string>([changeA.name]);
       if (changeA.before?.name) dissolvedNames.add(changeA.before.name);
 
@@ -360,9 +360,9 @@ function detectStructuralDivergence(states: AgentInFlightState[]): ConceptualCon
         if (agentB.agent_id === agentA.agent_id) continue;
         for (const changeB of agentB.changes) {
           if (changeB.change_kind !== 'add') continue;
-          // B's added symbol references the old structure if its signature/
-          // body mentions the dissolved name, or it explicitly targets the
-          // same symbol_id as the pre-change symbol.
+
+
+
           const referencesOld =
             changeB.symbol_id === changeA.symbol_id ||
             (changeB.after?.signature ? [...dissolvedNames].some((n) => changeB.after!.signature!.includes(n)) : false);
@@ -398,19 +398,19 @@ function detectStructuralDivergence(states: AgentInFlightState[]): ConceptualCon
   return findings;
 }
 
-// ---------------------------------------------------------------------------
-// Detector 4: behavior-drift (best-effort heuristic)
-// ---------------------------------------------------------------------------
 
-/**
- * Both agents change the SAME symbol's BODY in ways that compose to
- * likely-unintended behavior. Heuristic, tag-based: if A's body change adds
- * an early-return/guard and B's body change appends code assumed to run
- * unconditionally after, the composed function may skip B's code entirely
- * on the guarded path. This is inherently approximate — flagged medium, and
- * explicitly labeled heuristic in the explanation so callers don't over-trust
- * it the way they would a deterministic contract-divergence finding.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 function detectBehaviorDrift(states: AgentInFlightState[]): ConceptualConflict[] {
   const findings: ConceptualConflict[] = [];
   const seen = new Set<string>();
@@ -460,18 +460,18 @@ function detectBehaviorDrift(states: AgentInFlightState[]): ConceptualConflict[]
   return findings;
 }
 
-// ---------------------------------------------------------------------------
-// Detector 5: invariant-conflict (OPTIONAL, AI-flavored, off by default)
-// ---------------------------------------------------------------------------
 
-/**
- * A's intent asserts an invariant ("idempotent"/"immutable"/"non-null" etc.);
- * B's change to the same symbol plausibly violates it (heuristically: B
- * touches the same symbol's body/nullability/signature without asserting
- * the same invariant). Requires an InvariantInterpreter; with none supplied
- * this detector returns [] and contributes nothing — the four deterministic
- * detectors above are entirely unaffected by its absence.
- */
+
+
+
+
+
+
+
+
+
+
+
 function detectInvariantConflicts(
   states: AgentInFlightState[],
   interpreter?: InvariantInterpreter
@@ -492,7 +492,7 @@ function detectInvariantConflicts(
           const bAssertsSame = (interpreter(agentB.intent, changeB.name) ?? []).some((x) =>
             assertions.some((y) => y.invariant === x.invariant)
           );
-          if (bAssertsSame) continue; // B explicitly upholds it too — not a conflict
+          if (bAssertsSame) continue;
 
           for (const assertion of assertions) {
             const key = pairKey(agentA.agent_id, agentB.agent_id) + '|' + changeA.symbol_id + '|' + assertion.invariant;
@@ -520,22 +520,22 @@ function detectInvariantConflicts(
   return findings;
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface DetectConceptualConflictsOptions {
-  /** Optional AI-flavored invariant interpreter (detector 5). Omit to keep
-   *  the detector suite 100% deterministic. */
+
+
   invariantInterpreter?: InvariantInterpreter;
 }
 
-/**
- * Detect conceptual conflicts among concurrently in-flight agent states,
- * using the CAS call graph for detector 1 (contract-divergence). Pure and
- * deterministic by default (detectors 1-4); detector 5 is optional AI flavor
- * and no-ops without an interpreter.
- */
+
+
+
+
+
+
 export function detectConceptualConflicts(
   states: AgentInFlightState[],
   cas: ConflictCas,

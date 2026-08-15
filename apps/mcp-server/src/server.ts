@@ -1,7 +1,6 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { listAnalysesFiltered, DEFAULT_LIMIT, MAX_LIMIT } from './analysis-listing';
-import type { AnalysisTrack } from './track';
 import { listWorkspaceAnalysesFiltered } from './workspace-listing';
 import { resolveAnalysisScope, type AnalysisScope } from './analysis-scope';
 import { installGauntletWatcher, listGauntletWatchers, stopGauntletWatcher } from './gauntlet/gauntlet-watcher';
@@ -67,8 +66,8 @@ import { attachDeployable, ensureEntryPointDescription } from '../../../packages
 import { attachInteractionReach } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-enrichment';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
-import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WorkspaceCapabilityRef, type WorkClaim } from './coordination';
-import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getBoardInfo, getPresence, persistContractDriftSurprises, readClaimLog, readSurprisesFor, recordDerivedContracts, releaseAgentWithReason, watch } from './coordination/local-store';
+import { arbitrate, detectCollisions, getClaimStreams, heartbeatClaimStream, publishClaimStream, releaseClaimStream, type AgentKind, type CasEdgeRef, type WorkspaceCapabilityRef, type WorkClaim } from './coordination';
+import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getBoardInfo, getPresence, persistContractDriftSurprises, readClaimLog, readSurprisesFor, recordDerivedContracts, releaseAgentWithReason } from './coordination/local-store';
 import { detectDeclaredContractDrift } from './coordination/collision';
 import {
   attributeChangesToClaim,
@@ -81,17 +80,20 @@ import {
   type PeerContracts,
 } from './coordination/contract-intent';
 import { drainEventsForClaim, type EventsBlock } from './coordination/event-drain';
-import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordination/remote-transport';
+import { remoteActive, remoteCheck, remoteClaim, remoteExtend, remoteMergelessMetrics, remoteRelease } from './coordination/remote-transport';
 import { resolveFabricSettings } from './coordination/fabric-config';
 import { ensureWriteHookStarted, closeAllWriteHooks, shouldActivateWriteHook } from './coordination/write-hook';
 import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
+import { readParticipantInFlightSnapshots } from './coordination/participant-in-flight-store';
+import { getMergelessMetrics } from './coordination/mergeless-metrics';
+import { waitForLocalWorkspaceChange, waitForRemoteWorkspaceChange } from './coordination/workspace-subscription';
 import { computeAdvisoryOverlap, type AdvisoryOverlapFinding } from './context-fabric';
 import { getOrComputeCoChangeIndex } from '../../../packages/analyzer-core/src/analyzer/core/co-change-index';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
 import { planIntentMerge, planIntentMergeFromSubstrate, shouldUseSubstratePlan } from './coordination/intent-merge';
-import { partitionTasks, groupTasksByConcept, type PartitionCas, type PartitionTask } from './coordination/partitioner';
+import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import {
   buildConceptIndex,
   deriveConceptualCoordinate,
@@ -127,7 +129,7 @@ Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, th
 
 Default to parallel, through the fabric (not a fallback for when work collides): when a task can fan out, split it and run agents concurrently as the normal posture — each one announcing its flow/step/capability scope through the fabric, always, even when the scopes are obviously disjoint. The fabric is always-on ambient awareness (dedup, conceptual coherence, fleet visibility), not a lock you reach for only on conflict. Serial, one-agent-at-a-time work is the exception that needs a reason; parallel-plus-fabric is the default. You no longer need to fear dozens of agents on the same codebase at once — announce your concept-level scope and the fabric keeps the fleet aware and coherent, so you can go faster, not slower, as more agents join.
 
-Coordinate before you act (multi-agent workspaces — awareness first, never a lockout): before starting any non-trivial edit, call claim_work with the workspace, your agent_id, and the paths/symbols/capability you're about to touch. The fabric makes you AWARE of who else is here and what they intend, so you coordinate — it never blocks work you need. Disjoint work always runs free in parallel (block-time -> 0 for non-overlapping scope). If the verdict is "granted", proceed immediately: heartbeat_work periodically while working so the lease doesn't expire, and release_work the moment you're done or handing off (this instantly frees the scope and promotes the next queued agent, if any). If the verdict is "queued" — meaning another agent's grant genuinely overlaps your scope — you get full awareness in the response, not a dead end: the holder's agent_id, their stated intent, and their lease_status (active/near_expiry/expired), plus an "options" array. If the work is FUNGIBLE (interchangeable with something else), take redirect_hint/free_scope_hint and go do disjoint work instead. If the work is NON-fungible (you specifically need that symbol), you are never denied: wait_and_heartbeat_poll, proceed_with_awareness_if_compatible once you've read the holder's intent and judged the changes compatible, or take_over_stale_lease if their lease_status shows near_expiry/expired. If the verdict is "duplicate", you already hold this exact grant. Use check_collision for the same awareness read-only (no grant taken; surfaces overlapping_grant_holders with intent + lease_status even before you claim) and get_active_agents to see every live grant holder's intent + lease_status plus the queue. Contention is resolved by informed coordination, not lockout — the invariant "one grant per symbol" governs simultaneous blind writes, not your right to reach work you need. Use get_in_flight_changes to see who is touching a specific path and why. This only has value if you actually call it — treat it as mandatory for shared workspaces, not optional bookkeeping.
+Coordinate before you act (multi-agent workspaces — awareness first, never a lockout): before starting any non-trivial edit, call claim_work with the workspace, your agent_id, and the paths/symbols/capability you're about to touch. Every claim succeeds, including overlapping claims. The response surfaces path, symbol, flow, step, entity, capability, contract, and intent overlap so participants can exchange knowledge and reconcile continuously while all attributed streams remain active. Heartbeat long-running claims and release completed or handed-off work. Use check_collision for the same read-only awareness before claiming, get_active_agents to see current participants, and get_in_flight_changes to inspect their attributed semantic streams. Fabric coordinates collaboration; it never grants permission, queues work, or serializes participants.
 
 Catch what textual merge can't (semantic incoherence, not just overlap — now AMBIENT, not opt-in): claim_work/check_collision catch PATH and SYMBOL overlap — two agents touching the same lines. They cannot catch two changes that each merge cleanly on their own but are jointly incoherent (you retype getUser(): User|null -> User while another agent concurrently edits a caller still doing "if (!getUser())"; git sees two valid disjoint diffs and merges them — the bug ships). That is what check_conceptual_conflicts/check_collision are for, and the fabric now SEES what others are changing automatically: every call to either tool ambiently captures your own git working-tree diff (TS/JS files get full before/after signature diffing — signature/return-type/nullability/params — other languages degrade honestly to an unrecognized-change flag) and folds it into your persisted state with zero self-reporting required. Passing your own changes: SymbolChange[] explicitly still works and is merged on top (useful for languages ambient capture can't syntactically diff, or to add before/after detail ambient capture couldn't infer) — but you no longer have to. Conceptual conflicts surface automatically the moment you call either tool; this is fleet-coherence, not textual safety — the two are complementary, run both.
 
@@ -139,18 +141,18 @@ Trust, then verify: every result is stamped to a commit/branch. If get_file_node
 
 Watch for silent server staleness: \`klauro update\` overwrites the installed MCP server on disk, but an ALREADY-RUNNING server process keeps executing the OLD build in memory until the client restarts — MCP servers do not hot-reload, and this happens with no error, just missing tools or stale behavior. Every get_summary / get_system_overview response (and anything else on the freshness-stamped orient path) carries a server_update field once it becomes known (empty on the very first call of a session, populated from the second call onward) whenever a newer build is installed or available; get_server_version is the direct, always-fresh way to check on demand and returns the same finding as running_stale/server_update plus installed_version. If you see server_update or a get_server_version note asking for a restart, relay it to the human verbatim — restarting the MCP client (Claude Code / IDE) is the only way to pick up the new build.`;
 
-// Customer reads never execute analyzer code. Bound repositories resolve the
-// hosted result; unbound repositories may read an existing development cache,
-// but missing/stale state is reported until the client uploads it for hosted
-// analysis.
+
+
+
+
 async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly CasSectionName[]) {
-  // Project-bound repo (.klaurorc with a prj_ id + signed-in session): the
-  // HOSTED analysis is the source of truth (docs/KLAURO-PRODUCT-MODEL.md).
-  // resolveBoundAnalysis serves it via bounded named-section hydration and
-  // NEVER silently runs a local analysis or mirrors the full hosted CAS —
-  // when the server is unreachable it degrades honestly to the local cache
-  // (stamped with a note) or fails with an explicit error. Unbound repos keep
-  // the legacy local freshness-gated path below, including auto-analyze.
+
+
+
+
+
+
+
   const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
   if (binding) {
     return (await resolveBoundAnalysis(binding, sections ? { sections } : undefined)).cas;
@@ -159,27 +161,27 @@ async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly
   return getStoredAnalysis(projectPath);
 }
 
-/**
- * Bound-aware analysis read used by every direct tool handler in this file
- * (the former raw import of analyzer.getAnalysis). For a project-bound repo
- * the hosted analysis wins (same resolution as getFreshAnalysisForAgent);
- * track-scoped reads (in-flight / other-branch) are local-only concepts and
- * bypass hosted resolution, as does any unbound repo — those paths are
- * byte-for-byte the legacy local-store behavior.
- */
-/**
- * Section set for the get_agent_start_context / get_agent_tool_plan /
- * get_agent_context / install_agent_default_config family: these read across
- * nearly every CAS section (system summary, entry/exit points, capabilities,
- * idioms, invariants, security, tests) so there is no narrower fixed profile
- * to hand them (verified against agent-adoption.ts's actual field reads).
- * The one section genuinely skippable is 'runtime' (runtime_static_links,
- * communication_seams, runtime topology), and only when the operator's own
- * KLAURO_CONTEXT_RUNTIME/.klaurorc default (or an explicit runtime/
- * exclude_sections param, where the tool exposes one) says to exclude it —
- * mirrors the existing runtimeExcluded gate in getAgentStartContext, just
- * applied before the read instead of after.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function agentContextFamilySections(path: string, opts: { runtime?: unknown; exclude_sections?: unknown } = {}): Promise<readonly CasSectionName[]> {
   const filter = await resolveSectionFilterForProject(path, opts);
   if (!filter.isExcluded('runtime')) return CAS_SECTION_PROFILES.full;
@@ -196,19 +198,19 @@ async function getAnalysis(projectPath: string, options?: { track?: import('./tr
   return getStoredAnalysis(projectPath, options);
 }
 
-/**
- * Loads persisted runtime observations for `path` and rolls them up into
- * per-node metrics for the flow/coding-context telemetry join. Best-effort:
- * returns [] when there are no observations rather than fabricating a facet.
- * Must read through telemetryIngestion.loadTelemetryObservations (merges the
- * legacy runtime-observations.json store with the ingested store) — reading
- * only the legacy store silently misses real production traffic.
- */
-/**
- * Telemetry may be keyed by the analyzed root path rather than the caller's
- * literal path — try both so a project with no such alternate root behaves
- * exactly as before.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function telemetryProjectPathCandidates(cas: CASOutput, path: string): string[] {
   const candidates = [path];
   const root = (cas as unknown as { system?: { root_path?: string } })?.system?.root_path;
@@ -241,16 +243,16 @@ async function runtimeMetricsForContract(cas: CASOutput, path: string): Promise<
   }
 }
 
-/**
- * Joins runtime metrics onto entry points by route, not just node id — node
- * correlation is best-effort and often misses, but the observation still
- * carries the same method+route identity as the entry point's own trigger.
- * Match precedence (first hit wins): (1) id === metric static_id/entry_point_id,
- * (2) handler.node_id/source_node === metric node_id, (3) route-compatible
- * method+path (case/trailing-slash-insensitive, :param/{param} as wildcards).
- * An entry point with no matching metric is returned unchanged — no telemetry
- * key added. Other optional per-entry fields pass through via spread, untouched.
- */
+
+
+
+
+
+
+
+
+
+
 export function normalizeEntryRoute(value: string): string {
   return value
     .toLowerCase()
@@ -267,11 +269,11 @@ function entryRouteSegments(route: string): string[] {
   return route.split('/').filter(Boolean);
 }
 
-/** Bounded route-compatibility check: exact match, wildcard-segment match when
- *  either side carries a `:param` segment, or a literal suffix relationship
- *  (mirrors product.ts' internal `routesCompatible`, duplicated locally in
- *  minimal form since that helper isn't exported and this file may not modify
- *  product.ts). */
+
+
+
+
+
 export function entryRoutesCompatible(left: string, right: string): boolean {
   if (!left || !right) return false;
   if (left === right) return true;
@@ -286,9 +288,9 @@ export function entryRoutesCompatible(left: string, right: string): boolean {
   return left.endsWith(right) || right.endsWith(left);
 }
 
-/** Locate the runtime metric (if any) that identifies THIS entry point, by id,
- *  handler/source node, then normalized route+method. Returns undefined (never
- *  fabricated) when nothing matches. */
+
+
+
 export function matchTelemetryForEntryPoint(
   entryPoint: Record<string, any>,
   runtimeMetrics: product.NodeRuntimeMetrics[],
@@ -311,13 +313,13 @@ export function matchTelemetryForEntryPoint(
   });
 }
 
-/**
- * Attach the per-entry-point `telemetry` facet ({request_count, error_rate,
- * p50, p95, p99}) when a runtime metric identifies that entry (see
- * `matchTelemetryForEntryPoint` above for the join precedence). Evidence-gated
- * and additive: entries with no match, or when `runtimeMetrics` is empty, are
- * returned byte-for-byte as passed in.
- */
+
+
+
+
+
+
+
 export function attachEntryPointTelemetry<T extends Record<string, any>>(
   entryPoints: T[],
   runtimeMetrics: product.NodeRuntimeMetrics[],
@@ -390,11 +392,11 @@ interface RegisteredToolEntry {
   handler: (...args: any[]) => any;
 }
 
-// W5 (SPEC-COORDINATION-FABRIC-V3 §8): registered once per process (guarded
-// below), NOT once per createServer() call — tests construct createServer()
-// repeatedly and must not stack up duplicate 'exit' listeners. Closing every
-// write-hook on process exit is the shutdown half of the activation in
-// `advisoryFabricSettings` below; `closeAllWriteHooks` is itself idempotent.
+
+
+
+
+
 let writeHookShutdownRegistered = false;
 
 export function createServer(): McpServer {
@@ -487,7 +489,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Coverage Intelligence', tools: ['get_coverage_gaps'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
-  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'plan_parallel_work', 'subscribe_workspace', 'fab_claim_work', 'fab_extend', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work'] },
+  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'get_fabric_metrics', 'plan_parallel_work', 'subscribe_workspace', 'fab_claim_work', 'fab_extend', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work'] },
 ];
 
 function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
@@ -556,21 +558,21 @@ function enableToolCallLogging(server: McpServer): void {
       try {
         appendFileSync(logPath, `${JSON.stringify({ tool: name, at: new Date().toISOString() })}\n`);
       } catch {
-        // Logging must never break tool execution.
+
       }
       return handler(...args);
     }) as any);
 }
 
-/**
- * get_summary's sub-CAS-node wiring (docs/cas/SPECIFICATION.md §0.4): scope
- * the summary to one sub-CAS-node unit when `scope` is given (throws a
- * helpful error for an unknown id or a non-promoted repo, surfaced by
- * withErrorHandling like any other tool error), otherwise return the rollup
- * summary with `sub_cas_nodes` attached (always, promoted or not — §0.4) —
- * the discovery path a caller uses to learn a scope exists before ever
- * passing one.
- */
+
+
+
+
+
+
+
+
+
 function buildSummaryWithSubCasNodeIndex(
   cas: CASOutput,
   scope: SubCasNodeScopeParam | undefined,
@@ -580,11 +582,11 @@ function buildSummaryWithSubCasNodeIndex(
   const summary = query.buildSummary(scopedCas, opts);
   if (scope) return summary;
   const das = getCachedDeployableAnalyses(cas);
-  // sub_cas_nodes is attached whether or not the repo promoted. When it
-  // hasn't, the index is a few fields (qualified_unit_count /
-  // promotion_threshold / reason) and it is the only way a caller can tell
-  // "one ship unit found, below the threshold" from "no ship evidence found
-  // at all" — omitting it made those two answers indistinguishable.
+
+
+
+
+
   return { ...summary, sub_cas_nodes: das.sub_cas_nodes };
 }
 
@@ -592,12 +594,12 @@ function json(data: unknown): { content: Array<{ type: 'text'; text: string }> }
   return { content: [{ type: 'text', text: serializeToolResponse(data) }] };
 }
 
-// Honest-but-non-leaking projection of AnalysisScope for multi-analysis list
-// tool responses (list_analyses, list_workspace_analyses,
-// list_cross_codebase_analyses). Reports isolation is active and names the
-// agent's OWN workspace; deliberately omits `workspaceRoot` (a local
-// filesystem path) since it is not needed by the caller and could hint at
-// directory layout beyond what "scoped to workspace X" should reveal.
+
+
+
+
+
+
 function describeScopeForResponse(scope: AnalysisScope): { mode: 'workspace' | 'machine'; workspace_name?: string; reason: string } {
   return {
     mode: scope.mode,
@@ -606,36 +608,36 @@ function describeScopeForResponse(scope: AnalysisScope): { mode: 'workspace' | '
   };
 }
 
-// Stamp the freshness guarantee onto agent-entry tool responses, mirroring the
-// existing ai_enrichment progressive-serve field pattern: freshness_checked_at
-// makes "no agent-entry response is older than the time since the last
-// committed/working-tree change" (SPEC-FRESHNESS.md section 2e) observable
-// per-call instead of only asserted in docs. Only applied to responses that are
-// plain objects, since some gated tools (e.g. an error object) shouldn't be
-// mutated.
+
+
+
+
+
+
+
 function withFreshnessStamp<T>(data: T): T {
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    // analysis_source: provenance of the served analysis for project-bound
-    // repos (hosted / local-mirror / local-cache-degraded + honest note when
-    // the hosted service was unavailable). Empty for unbound repos.
+
+
+
     return { ...data, freshness_checked_at: new Date().toISOString(), ...currentAnalysisSourceStamp(), ...serverUpdateStampFields() };
   }
   return data;
 }
 
-// Silent-staleness surfacing on the main orient path (get_summary,
-// get_system_overview, and everything else routed through withFreshnessStamp):
-// the customer-facing bug this exists for is that `klauro update` overwrites
-// the installed bundle on disk while an already-running MCP server keeps
-// serving the OLD in-memory build, with no signal to the human that a restart
-// is needed. checkServerStaleness is async (a disk read + an optional network
-// fetch of latest.json) and throttled to ~once per 10min internally, but tool
-// responses here must stay synchronous and instant — so this wrapper reads the
-// LAST completed check synchronously and kicks off a fresh (still throttled)
-// check in the background for next time. The very first call in a process's
-// lifetime has no prior result yet, so it returns no server_update field
-// rather than blocking the response on the fetch; the field appears from the
-// second agent-entry call onward.
+
+
+
+
+
+
+
+
+
+
+
+
+
 let lastKnownStaleness: import('../../../packages/analyzer-core/src/analyzer/core/build-identity').StalenessCheck | undefined;
 let stalenessRefreshInFlight = false;
 
@@ -652,7 +654,7 @@ function refreshStalenessInBackground(): void {
   const resolvedServerUrl = normalizeServerUrl(auth.defaultServerUrl || process.env.KLAURO_URL);
   checkServerStaleness({ serverUrl: resolvedServerUrl })
     .then(result => { lastKnownStaleness = result; })
-    .catch(() => { /* best-effort; a failed background check just leaves the prior result in place */ })
+    .catch(() => {   })
     .finally(() => { stalenessRefreshInFlight = false; });
 }
 
@@ -682,12 +684,12 @@ function errorResponse(error: unknown): { content: Array<{ type: 'text'; text: s
   return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
 }
 
-/**
- * Best-effort CAS edges for blast-radius arbitration (§WS-C). `workspace` is
- * whatever id/path the caller coordinates under, which may not be an
- * analyzable project path (e.g. a logical workspace id) — arbitration must
- * still work with an empty edge set in that case, so failures are swallowed.
- */
+
+
+
+
+
+
 async function casEdgesForWorkspace(workspace: string): Promise<CasEdgeRef[]> {
   try {
     const cas = await getAnalysis(workspace);
@@ -697,16 +699,16 @@ async function casEdgesForWorkspace(workspace: string): Promise<CasEdgeRef[]> {
   }
 }
 
-/**
- * Best-effort workspace-level-CAS capabilities for capability-name arbitration (§WS-C). Resolves
- * the persisted workspace-analysis graph whose inputs cover `workspace` (same
- * resolver `resolve_workspace_analysis` uses) and trims its
- * `workspace_capabilities` to the coordination module's minimal
- * `WorkspaceCapabilityRef` shape. `workspace` may be a logical id with no matching
- * workspace-level-CAS analysis (or none has been run yet) — that is expected, not an error,
- * so any failure or empty match falls back to `[]` and arbitration proceeds
- * exactly as before this cross-reference existed.
- */
+
+
+
+
+
+
+
+
+
+
 async function workspaceCapabilitiesForWorkspace(workspace: string): Promise<WorkspaceCapabilityRef[]> {
   try {
     const { selected } = await resolveWorkspaceAnalysisForPaths([workspace]);
@@ -722,16 +724,16 @@ async function workspaceCapabilitiesForWorkspace(workspace: string): Promise<Wor
   }
 }
 
-/**
- * Awareness-rich holder context for a conflicting/held grant (§1.6 of
- * docs/SPEC-COORDINATION-FABRIC-V2.md — "awareness is the primitive"). A
- * queued/blocked verdict must never be a dead end: the caller needs to see
- * WHO holds the scope, WHY (their stated intent), and whether the lease is
- * stale enough to safely take over. This reads the raw claim log (same
- * per-workspace `claims.jsonl` grant-manager itself appends to) rather than
- * reaching into grant-manager internals, decoding the `__grant__` JSON
- * marker locally so this stays a read-only, additive projection.
- */
+
+
+
+
+
+
+
+
+
+
 interface GrantHolderContext {
   agent_id: string;
   intent: string;
@@ -758,7 +760,7 @@ async function describeGrantHolders(
         markerIntent = parsed.__grant__.intent;
       }
     } catch {
-      // not a grant-manager claim; skip (e.g. a plain edit-lock claim for the same agent).
+
     }
     if (markerIntent === undefined) continue;
     const leaseMs = Date.parse(claim.heartbeat_at) + claim.ttl_ms;
@@ -774,25 +776,25 @@ async function describeGrantHolders(
   return out;
 }
 
-/**
- * Wiring for check_conceptual_conflicts / check_collision (§1.7
- * SPEC-COORDINATION-FABRIC-V2, "ambient in-flight capture"). Derives ambient
- * SymbolChange[] from the calling agent's git working-tree diff so an agent
- * calling either tool with no explicit `changes` is not silent to the fleet;
- * ambient changes are merged with, not a replacement for, explicit reports.
- * Persists via the same `__conceptual__` marker technique grant-manager.ts
- * uses for `__grant__`, appended to the existing claim log — no new store.
- * Still same-machine/single-repo only; cross-machine ambient capture is
- * unimplemented follow-on work, not faked here.
- */
 
-/**
- * Best-effort ambient `SymbolChange[]` for `workspace`, treating it as the
- * calling agent's own repo path. Returns `[]` (never throws) when `workspace`
- * is not a readable git working tree, when `baseRef` doesn't resolve, or when
- * capture otherwise fails — callers merge this with agent-reported `changes`
- * rather than depending on it exclusively.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function ambientChangesForWorkspace(workspace: string, maxFiles?: number): Promise<SymbolChange[]> {
   try {
     return await captureInFlightChanges({ repoPath: workspace, maxFiles });
@@ -801,23 +803,23 @@ async function ambientChangesForWorkspace(workspace: string, maxFiles?: number):
   }
 }
 
-/**
- * File budget for the wave-2 ambient contract sweep, which runs INSIDE a
- * fab_* tool response. A pathologically dirty tree must not turn an advisory
- * observation into a slow coordination call — past this many changed files the
- * sweep observes a prefix rather than blocking the caller. Explicit
- * declaration (`produces`) is unaffected and remains complete.
- */
+
+
+
+
+
+
+
 const AMBIENT_SWEEP_MAX_FILES = 60;
 
-/** Merge agent-reported and ambiently-captured changes, de-duplicating by symbol_id (reported wins on conflict — it's the more authoritative, conscious signal). */
+
 function mergeChanges(reported: SymbolChange[], ambient: SymbolChange[]): SymbolChange[] {
   const bySymbol = new Map<string, SymbolChange>();
   for (const c of ambient) bySymbol.set(c.symbol_id, c);
   for (const c of reported) bySymbol.set(c.symbol_id, c);
   return [...bySymbol.values()];
 }
-const CONCEPTUAL_CLAIM_TTL_MS = 30 * 60 * 1000; // 30 min — long enough to outlive a typical edit session.
+const CONCEPTUAL_CLAIM_TTL_MS = 30 * 60 * 1000;
 
 interface ConceptualMarker {
   __conceptual__: {
@@ -842,16 +844,16 @@ function decodeConceptualMarker(intent: string): ConceptualMarker['__conceptual_
       return parsed.__conceptual__ as ConceptualMarker['__conceptual__'];
     }
   } catch {
-    // not a conceptual-conflict report (e.g. a plain edit-lock or grant claim); ignore.
+
   }
   return undefined;
 }
 
-/**
- * Persist the calling agent's reported in-flight changes as a `__conceptual__`
- * marker (re-announcing while still active refreshes the same claim_id rather
- * than piling up duplicates, mirroring `announceEdit`'s edit-lock pattern).
- */
+
+
+
+
+
 async function reportConceptualChanges(
   workspace: string,
   agentId: string,
@@ -874,17 +876,17 @@ async function reportConceptualChanges(
   });
 }
 
-/**
- * All OTHER agents' currently-active (LWW + non-expired) conceptual states
- * for a workspace, excluding `excludeAgentId`. Per Fabric-v2 #2, this is no
- * longer purely agent-reported: any active agent that has EVER reported via
- * `check_conceptual_conflicts` (or had ambient changes persisted for it via
- * `check_collision`) contributes its `__conceptual__` marker's changes, and —
- * additive on top — the caller's own current ambient capture for `workspace`
- * is folded into the requesting agent's own contribution by the tool handlers
- * below, so a fleet where nobody has ever self-reported still sees each
- * other's ambient TS/JS contract changes rather than empty `changes` arrays.
- */
+
+
+
+
+
+
+
+
+
+
+
 async function otherAgentConceptualStates(
   workspace: string,
   excludeAgentId: string
@@ -901,7 +903,7 @@ async function otherAgentConceptualStates(
   return states;
 }
 
-/** Best-effort CAS in the `ConflictCas` shape `detectConceptualConflicts` needs (nodes id/name, "calls" edges). */
+
 async function conceptualConflictCasForWorkspace(workspace: string): Promise<ConflictCas> {
   try {
     const cas = await getAnalysis(workspace);
@@ -916,22 +918,22 @@ async function conceptualConflictCasForWorkspace(workspace: string): Promise<Con
   }
 }
 
-/**
- * Conceptual vocabulary for the fabric (§4 SPEC-CONCEPTUAL-LAYER.md), always
- * computed — not gated on collision. Every claim/caller supplying paths/symbols
- * gets a derived conceptual coordinate regardless of overlap; overlap/conflict
- * classification is a filter applied on top, never a gate on the computation
- * itself. Best-effort: a workspace with no analyzable CAS or no entry_points
- * yields an empty index (honest degrade to file/symbol-only coordination),
- * never a fabricated coordinate.
- */
+
+
+
+
+
+
+
+
+
 async function conceptIndexForWorkspace(workspace: string): Promise<ConceptIndex> {
   try {
     const cas = await getAnalysis(workspace);
-    // Internal coordination-fabric index, not an agent-facing token cost —
-    // needs every flow to be a correct concept index, so explicitly opt out
-    // of getFlowConcepts' default browse-cap (query.ts DEFAULT_MAX_FLOWS)
-    // rather than silently losing coverage for entry points beyond it.
+
+
+
+
     const allEntryPoints = (cas.entry_points || []).length;
     const { flows } = query.getFlowConcepts(cas as any, allEntryPoints > 0 ? { maxFlows: allEntryPoints } : {});
     return buildConceptIndex(flows);
@@ -940,14 +942,14 @@ async function conceptIndexForWorkspace(workspace: string): Promise<ConceptIndex
   }
 }
 
-/**
- * Best-effort CAS in the `PartitionCas` shape `partitionTasks` needs (nodes
- * id/name, "calls" edges, plus a derived file list for
- * `inferFootprintFromIntent`'s path matching). Mirrors
- * `conceptualConflictCasForWorkspace` above — same tolerance for `path` being
- * a logical workspace id with no analyzable project (empty CAS, reduced
- * fidelity, never an error).
- */
+
+
+
+
+
+
+
+
 async function partitionCasForPath(path: string): Promise<PartitionCas> {
   try {
     const cas = await getAnalysis(path);
@@ -968,19 +970,19 @@ async function partitionCasForPath(path: string): Promise<PartitionCas> {
   }
 }
 
-/**
- * Best-effort git-history co-change index for a repo path
- * (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md §F —
- * packages/analyzer-core/.../co-change-index.ts). Reads/writes a compact
- * `.klauro/co-change-index.json` sidecar, cached in-process and invalidated
- * on HEAD movement (see `getOrComputeCoChangeIndex`'s own doc) — cheap enough
- * to call on every fab_claim_work/fab_check_collision/plan_parallel_work
- * without re-walking history each time. `path` may be a logical workspace id
- * with no real git checkout (the common non-repo case); `getOrComputeCoChangeIndex`
- * degrades to `null` for that rather than throwing, mirroring
- * `partitionCasForPath`'s graceful degradation above. ADVISORY input only —
- * never gates or blocks any caller.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function coChangeIndexForPath(path: string) {
   try {
     return getOrComputeCoChangeIndex(path) ?? undefined;
@@ -1041,13 +1043,13 @@ async function loadWorkspaceRepositoryAnalyses(options: {
 }
 
 function markWorkspaceAiEnrichmentSkipped(graph: crossCodebaseAnalysis.CrossCodebaseSystemGraph): crossCodebaseAnalysis.CrossCodebaseSystemGraph {
-  // Workspace comprehension is AI-only. When AI is intentionally skipped the
-  // narrative stays a pre-AI placeholder (empty description); there is no
-  // deterministic workspace narrative to substitute in.
+
+
+
   graph.workspace_narrative = {
     ...graph.workspace_narrative,
     source: 'ai-required-degraded',
-    degraded_reason: 'Workspace AI enrichment was intentionally skipped; comprehension is AI-only, so the narrative is a placeholder until AI runs.',
+    degraded_reason: 'Workspace AI enrichment was intentionally skipped; comprehension is AI-only, so no workspace narrative was generated.',
   };
   return graph;
 }
@@ -1147,21 +1149,21 @@ function runtimeObservationId(): string {
   return `runtime_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/**
- * Optional analysis-track selector shared by analysis-fetch tools. Omitting it
- * preserves today's default behavior (in-flight when present, else main); an
- * explicit value routes loadAnalysis to that exact track. Backward compatible.
- */
+
+
+
+
+
 const TRACK_PARAM = z
   .enum(['main', 'other-branch', 'in-flight'])
   .optional()
   .describe("Optional analysis track to read: 'main' (committed default branch), 'other-branch' (committed non-default branch), or 'in-flight' (dirty working tree). Omit for the default view (in-flight when present, else main).");
 
-// Runtime opt-out controls, shared across the context/summary read tools.
-// 'auto' (default) preserves today's task-type-gated behavior; 'exclude' omits
-// runtime telemetry / communication-seams / runtime-topology sections;
-// 'include' opts in. Resolved against KLAURO_CONTEXT_RUNTIME and the .klaurorc
-// context.runtime default (param wins). See context-filter.ts.
+
+
+
+
+
 const CONTEXT_RUNTIME_PARAM = z
   .enum(['include', 'exclude', 'auto'])
   .optional()
@@ -1171,12 +1173,12 @@ const EXCLUDE_SECTIONS_PARAM = z
   .optional()
   .describe('Named sections to omit regardless of runtime mode, e.g. ["runtime","seams","topology"] (aliases like "telemetry","communication_seams" accepted). Excluded sections are skipped, not blanked.');
 
-// Sub-CAS-node retrieval scope (docs/cas/SPECIFICATION.md §0.4): on a promoted
-// repo (>= 2 tier-qualified ship units, see deployable-analysis.ts), scope a
-// repo-level tool to exactly one sub_cas_node_id's sliced facts instead of the
-// whole-repo rollup. Omitted on any repo (promoted or not) preserves today's
-// behavior unchanged. Mirrors get_workspace_agent_context's task-scoped
-// pattern one level down (spec §6).
+
+
+
+
+
+
 const DAS_SCOPE_PARAM = z
   .object({
     sub_cas_node_id: z.string().describe('A sub_cas_node_id from get_summary\'s sub_cas_nodes (only present on a promoted repo).'),
@@ -1184,11 +1186,11 @@ const DAS_SCOPE_PARAM = z
   .optional()
   .describe('Scope this call to one sub-CAS-node unit (see sub_cas_nodes on get_summary). Omit to query the whole repo/rollup.');
 
-// Fold env (KLAURO_CONTEXT_RUNTIME) and the .klaurorc context.runtime default
-// into the task's `runtime` field before it reaches getAgentContext (which only
-// resolves the param). The explicit per-call param still wins; env/config only
-// fill in when the caller left it 'auto'/unset. exclude_sections is per-call
-// and passes through unchanged. Returns a task object either way.
+
+
+
+
+
 async function applyRuntimeContextDefault(path: string, task: any): Promise<any> {
   const base = task || {};
   const filter = await resolveSectionFilterForProject(path, {
@@ -1200,7 +1202,7 @@ async function applyRuntimeContextDefault(path: string, task: any): Promise<any>
 
 function registerTools(server: McpServer) {
 
-  // -- Analysis Management --
+
 
   server.registerTool(
     'analyze_codebase',
@@ -1215,10 +1217,10 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => {
       const focus: AnalysisFocus = analysis_focus || 'agent-fast';
-      // task #132: force_full was accepted into the schema and echoed back on
-      // `force_full_requested` but never actually reached the server — a
-      // documented parameter that silently did nothing, the MCP-tool twin of
-      // the CLI's `--force` defect. Now wired to the same protocol field.
+
+
+
+
       const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force_full) });
       return json({
         status: result.status,
@@ -1330,7 +1332,7 @@ function registerTools(server: McpServer) {
         phases: cas.analysis_phases || [],
         ai_description_status: {
           system: cas.enhanced_system_purpose?.description_generation || null,
-          capabilities: (cas.system_capabilities || []).slice(0, 25).map(capability => ({
+          capabilities: (cas.capabilities || []).slice(0, 25).map(capability => ({
             id: capability.id,
             name: capability.name,
             source: capability.description_source || null,
@@ -1387,7 +1389,7 @@ function registerTools(server: McpServer) {
           ? 'ui-overview'
           : 'deep-context';
 
-      // task #132: same previously-inert force_full parameter as analyze_codebase.
+
       const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force_full) });
       return json({
         status: result.status,
@@ -1925,11 +1927,11 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
       const report = await getAnalysisFreshness(path);
-      // Bound repo: the authoritative comparison is local mirror vs HOSTED
-      // analysis timestamp — a coherent local mirror of a fresh hosted
-      // analysis is 'fresh' even if file mtimes moved, and a July-4 local
-      // cache is 'stale' the moment the hosted analysis is newer, regardless
-      // of mtimes. The mtime-based scan stays in the report as local detail.
+
+
+
+
+
       const binding = await resolveHostedProjectBinding(path).catch(() => null);
       if (!binding) return json(report);
       const hosted = await compareHostedFreshness(binding);
@@ -2008,7 +2010,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- System-Level Understanding --
+
 
   server.registerTool(
     'get_summary',
@@ -2027,12 +2029,12 @@ function registerTools(server: McpServer) {
     async ({ path, track, detail, runtime, exclude_sections, scope }: any) => withErrorHandling(async () => {
       const filter = await resolveSectionFilterForProject(path, { runtime, exclude_sections });
       if (!track) {
-        // Project-bound repo: the hosted analysis is the source of truth. When
-        // the FULL hosted CAS cannot be mirrored (e.g. the deployed server
-        // predates GET /api/projects/{id}/cas) but the hosted state IS
-        // reachable, serve the hosted summary payload directly rather than a
-        // local cache that is older than the hosted analysis — the orient
-        // surface must never present a stale cache as current.
+
+
+
+
+
+
         const binding = await resolveHostedProjectBinding(path).catch(() => null);
         if (binding) {
           if (!scope && detail !== 'full' && runtime === undefined && !exclude_sections?.length) {
@@ -2043,9 +2045,9 @@ function registerTools(server: McpServer) {
           try {
             resolution = await resolveBoundAnalysis(binding);
           } catch (error) {
-            // No local cache AND no full-CAS download (offline, or a server
-            // build without the /cas endpoint): the hosted summary alone is
-            // still the truthful orient answer when the state is reachable.
+
+
+
             const hosted = await hostedSummaryPayload(binding);
             if (!hosted) throw error;
             const payload: Record<string, unknown> = withFreshnessStamp({ ...hosted });
@@ -2077,8 +2079,8 @@ function registerTools(server: McpServer) {
           return json(withFreshnessStamp(buildSummaryWithSubCasNodeIndex(resolution.cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
         }
       }
-      // track-scoped reads (working/committed/incoming) bypass the freshness gate:
-      // getFreshAnalysisForAgent only knows about the default track's CAS.
+
+
       const cas = track ? await getAnalysis(path, { track }) : await getFreshAnalysisForAgent(path);
       return json(withFreshnessStamp(buildSummaryWithSubCasNodeIndex(cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
     })
@@ -2926,7 +2928,7 @@ function registerTools(server: McpServer) {
         up_to_date: upToDate,
         update_command: 'klauro update',
         note,
-        // Silent-staleness fields (SPEC: running bundle vs installed-on-disk bundle vs hosted latest):
+
         installed_version: staleness.installed_version,
         running_stale: staleness.running_stale,
         server_update: staleness.note,
@@ -3310,7 +3312,7 @@ function registerTools(server: McpServer) {
             type: z.string().optional(),
             file: z.string().optional(),
           })).optional(),
-          data_entities: z.array(z.string()).optional(),
+          entities: z.array(z.string()).optional(),
           relationships: z.array(z.object({
             source: z.string(),
             target: z.string(),
@@ -3947,7 +3949,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Navigation & Search --
+
 
   server.registerTool(
     'search_nodes',
@@ -3976,10 +3978,10 @@ function registerTools(server: McpServer) {
         scope,
       );
       if (resolvedMode === 'lexical') {
-        // searchNodes returns a bare array (existing contract) — not stamped
-        // with freshness_checked_at to avoid a breaking shape change; the
-        // freshness guarantee still applies, it's just not observable on this
-        // particular branch the way it is on object-shaped responses.
+
+
+
+
         const cas = await scopedGetCas(path);
         const resolvedLimit = limit || (resolvedDetail === 'full' ? 25 : 8);
         return json(query.searchNodes(cas, q, { type, category, level, limit: resolvedLimit }));
@@ -4102,7 +4104,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Entry/Exit Points & Routes --
+
 
   server.registerTool(
     'get_entry_points',
@@ -4118,30 +4120,30 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, type, limit, offset, scope }: any) => withErrorHandling(async () => {
-      // entry_points/deployable_evidence -> supplemental, nodes -> graph,
-      // security_boundaries/contexts -> quality, communication_seams ->
-      // runtime; scope (when passed) additionally needs calls+comprehension
-      // for deployable-unit detection (DAS sliceInputSections parity).
+
+
+
+
       const cas = scopeCasToSubCasNode(
         await getAnalysis(path, { sections: ['identity', 'graph', 'calls', 'runtime', 'quality', 'comprehension', 'supplemental'] }),
         scope,
       );
       const result = query.getEntryPoints(cas, { type, limit, offset });
-      // ENTRY-POINT ANALYSIS-GAP ENRICHMENT (query-time — keeps the stored CAS
-      // canonical, mirrors the getFlowConcepts/telemetry query-time pattern).
-      // Every join here reads ONLY CAS-level data (boundaries, deployable
-      // evidence, seams) with no flow derivation, so the hot path stays cheap.
-      // Contract/capability enrichment (which needs derived flows) is
-      // deliberately NOT wired here — deriving all flows per get_entry_points
-      // call is the exact getFlowConcepts cost the old /conceptual path paid.
+
+
+
+
+
+
+
       let eps: any[] = result.entry_points || [];
-      eps = ensureEntryPointDescription(eps);                                             // description coverage (was 28% missing)
-      eps = attachDeployable(eps, cas.deployable_evidence, cas.nodes);                     // per-deployable attribution
-      eps = attachEntryPointSecurity(eps, cas.security_boundaries, cas.security_contexts); // per-entry security (boundary/context join)
-      eps = attachInteractionReach(eps, cas.communication_seams as any);                  // external vs internal reach
-      // TELEMETRY facet: join persisted runtime metrics by id/node/route. Also
-      // where any optional per-entry field passes through untouched (entries are
-      // spread verbatim, never rebuilt field-by-field).
+      eps = ensureEntryPointDescription(eps);
+      eps = attachDeployable(eps, cas.deployable_evidence, cas.nodes);
+      eps = attachEntryPointSecurity(eps, cas.security_boundaries, cas.security_contexts);
+      eps = attachInteractionReach(eps, cas.communication_seams as any);
+
+
+
       const runtimeMetrics = await runtimeMetricsForContract(cas, path);
       return json({
         ...result,
@@ -4200,8 +4202,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, method, limit, offset }: any) => withErrorHandling(async () => {
-      // route_table lives outside every keyword-matched section (casSectionForField
-      // falls through to 'supplemental') and getRouteTable reads nothing else.
+
+
       const cas = await getAnalysis(path, { sections: ['identity', 'supplemental'] });
       return json(query.getRouteTable(cas, { method, limit, offset }));
     })
@@ -4239,7 +4241,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Call Graph & Flow Tracing --
+
 
   server.registerTool(
     'get_callers',
@@ -4277,7 +4279,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Component Hierarchy (React/Frontend) --
+
 
   server.registerTool(
     'get_component_parents',
@@ -4408,7 +4410,7 @@ function registerTools(server: McpServer) {
     'get_flow_concepts',
     {
       title: 'Get Flow Concepts',
-      description: 'High-level named flows (the behavioral conceptual layer over the call graph, docs/SPEC-CONCEPTUAL-LAYER.md) — each flow = an ordered set of semantic steps (Validate -> Process -> Persist -> Call External -> Respond), not a raw function chain. Each flow and each step carries the full 6-facet UNDERSTANDING CONTRACT (docs/UNDERSTANDING-MODEL.md), all evidence-gated: (1) input, (2) output, (3) logic, (4) system effects split into state_changes (DB/cache/file writes, entity mutations) vs external_integrations (API/webhook/SDK/queue calls), (5) constraints — first-class {kind, rule, evidence} records where kind is validation | auth | rate-limit | error | invariant | business-rule | consistency (derived from validation schemas, auth guards, guard clauses, data-entity/behavioral invariants, and the consistency model — e.g. "reads from this replica are eventually consistent"), and (6) telemetry — real runtime metrics (request_count/error_rate/p50-p95-p99/status distribution) joined onto the unit WHEN observations exist for it, omitted otherwise. Nothing is fabricated: a facet with no supporting fact is omitted. Each step ties back to concrete function_ids, 1:1, 1:many, or a sub-section (line-range) of a single large function. Flows link to capability_id when a system_capabilities entry references the same entry point, and list the data entities touched. Deterministic-first (composed from entry_points, call edges, exit_points, data_lineage, data_entities.invariants, consistency_model, and persisted telemetry) — omits (not fabricates) whatever cannot be derived, with reasons in gaps. Powers the UI capability->flow->step->function hierarchy, agent work-alignment (coordinate at flow/step level, not file/function), and the coordination fabric. Sits between get_summary (names the capability) and get_coding_context/get_call_chain (drills a step into its concrete function) — the middle rung of the level-drilling path, and the concept-level vocabulary the fabric uses for claims ("I own the Persist step of the Checkout flow") when multiple agents work this codebase at once.',
+      description: 'High-level named flows (the behavioral conceptual layer over the call graph, docs/SPEC-CONCEPTUAL-LAYER.md) — each flow = an ordered set of semantic steps (Validate -> Process -> Persist -> Call External -> Respond), not a raw function chain. Each flow and each step carries the full 6-facet UNDERSTANDING CONTRACT (docs/UNDERSTANDING-MODEL.md), all evidence-gated: (1) input, (2) output, (3) logic, (4) system effects split into state_changes (DB/cache/file writes, entity mutations) vs external_integrations (API/webhook/SDK/queue calls), (5) constraints — first-class {kind, rule, evidence} records where kind is validation | auth | rate-limit | error | invariant | business-rule | consistency (derived from validation schemas, auth guards, guard clauses, data-entity/behavioral invariants, and the consistency model — e.g. "reads from this replica are eventually consistent"), and (6) telemetry — real runtime metrics (request_count/error_rate/p50-p95-p99/status distribution) joined onto the unit WHEN observations exist for it, omitted otherwise. Nothing is fabricated: a facet with no supporting fact is omitted. Each step ties back to concrete function_ids, 1:1, 1:many, or a sub-section (line-range) of a single large function. Flows link to capability_id when a capabilities entry references the same entry point, and list the data entities touched. Deterministic-first (composed from entry_points, call edges, exit_points, data_lineage, entities.invariants, consistency_model, and persisted telemetry) — omits (not fabricates) whatever cannot be derived, with reasons in gaps. Powers the UI capability->flow->step->function hierarchy, agent work-alignment (coordinate at flow/step level, not file/function), and the coordination fabric. Sits between get_summary (names the capability) and get_coding_context/get_call_chain (drills a step into its concrete function) — the middle rung of the level-drilling path, and the concept-level vocabulary the fabric uses for claims ("I own the Persist step of the Checkout flow") when multiple agents work this codebase at once.',
       inputSchema: {
         path: z.string().describe('Project path'),
         target: z.string().optional().describe('Restrict to entry points matching this id, name, or route path substring (e.g. "/orders" or "createOrder"); omit for all derivable flows'),
@@ -4422,13 +4424,13 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, target, max_depth, max_functions_per_flow, max_flows, offset, role, detail }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      // TELEMETRY facet: join persisted runtime metrics onto flow/step
-      // contracts when observations exist (evidence-gated, omitted otherwise).
+
+
       const runtimeMetrics = await runtimeMetricsForContract(cas, path);
-      // INTERPRETIVE layer: persisted AI-authored flow/step descriptions
-      // (element-description store, kind 'flow') feed the nameStep seam —
-      // matched units flip description_source to 'ai'; unmatched units keep
-      // their deterministic labels. Empty store -> fully deterministic output.
+
+
+
+
       const aiDescriptions = await descriptionEnrichment.loadStoredFlowDescriptions(path).catch(() => undefined);
       return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows, offset, role, detail, runtimeMetrics, aiDescriptions }));
     })
@@ -4452,7 +4454,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Agentic Coding Tools --
+
 
   server.registerTool(
     'get_coding_context',
@@ -4470,28 +4472,28 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, target, task_type, include, caller_limit, callee_limit }: any) => withErrorHandling(async () => {
       const cas = await getFreshAnalysisForAgent(path);
-      // TELEMETRY facet: join persisted runtime metrics onto the resolved
-      // target node's contract (evidence-gated; omitted when none match).
+
+
       const runtimeMetrics = await runtimeMetricsForContract(cas, path);
       const context: any = query.getCodingContext(cas, target, { task_type, include, caller_limit, callee_limit, runtimeMetrics });
-      // WS-A (minimal, safe merge): surface fused runtime facts for the
-      // resolved target node, if any were persisted via telemetry ingest.
-      // We don't have a dedicated dataDir/workspace parameter on this tool,
-      // so we reuse `path` as the workspace key (same convention as
-      // get_runtime_observations / ingest_telemetry) rather than threading a
-      // new parameter through query.getCodingContext.
+
+
+
+
+
+
       const nodeId = context?.target_node?.id;
       if (nodeId) {
         const fused = await loadPersistedRuntimeFacts('', path).catch(() => null);
         const matches = fused?.facts?.filter((f) => f.node_id === nodeId) || [];
         if (matches.length > 0) context.fused_runtime_facts = matches;
       }
-      // Per-file staleness surface (additive, non-blocking): getFreshAnalysisForAgent
-      // just refreshed this CAS, so the changed-file set is normally empty here — it
-      // is only non-empty when a refresh couldn't complete synchronously (e.g. a huge
-      // diff tripped the full-rebuild path). Attach the specific reason to the node
-      // instead of only a project-wide banner, so the agent knows exactly what's
-      // uncertain rather than an undifferentiated stale/fresh flag.
+
+
+
+
+
+
       const nodeFile = context?.target_node?.file;
       if (nodeFile) {
         const postRefreshSummary = freshness.summarizeAnalysisFreshness(path, cas.analysis_timestamp);
@@ -4582,7 +4584,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Agentic Coding Tools (Tier 2) --
+
 
   server.registerTool(
     'get_comments',
@@ -4673,7 +4675,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- v1.7.0 Intelligence --
+
 
   server.registerTool(
     'get_intent',
@@ -4708,11 +4710,11 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, entity_name, limit, offset, role, scope }: any) => withErrorHandling(async () => {
-      // getDataEntities itself needs graph (relation index)+comprehension
-      // (domain_concepts)+supplemental (data_entities); scopeCasToSubCasNode,
-      // when `scope` is actually passed, additionally needs calls+runtime for
-      // deployable-unit detection (mirrors the DAS sliceInputSections set in
-      // remote-analyzer-service.ts's /cas/sections sub_cas_node_id path).
+
+
+
+
+
       const cas = scopeCasToSubCasNode(
         await getAnalysis(path, { sections: ['identity', 'graph', 'calls', 'runtime', 'comprehension', 'supplemental'] }),
         scope,
@@ -4729,7 +4731,7 @@ function registerTools(server: McpServer) {
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      // security_boundaries/security_contexts/security_summary all classify to 'quality'.
+
       const cas = await getAnalysis(path, { sections: ['identity', 'quality'] });
       return json(query.getSecurityOverview(cas));
     })
@@ -4845,7 +4847,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Workflows & Capabilities --
+
 
   server.registerTool(
     'get_workflows',
@@ -5207,10 +5209,10 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, type, since, static_id, trace_id, span_id, source, limit, runtime }: any) => withErrorHandling(async () => {
-      // Runtime opt-out honored here too: when a team globally disables runtime
-      // context (.klaurorc context.runtime / KLAURO_CONTEXT_RUNTIME) or the
-      // caller passes runtime:"exclude", return a short stub instead of loading
-      // and correlating observations — a real skip, with an explicit override path.
+
+
+
+
       const runtimeFilter = await resolveSectionFilterForProject(path, { runtime });
       if (runtimeFilter.isExcluded('runtime')) {
         return json({
@@ -5230,10 +5232,10 @@ function registerTools(server: McpServer) {
         limit,
       });
       let result: any = await loadObservations();
-      // Lazy backfill: if the returned set still carries pre-analysis `unmatched`
-      // observations and an analysis now exists, re-correlate and upgrade them so
-      // node-level metrics stop reading empty. Bounded, idempotent, best-effort;
-      // reload afterwards so this response reflects the upgraded correlations.
+
+
+
+
       let cas: any = null;
       try {
         cas = await getAnalysis(path);
@@ -5248,20 +5250,20 @@ function registerTools(server: McpServer) {
           if (backfill && backfill.upgraded > 0) result = await loadObservations();
         }
       }
-      // Per-route+method traffic/latency aggregated from the RAW observations,
-      // CAS-free — visible with or without an analysis. Mirrors the HTTP
-      // GET /v1/telemetry/observations `route_metrics` shape for MCP parity.
+
+
+
       const routeMetrics = telemetryIngestion.summarizeRouteMetrics(result.observations || []);
       if (routeMetrics.length > 0) {
         result.route_metrics = routeMetrics;
         result.route_metrics_guidance =
           'Per route+method request_count/error_rate/p50/p95/p99 aggregated from raw observations. Available with or without an analysis; node_metrics correlate these to CAS static_id once the project is analyzed.';
       }
-      // Per-node operational rollup: traffic (request_count/throughput), errors
-      // (error_count/error_rate + status distribution), and latency
-      // (avg/p50/p95/p99/max) aggregated per CAS node/entry-point/route from the
-      // returned observations. Additive — the raw `observations` array is
-      // unchanged. Computed over the filtered set so it honors static_id/since.
+
+
+
+
+
       try {
         if (!cas) throw new Error('no analysis');
         const nodeMetrics = product.buildNodeRuntimeMetrics(cas, result.observations || []);
@@ -5271,12 +5273,12 @@ function registerTools(server: McpServer) {
             'Per-node traffic/error-rate/latency correlated to CAS static_id. Use static_id here as the target for get_agent_context / get_coding_context before editing a hot or erroring node.';
         }
       } catch {
-        // Metrics are best-effort; never fail the observation read if the CAS
-        // analysis is missing or unreadable.
+
+
       }
-      // WS-A: merge in fused telemetry facts (hot/slow/error) persisted via
-      // POST /v1/telemetry/ingest or ingest_telemetry, additive to the
-      // existing observation shape — see telemetry-fusion.ts.
+
+
+
       const fused = await loadPersistedRuntimeFacts('', path).catch(() => null);
       if (fused?.facts?.length) {
         result.fused_runtime_facts = static_id
@@ -5336,15 +5338,15 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Coordination fabric (§WS-E) --
-  // LOCAL tier only: same-machine, file-backed claim log (see coordination/local-store.ts).
-  // Cross-machine sync is HTTP-only for now (remote-analyzer-service.ts §WS-C-transport).
+
+
+
 
   server.registerTool(
     'claim_work',
     {
       title: 'Claim Work',
-      description: 'ENFORCED exclusive-lease coordination (one active grant per overlapping symbol/path + FIFO queue). Use claim_work when you need EXCLUSIVITY — a guaranteed at-most-one-writer lease over a scope, with queueing when it is contended. For non-blocking awareness that never takes a lease or queues you, use fab_claim_work (the advisory fabric) instead. Request a symbol/path-level GRANT before starting non-trivial changes. ENFORCED (not advisory): at most one active grant per overlapping symbol/path in a workspace at a time — but this governs simultaneous BLIND writes, not your right to reach work you need (§1.6 SPEC-COORDINATION-FABRIC-V2: awareness is the primitive, never a dead end). Returns verdict "granted" (grant_id + lease_expires_at — proceed; heartbeat_work to keep it alive, release_work when done), "queued" (another agent holds a conflicting grant — you get FULL awareness: the holder\'s agent_id + their stated intent + lease_status [active/near_expiry/expired], plus queue_position, plus an `options` array [\'wait_and_heartbeat_poll\', \'take_over_stale_lease\' (only if lease is near_expiry/expired), \'proceed_with_awareness_if_compatible\', \'redirect_to_free_scope\'] plus redirect_hint/free_scope_hint for when the work is fungible), or "duplicate" (you already hold an identical grant). Disjoint work is never queued: block-time is 0 for non-overlapping scope. Overlapping work is resolved by awareness + negotiation, never lockout. CONCEPTUAL VOCABULARY (§4 SPEC-CONCEPTUAL-LAYER.md, additive): pass flow_id/step_id/capability_id/entities to declare the FLOW step or ENTITY you own ("the Charge step of Checkout") alongside/instead of paths/symbols — higher-signal and human-legible. Even if you only pass paths/symbols, the fabric ALWAYS attempts to derive your conceptual coordinates from them (via real flow-concepts, never guessed) and represents them in `concept` on the response, whether or not anyone else is around — awareness is on by default for every claim, not just colliding ones. `concept_awareness` separately reports any OTHER active agent working the SAME flow (different step = informational, safe, both proceed; same step or same entity constraints = a conceptual heads-up, still never a hard stop — enforcement stays limited to the literal path/symbol grant above).',
+      description: 'Publish an attributed Fabric work stream. Every claim succeeds immediately, including work that overlaps the same paths, symbols, flow, step, entity, capability, or intent. Overlap and duplicate signals are advisory collaboration context: use them to share discoveries, coordinate compatible intent, and reconcile divergent intent while both streams remain visible and active. Pass flow_id/step_id/capability_id/entities when known; otherwise Fabric derives conceptual coordinates from real CAS flow evidence. Heartbeat long-running work and release it when completed or handed off.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path to coordinate within'),
         agent_id: z.string().describe('Stable identifier for the calling agent/session'),
@@ -5357,18 +5359,18 @@ function registerTools(server: McpServer) {
         step_id: z.string().optional().describe('Conceptual coordinate: the specific step within flow_id this work owns.'),
         capability_id: z.string().optional().describe('Conceptual coordinate: the SystemCapability id this work realizes (distinct from the free-text `capability` name field above).'),
         entities: z.array(z.string()).optional().describe('Conceptual coordinate: data entity name(s) whose CONSTRAINTS this work touches — enables cross-file conceptual-conflict detection even when paths/symbols are disjoint.'),
-        ttl_ms: z.number().optional().describe('Grant TTL in ms before it is considered stale (default 5 minutes)'),
+        ttl_ms: z.number().optional().describe('Claim freshness TTL in ms (default 5 minutes)'),
         base_commit: z.string().optional(),
         branch: z.string().optional(),
-        claim_id: z.string().optional().describe('Deprecated/unused by the enforced grant path; kept for backward-compat request shape.'),
+        claim_id: z.string().optional().describe('Deprecated compatibility field; the server assigns the claim id.'),
       } as any,
     } as any,
     async ({ workspace, agent_id, intent, agent_kind, paths, symbols, capability, flow_id, step_id, capability_id, entities, ttl_ms, base_commit, branch }: any) => withErrorHandling(async () => {
-      // ALWAYS-ON conceptual representation (§4): derive coordinates from
-      // paths/symbols via real flow-concepts regardless of whether this claim
-      // collides with anyone — awareness has value at zero overlap too
-      // (dedup visibility, fleet coherence, standing readiness). Declared
-      // fields always win over derived ones.
+
+
+
+
+
       const declaredConcept: ConceptualCoordinate | undefined =
         flow_id || step_id || capability_id || (entities && entities.length)
           ? { flow_id, step_id, capability_id, entities, source: 'declared' as const }
@@ -5379,7 +5381,7 @@ function registerTools(server: McpServer) {
         : deriveConceptualCoordinate({ scope: { paths: paths || [], symbols: symbols || [] } }, conceptIndex);
       const concept = declaredConcept ?? derivedConcept;
 
-      const result = await requestGrant({
+      const result = await publishClaimStream({
         workspace_id: workspace,
         agent_id,
         agent_kind: (agent_kind as AgentKind) || 'other',
@@ -5388,10 +5390,10 @@ function registerTools(server: McpServer) {
         ttl_ms,
       });
 
-      // Conceptual awareness against every OTHER currently-active agent —
-      // computed unconditionally (not gated on the grant verdict above),
-      // because same-flow awareness is valuable even when the literal
-      // path/symbol grant was cleanly "granted" with zero collision.
+
+
+
+
       const conceptAwareness: Array<{
         agent_id: string;
         intent: string;
@@ -5419,54 +5421,21 @@ function registerTools(server: McpServer) {
         }
       }
 
-      let freeHint: { free_paths: string[]; free_symbols: string[] } | undefined;
-      let holder: GrantHolderContext | undefined;
-      let options: string[] | undefined;
-      if (result.verdict === 'queued') {
-        const { active } = await getGrants(workspace);
-        const heldPaths = new Set(active.flatMap((g) => g.scope.paths));
-        const heldSymbols = new Set(active.flatMap((g) => g.scope.symbols));
-        freeHint = {
-          free_paths: (paths || []).filter((p: string) => !heldPaths.has(p)),
-          free_symbols: (symbols || []).filter((s: string) => !heldSymbols.has(s)),
-        };
-        const holderId = result.conflict?.holder_agent_id;
-        if (holderId) {
-          const holders = await describeGrantHolders(workspace, [holderId]);
-          holder = holders[holderId];
-        }
-        // §1.6: awareness-rich options, never a hard dead end. redirect_to_free_scope
-        // is only offered when there is actually free scope to redirect to (fungible
-        // work); take_over_stale_lease only when the holder's lease has actually lapsed
-        // or is about to — otherwise it would suggest clobbering a live agent.
-        options = ['wait_and_heartbeat_poll', 'proceed_with_awareness_if_compatible'];
-        if (freeHint.free_paths.length > 0 || freeHint.free_symbols.length > 0) {
-          options.push('redirect_to_free_scope');
-        }
-        if (holder && holder.lease_status !== 'active') {
-          options.push('take_over_stale_lease');
-        }
-      }
-
       return json({
-        // Back-compat shape: callers keyed on claim_id/verdict for the old advisory
-        // path still get something sane — grant_id doubles as claim_id, "granted"
-        // maps to the old "granted" verdict, "queued"/"duplicate" are new states
-        // the old advisory path never returned (it only ever granted or conflicted).
-        claim_id: result.grant_id,
+
+
+
+
+        claim_id: result.claim_id,
         verdict: result.verdict,
-        grant_id: result.grant_id,
+        grant_id: result.claim_id,
         lease_expires_at: result.lease_expires_at,
-        queue_position: result.queue_position,
         conflict: result.conflict,
-        holder,
-        options,
         redirect_hint: result.redirect_hint,
-        free_scope_hint: freeHint,
         base_commit,
         branch,
-        // Conceptual vocabulary (§4): always populated when derivable, whether
-        // or not this claim collided with anyone — see the tool description.
+
+
         concept,
         concept_awareness: conceptAwareness.length ? conceptAwareness : undefined,
       });
@@ -5477,7 +5446,7 @@ function registerTools(server: McpServer) {
     'release_work',
     {
       title: 'Release Work',
-      description: 'Release an ENFORCED grant taken via claim_work (completed or handing off). Frees its paths/symbols for other agents and immediately advances the FIFO queue: the next non-conflicting queued request (if any) is promoted to granted. This is the enforced-lease counterpart; to drop an ADVISORY fabric claim (from fab_claim_work) use fab_release_work instead.',
+      description: 'Mark a claim_work stream complete or handed off. Other overlapping streams are independent and remain active.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         claim_id: z.string().describe('Grant id to release (as returned by claim_work\'s grant_id/claim_id)'),
@@ -5486,12 +5455,12 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ workspace, claim_id, agent_id }: any) => withErrorHandling(async () => {
       if (!agent_id) return json({ status: 'error', error: 'agent_id is required to release a grant', claim_id });
-      const outcome = await releaseGrant(workspace, agent_id, claim_id);
+      const outcome = await releaseClaimStream(workspace, agent_id, claim_id);
       if (!outcome.released) {
         return json({
           status: 'not_found',
           claim_id,
-          reason: `No ACTIVE enforced grant "${claim_id}" held by agent "${agent_id}" in workspace "${workspace}" — already released/expired, an unknown id, or (if this id came back from fab_claim_work / an ADVISORY claim) the wrong tool: use fab_release_work for advisory claims instead.`,
+          reason: `No active claim_work stream "${claim_id}" for participant "${agent_id}" in workspace "${workspace}". It was released, expired, is unknown, or belongs to the fab_claim_work compatibility surface.`,
         });
       }
       return json({ status: 'released', claim_id });
@@ -5502,14 +5471,14 @@ function registerTools(server: McpServer) {
     'heartbeat_work',
     {
       title: 'Heartbeat Work',
-      description: 'Extend a held grant\'s lease (does not expire) while work is in progress. Call periodically for long-running tasks. Returns ok:false if the grant no longer exists (released, expired, or still queued — queued requests have nothing to heartbeat).',
+      description: 'Refresh an active claim_work stream while work is in progress. Returns ok:false when the stream was released, expired, or does not exist.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         claim_id: z.string().describe('Grant id to heartbeat'),
       } as any,
     } as any,
     async ({ workspace, claim_id }: any) => withErrorHandling(async () => {
-      const result = await heartbeatGrant(workspace, claim_id);
+      const result = await heartbeatClaimStream(workspace, claim_id);
       if (!result.ok) return json({ status: 'not_found', claim_id });
       return json({ status: 'heartbeat', claim_id, lease_expires_at: result.lease_expires_at });
     })
@@ -5519,20 +5488,20 @@ function registerTools(server: McpServer) {
     'get_active_agents',
     {
       title: 'Get Active Agents',
-      description: 'Live grant state for a workspace: which agents currently hold active (non-expired) grants — scope, stated intent, lease_expires_at, and lease_status (active/near_expiry/expired) — plus the FIFO queue of agents waiting on a conflicting scope. This is the awareness surface (§1.6 SPEC-COORDINATION-FABRIC-V2): use it before starting work to see who else is here, what they intend, blast-radius overlap risk, and free scope you could pick instead of queuing.',
+      description: 'Live Fabric participant state for a workspace: every active attributed stream, its scope, intent, freshness, and semantic overlap context. Overlapping streams remain active together; this surface informs collaboration and never controls who may proceed.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
       } as any,
     } as any,
     async ({ workspace }: any) => withErrorHandling(async () => {
-      const [presence, grants] = await Promise.all([getPresence(workspace), getGrants(workspace)]);
+      const [presence, grants] = await Promise.all([getPresence(workspace), getClaimStreams(workspace)]);
       const holderCtx = await describeGrantHolders(workspace, grants.active.map((g) => g.agent_id));
       const enrichedGrants = grants.active.map((g) => ({
         ...g,
         intent: holderCtx[g.agent_id]?.intent,
         lease_status: holderCtx[g.agent_id]?.lease_status,
       }));
-      return json({ ...presence, grants: enrichedGrants, queued: grants.queued });
+      return json({ ...presence, streams: enrichedGrants });
     })
   );
 
@@ -5540,7 +5509,7 @@ function registerTools(server: McpServer) {
     'check_collision',
     {
       title: 'Check Collision',
-      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work plus the live grant holders/queue, but takes no grant. Overlapping holders are returned WITH awareness context (intent + lease_status), never just a bare yes/no — so you can judge whether to wait, take over a stale lease, or proceed with awareness before ever calling claim_work. Pass agent_id + intent to ALSO run the conceptual-conflict detectors (contract-divergence/duplicate-work/structural-divergence/behavior-drift): this AMBIENTLY captures your own git working-tree diff (workspace treated as your repo path) — TS/JS files get full before/after signature diffing, zero self-reporting needed — and folds it in automatically against every other agent\'s persisted state (self-reported or itself ambient). Pass `changes` too if you want to add explicit SymbolChange[] on top (e.g. for a language ambient capture can\'t diff). CONCEPTUAL VOCABULARY (§4): `concept` in the response is ALWAYS populated (from your declared flow_id/step_id/capability_id/entities, or auto-derived from paths/symbols via real flow-concepts) whether or not anything collides — the fabric represents flow/step scope for every check, not only overlapping ones. `concept_awareness` lists any other active agent sharing your flow (different step = informational/safe) or entity constraints (a real conceptual-conflict heads-up) — advisory only, never a gate.',
+      description: 'Read-only Fabric preflight for a proposed path, symbol, capability, flow, step, entity, contract, or intent scope. Returns attributed overlap, duplicate-work, contract-divergence, structural-divergence, and behavior-drift context without publishing a stream. Ambient git changes are captured automatically; explicit SymbolChange records can add evidence for unsupported languages. Conceptual coordinates are derived from real CAS flow evidence when not declared. Findings inform realtime collaboration and never gate work.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         paths: z.array(z.string()).optional(),
@@ -5560,9 +5529,9 @@ function registerTools(server: McpServer) {
       const casEdges = await casEdgesForWorkspace(workspace);
       const editLockConflicts = paths?.length ? await checkEditLock(workspace, paths) : [];
 
-      // ALWAYS-ON conceptual representation (§4) — computed unconditionally,
-      // same posture as claim_work: awareness has value even with zero
-      // path/symbol overlap.
+
+
+
       const declaredConcept: ConceptualCoordinate | undefined =
         flow_id || step_id || capability_id || (entities && entities.length)
           ? { flow_id, step_id, capability_id, entities, source: 'declared' as const }
@@ -5613,7 +5582,7 @@ function registerTools(server: McpServer) {
       const workspaceCapabilities = capability ? await workspaceCapabilitiesForWorkspace(workspace) : [];
       const verdict = arbitrate(probe, active, casEdges, workspaceCapabilities);
       const report = detectCollisions([...active, probe], [], casEdges, workspaceCapabilities);
-      const grants = await getGrants(workspace);
+      const grants = await getClaimStreams(workspace);
       const heldPaths = new Set(grants.active.flatMap((g) => g.scope.paths));
       const heldSymbols = new Set(grants.active.flatMap((g) => g.scope.symbols));
       const overlappingGrants = grants.active.filter(
@@ -5623,9 +5592,9 @@ function registerTools(server: McpServer) {
       );
       const holderCtx = await describeGrantHolders(workspace, overlappingGrants.map((g) => g.agent_id));
 
-      // §1.7 SPEC-COORDINATION-FABRIC-V2: also surface conceptual conflicts when
-      // the caller identifies itself. Best-effort/additive — see the design note
-      // above `reportConceptualChanges` for why this is agent-reported, not ambient.
+
+
+
       let conceptualConflicts: ConceptualConflict[] | undefined;
       let conceptualNote: string | undefined;
       if (agent_id) {
@@ -5658,7 +5627,7 @@ function registerTools(server: McpServer) {
         edit_lock_conflicts: editLockConflicts,
         collisions: report,
         active_grants: grants.active,
-        queued_grants: grants.queued,
+        active_streams: grants.active,
         overlapping_grant_holders: overlappingGrants.map((g) => ({ ...g, ...holderCtx[g.agent_id] })),
         free_scope_hint: {
           free_paths: (paths || []).filter((p: string) => !heldPaths.has(p)),
@@ -5666,8 +5635,8 @@ function registerTools(server: McpServer) {
         },
         conceptual_conflicts: conceptualConflicts,
         conceptual_conflicts_note: conceptualNote,
-        // Conceptual vocabulary (§4): always populated when derivable, whether
-        // or not this proposed scope collides with anything else.
+
+
         concept,
         concept_awareness: conceptAwareness.length ? conceptAwareness : undefined,
       });
@@ -5712,10 +5681,10 @@ function registerTools(server: McpServer) {
       const reportedChanges: SymbolChange[] = Array.isArray(changes) ? changes : [];
       const ambientChanges = await ambientChangesForWorkspace(workspace);
       const requesterChanges = mergeChanges(reportedChanges, ambientChanges);
-      // Persist the MERGED view — ambient TS/JS contract changes ride along
-      // with (or stand in for) the agent's own report, so other agents' next
-      // check_collision/check_conceptual_conflicts sees them without that
-      // agent ever having to self-report them.
+
+
+
+
       await reportConceptualChanges(workspace, agent_id, (agent_kind as AgentKind) || 'other', intent, requesterChanges);
 
       const others = await otherAgentConceptualStates(workspace, agent_id);
@@ -5723,14 +5692,14 @@ function registerTools(server: McpServer) {
       const requesterState: AgentInFlightState = { agent_id, intent, changes: requesterChanges };
       const gitBasedConflicts = detectConceptualConflicts([requesterState, ...others], cas);
 
-      // W0 SUBSTRATE PATH (SPEC-COORDINATION-FABRIC-V3 §3): attributed
-      // per-participant deltas from the committed vs. in-flight CAS TRACKS,
-      // attributed via active claim scope — never git-diff-derived (on a
-      // shared tree every participant's "own diff" is the union of everyone's;
-      // that's the attribution collapse §3.2). Additive: runs ALONGSIDE the
-      // git-ambient path so the substrate can prove itself in production
-      // without removing the shipped detector feed; findings dedupe by
-      // (kind, agents, symbol). No in-flight track / no claims => no-op.
+
+
+
+
+
+
+
+
       let substrateConflicts: ConceptualConflict[] = [];
       let substrateInfo: { participants: number; unattributed: number } | undefined;
       try {
@@ -5741,7 +5710,7 @@ function registerTools(server: McpServer) {
           unattributed: substrate.attributed.unattributed.length,
         };
       } catch {
-        /* substrate unavailable — never a hard failure of this tool call */
+
       }
       const conflictDedupeKey = (c: ConceptualConflict) => `${c.kind}|${[...c.agents].sort().join(',')}|${c.symbol}`;
       const seenConflicts = new Set(gitBasedConflicts.map(conflictDedupeKey));
@@ -5790,11 +5759,11 @@ function registerTools(server: McpServer) {
     'plan_intent_merge',
     {
       title: 'Plan Intent Merge',
-      description: 'THE ART OF MERGE (Fabric-v2 #1, §1.7 SPEC-COORDINATION-FABRIC-V2 primitive 5; re-based on the W0 substrate per SPEC-COORDINATION-FABRIC-V3 §8 W4): when agents finish overlapping work, reconcile by INTENT rather than by textual 3-way diff. Git only asks "do the lines overlap?" — two changes that are textually disjoint merge silently even when they are jointly incoherent (see check_conceptual_conflicts), and two changes on the same lines conflict mechanically even when they are perfectly compatible in intent (e.g. one agent adding retry and another adding logging to the same function body). This tool answers the higher-level question for every symbol touched by the fleet: do the changes COHERE? SELECTION RULE (attribution path, §3.2): with more than one active participant currently claiming work in `workspace`, this defaults to the SUBSTRATE path — per-participant deltas attributed from the live committed-vs-in-flight analysis via active claim scope, with the write-hook\'s announced-edit/unclaimed-edit event log as a tiebreaker, NEVER from ambient git diff (on a shared tree, "my own git diff" is the union of everyone\'s — the exact failure that over-attributed 4 agents with 1 agent\'s edit). At <=1 active participant (or when you pass `states` explicitly), it uses the original git-ambient/self-reported capture path (check_conceptual_conflicts/check_collision\'s persisted state), which is sound at that scale. Pass `use_substrate` to force either path explicitly. Returns a MergePlan: auto_mergeable (compatible intents that compose, with a rationale naming both agents\' intents — includes symbols only one agent touched), needs_resolution (a genuine conceptual conflict was detected — NOT auto-merged even though it would pass a textual merge cleanly; a human or agent must decide), duplicate_work (the fleet did the same thing twice; keep one), merge_decisions_required and surprises (the V3 §5/§9 mergeless metrics — genuine cross-participant decisions and contract changes a participant hasn\'t seen yet; the goal is driving both to 0), and — on the substrate path only — `attribution` (participants/tiebroken/unattributed counts) and `unattributed_symbols` (changes nobody could be honestly credited with yet). Use this at the end of a shared editing session to get a single reconciliation verdict instead of re-deriving it from a pile of individual conflict findings.',
+      description: 'Continuously reconcile concurrent work by intent and semantic effect. The default path consumes participant-attributed semantic streams, including overlapping edits to the same symbol; it reports compatible composition, genuine conflicts, duplicate work, surprises, unattributed observations, and cumulative mergeless-work rates. Explicit `states` remain available for callers that already own their attribution.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         agent_id: z.string().describe('Your stable agent/session id (excluded from "other agents" lookup; included if you pass it in `states`)'),
-        use_substrate: z.boolean().optional().describe('Force the attribution path: true = substrate (claim-scope + write-hook tiebreaker, never git diff), false = git-ambient. Omit to auto-select from the live active-participant count (substrate when >1).'),
+        use_substrate: z.boolean().optional().describe('Use canonical semantic-stream attribution. Defaults to true unless explicit states are supplied. Set false only for compatibility with legacy reported state.'),
         states: z.array(z.object({
           agent_id: z.string(),
           intent: z.string(),
@@ -5827,32 +5796,23 @@ function registerTools(server: McpServer) {
       const cas = await conceptualConflictCasForWorkspace(workspace);
       const explicitStates = Array.isArray(states) && states.length > 0;
 
-      // W4 step 1 selection rule (SPEC-COORDINATION-FABRIC-V3 §8 W4, §3.2):
-      // explicit `states` always takes the git-ambient/self-reported shape the
-      // caller handed us (they opted out of substrate attribution by supplying
-      // their own state); otherwise auto-select the substrate path once more
-      // than one participant is active on this workspace's claim log — the
-      // git-ambient path is sound only at <=1 (§3.2's attribution collapse).
-      let useSubstrate = typeof use_substrate === 'boolean' ? use_substrate : undefined;
-      if (!explicitStates && useSubstrate === undefined) {
-        try {
-          const activeClaims = await getActiveClaims(workspace);
-          const activeParticipantCount = new Set(activeClaims.map((c) => c.agent_id)).size;
-          useSubstrate = shouldUseSubstratePlan(activeParticipantCount);
-        } catch {
-          useSubstrate = false; // no claim log readable — fall back to the original path rather than fail the call.
-        }
-      }
+
+
+
+
+
+
+      const useSubstrate = !explicitStates && shouldUseSubstratePlan(0, typeof use_substrate === 'boolean' ? use_substrate : undefined);
 
       if (!explicitStates && useSubstrate) {
         const plan = await planIntentMergeFromSubstrate(workspace, cas);
         return json({
           workspace,
-          attribution_source: 'substrate',
+          attribution_source: plan.attribution.source,
           agents_considered: plan.attribution.participants + plan.attribution.tiebroken,
           plan,
           note: plan.attribution.participants === 0 && plan.attribution.tiebroken === 0
-            ? 'Substrate path selected (>1 active participant) but nothing was attributable yet (no in-flight delta, or no active claims cover it) — see unattributed_symbols.'
+            ? 'No participant-attributed semantic stream is currently available. Shared-workspace observations, when present, remain visible in unattributed_symbols.'
             : undefined,
         });
       }
@@ -5871,13 +5831,31 @@ function registerTools(server: McpServer) {
       const plan = planIntentMerge(planStates, cas);
       return json({
         workspace,
-        attribution_source: 'git-ambient',
+        attribution_source: explicitStates ? 'explicit-agent-states' : 'legacy-workspace-observation',
         agents_considered: [...new Set(planStates.map((s) => s.agent_id))],
         plan,
         note: planStates.length === 0
           ? 'No agent states found (none passed explicitly, no persisted conceptual-conflict state, no ambient changes). Call check_conceptual_conflicts/check_collision first, or pass `states` explicitly.'
           : undefined,
       });
+    })
+  );
+
+  server.registerTool(
+    'get_fabric_metrics',
+    {
+      title: 'Get Fabric Metrics',
+      description: 'Return cumulative mergeless-work measurements for a workspace: observed participants and changed symbols, decisions still requiring reconciliation, surprises, unattributed changes, and normalized decision and surprise rates. Reads the configured remote board when Fabric is remote.',
+      inputSchema: {
+        workspace: z.string().optional().describe('Workspace id. Uses the configured Fabric workspace when omitted.'),
+      } as any,
+    } as any,
+    async ({ workspace }: any) => withErrorHandling(async () => {
+      const settings = await advisoryFabricSettings(workspace);
+      const metrics = settings.remote
+        ? await remoteMergelessMetrics(settings.remote, settings.workspace)
+        : await getMergelessMetrics(settings.workspace);
+      return json({ ...metrics, tier: settings.remote ? 'remote' : 'local' });
     })
   );
 
@@ -5910,9 +5888,9 @@ function registerTools(server: McpServer) {
       }));
 
       const cas = path ? await partitionCasForPath(path) : { nodes: [], edges: [] };
-      // Git-history co-change index (§F, best-effort; undefined when `path`
-      // is absent or not a real git checkout — the soft-ordering layer below
-      // then simply doesn't apply, same graceful degradation as the CAS).
+
+
+
       const coChangeIndex = path ? coChangeIndexForPath(path) : undefined;
       const includeBlastRadius = include_blast_radius ?? true;
       const result = partitionTasks(partitionTasksInput, cas, {
@@ -5941,44 +5919,21 @@ function registerTools(server: McpServer) {
     })
   );
 
-  server.registerTool(
-    'subscribe_workspace',
-    {
-      title: 'Subscribe Workspace',
-      description: 'Start (or confirm) live local-peer awareness for a workspace: same-machine claim-log changes are watched via fs events. There is no push transport over MCP (stdio has no server-initiated events), so this call arms a short-lived local watch and returns immediately — poll get_active_agents / get_in_flight_changes / check_collision afterward to see deltas. For cross-machine polling use HTTP GET /v1/coordination/state?workspace=&since=.',
-      inputSchema: {
-        workspace: z.string().describe('Workspace or project id/path'),
-      } as any,
-    } as any,
-    async ({ workspace }: any) => withErrorHandling(async () => {
-      const unwatch = watch(workspace, () => {});
-      // Best-effort local watch: MCP stdio has no server push, so this is a
-      // fire-and-forget arm+release rather than a held subscription. The
-      // caller is expected to poll; this just confirms the store is watchable.
-      setTimeout(unwatch, 250);
-      return json({
-        status: 'watching',
-        workspace,
-        note: 'MCP has no server-push transport; poll get_active_agents/get_in_flight_changes/check_collision for deltas. For cross-machine or SSE-style polling use HTTP GET /v1/coordination/state?workspace=&since=.',
-      });
-    })
-  );
 
-  // Advisory coordination fabric over MCP (CLI-parity for fab.ts). Distinct
-  // from the enforced grant surface (claim_work/check_collision/release_work/
-  // get_active_agents, backed by grant-manager): those take an enforced
-  // one-grant-per-symbol lease; these advisory claims never block — collisions
-  // surface as awareness, not refusals.
-  //
-  // Transport + workspace resolution is config-driven: once `klauro init` (or
-  // `klauro fabric on`) has persisted a fabric section into .klaurorc, these
-  // tools go remote automatically. Precedence: explicit workspace arg >
-  // .klaurorc fabric > FAB_* env escape hatch (CI) > local fabric with the
-  // stable 'poc' fallback — never the cwd basename, which can land a claim
-  // under the wrong workspace.
-  // Must seed the config search with already-analyzed project roots, not just
-  // process.cwd() — a globally-registered MCP server's cwd may not be inside
-  // the repo, which would leave fabric silently stuck local with no reason.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const advisoryFabricSettings = async (workspace?: string) => {
     let searchDirs: string[] = [];
     try {
@@ -5986,9 +5941,9 @@ function registerTools(server: McpServer) {
       const roots = analyses.map((a) => a.path).filter(Boolean);
       if (workspace && workspace.trim()) {
         const wsLower = workspace.trim().toLowerCase();
-        // Surface a repo whose registered name or directory basename matches the
-        // requested workspace first (best guess at "the repo this call is about"),
-        // then the rest as fallbacks.
+
+
+
         const preferred = analyses
           .filter((a) => a.name?.toLowerCase() === wsLower || nodePath.basename(a.path).toLowerCase() === wsLower)
           .map((a) => a.path)
@@ -5998,12 +5953,12 @@ function registerTools(server: McpServer) {
         searchDirs = [...new Set(roots)];
       }
     } catch {
-      // Registry unreadable: fall back to the cwd/env chain only (unchanged behavior).
+
     }
     const settings = await resolveFabricSettings({ searchDirs, cwd: process.cwd(), explicitWorkspace: workspace });
-    // shouldActivateWriteHook keeps a never-opted-in workspace fully inert;
-    // ensureWriteHookStarted is idempotent per workspace id and must never
-    // crash the caller — async errors inside the watcher only reach onError.
+
+
+
     if (shouldActivateWriteHook(settings)) {
       const root = settings.configPath ? nodePath.dirname(settings.configPath) : (searchDirs[0] ?? process.cwd());
       ensureWriteHookStarted(root, settings.workspace, {
@@ -6017,26 +5972,49 @@ function registerTools(server: McpServer) {
     return settings;
   };
 
-  /**
-   * CAS-backed advisory overlap (repo- and workspace-level) for the local fab_* path. Return shape is a
-   * strict superset of checkEditLock's EditLockConflict[] so existing callers
-   * keep working unchanged; added fields are pure enrichment. Must degrade to
-   * the plain path-only checkEditLock result on any failure — never fewer
-   * signals than before, never an error, never a gate.
-   */
+  server.registerTool(
+    'subscribe_workspace',
+    {
+      title: 'Subscribe Workspace',
+      description: 'Wait for the next Fabric change and return a fresh workspace snapshot. This is an honest cursor-based long poll for MCP transports that cannot receive unsolicited server events: local mode reacts to filesystem events; remote mode follows the hosted board. The first call returns an immediate snapshot. Pass its resume_seq, epoch, and revision into the next call to wait for claim, release, heartbeat, or participant in-flight changes, including overlapping concepts.',
+      inputSchema: {
+        workspace: z.string().optional().describe('Workspace or project id/path. Uses configured Fabric workspace when omitted.'),
+        since_seq: z.number().optional().describe('Last resume_seq returned by this tool.'),
+        since_epoch: z.string().optional().describe('Last epoch returned by this tool. Epoch changes produce an explicit gap snapshot.'),
+        since_revision: z.string().optional().describe('Last revision returned by this tool. Detects participant in-flight changes that do not advance claim sequence.'),
+        wait_ms: z.number().optional().describe('Maximum long-poll duration. Defaults to 20000ms and is capped at 30000ms. Use 0 for a non-blocking snapshot check.'),
+      } as any,
+    } as any,
+    async ({ workspace, since_seq, since_epoch, since_revision, wait_ms }: any) => withErrorHandling(async () => {
+      const settings = await advisoryFabricSettings(workspace);
+      const cursor = { since_seq, since_epoch, since_revision, wait_ms };
+      const result = settings.remote
+        ? await waitForRemoteWorkspaceChange(settings.remote, settings.workspace, cursor)
+        : await waitForLocalWorkspaceChange(settings.workspace, cursor);
+      return json(result);
+    })
+  );
+
+
+
+
+
+
+
+
   const advisoryOverlapConflicts = async (
     ws: string,
     agentId: string,
     claimPaths: string[],
     claimSymbols: string[],
   ): Promise<Array<AdvisoryOverlapFinding & { paths: string[] }>> => {
-    // Legacy path-only result is the guaranteed floor — we never return less.
+
     const editLock = claimPaths.length ? await checkEditLock(ws, claimPaths, agentId) : [];
     try {
       const active = await getActiveClaims(ws);
       const others = active.filter((c) => c.agent_id !== agentId);
-      // Nothing to compare against, or the caller declared no footprint at all:
-      // fall back to the legacy shape (as EditLockConflict already is).
+
+
       if (others.length === 0 || (claimPaths.length === 0 && claimSymbols.length === 0)) {
         return editLock.map((c) => ({
           agent_id: c.agent_id,
@@ -6050,17 +6028,17 @@ function registerTools(server: McpServer) {
           paths: c.paths,
         }));
       }
-      // Same-repo CAS (best-effort; empty CAS => literal symbol/path overlap).
+
       const cas = await partitionCasForPath(ws);
-      // Workspace-level CAS (best-effort; absent => cross-repo layer skipped).
+
       let was: any | undefined;
       try {
         was = (await resolveWorkspaceAnalysisForPaths([ws])).selected ?? undefined;
       } catch {
         was = undefined;
       }
-      // Git-history co-change index (best-effort; absent => predictive layer
-      // skipped). §F — see coChangeIndexForPath's doc.
+
+
       const coChangeIndex = coChangeIndexForPath(ws);
       const findings = computeAdvisoryOverlap(
         { agent_id: agentId, paths: claimPaths, symbols: claimSymbols },
@@ -6070,13 +6048,13 @@ function registerTools(server: McpServer) {
         was,
         coChangeIndex,
       );
-      // `paths` mirrors EditLockConflict semantics (local-store.ts): the
-      // CONFLICTING HOLDER's claimed scope, not the proposing caller's own
-      // claimPaths — so a fleet sees what the other agent actually claims.
+
+
+
       const pathsByClaimId = new Map(others.map((c) => [c.claim_id, c.scope.paths]));
       return findings.map((f) => ({ ...f, paths: pathsByClaimId.get(f.claim_id) ?? claimPaths }));
     } catch {
-      // Any failure — degrade to the legacy path-only conflicts, never throw.
+
       return editLock.map((c) => ({
         agent_id: c.agent_id,
         claim_id: c.claim_id,
@@ -6091,14 +6069,14 @@ function registerTools(server: McpServer) {
     }
   };
 
-  // -------------------------------------------------------------------------
-  // Coordination Engine wave 2 (docs/SPEC-COORDINATION-ENGINE.md §3 + §5):
-  // structured intent with AUTO-DERIVATION, declared-contract drift, and the
-  // claim-scoped event drain. Everything below is ADVISORY and BEST-EFFORT:
-  // no fabric call may ever fail because contract derivation or a drain did.
-  // -------------------------------------------------------------------------
 
-  /** Parse the caller-supplied `produces` array into DeclaredContracts (explicit = declared). */
+
+
+
+
+
+
+
   const parseDeclaredContracts = (raw: any): DeclaredContract[] =>
     Array.isArray(raw)
       ? raw
@@ -6113,19 +6091,19 @@ function registerTools(server: McpServer) {
           }))
       : [];
 
-  /**
-   * THE ADOPTION FIX (§3 auto-derivation): lift this agent's ambient
-   * `SymbolChange[]` into its claim as observed `produces`, auto-record
-   * `consumes` edges against peers' contract boards, and fire declared-contract
-   * drift surprises at the consumers that recorded an edge. Explicit
-   * declaration stays the high-signal path; this is the FLOOR that keeps the
-   * board populated when nobody declares anything.
-   *
-   * Runs only on the WRITE paths (claim/extend), never on reads: it costs a git
-   * diff plus a parse, and the write paths are where an agent's state actually
-   * moved. §13 attribution is enforced per change by `attributeChangesToClaim`
-   * — a change any other active claim also covers is lifted by nobody.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   const ambientContractSweep = async (
     ws: string,
     agentId: string,
@@ -6160,8 +6138,8 @@ function registerTools(server: McpServer) {
         consumes: consumes.names,
       });
 
-      // Drift: compare MY declared contracts against MY actual diff, and
-      // address findings to the lanes that recorded a consumes edge on me.
+
+
       const refreshed = await getActiveClaims(ws);
       const meNow = refreshed.find((c) => c.agent_id === agentId) ?? mine;
       const drift = detectDeclaredContractDrift(meNow, refreshed, myChanges);
@@ -6175,18 +6153,18 @@ function registerTools(server: McpServer) {
         ...(persisted.length ? { drift_surprises: persisted.length } : {}),
       };
     } catch {
-      // Advisory by contract: derivation failure degrades to no derivation.
+
       return {};
     }
   };
 
-  /**
-   * §5 CLAIM-SCOPED DRAIN. The caller's own ACTIVE CLAIM *is* the subscription
-   * — no registration, no interest taxonomy, nothing to renew. Returns the
-   * `events` block or undefined (absent when empty). No claim, no drain: an
-   * agent with no footprint has no relevance neighborhood, and polls
-   * `fab_list_active_work` explicitly instead.
-   */
+
+
+
+
+
+
+
   const drainEvents = async (
     ws: string,
     agentId: string | undefined,
@@ -6207,7 +6185,7 @@ function registerTools(server: McpServer) {
     'fab_claim_work',
     {
       title: 'Fab: Claim Work (advisory)',
-      description: 'ADVISORY awareness claim (default coordination mode) — announces intent to peers, never blocks or queues, takes no lease. Use fab_claim_work for awareness-first parallel work where agents coordinate rather than lock. When you instead need a GUARANTEED exclusive lease over a scope (at-most-one-writer, with queueing on contention), use the enforced claim_work. Advisory work-claim over the same-machine coordination fabric (CLI-parity for `fab.ts claim`). AWARENESS-FIRST, NEVER A LOCKOUT: the claim always succeeds — it announces to peers on this host that you intend to touch these paths/symbols with this intent, so a fleet coordinates instead of blindly clobbering. Unlike the enforced grant surface (claim_work), this takes no lease and never queues you. Belt-and-suspenders: this ALSO runs the same overlap scan check_collision/fab_check_collision does and returns a `warning` (plus `conflicts`) inline when your paths overlap an already-active claim by another agent — so even an agent that skipped the preflight check still gets the heads-up. Call fab_release_work when done. DECLARE YOUR CONTRACTS: pass `produces` (the exports/signatures/endpoints/types you will create — name + shape, BEFORE you write them) and peers can build against them immediately instead of waiting for your code to land; pass `consumes` (contract names you build against) and you are told the moment a producer\'s actual diff diverges from what it declared. If you declare nothing, ambient observation fills the board anyway (your diff is auto-lifted into `produces`, and references to peers\' contracts are auto-recorded as `consumes`) — declaring is just higher-signal and EARLIER. Claiming with no paths yet is fine and visible (an exploration claim, phase "exploring"): call fab_extend with add_paths the moment you localize your work. Responses may carry an `events` block: your active claim IS your subscription (events addressed to you, plus events overlapping your footprint) — no registration step, nothing to renew.',
+      description: 'Publish a Fabric work stream with contracts and continuous event delivery. This compatibility surface always succeeds, including overlapping work, and returns advisory overlap context. Declare produced and consumed contracts when known so peers can build against intent before code lands; ambient observation fills gaps from attributed diffs. Claims with no paths remain visible during exploration and can be extended as their footprint becomes known. Use claim_work for the same non-blocking semantics with conceptual flow coordinates.',
       inputSchema: {
         agent_id: z.string().describe('Stable identifier for the calling agent/session'),
         intent: z.string().describe('Short description of the work being claimed'),
@@ -6221,6 +6199,10 @@ function registerTools(server: McpServer) {
           notes: z.string().optional(),
         })).optional().describe('Contracts this work will CREATE or CHANGE — declare them before you write them so peers can stub against them now. Identity is (kind, name, path?); include `path` for an unambiguous match.'),
         consumes: z.array(z.string()).optional().describe('Contract NAMES this work builds against (a peer\'s declared export/endpoint/type). Recording this is what makes drift surprises reach you while both changes are still soft.'),
+        flow_id: z.string().optional().describe('Flow this work belongs to. Omit to derive it from the analyzed paths and symbols when possible.'),
+        step_id: z.string().optional().describe('Step within flow_id this work touches.'),
+        capability_id: z.string().optional().describe('Capability this work contributes to.'),
+        entities: z.array(z.string()).optional().describe('Entities whose constraints this work touches, including cross-file conceptual overlap.'),
         workspace: z.string().optional().describe('Workspace id to coordinate within (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
         agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional().describe('Kind of agent (default claude)'),
         ttl_ms: z.number().optional().describe('Claim TTL in ms before it is considered stale (default 6h, matching fab.ts)'),
@@ -6229,21 +6211,31 @@ function registerTools(server: McpServer) {
         since_epoch: z.string().optional().describe('Epoch your cursor belongs to; a mismatch returns an explicit gap notice instead of silence.'),
       } as any,
     } as any,
-    async ({ agent_id, intent, paths, symbols, produces, consumes, workspace, agent_kind, ttl_ms, repo_path, since_seq, since_epoch }: any) => withErrorHandling(async () => {
+    async ({ agent_id, intent, paths, symbols, produces, consumes, flow_id, step_id, capability_id, entities, workspace, agent_kind, ttl_ms, repo_path, since_seq, since_epoch }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const claimPaths: string[] = paths || [];
       const claimSymbols: string[] = symbols || [];
       const declaredContracts = parseDeclaredContracts(produces);
       const declaredConsumes: string[] = Array.isArray(consumes) ? consumes.filter((c: any) => typeof c === 'string') : [];
+      const declaredConcept: ConceptualCoordinate | undefined = flow_id || step_id || capability_id || (entities?.length ?? 0) > 0
+        ? { flow_id, step_id, capability_id, entities, source: 'declared' }
+        : undefined;
+      const conceptIndex = await conceptIndexForWorkspace(
+        repo_path || (settings.configPath ? nodePath.dirname(settings.configPath) : ws)
+      );
+      const concept = declaredConcept ?? deriveConceptualCoordinate(
+        { scope: { paths: claimPaths, symbols: claimSymbols } },
+        conceptIndex
+      );
       const explorationClaim = isExplorationClaim({
         scope: { paths: claimPaths, symbols: claimSymbols },
         produces: declaredContracts,
       });
-      // REMOTE MODE (docs/FABRIC-REMOTE.md): a `klauro init` fabric config (or
-      // the FAB_REMOTE_URL CI escape hatch) routes the claim to the
-      // cross-machine coordination API instead of this host's filesystem.
-      // Advisory contract on network failure: degrade LOUDLY to local, never error.
+
+
+
+
       const remote = settings.remote;
       if (remote) {
         try {
@@ -6251,6 +6243,9 @@ function registerTools(server: McpServer) {
             workspace: ws, agentId: agent_id, intent,
             paths: claimPaths, symbols: claimSymbols,
             agentKind: (agent_kind as AgentKind) || 'claude', ttlMs: ttl_ms,
+            produces: declaredContracts,
+            consumes: declaredConsumes,
+            concept,
           });
           return json({
             status: 'claimed', tier: 'remote', remote_url: remote.baseUrl,
@@ -6258,11 +6253,9 @@ function registerTools(server: McpServer) {
             paths: claimPaths, symbols: claimSymbols,
             ttl_ms: res.ttl_ms, server_time: res.server_time,
             conflicts: res.conflicts, warning: res.warning,
-            // Wire compatibility (§16): the remote coordination API accepts and
-            // returns new fields additively, but the CURRENT deployed transport
-            // has no produces/consumes column, so echo what the caller declared
-            // rather than pretending the remote board recorded it.
-            ...(declaredContracts.length ? { produces: declaredContracts, produces_note: 'Declared contracts are LOCAL-VIEW only until the remote transport carries them — peers on other machines see your paths/intent, not your contract board.' } : {}),
+            concept,
+            conceptual_awareness: res.conceptual_awareness ?? [],
+            ...(declaredContracts.length ? { produces: declaredContracts } : {}),
             ...(declaredConsumes.length ? { consumes: declaredConsumes } : {}),
             ...(explorationClaim ? { exploration_claim: true, exploration_note: EXPLORATION_CLAIM_NOTE } : {}),
             heartbeat_hint: 'Re-claim before ttl_ms elapses to stay visible; fab_release_work when done.',
@@ -6275,19 +6268,26 @@ function registerTools(server: McpServer) {
       return await localClaim();
 
       async function localClaim(degradeWarning?: string) {
-      // Belt-and-suspenders (papercut fix (b)): scan for overlap BEFORE claiming
-      // so an agent that skips fab_check_collision still gets the advisory
-      // signal. Advisory — the claim proceeds regardless. Now CAS-backed (repo- and workspace-level)
-      // (blast-radius + cross-repo aware), a strict superset of the old
-      // path-only checkEditLock; degrades gracefully and never throws.
+
+
+
+
+
       const conflicts = await advisoryOverlapConflicts(ws, agent_id, claimPaths, claimSymbols);
+      const conceptualAwareness = concept
+        ? (await getActiveClaims(ws))
+            .filter((claim) => claim.agent_id !== agent_id && claim.scope.concept)
+            .map((claim) => ({ claim, comparison: compareConceptualCoordinates(concept, claim.scope.concept) }))
+            .filter(({ comparison }) => comparison.verdict !== 'unrelated')
+            .map(({ claim, comparison }) => ({ agent_id: claim.agent_id, intent: claim.intent, ...comparison }))
+        : [];
       const now = new Date().toISOString();
       const entry = await appendClaim(ws, {
         claim_id: `${ws}:${agent_id}`,
         workspace_id: ws,
         agent_id,
         agent_kind: (agent_kind as AgentKind) || 'claude',
-        scope: { repo: ws, paths: claimPaths, symbols: claimSymbols },
+        scope: { repo: ws, paths: claimPaths, symbols: claimSymbols, concept },
         intent,
         status: 'active',
         created_at: now,
@@ -6296,7 +6296,7 @@ function registerTools(server: McpServer) {
         ...(declaredContracts.length ? { produces: declaredContracts } : {}),
         ...(declaredConsumes.length ? { consumes: declaredConsumes } : {}),
       });
-      // §3 auto-derivation + §5 drain, both strictly advisory (see helpers).
+
       const derived = await ambientContractSweep(ws, agent_id, repo_path || process.cwd());
       const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       const board = await getBoardInfo(ws);
@@ -6305,10 +6305,10 @@ function registerTools(server: McpServer) {
             .map((c) => `${c.agent_id}:${c.reason}`)
             .join(', ')})${conflicts.some((c) => c.was_derived) ? ' [incl. cross-repo]' : conflicts.some((c) => c.cas_derived) ? ' [incl. call-graph blast-radius]' : ''}. Your claim still succeeded — coordinate before writing.`
         : undefined;
-      // Tier note, never silent: `degradeWarning` = remote configured but the
-      // remote claim failed (unreachable/401); otherwise settings.localReason =
-      // remote was never in play (not configured/disabled/config not found from
-      // server cwd) so peers on other machines can't see this claim.
+
+
+
+
       const tierNote = degradeWarning || settings.localReason;
       return json({
         status: 'claimed',
@@ -6320,17 +6320,19 @@ function registerTools(server: McpServer) {
         intent,
         paths: entry.scope.paths,
         symbols: entry.scope.symbols,
-        // §3: the claim's contract board — explicit declarations plus anything
-        // ambient observation lifted onto it. `phase` is DERIVED for display
-        // (no writer reports it, so it can never be stale or lied about).
+        concept,
+        conceptual_awareness: conceptualAwareness,
+
+
+
         ...(declaredContracts.length ? { produces: declaredContracts } : {}),
         ...(declaredConsumes.length ? { consumes: declaredConsumes } : {}),
         ...derived,
         conflicts,
         ...(events ? { events } : {}),
-        // A path-less claim is REPRESENTABLE and VISIBLE, never dropped from
-        // the board — but it cannot overlap-match, so say so and prompt the
-        // agent to re-extend the moment it localizes.
+
+
+
         ...(explorationClaim ? { exploration_claim: true, exploration_note: EXPLORATION_CLAIM_NOTE } : {}),
         warning: [tierNote, overlapWarning].filter(Boolean).join(' ') || undefined,
       });
@@ -6342,7 +6344,7 @@ function registerTools(server: McpServer) {
     'fab_extend',
     {
       title: 'Fab: Extend Claim (advisory)',
-      description: 'Extend an ACTIVE advisory claim mid-task ("I also need to touch X — safe?") without losing claim identity: same claim_id, union of old+new paths/symbols, original intent and created_at preserved. THIS IS ALSO HOW AN EXPLORATION CLAIM LOCALIZES: if you claimed with no paths, call fab_extend with add_paths (and add_produces) the moment you know what you are touching — until then your claim is visible but cannot overlap-match. Contract declarations are merged, never dropped. The overlap scan runs against the ADDED scope only and is surfaced inline — extension always succeeds, never denied. Local-tier only until the remote transport gains an extend endpoint; when a remote fabric is configured the response says so explicitly.',
+      description: 'Extend an ACTIVE advisory claim mid-task without losing claim identity: the same claim gains the union of old and new paths, symbols, produced contracts, and consumed contracts. Use this to localize an exploration claim as soon as its footprint becomes known. Overlap on the added scope is returned as awareness and never blocks the extension. Works on both local and remote fabric boards.',
       inputSchema: {
         agent_id: z.string().describe('Agent whose active advisory claim to extend'),
         add_paths: z.array(z.string()).optional().describe('Paths to append to the claim scope'),
@@ -6355,24 +6357,60 @@ function registerTools(server: McpServer) {
           notes: z.string().optional(),
         })).optional().describe('Contracts to add to this claim\'s board — declare them as soon as you know their names/shapes; peers stub against them immediately.'),
         add_consumes: z.array(z.string()).optional().describe('Contract names to add to what this claim builds against.'),
+        flow_id: z.string().optional().describe('Flow the extended footprint belongs to.'),
+        step_id: z.string().optional().describe('Step within flow_id touched by the extended footprint.'),
+        capability_id: z.string().optional().describe('Capability the extended footprint contributes to.'),
+        entities: z.array(z.string()).optional().describe('Entities whose constraints the extended footprint touches.'),
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
         repo_path: z.string().optional().describe('Your working tree (default: the server cwd) for ambient contract observation.'),
         since_seq: z.number().optional().describe('Event cursor: echo back the `resume_seq` from your last fab_* response.'),
         since_epoch: z.string().optional().describe('Epoch your cursor belongs to; a mismatch returns an explicit gap notice.'),
       } as any,
     } as any,
-    async ({ agent_id, add_paths, add_symbols, add_produces, add_consumes, workspace, repo_path, since_seq, since_epoch }: any) => withErrorHandling(async () => {
+    async ({ agent_id, add_paths, add_symbols, add_produces, add_consumes, flow_id, step_id, capability_id, entities, workspace, repo_path, since_seq, since_epoch }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
+      const declaredConcept: ConceptualCoordinate | undefined = flow_id || step_id || capability_id || (entities?.length ?? 0) > 0
+        ? { flow_id, step_id, capability_id, entities, source: 'declared' }
+        : undefined;
+      const conceptIndex = await conceptIndexForWorkspace(
+        repo_path || (settings.configPath ? nodePath.dirname(settings.configPath) : ws)
+      );
+      const concept = declaredConcept ?? deriveConceptualCoordinate(
+        { scope: { paths: add_paths || [], symbols: add_symbols || [] } },
+        conceptIndex
+      );
+      if (settings.remote) {
+        try {
+          const outcome = await remoteExtend(settings.remote, {
+            workspace: ws,
+            claimId: `${ws}:${agent_id}`,
+            addPaths: add_paths || [],
+            addSymbols: add_symbols || [],
+            addProduces: parseDeclaredContracts(add_produces),
+            addConsumes: Array.isArray(add_consumes) ? add_consumes.filter((value: unknown) => typeof value === 'string') : [],
+            concept,
+          });
+          return json({ ...outcome, tier: 'remote', remote_url: settings.remote.baseUrl });
+        } catch (error) {
+          throw new Error(`Remote fabric extension failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       const outcome = await extendClaim(ws, `${ws}:${agent_id}`, add_paths || [], add_symbols || [], {
         produces: parseDeclaredContracts(add_produces),
         consumes: Array.isArray(add_consumes) ? add_consumes.filter((c: any) => typeof c === 'string') : [],
+        concept,
       });
       const derived = await ambientContractSweep(ws, agent_id, repo_path || process.cwd());
+      const conceptualAwareness = outcome.claim.scope.concept
+        ? (await getActiveClaims(ws))
+            .filter((claim) => claim.agent_id !== agent_id && claim.scope.concept)
+            .map((claim) => ({ claim, comparison: compareConceptualCoordinates(outcome.claim.scope.concept, claim.scope.concept) }))
+            .filter(({ comparison }) => comparison.verdict !== 'unrelated')
+            .map(({ claim, comparison }) => ({ agent_id: claim.agent_id, intent: claim.intent, ...comparison }))
+        : [];
       const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
-      const remoteNote = settings.remote
-        ? 'Remote fabric is configured but claim extension is LOCAL-ONLY for now — agents on other machines still see the pre-extension scope.'
-        : settings.localReason;
+      const remoteNote = settings.localReason;
       return json({
         status: 'extended',
         tier: 'local',
@@ -6382,6 +6420,8 @@ function registerTools(server: McpServer) {
         intent: outcome.claim.intent,
         paths: outcome.claim.scope.paths,
         symbols: outcome.claim.scope.symbols,
+        concept: outcome.claim.scope.concept,
+        conceptual_awareness: conceptualAwareness,
         ...(outcome.claim.produces?.length ? { produces: outcome.claim.produces } : {}),
         ...(outcome.claim.consumes?.length ? { consumes: outcome.claim.consumes } : {}),
         ...derived,
@@ -6398,7 +6438,7 @@ function registerTools(server: McpServer) {
     'fab_check_collision',
     {
       title: 'Fab: Check Collision (advisory)',
-      description: 'ADVISORY read-only preflight (pairs with fab_claim_work) — checks overlap without taking any claim or lease; awareness-only, never a gate. (The enforced claim_work performs its own overlap+queue resolution at grant time, so this fabric preflight is for the advisory awareness path.) Read-only advisory preflight over the coordination fabric (CLI-parity for `fab.ts check`): do the proposed paths overlap any OTHER active agent\'s claim on this host? Takes no claim. Returns the conflicting active claims (agent_id + overlapping_paths) so you can coordinate before you call fab_claim_work. Awareness-only — never a gate.',
+      description: 'Read-only Fabric overlap preflight for the fab_claim_work compatibility surface. Returns attributed overlapping streams so participants can collaborate; it never publishes a claim or gates work.',
       inputSchema: {
         agent_id: z.string().describe('Your agent_id (excluded from the overlap scan so you do not collide with yourself)'),
         paths: z.array(z.string()).describe('Proposed file/dir paths to check for overlap'),
@@ -6433,16 +6473,16 @@ function registerTools(server: McpServer) {
           degradeNote = `Remote fabric check failed (${msg}) — DEGRADED to the LOCAL view: claims from other machines are NOT visible in this result. `;
         }
       }
-      // CAS-backed advisory overlap (repo- and workspace-level, blast-radius + cross-repo aware), a
-      // strict superset of the old path-only checkEditLock; degrades gracefully
-      // and never throws. This preflight is paths-only (no symbols input), so
-      // pass [] for symbols — CAS still expands the paths' blast radius and the
-      // workspace-level CAS still surfaces cross-repo shared-code/contract overlap.
+
+
+
+
+
       const conflicts = await advisoryOverlapConflicts(ws, agent_id, paths || [], []);
-      // degradeNote = remote was configured but the call failed (unreachable/401).
-      // settings.localReason = remote was never in play (not configured/disabled/
-      // config not found from server cwd). Surface whichever applies so a local
-      // result is never silently ambiguous about cross-machine visibility.
+
+
+
+
       const localTierNote = degradeNote || (settings.localReason ? `${settings.localReason} ` : '');
       const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       return json({
@@ -6466,7 +6506,7 @@ function registerTools(server: McpServer) {
     'fab_release_work',
     {
       title: 'Fab: Release Work (advisory)',
-      description: 'ADVISORY release (counterpart to fab_claim_work) — clears the fabric awareness claims; to release an ENFORCED lease taken via claim_work use release_work instead. Release EVERY advisory claim held by an agent on this host (CLI-parity for `fab.ts release`): drops your work-claims and edit-locks so peers see the scope free again and false-overlap awareness clears. Call the moment you are done or handing off.',
+      description: 'Release every fab_claim_work compatibility stream held by one participant when work completes or is handed off.',
       inputSchema: {
         agent_id: z.string().describe('Agent id whose claims to release'),
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
@@ -6478,8 +6518,8 @@ function registerTools(server: McpServer) {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const remote = settings.remote;
-      // §5: the claim IS the subscription, so this is the LAST drain — take it
-      // before the release removes the footprint that scopes it.
+
+
       const finalEvents = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       let degradeWarning: string | undefined;
       if (remote) {
@@ -6500,11 +6540,11 @@ function registerTools(server: McpServer) {
           degradeWarning = `Remote fabric release failed (${msg}) — released LOCAL claims only; any remote claim will linger until its TTL expires. Re-release once the service is reachable.`;
         }
       }
-      // releaseAgentWithReason instead of bare releaseAgent: a released_count
-      // of 0 was silently ambiguous between "double-release no-op" and
-      // "workspace-id mismatch — your claim is still ACTIVE elsewhere" (V3
-      // §6.3 finding: fab_release_work returned released_count:0 for a claim
-      // definitely made). The reason names which, incl. where the live claim is.
+
+
+
+
+
       const outcome = await releaseAgentWithReason(ws, agent_id);
       const released = outcome.released;
       return json({
@@ -6516,9 +6556,9 @@ function registerTools(server: McpServer) {
         ...(outcome.reason ? { reason: outcome.reason } : {}),
         released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
         ...(finalEvents ? { events: finalEvents } : {}),
-        // degradeWarning = remote release failed; settings.localReason = remote
-        // was never configured (so "released local only" is expected, not a
-        // failure). Either way, say why this was a local-only release.
+
+
+
         warning: degradeWarning || settings.localReason,
       });
     })
@@ -6528,7 +6568,7 @@ function registerTools(server: McpServer) {
     'fab_list_active_work',
     {
       title: 'Fab: List Active Work (advisory)',
-      description: 'List active ADVISORY fabric claims (the awareness surface for fab_claim_work). For the ENFORCED grant/lease state and its FIFO queue, use get_active_agents instead. List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, symbols, DERIVED phase (exploring/building/verifying — never self-reported), and CONTRACT BOARD (`produces`/`consumes`: what each lane is creating and what it builds against, whether declared up front or observed from its diff). Pass `contracts: true` for the contract board alone — who is producing what, so you can stub against a peer\'s declared export before it exists. The awareness surface — call before starting work to see who else is here and what they are touching.',
+      description: 'List active fab_claim_work compatibility streams with participant intent, paths, symbols, derived phase, and produced or consumed contracts. Pass contracts:true for the contract board alone.',
       inputSchema: {
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
         agent_id: z.string().optional().describe('When provided, also returns surprise events addressed to this agent (contract divergences a peer\'s in-flight change caused in scope you depend on), plus your claim-scoped `events` drain if you hold an active claim'),
@@ -6542,7 +6582,7 @@ function registerTools(server: McpServer) {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const remote = settings.remote;
-      // Surprise events live in the local claim log regardless of tier.
+
       const surprises = agent_id ? await readSurprisesFor(ws, agent_id) : undefined;
       let degradeNote: string | undefined;
       if (remote) {
@@ -6558,6 +6598,7 @@ function registerTools(server: McpServer) {
             epoch: res.epoch,
             min_retained_seq: res.min_retained_seq,
             server_time: res.server_time,
+            in_flight: res.in_flight ?? [],
             active: res.active.map((c) => ({
               agent_id: c.agent_id,
               agent_kind: c.agent_kind,
@@ -6565,6 +6606,9 @@ function registerTools(server: McpServer) {
               intent: c.intent,
               paths: c.paths,
               symbols: c.symbols,
+              produces: c.produces ?? [],
+              consumes: c.consumes ?? [],
+              concept: c.concept,
               seq: c.seq,
             })),
           });
@@ -6574,10 +6618,10 @@ function registerTools(server: McpServer) {
         }
       }
       const activeAll = await getActiveClaims(ws);
-      // NEAR-narrowing must never hide an EXPLORATION claim: an arriving agent
-      // has no footprint yet (§3), so every path predicate is vacuously false
-      // for it — narrowing on paths alone would silently drop exactly the
-      // participant you most need to know arrived.
+
+
+
+
       const nearPaths: string[] = Array.isArray(near) ? near : [];
       const active = nearPaths.length
         ? activeAll.filter(
@@ -6587,6 +6631,7 @@ function registerTools(server: McpServer) {
           )
         : activeAll;
       const board = await getBoardInfo(ws);
+      const inFlight = await readParticipantInFlightSnapshots(ws);
       const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       const contractBoard = active
         .filter((c) => (c.produces?.length ?? 0) > 0 || (c.consumes?.length ?? 0) > 0)
@@ -6604,12 +6649,20 @@ function registerTools(server: McpServer) {
         min_retained_seq: board.min_retained_seq,
         ...(events ? { events } : {}),
         ...(contracts ? { contract_board: contractBoard } : {}),
-        // Never silent: if remote was expected but we fell back, degradeNote
-        // carries the runtime cause (unreachable/401); otherwise settings.localReason
-        // explains why local is the resolved tier (not configured / disabled /
-        // config not found from the server cwd). Only truly-local, correctly-
-        // configured runs have no note.
+
+
+
+
+
         note: degradeNote || settings.localReason,
+        in_flight: inFlight.map((snapshot) => ({
+          agent_id: snapshot.agent_id,
+          base_commit: snapshot.base_commit,
+          branch: snapshot.branch,
+          updated_at: snapshot.updated_at,
+          attribution_source: snapshot.attribution_source,
+          changes: snapshot.changes ?? [],
+        })),
         count: active.length,
         active: active.map((c) => ({
           agent_id: c.agent_id,
@@ -6618,12 +6671,13 @@ function registerTools(server: McpServer) {
           intent: c.intent,
           paths: c.scope.paths,
           symbols: c.scope.symbols,
-          // DERIVED for display (§3) — never self-reported, so never stale.
+          concept: c.scope.concept,
+
           phase: derivePhaseFromClaim(c),
           ...(c.produces?.length ? { produces: c.produces } : {}),
           ...(c.consumes?.length ? { consumes: c.consumes } : {}),
-          // A path-less claim renders DISTINCTLY rather than looking like an
-          // empty/broken claim: somebody is here, they just have not localized.
+
+
           ...(isExplorationClaim(c)
             ? { exploration_claim: true, note: 'no footprint declared yet — arriving/exploring, not idle' }
             : {}),
@@ -6671,7 +6725,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Behaviors & Lifecycle --
+
 
   server.registerTool(
     'get_behaviors',
@@ -6715,7 +6769,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Testing --
+
 
   server.registerTool(
     'find_tests',
@@ -6750,13 +6804,13 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, gap_type, severity, limit, offset }: any) => withErrorHandling(async () => {
-      // test_gaps/test_coverage/test_summary all classify to the 'tests' section.
+
       const cas = await getAnalysis(path, { sections: ['identity', 'tests'] });
       return json(query.getTestSummary(cas, { gapType: gap_type, severity, limit, offset }));
     })
   );
 
-  // -- Data & Schema --
+
 
   server.registerTool(
     'get_database_schema',
@@ -6783,13 +6837,13 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, format, entity }: any) => withErrorHandling(async () => {
-      // buildErd reads only data_entities and database_schema, both 'supplemental'.
+
       const cas = await getAnalysis(path, { sections: ['identity', 'supplemental'] });
       return json(query.getErd(cas, { format, entityName: entity }));
     })
   );
 
-  // -- Code Health --
+
 
   server.registerTool(
     'get_implementation_health',
@@ -6799,7 +6853,7 @@ function registerTools(server: McpServer) {
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      // implementation_health classifies to 'quality'.
+
       const cas = await getAnalysis(path, { sections: ['identity', 'quality'] });
       return json(query.getImplementationHealth(cas));
     })
@@ -6844,7 +6898,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Dependencies & Libraries --
+
 
   server.registerTool(
     'get_dependencies',
@@ -6896,7 +6950,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Change History & Incremental Analysis --
+
 
   server.registerTool(
     'get_changes_since',
@@ -7076,7 +7130,7 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Watch Mode (Real-Time Analysis) --
+
 
   server.registerTool(
     'start_watch',
@@ -7494,7 +7548,7 @@ function registerResources(server: McpServer) {
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
       if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
       const cas = await getAnalysis(entry.path);
-      return { contents: [{ uri: uri.href, text: JSON.stringify({ database_schema: query.getDatabaseSchema(cas), data_entities: query.getDataEntities(cas) }) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ database_schema: query.getDatabaseSchema(cas), entities: query.getDataEntities(cas) }) }] };
     }
   );
 

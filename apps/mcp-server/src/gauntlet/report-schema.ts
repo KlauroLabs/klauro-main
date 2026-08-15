@@ -1,58 +1,58 @@
-/**
- * Unified Gauntlet — report schema + scenario/arm/metric catalogs.
- *
- * This is the spine the whole gauntlet hangs off. Every scenario, every arm,
- * every metric, and the win-validator all speak this one contract, and the UI
- * renders nothing but this.
- *
- * The shape is a matrix:
- *
- *     SCENARIOS  (what an agent is asked to do, on real repos / workspaces)
- *        x
- *     ARMS       (how the agent retrieves context: no-tools, Klauro, or another indexer)
- *        x
- *     METRICS    (measured per arm: time, tokens, quality)
- *
- * The point of the whole exercise is the win-validator (win-validator.ts): for
- * every scenario, Klauro must win on quality AND on at least one of speed/tokens
- * against every other arm. Any scenario where it doesn't is a Klauro bug, surfaced
- * loudly — the same posture as the dogfood + agent-feedback loops.
- */
 
-// ---------------------------------------------------------------------------
-// Arms — how the agent gets its context.
-// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export type ArmKind = 'no-tools' | 'klauro' | 'other-indexer';
 
 export interface ArmSpec {
-  /** Stable id used as a key everywhere (report, UI, validator). */
+
   id: string;
-  /** Human label for the UI. */
+
   label: string;
   kind: ArmKind;
-  /**
-   * Short description of the retrieval method this arm models — what the agent
-   * is allowed to use to find and understand code.
-   */
+
+
+
+
   method: string;
-  /**
-   * The competing tool/approach this arm represents, for "other-indexer" arms
-   * (ctags, embeddings/RAG, LSP, Cursor-style index, …). Undefined for the two
-   * canonical arms.
-   */
+
+
+
+
+
   competitor?: string;
-  /** The arm we are proving Klauro beats. Exactly one arm has kind 'klauro'. */
+
   isKlauro: boolean;
 }
 
-/**
- * The arm catalog. `no-tools` is the floor (grep/Read only). `klauro` is us.
- * The rest are the "other indexing tools/methods" the user requires us to also
- * beat. They are real, distinct retrieval strategies — not all are wired to a
- * live backend yet (see runner), but the matrix, validator, and UI treat them
- * uniformly so adding a live backend is a drop-in.
- */
+
+
+
+
+
+
+
 export const ARMS: ArmSpec[] = [
   {
     id: 'no-tools',
@@ -96,9 +96,9 @@ export const ARMS: ArmSpec[] = [
 
 export const KLAURO_ARM_ID = 'klauro';
 
-// ---------------------------------------------------------------------------
-// Scenarios — what the agent is asked to do.
-// ---------------------------------------------------------------------------
+
+
+
 
 export type ScenarioGroup =
   | 'single-repo'
@@ -108,43 +108,43 @@ export type ScenarioGroup =
   | 'analysis';
 
 export type ScenarioExecution =
-  /** Runs real agents per arm and measures actual time/tokens/quality. */
+
   | 'live'
-  /** Derives metrics from an existing benchmark report (replayed, honest, fast). */
+
   | 'projected'
-  /** Measured directly from the analysis engine (no agent needed), e.g. readiness. */
+
   | 'engine'
-  /** Measured by driving the INSTALLED CLI against the hosted product (the VPS),
-   *  i.e. the real customer path rather than the in-process engine. */
+
+
   | 'product';
 
 export interface ScenarioSpec {
   id: string;
   label: string;
   group: ScenarioGroup;
-  /** One-line description of the agent task this scenario poses. */
+
   task: string;
-  /**
-   * Why Klauro should win this one — the mechanism, so a loss points at the
-   * specific capability to fix.
-   */
+
+
+
+
   klauroEdge: string;
-  /** Which arms are meaningful for this scenario (defaults to all). */
+
   arms?: string[];
-  /** How this scenario produces its numbers. */
+
   execution: ScenarioExecution;
-  /**
-   * For projected/live scenarios, the benchmark engine that backs it (npm
-   * script or module) — recorded in the report for provenance.
-   */
+
+
+
+
   backedBy?: string;
 }
 
-/**
- * The scenario catalog. Every item the user enumerated is here, plus the
- * objective analysis-readiness gate. Cross-repo + workspace scenarios are the
- * differentiated ground (the workspace-level CAS) where Klauro's lead should be largest.
- */
+
+
+
+
+
 export const SCENARIOS: ScenarioSpec[] = [
   {
     id: 'cold-onboarding',
@@ -291,101 +291,101 @@ export const SCENARIOS: ScenarioSpec[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Metrics — measured per arm.
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface ArmMetrics {
-  /** Wall-clock to complete the task, ms. Lower is better. */
+
   time_ms?: number;
-  /** Total provider tokens consumed. Lower is better. */
+
   tokens?: number;
-  /** Which token figure tokens came from, for honesty in the UI. */
+
   token_source?: 'provider-total' | 'provider-direct' | 'estimated-work';
-  /** LLM-judged quality of the result, 0..100. Higher is better. */
+
   quality?: number;
-  /** Did the agent's change pass the repo's tests / validation? */
+
   validation_passed?: boolean;
-  /** Did the agent's command exit cleanly? */
+
   command_passed?: boolean;
-  /** Task completion score 0..100 (separate from quality of the result). */
+
   completion?: number;
-  /** Files the agent touched (precision signal). */
+
   files_changed?: number;
-  /** Files the agent had to read to get there (effort signal). */
+
   files_read?: number;
 }
 
 export interface ArmResult {
   arm_id: string;
-  /** live (real agent run), projected (replayed from a benchmark), engine (measured). */
+
   mode: ScenarioExecution;
-  /** True if this arm was actually executed vs. carried as not-applicable. */
+
   attempted: boolean;
   metrics: ArmMetrics;
-  /** Provenance: which report/run produced these numbers. */
+
   source?: string;
-  /** Free-form note (e.g. why an arm was skipped). */
+
   note?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Win verdict — the heart. Produced by win-validator.ts.
-// ---------------------------------------------------------------------------
+
+
+
 
 export type MetricKey = 'quality' | 'time' | 'tokens';
 
 export interface MetricComparison {
   metric: MetricKey;
   klauro_value?: number;
-  /** Best (most favorable) value among non-Klauro arms. */
+
   best_other_value?: number;
   best_other_arm_id?: string;
-  /** Did Klauro win this metric against every other arm? */
+
   klauro_wins: boolean;
-  /**
-   * Quality only: Klauro did not win outright but matched the best competitor at
-   * the achievable ceiling (e.g. both F1 = 1.0 against a compiler-accurate tool).
-   * A ceiling tie is an acceptable quality outcome — you cannot out-correct ground
-   * truth — provided Klauro then wins on efficiency. Never set below the ceiling.
-   */
+
+
+
+
+
+
   tied_at_ceiling?: boolean;
-  /** Relative advantage, signed fraction (e.g. +0.42 = 42% better). */
+
   advantage?: number;
 }
 
 export interface WinVerdict {
-  /**
-   * The contract: Klauro wins quality against EVERY other arm AND beats every
-   * other arm on at least one efficiency metric (time or tokens).
-   */
+
+
+
+
   klauro_wins: boolean;
-  /** quality won outright. */
+
   quality_won: boolean;
-  /**
-   * Quality matched the best competitor at the ceiling (both perfect) rather than
-   * winning outright. Counts as an acceptable quality result when paired with an
-   * efficiency win — Klauro never *loses* quality, and the decisive edge is then
-   * tokens/speed (plus the Camp-C axes competitors cannot answer at all).
-   */
+
+
+
+
+
+
   quality_tied_at_ceiling?: boolean;
-  /** at least one of time/tokens won. */
+
   efficiency_won: boolean;
   comparisons: MetricComparison[];
-  /** Human-readable reasons (pass) or violations (fail). */
+
   reasons: string[];
-  /** Set when klauro_wins is false — this is a bug to fix, with a pointer. */
+
   violation?: {
     summary: string;
     losing_metrics: MetricKey[];
-    /** The scenario's klauroEdge — the capability that failed to deliver. */
+
     suspected_capability: string;
   };
 }
 
-// ---------------------------------------------------------------------------
-// Scenario + top-level report.
-// ---------------------------------------------------------------------------
+
+
+
 
 export type GauntletStatus = 'pending' | 'running' | 'done' | 'error';
 
@@ -395,7 +395,7 @@ export interface ScenarioResult {
   group: ScenarioGroup;
   status: GauntletStatus;
   execution: ScenarioExecution;
-  /** Repo/workspace this scenario ran against (when applicable). */
+
   target?: string;
   arms: ArmResult[];
   verdict?: WinVerdict;
@@ -413,13 +413,13 @@ export interface GauntletProgress {
 }
 
 export interface GauntletSummary {
-  /** Overall pass: every completed scenario's verdict.klauro_wins is true. */
+
   klauro_wins_all: boolean;
   scenarios_won: number;
   scenarios_lost: number;
-  /** Scenarios where Klauro lost — the work list. */
+
   losses: Array<{ scenario_id: string; summary: string; losing_metrics: MetricKey[] }>;
-  /** Averaged advantages across won scenarios, for the headline. */
+
   avg_quality_advantage?: number;
   avg_time_advantage?: number;
   avg_token_advantage?: number;
@@ -429,7 +429,7 @@ export interface GauntletReport {
   schema_version: 1;
   run_id: string;
   generated_at: string;
-  /** live = real agent runs; projected = replayed; mixed = both. */
+
   mode: 'live' | 'projected' | 'mixed';
   status: GauntletStatus;
   progress: GauntletProgress;

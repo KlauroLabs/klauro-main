@@ -250,9 +250,6 @@ async function sourceFileStats(projectPath: string): Promise<SourceFileStat[]> {
   return stats;
 }
 
-async function sourceFileCount(projectPath: string): Promise<number> {
-  return (await sourceFileStats(projectPath)).length;
-}
 
 function tasksForExpectation(expectation: AnalysisTruthExpectation): BenchmarkTask[] {
   const targets = [
@@ -659,7 +656,7 @@ function authTaskTarget(cas: CASOutput): string | undefined {
 }
 
 function dataTaskTarget(cas: CASOutput): string | undefined {
-  const entity = (cas.data_entities || [])[0] || (cas.database_schema?.entities || [])[0];
+  const entity = (cas.entities || [])[0] || (cas.database_schema?.entities || [])[0];
   if (entity?.name) return entity.name;
   const exitPoint = (cas.exit_points || []).find(candidate => candidate.type === 'database');
   return exitPoint?.target?.resource || exitPoint?.name;
@@ -716,7 +713,10 @@ async function analyzeTarget(target: BenchmarkTarget, options: { requestedTask?:
     : options.suite
       ? taskSuiteForCas(cas, target.expectation, options.maxTasksPerRepo || 8)
       : tasksForExpectation(target.expectation);
-  const taskScores = await Promise.all(tasks.map(task => scoreTask(cas, target.path, task, sourceFiles, analysisDurationMs, tasks.length)));
+  const taskScores: TaskScore[] = [];
+  for (const task of tasks) {
+    taskScores.push(await scoreTask(cas, target.path, task, sourceFiles, analysisDurationMs, tasks.length));
+  }
   const score = Math.round(average(taskScores.map(task => task.score)));
   const averageReduction = Math.round(average(taskScores.map(task => task.baseline.file_reduction_percentage)));
   const withSuccessRate = average(taskScores.map(task => task.solution.with_klauro.success ? 100 : 0));

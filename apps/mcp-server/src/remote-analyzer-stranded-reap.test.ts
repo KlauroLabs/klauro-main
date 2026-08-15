@@ -322,7 +322,6 @@ test('the startup reap sweep resolves an abandoned record left by a previous pro
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const port = address.port;
 
   try {
     // The startup sweep is fire-and-forget (must never delay server

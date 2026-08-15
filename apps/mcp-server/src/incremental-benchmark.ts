@@ -4,21 +4,27 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { glob } from 'glob';
 import pLimit from 'p-limit';
-import { type IncrementalAnalysisResult } from './analyzer';
-import { analyzeForBench } from './gauntlet/product-analysis';
+import { analyzeProject, analyzeProjectIncremental, createOrchestrator, type IncrementalAnalysisResult } from './analyzer';
 import { getAgentContext } from './agent-adoption';
 import { discoverTargets, type RepoTarget } from './gauntlet';
-import { getFileCacheSize, loadIncrementalState, saveAgenticBenchmarkReport } from './storage';
+import { getFileCacheSize, loadIncrementalState, saveAgenticBenchmarkReport, waitForPendingSegmentedWrites } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
-import { analyzeWithInstalledKlauro } from './installed-klauro';
-
+import { analyzeWithInstalledKlauro, initializeInstalledKlauroProject } from './installed-klauro';
+import { appendSemanticSourceProbe, supportsSemanticSourceProbe } from './semantic-source-probe';
+import { graphEquivalenceRate, type CasGraphEquivalence } from './incremental-graph-equivalence';
+import { provesIncrementalLocality } from './incremental-locality-proof';
+import {
+  captureEditedIncrementalRun,
+  captureIncrementalRun,
+  captureInitialIncrementalRun,
+  verifyFullGraph,
+  type IncrementalRunEvidence,
+} from './incremental-benchmark-execution';
 type GateStatus = 'pass' | 'warn' | 'fail';
-
 interface IncrementalTargetInput {
   name?: string;
   path: string;
 }
-
 interface IncrementalBenchmarkOptions {
   repos: IncrementalTargetInput[];
   includeRealRepos?: boolean;
@@ -31,9 +37,6 @@ interface IncrementalBenchmarkOptions {
   quiet?: boolean;
   concurrency?: number;
   analysisPath?: 'in-process-harness' | 'klauro-product';
-  // Hosted server for the klauro-product in-flight path. When set, the installed
-  // CLI runs in remote mode against this URL (production by default); when unset
-  // it runs offline local. Mirrors the cold/warm path in machine-gauntlet.
   analyzerServerUrl?: string;
   progress?: (event: { target: string; path: string; stage: 'start' | 'complete' | 'failed'; duration_ms?: number; error?: string }) => void;
 }
@@ -44,7 +47,7 @@ interface IncrementalTargetReport {
   workspace: string;
   edited_file?: string;
   edit: {
-    kind: 'syntactic-probe' | 'whitespace-fallback';
+    kind: 'semantic-probe' | 'not-applied';
     detail: string;
   };
   status: GateStatus;
@@ -83,6 +86,17 @@ interface IncrementalTargetReport {
     was_full_rebuild: boolean;
     full_rebuild_reason?: string;
   };
+  locality: {
+    strategy: string;
+    direct_changed_files: number;
+    graph_affected_files: number;
+    analyzed_files: number;
+    tracked_files: number;
+    reused_files: number;
+    reuse_ratio: number;
+    affected_package_roots: string[]; affected_deployable_roots: string[];
+    refreshed_project_analyzers: string[];
+  };
   output_summary: {
     nodes: number;
     edges: number;
@@ -107,14 +121,7 @@ interface IncrementalTargetReport {
     selected_node?: unknown;
     agent_context_ready?: boolean;
   };
-  full_verify_parity?: {
-    node_delta: number;
-    edge_delta: number;
-    entry_point_delta: number;
-    exit_point_delta: number;
-    absolute_delta: number;
-    count_similarity: number;
-  };
+  full_verify_parity?: CasGraphEquivalence;
 }
 
 function parseArgs(argv: string[]) {
@@ -229,6 +236,7 @@ export async function runIncrementalValueBenchmark(options: IncrementalBenchmark
   const reports = options.quiet ? await withQuietLogs(true, runTargets) : await runTargets();
 
   const generatedAt = new Date().toISOString();
+  const graphVerifiedReports = reports.filter(target => target.full_verify_parity);
   const report = {
     generated_at: generatedAt,
     generatedAt,
@@ -262,6 +270,8 @@ export async function runIncrementalValueBenchmark(options: IncrementalBenchmark
           .map(target => target.full_verify_parity?.count_similarity)
           .filter((value): value is number => typeof value === 'number')
       ),
+      full_verify_target_count: graphVerifiedReports.length,
+      full_verify_graph_equivalence_rate: graphEquivalenceRate(graphVerifiedReports),
     },
     targets: reports,
   };
@@ -284,7 +294,7 @@ function failedIncrementalTargetReport(
     original_path: path.resolve(target.path),
     workspace: '',
     edit: {
-      kind: 'whitespace-fallback',
+      kind: 'not-applied',
       detail: 'No edit applied because incremental proof failed before edit selection.',
     },
     status: 'fail',
@@ -319,6 +329,17 @@ function failedIncrementalTargetReport(
       risk_level: 'unknown',
       was_full_rebuild: true,
       full_rebuild_reason: detail,
+    },
+    locality: {
+      strategy: 'full-rebuild',
+      direct_changed_files: 0,
+      graph_affected_files: 0,
+      analyzed_files: 0,
+      tracked_files: 0,
+      reused_files: 0,
+      reuse_ratio: 0,
+      affected_package_roots: [], affected_deployable_roots: [],
+      refreshed_project_analyzers: []
     },
     output_summary: {
       nodes: 0,
@@ -426,7 +447,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
   await fs.ensureDir(trialRoot);
   try {
     const copyStartedAt = Date.now();
-    await copyRepo(target.path, workspace);
+    await copyIncrementalBenchmarkRepo(target.path, workspace);
     const copyRepoMs = Math.max(1, Date.now() - copyStartedAt);
     let gitBaselineMs = 0;
     if (options.useGitBaseline) {
@@ -441,48 +462,43 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       const analysisPath = options.analysisPath || 'in-process-harness';
       const analysisFocus = 'agent-fast';
       const installedEnv = { KLAURO_STORAGE_PATH: storagePath };
-      // klauro-product = the installed CLI, which always runs the hosted product
-      // (production by default; serverUrl can target a self-hosted analyzer-server).
+      if (analysisPath === 'klauro-product') {
+        await initializeInstalledKlauroProject(workspace, { env: installedEnv, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 });
+      }
       const analyzeIncremental = () => analysisPath === 'klauro-product'
         ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 })
-        : analyzeForBench(workspace).then(output => ({ output, state: undefined, changeReport: undefined, wasFullRebuild: true, fullRebuildReason: 'bench-product' }) as any);
+        : analyzeProjectIncremental(workspace);
       const analyzeFull = () => analysisPath === 'klauro-product'
         ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, forceFull: true, timeoutMs: 8 * 60 * 1000 }).then(result => result.output)
-        : analyzeForBench(workspace);
+        : analyzeProject(workspace, undefined, { reuseStoredContext: false, persist: false });
 
-      const initial = await timed(() => analyzeIncremental());
-      const noChange = await timed(() => analyzeIncremental());
-      const editSelectionStartedAt = Date.now();
-      const editFile = await chooseEditFile(initial.value.output, workspace);
-      const editSelectionMs = Math.max(1, Date.now() - editSelectionStartedAt);
-      if (!editFile) throw new Error(`No editable source file found in copied repo: ${workspace}`);
+      const initial = await captureInitialIncrementalRun(analyzeIncremental, output => chooseEditFile(output, workspace), workspace);
+      const noChange = await captureIncrementalRun(analyzeIncremental);
+      const editFile = initial.editFile;
       const editLoopStartedAt = Date.now();
       const editApplyStartedAt = Date.now();
       const edit = await applySafeSourceEdit(path.join(workspace, editFile));
       const editApplyMs = Math.max(1, Date.now() - editApplyStartedAt);
-      const edited = await timed(() => analyzeIncremental());
-
-      const contextStartedAt = Date.now();
-      const context = await getAgentContext(edited.value.output, workspace, {
-        task_type: 'modify',
-        target: targetFromEditedFile(edited.value.output, editFile),
-        instructions: `Use the incremental change summary to inspect ${editFile} and preserve connected behavior.`,
-      });
-      const contextGenerationMs = Math.max(1, Date.now() - contextStartedAt);
-      const tokenProofStartedAt = Date.now();
-      const tokenProof = await estimatePostEditTokenProof(workspace, context, editFile);
-      const tokenProofMs = Math.max(1, Date.now() - tokenProofStartedAt);
+      const edited = await captureEditedIncrementalRun(
+        analyzeIncremental,
+        output => getAgentContext(output, workspace, {
+          task_type: 'modify',
+          target: targetFromEditedFile(output, editFile),
+          instructions: `Use the incremental change summary to inspect ${editFile} and preserve connected behavior.`,
+        }),
+        context => estimatePostEditTokenProof(workspace, context, editFile),
+        Boolean(options.verifyFull),
+      );
       const editLoopWallMs = Math.max(1, Date.now() - editLoopStartedAt);
-
-      const verify = options.verifyFull ? await timed(() => analyzeFull()) : undefined;
+      const verify = edited.fingerprint ? await verifyFullGraph(analyzeFull, edited.fingerprint) : undefined;
       const stateLoadStartedAt = Date.now();
       const state = await loadIncrementalState(workspace);
       const stateLoadMs = Math.max(1, Date.now() - stateLoadStartedAt);
       const cacheSizeStartedAt = Date.now();
       const cacheSize = await getFileCacheSize(workspace);
       const cacheSizeMs = Math.max(1, Date.now() - cacheSizeStartedAt);
-      const fullParity = verify ? compareCasCounts(edited.value.output, verify.value) : undefined;
-      const gates = buildGates(initial, noChange, edited, context, edit, tokenProof, fullParity);
+      const fullParity = verify?.parity;
+      const gates = buildGates(initial.evidence, noChange, edited.evidence, edited.context, edit, edited.tokenProof, fullParity);
       const score = Math.round(average(gates.map(gate => gate.score)));
       const status = aggregateStatus(gates.map(gate => gate.status));
 
@@ -497,44 +513,45 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
         gates,
         timings: {
           total_wall_ms: Math.max(1, Date.now() - targetStartedAt),
-          initial_full_ms: initial.durationMs,
+          initial_full_ms: initial.evidence.durationMs,
           no_change_incremental_ms: noChange.durationMs,
-          edit_incremental_ms: edited.durationMs,
+          edit_incremental_ms: edited.evidence.durationMs,
           edit_loop_wall_ms: editLoopWallMs,
           verify_full_after_edit_ms: verify?.durationMs,
           copy_repo_ms: copyRepoMs,
           git_baseline_ms: gitBaselineMs,
-          edit_selection_ms: editSelectionMs,
+          edit_selection_ms: initial.editSelectionMs,
           edit_apply_ms: editApplyMs,
-          context_generation_ms: contextGenerationMs,
-          token_proof_ms: tokenProofMs,
+          context_generation_ms: edited.contextGenerationMs,
+          token_proof_ms: edited.tokenProofMs,
           state_load_ms: stateLoadMs,
           cache_size_ms: cacheSizeMs,
         },
         speedups: {
-          no_change_vs_full: ratio(initial.durationMs, noChange.durationMs),
-          edit_incremental_vs_full: ratio(initial.durationMs, edited.durationMs),
-          edit_incremental_vs_verify_full: verify ? ratio(verify.durationMs, edited.durationMs) : undefined,
+          no_change_vs_full: ratio(initial.evidence.durationMs, noChange.durationMs),
+          edit_incremental_vs_full: ratio(initial.evidence.durationMs, edited.evidence.durationMs),
+          edit_incremental_vs_verify_full: verify ? ratio(verify.durationMs, edited.evidence.durationMs) : undefined,
         },
-        change_summary: summarizeChange(edited.value),
+        change_summary: summarizeChange(edited.evidence),
+        locality: summarizeLocality(edited.evidence),
         output_summary: {
-          nodes: edited.value.output.nodes.length,
-          edges: edited.value.output.edges.length,
-          entry_points: edited.value.output.entry_points?.length || 0,
-          exit_points: edited.value.output.exit_points?.length || 0,
-          analysis_errors: edited.value.output.analysis_errors?.length || 0,
+          nodes: edited.evidence.output.nodes,
+          edges: edited.evidence.output.edges,
+          entry_points: edited.evidence.output.entryPoints,
+          exit_points: edited.evidence.output.exitPoints,
+          analysis_errors: edited.evidence.output.analysisErrors,
           tracked_files: Object.keys(state?.files || {}).length,
           file_cache_entries: cacheSize.files,
           file_cache_bytes: cacheSize.bytes,
         },
         agent_value_after_edit: {
-          context_generation_ms: contextGenerationMs,
-          file_read_plan_count: context.file_read_plan.length,
-          next_mcp_calls: context.next_mcp_calls.length,
-          estimated_context_tokens: estimateTokens(JSON.stringify(context).length),
-          ...tokenProof,
-          selected_node: context.selected_node,
-          agent_context_ready: context.agent_context_ready,
+          context_generation_ms: edited.contextGenerationMs,
+          file_read_plan_count: edited.context.file_read_plan.length,
+          next_mcp_calls: edited.context.next_mcp_calls.length,
+          estimated_context_tokens: estimateTokens(JSON.stringify(edited.context).length),
+          ...edited.tokenProof,
+          selected_node: edited.context.selected_node,
+          agent_context_ready: edited.context.agent_context_ready,
         },
         full_verify_parity: fullParity,
       };
@@ -546,6 +563,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       }
     }
   } finally {
+    await waitForPendingSegmentedWrites();
     if (options.keepWorkspaces === false) await fs.remove(trialRoot).catch(() => undefined);
   }
 }
@@ -559,37 +577,51 @@ function nonAnalysisOverheadMs(timings: IncrementalTargetReport['timings']): num
 }
 
 function buildGates(
-  initial: Timed<IncrementalAnalysisResult>,
-  noChange: Timed<IncrementalAnalysisResult>,
-  edited: Timed<IncrementalAnalysisResult>,
+  initial: IncrementalRunEvidence,
+  noChange: IncrementalRunEvidence,
+  edited: IncrementalRunEvidence,
   context: Awaited<ReturnType<typeof getAgentContext>>,
   edit: IncrementalTargetReport['edit'],
   tokenProof: Awaited<ReturnType<typeof estimatePostEditTokenProof>>,
   parity?: IncrementalTargetReport['full_verify_parity']
 ) {
-  const changedFiles = edited.value.changeReport.summary.filesAdded +
-    edited.value.changeReport.summary.filesModified +
-    edited.value.changeReport.summary.filesDeleted;
-  const casDelta = summarizeCasDelta(edited.value);
+  const changedFiles = edited.changeReport.summary.filesAdded +
+    edited.changeReport.summary.filesModified +
+    edited.changeReport.summary.filesDeleted;
+  const casDelta = summarizeCasDelta(edited);
   const editDetected = changedFiles > 0 || casDelta > 0;
-  const editWasIncremental = !edited.value.wasFullRebuild;
+  const editWasIncremental = !edited.wasFullRebuild;
+  const noChangeLocality = noChange.changeReport.locality;
+  const editLocality = edited.changeReport.locality;
   const editPerformanceAcceptable = editWasIncremental && (
     ratio(initial.durationMs, edited.durationMs) >= 1.2 ||
     edited.durationMs <= Math.max(noChange.durationMs * 8, 10000) ||
     (initial.durationMs < 1000 && edited.durationMs <= initial.durationMs + 750)
   );
   const gates = [
-    gate('initial-analysis-complete', initial.value.output.nodes.length > 0, `${initial.value.output.nodes.length} nodes`),
-    gate('initial-state-built', initial.value.wasFullRebuild, `wasFullRebuild=${initial.value.wasFullRebuild}`),
-    gate('no-change-incremental', !noChange.value.wasFullRebuild, [
-      `wasFullRebuild=${noChange.value.wasFullRebuild}`,
-      noChange.value.fullRebuildReason ? `reason=${noChange.value.fullRebuildReason}` : '',
+    gate('initial-analysis-complete', initial.output.nodes > 0, `${initial.output.nodes} nodes`),
+    gate('initial-state-built', initial.wasFullRebuild, `wasFullRebuild=${initial.wasFullRebuild}`),
+    gate('no-change-incremental', !noChange.wasFullRebuild, [
+      `wasFullRebuild=${noChange.wasFullRebuild}`,
+      noChange.fullRebuildReason ? `reason=${noChange.fullRebuildReason}` : '',
     ].filter(Boolean).join('; ')),
-    gate('no-change-empty-summary', summarizeChangedFiles(noChange.value) === 0, `${summarizeChangedFiles(noChange.value)} files changed`),
-    gate('syntactic-source-edit-applied', edit.kind === 'syntactic-probe', `${edit.kind}: ${edit.detail}`),
+    gate('no-change-empty-summary', summarizeChangedFiles(noChange) === 0, `${summarizeChangedFiles(noChange)} files changed`),
+    gate(
+      'no-change-reused-all-files',
+      noChangeLocality?.strategy === 'no-change' && noChangeLocality.reuseRatio === 1,
+      noChangeLocality ? `${noChangeLocality.reusedFiles}/${noChangeLocality.trackedFiles} files reused` : 'locality evidence missing'
+    ),
+    gate('semantic-source-edit-applied', edit.kind === 'semantic-probe', `${edit.kind}: ${edit.detail}`),
     gate('edit-detected', editDetected, `${changedFiles} files changed, ${casDelta} CAS nodes changed`),
     softGate('edit-produced-cas-delta', casDelta > 0 || changedFiles > 0, `${casDelta} CAS nodes changed, ${changedFiles} files changed`),
-    gate('edit-stayed-incremental', !edited.value.wasFullRebuild, `wasFullRebuild=${edited.value.wasFullRebuild}`),
+    gate('edit-stayed-incremental', !edited.wasFullRebuild, `wasFullRebuild=${edited.wasFullRebuild}`),
+    gate(
+      'edit-locality-proven',
+      provesIncrementalLocality(editLocality),
+      editLocality
+        ? `${editLocality.strategy}; ${editLocality.reusedFiles}/${editLocality.trackedFiles} files reused; ${editLocality.analyzedFiles} analyzed`
+        : 'locality evidence missing'
+    ),
     softGate('edit-performance-acceptable', editPerformanceAcceptable, `${edited.durationMs}ms vs ${initial.durationMs}ms`),
     gate('agent-context-after-edit', context.file_read_plan.length > 0 && context.next_mcp_calls.length > 0, `${context.file_read_plan.length} files, ${context.next_mcp_calls.length} calls`),
     gate('agent-token-reduction-after-edit', tokenProof.estimated_search_token_reduction_percentage >= 25, `${tokenProof.estimated_search_token_reduction_percentage}% vs search, ${tokenProof.estimated_total_context_tokens}/${tokenProof.estimated_search_baseline_tokens} tokens`),
@@ -600,7 +632,7 @@ function buildGates(
   return gates;
 }
 
-function summarizeChange(result: IncrementalAnalysisResult): IncrementalTargetReport['change_summary'] {
+function summarizeChange(result: IncrementalRunEvidence): IncrementalTargetReport['change_summary'] {
   const summary = result.changeReport.summary;
   return {
     files_changed: summary.filesAdded + summary.filesModified + summary.filesDeleted,
@@ -616,7 +648,22 @@ function summarizeChange(result: IncrementalAnalysisResult): IncrementalTargetRe
   };
 }
 
-function summarizeChangedFiles(result: IncrementalAnalysisResult): number {
+function summarizeLocality(result: IncrementalRunEvidence): IncrementalTargetReport['locality'] {
+  const locality = result.changeReport.locality;
+  return {
+    strategy: locality?.strategy || (result.wasFullRebuild ? 'full-rebuild' : 'unknown'),
+    direct_changed_files: locality?.directChangedFiles || 0,
+    graph_affected_files: locality?.graphAffectedFiles || 0,
+    analyzed_files: locality?.analyzedFiles || 0,
+    tracked_files: locality?.trackedFiles || 0,
+    reused_files: locality?.reusedFiles || 0,
+    reuse_ratio: locality?.reuseRatio || 0,
+    affected_package_roots: locality?.affectedPackageRoots || [], affected_deployable_roots: locality?.affectedDeployableRoots || [],
+    refreshed_project_analyzers: locality?.refreshedProjectAnalyzers || []
+  };
+}
+
+function summarizeChangedFiles(result: Pick<IncrementalRunEvidence, 'changeReport'>): number {
   return result.changeReport.summary.filesAdded +
     result.changeReport.summary.filesModified +
     result.changeReport.summary.filesDeleted;
@@ -627,7 +674,7 @@ async function chooseEditFile(cas: IncrementalAnalysisResult['output'], workspac
     .map(entry => cas.nodes.find(node => node.id === entry.source_node)?.source?.file)
     .filter((file): file is string => Boolean(file))
     .map(file => path.isAbsolute(file) ? path.relative(workspace, file) : file);
-  const sourceFiles = await glob(['**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart,tf,tfvars}'], {
+  const sourceFiles = await glob(['**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,py,rb,php,java,cs,go,rs,dart,sh,bash,zsh,ksh,sol,c,h,cpp,cc,cxx,hpp,hh,hxx,swift,kt,kts,ex,exs,proto,tf,tfvars,sql,ddl}'], {
     cwd: workspace,
     ignore: [
       '**/node_modules/**',
@@ -668,14 +715,14 @@ async function chooseEditFile(cas: IncrementalAnalysisResult['output'], workspac
   const entryFileSet = new Set(entryFiles);
   const nodesByFile = buildNodesByFile(cas);
   const safeCandidates = [...sourceFiles, ...entryFiles]
-    .filter(file => file && !isTestFile(file) && !isUnsafeBenchmarkEditFile(file))
+    .filter(file => file && supportsSemanticSourceProbe(file) && !isTestFile(file) && !isUnsafeBenchmarkEditFile(file))
     .filter((file, index, values) => values.indexOf(file) === index)
     .map(file => ({ file, score: incrementalEditScore(cas, file, entryFileSet, nodesByFile), nodeCount: (nodesByFile.get(file) || []).length }))
     .filter(candidate => candidate.nodeCount > 0)
     .sort((left, right) => right.score - left.score)
     .map(candidate => candidate.file);
   const fallbackCandidates = [...sourceFiles, ...entryFiles]
-    .filter(file => file && !isTestFile(file) && !isGeneratedBenchmarkFile(file))
+    .filter(file => file && supportsSemanticSourceProbe(file) && !isTestFile(file) && !isGeneratedBenchmarkFile(file))
     .filter((file, index, values) => values.indexOf(file) === index)
     .map(file => ({ file, score: incrementalEditScore(cas, file, entryFileSet, nodesByFile), nodeCount: (nodesByFile.get(file) || []).length }))
     .filter(candidate => candidate.nodeCount > 0)
@@ -718,10 +765,11 @@ function incrementalEditScore(
   if (/utils?|helpers?|constants?|types?|lib|shared/i.test(file)) score += 20;
   const nodes = nodesByFile.get(file) || [];
   if (nodes.length === 0) return score - 10;
+  const incrementalAnalyzers = registeredIncrementalAnalyzers();
   const unsafeAnalyzers = nodes.flatMap(node => [
     ...(node.analyzers || []),
     ...(node.primaryAnalyzer ? [node.primaryAnalyzer] : []),
-  ]).filter(analyzer => analyzer && !INCREMENTAL_SAFE_ANALYZERS.has(analyzer));
+  ]).filter(analyzer => analyzer && !incrementalAnalyzers.has(analyzer));
   if (unsafeAnalyzers.length === 0) score += 45;
   else score -= Math.min(60, unsafeAnalyzers.length * 15);
   return score;
@@ -778,87 +826,38 @@ function isTestFile(file: string): boolean {
     /(_test|Test|Tests)\.(go|java|cs|py)$/i.test(file);
 }
 
-const INCREMENTAL_SAFE_ANALYZERS = new Set([
-  'typescript-javascript',
-  'python',
-  'rust',
-  'go',
-  'java',
-  'csharp',
-  'php',
-  'dart',
-  'terraform',
-]);
+let incrementalAnalyzerIds: ReadonlySet<string> | null = null;
+
+function registeredIncrementalAnalyzers(): ReadonlySet<string> {
+  if (incrementalAnalyzerIds) return incrementalAnalyzerIds;
+  incrementalAnalyzerIds = new Set(
+    createOrchestrator()
+      .listRegisteredAnalyzers()
+      .filter(analyzer => analyzer.incremental)
+      .map(analyzer => analyzer.id)
+  );
+  return incrementalAnalyzerIds;
+}
 
 async function applySafeSourceEdit(filePath: string): Promise<IncrementalTargetReport['edit']> {
   const content = await fs.readFile(filePath, 'utf-8');
-  const extension = path.extname(filePath).toLowerCase();
-  const probe = sourceProbeForExtension(extension);
+  const editedContent = appendSemanticSourceProbe(filePath, content, semanticProbeIndex(filePath));
   await new Promise(resolve => setTimeout(resolve, 5));
-  if (probe) {
-    await fs.writeFile(filePath, `${trimTrailingWhitespace(content)}\n\n${probe}\n`, 'utf-8');
-    return { kind: 'syntactic-probe', detail: `appended ${extension || 'source'} comment probe` };
+  if (!editedContent) throw new Error(`No semantic source probe is available for ${filePath}`);
+  await fs.writeFile(filePath, editedContent, 'utf-8');
+  return { kind: 'semantic-probe', detail: `appended valid ${path.extname(filePath).toLowerCase()} declaration` };
+}
+
+function semanticProbeIndex(filePath: string): number {
+  let hash = 2166136261;
+  for (const character of filePath.replace(/\\/g, '/')) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
   }
-  await fs.writeFile(filePath, `${content}\n`, 'utf-8');
-  return { kind: 'whitespace-fallback', detail: 'appended newline because no language probe is defined for this extension' };
+  return hash >>> 0;
 }
 
-function sourceProbeForExtension(extension: string): string | null {
-  switch (extension) {
-    case '.ts':
-    case '.tsx':
-    case '.js':
-    case '.jsx':
-    case '.mjs':
-    case '.cjs':
-      return '// analysis probe: cas-edit-loop';
-    case '.py':
-      return '# analysis probe: cas-edit-loop';
-    case '.rs':
-      return '// analysis probe: cas-edit-loop';
-    case '.go':
-      return '// analysis probe: cas-edit-loop';
-    case '.java':
-      return '// analysis probe: cas-edit-loop';
-    case '.cs':
-      return '// analysis probe: cas-edit-loop';
-    case '.php':
-      return '// analysis probe: cas-edit-loop';
-    case '.dart':
-      return '// analysis probe: cas-edit-loop';
-    case '.tf':
-    case '.tfvars':
-      return '# analysis probe: cas-edit-loop';
-    default:
-      return null;
-  }
-}
-
-function trimTrailingWhitespace(content: string): string {
-  return content.replace(/\s+$/u, '');
-}
-
-function compareCasCounts(incremental: IncrementalAnalysisResult['output'], full: IncrementalAnalysisResult['output']) {
-  const nodeDelta = Math.abs(incremental.nodes.length - full.nodes.length);
-  const edgeDelta = Math.abs(incremental.edges.length - full.edges.length);
-  const entryPointDelta = Math.abs((incremental.entry_points?.length || 0) - (full.entry_points?.length || 0));
-  const exitPointDelta = Math.abs((incremental.exit_points?.length || 0) - (full.exit_points?.length || 0));
-  const baseline = Math.max(
-    1,
-    full.nodes.length + full.edges.length + (full.entry_points?.length || 0) + (full.exit_points?.length || 0)
-  );
-  const delta = nodeDelta + edgeDelta + entryPointDelta + exitPointDelta;
-  return {
-    node_delta: nodeDelta,
-    edge_delta: edgeDelta,
-    entry_point_delta: entryPointDelta,
-    exit_point_delta: exitPointDelta,
-    absolute_delta: delta,
-    count_similarity: Number(Math.max(0, 1 - delta / baseline).toFixed(4)),
-  };
-}
-
-async function copyRepo(source: string, destination: string): Promise<void> {
+export async function copyIncrementalBenchmarkRepo(source: string, destination: string): Promise<void> {
   const method = process.env.KLAURO_INCREMENTAL_COPY_METHOD || 'fs';
   if (method === 'apfs' && await copyRepoWithApfsClone(source, destination)) return;
   if (method === 'rsync' && await copyRepoWithRsync(source, destination)) return;
@@ -1178,17 +1177,6 @@ function gitEnv(): NodeJS.ProcessEnv {
   };
 }
 
-interface Timed<T> {
-  value: T;
-  durationMs: number;
-}
-
-async function timed<T>(fn: () => Promise<T>): Promise<Timed<T>> {
-  const startedAt = Date.now();
-  const value = await fn();
-  return { value, durationMs: Math.max(1, Date.now() - startedAt) };
-}
-
 function gate(id: string, passed: boolean, detail: string) {
   return {
     id,
@@ -1207,32 +1195,27 @@ function softGate(id: string, passed: boolean, detail: string) {
   };
 }
 
-function summarizeCasDelta(result: IncrementalAnalysisResult): number {
+function summarizeCasDelta(result: Pick<IncrementalRunEvidence, 'changeReport'>): number {
   const summary = result.changeReport.summary;
   return summary.nodesAdded + summary.nodesModified + summary.nodesDeleted;
 }
 
 function parityGate(parity: NonNullable<IncrementalTargetReport['full_verify_parity']>) {
-  const detail = `${Math.round(parity.count_similarity * 100)}% count similarity, ${parity.absolute_delta} absolute count delta`;
-  if (parity.count_similarity >= 0.98 || parity.absolute_delta <= 8) {
-    return { id: 'incremental-full-count-parity', status: 'pass' as GateStatus, score: 100, detail };
-  }
-  if (parity.count_similarity >= 0.94 || parity.absolute_delta <= 20) {
-    return { id: 'incremental-full-count-parity', status: 'warn' as GateStatus, score: 80, detail };
-  }
-  return { id: 'incremental-full-count-parity', status: 'fail' as GateStatus, score: 0, detail };
+  const detail = parity.graph_equivalent
+    ? 'incremental and cold graph sections are identical'
+    : `${parity.graph_difference_count} graph differences: ${parity.graph_difference_sample.join(', ')}`;
+  return {
+    id: 'incremental-full-graph-equivalence',
+    status: parity.graph_equivalent ? 'pass' as GateStatus : 'fail' as GateStatus,
+    score: parity.graph_equivalent ? 100 : 0,
+    detail,
+  };
 }
 
 function aggregateStatus(statuses: GateStatus[]): GateStatus {
   if (statuses.includes('fail')) return 'fail';
   if (statuses.includes('warn')) return 'warn';
   return 'pass';
-}
-
-function statusFromScore(score: number): GateStatus {
-  if (score >= 90) return 'pass';
-  if (score >= 70) return 'warn';
-  return 'fail';
 }
 
 function average(values: number[]): number {
@@ -1311,7 +1294,7 @@ async function sourceFileStats(workspace: string): Promise<Array<{ file: string;
       const stat = await fs.stat(path.join(workspace, file));
       stats.push({ file, estimated_tokens: estimateTokens(stat.size) });
     } catch {
-      // Ignore files that disappear during copied-workspace cleanup or generated churn.
+
     }
   }
   return stats;
@@ -1436,6 +1419,7 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
     `Average token reduction vs search after edit: ${report.summary.average_search_token_reduction_after_edit}%`,
     `Average token reduction vs cold scan after edit: ${report.summary.average_cold_scan_token_reduction_after_edit}%`,
     `Average full-verify count similarity: ${Math.round(report.summary.average_full_verify_count_similarity * 100)}%`,
+    `Full-verify graph equivalence: ${Math.round(report.summary.full_verify_graph_equivalence_rate * 100)}% across ${report.summary.full_verify_target_count} targets`,
     '',
     '## Repository Summary',
     '',
@@ -1444,7 +1428,7 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
   ];
 
   for (const target of report.targets) {
-    lines.push(`| ${target.name} | ${target.status} | ${target.score} | ${target.edited_file || ''} | ${target.timings.total_wall_ms || ''} | ${target.timings.edit_loop_wall_ms || ''} | ${target.timings.initial_full_ms} | ${target.timings.edit_incremental_ms} | ${nonAnalysisOverheadMs(target.timings)} | ${target.speedups.edit_incremental_vs_full}x | ${target.change_summary.files_changed} | ${target.agent_value_after_edit.file_read_plan_count} | ${target.agent_value_after_edit.estimated_search_token_reduction_percentage}% | ${target.full_verify_parity ? `${Math.round(target.full_verify_parity.count_similarity * 100)}%` : 'not run'} |`);
+    lines.push(`| ${target.name} | ${target.status} | ${target.score} | ${target.edited_file || ''} | ${target.timings.total_wall_ms || ''} | ${target.timings.edit_loop_wall_ms || ''} | ${target.timings.initial_full_ms} | ${target.timings.edit_incremental_ms} | ${nonAnalysisOverheadMs(target.timings)} | ${target.speedups.edit_incremental_vs_full}x | ${target.change_summary.files_changed} | ${target.agent_value_after_edit.file_read_plan_count} | ${target.agent_value_after_edit.estimated_search_token_reduction_percentage}% | ${target.full_verify_parity ? target.full_verify_parity.graph_equivalent ? 'identical' : `${target.full_verify_parity.graph_difference_count} differences` : 'not run'} |`);
   }
 
   lines.push('', '## Target Details', '');

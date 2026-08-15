@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 import type { StreamingSourceSnapshotPlan, StreamingWorkingTreePlan } from './remote-source';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from './remote-analyzer-protocol';
+import type { AnalysisFocus } from './analysis-focus';
 
 export interface StreamingJsonRequest {
   readonly streamingJson: true;
@@ -22,7 +23,8 @@ export function createAnalyzeUploadRequest(input: {
   project_path: string;
   snapshot: StreamingSourceSnapshotPlan;
   async: boolean;
-  /** See RemoteAnalyzeRequest.force (remote-analyzer-protocol.ts). */
+  analysis_focus?: AnalysisFocus;
+
   force?: boolean;
 }): StreamingJsonRequest {
   return streamingRequest(() => analyzeJson(input));
@@ -93,6 +95,7 @@ async function* analyzeJson(input: Parameters<typeof createAnalyzeUploadRequest>
   }
   yield `],${field('manifest', input.snapshot.manifest)}}`;
   yield `,${field('async', input.async)}`;
+  if (input.analysis_focus) yield `,${field('analysis_focus', input.analysis_focus)}`;
   if (input.force) yield `,${field('force', true)}`;
   yield '}';
 }

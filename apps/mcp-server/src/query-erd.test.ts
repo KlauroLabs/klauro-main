@@ -196,7 +196,7 @@ test('buildErd renders relations an ORM emitted as EDGES, not property decorator
       type: 'references',
       metadata: { attributes: { relationType: 'ManyToOne', field: 'company' } },
     }],
-    data_entities: [
+    entities: [
       { id: 'de_booking', name: 'Booking', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
       { id: 'de_company', name: 'Company', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
     ],
@@ -229,7 +229,7 @@ test('buildErd renders typed-composition relations and never invents one from a 
     },
     nodes: [],
     edges: [],
-    data_entities: [
+    entities: [
       {
         id: 'de_pzc', name: 'PacketZeroCopy',
         fields: [
@@ -283,7 +283,7 @@ test('buildErd draws ONE edge per relation field even when two carriers read it 
     },
     nodes: [],
     edges: [],
-    data_entities: [
+    entities: [
       {
         id: 'de_run', name: 'AnalysisRun',
         fields: [{ name: 'codebase', type: 'Codebase', is_sensitive: false }],
@@ -319,7 +319,7 @@ test('a non-persisted shape is excluded from the ERD, and its edges go with it',
     },
     nodes: [],
     edges: [],
-    data_entities: [
+    entities: [
       {
         id: 'de_layout', name: 'ErdLayout', kind: 'domain-shape', kind_source: 'shape-inference',
         fields: [{ name: 'nodes', type: 'ErdNode[]', is_sensitive: false }],

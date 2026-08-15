@@ -37,7 +37,6 @@ interface ImpactPreview {
 
 const DEFAULT_DEBOUNCE_MS = 5_000;
 const DEFAULT_IMPACT_DEBOUNCE_MS = 250;
-const MAX_RECENT_CHANGES = 10;
 const MAX_RECENT_IMPACT_PREVIEWS = 20;
 
 const sessions = new Map<string, WatchSession>();

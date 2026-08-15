@@ -1,50 +1,50 @@
-/**
- * Camp B (structural) head-to-head — Klauro vs the REAL installed
- * codebase-memory-mcp binary, per language, measured at full strength.
- *
- * The claim under test: Klauro's single generic tree-sitter walker
- * (`extractStructure`) matches-or-beats DeusData's codebase-memory on GENERIC
- * STRUCTURAL extraction — functions/classes/calls/imports — for EVERY language
- * it supports, at fewer tokens. We do NOT proxy codebase-memory: we shell out to
- * the real `codebase-memory-mcp cli index_repository` and read the knowledge
- * graph it builds (`get_graph_schema` node/edge counts). Any Klauro win is honest.
- *
- * VERDICT BASIS — SYMBOLS, NOT CALLS (fairness fix):
- *   codebase-memory genuinely extracts call edges (index_repository reports
- *   nodes/edges > 0), but its get_graph_schema / search_graph reads expose NO
- *   CALLS edge on a tiny single-file repo (the call-resolution pass leaves them
- *   unresolved at that scale). So a "cbm calls = 0" read is a READ ARTIFACT, not
- *   reality. We therefore classify the verdict on SYMBOL coverage (functions +
- *   classes), which IS reliably readable, and treat cbm's call/import edge counts
- *   as INFORMATIONAL ONLY (recorded, never used to drive a win). We never fake a
- *   win on an unreadable 0.
- *
- *   We read cbm's symbols at its BEST: the MAX across (a) get_graph_schema
- *   node_label counts, (b) search_graph results counted by their `label` field,
- *   and (c) the index_repository node total as a floor. Giving the competitor its
- *   strongest readable number is the only honest way to claim a win over it.
- *
- * Where the head-to-head lands:
- *   - codebase-memory's 11 Hybrid-LSP languages (python, ts/js/jsx/tsx, php, c#,
- *     go, c, c++, java, kotlin, rust) are compiler/LSP-accurate; Klauro cannot
- *     out-correct ground truth → `tie-ceiling`, Klauro's edge is tokens.
- *   - On the breadth long tail, cbm's generic tree-sitter indexer ALSO finds many
- *     functions, so those are honest TIES too (symbol parity + Klauro token win),
- *     NOT free wins. A `win` is recorded ONLY where cbm is genuinely
- *     out-of-coverage (0 symbols) or cbm extracted FEWER symbols than Klauro.
- *
- * HONESTY CONTRACT: if codebase-memory extracts MORE symbols than Klauro on a
- * language, that is a `loss`, surfaced loudly — the test goes RED and the Klauro
- * analyzer for that language must be deepened. Losses are the point; never hidden.
- *
- * TOKEN BASIS (real and fair, unchanged):
- *   - klauroTokens = byteLength(compact JSON of the extracted structure) / 4.
- *     Exactly what an agent receives: the symbols/calls/imports.
- *   - cbmTokens   = byteLength(codebase-memory's get_graph_schema output) / 4 —
- *     the smallest honest structural summary cbm emits per repo. A fuller
- *     get_architecture/query_graph dump is strictly larger, so the schema is the
- *     most charitable token count for codebase-memory.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { execFileSync } from 'child_process';
 import * as fs from 'fs-extra';
@@ -55,8 +55,8 @@ import { extractStructure } from '../../../../packages/analyzer-core/src/analyze
 import { codebaseMemoryPath } from './real-camp-arms';
 import { TOP_LANGS } from './camp-a-langs';
 
-/** codebase-memory's 11 Hybrid-LSP languages, in our grammar-id namespace. On
- *  these it is compiler/LSP-accurate, so the best Klauro can do is a ceiling tie. */
+
+
 const CBM_LSP_LANGS = new Set([
   'python',
   'typescript',
@@ -73,13 +73,13 @@ const CBM_LSP_LANGS = new Set([
   'rust',
 ]);
 
-/**
- * Grammar-id → source file extension. codebase-memory dispatches its indexer by
- * file extension, so the sample must land on disk with the right suffix or cbm
- * sees nothing (which would unfairly inflate Klauro). Every TOP_LANGS grammar +
- * the primitive-bench languages are covered here; an unmapped lang is skipped
- * (recorded honestly, not silently counted as a win).
- */
+
+
+
+
+
+
+
 const LANG_EXT: Record<string, string> = {
   ada: 'adb',
   apex: 'cls',
@@ -174,7 +174,7 @@ export interface CampBSide {
 }
 
 export interface CampBCbmSide extends CampBSide {
-  /** False when codebase-memory could not index this language (returned nothing). */
+
   available: boolean;
 }
 
@@ -187,7 +187,7 @@ export interface CampBStructuralRow {
 }
 
 export interface CampBStructuralReport {
-  /** False when the codebase-memory binary is absent (honest skip; no fake data). */
+
   available: boolean;
   perLanguage: CampBStructuralRow[];
   aggregate: {
@@ -195,49 +195,49 @@ export interface CampBStructuralReport {
     klauroWins: number;
     ceilingTies: number;
     losses: number;
-    /** (wins + ties) / measured languages. */
+
     winRate: number;
     meanKlauroTokens: number;
     meanCbmTokens: number;
-    /** mean(cbmTokens) - mean(klauroTokens); positive = Klauro cheaper. */
+
     tokenSavingMean: number;
   };
 }
 
-/** byteLength/4 token estimate of a string payload. */
+
 function tokensOf(s: string): number {
   return Math.round(Buffer.byteLength(s, 'utf8') / 4);
 }
 
-/** codebase-memory's project id = the slugified absolute repo path (its own rule).
- *  IMPORTANT: codebase-memory PRESERVES underscores (slug charset is [A-Za-z0-9_]),
- *  replacing only other non-word chars with '-'. macOS temp dirs live under
- *  /var/folders/<x>_/... so we must keep '_' or the project lookup misses. */
+
+
+
+
 function cbmProjectId(dir: string): string {
   return dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
 }
 
 interface CbmStructuralCounts {
-  /** Symbol count read at cbm's BEST (max across schema, search_graph, index). */
+
   functions: number;
   classes: number;
-  /** INFORMATIONAL ONLY — call/import edges are unreadable on tiny single-file
-   *  repos (read artifact), so they never drive a verdict. Recorded for the row. */
+
+
   calls: number;
   imports: number;
-  /** Distinct PROJECT-ROOTED symbol NAMES cbm extracted (functions/methods and
-   *  classes), excluding injected language builtins. This is the fair comparison
-   *  surface: it neutralizes cbm's Method/Function scope-duplication and its
-   *  std-lib stub injection, so a loss means cbm truly saw a source symbol Klauro
-   *  missed. */
+
+
+
+
+
   fnNames: Set<string>;
   classNames: Set<string>;
-  /** Raw schema JSON codebase-memory returned (the token-basis payload). */
+
   schemaRaw: string;
   available: boolean;
 }
 
-/** Run a cbm cli tool, returning the first JSON object line, or null. */
+
 function cbmCli(bin: string, tool: string, args: object): { json: any; raw: string } | null {
   let out = '';
   try {
@@ -257,26 +257,26 @@ function cbmCli(bin: string, tool: string, args: object): { json: any; raw: stri
   }
 }
 
-/**
- * Index `dir` with the REAL codebase-memory binary and read its SYMBOL coverage
- * at cbm's best. We never let an unreadable call-edge 0 drive a win, so verdicts
- * key off functions/classes only; calls/imports are recorded informationally.
- *
- * Symbol read = MAX across three honest paths (give the competitor its strongest):
- *   (a) get_graph_schema node_label counts (Function+Method, Class+Struct+Interface),
- *   (b) search_graph results counted by their `label` field (search_graph ignores
- *       node_type and returns all nodes, so we tally labels ourselves),
- *   (c) the index_repository node total as a floor when the graph reads come back thin.
- * The get_graph_schema JSON is the token basis. available:false only when cbm
- * indexed zero symbols by every path (genuine out-of-coverage).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
   const empty: CbmStructuralCounts = {
     functions: 0, classes: 0, calls: 0, imports: 0,
     fnNames: new Set(), classNames: new Set(), schemaRaw: '', available: false,
   };
 
-  // Index. Capture the reported node total as a floor proxy for symbol coverage.
+
   let indexNodeTotal = 0;
   {
     let idxOut = '';
@@ -290,13 +290,13 @@ function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
     }
     const line = idxOut.split('\n').find(l => l.trim().startsWith('{')) || '';
     if (line) {
-      try { indexNodeTotal = Number(JSON.parse(line).nodes) || 0; } catch { /* noop */ }
+      try { indexNodeTotal = Number(JSON.parse(line).nodes) || 0; } catch {   }
     }
   }
 
   const project = cbmProjectId(dir);
 
-  // (a) get_graph_schema — the canonical node-label/edge-type tallies + token basis.
+
   const schemaRes = cbmCli(bin, 'get_graph_schema', { project });
   let schemaFns = 0, schemaCls = 0, calls = 0, imports = 0, schemaRaw = '';
   if (schemaRes) {
@@ -311,13 +311,13 @@ function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
     imports = ec('IMPORTS');
   }
 
-  // (b) search_graph — returns every node with name + qualified_name + label
-  //     (node_type is ignored by the binary). We keep only PROJECT-ROOTED symbols
-  //     (qualified_name prefixed with `<project>.`), which excludes injected
-  //     language builtins (`builtins.print`, `builtins.list.append`, …) that are
-  //     NOT in the source. Tally distinct NAMES — this collapses cbm's habit of
-  //     storing a method as both `M.save` (Method) and `save` (Function), so the
-  //     count reflects true source symbols, fair to both tools.
+
+
+
+
+
+
+
   const fnNames = new Set<string>();
   const classNames = new Set<string>();
   const projPrefix = `${project}.`;
@@ -328,22 +328,22 @@ function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
     for (const r of results) {
       const q = r.qualified_name || '';
       const nm = r.name || '';
-      if (!nm || !q.startsWith(projPrefix)) continue; // skip builtins/externals
+      if (!nm || !q.startsWith(projPrefix)) continue;
       if (r.label === 'Function' || r.label === 'Method') fnNames.add(nm);
       else if (r.label === 'Class' || r.label === 'Struct' || r.label === 'Interface')
         classNames.add(nm);
     }
   }
 
-  // cbm at its best: max symbol COUNT across schema (label tallies) and the
-  // project-rooted distinct-name read. The schema count can include scope
-  // duplication; the name read is the fair source-symbol count. We expose both —
-  // counts (max, charitable) for the row display, and the NAME SETS for the
-  // verdict (name-set containment, see decideVerdict).
+
+
+
+
+
   const functions = Math.max(schemaFns, fnNames.size);
   const classes = Math.max(schemaCls, classNames.size);
-  // available when any path saw a code symbol, or the index reported more nodes
-  // than the ~5 structural scaffolding nodes (File/Module/Project/Branch + dir).
+
+
   const available = functions + classes > 0 || indexNodeTotal > 5;
 
   return { functions, classes, calls, imports, fnNames, classNames, schemaRaw, available };
@@ -356,27 +356,27 @@ interface SymbolNames {
   cbmClassNames: Set<string>;
 }
 
-/** Names in `a` not present in `b`. */
+
 function missing(a: Set<string>, b: Set<string>): string[] {
   return [...a].filter(n => !b.has(n));
 }
 
-/**
- * Decide the per-language verdict — keyed on PROJECT-ROOTED SYMBOL NAME SETS, the
- * fair and reliably-readable signal. Two fairness corrections vs raw counts:
- *   1. cbm's call/import edges are a read artifact on tiny single-file repos, so
- *      they NEVER drive a verdict (recorded informationally only).
- *   2. cbm inflates raw symbol COUNTS — it injects language builtins
- *      (`builtins.print`) and stores a method as both Method and Function. So we
- *      compare NAME SETS restricted to project-rooted symbols, not counts. A LOSS
- *      is recorded ONLY when cbm extracted a source-symbol NAME that Klauro's name
- *      set does not contain — i.e. cbm genuinely saw something Klauro missed.
- * The token saving is recorded on every row regardless of verdict.
- *
- *   loss  — cbm has a project symbol name Klauro missed (surface loud; deepen)
- *   win   — cbm out-of-coverage (no symbols) OR Klauro saw a name cbm missed
- *   tie-ceiling — same symbol-name coverage; Klauro wins on tokens
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function decideVerdict(
   lang: string,
   klauro: CampBSide,
@@ -389,8 +389,8 @@ function decideVerdict(
 
   const cbmHasAnyName = names.cbmFnNames.size + names.cbmClassNames.size > 0;
 
-  // LOSS: cbm extracted a project-rooted symbol NAME that Klauro did not. That is
-  // a genuine miss in the Klauro analyzer (not a read artifact / builtin / dup).
+
+
   if (cbmHasAnyName) {
     const missFns = missing(names.cbmFnNames, names.klauroFnNames);
     const missCls = missing(names.cbmClassNames, names.klauroClassNames);
@@ -406,7 +406,7 @@ function decideVerdict(
     }
   }
 
-  // WIN: cbm genuinely indexed no symbols (out-of-coverage) and Klauro did.
+
   if (!cbm.available && kSym >= 1) {
     return {
       verdict: 'win',
@@ -414,9 +414,9 @@ function decideVerdict(
     };
   }
 
-  // WIN: Klauro saw a project symbol name cbm did not (only meaningful when cbm
-  // read names at all; if cbm read none but is available via index-floor, fall
-  // through to the token-based parity tie below).
+
+
+
   if (cbmHasAnyName) {
     const kExtraFns = missing(names.klauroFnNames, names.cbmFnNames);
     const kExtraCls = missing(names.klauroClassNames, names.cbmClassNames);
@@ -428,9 +428,9 @@ function decideVerdict(
     }
   }
 
-  // TIE-CEILING: same symbol-name coverage (or cbm available only via index
-  // floor, names equal/empty on both readable surfaces). Klauro cannot
-  // out-correct cbm's symbols; its honest, recorded edge is tokens.
+
+
+
   if (kSym >= 1) {
     const lsp = CBM_LSP_LANGS.has(lang) ? 'LSP-accurate ' : '';
     return {
@@ -439,7 +439,7 @@ function decideVerdict(
     };
   }
 
-  // Degenerate: neither tool extracted symbols. No-loss, no over-claim.
+
   return {
     verdict: 'tie-ceiling',
     note: `neither tool extracted symbols for ${lang} (degenerate); recorded as no-loss tie`,
@@ -448,13 +448,13 @@ function decideVerdict(
 
 let cached: CampBStructuralReport | null = null;
 
-/**
- * Build the per-language Camp-B structural head-to-head. For each language in
- * TOP_LANGS (plus the primitive-bench languages) we write the camp-a sample to a
- * unique temp dir with the correct extension, run Klauro's extractStructure and
- * the REAL codebase-memory binary against it, count both sides' structural
- * facts, and decide a verdict. Cached in-process.
- */
+
+
+
+
+
+
+
 export async function buildCampBStructuralReport(): Promise<CampBStructuralReport> {
   if (cached) return cached;
 
@@ -477,7 +477,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
     return cached;
   }
 
-  // Build the sample set: every TOP_LANGS entry, deduped by lang.
+
   const samples = new Map<string, string>();
   for (const t of TOP_LANGS) {
     if (!samples.has(t.lang)) samples.set(t.lang, t.sample);
@@ -489,16 +489,16 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
   try {
     for (const [lang, sample] of samples) {
       const ext = LANG_EXT[lang];
-      if (!ext) continue; // unmapped extension → honest skip, not a free win
+      if (!ext) continue;
 
-      // Klauro side.
+
       let kExtract;
       try {
         kExtract = await extractStructure(lang, sample);
       } catch {
         kExtract = null;
       }
-      if (!kExtract) continue; // grammar not loadable in this env → skip honestly
+      if (!kExtract) continue;
       const klauroPayload = JSON.stringify({
         functions: kExtract.functions,
         classes: kExtract.classes,
@@ -513,7 +513,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
         tokens: tokensOf(klauroPayload),
       };
 
-      // codebase-memory side — write to a unique dir with the right extension.
+
       const dir = fs.mkdtempSync(path.join(root, `${lang}-`));
       fs.writeFileSync(path.join(dir, `sample.${ext}`), sample);
       const cbmCounts = cbmStructural(bin, dir);
@@ -540,7 +540,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
     try {
       fs.removeSync(root);
     } catch {
-      /* noop */
+
     }
   }
 
@@ -552,7 +552,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
   const meanKlauroTokens = languages
     ? rows.reduce((a, r) => a + r.klauro.tokens, 0) / languages
     : 0;
-  // cbm mean over languages it could actually index (its real token cost where present).
+
   const cbmAvail = rows.filter(r => r.cbm.available);
   const meanCbmTokens = cbmAvail.length
     ? cbmAvail.reduce((a, r) => a + r.cbm.tokens, 0) / cbmAvail.length
@@ -575,7 +575,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
   return cached;
 }
 
-/** Test/CI hook: drop the in-process cache. */
+
 export function _resetCampBStructuralCache(): void {
   cached = null;
 }

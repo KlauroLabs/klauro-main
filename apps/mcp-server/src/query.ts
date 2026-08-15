@@ -1,8 +1,8 @@
 import type {
-  CASOutput, CASNode, CASEdge, CASEntryPoint, CASExitPoint,
-  CASCallChain, CASMethodCall, CASDecorator, CASIntent,
-  CASChangeRisk, ChangeRiskFactor, CASTemporalStability, CASFlowCoverage,
-  CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
+  CASOutput, CASNode, CASEdge,
+
+  CASChangeRisk, ChangeRiskFactor,
+  CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData,
   CASUserJourney,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
@@ -14,7 +14,7 @@ import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/co
 import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
-import { computeFlowConcepts, rankStoredFlowRefs, attachTelemetryToFlows, telemetryForNode, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -39,7 +39,6 @@ import {
 } from './journey-presentation';
 import {
   loadChangeHistory,
-  getChangeHistoryEntry,
   listAnalysisSnapshots,
   loadAnalysisSnapshot,
   getAnalysisAt as getStorageAnalysisAt,
@@ -59,15 +58,15 @@ export function analysisVersionNotice(
   return `This analysis (cas_version ${stored}) predates ${featureLabel}, which is guaranteed from CAS ${attestedSince}. Re-run analyze_codebase on this project to generate it.`;
 }
 
-/**
- * Cheap orient capsule (progressive disclosure, task-3): a near-zero-token
- * index of WHAT Klauro knows about this system and WHICH tool pulls each
- * dimension. Reports availability + a count per dimension WITHOUT any heavy
- * content, so a caller learns what is pullable before spending tokens. This is
- * the "map" — the dimension tools (get_route_table, get_cicd_pipelines, …) are
- * the "detail" pulled on demand. Distinct from get_system_overview's
- * system_fit (a seams+topology narrative); this is a pure pullable-index.
- */
+
+
+
+
+
+
+
+
+
 export function buildOrientCapsule(cas: CASOutput) {
   const nodes = cas.nodes || [];
   const countType = (type: string) => nodes.filter(node => node.type === type).length;
@@ -77,18 +76,18 @@ export function buildOrientCapsule(cas: CASOutput) {
 
   return {
     system: cas.system?.name,
-    // `domain` is the PRODUCT domain and nothing else. It used to silently fall
-    // back to system_purpose.primary_type — a structural artifact label — under
-    // the same key, so the capsule could confidently report a domain in the very
-    // same payload where primary_domain was null and get_product_map said
-    // "unknown" (2026-07-27 comprehension audit). An agent reading the two
-    // together could not tell which was true. Absence is now reported as
-    // absence, with the provenance beside it, and the structural type keeps its
-    // own name.
+
+
+
+
+
+
+
+
     domain: cas.enhanced_system_purpose?.primary_domain || null,
     domain_source: cas.enhanced_system_purpose?.domain_source || null,
     system_type: cas.system_purpose?.primary_type || null,
-    // Each dimension: is it present, how many items, and the tool that pulls it.
+
     dimensions: {
       entry_points: dimension((cas.entry_points?.length || 0) > 0, cas.entry_points?.length || 0, 'get_entry_points'),
       routes: dimension((cas.route_table?.length || 0) > 0, cas.route_table?.length || 0, 'get_route_table'),
@@ -101,14 +100,14 @@ export function buildOrientCapsule(cas: CASOutput) {
         cas.runtime_static_links?.length || 0,
         'get_runtime_observations',
       ),
-      data_entities: dimension((cas.data_entities?.length || 0) > 0, cas.data_entities?.length || 0, 'get_data_entities'),
-      capabilities: dimension((cas.system_capabilities?.length || 0) > 0, cas.system_capabilities?.length || 0, 'get_summary'),
-      // Behavior/registration surfaces (mcp_tool/rpc/command/event/message
-      // engines) — navigation, not product purpose (docs/SEMANTIC-MODEL.md).
-      // Structurally separate from `capabilities`: never core, never ranked,
-      // never in top_capabilities, but still a real pullable dimension so
-      // agents can find e.g. "the 207-tool MCP surface" without it crowding
-      // out domain capabilities.
+      entities: dimension((cas.entities?.length || 0) > 0, cas.entities?.length || 0, 'get_data_entities'),
+      capabilities: dimension((cas.capabilities?.length || 0) > 0, cas.capabilities?.length || 0, 'get_summary'),
+
+
+
+
+
+
       behavior_surfaces: dimension((cas.behavior_surfaces?.length || 0) > 0, cas.behavior_surfaces?.length || 0, 'get_system_overview'),
       tests: dimension((cas.test_suites?.length || 0) > 0, cas.test_suites?.length || 0, 'get_test_summary'),
     },
@@ -116,14 +115,14 @@ export function buildOrientCapsule(cas: CASOutput) {
   };
 }
 
-/**
- * Last-resort domain-entity surfacing for CAS shapes where the data-entity
- * extraction produced nothing but language analyzers DID type real domain
- * entities as nodes (type 'entity'/'model' or an 'entity' subcategory).
- * Mirrors buildDataEntities' kind-filter semantics: only analyzer-asserted
- * entity kinds count — plain structs/classes/DTO-shaped nodes are NOT
- * inflated in, and abstract shapes stay excluded.
- */
+
+
+
+
+
+
+
+
 function entityKindNodeNames(nodes: CASOutput['nodes']): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
@@ -157,15 +156,15 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
   const primaryDomain = cas.enhanced_system_purpose?.primary_domain || null;
   const productTech = productTechSignals(cas);
   const versionInfo = describeAnalysisVersion(cas.cas_version);
-  // Runtime opt-out: skip computing the seam summary when seams are excluded
-  // (a real compute/token saving, not a blanked field).
+
+
   const seamSummary = opts.excludeSeams ? null : buildCommunicationSeamSummary(cas);
 
-  // compact mode (default) drops the static, per-repo-invariant analysis_phases
-  // prose (identical on every call, ~40% of the full payload per
-  // docs/SPEC-RESPONSE-BUDGET.md) and trims architectural_patterns to
-  // name/confidence/category (no guidance sentence) and a shorter slice.
-  // full restores today's shape byte-for-byte.
+
+
+
+
+
   const architecturalPatterns = detail === 'full'
     ? cas.architecture_summary?.architectural_patterns?.slice(0, 12).map(pattern => ({
         name: pattern.name,
@@ -182,42 +181,42 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
   return {
     name: cas.system?.name,
     type: cas.system?.type,
-    // Client-derived (git shortlog/log at snapshot-build time, see
-    // apps/mcp-server/src/remote-source.ts deriveRepoFacts) and stamped onto
-    // cas.system server-side (remote-analyzer-service.ts stampRepoFacts).
-    // Powers the app's Contributors / Codebase age stat cards
-    // (apps/app/src/pages/codebase/CodebaseStats.tsx). Omitted (not a
-    // zero/empty object) when the client could not derive it.
+
+
+
+
+
+
     ...(cas.system?.repo_facts ? { repo_facts: cas.system.repo_facts } : {}),
     cas_version: versionInfo.stored_version,
-    // Content-production time of THIS analysis (set by the orchestrator when it
-    // actually (re)computes; a no-op incremental preserves the prior value).
-    // This is the release-gate freshness marker: it is the ONLY summary field
-    // that reflects when the served content was produced. layers_ready.generated_at
-    // now tracks the same instant, but analysis_timestamp is the canonical,
-    // always-present source and is surfaced here at a stable, readable path so
-    // GET /api/projects/{id}/analysis exposes freshness without the caller
-    // digging into the layers ladder.
+
+
+
+
+
+
+
+
     analysis_timestamp: cas.analysis_timestamp || null,
     analysis_version_status: versionInfo.status,
     analysis_version_notice: versionInfo.status === 'older-compatible'
       ? `This analysis was produced by cas_version ${versionInfo.stored_version}; the server is at ${versionInfo.current_version}. Re-run analyze_codebase to populate fields added since (user journeys, data lineage, paradigm conformance, product map).`
       : undefined,
-    // Primary source is the byte-ranked language mix (system.technologies.languages,
-    // computed from real source bytes on disk so the true primary language sorts
-    // first — see orchestrator.extractTechnologies). productTech (per-node product
-    // signals) is only a fallback for the rare case where technologies is empty;
-    // it is NOT byte-ranked and previously mis-ordered TypeScript behind trailing
-    // markup files.
+
+
+
+
+
+
     languages: techs?.languages?.length ? techs.languages.map(l => l.name) : productTech.languages,
     frameworks: productTech.frameworks.length ? productTech.frameworks : techs?.frameworks?.map(f => f.name) || [],
-    // Honesty about scope: nested git repositories under this root are
-    // EXCLUDED from the analysis (deliberate submodule-ish boundary in the
-    // walker — orchestrator.getNestedRepoIgnorePatterns). A wrapper repo whose
-    // real code lives in nested repos must not present a handful of top-level
-    // infra files as "the codebase" with no signal that the bulk was skipped
-    // (live audit 2026-07-14: a benchmarked repo served 41 nodes with its
-    // nested app/ui sub-repos silently missing).
+
+
+
+
+
+
+
     ...(techs?.nested_repositories?.length
       ? {
           nested_repositories_excluded: {
@@ -232,28 +231,28 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
         }
       : {}),
     primary_domain: primaryDomain,
-    // #129 — no primary_domain_label here. It used to be a mechanical
-    // kebab-case->Title Case rendering of `primary_domain` (see
-    // product-map.ts's now-removed humanizeDomainSlug), but `primary_domain`
-    // is itself a composed/heuristic slug (token-pile pieces like
-    // "feed-integration-category"), not a human-authored phrase — title-
-    // casing it does not produce something a non-technical reader would
-    // write, it just capitalizes the same internal tokens. The owner's bar
-    // is a real reader, not a mechanical transform, so: omit the field
-    // rather than ship a label shaped like a fabricated one. If/when this
-    // needs a real human-facing domain phrase, it belongs behind the same
-    // AI-authored, evidence-grounded path as description/capability naming
-    // (docs/cas/DETERMINISM-BOUNDARY.md) — never a second hardcoded
-    // string-munging pass alongside it.
+
+
+
+
+
+
+
+
+
+
+
+
+
     description: cas.enhanced_system_purpose?.inferred_description || null,
     description_source: cas.enhanced_system_purpose?.description_source || null,
-    // Honest terminal AI-comprehension state. 'error' means the L5 pass RAN
-    // and FAILED (model call or grounding gate threw) — comprehension is
-    // AI-only, so description stays null with no deterministic substitute.
-    // Surfaced here so a reader (customer or validator) sees a
-    // degraded-but-final analysis instead of inferring forever-pending from
-    // description_source: null. Omitted when the marker is absent (legacy
-    // stores / synchronous path).
+
+
+
+
+
+
+
     ...(cas.ai_enrichment ? { ai_enrichment: cas.ai_enrichment } : {}),
     ...(cas.ai_enrichment === 'error' && cas.ai_enrichment_error
       ? { ai_enrichment_error: cas.ai_enrichment_error }
@@ -270,31 +269,31 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     edges: cas.edges.length,
     entry_points: cas.entry_points?.length || 0,
     entry_points_by_type: entryPointsByType,
-    // The product's domain entities live in cas.data_entities (the full Camp-B
-    // entity extraction — DTOs, domain shapes, ORM models, etc.). cas.database_schema
-    // is a much narrower ORM/DDL-only view (e.g. 3 @Entity classes) that is NOT the
-    // domain-entity surface the summary is meant to convey — reading it here reported
-    // "3 entities" for a 202-entity codebase. Surface data_entities; fall back to the
-    // database_schema names when the fuller extraction is absent; finally fall back
-    // to entity-kind NODES: some repo shapes (e.g. Rust + shell + TS mixes) parse
-    // real domain entities as type 'entity'/'model' nodes yet produce an empty
-    // data_entities extraction, which mis-reported "0 entities" for codebases whose
-    // own description names concrete entities.
-    database_entities: (cas.data_entities?.length
-      ? cas.data_entities.map(e => e.name)
+
+
+
+
+
+
+
+
+
+
+    database_entities: (cas.entities?.length
+      ? cas.entities.map(e => e.name)
       : cas.database_schema?.entities?.length
         ? cas.database_schema.entities.map(e => e.name)
         : entityKindNodeNames(cas.nodes)) || [],
-    capabilities: cas.system_capabilities?.length || cas.flow_graph?.capabilities.length || 0,
-    top_capabilities: cas.system_capabilities?.length
-      ? [...cas.system_capabilities]
+    capabilities: cas.capabilities?.length || cas.flow_graph?.capability_candidates?.length || 0,
+    top_capabilities: cas.capabilities?.length
+      ? [...cas.capabilities]
         .filter(c => c.category !== 'internal')
         .sort((a, b) => {
           const order = { critical: 0, high: 1, medium: 2, low: 3 };
-          // Plumbing never leads: supporting/admin capabilities rank strictly
-          // below core, whatever their criticality — a summary whose #1
-          // capability is profile/session/config upkeep misrepresents what
-          // the product was built for.
+
+
+
+
           const categoryRank = (capability: any) => capability.category === 'core' ? 0 : 1;
           const domainBias = (capability: any) =>
             primaryDomain && capability.related_domains?.some((domain: string) => domain.includes(primaryDomain) || primaryDomain.includes(domain))
@@ -303,20 +302,20 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
           return categoryRank(a) - categoryRank(b) ||
             domainBias(a) - domainBias(b) ||
             order[a.criticality] - order[b.criticality] ||
-            b.operations.length - a.operations.length;
+            (b.operations?.length || 0) - (a.operations?.length || 0);
         })
         .slice(0, 10)
         .map(c => c.name)
-      : cas.flow_graph ? [...cas.flow_graph.capabilities]
+      : cas.flow_graph?.capability_candidates ? [...cas.flow_graph.capability_candidates]
         .sort((a, b) => b.signals.total_score - a.signals.total_score)
         .slice(0, 10)
         .map(c => c.name) : [],
-    // NAVIGATION TIER, not purpose (SURFACES ARE NOT CAPABILITIES —
-    // docs/SEMANTIC-MODEL.md purpose test): registration/behavior surfaces
-    // (command / event-subscriber / message-handler / mcp_tool engines) are
-    // listed separately, unranked, and never mixed into capabilities /
-    // top_capabilities counts — agents use them to FIND handlers, not to
-    // learn what the product is for. Omitted when the repo has none.
+
+
+
+
+
+
     ...(cas.behavior_surfaces?.length ? {
       behavior_surfaces: cas.behavior_surfaces.map(surface => ({
         name: surface.structural_label || surface.name,
@@ -325,30 +324,30 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     } : {}),
     analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
     errors: cas.analysis_errors?.length || 0,
-    // Compact communication-seam one-liner (N sync / N async / N passive) so the
-    // FIRST orient call surfaces the integration shape. Omitted when no seams.
+
+
     ...(seamSummary ? { communication_seams: { headline: seamSummary.headline, counts: seamSummary.counts, level: seamSummary.level } } : {}),
-    // Cheap orient capsule: the pullable-dimension index (availability + counts +
-    // the tool that pulls each), so the FIRST orient call teaches what is
-    // available at near-zero tokens without any heavy content.
+
+
+
     orient_capsule: buildOrientCapsule(cas),
-    // Progressive-layering ladder (task #112): present only on a CAS produced
-    // via the layered/progressive entrypoint (analyzeProjectLayered). Absent
-    // on the plain analyze_codebase path, where every layer lands in one shot
-    // and is implicitly complete — omitted rather than a fabricated "all
-    // ready" so callers can tell "not layered" apart from "layered and done".
+
+
+
+
+
     ...(cas.layers_ready ? { layers_ready: cas.layers_ready } : {}),
-    // Compact coverage projection: rollup ratios + unmapped counts only (the
-    // full unmapped lists live in get_semantic_coverage).
-    // Must stay under the L0 <2s budget gate: computeFlowConcepts is too slow
-    // on a large flow set, so this field is only inlined when the flow set is
-    // small enough to stay well under budget. Above that guard, omit it rather
-    // than fabricate a partial/capped ratio — callers fall back to
-    // get_semantic_coverage's full uncapped compute.
+
+
+
+
+
+
+
     ...(() => {
       const entryCount = cas.entry_points?.length || 0;
       const nodeCount = cas.nodes?.length || 0;
-      // ~2.5ms/entry-point measured; 400 EPs ≈ ~1s, comfortably inside the budget.
+
       if (entryCount > 400 || nodeCount > 15000) {
         return { semantic_coverage_available: 'call get_semantic_coverage, or GET /api/projects/{id}/semantic-coverage over HTTP (omitted from summary: flow set too large to compute within the orient latency budget)' as const };
       }
@@ -363,43 +362,43 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
   };
 }
 
-/**
- * getSemanticCoverage — the dedicated read tool payload (docs/SEMANTIC-MODEL.md
- * "Coverage invariants"). The three rollup ratios PLUS the full honest unmapped
- * lists (reachable code with no step, orphan steps, capability-less flows), each
- * capped for response budget with an explicit omitted count. Deterministic and
- * evidence-only — measured over the SAME full flow set get_flow_coverage uses
- * (computeFlowConcepts, no cap) so the ratios reflect the true rollup, not a
- * browse-capped slice.
- */
+
+
+
+
+
+
+
+
+
 export function getSemanticCoverage(cas: CASOutput): SemanticCoverage {
   const flows = computeFlowConcepts(cas);
   return computeSemanticCoverage(cas, flows);
 }
 
 export interface SystemOverviewFilter {
-  /** Omit runtime/telemetry fields (runtime, runtime_static_links_count). */
+
   excludeRuntime?: boolean;
-  /** Omit the communication-seams portion of the dynamic system_fit view. */
+
   excludeSeams?: boolean;
-  /** Omit the runtime-topology portion of the dynamic system_fit view. */
+
   excludeTopology?: boolean;
 }
 
 export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {}) {
   const techs = cas.system?.technologies;
   const productTech = productTechSignals(cas);
-  // "How it fits" — the vertical tying entry points -> deployables (bundled
-  // ship-units collapsed) -> infra topology -> communication seams + CAP flags.
-  // Additive: omitted entirely when none of those layers are present.
-  // Runtime opt-out: system_fit is the seams+topology dynamic view, so skip
-  // computing it when both are excluded (a real compute/token saving).
+
+
+
+
+
   const systemFit = opts.excludeSeams && opts.excludeTopology ? null : buildSystemFitSummary(cas);
-  // Runtime opt-out: omit runtime/telemetry fields entirely for a pure static
-  // view. Default keeps today's shape byte-for-byte.
-  // Split so the include case preserves the original key order exactly
-  // (runtime, validation, runtime_static_links_count) — byte-for-byte with the
-  // pre-opt-out shape.
+
+
+
+
+
   const runtimeField = opts.excludeRuntime ? {} : { runtime: cas.runtime || null };
   const runtimeLinksField = opts.excludeRuntime
     ? {}
@@ -437,8 +436,8 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
       pattern_balance: cas.architecture_summary.pattern_balance,
     } : null,
     system_health: cas.system_health || null,
-    capabilities_count: cas.system_capabilities?.length || 0,
-    system_capabilities: cas.system_capabilities?.slice(0, 25).map(capability => ({
+    capabilities_count: cas.capabilities?.length || 0,
+    capabilities: cas.capabilities?.slice(0, 25).map(capability => ({
       id: capability.id,
       name: capability.name,
       description: capability.description,
@@ -450,11 +449,11 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
       related_entities: capability.related_entities,
       related_domains: capability.related_domains,
     })) || [],
-    // Behavior/registration surfaces (mcp_tool/rpc/command/event/message
-    // engines) — the navigation tier, NOT product-purpose capabilities
-    // (docs/SEMANTIC-MODEL.md). Deliberately separate from system_capabilities
-    // so a surface can never rank/outrank a domain capability, while
-    // remaining fully browsable in full-detail get_summary.
+
+
+
+
+
     behavior_surfaces_count: cas.behavior_surfaces?.length || 0,
     behavior_surfaces: cas.behavior_surfaces?.slice(0, 25).map(surface => ({
       id: surface.id,
@@ -574,9 +573,9 @@ function searchTypeRank(type: string): number {
   return SEARCH_TYPE_PRIORITY[type] ?? 3;
 }
 
-// Lower is better, matching the sort convention below. 0 = exact name or
-// qualified_name match, 1 = name starts with the query, 2 = name contains it
-// anywhere, 3 = the match came only from qualified_name/description text.
+
+
+
 function nameMatchRank(node: CASNode, queryLower: string): number {
   const nameLower = node.name.toLowerCase();
   if (nameLower === queryLower || node.qualified_name?.toLowerCase() === queryLower) return 0;
@@ -586,17 +585,17 @@ function nameMatchRank(node: CASNode, queryLower: string): number {
 }
 
 function nodeLanguageSignal(node: CASNode): string {
-  // Language analyzers do not all stamp a single `metadata.language` field: the
-  // TypeScript/JavaScript analyzer (the dominant source in a JS/TS repo) stamps
-  // `metadata.isTypeScript` + `metadata.extension` and leaves `language` unset,
-  // while only the breadth/tree-sitter analyzers set `metadata.language`. Reading
-  // `metadata.language` alone therefore silently drops TypeScript and surfaces
-  // only the trailing markup/shell files (the historic `[shell,html,css,glimmer]`
-  // summary that hid a 99.9%-TypeScript codebase). Derive the label from whichever
-  // reliable signal the producing analyzer actually set.
-  // `isTypeScript`/`extension` are stamped at analysis time by the TS/JS analyzer
-  // but are not part of the declared CASNode metadata shape, so read them off a
-  // widened view rather than the typed surface.
+
+
+
+
+
+
+
+
+
+
+
   const meta = (node.metadata || {}) as Record<string, unknown>;
   const explicit = String(meta.language || '').trim();
   if (explicit) return normalizeTechLabel(explicit);
@@ -615,17 +614,17 @@ function productTechSignals(cas: CASOutput): { languages: string[]; frameworks: 
     const language = nodeLanguageSignal(node);
     if (language) languages.add(language);
   }
-  // Frameworks go through the SAME comprehension gate the orchestrator uses to
-  // seed the description (framework-analyzer + product-path + application-surface),
-  // so summary.frameworks — the field the description cites — no longer reports
-  // adapter shims (django/fastapi from an SDK) or library category labels
-  // ("authentication and authorization") as frameworks the system is built with.
+
+
+
+
+
   const frameworks = selectProductFrameworkNames(
     cas.nodes || [],
-    // edges are load-bearing: a framework surface is recognized via the role of
-    // the node that structurally OWNS a handler (file/struct, through containment
-    // edges), because grouping assigns role='controller' to the owner, never to
-    // the individual handler. Omitting edges silently shifts every later argument.
+
+
+
+
     cas.edges || [],
     analyzerTypeMap(cas.analyzer_contributions || []),
     node => isPrimaryProductNodeForQuery(node as CASNode),
@@ -704,10 +703,10 @@ export function searchNodes(
     }
   }
 
-  // Within the exact bucket, put true symbol-name matches ahead of
-  // description/qualified-name substring hits: a node named exactly
-  // "buildSummary" should rank above some unrelated node whose description
-  // merely happens to mention "build summary" or share its type priority.
+
+
+
+
   exact.sort((a, b) => nameMatchRank(a, queryLower) - nameMatchRank(b, queryLower)
     || searchTypeRank(a.type) - searchTypeRank(b.type));
   overlapping.sort(
@@ -779,17 +778,17 @@ export function getFileNodes(cas: CASOutput, filePath: string, projectPath?: str
     nodeIds.has(e.source) && nodeIds.has(e.target)
   ).map(trimEdge);
 
-  // Empty result is ambiguous: a wrong path vs. a real file that simply isn't in
-  // the analyzed revision (e.g. it lives on an unmerged worktree branch). When the
-  // file DOES exist on disk but has no analyzed nodes, say so explicitly and stamp
-  // the analyzed revision — this is exactly the trust-then-verify gap agents hit.
+
+
+
+
   let hint: string | undefined;
   if (fileNodes.length === 0) {
     const rev = cas.system?.repository;
     const revStamp = rev?.commit || rev?.branch ? ` (analysis @ ${[rev?.branch, rev?.commit?.slice(0, 8)].filter(Boolean).join('/')})` : '';
     let onDisk = false;
     if (projectPath) {
-      try { onDisk = require('fs').existsSync(require('path').resolve(projectPath, filePath)); } catch { /* ignore */ }
+      try { onDisk = require('fs').existsSync(require('path').resolve(projectPath, filePath)); } catch {   }
     }
     hint = onDisk
       ? `0 nodes — this file exists in the working tree but is not present in the analyzed revision${revStamp}; your working tree may differ. Re-analyze the current branch to include it.`
@@ -853,7 +852,7 @@ export function getCommunicationSeams(
     offset,
     limit,
     level,
-    // System-level breakdown of every classified seam.
+
     inventory,
     seams: seams.slice(offset, offset + limit),
   };
@@ -868,16 +867,16 @@ export function getRouteTable(cas: CASOutput, opts: { limit?: number; offset?: n
   return { total, offset, limit, routes: routes.slice(offset, offset + limit) };
 }
 
-/**
- * First-class read surface for the CI/CD facts the CiPipelineAnalyzer already
- * emitted into the CAS graph. It does NOT recompute anything: it assembles the
- * pipeline -> stage/job -> step -> trigger -> deploy-target hierarchy plus the
- * inter-job DAG purely from the stored `ci_pipeline` / `ci_stage` / `ci_job` /
- * `ci_step` / `deploy_target` nodes, the `contains` / `depends_on` /
- * `deploys_to` edges, and the pipeline entry points. Mirrors getRouteTable /
- * getEntryPoints: a cheap map first (paginated pipelines with counts), heavy
- * detail (every step's command/action/env/secret refs) pulled on demand.
- */
+
+
+
+
+
+
+
+
+
+
 export function getCicdPipelines(
   cas: CASOutput,
   opts: { provider?: string; deployOnly?: boolean; limit?: number; offset?: number } = {},
@@ -889,9 +888,9 @@ export function getCicdPipelines(
   const attrs = (node: CASNode | undefined): Record<string, any> =>
     (node?.metadata as any)?.attributes || {};
 
-  // contains: parent -> child (pipeline->stage/job, stage->job, job->step)
-  // deploys_to: step -> deploy_target
-  // depends_on: job -> job (the DAG) and stage -> stage (ordering)
+
+
+
   const containsChildren = new Map<string, string[]>();
   const deploysTo = new Map<string, string[]>();
   const dependsOn = new Map<string, Array<{ target: string; reason?: string; dependency?: string }>>();
@@ -971,8 +970,8 @@ export function getCicdPipelines(
         jobs: (sa.jobs || []).map((id: string) => nodesById.get(id)?.name || id),
       };
     });
-    // Triggers live on pipeline entry points (type pipeline/schedule) whose
-    // container (source_node) is this pipeline node.
+
+
     const triggers = (cas.entry_points || [])
       .filter(ep => ep.source_node === pipeline.id)
       .map(ep => ({
@@ -982,10 +981,10 @@ export function getCicdPipelines(
         file: ep.handler?.file || (ep.metadata as any)?.file,
         line: ep.handler?.line || (ep.metadata as any)?.line,
       }));
-    // Fall back to the trigger events recorded on the pipeline node itself
-    // (always present) when no entry point resolved to this pipeline.
+
+
     const triggerFallback = triggers.length ? triggers : (a.triggers || []).map((event: string) => ({ type: 'pipeline', event }));
-    // Job DAG: edges among this pipeline's jobs only.
+
     const jobIds = new Set(jobs.map(job => job.id));
     const dag = jobs.flatMap(job =>
       (dependsOn.get(job.id) || [])
@@ -1042,11 +1041,11 @@ export function getExternalServices(cas: CASOutput) {
 
 export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
-  // Tracks node ids already pushed into `callers` (independent of `visited`,
-  // which gates *traversal from* a node). A node can be reached both via a
-  // graph edge and via a method_call record at the same depth (e.g. a normal
-  // call edge plus a duplicate method-call record for the same call site) —
-  // without this set the same caller would be pushed twice.
+
+
+
+
+
   const pushed = new Set<string>();
   const callers: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
   const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
@@ -1109,8 +1108,8 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
 export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
-  // See matching comment in getCallers: a node reachable via both a graph
-  // edge and a method_call record at the same depth must only be pushed once.
+
+
   const pushed = new Set<string>();
   const callees: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
   const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
@@ -1210,29 +1209,29 @@ export function getDataEntities(
   cas: CASOutput,
   opts: { entityName?: string; limit?: number; offset?: number; role?: SemanticRole } = {}
 ) {
-  let entities = cas.data_entities || [];
+  let entities = cas.entities || [];
   if (opts.entityName) {
     entities = entities.filter(e =>
       e.name.toLowerCase().includes(opts.entityName!.toLowerCase())
     );
   }
 
-  // Per-entity semantic role (core / supporting / infrastructure), classified
-  // with the SAME evidence + logic as the workspace item classifier (shared
-  // ./semantic-roles module), corroborated by the already-computed domain
-  // concept classification (cas.domain_concepts[].classification) and the
-  // entity's own lifecycle shape. Additive; omitted (`unknown`) when
-  // unclassifiable. See docs/SPEC-CONCEPTUAL-LAYER.md role vocabulary.
+
+
+
+
+
+
   const conceptIndex = buildDomainConceptIndex(cas.domain_concepts);
-  // Relation-pairing evidence for the integration-sync join-record check
-  // (classifyEntityRole step 0): built once from the ORM relation graph
-  // (cas.nodes/cas.edges), keyed by entity name, plus the set of domain
-  // entity names in THIS dataset and their field lists — so a *ConnectionBind
-  // -shaped entity can be told apart from a real domain entity without any
-  // hardcoded per-entity name list.
+
+
+
+
+
+
   const relationIndex = buildEntityRelationIndex(cas);
-  const domainEntityNamesLower = new Set((cas.data_entities || []).map(e => e.name.toLowerCase()));
-  const fieldsByNameLower = new Map((cas.data_entities || []).map(e => [e.name.toLowerCase(), e.fields]));
+  const domainEntityNamesLower = new Set((cas.entities || []).map(e => e.name.toLowerCase()));
+  const fieldsByNameLower = new Map((cas.entities || []).map(e => [e.name.toLowerCase(), e.fields]));
   const roleByEntityId = new Map<string, { role?: SemanticRole; role_evidence: string[] }>();
   for (const e of entities) {
     roleByEntityId.set(e.id, classifyEntityRole(e, conceptIndex, {
@@ -1242,7 +1241,7 @@ export function getDataEntities(
     }));
   }
 
-  // Optional role filter — apply BEFORE pagination so counts stay honest.
+
   if (opts.role) {
     entities = entities.filter(e => roleByEntityId.get(e.id)?.role === opts.role);
   }
@@ -1268,34 +1267,34 @@ export function getDataEntities(
       id: e.id,
       name: e.name,
       schema_source: e.schema_source,
-      // E1 entity_description.v1 (orchestrator applyAIInterpretation, last-stage
-      // pass over the full evidence bundle): AI-only-or-absent, never a
-      // deterministic placeholder — description stays undefined when the pass
-      // hasn't run or the AI enrichment is skipped/degraded for this entity.
+
+
+
+
       description: e.description,
       description_source: e.description_source,
       role: classification?.role,
       role_evidence: classification?.role_evidence,
       field_count: e.fields?.length || 0,
-      // A field that IS a relation is flagged rather than dropped: the column
-      // is real and callers still need its name/type, but it must not read as
-      // scalar state when a relation declaration or an entity-typed
-      // declaration proves it is a foreign key. See `relations` below for the
-      // relation itself (direction, cardinality, evidence).
+
+
+
+
+
       fields: (e.fields || []).slice(0, 10).map(f =>
         relationFieldNames.has(f.name) && !f.is_relation ? { ...f, is_relation: true } : f),
       relation_field_names: [...relationFieldNames],
-      // DATA relations only — ORM associations (decorator, attribute, or
-      // analyzer-emitted edge) and typed composition where a field's type IS
-      // another extracted entity. Every entry cites the evidence that proves
-      // it; a field whose NAME merely looks like a foreign key yields nothing.
+
+
+
+
       relations: dataRelations.slice(0, 25),
       relation_count: dataRelations.length,
-      // STRUCTURAL relations (implements / uses_trait / extends) are a
-      // SEPARATE field. They are legitimate — an entity implementing an
-      // interface is a real edge — but they are not the data model, and they
-      // used to be the only thing in `relations`, which made a persisted
-      // entity look unrelated to everything it has a foreign key to.
+
+
+
+
+
       structural_relations: structuralRelations.slice(0, 10),
       structural_relation_count: structuralRelations.length,
       lifecycle_summary: {
@@ -1426,24 +1425,24 @@ export function getStability(cas: CASOutput, nodeId?: string) {
   };
 }
 
-/**
- * Transitive affected set over the call graph (Workstream C,
- * docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): every node whose behavior can be
- * affected when `nodeIds` change (direction 'upstream' = transitive callers,
- * the blast radius; 'downstream' = transitive callees; 'both' = undirected
- * closure). Uses the persisted reachability index when the analysis carries
- * one AND it's marked `includes_invokes_edges` (near-O(1) / O(answer));
- * falls back to a full BFS traversal over the SAME edge set
- * `reachabilityEdgePairs` defines ('calls' edges + resolved method_calls +
- * 'invokes' edges) on CAS revisions with no persisted index, or with one
- * stored before that flag existed — both paths return identical answers
- * (parity-tested). Gating on the flag (not presence alone) matters: an
- * analysis stored before task #100 carries an index built over 'calls' +
- * method_calls only, and reusing it unconditionally would silently narrow
- * the answer below what a fresh traversal (or a re-analysis) would report.
- * When `maxNodes` truncates, both paths return a bounded subset and flag
- * `truncated: true`; the untruncated closure is identical across paths.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function getAffectedSet(
   cas: CASOutput,
   nodeIds: string[],
@@ -1458,9 +1457,9 @@ export function getAffectedSet(
     return { ...result, method: 'reachability_index' };
   }
 
-  // Traversal fallback: no persisted index, or one stored before
-  // 'includes_invokes_edges' existed — BFS over the exact edge set a fresh
-  // index would be built from, so answers match the up-to-date index path.
+
+
+
   const fwd = new Map<string, string[]>();
   const rev = new Map<string, string[]>();
   for (const [s, t] of reachabilityEdgePairs(cas)) {
@@ -1504,28 +1503,28 @@ function isTestOwnedRiskNode(node: CASNode | undefined): boolean {
   );
 }
 
-/**
- * Score change risk for a SINGLE node on demand, when it is a riskable type
- * (function/method/service/controller/...) but buildChangeRisks left it out
- * of the precomputed `cas.change_risks` list — either because that pass caps
- * itself at the top 100 repo-wide, or because its "boring node" pre-filter
- * (few callers, not exported, not entry/data/repo/domain/critical) skipped
- * it as noise for a REPO-WIDE summary. Neither reason is valid grounds for
- * `assess_change_risk` to answer `null` when a caller asks about this ONE
- * specific node by id: the top-100/noise-filtering makes sense for a
- * repo-wide list, never for a targeted per-node question (defect #1,
- * 2026-08 blackbox demo: a real method's headline `risk` field came back
- * null while the transitive-impact data beneath it was excellent).
- *
- * Mirrors buildChangeRisks' non-git risk factors from CASOutput fields alone
- * (nodes/edges/entry_points/temporal_stability already on the analysis) — the
- * one factor buildChangeRisks derives from a live git.log() call
- * (`recent-bugs`) is instead read from cas.temporal_stability for this node
- * when present, and honestly omitted (not silently assumed absent) when it
- * is not. No node is ever dropped for having "too few" risk factors here —
- * zero factors is itself the honest answer 'low' risk, not a reason to
- * return nothing.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
   const edges = cas.edges || [];
@@ -1557,16 +1556,16 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   const isDataRelated = node.type === 'entity' || node.type === 'model' || node.type === 'serializer';
   const isRepository = node.type === 'repository' ||
     /repository|repo|dao|gateway|store/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
-  // Severity escalation is driven by STRUCTURAL evidence only — see
-  // hasStructuralSecurityEvidence in orchestrator.ts (the single shared
-  // implementation buildChangeRisks also uses) for why: a prior version of
-  // this check, and of buildChangeRisks' own copy, matched node/file names
-  // against a hardcoded bag mixing generic security terms with business-
-  // domain nouns from an unrelated (fleet/logistics) corpus ("fuel",
-  // "vehicle", "driver", "trip", "dispatch"), which is exactly the
-  // hardcoded-categorizer class the product's cardinal rule forbids. See the
-  // same-shaped fix already applied to capability naming in
-  // capability-audience-test.ts.
+
+
+
+
+
+
+
+
+
+
   const hasSecurityEvidence = hasStructuralSecurityEvidence(node);
   const nodeComplexity = node.metadata?.complexity?.cyclomatic || 0;
   const hasDirectTestCoverage = !!node.testing?.tested_by?.length || directlyTestCalled;
@@ -1641,20 +1640,20 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   };
 }
 
-/**
- * `high_risk_nodes` / `untested_critical_paths` on `cas.change_risk_summary`
- * are REPO-WIDE lists (buildChangeRiskSummary scans every scored node in the
- * whole codebase), not consequences of the one change being assessed.
- * Embedding them wholesale under a per-node assess_change_risk answer read as
- * "your change endangers ~100 things" (defect #2, 2026-08 blackbox demo: a
- * one-method query returned ~100 high_risk_nodes and ~47
- * untested_critical_paths spanning unrelated JS files, locale printers, and
- * config parsers) — false, and actively destructive to trust in a tool whose
- * whole job is honest risk signal. Scope both lists to the change's own
- * transitive blast radius (`scopeNodeIds`); repo-wide totals are still
- * available, but as counts only and unmistakably labeled repo-wide rather
- * than embedded as if they were part of the per-node answer.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function scopedChangeRiskContext(cas: CASOutput, scopeNodeIds: Set<string>) {
   const summary = cas.change_risk_summary;
   if (!summary) return null;
@@ -1686,15 +1685,15 @@ export function assessChangeRisk(cas: CASOutput, nodeId: string) {
   }
 
   if (!risk && !RISKABLE_NODE_TYPES.includes(node.type)) {
-    // The node exists but its type is never scored by buildChangeRisks (property,
-    // interface, variable, class, file, import, ...) — returning `risk: null` plus the
-    // whole-repo change_risk_summary here would look like "assessed, low-risk" when the
-    // node was never evaluated at all (bug #3, 2026-07-04 impact benchmark: a silent
-    // wrong-looking answer instead of an honest "unsupported" signal). Surface the real
-    // reason and point at a node this tool can actually assess instead.
-    // Walk 'contains' edges upward (property -> class/interface -> file) looking for the
-    // nearest ancestor whose type IS scored, so the caller has something concrete to assess
-    // instead of a dead end.
+
+
+
+
+
+
+
+
+
     const containedBy = new Map<string, string>();
     for (const edge of cas.edges) {
       if (edge.type === 'contains') containedBy.set(edge.target, edge.source);
@@ -1724,10 +1723,10 @@ export function assessChangeRisk(cas: CASOutput, nodeId: string) {
     };
   }
 
-  // Transitive blast radius (additive): full upstream closure — every node
-  // that can transitively reach this one, i.e. everything a change here can
-  // affect. Near-O(1) via the persisted reachability index when present;
-  // traversal fallback on older CAS (same edge set, same answer).
+
+
+
+
   const affectedResult = getAffectedSet(cas, [nodeId], { direction: 'upstream' });
   const nodeNameById = new Map(cas.nodes.map(n => [n.id, n.name]));
   const transitiveImpact = {
@@ -1736,12 +1735,12 @@ export function assessChangeRisk(cas: CASOutput, nodeId: string) {
     method: affectedResult.method,
   };
 
-  // Defect #1: never fall back to a silent `risk: null` for a riskable-type
-  // node just because buildChangeRisks' repo-wide top-100/noise filtering
-  // left it out — compute the answer on demand instead (see
-  // scoreChangeRiskOnDemand). `risk_computation` says which path produced it,
-  // so a caller can tell "the analysis already knew this" from "computed just
-  // now for this ask" without guessing from field presence alone.
+
+
+
+
+
+
   const resolvedRisk = risk || scoreChangeRiskOnDemand(cas, node);
   const scopeNodeIds = new Set<string>([nodeId, ...affectedResult.affected]);
 
@@ -1761,13 +1760,13 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
       test_gaps: (cas.test_gaps || []).filter(g => g.location.call_chain_id === chainId),
     };
   }
-  // VOCABULARY COHERENCE: `flow_coverage` entries are per CALL CHAIN
-  // (call_chain_id), not per flow. Report chains as chains, and measure FLOW
-  // coverage over the SAME flow set get_flow_concepts returns
-  // (computeFlowConcepts' union), joined chain->flow by chain id (terminal
-  // flows embed it: flow::<chain_id>) or by shared entry point. Previously
-  // `total_flows` was the raw chain count (e.g. 3703) while get_flow_concepts
-  // said 10 — two tools, one word, two meanings.
+
+
+
+
+
+
+
   const chainByStatus: Record<string, number> = {};
   for (const fc of coverage) {
     chainByStatus[fc.coverage_status] = (chainByStatus[fc.coverage_status] || 0) + 1;
@@ -1775,8 +1774,8 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
 
   const flows = computeFlowConcepts(cas);
   const coverageByChainId = new Map(coverage.map(fc => [fc.call_chain_id, fc]));
-  // entry node/entry-point id -> best coverage status of any chain rooted there
-  // (for entry-point-rooted flows that don't wrap a single recorded chain).
+
+
   const STATUS_RANK: Record<string, number> = { 'fully-covered': 3, 'partially-covered': 2, 'not-covered': 1 };
   const bestStatusByEntry = new Map<string, string>();
   for (const chain of cas.call_chains || []) {
@@ -1794,7 +1793,7 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
   const flowsByStatus: Record<string, number> = {};
   let unmeasuredFlows = 0;
   for (const flow of flows) {
-    // Terminal flows carry their chain id in the flow_id (flow::<chain_id>).
+
     const embeddedChainId = flow.flow_id.startsWith('flow::') ? flow.flow_id.slice('flow::'.length) : undefined;
     const direct = embeddedChainId ? coverageByChainId.get(embeddedChainId) : undefined;
     const status = direct?.coverage_status || bestStatusByEntry.get(flow.entry_point);
@@ -1812,29 +1811,29 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
   }
   return {
     flow_summary: cas.flow_summary || null,
-    // Flows — the SAME flow set (and count) as get_flow_concepts.
+
     total_flows: flows.length,
     flows_by_coverage_status: flowsByStatus,
-    // Flows with no coverage-measured chain rooted at their entry point —
-    // honest "unmeasured", never silently folded into not-covered.
+
+
     unmeasured_flows: unmeasuredFlows,
-    // Chains — the raw per-call-chain coverage records, reported as chains.
+
     total_chains: coverage.length,
     chains_by_coverage_status: chainByStatus,
-    // Back-compat alias (pre-coherence field name; same chain breakdown).
+
     by_coverage_status: chainByStatus,
     total_test_gaps: gaps.length,
     test_gaps_by_severity: gapsBySeverity,
   };
 }
 
-// "Workflow" is not a stored CAS structure (docs/cas/SPECIFICATION.md
-// §0.5.1 — tier-3 comprehension has exactly four members: Capability, Flow,
-// Step, Entity; journeys/workflows are derived, presentation-only views
-// over `flows`). This is a read-time projection over `cas.user_journeys` —
-// the same journey a `get_user_journeys` caller sees, reshaped into the
-// workflow-summary vocabulary this tool's existing callers expect. Nothing
-// here is a second stored source of truth.
+
+
+
+
+
+
+
 function journeyToWorkflowSummary(journey: CASUserJourney) {
   return {
     id: journey.id,
@@ -1858,9 +1857,9 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
   return {
     total: journeys.length,
     workflows: journeys.map(journeyToWorkflowSummary),
-    // No stored dependency graph exists anymore; a real workflow-dependency
-    // read would need its own flow-continuation-based projection, not yet
-    // built. Absent, not fabricated.
+
+
+
     workflow_graph: null,
   };
 }
@@ -1909,14 +1908,14 @@ export function getUserJourneys(
     };
   }
 
-  // Steps in the list form: default ON. Each step is small (node_id, name,
-  // layer, depth), so even a page of 25 journeys stays token-cheap, and it
-  // removes the near-universal need for a 2nd per-journey detail call just to
-  // get the step chain (e.g. to feed a node_id into get_coding_context). Uses
-  // the same display-deduped step list as the markdown/detail views (drops
-  // steps whose label repeats the entry or the previous step) so the JSON and
-  // markdown forms agree. Pass include_steps: false to opt out for very large
-  // listings.
+
+
+
+
+
+
+
+
   const includeSteps = opts.includeSteps !== false;
 
   return {
@@ -1946,18 +1945,18 @@ export function getUserJourneys(
             depth: step.depth,
           }))
         : undefined,
-      // Compact source->sink reaching-chain so the cross-function path is visible
-      // without a second per-journey detail call. Reuses the same compression-bounded
-      // step-name phrase as the markdown/detail views (leading + "(N intermediate)" +
-      // trailing), keeping this token-bounded even for long chains.
+
+
+
+
       path: journeyStepPhrase(journey) || undefined,
       security_boundary_count: journey.security_boundaries?.length || 0,
       test_count: journey.tests_covering?.length || 0,
-      // Journeys are a derived view over flows; this is the direct,
-      // evidence-gated capability linkage the journey inherited from its
-      // underlying flow (never re-derived from journey data alone). Omitted
-      // when the flow this journey projects from has no capability
-      // relationship.
+
+
+
+
+
       capability_ids: journey.capability_relationships?.length
         ? journey.capability_relationships.map(rel => rel.capability_id)
         : undefined,
@@ -2002,15 +2001,15 @@ export function getParadigmConformance(
   };
 }
 
-/**
- * Architectural consistency: pattern-conflict/overlap findings (the same
- * concern handled by two competing structural patterns) and engineering-
- * principle violations (layering, single-responsibility, coupling), grounded
- * in the same deterministic evidence as paradigm_conformance. This is the
- * tool an agent calls BEFORE adding non-trivial code to check "is what I'm
- * about to build consistent with how this system is actually built?" —
- * self-regulation so a fleet of agents keeps a growing codebase cohesive.
- */
+
+
+
+
+
+
+
+
+
 export function getArchitecturalConflicts(
   cas: CASOutput,
   opts: { severity?: 'low' | 'medium' | 'high'; limit?: number; offset?: number; includeFlowLinks?: boolean } = {}
@@ -2035,15 +2034,15 @@ export function getArchitecturalConflicts(
   const violationsByPrinciple: Record<string, number> = {};
   for (const v of violations) violationsByPrinciple[v.principle] = (violationsByPrinciple[v.principle] || 0) + 1;
 
-  // Cross-link to the BEHAVIORAL hierarchy (docs/SPEC-CONCEPTUAL-LAYER.md
-  // §3/§6): which flow(s)/step(s)/capability(ies) each conflict/violation's
-  // evidence actually sits on, deterministically, via node-id/file
-  // membership in the traced flow function sets. Opt-out (includeFlowLinks:
-  // false) since it requires computing flows; on by default because flows
-  // are cheap at the default bounded traversal depth and this is exactly the
-  // point of the unification. Silently degrades to no links (never throws)
-  // when entry_points are absent — existing callers see identical output
-  // plus an empty flow_links, not a behavior change.
+
+
+
+
+
+
+
+
+
   const includeFlowLinks = opts.includeFlowLinks !== false;
   let conflictLinks = new Map<string, ReturnType<typeof computeConflictBehavioralLinks>['conflicts'] extends Map<string, infer V> ? V : never>();
   let violationLinks = new Map<string, ReturnType<typeof computeConflictBehavioralLinks>['violations'] extends Map<string, infer V> ? V : never>();
@@ -2075,17 +2074,17 @@ export function getArchitecturalConflicts(
   };
 }
 
-/**
- * Module health: "which parts of this system are dangerous to touch, and
- * why" (task #122 — a codebase-analysis product that never told its own team
- * a 31k-line file existed). Every finding is a file that is a statistical
- * OUTLIER within THIS codebase's own file-size/churn/fan-in/capability-anchor
- * distribution (median + MAD modified z-score, see module-health.ts) — never
- * a fixed line-count cutoff. A tidy codebase legitimately returns zero
- * findings; that is success, not a gap. Call this before touching a file you
- * do not already know well, or when onboarding to an unfamiliar system, to
- * see where change is structurally risky before you make it.
- */
+
+
+
+
+
+
+
+
+
+
+
 export function getModuleHealth(
   cas: CASOutput,
   opts: { kind?: 'size-outlier' | 'change-concentration' | 'fan-in-hotspot' | 'mixed-concerns' | 'danger-composite'; severity?: 'info' | 'warning' | 'error'; limit?: number; offset?: number } = {}
@@ -2127,13 +2126,13 @@ export function getModuleHealth(
   };
 }
 
-/**
- * Order data-lineage access sites so the most authoritative producers/consumers
- * come first: repositories and services (where the entity is really persisted or
- * orchestrated) above controllers, above UI stores, above tests. An entity whose
- * only writer is a test or a UI store reads as "untraceable" to an onboarding
- * agent — surface the real backend site instead.
- */
+
+
+
+
+
+
+
 function rankLineageSites<T extends { file?: string }>(sites: T[]): T[] {
   const rank = (file: string | undefined): number => {
     const f = (file || '').toLowerCase();
@@ -2156,13 +2155,13 @@ export function getDataLineage(
     : undefined;
   const lineage = cas.data_lineage || [];
 
-  // `entityName` is an alias accepted for callers that pass a display name
-  // (e.g. "Invoice") rather than the internal entity_id — this was previously
-  // silently ignored, returning the identical unfiltered listing regardless
-  // of what was passed. Resolve by entity_id first (exact), then by
-  // entity_name case-insensitively. A filter that resolves to nothing now
-  // returns an explicit not-found reason instead of silently falling through
-  // to the unfiltered listing.
+
+
+
+
+
+
+
   const requestedFilter = opts.entityId || opts.entityName;
   if (requestedFilter) {
     let entity = lineage.find(item => item.entity_id === requestedFilter) || null;
@@ -2218,10 +2217,10 @@ export function getDataLineage(
       sensitive_fields: item.sensitive_fields,
       writer_count: item.writers.length,
       reader_count: item.readers.length,
-      // Surface the actual writer/reader SITES (file + how), not just counts —
-      // otherwise the lineage is unnavigable ("who writes User?" -> a number).
-      // Rank persistence/service/controller sites above tests and UI stores so the
-      // first results point at where the entity is really produced/consumed.
+
+
+
+
       writers: rankLineageSites(item.writers).slice(0, 6).map(writer => ({ file: writer.file, via: writer.via, node_id: writer.node_id })),
       readers: rankLineageSites(item.readers).slice(0, 6).map(reader => ({ file: reader.file, via: reader.via, node_id: reader.node_id })),
       external_recipients: item.external_recipients.map(recipient => recipient.service),
@@ -2332,11 +2331,11 @@ export function getProductMap(
 export function productMapToMarkdown(map: CASProductMap): string {
   const lines: string[] = [];
   const percent = (rate: number) => `${Math.round(rate * 100)}%`;
-  // Exposure-highlight fields (sensitive_fields, external_recipients) are typed
-  // string[], but legacy/cross-repo analyses can carry field/recipient OBJECTS
-  // ({name,...} / {service,...}) instead of bare strings; joining those renders
-  // "[object Object]" in the served map. Coerce to a meaningful string so old
-  // analyses degrade to the field/service NAME instead of the object noise.
+
+
+
+
+
   const asLabel = (value: unknown): string => {
     if (value == null) return '';
     if (typeof value === 'string') return value;
@@ -2553,7 +2552,7 @@ export function getFlowGraph(cas: CASOutput) {
   const flowGraph = cas.flow_graph;
   if (!flowGraph) return null;
 
-  const capabilities = (flowGraph.capabilities || []).map(c => ({
+  const capabilities = (flowGraph.capability_candidates || []).map(c => ({
     id: c.id,
     name: c.name,
     description: c.description,
@@ -2652,8 +2651,8 @@ export function getPatterns(cas: CASOutput) {
   };
 }
 
-/** Louvain functional modules over the call graph — structural parity with
- *  codebase-memory's community detection, computed from the final CAS graph. */
+
+
 export function getCommunities(cas: CASOutput) {
   const communities = detectCommunities(
     (cas.nodes || []).map(n => n.id),
@@ -2673,8 +2672,8 @@ export function getCommunities(cas: CASOutput) {
   };
 }
 
-/** MinHash near-clone groups over function/method bodies — structural parity with
- *  codebase-memory's SIMILAR_TO edge. */
+
+
 export function getClones(cas: CASOutput, opts: { threshold?: number } = {}) {
   const items = (cas.nodes || [])
     .filter(n => /function|method/.test(String(n.type)) && n.source?.raw)
@@ -2691,10 +2690,10 @@ export function getClones(cas: CASOutput, opts: { threshold?: number } = {}) {
   };
 }
 
-/** Dead code: functions/methods with zero callers in the call graph, excluding
- *  entry points and tests — structural parity with codebase-memory's dead-code
- *  detection. (Exported-but-uncalled symbols are reported; they are API surface
- *  the caller can vet, the same simple definition the competition uses.) */
+
+
+
+
 export function getDeadCode(cas: CASOutput) {
   const called = new Set(
     (cas.edges || [])
@@ -2896,13 +2895,13 @@ export function getPerspectives(cas: CASOutput) {
   return cas.perspectives || [];
 }
 
-/**
- * Returns behavioral (flows/capabilities) and structural (architectural
- * conflicts + paradigm conformance) perspectives cross-referenced in one call,
- * each annotated with links into the other. Pure composition over the three
- * existing accessors — does not change or duplicate their own outputs.
- * `target` narrows flows the same way get_flow_concepts does.
- */
+
+
+
+
+
+
+
 export function getUnifiedPerspectives(
   cas: CASOutput,
   opts: { target?: string; maxFlows?: number; severity?: 'low' | 'medium' | 'high' } = {}
@@ -3159,19 +3158,19 @@ export function getDatabaseSchema(cas: CASOutput) {
   return cas.database_schema || null;
 }
 
-// --- Entity-Relationship model (ERD) -----------------------------------------
-//
-// The ORM analyzers + entity extraction already give us `cas.database_schema`
-// (entities, fields, and `relationships` carrying an ORM relation kind + target
-// + field). `buildErd` reshapes THAT — it does not re-extract — into a
-// structured entity-relationship model plus a renderable Mermaid `erDiagram`.
-//
-// Evidence-gating: every relationship edge comes from a real ORM relation
-// declaration (decorator, typed edge, attribute, or Eloquent method) captured on
-// an entity's `relationships[]`. We never invent an edge from a field name that
-// merely looks like a foreign key. When the relation kind is present but its
-// cardinality is not one of the four known ORM kinds, we label the edge
-// `unknown` rather than guessing a cardinality.
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export type ErdCardinality = 'one-to-one' | 'one-to-many' | 'many-to-one' | 'many-to-many' | 'unknown';
 
@@ -3189,7 +3188,7 @@ export interface ErdEntity {
   table?: string;
   source_file?: string;
   fields: ErdField[];
-  /** Repos this entity appears in (only set when a workspace analysis spans repos). */
+
   repos?: string[];
   cross_repo?: boolean;
 }
@@ -3198,10 +3197,10 @@ export interface ErdRelationship {
   from: string;
   to: string;
   cardinality: ErdCardinality;
-  /** The declaring field / relation-method name on `from`. */
+
   field?: string;
   join_table?: string;
-  /** How the relation kind was grounded, e.g. the raw ORM relation type. */
+
   evidence: string;
 }
 
@@ -3211,7 +3210,7 @@ export interface ErdModel {
   relationships: ErdRelationship[];
   cardinality_breakdown: Record<ErdCardinality, number>;
   cross_repo?: {
-    /** Entity names that appear in more than one repo in the workspace. */
+
     shared_entities: string[];
     repos: string[];
   };
@@ -3224,7 +3223,7 @@ const ERD_RELATION_KIND_TO_CARDINALITY: Record<string, ErdCardinality> = {
   ManyToMany: 'many-to-many',
 };
 
-/** The extractor's normalized cardinality -> the ERD vocabulary. */
+
 const ERD_EXTRACTED_CARDINALITY: Record<string, ErdCardinality> = {
   '1:1': 'one-to-one',
   '1:N': 'one-to-many',
@@ -3232,8 +3231,8 @@ const ERD_EXTRACTED_CARDINALITY: Record<string, ErdCardinality> = {
   'N:M': 'many-to-many',
 };
 
-// The Mermaid crow's-foot notation for the LEFT->RIGHT reading of the edge.
-// `from` side first. e.g. one-to-many: from ||--o{ to.
+
+
 const ERD_CARDINALITY_TO_MERMAID: Record<ErdCardinality, string> = {
   'one-to-one': '||--||',
   'one-to-many': '||--o{',
@@ -3242,12 +3241,12 @@ const ERD_CARDINALITY_TO_MERMAID: Record<ErdCardinality, string> = {
   unknown: '..',
 };
 
-/**
- * Build a structured ERD model from `cas.database_schema`. Optionally accepts a
- * workspace analysis to annotate entities that span multiple repos (the same
- * entity/relationship graph spanning repos). Returns an empty (non-crashing)
- * model when the repo has no entities.
- */
+
+
+
+
+
+
 export function buildErd(
   cas: CASOutput,
   opts: { entityName?: string; workspace?: { entities?: Array<{ name: string; project_ids?: string[] }>; project_ids?: string[] } } = {},
@@ -3257,13 +3256,13 @@ export function buildErd(
     'one-to-one': 0, 'one-to-many': 0, 'many-to-one': 0, 'many-to-many': 0, unknown: 0,
   });
 
-  // The relation graph from EVERY carrier, not just `database_schema`. An ORM
-  // whose analyzer emits relation EDGES (rather than property decorators) used
-  // to leave `database_schema.entities[].relationships` nearly empty, and a
-  // typed-composition data model left it entirely empty — in both cases the
-  // ERD rendered a set of disconnected boxes even though the relations were
-  // provable from the stored graph. Reading the shared extractor here also
-  // means an analysis stored BEFORE relations were persisted still renders.
+
+
+
+
+
+
+
   const relationGraph = buildEntityRelationIndex(cas);
 
   if (!schema || !schema.entities || schema.entities.length === 0) {
@@ -3272,7 +3271,7 @@ export function buildErd(
 
   const wantEntity = opts.entityName?.toLowerCase();
 
-  // Cross-repo annotation: which entity names appear in >1 repo of the workspace.
+
   const sharedEntityNames = new Set<string>();
   const wsRepos = new Set<string>();
   const wsEntities = opts.workspace?.entities || [];
@@ -3286,17 +3285,17 @@ export function buildErd(
     if (we.project_ids && we.project_ids.length) wsEntityRepos.set(we.name.toLowerCase(), we.project_ids);
   }
 
-  // NON-PERSISTED SHAPES ARE NOT ERD ENTITIES. `data_entities` carries the
-  // deterministic kind, so a shape the analyzer classified as a domain
-  // shape/DTO/value object is excluded here even when it reached
-  // `database_schema` (an analysis stored before the producer-side persistence
-  // gate, or a schema carrier that admitted a type on its location). Exclusion
-  // requires an explicit non-persisted classification: a name ABSENT from
-  // `data_entities`, or one with no kind at all, is left alone — absence is not
-  // evidence. Dropping the box also drops its edges, since every relationship
-  // below is gated on both endpoints being in the entity set.
+
+
+
+
+
+
+
+
+
   const nonPersistedNames = new Set<string>();
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     if (entity.kind && entity.kind !== 'persisted-entity') {
       nonPersistedNames.add(entity.name.toLowerCase());
     }
@@ -3309,22 +3308,22 @@ export function buildErd(
   const relationships: ErdRelationship[] = [];
   const breakdown = emptyBreakdown();
   const relSeen = new Set<string>();
-  // (entity|field) pairs whose relation is already drawn. A field declares AT
-  // MOST ONE association, so a second carrier reading the same field with a
-  // different cardinality (a typed-composition `1:1` over a decorator's `N:1`)
-  // must not draw a second edge — that would render every relation twice.
+
+
+
+
   const relFieldClaimed = new Set<string>();
 
   for (const ent of schemaEntities) {
     if (wantEntity && ent.name.toLowerCase() !== wantEntity) {
-      // Still allow it to appear if it is the TARGET of a wanted entity's
-      // relationship — handled below by not filtering targets out of the graph.
+
+
     }
 
-    // Foreign-key fields: a scalar field whose name matches a relation's join
-    // field, or ends in a conventional `_id`/`Id` suffix AND names a known
-    // entity. Only the former is strictly evidence-backed; the suffix heuristic
-    // is a labelling aid (fk?), never a source of relationship edges.
+
+
+
+
     const relationFieldNames = new Set([
       ...((ent.relationships || []).map(r => r.field).filter(Boolean) as string[]),
       ...(relationGraph.relationFieldsByEntityNameLower.get(ent.name.toLowerCase()) || []),
@@ -3355,12 +3354,12 @@ export function buildErd(
       cross_repo: sharedEntityNames.has(nameKey) || undefined,
     });
 
-    // Evidence-gated relationships: one edge per declared ORM relation.
+
     for (const rel of ent.relationships || []) {
       if (!rel.target) continue;
       const cardinality: ErdCardinality = ERD_RELATION_KIND_TO_CARDINALITY[rel.type] || 'unknown';
-      // Dedup on (from|kind|to|field) so a decorator + typed-edge description of
-      // the SAME relation don't double-count.
+
+
       const key = `${ent.name}|${cardinality}|${rel.target}|${rel.field || ''}`.toLowerCase();
       if (relSeen.has(key)) continue;
       relSeen.add(key);
@@ -3377,10 +3376,10 @@ export function buildErd(
     }
   }
 
-  // Relations from the shared extractor, for every entity already in the
-  // diagram. Same evidence gate: the target must be a known entity. Dedupe is
-  // shared with the database_schema pass above via `relSeen`, so a relation
-  // proved by both carriers renders once.
+
+
+
+
   const erdEntityNames = new Map(entities.map(e => [e.name.toLowerCase(), e.name]));
   for (const [sourceKey, relations] of relationGraph.dataByEntityNameLower) {
     const fromName = erdEntityNames.get(sourceKey);
@@ -3409,8 +3408,8 @@ export function buildErd(
     }
   }
 
-  // Entity filter: when an entity is named, keep it, its direct neighbours, and
-  // only the edges touching it — so the ERD is a focused subgraph, not a lie.
+
+
   let outEntities = entities;
   let outRelationships = relationships;
   if (wantEntity) {
@@ -3423,7 +3422,7 @@ export function buildErd(
     outRelationships = relationships.filter(
       r => r.from.toLowerCase() === wantEntity || r.to.toLowerCase() === wantEntity,
     );
-    // Recompute breakdown for the focused view.
+
     const fb = emptyBreakdown();
     for (const r of outRelationships) fb[r.cardinality] += 1;
     return {
@@ -3445,14 +3444,14 @@ export function buildErd(
 }
 
 function fkTargetGuess(fieldName: string): string {
-  // `userId` / `user_id` -> `User`. Best-effort, only used to LABEL a field as
-  // fk when the guessed target is a known entity; never emits a relationship.
+
+
   const base = fieldName.replace(/(_id|Id)$/, '');
   const camel = base.replace(/[_-](\w)/g, (_, c) => c.toUpperCase());
   return camel.charAt(0).toUpperCase() + camel.slice(1);
 }
 
-/** Render a Mermaid `erDiagram` string from an ERD model. */
+
 export function erdToMermaid(model: ErdModel): string {
   const lines: string[] = ['erDiagram'];
   const safe = (n: string) => n.replace(/[^A-Za-z0-9_]/g, '_');
@@ -3461,8 +3460,8 @@ export function erdToMermaid(model: ErdModel): string {
     const header = ent.cross_repo ? `  ${safe(ent.name)} {` : `  ${safe(ent.name)} {`;
     lines.push(header);
     if (ent.fields.length === 0) {
-      // Mermaid needs at least a valid block; emit nothing inside is allowed but
-      // some renderers dislike empty blocks, so annotate presence.
+
+
     }
     for (const f of ent.fields) {
       const type = safe(f.type || 'unknown') || 'unknown';
@@ -3486,10 +3485,10 @@ export function erdToMermaid(model: ErdModel): string {
   return lines.join('\n');
 }
 
-/**
- * Public ERD query used by the MCP tool / CLI / HTTP. Returns the structured
- * model plus a Mermaid `erDiagram`. `format` narrows the payload.
- */
+
+
+
+
 export function getErd(
   cas: CASOutput,
   opts: { entityName?: string; format?: 'json' | 'mermaid'; workspace?: Parameters<typeof buildErd>[1] extends infer O ? O : never } = {},
@@ -3518,10 +3517,10 @@ export function getTodos(cas: CASOutput) {
 }
 
 export function getDependencies(cas: CASOutput) {
-  // Package-manager dependencies are parsed into cas.libraries (name/version/type/
-  // package_manager); the cas.dependencies summary is rarely populated. Build the
-  // real dependency view from the manifest-backed libraries so the tool returns
-  // versions + counts instead of null.
+
+
+
+
   const libs = (cas.libraries || []) as Array<{ name?: string; version?: string; type?: string; package_manager?: string; security?: { vulnerabilities?: unknown[] }; license?: string }>;
   const manifestDeps = libs.filter(lib => lib.package_manager && lib.version);
   if (manifestDeps.length === 0) return cas.dependencies || { direct_count: 0, total_count: 0, packages: [] };
@@ -3590,13 +3589,13 @@ export function getLibraries(cas: CASOutput, opts: { query?: string; limit?: num
   return { total, offset, limit, libraries: summarized };
 }
 
-/**
- * Self-discovered coverage gaps (see analyzer/core/coverage-gaps.ts): unknown
- * dependencies matching no analyzer, low node-extraction-ratio files, roots
- * with zero entry points, and unhandled tree-sitter node types. This is the
- * queryable surface for "what does this analysis NOT understand yet" — the
- * mechanism that makes gap-closing systematic instead of ad hoc.
- */
+
+
+
+
+
+
+
 export function getCoverageGaps(
   cas: CASOutput,
   opts: { kind?: string; severity?: string; limit?: number; offset?: number } = {}
@@ -3634,10 +3633,10 @@ export function getCoverageGaps(
   };
 }
 
-/**
- * Levenshtein edit distance, used only for short identifier-length strings
- * (fuzzy near-name matching below) — not intended for long text.
- */
+
+
+
+
 function levenshteinDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
@@ -3657,23 +3656,23 @@ function levenshteinDistance(a: string, b: string): number {
   return prev[n];
 }
 
-/**
- * Builds a graceful "target not found" result shared by getCodingContext and
- * getInterfaceSignature: (a) frames the miss as CAS-relative, not absolute —
- * the analysis may simply be stale, not the guess wrong, (b) surfaces an
- * analysis-age hint (this function has no git access to run the full
- * freshness scan itself), (c) points at get_server_version if the
- * tool/analysis itself seems unavailable, and (d) offers fuzzy near-name
- * matches so a typo or stale name still gets somewhere useful.
- */
+
+
+
+
+
+
+
+
+
 function buildTargetNotFoundResult(cas: CASOutput, target: string, toolName: string) {
   const query = target.trim();
   const queryLower = query.toLowerCase();
 
-  // Near-name matches: prefer substring hits (cheap, high precision for partial/
-  // renamed identifiers), then fall back to edit-distance for typos, scored over
-  // named nodes only (searching all ~tens-of-thousands of nodes by full edit
-  // distance would be wasteful; substring first keeps this cheap in the common case).
+
+
+
+
   const namedNodes = cas.nodes.filter(n => typeof n.name === 'string' && n.name.length > 0);
   const substringMatches = namedNodes.filter(n => n.name.toLowerCase().includes(queryLower) || queryLower.includes(n.name.toLowerCase()));
 
@@ -3692,12 +3691,12 @@ function buildTargetNotFoundResult(cas: CASOutput, target: string, toolName: str
       file: node.source?.file,
     }));
 
-  // Analysis-age hint: this function only has the CAS payload (no project path
-  // or git access), so it can't run the real staleness scan (see
-  // get_analysis_freshness / getFreshAnalysisForAgent for that). It surfaces the
-  // one staleness-relevant fact it does have — how old the stored analysis is —
-  // so an agent isn't left guessing whether "not found" means "doesn't exist" or
-  // "analysis predates this symbol".
+
+
+
+
+
+
   let analysisAgeHint: string | undefined;
   if (cas.analysis_timestamp) {
     const analyzedAt = new Date(cas.analysis_timestamp);
@@ -3741,9 +3740,9 @@ export function getCodingContext(
   const shouldInclude = (section: string) => includeAll || opts.include?.includes(section);
   const callerLimit = opts.caller_limit && opts.caller_limit > 0 ? opts.caller_limit : 10;
   const calleeLimit = opts.callee_limit && opts.callee_limit > 0 ? opts.callee_limit : 10;
-  // Large-but-bounded probe used only to learn the true caller/callee count so we can
-  // report `callers_total`/`callees_total` and a `truncated` flag instead of silently
-  // dropping entries past the display limit (see docs/SPEC-RESPONSE-BUDGET.md).
+
+
+
   const UNCAPPED_COUNT_PROBE = 5000;
 
   let targetNode: CASNode | undefined;
@@ -3958,9 +3957,9 @@ export function getCodingContext(
 
   const callersResult = getCallers(cas, targetNode.id, 1, callerLimit);
   const calleesResult = getCallees(cas, targetNode.id, 1, calleeLimit);
-  // callersResult.total/truncated only reflect what the capped traversal collected, not
-  // the real graph count. Re-probe at depth 1 with a large limit to learn the true count
-  // so truncation is reported honestly rather than silently.
+
+
+
   const callersTotal = callersResult.truncated
     ? getCallers(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total
     : callersResult.total;
@@ -4005,10 +4004,10 @@ export function getCodingContext(
       : {}),
   };
 
-  // TELEMETRY facet (facet 6 of the uniform understanding contract): if the
-  // caller supplied runtime metrics, attach "how this unit actually runs" to
-  // the resolved target node. Evidence-gated — omitted entirely when no
-  // observation matches this node, never fabricated.
+
+
+
+
   if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
     const tel = telemetryForNode(targetNode.id, opts.runtimeMetrics);
     if (tel) result.telemetry = tel;
@@ -4017,19 +4016,19 @@ export function getCodingContext(
   return result;
 }
 
-/**
- * Resolve "Class::method" / "Class.method" / "Class#method" syntax — agents
- * often paste a target straight from a stack trace or another tool's naming
- * convention, and node ids don't encode that shape directly. Each member
- * node carries a `parent` pointing at its containing class/interface node,
- * which is the robust join: find class node(s) by name, then a method/function
- * node among them whose `parent` equals the class node's id. Falls back to
- * the id-embedding convention used by method nodes
- * (`method_class_<file>_<Class>_<i>_<method>_<j>`, see flow-concepts.ts) when
- * no `parent` link is present on this analyzer's output. An honest miss
- * returns undefined rather than guessing across classes with the same method
- * name.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function resolveClassMember(cas: CASOutput, className: string, memberName: string): CASNode | undefined {
   const memberNodes = cas.nodes.filter(n =>
     (n.type === 'method' || n.type === 'function') && n.name === memberName
@@ -4044,23 +4043,23 @@ function resolveClassMember(cas: CASOutput, className: string, memberName: strin
     if (member) return member;
   }
 
-  // Fall back to id-embedding convention when no parent link resolved.
+
   const idScoped = memberNodes.find(n => n.id.includes(`_${className}_`));
   if (idScoped) return idScoped;
 
   return undefined;
 }
 
-/**
- * getInterfaceSignature — the I/L/S/O join (SPEC-INTELLIGENCE-CAPITALIZATION.md
- * concept #2). Every entity (function -> flow -> capability -> project ->
- * workspace) has the same contract shape: Input (what it requires), Logic
- * (the blackbox internal wiring), Side-effects (3rd-party/external touches),
- * Output (what it produces). Today these four facts live in four separate
- * tools/ID-spaces (entry_points, exit_points, data_lineage, callers/callees)
- * that an agent must call separately and intersect by node_id/file by hand.
- * This is a pure JOIN over existing facts — no new analyzer pass.
- */
+
+
+
+
+
+
+
+
+
+
 export function getInterfaceSignature(
   cas: CASOutput,
   target: string,
@@ -4070,8 +4069,8 @@ export function getInterfaceSignature(
   const calleeLimit = opts.callee_limit && opts.callee_limit > 0 ? opts.callee_limit : 10;
   const UNCAPPED_COUNT_PROBE = 5000;
 
-  // -- project/workspace level: aggregate from workspace-level-CAS-adjacent CAS fields
-  // (product_map, exit_points, entry_points) rather than a single node. --
+
+
   const requestedLevel = opts.level && opts.level !== 'auto' ? opts.level : undefined;
   const isProjectTarget = requestedLevel === 'project' || requestedLevel === 'workspace'
     || (!requestedLevel && /^(project|workspace|\.|\/?$)$/.test(target.trim()));
@@ -4107,13 +4106,13 @@ export function getInterfaceSignature(
     };
   }
 
-  // -- function/flow/capability level: resolve target node the same way
-  // getCodingContext does (node id, file path, or search query). --
+
+
   let targetNode: CASNode | undefined;
 
-  // Class::method / Class#method syntax (unambiguous separators — agents
-  // commonly paste this straight from a stack trace or another tool) is
-  // tried first, before the file-path/id/search fallbacks below.
+
+
+
   const classMemberSeparatorMatch = target.match(/^([\w$]+)\s*(?:::|#)\s*([\w$]+)$/);
   if (classMemberSeparatorMatch) {
     targetNode = resolveClassMember(cas, classMemberSeparatorMatch[1], classMemberSeparatorMatch[2]);
@@ -4132,9 +4131,9 @@ export function getInterfaceSignature(
     }
   }
 
-  // Class.method syntax is ambiguous with a bare file name (e.g. "utils.ts"),
-  // so it is only tried as a last resort once the id/file/search resolution
-  // above has come up empty.
+
+
+
   if (!targetNode && !classMemberSeparatorMatch) {
     const dotMatch = target.match(/^([\w$]+)\.([\w$]+)$/);
     if (dotMatch) {
@@ -4152,7 +4151,7 @@ export function getInterfaceSignature(
         ? 'flow'
         : 'function');
 
-  // -- I: required inputs --
+
   const ownEntryPoints = (cas.entry_points || []).filter(ep =>
     ep.source_node === targetNode!.id || ep.handler?.node_id === targetNode!.id
   );
@@ -4160,14 +4159,14 @@ export function getInterfaceSignature(
   const callersResult = getCallers(cas, targetNode.id, 1, callerLimit);
   const callersTotal = callersResult.truncated ? getCallers(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total : callersResult.total;
 
-  // -- O: produced outputs --
+
   const returnType = targetNode.signature?.return_type;
   const ownExitEventNames: string[] = [];
 
-  // -- S: side-effects, from exit_points filtered to this node's own
-  // source_node (code-level call sites) reconciled with data_lineage
-  // external_recipients for entities this node writes/reads (entity-level
-  // recipients) — the two "external" notions the audit found unreconciled. --
+
+
+
+
   const ownExitPoints = (cas.exit_points || []).filter(ep => ep.source_node === targetNode!.id);
   const lineageEntries = cas.data_lineage || [];
   const relatedLineage = lineageEntries.filter(entry =>
@@ -4176,19 +4175,19 @@ export function getInterfaceSignature(
   const externalRecipients = [...new Set(relatedLineage.flatMap(entry => entry.external_recipients.map(r => r.service)))];
   const boundariesCrossed = relatedLineage.flatMap(entry => entry.boundaries_crossed);
 
-  // -- L: blackbox internal wiring (callers + callees), reusing the
-  // truncation-signal pattern from getCodingContext (report the true total,
-  // never silently drop entries past the display limit). --
+
+
+
   const calleesResult = getCallees(cas, targetNode.id, 1, calleeLimit);
   const calleesTotal = calleesResult.truncated ? getCallees(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total : calleesResult.total;
   const anyTruncated = callersTotal > callersResult.callers.length || calleesTotal > calleesResult.callees.length;
 
-  // -- purpose: terminal-signal proximity, if the entity's name/related
-  // entities match a ranked terminal entity/stage. Cheap: buildTerminalSignal
-  // runs over the CAS's own journeys/capabilities, already in memory. --
+
+
+
   let purpose: string | undefined;
   if (cas.user_journeys && cas.user_journeys.length > 0) {
-    const signal = buildTerminalSignal({ journeys: cas.user_journeys, systemCapabilities: cas.system_capabilities || [] });
+    const signal = buildTerminalSignal({ journeys: cas.user_journeys, systemCapabilities: cas.capabilities || [] });
     const nameLower = targetNode.name.toLowerCase();
     const matchedEntity = signal.ranked_entities.find(e => e.name.toLowerCase() === nameLower || nameLower.includes(e.name.toLowerCase()));
     const matchedStage = signal.ranked_stages.find(s => s.name.toLowerCase() === nameLower || nameLower.includes(s.name.toLowerCase()));
@@ -4237,100 +4236,100 @@ export function getInterfaceSignature(
   };
 }
 
-// getFlowConcepts has no default cap on the number of flows returned when
-// `target` is omitted — one flow per entry point, each carrying a full
-// I/L/S/O + Constraints contract per flow AND per step. On a repo with
-// hundreds/thousands of entry points (this repo: 1,133) that is ~467k
-// tokens in a single uncapped response — silently, since the only signal
-// was an undocumented "default: all" in the tool description. This default
-// keeps the common "browse a handful of flows" case cheap while an agent
-// that genuinely wants everything can still ask for it explicitly via
-// max_flows (a large explicit value, or Infinity-ish via a big number) —
-// never silent, always paginated with total/truncated/hint.
-//
-// RAISED 15 -> 25 (P0 rank-before-truncate). The old number was chosen when the
-// window was significance-BLIND, so a bigger page only bought more 1-step
-// leaves; with ranking in front of the cap the page carries the flows that
-// answer a question, and the size is now set from measurement.
-//
-// MEASURED compact-projection cost per flow (`flows` JSON bytes / flow, three
-// real stored CASes, heavy evidence tiers already stripped):
-//
-//   page size |    27k-node repo |   57k-node repo |   12k-node repo
-//   ----------+------------------+-----------------+----------------
-//        15   |  10.0 KB / flow  | 12.1 KB / flow  |  6.4 KB / flow
-//        25   |   9.9 KB / flow  | 11.1 KB / flow  |  6.2 KB / flow
-//        50   |   8.5 KB / flow  |  8.8 KB / flow  |  5.6 KB / flow
-//
-// A ranked page costs ~3x MORE per flow than the old window did (~2.4-3.4 KB)
-// — precisely because it now carries deep flows instead of leaves. That cost
-// is dominated by RANKING, not by page size: going 15 -> 25 adds ~21% bytes
-// for 67% more flows, and the per-flow cost DROPS as the page extends into
-// shallower flows. 25 is where the marginal flow is still substantive.
-//
-// Interaction with the hard response budget (docs/SPEC-RESPONSE-BUDGET.md):
-// every MCP tool result is bounded to RESPONSE_BUDGET_BYTES (20,000) by
-// server.ts' enforceResponseBudget, which shrinks the largest arrays and
-// attaches an honest truncation envelope. That wrapper — not this default —
-// is what actually sizes an MCP response on a large repo, and it is now SAFE
-// for it to trim the tail of `flows`, because the tail is the lowest-ranked
-// end of a real order rather than an arbitrary one. Callers that want the
-// trimmed flows ask for them by page (`offset`), not by luck.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const DEFAULT_MAX_FLOWS = 25;
 
-/**
- * getFlowConcepts — the FLOW -> STEP tier of the conceptual understanding
- * layer (docs/SPEC-CONCEPTUAL-LAYER.md), thin query-layer wrapper over
- * computeFlowConcepts (packages/analyzer-core/src/analyzer/core/flow-concepts.ts).
- * `target` filters to entry points matching an id/name/route-path substring;
- * omitted returns the top DEFAULT_MAX_FLOWS derivable flows (explicit
- * `maxFlows` overrides the default; pass a value >= the real entry_points
- * count to get everything).
- */
+
+
+
+
+
+
+
+
+
 export function getFlowConcepts(
   cas: CASOutput,
   opts: {
     target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean; runtimeMetrics?: RuntimeMetricLike[]; role?: SemanticRole;
-    /** Page offset into the RANKED flow order (rankStoredFlowRefs) — the
-     *  page-2 mechanism. 0/omitted = first page. */
+
+
     offset?: number;
-    /** 'compact' (default) elides the heavy evidence tiers (contract
-     *  facet_provenance, step code_mappings) with availability markers so the
-     *  browse response stays inside the size budget; 'full' inlines them. */
+
+
+
     detail?: 'compact' | 'full';
-    /** Persisted AI-authored flow/step descriptions (element-description store,
-     *  kind 'flow'), keyed by flow_id AND step_id. This is the caller of the
-     *  interpretive `nameStep` seam: step keys feed computeFlowConcepts'
-     *  nameStep hook (description_source flips to 'ai'); flow keys overlay the
-     *  flow-level description. Absent -> fully deterministic output. */
+
+
+
+
+
     aiDescriptions?: Map<string, { description: string }>;
-    /** Which caller surface is asking — affects only the phrasing of the
-     *  truncation gap hint below. 'mcp' (default): this function's own
-     *  `maxFlows` param is a first-class tool arg an MCP caller can pass
-     *  directly. 'http': the caller is an HTTP route (e.g. /conceptual) that
-     *  may or may not forward a max_flows query param — the hint must name
-     *  the actual mechanism (query param, with its bound) rather than assume
-     *  a bare function-argument surface that doesn't exist for HTTP callers. */
+
+
+
+
+
+
+
     surface?: 'mcp' | 'http';
   } = {}
 ) {
-  // Only apply the default cap when browsing all flows (no target filter).
-  // A targeted lookup ("flows touching this entry point") is already
-  // naturally narrow and an explicit ask — don't second-guess it.
+
+
+
   const effectiveMaxFlows = opts.maxFlows && opts.maxFlows > 0
     ? opts.maxFlows
     : (opts.target ? undefined : DEFAULT_MAX_FLOWS);
 
-  // PAGINATION (P0): offset into the ranked order. Only meaningful when a
-  // ranked order exists (browse case + materialized flow index) — a targeted
-  // lookup has no stable global order to page through, so an offset there is
-  // reported as unsupported in `gaps` rather than silently applied.
+
+
+
+
   const requestedOffset = opts.offset && opts.offset > 0 ? Math.floor(opts.offset) : 0;
-  // Exact denominator for the paged view: the materialized flow index IS the
-  // full flow set (one ref per derived flow), so when it is present we know
-  // the true total without a second uncapped derivation — the honest `total`
-  // the old truncation hint could only approximate with entry_points.length.
-  const rankedTotal = (!opts.target && !opts.role) ? rankStoredFlowRefs(cas).length : 0;
+
+
+
+
+  const rankedTotal = (!opts.target && !opts.role) ? rankMaterializedFlows(cas).length : 0;
   const pagingSupported = rankedTotal > 0;
   const offset = pagingSupported ? requestedOffset : 0;
 
@@ -4339,16 +4338,16 @@ export function getFlowConcepts(
     offset: offset > 0 ? offset : undefined,
     maxDepth: opts.maxDepth,
     maxFunctionsPerFlow: opts.maxFunctionsPerFlow,
-    // Probe one extra so we can report truncation honestly without a
-    // second full compute pass just to learn the true total. When a `role`
-    // filter is active we must compute over ALL flows first (otherwise the
-    // per-flow filter would only ever see the first N and silently miss
-    // matching flows past the cap), so drop the probe cap in that case.
+
+
+
+
+
     maxFlows: opts.role ? undefined : (effectiveMaxFlows ? effectiveMaxFlows + 1 : undefined),
-    // The interpretive seam's caller (ICELOT doctrine): persisted AI-authored
-    // step descriptions (element-description store, kind 'flow') feed the
-    // nameStep hook, flipping matched steps' description_source to 'ai'.
-    // Deterministic labels remain the fallback for every unmatched step.
+
+
+
+
     nameStep: opts.aiDescriptions && opts.aiDescriptions.size > 0
       ? (step) => {
           const hit = opts.aiDescriptions!.get(step.step_id);
@@ -4358,8 +4357,8 @@ export function getFlowConcepts(
   };
   let probedFlows = computeFlowConcepts(cas, computeOpts);
 
-  // Flow-level AI description overlay (same store, keyed by flow_id). The
-  // deterministic `intent` stays untouched as the fact-shaped fallback.
+
+
   if (opts.aiDescriptions && opts.aiDescriptions.size > 0) {
     for (const f of probedFlows) {
       const hit = opts.aiDescriptions.get(f.flow_id);
@@ -4370,17 +4369,17 @@ export function getFlowConcepts(
     }
   }
 
-  // Per-flow semantic role (core / supporting / infrastructure), classified
-  // with the SAME shared ./semantic-roles logic as entities + workspace items,
-  // anchored on the already-computed domain concept classification
-  // (entry-point-anchored and touched-entity-anchored) with a name-based
-  // fallback. Additive; `unknown` (undefined) when unclassifiable.
+
+
+
+
+
   const flowConceptIndex = buildDomainConceptIndex(cas.domain_concepts);
-  // Structural terminal/product evidence per flow (entry TYPE + terminus +
-  // capability membership) — outranks domain-concept/name anchors inside
-  // classifyFlowRole, so a deploy.sh-rooted flow is infrastructure even when a
-  // "shell" domain concept was classified core, and a capability-serving flow
-  // with an api/persisted terminus is core regardless of its name.
+
+
+
+
+
   const roleEntryPointById = new Map((cas.entry_points || []).map(ep => [ep.id, ep]));
   const roleNodeById = new Map(cas.nodes.map(n => [n.id, n]));
   const structuralRoleEvidence = (f: (typeof probedFlows)[number]) => {
@@ -4396,18 +4395,18 @@ export function getFlowConcepts(
       capability_linked: Boolean(f.capability_id),
     };
   };
-  // FLOW-FLOODING FIX: a flow rooted at a `test` entry point is a real
-  // structural fact (get_test_summary depends on the underlying entry point
-  // staying in the graph) but must never be counted into the product
-  // core/supporting/infrastructure vocabulary — a test-heavy CAS would
-  // otherwise either drown those buckets in test noise or (via the
-  // conservative "supporting" name fallback) silently misclassify test flows
-  // as product surface. Give it its own honest 'test' bucket instead, decided
-  // BEFORE the name/domain-concept classifier runs (entry type is a stronger,
-  // cheaper signal than name matching). Doctrine: tests stay in the graph and
-  // in entry_points; they just never dominate — see
-  // filterPrimaryProductEntryPoints/filterPrimaryProductJourneys in
-  // orchestrator.ts for the same doctrine applied to comprehension surfaces.
+
+
+
+
+
+
+
+
+
+
+
+
   const roleByFlowId = new Map<string, { role?: SemanticRole | 'test'; role_evidence: string[] }>();
   for (const f of probedFlows) {
     const structural = structuralRoleEvidence(f);
@@ -4420,17 +4419,17 @@ export function getFlowConcepts(
     }
     const classification = classifyFlowRole(f, flowConceptIndex, structural);
     roleByFlowId.set(f.flow_id, classification);
-    // Rule (c) of the capability↔flow relational-role derivation
-    // (docs/SEMANTIC-MODEL.md — roles live on the EDGE): an entity-overlap
-    // relationship on a flow the classifier grounds as 'infrastructure'
-    // (deploy/install script entry, plumbing surface) is 'operational', not
-    // 'supporting'. Primary (operation-ref) and observability (telemetry-exit)
-    // edges keep their stronger evidence.
+
+
+
+
+
+
     applyFlowRoleToCapabilityRelationships(f, classification.role, classification.role_evidence);
   }
 
-  // Optional role filter — applied to the fully-computed flow set before the
-  // browse cap, so counts and truncation stay honest for the filtered view.
+
+
   if (opts.role) {
     probedFlows = probedFlows.filter(f => roleByFlowId.get(f.flow_id)?.role === opts.role);
   }
@@ -4443,32 +4442,32 @@ export function getFlowConcepts(
   for (const f of probedFlows) {
     roleBreakdown[roleByFlowId.get(f.flow_id)?.role || 'unknown']++;
   }
-  // Honest product-vs-test denominator, independent of the (possibly capped)
-  // probe window above: a cheap O(entry_points) pass over facts already
-  // loaded, so total_available staying dominated by test count is visible
-  // rather than silently implied. Additive field — existing consumers reading
-  // total_available/role_breakdown are unaffected.
+
+
+
+
+
   const testEntryPointTotal = (cas.entry_points || []).filter(ep => ep.type === 'test').length;
   const entryPointTotals = {
     product: (cas.entry_points || []).length - testEntryPointTotal,
     test: testEntryPointTotal,
   };
-  // True total when we didn't truncate is just what we got; when we did,
-  // it's at least effectiveMaxFlows+1 (we don't re-probe uncapped here —
-  // entry_points.length is the authoritative upper bound for "all flows").
-  // When a role filter is active we computed over ALL flows, so probedFlows
-  // (post-filter) is the exact filtered total — don't fall back to the
-  // entry-point upper bound (which ignores the filter).
-  //
-  // When the materialized flow index is available (pagingSupported) it IS the
-  // exact total — use it instead of the entry-point upper bound, so `offset`
-  // has a denominator a caller can page against rather than an estimate.
+
+
+
+
+
+
+
+
+
+
   const totalFlowsAvailable = pagingSupported
     ? rankedTotal
     : truncated
       ? (opts.role ? probedFlows.length : Math.max(probedFlows.length, (cas.entry_points || []).length))
       : probedFlows.length;
-  // "Is there another page" is an offset question, not just a cap question.
+
   const hasMore = pagingSupported ? offset + flows.length < totalFlowsAvailable : truncated;
   const nextOffset = hasMore && pagingSupported ? offset + flows.length : undefined;
 
@@ -4481,24 +4480,24 @@ export function getFlowConcepts(
   }
   if (requestedOffset > 0 && !pagingSupported) {
     gaps.push(
-      'offset ignored: paging needs the materialized flow index (flow_graph.flows) and the untargeted/unfiltered browse view — this response has no stable global rank order to page through. Use target to narrow instead.'
+      'offset ignored: paging needs canonical materialized flows and the untargeted/unfiltered browse view — this response has no stable global rank order to page through. Use target to narrow instead.'
     );
   }
   if (hasMore) {
-    // Report the cap that was ACTUALLY applied (effectiveMaxFlows), not the
-    // module default — a caller (e.g. the /conceptual HTTP route) may pass
-    // its own explicit maxFlows, and stating DEFAULT_MAX_FLOWS there would be
-    // false ("default cap 15" while the real cap in effect was 20).
+
+
+
+
     const appliedCapNotice = opts.maxFlows && opts.maxFlows > 0
       ? `cap ${effectiveMaxFlows}`
       : `default cap ${effectiveMaxFlows} when browsing all entry points`;
-    // HONEST HINT (P0): the old text told HTTP callers to "Pass a max_flows
-    // query param (bounded, max 50)" — i.e. the advertised remedy was capped
-    // at the same number that caused the complaint, and there was no page 2 at
-    // all. Name the mechanism that actually reaches flow #51+.
+
+
+
+
     const moreHint = pagingSupported
-      // Same mechanism name on both surfaces: `offset` is a real query param on
-      // the HTTP route AND a real tool arg on the MCP surface.
+
+
       ? `Pass offset=${nextOffset} (with max_flows) for the next page — flows are ranked by significance (steps, capability link, terminus, criticality, structural importance) before the cap, so page 1 is the top of that order and later pages are strictly lower-ranked, never duplicated. Or use target to narrow to a specific entry point/route/name.`
       : (opts.surface === 'http'
         ? 'Pass a larger max_flows query param to see more, or target to narrow to a specific entry point/route/name.'
@@ -4511,20 +4510,20 @@ export function getFlowConcepts(
     }
   }
 
-  // Cross-link each flow/step to the STRUCTURAL perspectives (architectural
-  // layer + paradigm-deviation membership, docs/SPEC-CONCEPTUAL-LAYER.md
-  // §3/§6) — on by default (includeStructural: false to opt out). Purely
-  // additive: `structural` is a new field on each flow/step; existing
-  // consumers reading name/contract/functions see no change.
+
+
+
+
+
   const includeStructural = opts.includeStructural !== false;
   const withRole = (flow: typeof flows[number]) => {
     const classification = roleByFlowId.get(flow.flow_id);
-    // `terminus` (what the flow PRODUCES at its resolved exit — SPEC terminal
-    // anchor), `capability_id` (back-compat primary link the UI binds) and
-    // `capability_relationships` (the real M:N model — role on the edge) are
-    // spread via `...flow`, but named explicitly so the projection is an
-    // intentional, grep-visible field-list rather than an implicit spread
-    // that a future compaction could silently drop.
+
+
+
+
+
+
     return { ...flow, terminus: flow.terminus, capability_id: flow.capability_id, capability_relationships: flow.capability_relationships, role: classification?.role, role_evidence: classification?.role_evidence };
   };
   let flowsOut: any[] = flows.map(withRole);
@@ -4552,40 +4551,40 @@ export function getFlowConcepts(
     });
   }
 
-  // TELEMETRY facet (facet 6 of the uniform understanding contract): join
-  // real runtime metrics onto each flow/step contract when the caller supplied
-  // them (server.ts loads persisted observations and builds NodeRuntimeMetrics).
-  // Evidence-gated: attachTelemetryToFlows only sets `contract.telemetry` where
-  // an observation actually matches; nothing is fabricated. The mutation lands
-  // on the shared `contract` object referenced by both `flows` and `flowsOut`
-  // (the structural branch shallow-spreads steps, so `step.contract` is the
-  // same reference).
-  //
-  // Runs over `probedFlows` (the full computed-before-display-cap set), not
-  // the possibly-truncated `flows` page: `flows` is a slice of the SAME
-  // object references when truncated, so attaching onto probedFlows covers
-  // the display page for free while also giving the capability-level rollup
-  // below (computeCapabilityTelemetry) the widest honest view this call
-  // actually computed, rather than silently only seeing page 1.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   let capabilityTelemetry: ReturnType<typeof computeCapabilityTelemetry> | undefined;
   let unexercised: ReturnType<typeof unexercisedFlows> | undefined;
   if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
     attachTelemetryToFlows(probedFlows, opts.runtimeMetrics);
-    if (cas.system_capabilities && cas.system_capabilities.length > 0) {
-      capabilityTelemetry = computeCapabilityTelemetry(cas.system_capabilities, probedFlows);
+    if (cas.capabilities && cas.capabilities.length > 0) {
+      capabilityTelemetry = computeCapabilityTelemetry(cas.capabilities, probedFlows);
     }
     unexercised = unexercisedFlows(probedFlows, opts.runtimeMetrics);
   }
 
-  // COMPACT projection (default): D2 facet_provenance + D1 code_mappings
-  // inflate per-flow weight ~3-4x, and with the significance-first flow window
-  // (task #15) the default window carries REAL flows — a whale's compact
-  // get_flow_concepts response measured 138KB against the 64KB budget. The
-  // heavy evidence tiers leave the default projection (marker fields say what
-  // was elided); `detail: 'full'` opts back in for callers that want the
-  // walkable provenance/mapping chains inline. Built as NEW objects — the
-  // underlying flow/step/contract objects are shared with `flows` and must
-  // not be mutated.
+
+
+
+
+
+
+
+
+
   if (opts.detail !== 'full') {
     const stripContract = (contract: any) => {
       if (!contract || typeof contract !== 'object' || !('facet_provenance' in contract)) return contract;
@@ -4610,46 +4609,46 @@ export function getFlowConcepts(
 
   return {
     flows: flowsOut,
-    // total = count returned (unchanged meaning/back-compat with prior
-    // callers that read `.total` as "how many flows are in `flows`").
-    // `total_available`/`truncated` are additive fields carrying the honest
-    // "is there more" signal instead of a silent drop.
+
+
+
+
     total: flows.length,
     total_available: totalFlowsAvailable,
-    // `truncated` keeps its meaning ("there are more flows than this response
-    // carries") but is now offset-aware: on page 3 of 5 it is still true, and
-    // on the last page it is false even though a cap was applied.
+
+
+
     truncated: hasMore,
-    // PAGINATION (P0). `returned`/`offset`/`next_offset` are the honest
-    // page-2 contract: next_offset is present iff another page exists, and
-    // feeding it straight back as `offset` yields the next slice of the SAME
-    // ranked order (no overlap, no gap). Omitted (never 0/null) on the last
-    // page, so "is there more" is answerable without arithmetic.
+
+
+
+
+
     returned: flows.length,
     offset,
     next_offset: nextOffset,
-    /** How the window was chosen — so a caller knows whether `offset` is live
-     *  and what the order in front of the cap actually is. */
+
+
     ranking: pagingSupported
       ? 'significance: product-first, then step depth + capability link + terminus + chain criticality + structural importance; ties by flow_id (byte-stable)'
       : 'derivation order (no materialized flow index on this analysis — offset unavailable)',
     role_breakdown: roleBreakdown,
-    // Honest product-vs-test split of ALL entry points on the CAS (not just
-    // the probed window) — additive, so total_available dominated by test
-    // count is legible instead of silently implied.
+
+
+
     entry_point_totals: entryPointTotals,
-    // Tier 4 capability-level rollup (docs/analysis-scope/SPECIFICATION.md
-    // §8) — "which capabilities are exercised versus dormant". Omitted
-    // (never []) when no runtime metrics were supplied, matching the
-    // evidence-gated omission rule the flow/step telemetry facet already
-    // follows. Each entry states its own `coverage` — 'dormant' is only ever
-    // true under 'full' coverage; see computeCapabilityTelemetry's doc.
+
+
+
+
+
+
     capability_telemetry: capabilityTelemetry && capabilityTelemetry.length ? capabilityTelemetry : undefined,
-    // "Paths that exist in source but never run in production" — flows this
-    // call computed that carry no observation, only reported when real
-    // telemetry data exists for the scope at all (never a claim of dead code
-    // from an untelemetered repo, which would be indistinguishable from
-    // silence). Annotates; does not remove the flow from `flows` above.
+
+
+
+
+
     unexercised_flows: unexercised && unexercised.length ? unexercised : undefined,
     gaps: gaps.length ? gaps : undefined,
   };
@@ -5310,7 +5309,6 @@ export function getUsageExamples(
   const node = cas.nodes.find(n => n.id === nodeId);
   if (!node) return { error: `Node not found: ${nodeId}` };
 
-  const limit = opts.limit || 10;
   const includeTests = opts.include_tests || false;
 
   const callers = getCallers(cas, nodeId, 1, 100);
@@ -5421,18 +5419,18 @@ export function getConfiguration(
       filteredNodes = relatedConfigs;
     }
 
-    // Node-scoped process.env.* discovery: cas.configuration.environment_variables is only
-    // ever populated from .env-shaped FILES (see buildConfiguration in orchestrator.ts) — a
-    // plain `export const X = process.env.X === 'true'` in an ordinary source file (e.g.
-    // config.ts) is invisible to that mechanism no matter what affecting_node_id is passed,
-    // even though the target node directly imports and branches on it (bug #4, 2026-07-04
-    // impact benchmark: QuotaEnforcementInterceptor imports ENFORCE_API_QUOTAS from
-    // '../../../config' and gates its entire behavior on it, yet get_configuration scoped to
-    // that class returned an empty environment_variables array). Walk the 'references' edges
-    // (see the extractIdentifierReferences fix for bug #1) from affecting_node_id to any
-    // variable node whose initializer literally reads process.env.*, and surface those
-    // directly — real, evidence-based (regex over the actual captured initializer text), not
-    // fabricated, and additive to whatever cas.configuration already found.
+
+
+
+
+
+
+
+
+
+
+
+
     const PROCESS_ENV_RE = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/;
     const referencedVarIds = new Set(
       cas.edges
@@ -5458,9 +5456,9 @@ export function getConfiguration(
     }
 
     if (discoveredEnvVars.length > 0 || relatedConfigs.length > 0) {
-      // Node-scoped result: only what's actually connected to this node (the discovered
-      // process.env reads plus any cas.configuration entries whose used_by/affected_nodes
-      // already names this node) — not the whole repo's env var list.
+
+
+
       scopedEnvVars = [
         ...scopedEnvVars.filter(ev => ev.used_by?.includes(opts.affecting_node_id!)),
         ...discoveredEnvVars,

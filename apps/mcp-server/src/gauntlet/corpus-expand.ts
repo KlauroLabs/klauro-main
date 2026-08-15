@@ -1,16 +1,16 @@
-/**
- * Corpus-expansion harness — clones diverse, challenging repos, runs Klauro's
- * analyzer on each, and reports where reach grows vs where Klauro is BLIND.
- *
- * The point is two-sided: prove Klauro now handles more repo types (shell,
- * libraries, less-common stacks), and surface the next capability gaps honestly
- * (a repo that analyzes to ~0 nodes = a language/framework Klauro can't see yet).
- * Output feeds the "expand the reach" roadmap: every BLIND row is a missing
- * analyzer; every THIN row is an analyzer that needs depth.
- *
- *   npm run corpus:expand            # curated diverse set (small repos, shallow)
- *   npm run corpus:expand -- --set gaps   # only the suspected-gap stacks
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as os from 'os';
 import * as path from 'path';
@@ -26,9 +26,9 @@ const execFileAsync = promisify(execFile);
 export interface ExpansionTarget {
   name: string;
   url: string;
-  /** What this repo stresses — the dimension we're checking coverage on. */
+
   kind: string;
-  /** Expected primary language/stack. */
+
   stack: string;
 }
 
@@ -43,32 +43,32 @@ export interface ExpansionResult {
   entry_points: number;
   frameworks: string[];
   duration_ms: number;
-  /** supported = real structure extracted; thin = some but sparse; blind = ~nothing. */
+
   verdict: 'supported' | 'thin' | 'blind' | 'error';
   error?: string;
 }
 
-/**
- * Curated, intentionally diverse + small (so a shallow clone is fast). Spans the
- * dimensions the corpus is weak on: shell, C, Solidity (crypto-relevant),
- * libraries, and a couple of well-covered stacks as a control.
- */
+
+
+
+
+
 export const DIVERSE_SET: ExpansionTarget[] = [
-  // --- already-supported controls ---
+
   { name: 'shlib', url: 'https://github.com/client9/shlib', kind: 'shell scripts', stack: 'shell' },
   { name: 'xxhash-go', url: 'https://github.com/cespare/xxhash', kind: 'Go library', stack: 'go' },
-  // --- new languages (Wave 1) ---
+
   { name: 'solmate', url: 'https://github.com/transmissions11/solmate', kind: 'Solidity contracts', stack: 'solidity' },
   { name: 'sds', url: 'https://github.com/antirez/sds', kind: 'C library', stack: 'c' },
   { name: 'json-cpp', url: 'https://github.com/nlohmann/json', kind: 'C++ header lib', stack: 'cpp' },
   { name: 'swift-collections', url: 'https://github.com/apple/swift-collections', kind: 'Swift library', stack: 'swift' },
   { name: 'ktor-samples', url: 'https://github.com/ktorio/ktor-samples', kind: 'Kotlin/Ktor', stack: 'kotlin' },
   { name: 'plug', url: 'https://github.com/elixir-plug/plug', kind: 'Elixir library', stack: 'elixir' },
-  // --- TS/JS meta-frameworks (Wave 2) ---
+
   { name: 'sveltekit-demo', url: 'https://github.com/sveltejs/realworld', kind: 'SvelteKit app', stack: 'sveltekit' },
   { name: 'astro-blog', url: 'https://github.com/withastro/astro', kind: 'Astro', stack: 'astro' },
   { name: 'hono', url: 'https://github.com/honojs/examples', kind: 'Hono backend', stack: 'hono' },
-  // --- architectural libraries (Wave 3) ---
+
   { name: 'prisma-examples', url: 'https://github.com/prisma/prisma-examples', kind: 'Prisma ORM', stack: 'prisma' },
   { name: 'trpc', url: 'https://github.com/trpc/examples-next-prisma-starter', kind: 'tRPC contract', stack: 'trpc' },
   { name: 'langchain-templates', url: 'https://github.com/langchain-ai/langchain-nextjs-template', kind: 'LangChain AI app', stack: 'langchain' },
@@ -117,10 +117,10 @@ async function analyzeTarget(target: ExpansionTarget, workRoot: string): Promise
 }
 
 export async function runCorpusExpansion(targets: ExpansionTarget[]): Promise<ExpansionResult[]> {
-  // Corpus clones live in the one explicit dev-data dir (~/.klauro/dev), never
-  // scattered under the user's real store; the run prints the dir's size on
-  // exit so growth stays visible. Shallow clones — a few hundred MB, and the
-  // whole dev dir is regenerable scratch, safe to delete wholesale.
+
+
+
+
   const workRoot = path.join(devDataRoot(), 'corpus-expand');
   reportDevDataDirSizeOnExit();
   await fs.ensureDir(workRoot);

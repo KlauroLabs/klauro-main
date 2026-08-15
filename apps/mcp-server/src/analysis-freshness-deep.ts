@@ -5,19 +5,19 @@ import { getAnalysisEntry, loadAnalysis, loadIncrementalState } from './storage'
 import type { CASLayersReady } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { FreshnessStatus } from './freshness';
 
-/**
- * `getAnalysisFreshness`: the glob-backed, full-source-tree freshness scan.
- * Split out of freshness.ts (2026-07) so importing the cheap, git-diff-based
- * `summarizeAnalysisFreshness` (still in freshness.ts, used by `klauro
- * status`) does not drag this file's dependency chain — `glob` alone pulls
- * in minimatch + path-scurry + lru-cache + minipass + graceful-fs, ~240KB
- * once bundled — into the installed customer client. `klauro status` was
- * restored to installed-cli.ts specifically to be genuinely lightweight (see
- * status-report.ts); it must never pay for a scan it does not use.
- *
- * Only agent-doctor.ts and server.ts (both dev/hosted-only) use this
- * function; installed-cli.ts must never import this module.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 export interface AnalysisFreshnessReport {
   generated_at: string;
   path: string;
@@ -32,9 +32,9 @@ export interface AnalysisFreshnessReport {
     modified_at: string;
   }>;
   recommendation: string;
-  /** Progressive-layering ladder (task #112), mirrored from the stored CAS's
-   *  `layers_ready` when present — absent for analyses produced outside the
-   *  layered entrypoint, where every layer is implicitly complete. */
+
+
+
   layers_ready?: CASLayersReady;
 }
 
@@ -120,10 +120,10 @@ export async function getAnalysisFreshness(projectPath: string): Promise<Analysi
   const incrementalState = await loadIncrementalState(projectPath);
   const status: FreshnessStatus = modified.length > 0 ? 'stale' : 'fresh';
 
-  // Best-effort: pull layers_ready off the stored CAS (task #112) so a caller
-  // checking freshness in one call also learns whether the analysis on disk
-  // is still progressively filling in. Never let a load failure break the
-  // freshness report itself — freshness is meaningful even without it.
+
+
+
+
   let layersReady: CASLayersReady | undefined;
   try {
     const cas = await loadAnalysis(projectPath, { preferCache: true });

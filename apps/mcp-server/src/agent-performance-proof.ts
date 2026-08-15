@@ -159,6 +159,7 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
       average_search_token_reduction_after_edit: asPercentNumber(summary.average_search_token_reduction_after_edit),
       average_cold_scan_token_reduction_after_edit: asPercentNumber(summary.average_cold_scan_token_reduction_after_edit),
       average_full_verify_count_similarity: asPercent(summary.average_full_verify_count_similarity),
+      full_verify_graph_equivalence: asPercent(summary.full_verify_graph_equivalence_rate),
     });
   } else if (isIdiomReport(report)) {
     Object.assign(metrics, {

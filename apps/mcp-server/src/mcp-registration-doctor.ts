@@ -26,11 +26,11 @@ export interface McpConfigProbeResult {
   error?: string;
 }
 
-/**
- * Reads a JSON file defensively; returns undefined on any read/parse failure
- * (missing file, malformed JSON, permission error) rather than throwing, since
- * this is a best-effort scan across several possible client config locations.
- */
+
+
+
+
+
 function readJsonFile(filePath: string): unknown {
   try {
     if (!fs.existsSync(filePath)) return undefined;
@@ -51,11 +51,11 @@ function extractKlauroEntry(mcpServers: unknown): { command?: string; args?: str
   return { command, args };
 }
 
-/**
- * Scans ~/.claude.json for a registered `klauro` MCP server entry.
- * Checks both the top-level (user-scope) mcpServers and, if projectPath is
- * given, that project's entry under projects[projectPath].mcpServers.
- */
+
+
+
+
+
 export function probeClaudeJson(options: {
   homeDir?: string;
   projectPath?: string;
@@ -99,10 +99,10 @@ export function probeClaudeJson(options: {
   return { configPath, scope: 'user', exists: true, registered: false };
 }
 
-/**
- * Scans ~/.cursor/mcp.json for a `klauro` server entry (top-level `mcpServers`
- * key, same shape Cursor documents). Detection only, same as Codex/VS Code.
- */
+
+
+
+
 export function probeCursorMcpJson(options: { homeDir?: string } = {}): McpConfigProbeResult {
   const homeDir = options.homeDir ?? os.homedir();
   const configPath = path.join(homeDir, '.cursor', 'mcp.json');
@@ -129,11 +129,11 @@ export interface UncheckedClientConfig {
   configPath: string;
 }
 
-/**
- * Config locations we know about but do not deeply parse (different formats:
- * Codex uses TOML, VS Code's mcp.json has its own dialect). Listed so the
- * doctor output tells the agent where else to look by hand.
- */
+
+
+
+
+
 export function listUncheckedClientConfigs(homeDir: string = os.homedir()): UncheckedClientConfig[] {
   return [
     { client: 'Codex CLI', configPath: path.join(homeDir, '.codex', 'config.toml') },
@@ -149,21 +149,21 @@ export interface BootProbeResult {
   detail: string;
 }
 
-/**
- * Best-effort boot probe: spawns `node <entryPath>` (or, for a self-contained
- * SEA-binary registration, `<entryPath> __mcp_server` — see spawnArgs below)
- * with stdin closed and a tight timeout, and classifies the outcome from
- * stderr text emitted by index.ts's reportGrammarHealth(). Never lets the
- * process hang past maxMs.
- */
+
+
+
+
+
+
+
 export function probeMcpBoot(options: {
   entryPath: string;
   maxMs?: number;
   nodePath?: string;
   env?: NodeJS.ProcessEnv;
-  /** Override the spawned argv when entryPath is itself the executable (the
-   *  self-contained binary registration), not a script `node` runs. Default
-   *  behaviour (`node <entryPath>`) is unchanged when this is omitted. */
+
+
+
   spawnArgs?: string[];
 }): Promise<BootProbeResult> {
   const { entryPath, maxMs = 4000, nodePath = process.execPath, env = process.env, spawnArgs } = options;
@@ -175,11 +175,11 @@ export function probeMcpBoot(options: {
 
     let settled = false;
     let stderrBuffer = '';
-    // Do NOT set KLAURO_DEFER_START: the grammar-health self-check only runs
-    // inside startServer() (see src/index.ts), so the real server boot path
-    // must execute. Closing stdin immediately below triggers index.ts's
-    // `stdin.on('end', () => process.exit(0))` so the process exits promptly
-    // once we've captured its stderr, instead of idling as a live MCP server.
+
+
+
+
+
     const child = spawnArgs
       ? spawn(entryPath, spawnArgs, { env: { ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
       : spawn(nodePath, [entryPath], { env: { ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -191,7 +191,7 @@ export function probeMcpBoot(options: {
       try {
         child.kill();
       } catch {
-        // process may already be gone
+
       }
       resolve(result);
     };
@@ -215,17 +215,17 @@ export function probeMcpBoot(options: {
       finish(classifyBootOutput(stderrBuffer, `exit-${code}`));
     });
 
-    // Closing stdin immediately can race the async grammar-health check in
-    // index.ts's startServer() path (grammar resolution does async I/O), so
-    // the process can exit cleanly before it ever writes the health line.
-    // Give it a short head start to boot and emit stderr, bounded well under
-    // maxMs, before closing stdin to trigger the documented graceful-exit path.
+
+
+
+
+
     const stdinCloseDelayMs = Math.min(1500, Math.floor(maxMs / 2));
     const stdinTimer = setTimeout(() => {
       try {
         child.stdin.end();
       } catch {
-        // ignore: process may already be gone
+
       }
     }, stdinCloseDelayMs);
     child.on('exit', () => clearTimeout(stdinTimer));
@@ -263,13 +263,13 @@ function classifyBootOutput(stderrBuffer: string, reason: string): BootProbeResu
   };
 }
 
-/**
- * Builds the "mcp-registration" doctor check: is the klauro MCP registered in
- * a known client config, does its entry point resolve on disk, and does it
- * boot cleanly. Non-fatal by design (status ok maps to 'pass', never blocks
- * the rest of the doctor run) — this answers "is my Klauro MCP actually
- * registered + loadable in this client?" per SPEC-COORDINATION-FABRIC WS-J.
- */
+
+
+
+
+
+
+
 export async function checkMcpRegistration(options: {
   packageRoot: string;
   projectPath?: string;
@@ -298,15 +298,15 @@ export async function checkMcpRegistration(options: {
     };
   }
 
-  // Prefer the entry that actually points at something (real command/args) for
-  // the entry-point-resolvable and boot checks below.
+
+
   const primary = registeredIn[0];
-  // A self-contained (Node SEA) install registers the binary itself as
-  // `command`, invoked as `<binary> __mcp_server` — there is no `.cjs`/`.js`
-  // script arg for resolveConfiguredEntryPoint to find, and no dist/ on disk
-  // to fall back to (packagedEntry legitimately does not exist for a
-  // binary-only install). Detect that shape and check/boot the BINARY,
-  // never dist/index.cjs, or every binary install would report "fail".
+
+
+
+
+
+
   const binaryMode = isBinaryModeMcpEntry(primary.entry);
   const configuredEntryPoint = binaryMode ? primary.entry?.command : resolveConfiguredEntryPoint(primary.entry);
   const entryPointToCheck = configuredEntryPoint ?? packagedEntry;
@@ -354,21 +354,21 @@ export async function checkMcpRegistration(options: {
 
 function resolveConfiguredEntryPoint(entry: RegisteredMcpEntry | undefined): string | undefined {
   if (!entry || !entry.args) return undefined;
-  // The launcher is invoked as `node <path-to-index.cjs>`; find the first arg
-  // that looks like a path to a .cjs/.js file.
+
+
   const candidate = entry.args.find(a => /\.(cjs|mjs|js)$/.test(a));
   return candidate;
 }
 
-/**
- * True for a self-contained-binary registration: `klauro install` (see
- * installed-cli.ts's resolveMcpRegistrationCommand) registers
- * `command: <path to the klauro binary>`, `args: ['__mcp_server']` when
- * running from inside a Node SEA build, instead of `command: node`,
- * `args: [<path>/dist/index.cjs]`. No `.cjs`/`.js` arg exists to resolve in
- * that shape, and the sentinel `__mcp_server` argv is the client-side half of
- * the same dispatch installed-sea-entry.ts reads on the other end.
- */
+
+
+
+
+
+
+
+
+
 function isBinaryModeMcpEntry(entry: RegisteredMcpEntry | undefined): boolean {
   if (!entry?.args?.length) return false;
   return entry.args.includes('__mcp_server') && !entry.args.some(a => /\.(cjs|mjs|js)$/.test(a));

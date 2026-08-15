@@ -1,42 +1,42 @@
-/**
- * Throughput bench for the work-partitioner (§1.5 of
- * docs/SPEC-COORDINATION-FABRIC-V2.md — "North-star metric: throughput /
- * parallelism factor, block-time -> 0 — NOT collisions prevented").
- *
- * Every other coordination demo in this directory (coordination-demo,
- * coordination-fleet-demo, coordination-enforcement-demo,
- * conceptual-conflict-demo) measures DEFENSE: did we detect / prevent a
- * collision. This bench measures the thing P6 actually exists to move: how
- * much MORE work a fleet can do in parallel when a scheduler front-loads the
- * decomposition, versus running the same tasks one-at-a-time (or file-locked,
- * which degenerates to the same thing when every task touches a shared file).
- *
- * Built on a REAL CAS (analyzeForBench() over a small fixture — same
- * blackbox pattern as conceptual-conflict-demo.ts: the harness never imports
- * the analyzer engine, only calls the product's analyzer-server), not a
- * hand-rolled fixture, so the call-graph edges partitioner.ts consumes for
- * blast-radius expansion are genuine.
- *
- * Scenarios:
- *   1. Mixed set (some conflicting, some disjoint) — the realistic case.
- *      Naive serial baseline (N tasks, one at a time) vs partitioned
- *      (K batches, parallelism_factor = N/K). Asserts parallelism_factor > 1.
- *   2. Blast-radius case — two tasks with DISJOINT literal targets but
- *      INTERSECTING blast radius (one edits a function, the other edits a
- *      real caller of it per the CAS). Proves graph-aware partitioning
- *      catches what a file-only partitioner would miss: asserts they land in
- *      different batches under blast-radius expansion, and (as a contrast)
- *      would be co-batched without it.
- *   3. Disjoint control — N fully-unrelated tasks. Asserts they all land in
- *      ONE batch (parallelism_factor = N), proving the partitioner doesn't
- *      over-serialize when there is truly no conflict.
- *
- * Simulated wall-clock: 1 time unit per batch (an idealized "all agents in a
- * batch run at the same speed, fully parallel" assumption — the same
- * simplification every parallel-speedup back-of-envelope makes). Naive
- * serial wall-clock is simply N time units (or N under file-locking, since
- * with a shared-file task set every task collides with every other).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as os from 'os';
@@ -142,13 +142,13 @@ export async function runThroughputBench(): Promise<ThroughputBenchReport> {
     await fs.remove(fixtureDir).catch(() => {});
   }
 
-  // --- Scenario 1: mixed set (realistic) -----------------------------------
-  // t1/t2 conflict directly (both edit getUser). t3/t4 conflict via blast
-  // radius (renderProfile and renderSettings both call getUser, so editing
-  // one while claiming the other's footprint would still land in the same
-  // batch as t1/t2's blast radius unless kept separate — here we give them
-  // their own literal targets that also happen to share a callee).
-  // t5..t8 are mutually disjoint, unrelated utility edits.
+
+
+
+
+
+
+
   const mixedTasks: PartitionTask[] = [
     { id: 't1-retype-getUser', intent: 'retype getUser to non-null', target_symbols: [idFor(cas, 'getUser')] },
     { id: 't2-add-logging-getUser', intent: 'add logging inside getUser', target_symbols: [idFor(cas, 'getUser')] },
@@ -161,12 +161,12 @@ export async function runThroughputBench(): Promise<ThroughputBenchReport> {
   ];
   const mixed = measure('mixed conflicting + disjoint task set', mixedTasks, cas);
 
-  // --- Scenario 2: blast-radius proof --------------------------------------
-  // t-a edits getUser directly; t-b edits renderProfile, a REAL caller of
-  // getUser per the CAS call graph. Literal targets are disjoint (a file- or
-  // symbol-only partitioner sees no overlap); blast-radius expansion must
-  // separate them because changing getUser's contract can break
-  // renderProfile's assumptions about it.
+
+
+
+
+
+
   const blastPair: PartitionTask[] = [
     { id: 't-a-getUser', intent: 'retype getUser to non-null', target_symbols: [idFor(cas, 'getUser')] },
     { id: 't-b-renderProfile', intent: 'add avatar rendering to renderProfile', target_symbols: [idFor(cas, 'renderProfile')] },
@@ -179,9 +179,9 @@ export async function runThroughputBench(): Promise<ThroughputBenchReport> {
     separated_correctly: withoutBlastRadius.batches.length === 1 && withBlastRadius.batches.length === 2,
   };
 
-  // --- Scenario 3: disjoint control -----------------------------------------
-  // N fully-unrelated edits (no shared symbols, no call-graph relationship).
-  // Must all land in a single batch: parallelism_factor === N.
+
+
+
   const disjointTasks: PartitionTask[] = [
     { id: 'd1', intent: 'edit unrelatedUtilOne', target_symbols: [idFor(cas, 'unrelatedUtilOne')] },
     { id: 'd2', intent: 'edit unrelatedUtilTwo', target_symbols: [idFor(cas, 'unrelatedUtilTwo')] },
@@ -205,12 +205,12 @@ export async function runThroughputBench(): Promise<ThroughputBenchReport> {
 if (require.main === module) {
   runThroughputBench()
     .then((report) => {
-      // eslint-disable-next-line no-console
+
       console.log(JSON.stringify(report, null, 2));
       console.log(report.summary);
     })
     .catch((err) => {
-      // eslint-disable-next-line no-console
+
       console.error(err);
       process.exitCode = 1;
     });

@@ -87,7 +87,7 @@ test('customer CLI init and upload-manifest produce parseable onboarding artifac
     assert.equal(manifest.status, 0, manifest.stderr);
     const parsed = JSON.parse(manifest.stdout);
     assert.ok(parsed.summary.included_files > 0);
-    assert.ok(parsed.included_files.some((file: any) => file.path === 'app/main.py'));
+    assert.ok(parsed.files_sample.includes('app/main.py'));
     assert.equal(parsed.remote_provider.provider, 'github');
     assert.equal(parsed.remote_provider.owner, 'acme');
     assert.equal(parsed.remote_provider.repository, 'fastapi-sqlalchemy');
@@ -281,6 +281,50 @@ test('build-out-<name>/ vendored dump is excluded from both snapshot modes + sur
     assert.equal(exclusionEntry?.reason, 'vendored-output-shape');
     assert.ok(manifest.included_files.some(file => file.path === 'building-blocks/lib.rs'));
     assert.ok(manifest.included_files.some(file => file.path === 'bin/main.rs'));
+  });
+});
+
+test('generated dist variants are excluded without excluding similarly named source directories', async () => {
+  await withFixtureWorkspace(async workspace => {
+    for (const directory of ['dist-sea', 'dist.hosted', 'dist_release']) {
+      fs.mkdirSync(path.join(workspace.repo, directory), { recursive: true });
+      fs.writeFileSync(path.join(workspace.repo, directory, 'executable.ts'), 'export const generated = true;\n');
+    }
+    for (const directory of ['distributed-systems', 'distribution']) {
+      fs.mkdirSync(path.join(workspace.repo, directory), { recursive: true });
+      fs.writeFileSync(path.join(workspace.repo, directory, 'source.ts'), 'export const source = true;\n');
+    }
+
+    const snapshot = await buildSourceSnapshot(workspace.repo);
+
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('dist-sea/')));
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('dist.hosted/')));
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('dist_release/')));
+    assert.ok(snapshot.files.some(file => file.path === 'distributed-systems/source.ts'));
+    assert.ok(snapshot.files.some(file => file.path === 'distribution/source.ts'));
+  });
+});
+
+test('agent state and hidden temporary worktrees are excluded without hiding source directories', async () => {
+  await withFixtureWorkspace(async workspace => {
+    for (const directory of ['.agents', '.tmp', '.tmp-retry', '.tmp_workspace']) {
+      fs.mkdirSync(path.join(workspace.repo, directory), { recursive: true });
+      fs.writeFileSync(path.join(workspace.repo, directory, 'copy.ts'), 'export const copied = true;\n');
+    }
+    for (const directory of ['agents', 'tmp', 'temporary-workflows']) {
+      fs.mkdirSync(path.join(workspace.repo, directory), { recursive: true });
+      fs.writeFileSync(path.join(workspace.repo, directory, 'source.ts'), 'export const source = true;\n');
+    }
+
+    const snapshot = await buildSourceSnapshot(workspace.repo);
+
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('.agents/')));
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('.tmp/')));
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('.tmp-retry/')));
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('.tmp_workspace/')));
+    assert.ok(snapshot.files.some(file => file.path === 'agents/source.ts'));
+    assert.ok(snapshot.files.some(file => file.path === 'tmp/source.ts'));
+    assert.ok(snapshot.files.some(file => file.path === 'temporary-workflows/source.ts'));
   });
 });
 

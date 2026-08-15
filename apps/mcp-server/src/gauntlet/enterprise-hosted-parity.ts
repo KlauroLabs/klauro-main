@@ -215,7 +215,7 @@ function assertProjectSemanticQuality(appCas: CASOutput, infraCas: CASOutput): v
   invariant(!/deployment orders?|order management|process(?:es|ing)? orders?|customers?|business application|three independently deployable|three microservices?/.test(infraDescription), `infra description invented application semantics: ${infraDescription}`);
   invariant(!/\b(?:likely|possibly|perhaps|presumably|scripts?|source files?|streamlin\w*)\b/.test(infraDescription), `infra description contains hedging, source mechanics, or marketing filler: ${infraDescription}`);
 
-  const primaryCapabilities = (appCas.system_capabilities || []).slice(0, 8);
+  const primaryCapabilities = (appCas.capabilities || []).slice(0, 8);
   const appOperations = primaryCapabilities.flatMap(capability => capability.operations || []);
   const appHasRead = appOperations.some(operation => /^(?:view|read|list|get|show|access|analyze|review)$/i.test(operation.action || '') || /^(?:GET|HEAD|OPTIONS)$/i.test(operation.trigger?.method || ''));
   const appHasMutation = appOperations.some(operation => /^(?:create|update|delete|write|modify|submit|configure|manage|mutate)$/i.test(operation.action || '') || /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || ''));
@@ -243,7 +243,7 @@ function assertProjectSemanticQuality(appCas: CASOutput, infraCas: CASOutput): v
       invariant(!/\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(description), `read-only capability description claims mutation: ${description}`);
     }
   }
-  for (const capability of infraCas.system_capabilities || []) {
+  for (const capability of infraCas.capabilities || []) {
     invariant(!/\b(?:shell|script|command|handler|route)\b/i.test(capability.name), `infra capability exposes a mechanism instead of an operational responsibility: ${capability.name}`);
     invariant(!/\b(?:scripts?|source files?|streamlin\w*|likely|possibly)\b/i.test(String(capability.description || '')), `infra capability description contains mechanics or speculation: ${capability.description}`);
   }
@@ -254,11 +254,10 @@ function assertProjectSemanticQuality(appCas: CASOutput, infraCas: CASOutput): v
     .map(concept => concept.name)
     .filter(name => /^(?:dotnet|aspnet|mvc|sqlalchemy|microsoft|framework|schema|model|mapping)$/i.test(name));
   invariant(coreTechnologyDomains.length === 0, `domain concepts promoted technology vocabulary to core: ${coreTechnologyDomains.join(', ')}`);
-  // `primary_workflow_id` names a FLOW id now (flow_graph.flows, CASFlowRef)
-  // — workflows collapsed into a derived view over flows
-  // (docs/cas/SPECIFICATION.md §0.5.1), there is no stored workflow list to
-  // look the id up in.
-  const primaryFlow = (appCas.flow_graph?.flows || []).find(flow => flow.flow_id === appPurpose.primary_workflow_id);
+
+
+
+  const primaryFlow = (appCas.flows || []).find(flow => flow.flow_id === appPurpose.primary_workflow_id);
   invariant(!/^(?:main|application|server|bootstrap)$/i.test(String(primaryFlow?.name || '')), `generic process bootstrap outranked the product workflow: ${primaryFlow?.name || 'missing'}`);
 }
 

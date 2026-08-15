@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, computeCodebaseComplexity, computeWorkspaceComplexity, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, humanizeWorkspaceNarrativeIdentifiers, isGroundedAiWorkspaceItemDescription, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeApplicationMisattributionReason, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext, workspaceNarrativeRepairPromptContext } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, computeCodebaseComplexity, computeWorkspaceComplexity, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, humanizeWorkspaceNarrativeIdentifiers, isGroundedAiWorkspaceItemDescription, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeApplicationMisattributionReason, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext, workspaceNarrativeRepairPromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
-import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { validateCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 
 function cas(overrides: Partial<CASOutput>): CASOutput {
   return {
@@ -104,6 +105,55 @@ test('builds outer graph with http, sdk, message, passive data, and unmatched in
   assert.ok(graph.links.some(link => link.kind === 'sdk-install'));
   assert.ok(graph.interfaces.some(item => item.kind === 'passive-data'));
   assert.ok(Array.isArray(graph.unmatched_interfaces));
+  assert.equal(validateCasTree(graph as unknown as CASOutput).valid, true);
+  assert.equal(graph.children.length, graph.codebase_count);
+  assert.ok(graph.children.every(child => child.parent_id === graph.id));
+  assert.ok(graph.edges.every(edge => graph.children.some(child => child.id === edge.source)));
+  assert.ok(graph.edges.every(edge => graph.children.some(child => child.id === edge.target)));
+  assert.ok(graph.flows.length > 0);
+  assert.deepEqual(graph.steps.map(step => step.step_id), graph.flows.flatMap(flow => flow.steps.map(step => step.step_id)));
+  assert.ok(graph.flows.every(flow => flow.steps.length === 2));
+  assert.ok(graph.terminality.flows.length === graph.flows.length);
+});
+
+test('shared data links preserve writer-to-reader direction from entity lifecycle evidence', () => {
+  const writer = cas({
+    system: { id: 'writer', name: 'order-writer', type: 'service', root_path: '/tmp/order-writer' },
+    nodes: [{ id: 'create-order', name: 'createOrder', type: 'function', source: { file: 'src/orders.ts', line: 1 } } as any],
+    entities: [{
+      id: 'writer-orders',
+      name: 'Orders',
+      lifecycle: { created_by: ['create-order'], read_by: [], updated_by: [], deleted_by: [] },
+    }],
+  });
+  const reader = cas({
+    system: { id: 'reader', name: 'order-reports', type: 'service', root_path: '/tmp/order-reports' },
+    nodes: [{ id: 'read-orders', name: 'readOrders', type: 'function', source: { file: 'src/reports.ts', line: 1 } } as any],
+    entities: [{
+      id: 'reader-orders',
+      name: 'Orders',
+      lifecycle: { created_by: [], read_by: ['read-orders'], updated_by: [], deleted_by: [] },
+    }],
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('data-direction', [
+    { path: '/tmp/order-writer', cas: writer },
+    { path: '/tmp/order-reports', cas: reader },
+  ]);
+  const writerInterface = graph.interfaces.find(item => item.codebase_path === '/tmp/order-writer' && item.kind === 'passive-data');
+  const readerInterface = graph.interfaces.find(item => item.codebase_path === '/tmp/order-reports' && item.kind === 'passive-data');
+  assert.equal(writerInterface?.role, 'publisher');
+  assert.equal(readerInterface?.role, 'listener');
+  assert.ok(graph.links.some(link =>
+    link.kind === 'shared-data' &&
+    link.source_interface_id === writerInterface?.id &&
+    link.target_interface_id === readerInterface?.id
+  ), JSON.stringify({ writerInterface, readerInterface, links: graph.links }, null, 2));
+  assert.ok(!graph.links.some(link =>
+    link.kind === 'shared-data' &&
+    link.source_interface_id === readerInterface?.id &&
+    link.target_interface_id === writerInterface?.id
+  ));
 });
 
 test('matches deployment service aliases from container topology facts', () => {
@@ -251,7 +301,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
       trigger: { method: 'ALL', path: 'http://redis' },
       metadata: { topology_surface: 'docker-compose', deployment_service_name: 'redis', service_aliases: ['redis'] },
     }],
-    data_entities: [{
+    entities: [{
       id: 'entity:agent',
       name: 'Agent',
       description: 'Agent records describe enrolled device agents and their access state.',
@@ -275,7 +325,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
       journeys_carrying: ['workflow:agent-registration'],
       exposure: { unguarded_paths: 0, external_transfer: true, sensitive: true },
     }],
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:agent-access',
       name: 'Agent Access Brokerage',
       description: 'Agent Access Brokerage registers agents and exposes access request state to agent-facing surfaces.',
@@ -386,8 +436,8 @@ test('workspace analysis composes completed CAS outputs without source reads', (
   const overview = selectWorkspaceAnalysisDetail(graph, 'overview') as any;
   const overviewDeployableNames = new Set((overview.deployables || []).map((deployable: any) => deployable.name));
 
-  assert.equal(graph.analysis_kind, 'workspace');
-  assert.equal(graph.spec_version, '1.0.0');
+  assert.equal(graph.cas_version, CAS_VERSION);
+  assert.equal(graph.composition_mode, 'composed');
   assert.equal(graph.composition.kind, 'interconnected-system');
   assert.equal(graph.composition.recommended_primary_view, 'system-map');
   // Comprehension is AI-only: the synchronous workspace-level-CAS builder leaves the narrative
@@ -432,7 +482,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
   // "mcp-*" alongside apps named "agent"/"coordinator"/etc). There is no
   // structural evidence for "agent-ness" anywhere in the CAS (repo- or workspace-level), so the insight
   // was deleted (evidence-or-delete) rather than kept as a name guess.
-  assert.ok(!graph.system_insights.some(insight => insight.type === 'mcp-agent-surface'));
+  assert.ok(!graph.system_insights.some(insight => /mcp-facing control surface|agent workflows/i.test(`${insight.title} ${insight.description}`)));
   assert.ok(graph.system_insights.some(insight => insight.type === 'declared-unused-infrastructure' && /redis/i.test(insight.title)));
   assert.ok(
     graph.system_insights.some(insight => insight.type === 'provider-api-without-source-consumers' && /internal-api/i.test(insight.title)),
@@ -634,7 +684,7 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
       system: { id: 'api', name: 'agent-api', type: 'service', root_path: '/tmp/agent-api' },
       nodes: [{ id: 'route', name: 'registerAgent', type: 'function', source: { file: '/tmp/agent-api/src/agents.controller.ts', line: 1 } } as any],
       entry_points: [{ id: 'entry:agent', source_node: 'route', type: 'http', name: 'POST /agents', trigger: { method: 'POST', path: '/agents' } }],
-      system_capabilities: [{
+      capabilities: [{
         id: 'capability:agent-access',
         name: 'Agent Access Brokerage',
         description: 'Deterministic fallback capability text.',
@@ -647,7 +697,7 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
         evidence: ['entry:agent'],
       }] as any,
       domain_concepts: [{ id: 'domain:agent-access', name: 'Agent Access', classification: 'core', confidence: 0.8, evidence: [] } as any],
-      data_entities: [{
+      entities: [{
         id: 'entity_agent',
         name: 'Agent',
         description: 'Deterministic Agent entity description.',
@@ -684,6 +734,12 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
     assert.equal(enriched.workspace_capabilities.length, 1);
     assert.equal(enriched.workspace_capabilities[0].description_source, 'ai');
     assert.match(enriched.workspace_capabilities[0].description, /drop server register agents/i);
+    assert.equal(enriched.capabilities.length, 1);
+    assert.equal(enriched.capabilities[0].id, enriched.workspace_capabilities[0].id);
+    assert.equal(enriched.capabilities[0].name_source, 'ai');
+    assert.equal(enriched.capabilities[0].description_source, 'ai');
+    assert.equal(enriched.summary.capabilities, enriched.capabilities.length);
+    assert.ok(enriched.terminality.capabilities.some(node => node.id === enriched.capabilities[0].id));
     assert.equal(enriched.workspace_domains[0].description_source, 'ai');
     assert.match(enriched.workspace_domains[0].description, /enrollment, trust/i);
     assert.equal(enriched.workspace_workflows[0].description, 'Agent Enrollment follows the drop server to admin API route that records agent identity, heartbeat, and access state for downstream MCP access decisions.');
@@ -730,7 +786,7 @@ test('AI enrichment rejects generic or unsupported workspace descriptions instea
       system: { id: 'api', name: 'analysis-api', type: 'service', root_path: '/tmp/analysis-api' },
       nodes: [{ id: 'route', name: 'analyzeCodebase', type: 'function', source: { file: '/tmp/analysis-api/src/analysis.controller.ts', line: 1 } } as any],
       entry_points: [{ id: 'entry:analysis', source_node: 'route', type: 'http', name: 'POST /analysis', trigger: { method: 'POST', path: '/analysis' } }],
-      system_capabilities: [{
+      capabilities: [{
         id: 'capability:cas-validation',
         name: 'CAS Contract Validation',
         description: 'Deterministic fallback capability text.',
@@ -746,7 +802,7 @@ test('AI enrichment rejects generic or unsupported workspace descriptions instea
         { id: 'domain:analysis', name: 'Analysis', classification: 'core', confidence: 0.8, evidence: [] },
         { id: 'domain:customer', name: 'Customer', classification: 'supporting', confidence: 0.5, evidence: [] },
       ] as any,
-      data_entities: [{ id: 'entity_analysis_run', name: 'AnalysisRun', fields: [], lifecycle: { created_by: ['route'], read_by: ['route'], updated_by: [], deleted_by: [] } }] as any,
+      entities: [{ id: 'entity_analysis_run', name: 'AnalysisRun', fields: [], lifecycle: { created_by: ['route'], read_by: ['route'], updated_by: [], deleted_by: [] } }] as any,
     });
     const graph = buildCrossCodebaseSystemGraph('analysis-workspace', [
       { path: '/tmp/analysis-api', name: 'analysis-api', cas: api },
@@ -781,7 +837,7 @@ test('workspace domains demote thin entity-only concepts below terminal product 
       core_concepts: ['Codebase Graph', 'Agent Context'],
       primary_workflow_id: 'workflow:analyze-codebase',
     } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:analyze-codebase',
       name: 'Codebase Analysis',
       description: 'Codebase Analysis builds a graph from code elements, routes, entities, and risks for agent contexts.',
@@ -799,7 +855,7 @@ test('workspace domains demote thin entity-only concepts below terminal product 
       { id: 'domain:bare-analysis', name: 'Analysis', classification: 'core', confidence: 0.8, evidence: [] },
       { id: 'domain:customer', name: 'Customer', classification: 'supporting', confidence: 0.5, evidence: [] },
     ] as any,
-    data_entities: [
+    entities: [
       { id: 'entity_analysis_run', name: 'AnalysisRun', fields: [], lifecycle: { created_by: ['route'], read_by: ['route'], updated_by: [], deleted_by: [] } },
       { id: 'entity_customer', name: 'Customer', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
     ] as any,
@@ -842,7 +898,7 @@ test('workspace domains reject token-frequency concepts sourced only from shell 
       primary_domain: 'Network Access Management',
       core_concepts: ['device', 'access'],
     } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:policy',
       name: 'Policy Management',
       description: 'Policy Management evaluates access policies for enrolled devices.',
@@ -867,7 +923,7 @@ test('workspace domains reject token-frequency concepts sourced only from shell 
       { id: 'concept_json', name: 'json', classification: 'supporting', frequency: 12, appears_in: { entry_points: [], entities: [], nodes: ['function_scripts_parse_json_sh_parse_json_3'] } },
       { id: 'concept_revisions', name: 'revisions', classification: 'supporting', frequency: 6, appears_in: { entry_points: [], entities: [], nodes: ['function_scripts_revisions_sh_list_revisions_2'] } },
     ] as any,
-    data_entities: [
+    entities: [
       { id: 'entity_policy', name: 'Policy', fields: [], lifecycle: { created_by: ['enroll'], read_by: ['enroll'], updated_by: [], deleted_by: [] } },
     ] as any,
     user_journeys: [{
@@ -934,7 +990,7 @@ test('AI enrichment rejects item descriptions that are useful-sounding but not g
         core_concepts: ['Codebase Graph'],
         primary_workflow_id: 'workflow:analyze-codebase',
       } as any,
-      system_capabilities: [{
+      capabilities: [{
         id: 'capability:codebase-analysis',
         name: 'Codebase Analysis',
         description: 'Deterministic fallback capability text.',
@@ -950,7 +1006,7 @@ test('AI enrichment rejects item descriptions that are useful-sounding but not g
         { id: 'domain:analysis', name: 'Codebase Analysis', classification: 'core', confidence: 0.9, evidence: [] },
         { id: 'domain:customer', name: 'Customer', classification: 'supporting', confidence: 0.5, evidence: [] },
       ] as any,
-      data_entities: [
+      entities: [
         { id: 'entity_analysis_run', name: 'AnalysisRun', fields: [], lifecycle: { created_by: ['route'], read_by: ['route'], updated_by: [], deleted_by: [] } },
         { id: 'entity_customer', name: 'Customer', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
       ] as any,
@@ -1014,7 +1070,7 @@ test('surfaces source-backed auth providers and topology-only infrastructure sep
       trigger: { method: 'ALL', path: 'http://redis' },
       metadata: { topology_surface: 'docker-compose', deployment_service_name: 'redis', service_aliases: ['redis'] },
     }],
-    data_entities: [
+    entities: [
       { id: 'entity:agent', name: 'Agent', fields: [{ name: 'token', type: 'string', is_sensitive: true }], lifecycle: { created_by: ['entry:admin'], read_by: [], updated_by: ['entry:admin'], deleted_by: [] } },
       { id: 'entity:device', name: 'Device', fields: [], lifecycle: { created_by: ['entry:user'], read_by: [], updated_by: [], deleted_by: [] } },
     ] as any,
@@ -1066,7 +1122,7 @@ test('never authors deterministic product summaries — pre-AI narrative ships e
     system: { id: 'soon-sync', name: 'soon-sync', type: 'service', root_path: '/tmp/soon-sync' },
     nodes: [{ id: 'billing-route', name: 'BillingRecoveryController', type: 'function', source: { file: 'src/billing.ts', line: 1 } } as any],
     entry_points: [{ id: 'entry:billing', source_node: 'billing-route', type: 'http', name: 'POST /billing/recovery', trigger: { method: 'POST', path: '/billing/recovery' } }],
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:automation-audit',
       name: 'Automation Audit Management',
       description: 'Automation Audit Management maintains automated investing, tax-stash, account-sync, and billing recovery behavior.',
@@ -1078,13 +1134,13 @@ test('never authors deterministic product summaries — pre-AI narrative ships e
       confidence: 0.84,
       evidence: ['entry:billing'],
     }] as any,
-    data_entities: [{ id: 'entity:account', name: 'Account', fields: [], lifecycle: { created_by: [], read_by: ['billing-route'], updated_by: [], deleted_by: [] } }] as any,
+    entities: [{ id: 'entity:account', name: 'Account', fields: [], lifecycle: { created_by: [], read_by: ['billing-route'], updated_by: [], deleted_by: [] } }] as any,
   });
   const klauro = cas({
     system: { id: 'klauro', name: 'Klauro', type: 'service', root_path: '/tmp/klauro' },
     nodes: [{ id: 'mcp', name: 'McpServer', type: 'module', source: { file: 'src/server.ts', line: 1 } } as any],
     entry_points: [{ id: 'entry:mcp', source_node: 'mcp', type: 'http', name: 'GET /mcp', trigger: { method: 'GET', path: '/mcp' } }],
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:codebase-analysis',
       name: 'Codebase Analysis',
       description: 'Codebase Analysis turns CAS graph, workspace analysis, analyzer facts, and MCP agent context context into agent guidance.',
@@ -1096,7 +1152,7 @@ test('never authors deterministic product summaries — pre-AI narrative ships e
       confidence: 0.9,
       evidence: ['entry:mcp'],
     }] as any,
-    data_entities: [{ id: 'entity:analysis', name: 'AnalysisResult', fields: [], lifecycle: { created_by: ['mcp'], read_by: ['mcp'], updated_by: [], deleted_by: [] } }] as any,
+    entities: [{ id: 'entity:analysis', name: 'AnalysisResult', fields: [], lifecycle: { created_by: ['mcp'], read_by: ['mcp'], updated_by: [], deleted_by: [] } }] as any,
   });
 
   const soonGraph = buildCrossCodebaseSystemGraph('Soon', [{ path: '/tmp/soon-sync', name: 'soon-sync', cas: soon }]);
@@ -1123,7 +1179,7 @@ test('workspace AI auto configuration prefers fast capable local Ollama models',
 test('workspace entity paths keep traversable project steps even when capabilities lack deployable ids', () => {
   const api = cas({
     system: { id: 'api', name: 'policy-api', type: 'service', root_path: '/tmp/policy-api' },
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:policy-review',
       name: 'Policy Review',
       description: 'Policy Review reads Policy records before access is granted.',
@@ -1135,7 +1191,7 @@ test('workspace entity paths keep traversable project steps even when capabiliti
       confidence: 0.82,
       evidence: ['entity:Policy'],
     }] as any,
-    data_entities: [{ id: 'entity:policy', name: 'Policy', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } }] as any,
+    entities: [{ id: 'entity:policy', name: 'Policy', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } }] as any,
   });
 
   const graph = buildCrossCodebaseSystemGraph('Policy Workspace', [
@@ -1166,7 +1222,7 @@ test('ranks evidence-backed product capabilities above unsupported generic bucke
       { id: 'entry:access', source_node: 'access-route', type: 'http', name: 'POST /access/requests', trigger: { method: 'POST', path: '/access/requests' } },
       { id: 'entry:generic', source_node: 'config-node', type: 'cli', name: 'jest config' },
     ] as any,
-	    system_capabilities: [{
+	    capabilities: [{
 	      id: 'capability:generic',
       name: 'Project Backend Provisioning',
       description: 'Project Backend Provisioning creates and configures developer projects, databases, APIs, and backend resources.',
@@ -1200,7 +1256,7 @@ test('ranks evidence-backed product capabilities above unsupported generic bucke
       confidence: 0.86,
       evidence: ['apps/admin-api/src/accessControl/accessControl.controller.ts', 'entity:AccessRequest'],
     }] as any,
-	    data_entities: [
+	    entities: [
 	      { id: 'entity:device', name: 'Device', fields: [], lifecycle: { created_by: ['device-route'], read_by: [], updated_by: [], deleted_by: [] } },
 	      { id: 'entity:access-request', name: 'AccessRequest', fields: [], lifecycle: { created_by: ['access-route'], read_by: [], updated_by: [], deleted_by: [] } },
 	    ] as any,
@@ -1232,7 +1288,7 @@ test('ranks evidence-backed product capabilities above unsupported generic bucke
 	      exit_point_ids: [],
 	    }] as any,
 	    flow_graph: {
-	      capabilities: [],
+	      capability_candidates: [],
 	      dependencies: [],
 	      topology: {
 	        root_capabilities: ['capability:generic'],
@@ -1294,7 +1350,7 @@ test('builds compact workspace agent contexts from WAS without full graph inject
       trigger: { method: 'ALL', path: 'http://redis' },
       metadata: { topology_surface: 'docker-compose', deployment_service_name: 'redis', service_aliases: ['redis'] },
     }],
-    data_entities: [
+    entities: [
       { id: 'entity:agent', name: 'Agent', fields: [{ name: 'token', type: 'string', is_sensitive: true }], lifecycle: { created_by: ['entry:admin'], read_by: [], updated_by: ['entry:admin'], deleted_by: [] } },
       { id: 'entity:device', name: 'Device', fields: [], lifecycle: { created_by: ['entry:user'], read_by: [], updated_by: [], deleted_by: [] } },
     ] as any,
@@ -1541,7 +1597,7 @@ function shopCas(): CASOutput {
     system: { id: 'shop-api', name: 'shop-api', type: 'service', root_path: '/tmp/shop-api' },
     nodes: [{ id: 'order-route', name: 'createOrder', type: 'function', source: { file: 'src/orders.controller.ts', line: 1 } } as any],
     entry_points: [{ id: 'entry:order', source_node: 'order-route', type: 'http', name: 'POST /orders', trigger: { method: 'POST', path: '/orders' } }],
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:order-fulfillment',
       name: 'Order Fulfillment',
       description: 'Deterministic order fulfillment capability text.',
@@ -1565,7 +1621,7 @@ function shopCas(): CASOutput {
       evidence: ['entry:order'],
     }] as any,
     domain_concepts: [{ id: 'domain:commerce', name: 'Commerce', classification: 'core', confidence: 0.9, evidence: [] } as any],
-    data_entities: [
+    entities: [
       { id: 'entity_order', name: 'Order', fields: [], lifecycle: { created_by: ['order-route'], read_by: ['order-route'], updated_by: [], deleted_by: [] } },
       { id: 'entity_product', name: 'Product', fields: [], lifecycle: { created_by: [], read_by: ['order-route'], updated_by: [], deleted_by: [] } },
     ] as any,
@@ -1616,13 +1672,23 @@ test('Workspace narrative quality gate hard-rejects id-leaking, route-dumping, s
   assert.equal(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, 'Runs the storefront ordering and catalog backend.'), null);
 });
 
+test('workspace frame consistency uses a valid short product summary instead of discarding it as a description', () => {
+  const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+
+  const gate = evaluateWorkspaceNarrativeGate(graph, REAL_SHOP_NARRATIVE, 'Orders from shop-api.');
+
+  assert.equal(gate.accepted, true, gate.reason);
+});
+
 test('Workspace narrative quality gate rejects unsupported cross-project interaction even when the prose does not say both projects', () => {
   const orderCas = shopCas();
   const infraCas = cas({
     system: { id: 'infra', name: 'platform-infra', type: 'application', root_path: '/tmp/platform-infra' },
     nodes: [{ id: 'queue', name: 'Deployment Queue', type: 'infrastructure_resource', source: { file: 'main.tf', line: 1 } } as any],
     enhanced_system_purpose: { artifact_type: 'infrastructure', primary_domain: 'Deployment Platform', core_concepts: ['Deployment Queue'] } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:deploy', name: 'Deploy Infrastructure', description: 'Provisions the deployment queue.', category: 'core', criticality: 'high', operations: [], related_entities: [], related_domains: ['Deployment Platform'], confidence: 0.9, evidence: ['queue'],
     }] as any,
   });
@@ -1683,11 +1749,11 @@ test('every member primary domain survives workspace composition across polyglot
       primary_domain: 'enterprise-orders',
       core_concepts: ['orders', 'order', 'enterprise', 'summary'],
     } as any,
-    data_entities: [
+    entities: [
       { id: 'order-ts', name: 'EnterpriseOrder', kind: 'persisted-entity', fields: [] } as any,
       { id: 'order-python', name: 'EnterprisePythonOrder', kind: 'persisted-entity', fields: [] } as any,
     ],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'orders-capability',
         name: 'Handle Enterprise Python Orders',
@@ -2010,31 +2076,6 @@ test('persist seam: source=ai with an empty product_value_summary is structurall
   }
 });
 
-test('ambiguous general-purpose ports (Django 8000, pprof 6060) never assert a crypto workspace domain', () => {
-  const djangoOrders = {
-    id: 'app:hercules',
-    codebase_id: 'hercules',
-    codebase_path: '/tmp/hercules',
-    name: 'hercules-orders',
-    kind: 'service',
-    deployable: true,
-    path_hint: '',
-    service_aliases: [],
-    ports: ['8000', '8001', '6060'],
-    interface_ids: [],
-    runtime_component_ids: [],
-    evidence: [],
-  } as any;
-  const noCrypto = detectWorkspaceCryptoProfile([], [djangoOrders], new Map());
-  assert.equal(noCrypto.isCrypto, false, `a Django orders app on :8000 must not assert crypto: ${JSON.stringify(noCrypto.evidence)}`);
-
-  // Real blockchain RPC ports still assert decisively.
-  const evmNode = { ...djangoOrders, id: 'app:evm', name: 'geth-node', ports: ['8545', '30303'] } as any;
-  const crypto = detectWorkspaceCryptoProfile([], [evmNode], new Map());
-  assert.equal(crypto.isCrypto, true);
-  assert.ok(crypto.rpc_ports.includes('8545'));
-});
-
 // ---------------------------------------------------------------------------
 // Workspace narrative frame-bias fixes (the live OpenClaw degrade loop):
 // (1) the prompt context carries the workspace's OWN member domains and no
@@ -2052,7 +2093,7 @@ function messagingGatewayCas(): CASOutput {
       primary_domain: 'messaging-gateway',
       core_concepts: ['Channel Routing', 'Exec Approvals'],
     } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:channel-routing',
       name: 'Multi-Channel Message Routing',
       description: 'Routes inbound and outbound messages across Discord, Telegram, and Slack channel adapters.',
@@ -2076,7 +2117,7 @@ function messagingGatewayCas(): CASOutput {
       evidence: ['entry:message'],
     }] as any,
     domain_concepts: [{ id: 'domain:messaging', name: 'Messaging', classification: 'core', confidence: 0.9, evidence: [] }] as any,
-    data_entities: [
+    entities: [
       { id: 'entity_channel_message', name: 'ChannelMessage', fields: [], lifecycle: { created_by: ['route-node'], read_by: ['route-node'], updated_by: [], deleted_by: [] } },
       { id: 'entity_exec_approval', name: 'ExecApproval', fields: [], lifecycle: { created_by: ['route-node'], read_by: ['route-node'], updated_by: [], deleted_by: [] } },
     ] as any,
@@ -2385,7 +2426,7 @@ test('workspace composition preserves grounded AI infrastructure capabilities wi
   const infrastructure = cas({
     system: { id: 'infra', name: 'platform-infra', type: 'application', root_path: '/tmp/platform-infra' },
     enhanced_system_purpose: { artifact_type: 'infrastructure', primary_domain: 'platform-infrastructure' } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'deploy-runtime',
       name: 'Deploy service runtime',
       description: 'Deploy service runtime provisions container deployments and queue resources for the declared application environment.',
@@ -2428,7 +2469,7 @@ test('independent-member WAS repair prompt keeps entities scoped and omits globa
     ...(app.enhanced_system_purpose || {}),
     inferred_description: 'The application retrieves and presents enterprise orders so operators can review order details.',
   } as any;
-  app.data_entities = [{
+  app.entities = [{
     id: 'entity_order',
     name: 'EnterpriseOrder',
     fields: [],
@@ -2459,7 +2500,7 @@ test('workspace domains are evidence-length: no verb-phrase capability labels, n
     system: { id: 'msgs', name: 'msgs-api', type: 'service', root_path: '/tmp/msgs-api' },
     nodes: [{ id: 'send-route', name: 'sendMessage', type: 'function', source: { file: 'src/messages.controller.ts', line: 1 } } as any],
     entry_points: [{ id: 'entry:send', source_node: 'send-route', type: 'http', name: 'POST /messages', trigger: { method: 'POST', path: '/messages' } }],
-    system_capabilities: [{
+    capabilities: [{
       id: 'capability:send-messages',
       name: 'Send Messages',
       description: 'Sends messages between users.',
@@ -2471,7 +2512,7 @@ test('workspace domains are evidence-length: no verb-phrase capability labels, n
       confidence: 0.9,
       evidence: ['entry:send'],
     }] as any,
-    data_entities: [
+    entities: [
       { id: 'entity_pricingtype', name: 'PricingType', fields: [], lifecycle: { created_by: [], read_by: ['send-route'], updated_by: [], deleted_by: [] } },
       { id: 'entity_telemetrysnapshot', name: 'TelemetrySnapshot', fields: [], lifecycle: { created_by: [], read_by: ['send-route'], updated_by: [], deleted_by: [] } },
     ] as any,
@@ -3033,7 +3074,6 @@ test('LIVE-SHAPE: runtime_links survive a bare top-level-directory consumer (no 
     { path: '/tmp/fleet-system', name: 'fleet-system', cas: system },
   ], { generatedAt: '2026-01-01T00:00:00.000Z' });
 
-  const componentById = new Map(graph.runtime_topology.components.map(component => [component.id, component]));
   const agentComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('agent'));
   const coordinatorComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('coordinator'));
   const cacheComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('cache'));
@@ -3460,8 +3500,8 @@ test('codebase complexity: deterministic — identical input always produces the
     entry_points: [{ id: 'e1', source_node: 'node-0', type: 'http', name: 'GET /x', trigger: { method: 'GET', path: '/x' } } as any],
     exit_points: [{ id: 'x1', source_node: 'node-1', type: 'database', name: 'db', target: { resource: 'db' } } as any],
     dependencies: { manager: 'npm', packages: [{ name: 'left-pad', version: '1.0.0', direct: true }] },
-    data_entities: [{ id: 'ent1', name: 'Thing' } as any],
-    system_capabilities: [{ id: 'cap1', name: 'Do Thing', operations: [] } as any],
+    entities: [{ id: 'ent1', name: 'Thing' } as any],
+    capabilities: [{ id: 'cap1', name: 'Do Thing', operations: [] } as any],
   });
 
   const graphA = buildCrossCodebaseSystemGraph('det-a', [{ path: '/tmp/svc', name: 'svc', cas: buildInput() }], { generatedAt: '2026-01-01T00:00:00.000Z', id: 'det' });
@@ -3530,8 +3570,8 @@ test('codebase complexity: surface subscore increases monotonically with entry/e
 
 test('codebase complexity: topology subscore increases monotonically with capability/entity/deployable count', () => {
   const base = { system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' } as any, nodes: makeNodes(20), edges: makeEdges(20, 20) };
-  const flat = cas({ ...base, system_capabilities: [{ id: 'c1', name: 'One', operations: [] } as any] });
-  const rich = cas({ ...base, system_capabilities: Array.from({ length: 25 }, (_, i) => ({ id: `c${i}`, name: `Cap ${i}`, operations: [] } as any)) });
+  const flat = cas({ ...base, capabilities: [{ id: 'c1', name: 'One', operations: [] } as any] });
+  const rich = cas({ ...base, capabilities: Array.from({ length: 25 }, (_, i) => ({ id: `c${i}`, name: `Cap ${i}`, operations: [] } as any)) });
 
   const flatGraph = buildCrossCodebaseSystemGraph('tp', [{ path: '/tmp/svc', name: 'svc', cas: flat }]);
   const richGraph = buildCrossCodebaseSystemGraph('tp', [{ path: '/tmp/svc', name: 'svc', cas: rich }]);

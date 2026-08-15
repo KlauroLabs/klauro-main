@@ -1,41 +1,41 @@
-/**
- * DEPTH-2 — Cross-repo, field-level CONTRACT DRIFT, head-to-head vs the real
- * installed codebase-memory binary (DeusData).
- *
- * What is being proven
- * --------------------
- * A producer repo exposes an HTTP contract whose typed shape DRIFTS from what a
- * consumer repo in the same workspace expects — e.g. the producer returns
- * `Wallet { id: string }` but the consumer types it `Wallet { id: number }`.
- * Klauro fuses the two repos (buildCrossRepositoryLinks), resolves the typed
- * data-shape on EACH side from each repo's deterministically-extracted
- * data_entities (field name + field type), and diffs them field-by-field at the
- * seam (buildCrossRepoContractDrift in product.ts). A single-repo indexer never
- * holds both shapes at once, so it cannot compute the diff.
- *
- * Klauro's REAL cross-repo contract capability (honest scope)
- * -----------------------------------------------------------
- *  - The SEAM (consumer fetch ↔ provider route, with method + endpoint) is real
- *    and was already proven by the workspace-level-CAS cross-repo link layer.
- *  - FIELD NAMES and FIELD TYPES come from data_entities, which the analyzer
- *    emits for class/model/entity declarations and DTO-like TypeScript
- *    interface/type shapes (the property type annotation is sourced from
- *    node.metadata.type — see the surgical orchestrator deepening).
- *  - A field whose TYPE changed, was RENAMED, or was REMOVED across the seam is
- *    reported. Untyped or non-DTO structural interfaces still contribute no
- *    shape — never faked.
- *
- * codebase-memory: out-of-category. It indexes ONE repo, has no cross-repo
- * fusion, and no field-level contract concept. It is driven at its best (index
- * each repo, probe every plausible graph/architecture query for any
- * cross-service contract output) and honestly returns nothing.
- *
- * Signature for central integration (camps-bench.ts / dashboard.html):
- *   import { buildDepthContractDriftReport } from './depth-contract-drift-bench';
- *   const report = await buildDepthContractDriftReport();
- *   // report.available === true always (Klauro side needs no external binary);
- *   // report.cbmAvailable === false when the cbm binary is not installed.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { execFileSync } from 'child_process';
 import * as fs from 'fs-extra';
@@ -70,15 +70,15 @@ export type DriftVerdict = 'win' | 'tie' | 'loss';
 
 export interface DepthContractDriftCaseResult {
   fixture: string;
-  /** Truth drift set, as `contract.field:kind`. */
+
   truthDrift: string[];
-  /** Klauro detected drift set, as `contract.field:kind`. */
+
   klauroDrift: string[];
   klauroF1: number;
   klauroTokens: number;
-  /** Whether the non-drifting control contract was (correctly) NOT flagged. */
+
   controlClean: boolean;
-  /** cbm's best cross-service contract attempt (expected empty). */
+
   cbmDrift: string[];
   cbmF1: number;
   cbmTokens: number;
@@ -141,12 +141,12 @@ async function sourceBytes(dir: string): Promise<number> {
   return total;
 }
 
-/** Normalize a truth/detected drift entry into a comparable key. */
+
 function driftKey(contract: string, field: string, kind: string): string {
   return `${contract.toLowerCase()}.${field}:${kind}`;
 }
 
-/** Klauro: analyze each repo, fuse, resolve typed shapes per side, diff at seam. */
+
 async function klauroDrift(dir: string): Promise<{
   detected: string[];
   controlContracts: Set<string>;
@@ -172,13 +172,13 @@ async function klauroDrift(dir: string): Promise<{
   return { detected: [...new Set(detected)], controlContracts, bytes, raw: findings };
 }
 
-/**
- * codebase-memory at its BEST for a cross-service field-drift task: index each
- * repo, then probe every plausible cross-service / contract / architecture query
- * for any field-level contract-drift output. cbm has no cross-repo fusion and no
- * field-typed contract concept, so this honestly returns nothing — the
- * out-of-category result. Returns null when the binary is absent.
- */
+
+
+
+
+
+
+
 async function cbmDrift(dir: string): Promise<{ drift: string[]; bytes: number; source: string } | null> {
   const bin = codebaseMemoryPath();
   if (!bin) return null;
@@ -203,7 +203,7 @@ async function cbmDrift(dir: string): Promise<{ drift: string[]; bytes: number; 
     }
     if (!project) project = repoPath.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
 
-    // Every plausible surface a cross-service contract diff could hide behind.
+
     const probe = (cmd: string, params: Record<string, unknown>, src: string): void => {
       try {
         const out = execFileSync(bin, ['cli', cmd, JSON.stringify({ project, ...params })], {
@@ -217,7 +217,7 @@ async function cbmDrift(dir: string): Promise<{ drift: string[]; bytes: number; 
           probedSources.push(src);
         }
       } catch {
-        /* surface not supported by cbm — honest miss */
+
       }
     };
 
@@ -228,8 +228,8 @@ async function cbmDrift(dir: string): Promise<{ drift: string[]; bytes: number; 
     probe('search_graph', { label: 'Field' }, `${name}:search_graph{label:Field}`);
   }
 
-  // cbm exposes no cross-repo contract-drift output. Whatever it returned per
-  // repo is single-repo node data, never a producer↔consumer field diff.
+
+
   return {
     drift: [],
     bytes: totalBytes,
@@ -249,7 +249,7 @@ export async function buildDepthContractDriftReport(): Promise<DepthContractDrif
 
     const kl = await klauroDrift(dir);
     const klauroF1 = Math.round(f1(kl.detected, truthDrift) * 100) / 100;
-    // Control is clean iff Klauro did not emit drift for any control contract.
+
     const controlClean = ![...kl.controlContracts].some(contract => controlContracts.has(contract));
 
     const cbm = await cbmDrift(dir);
@@ -259,8 +259,8 @@ export async function buildDepthContractDriftReport(): Promise<DepthContractDrif
     const srcBytes = await sourceBytes(dir);
     const cbmTokens = cbm ? toTokens(Math.max(cbm.bytes, 1)) : toTokens(srcBytes);
 
-    // Verdict: out-of-category WIN when Klauro detects the drift it claims and
-    // cbm cannot produce cross-repo field drift. Measured honestly otherwise.
+
+
     let verdict: DriftVerdict;
     if (klauroF1 > cbmF1 && controlClean) verdict = 'win';
     else if (klauroF1 === cbmF1) verdict = 'tie';

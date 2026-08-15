@@ -1,8 +1,8 @@
-/**
- * The four collision detectors (§WS-D), composed into a single CollisionReport.
- * Pure: every input (active claims, in-flight snapshots, CAS edges,
- * workspace-level-CAS capabilities) is passed in by the caller. No transport, no storage.
- */
+
+
+
+
+
 
 import type { SymbolChange } from './conceptual-conflict';
 import type { ContractMatchConfidence } from './contract-intent';
@@ -34,7 +34,7 @@ function intersect<T>(a: T[], b: T[]): T[] {
   return a.filter((x) => setB.has(x));
 }
 
-/** Detector 1: duplicate-work — two active claims target the same capability. */
+
 function detectDuplicates(
   activeClaims: WorkClaim[],
   workspaceCapabilities: WorkspaceCapabilityRef[]
@@ -65,7 +65,7 @@ function detectDuplicates(
   return findings;
 }
 
-/** Detector 2: edit-overlap — path/symbol intersection across active claims. */
+
 function detectOverlaps(activeClaims: WorkClaim[]): OverlapFinding[] {
   const findings: OverlapFinding[] = [];
   for (let i = 0; i < activeClaims.length; i++) {
@@ -95,11 +95,11 @@ function detectOverlaps(activeClaims: WorkClaim[]): OverlapFinding[] {
   return findings;
 }
 
-/**
- * Detector 3: in-flight contract-drift — agent A's touched contracts overlap
- * agent B's claimed scope (paths/symbols/capability), meaning A's uncommitted
- * change may be shifting a shape B is actively depending on/editing.
- */
+
+
+
+
+
 function detectDrifts(
   activeClaims: WorkClaim[],
   inFlightSnapshots: InFlightSnapshot[]
@@ -138,11 +138,11 @@ function detectDrifts(
   return findings;
 }
 
-/**
- * Detector 4: cross-agent blast-radius — union each active claim's edit set,
- * expand one hop via CAS edges, and flag when agent A's blast radius reaches
- * into agent B's claimed symbols.
- */
+
+
+
+
+
 function detectBlastIntersections(
   activeClaims: WorkClaim[],
   casEdges: CasEdgeRef[]
@@ -180,24 +180,24 @@ function detectBlastIntersections(
   return findings;
 }
 
-// ---------------------------------------------------------------------------
-// Detector 5: DECLARED-CONTRACT DRIFT (Coordination Engine §3, wave 2)
-// ---------------------------------------------------------------------------
 
-/**
- * One divergence between what a producer DECLARED it would produce and what
- * its ambient diff actually did, addressed to a lane that consumes it.
- */
+
+
+
+
+
+
+
 export interface DeclaredContractDriftFinding {
   producer_agent_id: string;
   producer_claim_id: string;
   consumer_agent_id: string;
   consumer_claim_id: string;
-  /** The contract name the producer declared and the consumer builds against. */
+
   contract: string;
   contract_kind: ContractKind;
   reason: 'declared_contract_drift' | 'declared_contract_missing';
-  /** `name_only` matches are real but LOWER CONFIDENCE — labeled, never promoted. */
+
   confidence: ContractMatchConfidence;
   explanation: string;
   evidence: string[];
@@ -213,32 +213,32 @@ function samePathish(a: string | undefined, b: string | undefined): boolean {
   return normalizePath(a.replace(/\\/g, '/')) === normalizePath(b.replace(/\\/g, '/'));
 }
 
-/**
- * DETERMINISTIC declared-contract drift (§3 "divergence auto-fires a
- * surprise"). Compares one producer's ACTUAL `SymbolChange[]` against the
- * contracts that producer DECLARED, and emits a finding per affected consumer
- * — i.e. per neighborhood claim whose `consumes` names the contract (declared
- * explicitly or auto-recorded by §3's observation path). Delivery rides the
- * claim-scoped drain (§5); the finding is ADVISORY — the consumer decides.
- *
- * SCOPE, STATED EXPLICITLY: this covers SIGNATURE-SHAPED DRIFT ONLY — the
- * shape a contract exposes (params, return type, nullability, existence,
- * location). It CANNOT and does not detect SEMANTIC or BEHAVIORAL change: a
- * producer that keeps `getUser(id: string): User` byte-identical while
- * changing what the function MEANS (different ordering, different error
- * semantics, a now-cached read, a changed invariant) produces no finding here.
- * Body edits are excluded from contract lifting for exactly this reason — a
- * `body` change is precisely the case this layer is honest about not knowing.
- * Behavioral divergence is conceptual-conflict.ts's territory (detectors 4/5),
- * not this one's.
- *
- * SCALE: O(producer's declared contracts × its own consumers) — the consumer
- * edges live on claims, so this never scans all claims (§3 scale note).
- *
- * ATTRIBUTION (§13): `producerChanges` must be the producer's OWN attributed
- * diff. On a shared tree the caller disables this detector rather than blaming
- * an agent for another agent's edit.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function detectDeclaredContractDrift(
   producerClaim: WorkClaim,
   neighborhoodClaims: WorkClaim[],
@@ -254,7 +254,7 @@ export function detectDeclaredContractDrift(
     const consumers = neighborhoodClaims.filter(
       (c) => c.claim_id !== producerClaim.claim_id && (c.consumes ?? []).includes(contract.name)
     );
-    if (consumers.length === 0) continue; // nobody depends on it — nothing to deliver.
+    if (consumers.length === 0) continue;
 
     const byName = producerChanges.filter((ch) => ch.name === contract.name);
     const pathQualified = byName.filter((ch) => samePathish(ch.file, contract.path));
@@ -267,9 +267,9 @@ export function detectDeclaredContractDrift(
     const evidence: string[] = [];
 
     if (matched.length === 0) {
-      // Declared but never produced. Only a FINDING once the producer has
-      // released — mid-flight, "not written yet" is the normal state of a
-      // declaration and firing on it would make declaring a liability.
+
+
+
       if (producerReleased) {
         reason = 'declared_contract_missing';
         explanation =
@@ -333,11 +333,11 @@ export function detectDeclaredContractDrift(
   return findings;
 }
 
-/**
- * Compose the four WS-D detectors into a single CollisionReport. Pure and
- * side-effect free — the caller supplies the active claims, in-flight
- * snapshots, CAS edges, and workspace-level-CAS capabilities.
- */
+
+
+
+
+
 export function detectCollisions(
   activeClaims: WorkClaim[],
   inFlightSnapshots: InFlightSnapshot[],

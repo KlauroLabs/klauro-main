@@ -11,18 +11,18 @@ export interface KlauroConfig {
     id?: string;
     workspaceId?: string;
     organizationId?: string;
-    /**
-     * The repo's default ("main") branch. When set, this branch is classified
-     * as the 'main' analysis track and every other committed branch as
-     * 'other-branch' (see track.ts revisionToTrack). Optional and backward
-     * compatible: when unset, both 'main' and 'master' are treated as default.
-     */
+
+
+
+
+
+
     mainBranch?: string;
   };
   analyzer: {
-    // No "mode": Klauro is one product. Analysis goes to the hosted service
-    // (serverUrl, production by default). selfHosted only swaps the server URL for
-    // a local/self-hosted analyzer-server; it is not a local-vs-remote toggle.
+
+
+
     serverUrl?: string;
     selfHosted?: boolean;
   };
@@ -42,27 +42,27 @@ export interface KlauroConfig {
   };
   mcp: {
     cachePath?: string;
-    /**
-     * Consumed by the hosted-analysis resolution for project-bound repos
-     * (apps/mcp-server/src/hosted-analysis.ts). true (default): a local
-     * analysis that is NOT OLDER than the hosted one is served without a
-     * download — the coherent mirror, or a deliberately newer local working
-     * analysis. false: only an exact mirror (same analysis_timestamp) is
-     * served locally; a newer-than-hosted local analysis is bypassed in favor
-     * of the hosted source of truth. Never lets a local cache OLDER than the
-     * hosted analysis shadow it, and has no effect on unbound repos.
-     */
+
+
+
+
+
+
+
+
+
+
     preferLocalCache: boolean;
   };
   policy: {
     allowRemoteAnalyzer: boolean;
     allowedAnalyzerHosts: string[];
     requireSelfHosted: boolean;
-    /**
-     * Retained for config compatibility. Customer MCP/CLI launch paths are
-     * hosted-only regardless of this value; analyzer development invokes the
-     * internal analyzer harness directly rather than weakening product policy.
-     */
+
+
+
+
+
     requireRemoteAnalyzer?: boolean;
     blockUntrackedFiles: boolean;
   };
@@ -89,80 +89,80 @@ export interface KlauroConfig {
     repositories?: string[];
     defaultBranchOnly?: boolean;
   };
-  /**
-   * Declared custom-architecture conventions, in Klauro's own node/edge
-   * vocabulary, so hand-rolled/proprietary patterns the auto-detectors can't
-   * infer surface as real entry_points/route_table rows/data_entities/edges/
-   * flows instead of staying invisible. Purely ADDITIVE to auto-detection —
-   * never replaces it, and a declared convention that matches nothing real in
-   * the analyzed nodes emits nothing (evidence-gated, never fabricated). See
-   * docs/CUSTOM-CONVENTIONS.md. Optional/backward-compatible: absent or
-   * empty on every existing .klaurorc.
-   */
+
+
+
+
+
+
+
+
+
+
   conventions?: KlauroConventions;
-  /**
-   * Team-level defaults for the agent context/summary read tools. Currently the
-   * runtime opt-out: `context.runtime` = "exclude" turns off runtime telemetry,
-   * communication-seams, and runtime-topology sections globally for everyone on
-   * the repo (a pure static view); "include" opts back in; "auto" (default,
-   * backward compatible) keeps the existing task-type-gated behavior. A per-call
-   * `runtime` param and the KLAURO_CONTEXT_RUNTIME env var override this. See
-   * apps/mcp-server/src/context-filter.ts. Optional/absent on every existing
-   * .klaurorc.
-   */
+
+
+
+
+
+
+
+
+
+
   context?: KlauroContextConfig;
-  /**
-   * Coordination-fabric settings for this project, written by `klauro init`
-   * (enabled by default when connecting a repo) and by `klauro fabric on|off`
-   * for fine control (see docs/FABRIC-REMOTE.md). When `enabled` is true, the fab CLI
-   * (scripts/fab.ts) and the fab_* MCP tools route advisory claims to the
-   * cross-machine coordination API at `endpoint` under `workspace` — no env
-   * vars needed. The Bearer token is NEVER stored here: it is resolved at call
-   * time from the same credential store `klauro init`/`klauro login` use
-   * (~/.klauro/auth.json). Optional and additive: absent on every existing
-   * .klaurorc = the original local-only fabric, byte-for-byte unchanged.
-   */
+
+
+
+
+
+
+
+
+
+
+
   fabric?: KlauroFabricConfig;
-  /**
-   * Local declarative analyzer packs (glob(s), relative to the project root or
-   * absolute) that the analyzer-pack engine loads IN ADDITION to the built-in
-   * packs shipped with analyzer-core. A pack is a *.pack.yaml with tree-sitter
-   * queries that emit real CAS entry_points/entities/edges — the declarative
-   * equivalent of a hand-coded *-analyzer.ts. See docs/SPEC-ANALYZER-PACKS.md.
-   * Purely ADDITIVE and evidence-gated (each pack's applies_when must match):
-   * absent/empty on every existing .klaurorc, and a malformed pack degrades to
-   * a scoped load error rather than crashing the analysis. Convention mirrors
-   * `conventions` discovery — e.g. `packs: ["./.klauro/packs/*.pack.yaml"]`.
-   */
+
+
+
+
+
+
+
+
+
+
+
   packs?: string[];
-  /**
-   * Agent-isolation scope for multi-analysis MCP surfaces (list_analyses,
-   * list_workspace_analyses/list_cross_codebase_analyses, resolve_agent_analysis,
-   * get_agent_project_map). See apps/mcp-server/src/analysis-scope.ts.
-   *
-   * When this project (or an ancestor directory) is bound to an account
-   * workspace (`project.workspaceId` set, typically on a `kind: "workspace"`
-   * .klaurorc written by `klauro init` at the workspace root), the default is
-   * `mode: "workspace"`: multi-analysis tools are filtered to analyses whose
-   * path falls under that workspace root, so an agent operating in one
-   * customer's workspace never sees another customer's — or the operator's
-   * personal — analyses. Set `mode: "machine"` to explicitly opt back into
-   * the old all-local-store view (the operator's own dogfooding machine).
-   * Absent + no bound workspaceId = unchanged legacy behavior (machine-wide).
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   scope?: KlauroScopeConfig;
 }
 
 export interface KlauroScopeConfig {
-  /**
-   * "workspace" (default when project.workspaceId is set): filter multi-analysis
-   * enumeration to the bound workspace's projects. "machine": explicit opt-out,
-   * see every locally stored analysis (pre-isolation behavior).
-   */
+
+
+
+
+
   mode?: 'workspace' | 'machine';
 }
 
-/** One custom route source: a decorator-based router or a registration-call-based router. */
+
 export type KlauroRouteConvention =
   | {
       kind?: 'decorator';
@@ -209,21 +209,21 @@ export interface KlauroFlowConvention {
 }
 
 export interface KlauroContextConfig {
-  /**
-   * Runtime-section opt-out for the context/summary tools. "auto" (default)
-   * preserves the current task-type-gated behavior; "exclude" omits runtime
-   * telemetry / communication-seams / runtime-topology; "include" opts in.
-   */
+
+
+
+
+
   runtime?: 'include' | 'exclude' | 'auto';
 }
 
-/** Project-level coordination-fabric settings (written by `klauro init`; `klauro fabric on|off` for fine control). */
+
 export interface KlauroFabricConfig {
-  /** Route fab claims to the remote coordination API (true) or stay local-only (false). */
+
   enabled: boolean;
-  /** Coordination service base URL (e.g. https://mcp.klauro.com). Token comes from ~/.klauro/auth.json, never from this file. */
+
   endpoint?: string;
-  /** Shared workspace id — must match on every machine coordinating on this repo. */
+
   workspace?: string;
 }
 
@@ -250,16 +250,16 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
     version: 1,
     kind: 'project',
     project: {
-      // Prefer the ecosystem manifest's declared name (package.json/pyproject.toml/
-      // Cargo.toml/go.mod) over the bare directory basename — a checkout folder or
-      // hash-named snapshot dir frequently doesn't match the actual package name,
-      // and naming the project after it reads as unpolished. See cold-customer
-      // feedback 2026-07-06 (~/.klauro/agent-feedback/2026-07-06-cold-customer.md).
+
+
+
+
+
       name: resolveManifestProjectName(path.resolve(projectPath), path.basename(path.resolve(projectPath))),
     },
     analyzer: {
-      // One product: analysis goes to the hosted service (heavy work + AI on the VPS),
-      // production by default. No local/remote mode exists. See docs/KLAURO-PRODUCT-MODEL.md.
+
+
       serverUrl: process.env.KLAURO_ANALYZER_URL || DEFAULT_KLAURO_CLOUD_URL,
       selfHosted: false,
     },
@@ -287,17 +287,17 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
       allowRemoteAnalyzer: true,
       allowedAnalyzerHosts: [],
       requireSelfHosted: false,
-      // Kept only as a readable legacy config field. Product analysis is
-      // hosted regardless of this value; repository config cannot authorize
-      // analyzer execution on a customer machine.
+
+
+
       blockUntrackedFiles: false,
     },
     embedding: {
       enabled: true,
       provider: 'local',
-      // Real in-process ONNX sentence-embedding model (all-MiniLM-L6-v2).
-      // Availability failures degrade explicitly; they never masquerade as
-      // this model while producing hash vectors.
+
+
+
       model: 'onnx-all-MiniLM-L6-v2',
       apiKeyEnv: 'KLAURO_EMBEDDING_API_KEY',
       dimensions: 384,
@@ -363,8 +363,8 @@ export async function writeDefaultKlauroConfig(projectPath: string, options: {
       if (error instanceof Error && !('code' in error)) throw error;
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-    // A pre-existing .klauroignore is KEPT, not an error: `klauro init` must be
-    // idempotent/re-runnable, and a hand-tuned ignore file is user data.
+
+
     try {
       await fs.access(ignorePath);
       ignoreExists = true;
@@ -378,15 +378,15 @@ export async function writeDefaultKlauroConfig(projectPath: string, options: {
   return { configPath, ignorePath, config };
 }
 
-/**
- * Persist a hosted-project binding into an EXISTING .klaurorc additively: the
- * raw file is read as-is and ONLY the project ids (+ name/kind when absent)
- * are updated, so hand-tuned source/exclude/analyzer customizations are never
- * clobbered. This is the self-heal path for a stale config written by an
- * older CLI that left `project.id: null` — `klauro init` re-binds it in place
- * instead of making the user `rm .klaurorc` and start over. Mirrors the
- * additive contract of writeFabricSection (fabric-config.ts).
- */
+
+
+
+
+
+
+
+
+
 export async function writeProjectBindingIntoConfig(projectPath: string, binding: {
   projectId: string;
   workspaceId?: string;
@@ -406,7 +406,7 @@ export async function writeProjectBindingIntoConfig(projectPath: string, binding
   project.id = binding.projectId;
   if (binding.workspaceId) project.workspaceId = binding.workspaceId;
   if (binding.organizationId) project.organizationId = binding.organizationId;
-  // A user-chosen name in the file wins; only fill the name when it is absent.
+
   if (binding.projectName && !project.name) project.name = binding.projectName;
   raw.project = project;
   if (binding.kind && !raw.kind) raw.kind = binding.kind;
@@ -440,29 +440,29 @@ export function defaultExcludePatterns(): string[] {
     '**/.venv/**',
     '**/venv/**',
     '**/env/**',
-    // Installed Python dependencies, excluded by STRUCTURE rather than by the
-    // directory name a project happens to use. Measured 2026-08-11 on a real ML
-    // repo: get_upload_manifest selected 21,381 `site-packages` paths because its
-    // virtualenv is not called `venv`/`.venv` — so a customer would have uploaded
-    // ~21k files of third-party Python, inflating the snapshot, the node graph,
-    // every AI batch, and their bill.
-    //
-    // `site-packages` / `dist-packages` are the interpreter's own install
-    // locations: their presence identifies installed dependencies no matter what
-    // the parent directory is called, which is why matching the marker
-    // generalises where matching a name cannot. Same defect class as vendored
-    // third-party CSS contributing 2,708 of one repo's 3,943 nodes.
+
+
+
+
+
+
+
+
+
+
+
+
     '**/site-packages/**',
     '**/dist-packages/**',
-    // Extracted wheels/eggs are installed artifacts too, not authored source.
+
     '**/*.egg-info/**',
     '**/*.dist-info/**',
     '**/.tox/**',
     '**/.dart_tool/**',
     '**/.gradle/**',
     '**/Pods/**',
-    // 'bin' is NOT ignored — it holds real source in OCaml/Dune, Rust src/bin,
-    // shell script dirs; build artifacts there fail the source-extension gate.
+
+
     '**/obj/**',
     '**/.env',
     '**/.env.*',
@@ -562,42 +562,42 @@ export function resolveAnalysisId(loaded: LoadedKlauroConfig, fallback: string, 
   return explicitId || loaded.config.project.id || fallback;
 }
 
-/**
- * True when this repo is BOUND to a hosted Klauro project — i.e. a real
- * customer/workspace repo (klauro init / signup wrote a project.id), as opposed
- * to an unbound OSS/dev/offline checkout. This is the signal that "prod
- * exclusively" should apply by default: a bound repo has a hosted analyzer to
- * run on; an unbound one has nowhere to redirect to.
- */
+
+
+
+
+
+
+
 export function isBoundToHostedProject(loaded: LoadedKlauroConfig): boolean {
   return Boolean(loaded.config.project?.id);
 }
 
-/**
- * True when a .klaurorc's project.id does NOT bind to a hosted project: null /
- * missing / any non-prj_ placeholder (all of which an older broken CLI, or no
- * `klauro init` at all, could leave behind). An unbound config makes every
- * analysis upload land as an orphaned path-hash slug (see defaultAnalysisId in
- * remote-sync-client.ts) that never appears in any workspace — `klauro init`
- * self-heals it when signed in, and every upload path (analyze/sync/branch-diff)
- * refuses up front rather than accepting source it cannot place. Exported so the
- * decision is unit-testable and shared by cli.ts and remote-sync-client.ts.
- */
+
+
+
+
+
+
+
+
+
+
 export function isUnboundHostedProjectId(id: unknown): boolean {
   return typeof id !== 'string' || !/^prj_/.test(id);
 }
 
-/**
- * Probe whether a .klaurorc's well-formed prj_ id actually resolves for THIS
- * account: GET /api/projects/{id} answers 200 for a member, 404 for a project
- * that does not exist (or belongs to someone else — the server deliberately
- * does not distinguish, to avoid leaking existence to non-members). Only a
- * definite 404 is reported as 'not_found'; network failures / 5xx / auth
- * problems are 'indeterminate' so callers NEVER refuse an upload on a flaky
- * connection or an expired token — they fall through and let the upload
- * itself be the source of truth. fetchImpl is injectable (and the function
- * exported) so the decision is unit-testable without a live server.
- */
+
+
+
+
+
+
+
+
+
+
+
 export async function probeHostedProjectBinding(
   serverUrl: string,
   token: string,
@@ -616,12 +616,12 @@ export async function probeHostedProjectBinding(
   }
 }
 
-/**
- * Reject every local analysis attempt. The installed client may discover,
- * filter, hash, package, upload, watch, and query; analyzers always execute on
- * Klauro infrastructure. Environment and repository policy cannot bypass this
- * boundary.
- */
+
+
+
+
+
+
 export function assertLocalAnalysisAllowed(loaded: LoadedKlauroConfig): void {
   const url = loaded.config.analyzer.serverUrl || DEFAULT_KLAURO_CLOUD_URL;
   throw new Error(
@@ -756,7 +756,7 @@ export function validateEmbeddingConfig(config: KlauroConfig): EmbeddingConfigVa
     }
   }
 
-  // The local ONNX model (all-MiniLM-L6-v2) emits fixed 384-dim vectors.
+
   if (
     embedding.provider === 'local' &&
     embedding.model === 'onnx-all-MiniLM-L6-v2' &&
@@ -775,12 +775,12 @@ export interface ConventionsValidation {
   warnings: string[];
 }
 
-/**
- * Validate the `conventions` section with actionable, field-specific
- * messages — a malformed convention must degrade to a clear error, never a
- * crash mid-analysis. Called both by the MCP `declare_convention` surface
- * (reject before writing) and defensively before the applier runs.
- */
+
+
+
+
+
+
 export function validateConventions(conventions: KlauroConventions | undefined): ConventionsValidation {
   const errors: string[] = [];
   const warnings: string[] = [];

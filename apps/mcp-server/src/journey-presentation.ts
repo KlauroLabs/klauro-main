@@ -1,9 +1,9 @@
 import type { CASUserJourney, CASUserJourneyStep, CASGuardKind } from '../../../packages/analyzer-core/src/types/cas.types';
 import { classifyGuardKind } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 
-// Presentation-only helpers for stored user journeys. Every function reads
-// fields already present on the CAS journey; nothing here recomputes
-// relationships, chains, or effects.
+
+
+
 
 const STEP_COMPRESSION_THRESHOLD = 7;
 const STEP_COMPRESSION_LEADING = 3;
@@ -109,9 +109,9 @@ const GUARD_KIND_LABELS: Record<CASGuardKind, string> = {
   unknown: '',
 };
 
-// "guarded" must never conflate rate limiting with authentication: a journey
-// whose only guard is a throttler renders "rate-limited (...), no auth guard"
-// so protection is never overstated.
+
+
+
 export function guardPhraseForBoundaries(boundaries: GuardBoundary[]): string {
   const byKind = new Map<CASGuardKind, string[]>();
   const seen = new Set<string>();
@@ -170,9 +170,9 @@ export interface CompressedJourneySteps {
   trailing: CASUserJourneyStep[];
 }
 
-// Steps shown to humans: the raw chain repeats the entry as handler, route,
-// and controller steps. Keep the chain intact in stored data; for display,
-// drop steps whose label duplicates the entry label or the previous step.
+
+
+
 export function displayJourneySteps(
   journey: Pick<CASUserJourney, 'steps' | 'entry'>
 ): CASUserJourneyStep[] {
@@ -289,9 +289,9 @@ export function journeyListMarkdown(
   return lines.join('\n');
 }
 
-// Stored product-map journey summaries and capability links carry only the
-// stored journey name. Parse the deterministic name format
-// "Title -> Outcome (+N more) (METHOD /path)" for display.
+
+
+
 export function storedJourneyNameParts(name: string): { title: string; outcome: string; entry: string } {
   const raw = String(name || '').trim();
   const entryMatch = /\(((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s[^)]*)\)\s*$/i.exec(raw);

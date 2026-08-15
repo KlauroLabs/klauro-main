@@ -1,21 +1,21 @@
-/**
- * CONTEXT-FABRIC — compact, high-signal pointers that weave the newer fact
- * layers (communication seams, runtime infra topology, consistency/CAP posture,
- * bundled ship-units) into the PRIMARY orient/context tools an agent calls first
- * (get_system_overview, get_summary, get_agent_context).
- *
- * Everything here is a PURE READ of already-computed CAS fields:
- *   - cas.communication_seams  (buildCommunicationSeams inventory)
- *   - cas.consistency_model    (CAP / staleness posture)
- *   - cas.product_map.runtime_topology (buildRuntimeTopology infra->code join)
- *   - cas.deployable_evidence  (ship-units, bundled members via ships_paths)
- *   - cas.entry_points
- * NOTHING is recomputed. Every builder is additive and returns `undefined` /
- * empty when the underlying facts are absent, so non-applicable repos are
- * unchanged. Node-level runtime hotspots (which need telemetry observations,
- * an async load) are handled separately in agent-adoption via
- * buildNodeRuntimeMetrics; this module stays synchronous and CAS-only.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import type {
   CASOutput,
@@ -26,18 +26,18 @@ import type { WorkClaim } from './coordination/types';
 import type { CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import type { CoChangeIndex } from '../../../packages/analyzer-core/src/analyzer/core/co-change-index';
 
-// ---------------------------------------------------------------------------
-// Communication seams — one-line modality summary + a couple of top edges
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface CommunicationSeamSummary {
-  /** N sync / N async / N passive / total. */
+
   counts: { sync: number; async: number; passive: number; total: number };
-  /** Compact "N sync / N async / N passive" line. */
+
   headline: string;
-  /** Level the counts describe: deployable rollup when present, else node. */
+
   level: 'node' | 'deployable' | 'workspace';
-  /** A few busiest component-to-component edges (dominant modality + counts). */
+
   top_edges: Array<{
     source: string;
     target: string;
@@ -47,12 +47,12 @@ export interface CommunicationSeamSummary {
   detail_tool: 'get_communication_seams' | 'get_product_map';
 }
 
-/**
- * Compact seam summary from the already-computed communication_seams inventory.
- * Prefers the deployable-level rollup (component-to-component reads better for
- * orientation) and falls back to the node-level inventory. Returns undefined
- * when no seams were classified.
- */
+
+
+
+
+
+
 export function buildCommunicationSeamSummary(
   cas: CASOutput,
   opts: { maxEdges?: number } = {},
@@ -85,12 +85,12 @@ export function buildCommunicationSeamSummary(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Consistency / CAP — eventual-consistency & staleness risk flags
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface ConsistencyFlags {
-  /** True when at least one store/seam carries eventual consistency + staleness. */
+
   eventual_consistency_present: boolean;
   counts: {
     strong_stores: number;
@@ -99,17 +99,17 @@ export interface ConsistencyFlags {
     passive_replica: number;
     passive_streaming: number;
   };
-  /** Compact human-readable risk flags (only staleness-bearing postures). */
+
   flags: string[];
   detail_tool: 'get_product_map';
 }
 
-/**
- * Read the consistency_model result and surface only the staleness-bearing
- * signal (eventual stores, replica reads, streaming). Strong primary reads are
- * deliberately NOT flagged (matching the analyzer's "NOT flagged stale" rule).
- * Returns undefined when the analysis carries no eventual/streaming posture.
- */
+
+
+
+
+
+
 export function buildConsistencyFlags(cas: CASOutput): ConsistencyFlags | undefined {
   const model = cas.consistency_model;
   if (!model) return undefined;
@@ -139,48 +139,48 @@ export function buildConsistencyFlags(cas: CASOutput): ConsistencyFlags | undefi
   };
 }
 
-// ---------------------------------------------------------------------------
-// Bundled deployables — ship-units with their bundled members
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface BundledDeployable {
   name: string;
   kind: string;
-  /** Members bundled into this ship unit (e.g. client bundles client-service). */
+
   bundles: string[];
-  /** The primary/ENTRYPOINT member of a multi-member bundle, when known. */
+
   entrypoint_member?: string;
   ports?: number[];
 }
 
-/**
- * Ship units from deployable_evidence, collapsing bundled multi-member units so
- * `client` that packages `client-service` reads as ONE deployable with its
- * members listed (Tier-1 ships_paths). Non-bundled units are included with an
- * empty `bundles` array only when they carry a clear ship kind; the caller can
- * cap. Returns undefined when no deployable evidence exists.
- */
-/**
- * ships_paths carries raw evidence tokens; for a docker unit that includes
- * base-image lines (`node:22-alpine`), and for an installer/CI-deploy unit it
- * can include free-text arg tokens. Keep only tokens that read like real bundle
- * MEMBERS (service/bin/crate names) so the "client bundles client-service" signal
- * stays high. Conservative: when nothing survives, the unit shows as un-bundled.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function isPlausibleMember(token: string): boolean {
   const t = token.trim();
   if (t.length < 3) return false;
-  // Base images / tagged image refs: `node:22-alpine`, `alpine:3.19`, `library/x`.
+
   if (/[a-z0-9._-]+:[a-z0-9._-]+/i.test(t)) return false;
   if (/\b(alpine|debian|ubuntu|distroless|scratch|buster|bookworm|slim)\b/i.test(t)) return false;
   if (/^(dumb-init|tini|bash|sh|node|npm|yarn|pnpm|git|curl|wget)$/i.test(t)) return false;
-  // Trailing punctuation / prose fragments ("below.", "bastion.") are arg noise.
+
   if (/[.,;:]$/.test(t)) return false;
-  // A component-name suffix is the strongest signal of a real bundle member.
+
   if (/-(api|service|worker|web|app|server|client|gateway|fn|lambda|job)\b/i.test(t)) return true;
-  // A path-shaped token (has a slash, not a bare config-key dot) is a member.
+
   if (t.includes('/')) return true;
-  // Otherwise (bare word, or dotted config key like http.postBuffer) => drop.
+
   return false;
 }
 
@@ -219,15 +219,15 @@ export function buildBundledDeployables(
       };
     });
 
-  // Prefer ship-declarations (tier 1) and bundles first for orientation value.
+
   units.sort((a, b) => (b.bundles.length - a.bundles.length));
   const trimmed = units.slice(0, limit);
   return trimmed.length ? trimmed : undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Runtime topology — compact per-deployable infra->code summary
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface RuntimeTopologySummary {
   edge_count: number;
@@ -252,11 +252,11 @@ function compactTopoDeployable(d: CASProductMapDeployableTopology) {
   return out;
 }
 
-/**
- * Compact view of product_map.runtime_topology (the infra->code join). Present
- * only when the analysis carries infra topology edges. Returns undefined for
- * repos with no infra-as-code.
- */
+
+
+
+
+
 export function buildRuntimeTopologySummary(
   cas: CASOutput,
   opts: { limit?: number } = {},
@@ -271,55 +271,55 @@ export function buildRuntimeTopologySummary(
   };
 }
 
-// ---------------------------------------------------------------------------
-// System fit — the vertical "how it fits" pointer for get_system_overview
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface SystemFitSummary {
-  /** One-line "how it fits" tying the vertical together. */
+
   headline: string;
   entry_points: { total: number; by_type: Record<string, number> };
-  /** Ship units, bundled members collapsed. */
+
   deployables?: BundledDeployable[];
-  /** Infra->code topology, compacted. */
+
   topology?: RuntimeTopologySummary;
-  /** N sync / N async / N passive. */
+
   communication_seams?: CommunicationSeamSummary;
-  /** Eventual-consistency / CAP staleness flags, when present. */
+
   consistency?: ConsistencyFlags;
   detail_tools: string[];
 }
 
-/**
- * The compact "how it fits" section for get_system_overview: entry points ->
- * deployables (bundled members collapsed) -> infra topology -> communication
- * seam counts + CAP flags. Every sub-section is omitted when its facts are
- * absent; returns undefined only when NONE of the layers are present, so a
- * plain repo with no seams/topology/deployables is unchanged.
- *
- * Role split (see also buildOrientCapsule in query.ts): this is the NARRATIVE —
- * a woven headline plus the compacted content of each layer, so a caller can
- * read how the vertical actually connects. get_summary's orient_capsule is the
- * complementary INDEX — availability + count + the pulling tool per dimension,
- * no narrative and no per-layer content. They are deliberately non-redundant:
- * the capsule tells you WHAT is pullable at near-zero tokens; system_fit tells
- * you the STORY. Keep them that way — do not fold the capsule's per-dimension
- * counts into system_fit prose, and do not add narrative to the capsule.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefined {
   const deployables = buildBundledDeployables(cas, { limit: 6 });
   const topology = buildRuntimeTopologySummary(cas);
   const seams = buildCommunicationSeamSummary(cas);
   const consistency = buildConsistencyFlags(cas);
 
-  // Nothing new to surface — leave the overview untouched.
+
   if (!deployables && !topology && !seams && !consistency) return undefined;
 
   const entryTotal = cas.entry_points?.length || 0;
   const byType: Record<string, number> = {};
   for (const ep of cas.entry_points || []) byType[ep.type] = (byType[ep.type] || 0) + 1;
 
-  // Build the one-liner from whatever layers exist.
+
   const parts: string[] = [`${entryTotal} entry point(s)`];
   if (deployables) {
     const bundled = deployables.find(d => d.bundles.length > 0);
@@ -346,133 +346,133 @@ export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefi
   };
 }
 
-// ---------------------------------------------------------------------------
-// CAS-backed advisory overlap — blast-radius + symbol/contract aware
-// ---------------------------------------------------------------------------
-//
-// The advisory fabric surface (fab_claim_work / fab_check_collision) detects
-// overlap today with `checkEditLock` (coordination/local-store.ts) — a PURE
-// STRING/PATH-PREFIX scan: it compares only the raw `scope.paths` of the
-// proposed claim against every active claim's raw `scope.paths`, ignoring
-// `scope.symbols` entirely and never consulting the analysis. That misses the
-// whole differentiation of Klauro's fabric: two agents editing functions in
-// the same CALL CHAIN collide even in DIFFERENT files (call-graph blast
-// radius), and two agents changing the same SYMBOL/contract collide
-// semantically even when their file paths are disjoint.
-//
-// The enforced surface (claim_work / check_collision) already sees this via
-// coordination/collision.ts's Detector 4 (detectBlastIntersections) and the
-// planner (plan_parallel_work) already sees it via coordination/partitioner.ts
-// (`partitionTasks` with `includeBlastRadius`, expanding each footprint one hop
-// over CAS "calls" edges). The advisory path was the odd one out.
-//
-// `computeAdvisoryOverlap` closes that gap by REUSING the partitioner — the
-// exact same blast-radius machinery plan_parallel_work runs — instead of
-// reinventing a call-graph walk here. Each active claim + the proposed claim
-// become PartitionTasks; `partitionTasks(..., { includeBlastRadius })` computes
-// their symbol/path footprints, expands them by one CAS hop, and reports every
-// conflict edge with its reason ('symbol' | 'path' | 'blast-radius'). We keep
-// only the edges touching the proposed claim and hand them back as awareness.
-//
-// STRICTLY ADVISORY: this is a pure function that RETURNS findings — it never
-// blocks, queues, gates, or throws. Callers use it exactly like `checkEditLock`
-// (surface the findings, proceed regardless).
-//
-// CROSS-REPO (workspace-level CAS) LAYER (§4.2/§4.3/§7 SPEC-COORDINATION-FABRIC-V2): CAS
-// blast-radius is single-repo. But a fleet works a WORKSPACE: agent A edits a
-// shared type/lib in one repo, agent B edits its consumer in ANOTHER repo —
-// only the workspace-level CAS sees that cross-deployable link and the
-// frozen cross-repo contract surface. CAS-only collision detection is blind to
-// exactly the fleet-scale collisions that matter most. When a workspace-level CAS graph is
-// available for the claim's workspace, `computeAdvisoryOverlap` also folds in
-// two cross-repo signals, REUSING the workspace-level-CAS machinery (never reinventing it):
-//   (a) SHARED-CODE ROLLUP (`was.shared_code_rollup`): a claim touching a
-//       shared-library symbol (its `consumed_surface` / per-symbol
-//       `blast_radius`) overlaps any other claim touching a CONSUMER deployable
-//       of that symbol — the cross-repo shared-code blast radius the workspace-level CAS builds.
-//   (b) FROZEN/SHARED CROSS-REPO CONTRACTS (`was.interfaces` + `was.links`): a
-//       claim touching one side of a cross-repo interface link (provided
-//       route/message/db surface) overlaps another claim touching the linked
-//       counterpart — the contract surface two repos share.
-//
-// PREDICTIVE (GIT-HISTORY) LAYER (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md §F,
-// "Fabric co-change prediction"): the layers above are all PRESENT-TENSE
-// facts — a symbol, path, or contract BOTH claims literally or structurally
-// touch RIGHT NOW. Git history carries a different, complementary signal:
-// files that have HISTORICALLY changed together, even when nothing in today's
-// CAS (repo- or workspace-level) connects them (a config file and the code that reads it; a schema
-// and its migration; parallel-language twins with no shared symbol). When a
-// `CoChangeIndex` (packages/analyzer-core/.../co-change-index.ts — top-K
-// Laplace-smoothed conditional co-change probabilities per file) is supplied,
-// `computeAdvisoryOverlap` expands the proposed claim's paths into a
-// PREDICTED footprint (claimed paths ∪ high-probability co-change partners)
-// and checks it against every other active claim's ACTUAL paths (and vice
-// versa). A hit is reported with reason 'predicted-co-change' and a
-// `prediction` field carrying the probability — ADVISORY ONLY, and clearly
-// labeled AS a prediction (never conflated with the CAS (repo- or workspace-level) "this literally
-// overlaps" findings above) so a peer agent can weigh and ignore it freely.
-//
-// GRACEFULLY DEGRADING (workspace-level CAS -> CAS -> string, never throw): when no workspace-level CAS graph
-// is passed, the cross-repo layer is simply skipped and the result is the
-// CAS-backed set below. When no CAS is available either (`cas` undefined / an
-// empty nodes+edges set — the common case for a logical workspace id with no
-// analyzable project), `partitionTasks` naturally falls back to raw symbol/path
-// overlap (no edges to expand), so this reduces to a SUPERSET of `checkEditLock`
-// (adds symbol overlap; never loses the path overlap it had). Every layer is
-// wrapped so a failure degrades to fewer findings, never an exception. Safe to
-// call unconditionally.
 
-/** One advisory overlap finding against the proposed claim. Superset of
- *  local-store's path-only `EditLockConflict`: it adds the overlapping SYMBOLS,
- *  the overlap REASON, and (for cross-repo overlap) the shared workspace
- *  surface, so callers can distinguish a literal path/symbol clash from a
- *  call-graph blast-radius reach or a cross-repo (workspace-level-CAS) dependency. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export interface AdvisoryOverlapFinding {
-  /** The already-active claim whose footprint overlaps the proposed one. */
+
   agent_id: string;
   claim_id: string;
   intent: string;
-  /** Overlapping raw paths (path-prefix intersection), for parity with the
-   *  legacy string scan. Empty when the overlap is symbol/blast-radius only. */
+
+
   overlapping_paths: string[];
-  /** Overlapping symbols/node-ids. Empty when the overlap is path-only. */
+
   overlapping_symbols: string[];
-  /** Why they overlap:
-   *  - 'path'          : raw file-path prefix overlap (what the old scan caught).
-   *  - 'symbol'        : the two claims literally name the same symbol/entity.
-   *  - 'blast-radius'  : literal footprints are disjoint, but one claim edits a
-   *                      CAS caller/callee of the other — the same-repo moat
-   *                      signal a file/path-only scan cannot see.
-   *  - 'cross-repo-shared-code' : both claims touch a shared library symbol
-   *                      (one the lib, the other a cross-repo consumer of it),
-   *                      via the workspace-level CAS's shared_code_rollup blast radius.
-   *  - 'cross-repo-contract'    : both claims touch two ends of a frozen/shared
-   *                      cross-repo interface link (workspace-level CAS interfaces + links).
-   *  - 'predicted-co-change'    : NOT a present-tense fact — git history says
-   *                      a file either claim touches has historically
-   *                      co-changed with a file the other touches, above the
-   *                      caller's probability threshold. See `prediction`. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   reason: 'path' | 'symbol' | 'blast-radius' | 'cross-repo-shared-code' | 'cross-repo-contract' | 'predicted-co-change';
-  /** Present only for reason 'predicted-co-change' — the evidence behind the
-   *  prediction, so callers can render "predicted (73% probability, based on
-   *  42 historical co-commits)" rather than a bare label. Never present for
-   *  any other reason (those are facts, not predictions, and are not
-   *  conflated with this field). */
+
+
+
+
+
   prediction?: { probability: number; support: number; file_a: string; file_b: string };
-  /** True when the finding came from the CAS (reason 'blast-radius' or 'symbol')
-   *  — visible only because the single-repo analysis was consulted. */
+
+
   cas_derived: boolean;
-  /** True when the finding came from the workspace-level CAS (a 'cross-repo-*' reason) — visible
-   *  only because the WORKSPACE analysis was consulted (cross-repo blindness a
-   *  single-repo CAS cannot see). */
+
+
+
   was_derived: boolean;
-  /** For cross-repo findings: the shared workspace surface both claims touch —
-   *  the shared library name/symbols, or the cross-repo contract id — so the
-   *  awareness names WHAT is shared, not just that something is. */
+
+
+
   shared_surface?: string[];
 }
 
-/** The proposed (not-yet-appended) advisory claim footprint to check. */
+
 export interface AdvisoryClaimProposal {
   agent_id: string;
   paths?: string[];
@@ -480,19 +480,19 @@ export interface AdvisoryClaimProposal {
 }
 
 export interface AdvisoryOverlapOptions {
-  /** Expand footprints by one hop of CAS call-graph edges before intersecting.
-   *  Default true — this is the point of the helper. Set false to reduce to a
-   *  literal path/symbol overlap check (still a superset of the old path-only
-   *  scan). */
+
+
+
+
   includeBlastRadius?: boolean;
-  /** Cap on findings returned (highest-signal first: cross-repo, then symbol,
-   *  then blast-radius, then path, then predicted co-change). Default 25 —
-   *  advisory awareness, not a full report. */
+
+
+
   limit?: number;
-  /** Minimum co-change probability to treat a partner file as part of the
-   *  proposed claim's PREDICTED footprint. Default 0.5 — see the module
-   *  header's "PREDICTIVE (GIT-HISTORY) LAYER" note. Only consulted when
-   *  `coChangeIndex` is passed to `computeAdvisoryOverlap`. */
+
+
+
+
   coChangeThreshold?: number;
 }
 
@@ -505,21 +505,21 @@ const REASON_RANK: Record<AdvisoryOverlapFinding['reason'], number> = {
   'predicted-co-change': 5,
 };
 
-/**
- * CAS-backed advisory overlap (repo- and workspace-level) between a proposed claim and the active
- * claims. Same-repo overlap reuses `partitionTasks`' blast-radius machinery;
- * cross-repo overlap reuses the workspace-level CAS's `shared_code_rollup` + `interfaces`/`links`
- * (see the section header).
- *
- * Pure and non-blocking: returns findings, never throws — any internal failure
- * degrades to fewer findings (awareness is best-effort, never a gate).
- * Degrades workspace-level CAS -> CAS -> string:
- *  - Pass a real `PartitionCas` (server.ts builds one via `partitionCasForPath`)
- *    for same-repo blast-radius/symbol awareness; `undefined`/empty CAS degrades
- *    to literal symbol/path overlap.
- *  - Pass a workspace-level CAS graph (server.ts resolves one via `resolveWorkspaceAnalysisForPaths`)
- *    for cross-repo shared-code + contract awareness; omit it to skip that layer.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function computeAdvisoryOverlap(
   proposal: AdvisoryClaimProposal,
   activeClaims: WorkClaim[],
@@ -538,13 +538,13 @@ export function computeAdvisoryOverlap(
     if (!byClaimId.has(claim.claim_id)) byClaimId.set(claim.claim_id, claim);
   }
 
-  // Each layer is independently guarded: a failure in one degrades to fewer
-  // findings, never an exception and never a lost other layer.
+
+
   const findingsByClaim = new Map<string, AdvisoryOverlapFinding>();
   const record = (f: AdvisoryOverlapFinding) => {
-    // One finding per conflicting claim — keep the highest-signal reason
-    // (lowest REASON_RANK) when a claim overlaps on multiple layers, and merge
-    // the surfaces so the awareness stays complete.
+
+
+
     const existing = findingsByClaim.get(f.claim_id);
     if (!existing) {
       findingsByClaim.set(f.claim_id, f);
@@ -561,7 +561,7 @@ export function computeAdvisoryOverlap(
     findingsByClaim.set(f.claim_id, merged);
   };
 
-  // ---- Same-repo layer: CAS blast-radius via partitionTasks ----
+
   try {
     const PROPOSAL_ID = '__advisory_proposal__';
     const tasks: PartitionTask[] = [
@@ -581,9 +581,9 @@ export function computeAdvisoryOverlap(
       });
     }
 
-    // Empty/undefined CAS -> partitionTasks has no edges to expand and reduces
-    // to literal symbol/path overlap. Feeding {nodes:[],edges:[]} is the same
-    // graceful-degradation path server.ts's partitionCasForPath already yields.
+
+
+
     const partitionCas: PartitionCas = cas ?? { nodes: [], edges: [] };
     const includeBlastRadius = opts.includeBlastRadius ?? true;
     const result = partitionTasks(tasks, partitionCas, { includeBlastRadius });
@@ -605,28 +605,28 @@ export function computeAdvisoryOverlap(
       });
     }
   } catch {
-    // Same-repo layer failed — cross-repo layer below still runs.
+
   }
 
-  // ---- Cross-repo layer: workspace-level-CAS shared-code rollup + contract links ----
+
   if (was) {
     try {
       for (const f of computeCrossRepoOverlap(proposal, [...byClaimId.values()], was)) {
         record(f);
       }
     } catch {
-      // Cross-repo layer failed — same-repo findings above are preserved.
+
     }
   }
 
-  // ---- Predictive layer: git-history co-change (§F) ----
+
   if (coChangeIndex) {
     try {
       for (const f of computePredictedCoChangeOverlap(proposal, [...byClaimId.values()], coChangeIndex, opts.coChangeThreshold ?? 0.5)) {
         record(f);
       }
     } catch {
-      // Predictive layer failed — every fact-based finding above is preserved.
+
     }
   }
 
@@ -636,26 +636,26 @@ export function computeAdvisoryOverlap(
   return findings.slice(0, limit);
 }
 
-/**
- * Cross-repo (workspace-level-CAS) overlap: does the proposed claim share a WORKSPACE surface
- * with any other active claim that a single-repo CAS cannot see? Two signals,
- * both read straight off the persisted workspace-level CAS graph:
- *
- *  (a) shared_code_rollup — a shared library and its cross-repo consumers. If
- *      the proposed claim touches a shared symbol (or the lib itself) and
- *      another claim touches a CONSUMER of that symbol (or the lib), they
- *      collide across repos. `blast_radius[].symbol -> consumer_deployable_ids`
- *      is exactly the workspace-level CAS's own cross-deployable dependency index.
- *  (b) interfaces + links — a frozen/shared cross-repo contract. Each `link`
- *      ties a provider interface to a consumer interface across two codebases;
- *      if the proposed claim touches one interface's refs and another claim
- *      touches the linked counterpart's refs, both are editing two ends of the
- *      same cross-repo contract.
- *
- * Matching against a claim's footprint is deliberately tolerant (symbol-name OR
- * path-substring), mirroring the workspace-level CAS's own evidence granularity — it
- * records symbol names and file/path hints, not CAS node ids.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function computeCrossRepoOverlap(
   proposal: AdvisoryClaimProposal,
   others: WorkClaim[],
@@ -665,9 +665,9 @@ function computeCrossRepoOverlap(
   const proposalSyms = new Set(proposal.symbols ?? []);
   const proposalPaths = proposal.paths ?? [];
 
-  // A claim "touches" a surface token when the token matches one of its symbols
-  // exactly, or appears as a substring of one of its paths (or vice-versa) —
-  // the workspace-level-CAS surface is name/path-shaped, not a CAS node id.
+
+
+
   const claimTouches = (claim: WorkClaim | AdvisoryClaimProposal, token: string): boolean => {
     if (!token) return false;
     const syms = 'symbols' in claim ? (claim.symbols ?? []) : (claim as WorkClaim).scope.symbols ?? [];
@@ -678,24 +678,24 @@ function computeCrossRepoOverlap(
   const proposalTouches = (token: string) =>
     proposalSyms.has(token) || proposalPaths.some((p) => p === token || p.includes(token) || token.includes(p));
 
-  // (a) Shared-code rollup: shared library + its cross-repo consumers.
+
   for (const rollup of was.shared_code_rollup ?? []) {
-    // The shared surface: the lib's exported symbols plus per-symbol blast radius.
+
     const surfaceSymbols = new Set<string>([
       ...(rollup.consumed_surface ?? []),
       ...((rollup.blast_radius ?? []).map((b) => b.symbol)),
     ]);
     const libTokens = [rollup.lib_name, rollup.path_hint].filter(Boolean) as string[];
 
-    // Does the proposal touch this shared lib (a symbol on its surface, or the
-    // lib path/name itself)?
+
+
     const proposalHitsSymbols = [...surfaceSymbols].filter((s) => proposalTouches(s));
     const proposalHitsLib = libTokens.some((t) => proposalTouches(t));
     if (proposalHitsSymbols.length === 0 && !proposalHitsLib) continue;
 
     for (const claim of others) {
-      // Does this other claim touch the same shared surface / lib (a consumer
-      // or the lib itself)?
+
+
       const claimHitsSymbols = [...surfaceSymbols].filter((s) => claimTouches(claim, s));
       const claimHitsLib = libTokens.some((t) => claimTouches(claim, t));
       if (claimHitsSymbols.length === 0 && !claimHitsLib) continue;
@@ -715,7 +715,7 @@ function computeCrossRepoOverlap(
     }
   }
 
-  // (b) Cross-repo contract links: two ends of the same frozen/shared contract.
+
   const interfaceById = new Map<string, (typeof was.interfaces)[number]>();
   for (const iface of was.interfaces ?? []) interfaceById.set(iface.id, iface);
 
@@ -745,9 +745,9 @@ function computeCrossRepoOverlap(
     for (const claim of others) {
       const claimOnSrc = srcTokens.some((t) => claimTouches(claim, t));
       const claimOnDst = dstTokens.some((t) => claimTouches(claim, t));
-      // Overlap when the two claims sit on the SAME contract — either both ends,
-      // or opposite ends of the same cross-repo link (the fleet-scale case:
-      // provider edited in one repo, consumer edited in the other).
+
+
+
       if (!claimOnSrc && !claimOnDst) continue;
       const sameContract = (proposalOnSrc || proposalOnDst) && (claimOnSrc || claimOnDst);
       if (!sameContract) continue;
@@ -773,22 +773,22 @@ function computeCrossRepoOverlap(
   return out;
 }
 
-/**
- * Predictive (git-history) overlap: does the proposed claim's PREDICTED
- * footprint — its literal paths plus every co-change partner at or above
- * `threshold` — intersect any other active claim's ACTUAL claimed paths, or
- * vice versa (the other claim's predicted footprint hitting the proposal's
- * actual paths)? Checked both directions because either agent's history-based
- * expansion could be the one that reveals the coupling.
- *
- * Deliberately narrow scope vs. the CAS layers above (repo- and workspace-level): this never expands
- * BOTH sides' footprints simultaneously and intersects the two predicted
- * sets — that would compound two probabilistic expansions into a much
- * noisier, harder-to-explain finding. Anchoring one side to ACTUAL claimed
- * paths keeps every finding traceable to "you two, in reality, are touching
- * X and Y, and X→Y is a strong historical pair" — one real fact, one
- * prediction, never two predictions compounded.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function computePredictedCoChangeOverlap(
   proposal: AdvisoryClaimProposal,
   others: WorkClaim[],
@@ -817,14 +817,14 @@ function computePredictedCoChangeOverlap(
 
     let best: { fileA: string; fileB: string; probability: number; support: number } | undefined;
 
-    // Direction 1: proposal's files predict into the claim's actual paths.
+
     for (const pFile of proposalPaths) {
       const hit = bestPartnerAbove(pFile, claimPaths);
       if (hit && (!best || hit.probability > best.probability)) {
         best = { fileA: pFile, fileB: hit.file, probability: hit.probability, support: hit.support };
       }
     }
-    // Direction 2: the claim's files predict into the proposal's actual paths.
+
     for (const cFile of claimPaths) {
       const hit = bestPartnerAbove(cFile, proposalPaths);
       if (hit && (!best || hit.probability > best.probability)) {
@@ -849,8 +849,8 @@ function computePredictedCoChangeOverlap(
   return out;
 }
 
-/** Path-prefix intersection (mirrors partitioner/local-store `pathsOverlap`),
- *  returning the concrete overlapping paths for the finding. */
+
+
 function intersectPaths(a: string[], b: string[]): string[] {
   const out = new Set<string>();
   for (const p of a) {
@@ -863,7 +863,7 @@ function intersectPaths(a: string[], b: string[]): string[] {
   return [...out];
 }
 
-/** Exact symbol/name intersection. */
+
 function intersectExact(a: string[], b: string[]): string[] {
   const setB = new Set(b);
   return [...new Set(a.filter((x) => setB.has(x)))];

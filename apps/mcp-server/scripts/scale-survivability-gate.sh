@@ -1,52 +1,4 @@
 #!/usr/bin/env bash
-#
-# PERIODIC scale-survivability gate — the live runner. Not part of deploy
-# smoke (infrastructure/vps/analysis-smoke.mjs stays tiny on purpose). See
-# apps/mcp-server/src/scale-survivability-gate.ts for the full rationale, the
-# budgets, and the "red means someone acts" ownership/failure-surface note.
-#
-# WHAT THIS DOES:
-#   1. Blackbox-triggers a real hosted analysis of a real, ordinary-size,
-#      mixed-language repository via the `klauro` CLI (a genuine customer
-#      path) — never by importing the analyzer engine. `klauro analyze`
-#      itself only ACCEPTS the upload and returns immediately (progressive
-#      availability — see docs/context/ANALYZER-ORCHESTRATION.md); this
-#      script then POLLS the same customer-facing analysis-status endpoint
-#      (GET /api/projects/{id}/analysis-status, same shape the
-#      resolve_agent_analysis MCP tool and the installed CLI both read) to
-#      observe real completion — the customer-visible signal, not an
-#      internal one.
-#   2. While it polls, ALSO samples the production container's memory via
-#      the VPS SSH credentials (VPS_HOST/VPS_USER/VPS_PASSWORD in the
-#      repo-root .env, same as deploy.sh) — the one place this gate looks
-#      past the customer-facing API, because peak RSS isn't something that
-#      API exposes and this is the whole point of that assertion.
-#   3. task #118 (latency PREDICTABILITY): the same status poll also records
-#      when the L4 (last deterministic) layer's `completed_at` lands, so the
-#      gate can assert deterministic-layer readiness on its OWN tight budget
-#      (maxDeterministicReadyMs) — independent of the overall AI-inclusive
-#      wall-clock budget. See scale-survivability-gate.ts's module doc for
-#      why maxWallMs alone cannot catch a queueing regression here.
-#   4. Evaluates the observation against DEFAULT_SCALE_GATE_BUDGETS (or an
-#      override) via the pure, unit-tested evaluateScaleGateObservation().
-#   5. On any failure: appends a FAILING row to
-#      docs/mcp/SCALE-SURVIVABILITY-LOG.md and exits non-zero. A scheduled
-#      caller (see infrastructure/vps/klauro-scale-gate.timer) turns that
-#      exit code into an OnFailure= alert.
-#
-# USAGE:
-#   apps/mcp-server/scripts/scale-survivability-gate.sh [path]
-#   [path] defaults to the repo root (this repo IS the "several thousand
-#   files, mixed languages" ordinary-size case the gate targets — it is the
-#   same repo the 3,856-file RangeError incident and the Aug 2026 peak-RSS
-#   probes both used).
-#
-# REQUIRES: a valid `klauro` CLI session (`klauro auth-status`). This gate
-# does NOT run `klauro login` itself and never will — an expired/invalid
-# session must fail loudly here (exit non-zero, logged) rather than silently
-# skip the gate. If this is failing on auth, that IS the finding: refresh
-# the gate's own service session out-of-band before assuming the pipeline
-# regressed.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -55,8 +7,6 @@ LOG_PATH="$REPO_ROOT/docs/mcp/SCALE-SURVIVABILITY-LOG.md"
 MAX_WALL_MS="${KLAURO_SCALE_GATE_MAX_WALL_MS:-600000}"
 MAX_PEAK_RSS_MB="${KLAURO_SCALE_GATE_MAX_PEAK_RSS_MB:-4500}"
 MIN_NODES="${KLAURO_SCALE_GATE_MIN_NODES:-1000}"
-# task #118: independent, much tighter budget on deterministic-layer (L0-L4)
-# readiness — see scale-survivability-gate.ts's DEFAULT_SCALE_GATE_BUDGETS doc.
 MAX_DETERMINISTIC_READY_MS="${KLAURO_SCALE_GATE_MAX_DETERMINISTIC_READY_MS:-90000}"
 
 cd "$REPO_ROOT"
@@ -73,17 +23,24 @@ EXIT_CODE=0
 OUTPUT_FILE="$(mktemp)"
 if [ -f "$REPO_ROOT/.env" ]; then set -a; source "$REPO_ROOT/.env"; set +a; fi
 
-# Kick off the memory sampler in the background (best-effort — a sampler
-# failure degrades to peakRssMb=null, which evaluateScaleGateObservation()
-# treats as "not sampled", never as a false pass).
 SAMPLE_FILE="$(mktemp)"
 SAMPLER_PID=""
-if [ -n "${VPS_HOST:-}" ] && [ -n "${VPS_PASSWORD:-}" ] && command -v sshpass >/dev/null 2>&1; then
+RSS_CONTAINER="${KLAURO_SCALE_GATE_RSS_CONTAINER:-}"
+if [ -n "$RSS_CONTAINER" ] && ! [[ "$RSS_CONTAINER" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  echo "[scale-gate] FAIL: KLAURO_SCALE_GATE_RSS_CONTAINER contains invalid characters" >&2
+  exit 2
+fi
+if [ -n "$RSS_CONTAINER" ] && { [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_PASSWORD:-}" ] || ! command -v sshpass >/dev/null 2>&1; }; then
+  echo "[scale-gate] FAIL: remote RSS sampling requires VPS_HOST, VPS_PASSWORD, and sshpass" >&2
+  exit 2
+fi
+if [ -n "$RSS_CONTAINER" ] && [ -n "${VPS_HOST:-}" ] && [ -n "${VPS_PASSWORD:-}" ] && command -v sshpass >/dev/null 2>&1; then
+  export SSHPASS="$VPS_PASSWORD"
   (
     while true; do
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+      sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
         "${VPS_USER:-root}@$VPS_HOST" \
-        "docker exec klauro-api-1 sh -c \"awk '/VmRSS/{print \\\$2}' /proc/1/status\" 2>/dev/null" \
+        "docker exec '$RSS_CONTAINER' sh -c \"awk '/VmRSS/{print \\\$2}' /proc/1/status\" 2>/dev/null" \
         >> "$SAMPLE_FILE" 2>/dev/null || true
       sleep 5
     done
@@ -97,10 +54,6 @@ ACCEPT_EXIT=$?
 set -e
 
 if [ "$ACCEPT_EXIT" -ne 0 ]; then
-  # Upload/accept itself failed — no analysis_id to poll. This IS a
-  # process-failed observation; fall through to evaluation with no counts,
-  # no deterministic-readiness sample, exactly as the old synchronous-CLI
-  # path did on a non-zero exit.
   EXIT_CODE=$ACCEPT_EXIT
   TIMED_OUT="false"
   ENDED_MS=$(($(date +%s%3N)))
@@ -132,9 +85,6 @@ else
     NODES="null"
     EDGES="null"
   else
-    # Poll the SAME customer-facing analysis-status endpoint the installed
-    # CLI/MCP client reads (resolve_agent_analysis) until L5 (or the whole
-    # analysis) reaches a terminal state, or MAX_WALL_MS elapses.
     DEADLINE_MS=$((STARTED_MS + MAX_WALL_MS))
     DETERMINISTIC_READY_MS="null"
     STATUS="populating"
@@ -193,7 +143,7 @@ else
     ")
     [ -z "$NODES" ] && NODES="null"
     [ -z "$EDGES" ] && EDGES="null"
-    PEAK_RSS_MB="null" # filled in below, after the sampler is stopped
+    PEAK_RSS_MB="null"
   fi
 fi
 

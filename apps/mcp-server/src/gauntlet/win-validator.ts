@@ -1,22 +1,22 @@
-/**
- * The win-validator — the heart of the gauntlet.
- *
- * The user's win condition, verbatim:
- *
- *   "Klauro should ALWAYS ultimately win. It should either be faster or more
- *    token efficient and should ALWAYS result in a higher quality result."
- *
- * Decoded into a hard rule, per scenario, against EVERY other arm:
- *
- *   (1) quality:  Klauro strictly higher than every other arm.            [required]
- *   (2) efficiency: Klauro beats every other arm on time OR on tokens.    [required]
- *
- * Both must hold. If either fails, Klauro did NOT win this scenario — and that
- * is a Klauro bug to fix, surfaced loudly with a pointer at the capability that
- * was supposed to deliver the edge. No silent passes, no moral victories.
- *
- * Pure functions only — unit-testable, no I/O.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import type {
   ArmResult,
@@ -27,17 +27,17 @@ import type {
   GauntletSummary,
 } from './report-schema';
 
-/** Quality ties do NOT count as a win — Klauro must be strictly ahead by this margin. */
-const QUALITY_WIN_MARGIN = 0.5; // on a 0..100 scale
-/**
- * The quality ceiling (0..100). A tie is only acceptable here — against a
- * compiler-accurate / ground-truth-correct competitor you cannot out-correct,
- * so matching it at the top is the honest best case, and the win is then decided
- * on tokens/speed. Below the ceiling, Klauro must still win quality outright.
- */
+
+const QUALITY_WIN_MARGIN = 0.5;
+
+
+
+
+
+
 const QUALITY_CEILING = 99.5;
-/** Efficiency must be a real win, not noise. */
-const EFFICIENCY_WIN_MARGIN_FRAC = 0.02; // 2%
+
+const EFFICIENCY_WIN_MARGIN_FRAC = 0.02;
 
 type Direction = 'higher-better' | 'lower-better';
 
@@ -58,11 +58,11 @@ function metricValue(arm: ArmResult, metric: MetricKey): number | undefined {
   }
 }
 
-/**
- * Compare Klauro against the *best* (most favorable) value among the other arms
- * for one metric. We compare against the best other arm, not the average — if
- * any competitor beats Klauro on quality, Klauro has not won.
- */
+
+
+
+
+
 function compareMetric(
   metric: MetricKey,
   klauro: ArmResult,
@@ -75,7 +75,7 @@ function compareMetric(
     .map(a => ({ arm_id: a.arm_id, value: metricValue(a, metric) }))
     .filter((x): x is { arm_id: string; value: number } => typeof x.value === 'number');
 
-  // Pick the strongest competitor on this metric.
+
   let best: { arm_id: string; value: number } | undefined;
   for (const cand of otherValues) {
     if (!best) { best = cand; continue; }
@@ -84,7 +84,7 @@ function compareMetric(
   }
 
   if (typeof klValue !== 'number' || !best) {
-    // Not enough data to judge — record what we have, don't claim a win.
+
     return {
       metric,
       klauro_value: klValue,
@@ -100,9 +100,9 @@ function compareMetric(
   if (dir === 'higher-better') {
     wins = klValue > best.value + (metric === 'quality' ? QUALITY_WIN_MARGIN : 0);
     advantage = best.value > 0 ? (klValue - best.value) / best.value : (klValue > best.value ? 1 : 0);
-    // Quality only: did Klauro match the strongest competitor at the ceiling?
-    // (e.g. both F1 = 100 against a compiler-accurate tool). Not a loss — the
-    // win is then carried by efficiency.
+
+
+
     if (metric === 'quality' && !wins) {
       tied_at_ceiling = klValue >= QUALITY_CEILING && Math.abs(klValue - best.value) <= QUALITY_WIN_MARGIN;
     }
@@ -123,12 +123,12 @@ function compareMetric(
   };
 }
 
-/**
- * Validate one scenario's arm results against the win condition.
- *
- * @param klauroEdge the scenario's stated mechanism — echoed into a violation so
- *        a loss points at the exact capability that failed to deliver.
- */
+
+
+
+
+
+
 export function validateWin(
   armResults: ArmResult[],
   klauroEdge: string
@@ -136,8 +136,8 @@ export function validateWin(
   const klauro = armResults.find(a => a.arm_id === 'klauro');
   const others = armResults.filter(a => a.arm_id !== 'klauro' && a.attempted);
 
-  // Single-arm scenarios (e.g. objective analysis-readiness) have no opponent;
-  // "winning" reduces to Klauro meeting its own bar, judged on quality alone.
+
+
   if (!klauro) {
     return {
       klauro_wins: false,
@@ -159,7 +159,7 @@ export function validateWin(
     return {
       klauro_wins: passed,
       quality_won: passed,
-      efficiency_won: true, // uncontested
+      efficiency_won: true,
       comparisons: [
         { metric: 'quality', klauro_value: q, klauro_wins: passed },
       ],
@@ -183,8 +183,8 @@ export function validateWin(
 
   const quality_won = quality.klauro_wins;
   const quality_tied_at_ceiling = !!quality.tied_at_ceiling;
-  // Quality is acceptable if Klauro wins outright OR matches a ground-truth-correct
-  // competitor at the ceiling. The win is then sealed by efficiency.
+
+
   const quality_ok = quality_won || quality_tied_at_ceiling;
   const efficiency_won = time.klauro_wins || tokens.klauro_wins;
   const klauro_wins = quality_ok && efficiency_won;
@@ -240,7 +240,7 @@ export function validateWin(
   };
 }
 
-/** Roll up scenario verdicts into the top-level summary the UI headlines. */
+
 export function summarize(scenarios: ScenarioResult[]): GauntletSummary {
   const judged = scenarios.filter(s => s.verdict && s.status === 'done');
   const won = judged.filter(s => s.verdict!.klauro_wins);

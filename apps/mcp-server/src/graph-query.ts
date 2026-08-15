@@ -1,15 +1,15 @@
-/**
- * Cypher-lite graph query over the CAS — structural parity with codebase-memory's
- * `query_graph` (MATCH…RETURN). Supports the patterns an agent actually needs:
- *
- *   MATCH (n) WHERE n.type = 'function' RETURN n
- *   MATCH (a)-[:CALLS]->(b) WHERE b.name = 'save' RETURN a     // callers of save
- *   MATCH (a)-[:RESOLVED_BY]->(b) WHERE a.name = 'user' RETURN b
- *
- * Single optional relationship hop, one WHERE equality, projected RETURN. Runs
- * directly over cas.nodes/edges — no graph DB, no infra. (Klauro answers the same
- * queries through typed tools too; this adds the free-form escape hatch.)
- */
+
+
+
+
+
+
+
+
+
+
+
+
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 
 interface ParsedQuery {
@@ -71,7 +71,7 @@ export function queryGraph(cas: CASOutput, q: string, opts: { limit?: number } =
     return { total: aNodes.length, results: out };
   }
 
-  // One-hop: a -[:REL]-> b
+
   const aSet: CASNode[] = [];
   const bSet: CASNode[] = [];
   const relLc = parsed.relType?.toLowerCase();

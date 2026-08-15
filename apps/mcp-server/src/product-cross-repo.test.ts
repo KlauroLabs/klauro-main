@@ -95,7 +95,7 @@ function backendCas(overrides: Record<string, unknown> = {}): CASOutput {
         },
       },
     ],
-    data_entities: [
+    entities: [
       { id: 'entity-thing', name: 'Thing', lifecycle: {} },
     ],
     ...overrides,
@@ -131,6 +131,33 @@ test('unrelated frontend paths do not link to backend routes', () => {
   const result = buildCrossRepositoryLinks([repo('frontend', frontend), repo('backend', backendCas())]);
 
   assert.equal(result.links.filter(link => link.type === 'api').length, 0);
+});
+
+test('generic ORM resource labels do not fabricate a shared database', () => {
+  const first = makeCas('first', {
+    exit_points: [{ id: 'first-orm', source_node: 'first-node', type: 'database', name: 'orm', target: { resource: 'orm' } }],
+  });
+  const second = makeCas('second', {
+    exit_points: [{ id: 'second-orm', source_node: 'second-node', type: 'database', name: 'orm', target: { resource: 'orm' } }],
+  });
+
+  const result = buildCrossRepositoryLinks([repo('first', first), repo('second', second)]);
+  assert.equal(result.links.filter(link => link.type === 'shared-database').length, 0);
+});
+
+test('matching concrete database endpoints establish a shared database without exposing credentials', () => {
+  const first = makeCas('first', {
+    exit_points: [{ id: 'first-db', source_node: 'first-node', type: 'database', name: 'orders', target: { endpoint: 'postgresql://writer:secret@orders-db.internal:5432/orders' } }],
+  });
+  const second = makeCas('second', {
+    exit_points: [{ id: 'second-db', source_node: 'second-node', type: 'database', name: 'orders', target: { endpoint: 'postgresql://reader:different@orders-db.internal:5432/orders' } }],
+  });
+
+  const result = buildCrossRepositoryLinks([repo('first', first), repo('second', second)]);
+  const links = result.links.filter(link => link.type === 'shared-database');
+  assert.equal(links.length, 1);
+  assert.equal((links[0].connection as any)?.resource, 'postgresql://orders-db.internal:5432/orders');
+  assert.doesNotMatch(JSON.stringify(links[0]), /secret|different/);
 });
 
 test('unresolved dynamic prefix matches backend route by literal suffix', () => {
@@ -248,7 +275,7 @@ test('shared entity vocabulary links repositories through shared-schema links', 
         source: { file: 'src/Entity/User.php', line: 8 },
       },
     ],
-    data_entities: [
+    entities: [
       { id: 'entity-thing', name: 'Thing', lifecycle: {} },
       { id: 'entity-user', name: 'User', lifecycle: {} },
     ],

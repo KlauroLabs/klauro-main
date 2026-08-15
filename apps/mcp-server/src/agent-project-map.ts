@@ -48,29 +48,29 @@ export async function getAgentProjectMap(input: {
   task?: AgentTask;
   limit?: number;
 } = {}): Promise<AgentProjectMap> {
-  // SECURITY: scope by the REQUESTED path, not the MCP process's own
-  // process.cwd(). listAnalyses()'s default scope resolution walks up from
-  // cwd looking for a .klaurorc binding and falls back to 'machine' (fully
-  // unscoped, every analysis on this machine) when none is found there. If
-  // this tool scoped on cwd, a caller could pass an arbitrary `path`
-  // belonging to a DIFFERENT, unrelated (and possibly unbound) workspace and
-  // still see every analysis stored on the host whenever the *server
-  // process's* cwd happened to lack a binding — regardless of whether the
-  // requested path itself belongs to someone else's real, bound project.
-  // Anchoring on input.path means: if the repo the caller says they're
-  // working in is bound to workspace W, only W's analyses are visible,
-  // independent of the process's own working directory. This closes the
-  // cross-tenant bleed from the 2026-07-06 cold-customer audit, where
-  // resolve_agent_analysis(otherAccountsRealPath) returned that account's
-  // full analysis to an unrelated caller.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const { entries: scopedEntries, scope } = await listAnalysesWithScope({ scopeCwd: input.path });
-  // Second, fail-closed pass: filterEntriesToScope (inside listAnalysesWithScope)
-  // is a no-op when scope.mode is 'machine' (unbound requester — e.g. a
-  // brand-new/fixture repo with no .klaurorc yet, exactly the cold-customer
-  // audit's case). That "everything on this machine" fallback is intentional
-  // for a genuinely unhosted solo dev, but it must never surface an entry
-  // that IS bound to someone else's specific, different workspace. Strip
-  // those out regardless of the requester's own scope mode.
+
+
+
+
+
+
+
   const entries = await excludeForeignWorkspaceEntries(scopedEntries, scope);
   const candidates: AgentAnalysisCandidate[] = [];
   const requestedPath = input.path ? normalizePath(input.path) : undefined;
@@ -166,10 +166,10 @@ export async function resolveAgentAnalysis(input: {
       : `Use ${selected.path} for agent-start/work-context calls; it is the best matching analyzed subproject.`
     : 'No stored analysis matches this path. Run analyze_codebase on the repository or target subproject first.';
   const detail = input.detail || 'compact';
-  // compact (default): an exact, unambiguous match doesn't need the full
-  // candidate list replayed on every turn — only include candidates when
-  // the match is ambiguous (no exact-relation selection) or detail:'full'
-  // is requested. See docs/SPEC-RESPONSE-BUDGET.md §4.
+
+
+
+
   const isExactMatch = selected?.relation === 'exact';
   const includeCandidates = detail === 'full' || !isExactMatch;
   return {
@@ -234,16 +234,16 @@ function candidateScore(input: {
   if (input.target && input.targetMatches.length > 0) score += Math.min(35, input.targetMatches.length * 8);
   if (input.profile.kind === 'empty' || input.profile.kind === 'infrastructure') score -= 20;
   if (input.entry.node_count === 0 || input.entry.edge_count === 0) score -= 25;
-  // A test fixture that happens to live inside the requested tree is never the
-  // product the agent is working on. Without this an embedded fixture (a
-  // descendant, +18) outranks the real ancestor analysis (−10) — a reported
-  // footgun where a worktree of a large repo resolved to a rails fixture.
+
+
+
+
   if (/(^|\/)(fixtures?|__fixtures__|test[-_]?fixtures|analysis-truth|testdata)(\/|$)/.test(input.entry.path.replace(/\\/g, '/'))) {
     score -= 60;
   }
-  // For a large repo whose only analysis sits at an ancestor (e.g. when the agent
-  // is in a worktree subpath), that ancestor IS the product — don't penalize a
-  // substantial, passing ancestor the way a thin/stale one is penalized.
+
+
+
   if (input.relation === 'ancestor' && input.readiness.status === 'pass' && (input.entry.node_count || 0) >= 500) {
     score += 14;
   }

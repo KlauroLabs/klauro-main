@@ -1,4 +1,5 @@
 import * as fs from 'fs-extra';
+import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
@@ -11,12 +12,13 @@ import { runAgentCapabilityMemoryBenchmark } from './agent-capability-memory-ben
 import { runSeededExistingTaskBenchmark } from './agent-existing-task-benchmark';
 import { runFromZeroBuildContextProof } from './agent-from-zero-build-context-proof';
 import { reviewAnalysisUsefulness } from './analysis-usefulness-review';
-import { runIncrementalValueBenchmark } from './incremental-benchmark';
+import { copyIncrementalBenchmarkRepo, runIncrementalValueBenchmark } from './incremental-benchmark';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
 import { type AnalysisFocus } from './analysis-focus';
-import { analyzeWithInstalledKlauro, getInstalledKlauroVersion } from './installed-klauro';
+import { analyzeWithInstalledKlauro, getInstalledKlauroVersion, initializeInstalledKlauroProject } from './installed-klauro';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
+import { graphEquivalenceRate } from './incremental-graph-equivalence';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -54,11 +56,6 @@ export interface ParsedArgs {
   incrementalBudgetMs?: number;
   analysisPath?: AnalysisPath;
   inFlightPath?: InFlightPath;
-  // Klauro-product analysis targets the hosted production service by default
-  // (the real customer experience). `analyzerServerUrl` overrides the endpoint
-  // for testing against a local/self-hosted server; `productLocal` runs the
-  // installed CLI in offline local mode instead of hitting any server. Neither
-  // is required — the default is production.
   analyzerServerUrl?: string;
   productLocal?: boolean;
 }
@@ -232,18 +229,22 @@ export async function runMachineAgentProof(options: ParsedArgs) {
   async function analyzeRepoForMachineProof(repo: RealRepoTarget) {
     const startedAt = Date.now();
     logMachineProgress(`analyzing ${repo.name} (${repo.path}) with ${analysisFocus} via ${options.analysisPath}`);
+    let analysisPath = repo.path;
     try {
+      if (options.analysisPath === 'klauro-product') {
+        analysisPath = path.join(workRoot, 'product-analysis', `${slugForMachineFile(repo.name)}-${crypto.createHash('sha256').update(repo.path).digest('hex').slice(0, 12)}`);
+        await fs.remove(analysisPath);
+        await copyIncrementalBenchmarkRepo(repo.path, analysisPath);
+        await initializeInstalledKlauroProject(analysisPath, { serverUrl: options.analyzerServerUrl, env: { KLAURO_STORAGE_PATH: klauroProductStoragePath }, timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000 });
+      }
       const cas = options.analysisPath === 'klauro-product'
-        ? (await analyzeWithInstalledKlauro(repo.path, {
-          analysisFocus,
-          // The installed CLI always runs the hosted product. serverUrl targets the
-          // production service by default (or a self-hosted analyzer-server).
-          serverUrl: options.analyzerServerUrl,
+        ? (await analyzeWithInstalledKlauro(analysisPath, {
+          analysisFocus, serverUrl: options.analyzerServerUrl,
           env: { KLAURO_STORAGE_PATH: klauroProductStoragePath },
           timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000,
         })).output
         : await analyzeForBench(repo.path);
-      const readiness = evaluateAgentReadiness(cas, repo.path);
+      const readiness = evaluateAgentReadiness(cas, analysisPath);
       const analysisQuality = assessAnalysisQuality(cas, repo.path);
       const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name, analysisFocus);
       logMachineProgress(`analyzed ${repo.name} in ${Date.now() - startedAt}ms`);
@@ -258,7 +259,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
           exit_points: cas.exit_points?.length || 0,
           behavioral_invariants: cas.behavioral_invariants?.length || 0,
           codebase_idioms: cas.codebase_idioms?.length || 0,
-          system_capabilities: cas.system_capabilities?.length || 0,
+          capabilities: cas.capabilities?.length || 0,
           primary_domain: cas.enhanced_system_purpose?.primary_domain || null,
           description_source: cas.enhanced_system_purpose?.description_source || null,
           description_generation: cas.enhanced_system_purpose?.description_generation || null,
@@ -285,6 +286,8 @@ export async function runMachineAgentProof(options: ParsedArgs) {
         analysis_ms: Date.now() - startedAt,
         error: error instanceof Error ? error.message : String(error),
       };
+    } finally {
+      if (options.analysisPath === 'klauro-product' && options.discardWorkspaces) await fs.remove(analysisPath).catch(() => undefined);
     }
   }
 
@@ -646,9 +649,6 @@ export function normalizeMachineProofOptions(options: ParsedArgs): ParsedArgs {
     incrementalBudgetMs: options.incrementalBudgetMs ?? (fast ? 30_000 : 120_000),
     analysisPath: options.analysisPath ?? 'klauro-product',
     inFlightPath: options.inFlightPath ?? 'klauro-product',
-    // Default the klauro-product path at the hosted production service — the
-    // real customer experience. `--local-analyzer` opts out to offline mode;
-    // `--analyzer-server <url>` points at a different (e.g. self-hosted) server.
     analyzerServerUrl: options.productLocal
       ? undefined
       : options.analyzerServerUrl ?? DEFAULT_KLAURO_CLOUD_URL,
@@ -660,9 +660,6 @@ export function defaultMachineProofWorkRoot(runId = `machine-${Date.now()}`): st
 }
 
 export function machineProofAnalysisFocus(options: Pick<ParsedArgs, 'mode'>): AnalysisFocus {
-  // The machine proof's repo loop measures the default agent/MCP path. Rich
-  // AI-written narrative quality is proven by runDescriptionGenerationProbe and
-  // the narrative benchmarks so the coding path can stay compact.
   void options;
   return 'agent-fast';
 }
@@ -691,7 +688,7 @@ export function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateSt
   const primaryDomain = String(cas.enhanced_system_purpose?.primary_domain || '');
   const description = String(cas.enhanced_system_purpose?.inferred_description || '');
   const repoSignal = `${repoPath} ${cas.system?.name || ''}`.toLowerCase();
-  const capabilities = cas.system_capabilities || [];
+  const capabilities = cas.capabilities || [];
   const architecturalPatterns = cas.architecture_summary?.architectural_patterns || [];
   const architecturalInventory = cas.architecture_summary?.architectural_inventory || {};
   const patternBalance = cas.architecture_summary?.pattern_balance;
@@ -916,7 +913,7 @@ function findWeakMachineDescriptionReasons(cas: any, description: string, repoSi
   const concepts = [
     ...(cas.enhanced_system_purpose?.core_concepts || []),
     ...(cas.domain_concepts || []).map((concept: any) => concept.name),
-    ...(cas.system_capabilities || []).map((capability: any) => capability.name),
+    ...(cas.capabilities || []).map((capability: any) => capability.name),
   ].map(value => String(value || '').toLowerCase()).filter(Boolean);
   const distinctive = concepts.filter(isDistinctiveMachineDescriptionTerm);
   if (/project text identifies the main concepts as/i.test(text) && distinctive.length < 3) {
@@ -970,10 +967,10 @@ function descriptionTermIsGroundedInMachineCas(cas: any, term: string): boolean 
     domain: cas.enhanced_system_purpose?.primary_domain,
     concepts: cas.enhanced_system_purpose?.core_concepts,
     domainConcepts: (cas.domain_concepts || []).map((concept: any) => concept.name),
-    capabilities: (cas.system_capabilities || []).map((capability: any) => capability.name),
+    capabilities: (cas.capabilities || []).map((capability: any) => capability.name),
     entities: [
       ...((cas.database_schema?.entities || []).map((entity: any) => entity?.name || '')),
-      ...((cas.data_entities || []).map((entity: any) => entity.name)),
+      ...((cas.entities || []).map((entity: any) => entity.name)),
     ],
     entries: (cas.entry_points || []).map((entry: any) => `${entry.name} ${entry.type}`),
     integrations: ((cas as any).external_services || []).map((service: any) => `${service?.name || ''} ${service?.service || ''} ${service?.type || ''}`),
@@ -1051,7 +1048,7 @@ async function runMachineIncrementalBenchmarkIsolated(
       `${repo.name}=${repo.path}`,
       '--max-targets',
       '1',
-      '--no-verify-full',
+      '--verify-full',
       options.discardWorkspaces ? '--discard-workspaces' : '--keep-workspaces',
       '--work-root',
       path.join(workRoot, 'workspaces'),
@@ -1097,6 +1094,7 @@ async function runMachineIncrementalBenchmarkIsolated(
   })));
 
   const generatedAt = new Date().toISOString();
+  const graphVerifiedReports = reports.filter(target => target.full_verify_parity);
   return {
     generated_at: generatedAt,
     generatedAt,
@@ -1131,6 +1129,8 @@ async function runMachineIncrementalBenchmarkIsolated(
           .map(target => target.full_verify_parity?.count_similarity)
           .filter((value): value is number => typeof value === 'number')
       ),
+      full_verify_target_count: graphVerifiedReports.length,
+      full_verify_graph_equivalence_rate: graphEquivalenceRate(graphVerifiedReports),
     },
     targets: reports,
   };
@@ -1250,7 +1250,7 @@ function failedIsolatedIncrementalReport(repo: RealRepoTarget, detail: string, d
     original_path: repo.path,
     workspace: '',
     edit: {
-      kind: 'whitespace-fallback',
+      kind: 'not-applied',
       detail: 'No edit result was produced because the isolated incremental child failed.',
     },
     status: 'fail' as GateStatus,

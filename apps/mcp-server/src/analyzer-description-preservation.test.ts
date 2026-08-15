@@ -22,7 +22,7 @@ function outputWith(purpose: Record<string, unknown>, capabilities: unknown[] = 
       supporting_workflow_ids: [],
       ...purpose,
     },
-    system_capabilities: capabilities,
+    capabilities: capabilities,
   } as unknown as CASOutput;
 }
 
@@ -59,6 +59,29 @@ test('a previously reused AI description keeps being carried forward', () => {
   const result = preservePreviousAIDescriptions(previous, next);
   assert.equal(result.enhanced_system_purpose?.inferred_description, previous.enhanced_system_purpose!.inferred_description);
   assert.equal(result.enhanced_system_purpose?.description_source, 'reused');
+});
+
+test('a previous narrative is rejected when current structured evidence establishes a different purpose', () => {
+  const previous = outputWith({
+    primary_domain: 'astronomy-catalog',
+    core_concepts: ['Telescope Observation', 'Star Catalog'],
+    inferred_description: 'An astronomy catalog that records telescope observations and classified stars.',
+    description_source: 'ai',
+    description_generation: { status: 'ai_applied', attempted: true },
+  });
+  const next = outputWith({
+    primary_domain: 'invoice-settlement',
+    core_concepts: ['Invoice Approval', 'Payment Reconciliation'],
+  }, [
+    { id: 'cap_invoice', name: 'Invoice Approval', related_domains: ['billing'] },
+    { id: 'cap_payment', name: 'Payment Reconciliation', related_domains: ['payments'] },
+  ]);
+  const freshDescription = next.enhanced_system_purpose!.inferred_description;
+
+  const result = preservePreviousAIDescriptions(previous, next);
+
+  assert.equal(result.enhanced_system_purpose?.inferred_description, freshDescription);
+  assert.equal(result.enhanced_system_purpose?.description_source, 'deterministic');
 });
 
 test('AI-attempted-and-rejected keeps the fresh deterministic description', () => {
@@ -104,7 +127,7 @@ test('AI capability descriptions are carried forward by capability id on AI-off 
   ]);
 
   const result = preservePreviousAIDescriptions(previous, next);
-  const capabilities = result.system_capabilities as Array<{ id: string; description: string; description_source?: string }>;
+  const capabilities = result.capabilities as Array<{ id: string; description: string; description_source?: string }>;
   const orders = capabilities.find(capability => capability.id === 'cap_orders')!;
   const misc = capabilities.find(capability => capability.id === 'cap_misc')!;
 
@@ -126,7 +149,7 @@ test('AI capability descriptions are not carried across reused ids with differen
   ]);
 
   const result = preservePreviousAIDescriptions(previous, next);
-  const capabilities = result.system_capabilities as Array<{ id: string; description: string; description_source?: string }>;
+  const capabilities = result.capabilities as Array<{ id: string; description: string; description_source?: string }>;
   const google = capabilities.find(capability => capability.id === 'cap_1')!;
 
   assert.equal(google.description, 'Google operations.');

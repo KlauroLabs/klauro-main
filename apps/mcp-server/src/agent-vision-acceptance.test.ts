@@ -123,10 +123,13 @@ test('vision acceptance requires new-user install-to-value and hosted incrementa
     total_ms: 8000,
     max_total_ms: 600000,
     steps: [
-      { name: 'deterministic install plus first value', ok: true, detail: 'installer built bundle and produced an agent context summary' },
+      { name: 'build customer artifact', ok: true, detail: 'built the lightweight customer bundle' },
+      { name: 'pack and install from customer tarball', ok: true, detail: 'installed the customer tarball' },
       { name: 'installed CLI is executable', ok: true, detail: 'klauro 1.0.0' },
+      { name: 'account registration', ok: true, detail: 'registered and stored a session' },
       { name: 'remote analyzer project init', ok: true, detail: '.klaurorc points at https://mcp.klauro.com' },
       { name: 'hosted analyzer full analysis', ok: true, detail: 'full remote analysis returned 33 nodes' },
+      { name: 'installed MCP first context', ok: true, detail: 'installed MCP returned hosted system context' },
       { name: 'hosted analyzer incremental sync', ok: true, detail: 'incremental sync returned 1 changed file(s)' },
     ],
   });
@@ -139,7 +142,7 @@ test('vision acceptance requires new-user install-to-value and hosted incrementa
     total_ms: 700000,
     max_total_ms: 600000,
     steps: [
-      { name: 'deterministic install plus first value', ok: true, detail: 'installed only' },
+      { name: 'pack and install from customer tarball', ok: true, detail: 'installed only' },
       { name: 'installed CLI is executable', ok: true, detail: 'klauro 1.0.0' },
     ],
   });

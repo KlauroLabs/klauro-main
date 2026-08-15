@@ -30,7 +30,7 @@ test('get_data_entities: persisted ORM relations populate relations with cardina
   const cas = {
     nodes: [],
     edges: [],
-    data_entities: [
+    entities: [
       {
         id: 'de_analysisrun',
         name: 'AnalysisRun',
@@ -91,7 +91,7 @@ test('get_data_entities: a UI implements edge lands in structural_relations, nev
         metadata: { attributes: { relationType: 'ManyToOne', field: 'project' } },
       },
     ],
-    data_entities: [
+    entities: [
       { id: 'de_codebase', name: 'Codebase', fields: [], lifecycle: lifecycle() },
       { id: 'de_project', name: 'Project', fields: [], lifecycle: lifecycle() },
     ],
@@ -111,7 +111,7 @@ test('get_data_entities: a field typed as another entity yields a composition re
   const cas = {
     nodes: [],
     edges: [],
-    data_entities: [
+    entities: [
       {
         id: 'de_pzc', name: 'EncryptedPacketZeroCopy',
         fields: [
@@ -142,7 +142,7 @@ test('get_data_entities: an entity-shaped field NAME alone produces no relation'
   const cas = {
     nodes: [],
     edges: [],
-    data_entities: [
+    entities: [
       {
         id: 'de_ar', name: 'AnalysisResult',
         fields: [

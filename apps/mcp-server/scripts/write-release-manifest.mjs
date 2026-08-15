@@ -1,50 +1,40 @@
 #!/usr/bin/env node
-/**
- * Writes .pack/latest.json — the manifest every `klauro update` reads, and the
- * only thing that tells an installed client a newer build exists.
- *
- * Extracted from the inline `pack:tarball` one-liner because the manifest
- * actually SERVED at https://mcp.klauro.com/dist/latest.json had drifted from
- * what the pack step produced: prod carried `tarball` and `update_command`
- * fields the generator never emitted (hand-patched on the VPS at some point),
- * while `published_at` still read 2026-07-24 days after the server had moved
- * on. A hand-maintained distribution manifest is how a release channel goes
- * stale without anyone noticing, so it is generated here, in one place, from
- * the package version and HEAD.
- *
- * `git_sha` is recorded so the published artifact can be matched against the
- * deployed server build instead of being taken on trust.
- */
-import { execFileSync } from 'node:child_process';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import buildSourceIdentity from './build-source-identity.cjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const version = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version;
 const baseUrl = (process.env.KLAURO_URL || 'https://mcp.klauro.com').replace(/\/+$/, '');
 
-function headSha() {
-  try {
-    const sha = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: packageRoot, encoding: 'utf8' }).trim();
-    const dirty = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: packageRoot, encoding: 'utf8' }).trim();
-    return dirty ? `${sha}-dirty` : sha;
-  } catch {
-    return 'unknown';
-  }
-}
 
-// Self-contained per-platform binaries (Node SEA — scripts/build-sea-binaries.mjs)
-// are the PRIMARY install path as of this release (see install.sh); the npm
-// tarball above is now the emergency fallback for a platform with no binary.
-// build-sea-binaries.mjs writes dist-sea/manifest.json with each target's
-// sha256; fold that into latest.json as both a nested `binaries` map (for
-// JSON consumers — self-update.ts's binary self-update) and flat
-// `bin_<platform>_path`/`bin_<platform>_sha256` fields (so install.sh, a
-// POSIX-sh script with no JSON parser, can read them with sed). Absent
-// gracefully if scripts/build-sea-binaries.mjs was not run before packaging
-// — install.sh and self-update.ts both fall back to the npm tarball when no
-// binary fields are present for a platform.
+
+
+
+
+
+
+
+
+
+
 const seaManifestPath = path.join(packageRoot, 'dist-sea', 'manifest.json');
 const binaries = {};
 const flatBinaryFields = {};
@@ -58,15 +48,15 @@ if (existsSync(seaManifestPath)) {
   }
 }
 
-// min_node is read from the CUSTOMER package.json's own `engines.node`
-// (.customer-package/package.json, written by build-bundle.mjs) rather than
-// hardcoded here a second time — that file is what actually ships, so it is
-// the one enforced place this claim lives. Deliberately NOT this repo's dev
-// apps/mcp-server/package.json or packages/analyzer-core/package.json:
-// those declare `engines: {"node": ">=22.0.0 <23.0.0"}` because THEY build a
-// native tree-sitter addon (see docs/audits/2026-08-10-tsgo-node26-audit.md),
-// but the customer tarball has `dependencies: {}` and no native addon at
-// all, so its Node floor is unrelated and far wider.
+
+
+
+
+
+
+
+
+
 const customerPackageJsonPath = path.join(packageRoot, '.customer-package', 'package.json');
 if (!existsSync(customerPackageJsonPath)) {
   throw new Error(`write-release-manifest.mjs: ${customerPackageJsonPath} is missing — run "npm run build" first so the customer package.json (with its engines.node) exists to read from.`);
@@ -81,23 +71,23 @@ const minNode = Number(minNodeMatch[1]);
 
 const manifest = {
   version,
-  git_sha: headSha(),
+  git_sha: buildSourceIdentity.resolveBuildGitSha(packageRoot),
   tarball: `${baseUrl}/dist/klauro-latest.tgz`,
   tarball_path: '/dist/klauro-latest.tgz',
-  // max_node is deliberately NOT set: the customer tarball has no native
-  // addon to be bounded by, and is verified to run unmodified on Node 24 and
-  // Node 26 (see docs/audits/2026-08-10-tsgo-node26-audit.md). The server's
-  // resolveHostedReleaseNodeRange() (remote-analyzer-service.ts) advertises
-  // "no ceiling" whenever this field is absent — do not add one here without
-  // a measurement backing it; a previous fabricated default of 24 actively
-  // contradicted that audit.
+
+
+
+
+
+
+
   min_node: minNode,
-  published_at: new Date().toISOString(),
+  published_at: buildSourceIdentity.resolveBuildTime(),
   binaries,
   ...flatBinaryFields,
-  // Remediation strings served to clients. `update_command` is only correct
-  // for clients that HAVE the command — every release through 1.0.127 did not
-  // (see self-update.ts), so the reinstall one-liner ships alongside it.
+
+
+
   update_command: 'klauro update',
   update_command_min_version: '1.0.128',
   install_command: `curl -fsSL ${baseUrl}/install.sh | sh`,

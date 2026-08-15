@@ -217,6 +217,7 @@ function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
   // persists for every derived flow. Without it the route has no stable global
   // order to page through and honestly says so.
   const flowRefs = [];
+  const flows = [];
   for (let i = 0; i < count; i++) {
     const nodeId = `n_handler_${i}`;
     const key = String(i).padStart(3, '0');
@@ -236,6 +237,24 @@ function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
       entry_point: `ep_handler_${key}`,
       step_count: 1,
     });
+    flows.push({
+      flow_id: `flow::ep_handler_${key}`,
+      name: `Handle request ${key}`,
+      intent: `handle /handler${key}`,
+      entry_point: `ep_handler_${key}`,
+      entities: [],
+      steps: [{
+        step_id: `step::ep_handler_${key}`,
+        order: 1,
+        name: `Handle request ${key}`,
+        description: `Handles the request registered at /handler${key}.`,
+        description_source: 'deterministic-label',
+        contract: { input: [], logic: `handle /handler${key}`, side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [], facet_provenance: [] },
+        functions: [{ function_id: nodeId, role: 'handler' }],
+        entities: [],
+      }],
+      step_graph: { edges: [] },
+    });
   }
   return {
     cas_version: '1.11.0',
@@ -246,8 +265,9 @@ function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
     edges: [],
     analyzer_contributions: [],
     entry_points: entryPoints,
+    flows,
     flow_graph: {
-      capabilities: [], dependencies: [], flows: flowRefs,
+      capability_candidates: [], dependencies: [], flows: flowRefs,
       topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
     },
   } as unknown as CASOutput;

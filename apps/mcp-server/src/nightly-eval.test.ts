@@ -128,7 +128,7 @@ test('buildKlauroVocabulary is just the literal brand mention now that the curat
 
 test('findVocabularyLeaks reports zero occurrences on a clean foreign analysis', () => {
   const foreign = vocabFixture({
-    system_capabilities: [
+    capabilities: [
       capability('Work Order Management', 'Work Order Management maintains work order records, workflows, and relationships used by dispatch behavior.', ['work_order']),
     ],
     user_journeys: [{ id: 'journey-1', name: 'Dispatch a work order', steps: [] }],
@@ -138,7 +138,7 @@ test('findVocabularyLeaks reports zero occurrences on a clean foreign analysis',
 
 test('findVocabularyLeaks catches literal Klauro brand mentions', () => {
   const contaminated = vocabFixture({
-    system_capabilities: [
+    capabilities: [
       capability('Klauro Sync', 'Calls out to Klauro for analysis.'),
     ],
     user_journeys: [{ id: 'journey-1', name: 'Run klauro analyze on the repo', steps: [] }],
@@ -157,7 +157,7 @@ test('findVocabularyLeaks catches literal Klauro brand mentions', () => {
 // direction remains: foreign repos must not pick up Klauro's own vocabulary.
 test('evaluateVocabIsolationChecks passes a clean foreign analysis', () => {
   const foreign = vocabFixture({
-    system_capabilities: [capability('Vehicle Management', 'Vehicle Management maintains vehicle records, workflows, and relationships used by fleet behavior.')],
+    capabilities: [capability('Vehicle Management', 'Vehicle Management maintains vehicle records, workflows, and relationships used by fleet behavior.')],
   } as unknown as Partial<CASOutput>);
   const checks = evaluateVocabIsolationChecks({
     foreign: [{ name: 'fleet-app', cas: foreign }],
@@ -168,7 +168,7 @@ test('evaluateVocabIsolationChecks passes a clean foreign analysis', () => {
 
 test('evaluateVocabIsolationChecks fails a contaminated foreign analysis and reports a missing repo', () => {
   const contaminated = vocabFixture({
-    system_capabilities: [capability('Klauro Sync', 'Proves agent tasks via Klauro.')],
+    capabilities: [capability('Klauro Sync', 'Proves agent tasks via Klauro.')],
   } as unknown as Partial<CASOutput>);
   const checks = evaluateVocabIsolationChecks({
     foreign: [{ name: 'wagtail', cas: contaminated }, { name: 'missing-repo', cas: null }],

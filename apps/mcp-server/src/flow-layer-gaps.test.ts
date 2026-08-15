@@ -77,7 +77,7 @@ function buildCas(): CASOutput {
         test_quality: { has_unit_tests: true, has_integration_tests: false, has_e2e_tests: false, uses_mocks: false },
       },
     ],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap_orders', name: 'Order Management', category: 'core', criticality: 'high',
         operations: [{ action: 'create order', entry_point_id: 'ep_orders', entry_point_type: 'http' }],
@@ -242,7 +242,7 @@ function buildFloodedCas(): CASOutput {
         risk_analysis: { risk_level: 'low', risk_factors: [] },
       },
     ],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap_orders', name: 'Order Management', category: 'core', criticality: 'high',
         operations: [{ action: 'create order', entry_point_id: 'ep_http', entry_point_type: 'http' }],

@@ -12,8 +12,8 @@ import { jsonForTest, summarizeUploadManifest } from './installed-client-server'
 // via `klauro update`, not via a server deploy, so re-calling the tool after a
 // deploy returned the identical 4MB and proved nothing. A client-side change with
 // no test is a change nobody has verified.
-function syntheticManifest(fileCount: number): Record<string, any> {
-  const files = Array.from({ length: fileCount }, (_, index) => ({
+function syntheticManifest(fileCount: number): any {
+  const includedFiles = Array.from({ length: fileCount }, (_, index) => ({
     // Two thirds under an installed-dependency tree, mirroring the real repo.
     path: index % 3 === 0
       ? `backend/app/module_${index}.py`
@@ -22,15 +22,20 @@ function syntheticManifest(fileCount: number): Record<string, any> {
     hash: `h${index}`,
   }));
   return {
+    generated_at: '2026-08-13T00:00:00.000Z',
     root: '/tmp/ml-repo',
-    file_count: fileCount,
-    files,
+    mode: 'full',
+    summary: {
+      included_files: fileCount,
+      included_bytes: includedFiles.reduce((total, file) => total + file.bytes, 0),
+      excluded_files: 3,
+    },
+    included_files: includedFiles,
     excluded: [
       { path: '.env', reason: 'sensitive' },
       { path: 'node_modules/x', reason: 'excluded directory' },
       { path: 'node_modules/y', reason: 'excluded directory' },
     ],
-    snapshot_digest: 'abc123',
   };
 }
 

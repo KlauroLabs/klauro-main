@@ -91,3 +91,6 @@ export function resolveDevGitSha(): string {
   return result.status === 0 ? String(result.stdout).trim() : 'unknown';
 }
 
+export function materializeDeployableCasTree<T>(output: T): T {
+  return output;
+}

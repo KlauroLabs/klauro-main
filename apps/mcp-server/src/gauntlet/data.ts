@@ -1,13 +1,13 @@
-/**
- * Gauntlet data layer — the aggregation the app's pages read.
- *
- * Everything here is grounded in REAL stored analyses: the full set of product
- * repos, the real workspaces, and per-entity projected quality/speed/token
- * deltas computed from each entity's actual size via the projection model and
- * judged by the same win-validator the live runs use. The app shows these so you
- * can see, per repo / per workspace / overall, exactly where Klauro stands —
- * and a live run overlays measured numbers on the same shape.
- */
+
+
+
+
+
+
+
+
+
+
 
 import * as os from 'os';
 import * as path from 'path';
@@ -16,21 +16,20 @@ import { listAnalyses, type AnalysisEntry } from '../storage';
 import { getAnalysis } from '../analyzer';
 import { buildSummary, getSystemOverview } from '../query';
 import {
-  ARMS, SCENARIOS, armsForScenario,
+  ARMS, SCENARIOS,
   type ArmResult, type ScenarioGroup, type WinVerdict,
 } from './report-schema';
 import { validateWin } from './win-validator';
 import { projectArm, type RepoFact } from './projection-model';
 import {
   discoverAllRealRepoEntries, discoverWorkspaces,
-  type WorkspaceFact,
 } from './corpus';
 
 export interface Delta {
-  quality?: number;  // fraction Klauro quality lead vs best competitor
-  tokens?: number;   // fraction fewer tokens
-  time?: number;     // fraction faster
-  win: boolean;      // win-validator verdict on the projection
+  quality?: number;
+  tokens?: number;
+  time?: number;
+  win: boolean;
 }
 
 export interface RepoCard {
@@ -51,9 +50,9 @@ export interface WorkspaceCard {
   delta: Delta;
 }
 
-// ---------------------------------------------------------------------------
-// Per-entity projected delta — the heart of "quality/speed/token delta per X".
-// ---------------------------------------------------------------------------
+
+
+
 
 function deltaFromVerdict(v: WinVerdict): Delta {
   const get = (m: string) => v.comparisons.find(c => c.metric === m);
@@ -65,15 +64,15 @@ function deltaFromVerdict(v: WinVerdict): Delta {
   };
 }
 
-/**
- * Per-entity realism modulation (confined here, not in the shared projection
- * model). A flat projection gives every repo the same delta, which is neither
- * true nor useful. Klauro's edge over a generic index is LARGER on repos with
- * rich structure it extracts and grep/embeddings miss (dense call graphs, known
- * frameworks), and its token saving GROWS with repo size because Klauro's
- * precomputed context is roughly size-stable while an index/read scales with the
- * tree. So we nudge the Klauro arm per entity from its real metadata.
- */
+
+
+
+
+
+
+
+
+
 export interface EntitySignal {
   nodes: number;
   edges: number;
@@ -81,13 +80,13 @@ export interface EntitySignal {
 }
 
 function klauroQualityBump(sig: EntitySignal): number {
-  const density = sig.nodes > 0 ? sig.edges / sig.nodes : 0;        // ~0.3–1.6
+  const density = sig.nodes > 0 ? sig.edges / sig.nodes : 0;
   const densityTerm = Math.max(-3, Math.min(6, (density - 0.7) * 7));
   const fwTerm = Math.min(4, sig.framework_count * 0.8);
-  return densityTerm + fwTerm;                                      // ~ -3..+10
+  return densityTerm + fwTerm;
 }
 
-/** Bigger repo → Klauro's fixed-ish context saves a larger fraction. 0.6–1.0. */
+
 function klauroTokenSizeFactor(nodes: number): number {
   if (nodes <= 400) return 1.0;
   const f = 1 - Math.min(0.4, (Math.log10(nodes) - 2.6) * 0.22);
@@ -104,8 +103,8 @@ function applyEntityModulation(arms: ArmResult[], sig: EntitySignal): ArmResult[
   });
 }
 
-/** Project all arms for a scenario group over the given repos, then judge.
- *  Pass `sig` to ground the Klauro arm in a specific entity's real structure. */
+
+
 export function projectedDelta(group: ScenarioGroup, repos: RepoFact[], sig?: EntitySignal): Delta {
   let arms: ArmResult[] = ARMS.map(arm => {
     const m = projectArm(group, arm.id, repos);
@@ -121,7 +120,7 @@ export function projectedDelta(group: ScenarioGroup, repos: RepoFact[], sig?: En
   return deltaFromVerdict(verdict);
 }
 
-/** Per-arm projected metrics for a group+repos (for detail views). */
+
 export function projectedArms(group: ScenarioGroup, repos: RepoFact[]): ArmResult[] {
   return ARMS.map(arm => {
     const m = projectArm(group, arm.id, repos);
@@ -137,16 +136,16 @@ function sigOf(e: AnalysisEntry): EntitySignal {
   return { nodes: e.node_count, edges: e.edge_count, framework_count: (e.frameworks || []).length };
 }
 
-/** Aggregate entity signal for a multi-repo workspace. */
+
 function wsSignal(repos: RepoFact[]): EntitySignal {
   const nodes = repos.reduce((a, r) => a + r.nodes, 0);
   const edges = repos.reduce((a, r) => a + r.edges, 0);
   return { nodes, edges, framework_count: 3 };
 }
 
-// ---------------------------------------------------------------------------
-// Repo list + detail.
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface RepoListQuery {
   q?: string;
@@ -253,9 +252,9 @@ export async function repoDetail(name: string): Promise<RepoDetail> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Workspace list + detail.
-// ---------------------------------------------------------------------------
+
+
+
 
 export async function listWorkspaces(): Promise<{ workspaces: WorkspaceCard[] }> {
   const workspaces = await discoverWorkspaces(await listAnalyses());
@@ -298,9 +297,9 @@ export async function workspaceDetail(name: string): Promise<WorkspaceDetail> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Overview + run history.
-// ---------------------------------------------------------------------------
+
+
+
 
 function gauntletDir(): string {
   return path.join(os.homedir(), '.klauro', 'gauntlet');
@@ -332,7 +331,7 @@ export async function runHistory(limit = 50): Promise<RunSummary[]> {
         won: r.summary?.scenarios_won || 0, lost: r.summary?.scenarios_lost || 0,
         wins_all: Boolean(r.summary?.klauro_wins_all), file: f,
       });
-    } catch { /* skip unreadable */ }
+    } catch {   }
   }
   runs.sort((a, b) => (b.generated_at || '').localeCompare(a.generated_at || ''));
   return runs.slice(0, limit);
@@ -352,13 +351,13 @@ export async function overview(): Promise<Overview> {
   const workspaces = await discoverWorkspaces(entries);
   const runs = await runHistory(1);
 
-  // Repo-level delta: averaged single-repo projection over a diverse slice.
+
   const sampleRepos = repos.slice(0, 24).map(toFact);
   const repoDelta = projectedDelta('single-repo', sampleRepos);
-  // Workspace-level delta: cross-repo projection over the largest workspace.
+
   const biggestWs = [...workspaces].sort((a, b) => b.total_nodes - a.total_nodes)[0];
   const wsDelta = biggestWs ? projectedDelta('cross-repo', biggestWs.repos) : { win: false };
-  // Overall = mean of the two headline axes.
+
   const overall: Delta = {
     quality: mean([repoDelta.quality, wsDelta.quality]),
     tokens: mean([repoDelta.tokens, wsDelta.tokens]),

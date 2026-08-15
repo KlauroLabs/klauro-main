@@ -1,24 +1,24 @@
-/**
- * Corpus sweep: validate the REAL product (blackbox, via analyzeForBench) against
- * the user's actual ~/dev corpus — 100+ real, in-progress, messy repos across
- * several workspaces (personal, soon, zerac, money, clients, ...).
- *
- * This is NOT a fixture bench. It is teeth-cutting: run the product on real code
- * outside any curated corpus, and honestly report where it works vs breaks.
- * SYSTEMATIC failures (repeat across N repos) matter far more than one-offs.
- *
- * BLACKBOX RULE: this file calls analyzeForBench() (./product-analysis.ts) for
- * per-repo CAS and buildCrossCodebaseSystemGraph() (../cross-codebase-analysis.ts,
- * a pure function over already-produced CAS outputs, not an engine internal) for
- * per-workspace CAS composition (workspace-level). It never imports createOrchestrator/orchestrateAnalysis/
- * analyzeProject, and never sets an AI/model env var.
- *
- * Run: npx tsx apps/mcp-server/src/gauntlet/corpus-sweep.ts
- *   CORPUS_SWEEP_ROOT=~/dev           (default)
- *   CORPUS_SWEEP_MAX_PROJECTS=60      (cap on standalone projects; workspaces are
- *                                      always run in addition to the cap)
- *   CORPUS_SWEEP_ONLY_LEADS=1         (skip discovery, run only the 8 lead targets)
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as os from 'os';
@@ -27,9 +27,9 @@ import { analyzeForBench } from './product-analysis';
 import { buildCrossCodebaseSystemGraph, type CrossCodebaseInput } from '../cross-codebase-analysis';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
-// ---------------------------------------------------------------------------
-// Discovery
-// ---------------------------------------------------------------------------
+
+
+
 
 const MANIFEST_NAMES = [
   'package.json',
@@ -61,7 +61,7 @@ interface DiscoveredEntry {
   manifests: string[];
 }
 
-/** True if `dir` directly contains a recognized manifest file. */
+
 async function manifestsIn(dir: string): Promise<string[]> {
   let entries: string[];
   try {
@@ -77,17 +77,17 @@ async function manifestsIn(dir: string): Promise<string[]> {
   return found;
 }
 
-/**
- * Walk `root` looking for PROJECT roots (a dir with a manifest) and WORKSPACE
- * roots (a dir with >=3 direct subdirectories that are themselves project
- * roots). Skips node_modules/target/.git/dist/build and hidden dirs. Does not
- * descend into a directory once it's been classified as a project root
- * (its own sub-manifests, e.g. a monorepo's packages/*, are left to the
- * product's own workspace-detection during analysis, not double-counted here
- * as separate top-level projects) UNLESS that directory is itself a
- * workspace-root candidate (>=3 sub-project manifests) — in which case we
- * still stop there and record it as a workspace, not recurse further.
- */
+
+
+
+
+
+
+
+
+
+
+
 async function discover(
   root: string,
   maxDepth = 3
@@ -111,27 +111,27 @@ async function discover(
 
     const ownManifests = await manifestsIn(dir);
 
-    // Check how many direct subdirs are themselves project roots (manifest present).
+
     const subManifestChecks = await Promise.all(
       subDirs.map(async (sd) => ({ sd, manifests: await manifestsIn(path.join(dir, sd.name)) }))
     );
     const subProjectCount = subManifestChecks.filter((c) => c.manifests.length > 0).length;
 
     if (subProjectCount >= 3) {
-      // Workspace root: >=3 sub-project manifests. Record it; do not recurse
-      // further (its sub-projects are covered by the workspace-level-CAS run over this workspace).
+
+
       workspaces.push({ dirPath: dir, name: path.basename(dir), manifests: ownManifests });
       return;
     }
 
     if (ownManifests.length > 0) {
-      // Project root. Record it; don't recurse into its own tree (avoids
-      // double-counting nested workspace packages as separate top-level hits).
+
+
       projects.push({ dirPath: dir, name: path.basename(dir), manifests: ownManifests });
       return;
     }
 
-    // Neither: recurse into subdirs looking for project/workspace roots further down.
+
     for (const sd of subDirs) {
       await walk(path.join(dir, sd.name), depth + 1);
     }
@@ -141,9 +141,9 @@ async function discover(
   return { projects, workspaces, scanned };
 }
 
-// ---------------------------------------------------------------------------
-// Result shapes
-// ---------------------------------------------------------------------------
+
+
+
 
 interface ProjectResult {
   name: string;
@@ -161,7 +161,7 @@ interface ProjectResult {
   distributionUnitCount?: number;
   entryPointCount?: number;
   routeCount?: number;
-  gracefulOnEmpty?: boolean; // only meaningful for no-manifest targets
+  gracefulOnEmpty?: boolean;
 }
 
 interface WorkspaceResult {
@@ -180,9 +180,9 @@ interface WorkspaceResult {
   subRepoResults: ProjectResult[];
 }
 
-// ---------------------------------------------------------------------------
-// Per-project / per-workspace analysis
-// ---------------------------------------------------------------------------
+
+
+
 
 function casToProjectResult(cas: CASOutput, dirPath: string, name: string, timeMs: number, hasManifest = true): ProjectResult {
   const enhanced = (cas as any).enhanced_system_purpose;
@@ -235,9 +235,9 @@ async function analyzeWorkspace(dirPath: string, name: string, subDirNames: stri
   const start = Date.now();
   try {
     const repositories: CrossCodebaseInput[] = [];
-    // Analyze each sub-repo once via the blackbox product call, capturing both
-    // the per-repo CAS metrics (for the report) and the CAS itself (to fuse
-    // into the workspace-level CAS graph) from the same call — no redundant re-analysis.
+
+
+
     for (const sub of subDirNames) {
       const repoPath = path.join(dirPath, sub);
       const projStart = Date.now();
@@ -276,24 +276,24 @@ async function analyzeWorkspace(dirPath: string, name: string, subDirNames: stri
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Main sweep
-// ---------------------------------------------------------------------------
+
+
+
 
 const LEAD_PROJECTS = [
   '~/dev/personal/kadra.ai',
-  '~/dev/personal/kontinuum', // single-repo WITH a root Dockerfile — must not have root dropped
+  '~/dev/personal/kontinuum',
   '~/dev/personal/cleanmusic',
-  '~/dev/clients/outcode/hoggan', // no manifest — graceful-handling stress test
-  '~/dev/clients/outcode/truckspy', // PHP+JS
-  '~/dev/unravl/proof-of-concept', // Klauro's own 14GB self-repo — the exact target that OOM'd the driver in the 2026-07-03/04 re-validation; keep it as a standing large-repo/heap-guard regression check
-  '~/dev/openclaw', // second largest corpus repo (76k+ nodes) — large-repo heap-guard cross-check alongside the self-repo
-  // v1.0.13 monorepo-scope leads: Nx / pnpm-workspace backends with Dockerfile-only
-  // cicd dirs alongside real app packages — the exact isPackageBoundaryManifest case.
-  '~/dev/zerac/zerac-ui', // Nx monorepo (nx.json), apps/user-ui + apps/admin-ui, no Dockerfiles
-  '~/dev/soon/soon-bos', // pnpm workspace, apps/* each with own package.json + Dockerfile
-  '~/dev/soon/finance-context-ts', // pnpm workspace, cicd/api-external + cicd/scheduler are Dockerfile-ONLY dirs (no package.json) alongside apps/* and packages/*
-  '~/dev/soon/soon-link', // pnpm workspace, packages/frontend + packages/backend each with own Dockerfile
+  '~/dev/clients/outcode/hoggan',
+  '~/dev/clients/outcode/truckspy',
+  '~/dev/unravl/proof-of-concept',
+  '~/dev/openclaw',
+
+
+  '~/dev/zerac/zerac-ui',
+  '~/dev/soon/soon-bos',
+  '~/dev/soon/finance-context-ts',
+  '~/dev/soon/soon-link',
 ].map(expandHome);
 
 const LEAD_WORKSPACES = ['~/dev/personal/money', '~/dev/zerac', '~/dev/soon'].map(expandHome);
@@ -333,10 +333,10 @@ async function main() {
   const root = expandHome(process.env.CORPUS_SWEEP_ROOT || '~/dev');
   const maxProjects = Number(process.env.CORPUS_SWEEP_MAX_PROJECTS || 60);
   const onlyLeads = process.env.CORPUS_SWEEP_ONLY_LEADS === '1';
-  // CORPUS_SWEEP_EXCLUDE: comma-separated path substrings — any lead or
-  // discovered target whose resolved path contains one is skipped (logged, not
-  // silent). Lets a sweep honor "avoid these workspaces" mandates without
-  // editing the lead lists.
+
+
+
+
   const excludes = (process.env.CORPUS_SWEEP_EXCLUDE || '')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
   const isExcluded = (dir: string) => {
@@ -351,7 +351,7 @@ async function main() {
 
   console.error(`[corpus-sweep] root=${root} maxProjects=${maxProjects} onlyLeads=${onlyLeads}${excludes.length ? ` exclude=${excludes.join(',')}` : ''}`);
 
-  // ---- Lead smoke test first (priority targets) ----
+
   console.error('[corpus-sweep] === LEAD SMOKE TEST ===');
   for (const dir of LEAD_PROJECTS.filter((d) => !isExcluded(d))) {
     const exists = await fs.pathExists(dir);
@@ -400,7 +400,7 @@ async function main() {
     discoveredWorkspaceCount = workspaces.length;
     console.error(`[corpus-sweep] scanned ${scanned} dirs; found ${projects.length} project roots, ${workspaces.length} workspace roots`);
 
-    // De-dup: skip any project/workspace already covered by a lead target.
+
     const leadPaths = new Set([...LEAD_PROJECTS, ...LEAD_WORKSPACES].map((p) => path.resolve(p)));
     const remainingProjects = projects.filter((p) => !leadPaths.has(path.resolve(p.dirPath)) && !isExcluded(p.dirPath));
     const remainingWorkspaces = workspaces.filter((w) => !leadPaths.has(path.resolve(w.dirPath)) && !isExcluded(w.dirPath));
@@ -423,8 +423,8 @@ async function main() {
         );
         projectResults.push(r);
       } catch (err: any) {
-        // analyzeProject already catches internally; this is a belt-and-suspenders
-        // guard so a truly unexpected throw cannot abort the sweep.
+
+
         console.error(`[corpus-sweep]   -> UNCAUGHT: ${err?.message || err}`);
         projectResults.push({ name: proj.name, dirPath: proj.dirPath, hasManifest: true, crashed: true, error: String(err?.message || err) });
       }
@@ -465,20 +465,20 @@ async function main() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Heap guard: re-exec with a raised --max-old-space-size before doing any work.
-//
-// A large repo's CAS response (e.g. Klauro's own 14GB proof-of-concept
-// self-repo) can OOM V8 during response buffering/JSON.parse in
-// product-analysis.ts — a fatal allocation failure, not a catchable JS
-// exception, so no amount of try/catch in analyzeProject/analyzeWorkspace can
-// save the process once it happens. Node's default heap ceiling (~4GB on this
-// machine) is comfortably smaller than a single huge-repo CAS payload can
-// require once chunks + concatenated buffer + utf8 string + parsed object are
-// briefly co-resident. Raise the ceiling unconditionally by re-exec'ing this
-// same script as a child with --max-old-space-size set, unless the caller
-// already set one (respect an explicit override) or has opted out via
-// CORPUS_SWEEP_NO_REEXEC (useful under a debugger/profiler).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const SWEEP_MIN_HEAP_MB = 8192;
 
 function currentMaxOldSpaceMb(): number | null {

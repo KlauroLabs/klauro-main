@@ -9,7 +9,7 @@ interface RuntimeSdkFile {
   content: string;
 }
 
-/** Published, installable SDK packages. Kept in lockstep with packages/klauro-sdk-{js,py}. */
+
 const JS_PACKAGE = '@klauro/telemetry';
 const PY_PACKAGE = 'klauro-telemetry';
 
@@ -19,40 +19,46 @@ interface FrameworkSnippet {
   framework: string;
   stack: Stack;
   install: string;
-  init: string; // 3-line copy-paste init for the detected stack
+  init: string;
   docs: string;
 }
 
-/**
- * Detect the primary web framework and language stack from the analysis so we
- * can hand the customer the exact install command + init snippet for their app.
- */
+
+
+
+
 function detectStack(cas: CASOutput): { stack: Stack; framework: string } {
   const frameworks = (cas.system.technologies?.frameworks || [])
     .map(f => (f?.name || '').toLowerCase())
     .filter(Boolean);
   const runtime = (cas.system.technologies?.runtime || '').toLowerCase();
-  const languages = (cas.system.technologies?.languages || []).map(l => (l.name || '').toLowerCase());
+  const languages = cas.system.technologies?.languages || [];
   const has = (needle: string) => frameworks.some(f => f.includes(needle));
 
-  // Python frameworks first (each has a distinct integration).
+
   if (has('fastapi') || has('starlette')) return { stack: 'python', framework: 'fastapi' };
   if (has('flask')) return { stack: 'python', framework: 'flask' };
   if (has('django')) return { stack: 'python', framework: 'django' };
 
-  // Node frameworks.
+
   if (has('nest')) return { stack: 'node', framework: 'nestjs' };
   if (has('fastify')) return { stack: 'node', framework: 'fastify' };
   if (has('koa')) return { stack: 'node', framework: 'koa' };
   if (has('express')) return { stack: 'node', framework: 'express' };
 
-  // Fall back to language when no known web framework is detected.
-  const isPython =
-    runtime.includes('python') ||
-    languages.some(l => l === 'python') ||
-    frameworks.some(f => f.includes('python'));
+
+  const dominantLanguage = [...languages]
+    .sort((left, right) => (right.percentage || right.files || 0) - (left.percentage || left.files || 0))[0]
+    ?.name.toLowerCase() || '';
+  const isPython = runtime.includes('python') || dominantLanguage === 'python' || frameworks.some(f => f.includes('python'));
   if (isPython) return { stack: 'python', framework: 'python' };
   return { stack: 'node', framework: 'node' };
+}
+
+export function isRuntimeSdkPackageReady(sdkPackage: ReturnType<typeof getRuntimeSdkPackage>): boolean {
+  return sdkPackage.proof.installable
+    && Boolean(sdkPackage.install.command)
+    && sdkPackage.files.some(file => file.path === 'cas-runtime-contract.json' && file.sha256.length === 64);
 }
 
 function snippetFor(framework: string, service: string): FrameworkSnippet {
@@ -161,7 +167,7 @@ function snippetFor(framework: string, service: string): FrameworkSnippet {
         ].join('\n'),
         docs: PY_PACKAGE,
       };
-    default: // plain node
+    default:
       return {
         framework: 'node',
         stack: 'node',
@@ -193,16 +199,16 @@ export function getRuntimeSdkPackage(cas: CASOutput, opts: { limit?: number } = 
     service_name: service,
   };
 
-  // The contract file is the one generated artifact worth handing over: it is
-  // the exact runtime-static link set for THIS analysis, so the customer can
-  // pin correlation ids. The SDK client itself is a real published package.
+
+
+
   const files: RuntimeSdkFile[] = [
     sdkFile('cas-runtime-contract.json', 'json', JSON.stringify(contract, null, 2)),
   ];
 
   return {
     manifest,
-    // Real, runnable output — an install command + copy-paste init for the stack.
+
     install: {
       command: snippet.install,
       package: pkg,

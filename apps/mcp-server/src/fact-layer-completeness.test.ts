@@ -38,7 +38,7 @@ const DIMENSION_PARITY: Record<string, { cli: string | null }> = {
   cicd_pipelines: { cli: 'cicd' },
   runtime_topology: { cli: 'product-map' },
   runtime_node_metrics: { cli: 'node-metrics' },
-  data_entities: { cli: null },
+  entities: { cli: null },
   capabilities: { cli: null },
   tests: { cli: null },
 };

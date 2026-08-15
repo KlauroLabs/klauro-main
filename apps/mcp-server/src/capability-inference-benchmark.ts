@@ -36,7 +36,10 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
   try {
     await seedSymfonyFleetFixture(root);
     const cas = await analyzeForBench(root);
-    const capabilities = (cas.system_capabilities || []).map(capability => ({
+    const inferredCapabilities = cas.capabilities?.length
+      ? cas.capabilities
+      : cas.structural_capability_candidates || [];
+    const capabilities = inferredCapabilities.map(capability => ({
       name: capability.name,
       domains: capability.related_domains || [],
       description: capability.description || '',
@@ -44,13 +47,13 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
     const names = capabilities.map(capability => capability.name);
     const capabilityText = capabilities.map(capability => `${capability.name} ${capability.description}`.toLowerCase());
     const primaryDomain = cas.enhanced_system_purpose?.primary_domain || '';
-    // The domain label is AI-only comprehension (docs/cas/DETERMINISM-BOUNDARY.md):
-    // there is no deterministic domain stamp anymore, so a bench run through a
-    // product server with no AI provider legitimately yields an EMPTY domain with
-    // ai_skipped provenance. The gate is provenance-honesty, not a hardcoded label:
-    //  - domain present  -> it must be AI-sourced (never a deterministic stamp);
-    //  - domain absent   -> the AI pass must be honestly recorded as skipped/
-    //    rejected/failed (never a silent blank on a claimed-successful AI pass).
+
+
+
+
+
+
+
     const domainSource = cas.enhanced_system_purpose?.domain_source || '';
     const descriptionStatus = cas.enhanced_system_purpose?.description_generation?.status || '';
     const aiEnrichment = cas.ai_enrichment || '';
@@ -61,13 +64,16 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
     const gates = [
       gate('capability-inference:primary-domain-provenance', domainProvenanceOk, `primary domain ${primaryDomain || 'absent'} (domain_source=${domainSource || 'unset'}, description_generation=${descriptionStatus || 'unset'}, ai_enrichment=${aiEnrichment || 'unset'})`),
       gate('capability-inference:no-generic-primary-capabilities', genericCapabilities.length === 0, `${genericCapabilities.length} generic capabilities: ${genericCapabilities.map(item => item.name).join(', ') || 'none'}`),
-      // Each domain concept must be inferred as a capability, matched over the
-      // capability's name AND description. Capability phrasing is AI-derived and varies
-      // (noun titles "Vehicle Management" vs verb clauses "Manages fleet operations";
-      // the invoice capability sometimes surfaces as "settlement"/"billing" — the
-      // fixture's InvoiceSettlementService.settleInvoice). Matching name+description
-      // with concept synonyms keeps the gate meaningful without being brittle to
-      // phrasing. (Names alone, case-sensitive, made this cold-AI-flaky.)
+      gate('capability-inference:canonical-language-authored', (cas.capabilities || []).every(capability =>
+        ['ai', 'manual', 'reused'].includes(capability.name_source || '')
+      ), `${cas.capabilities?.length || 0} canonical capabilities; unauthored candidates remain structural evidence`),
+
+
+
+
+
+
+
       gate('capability-inference:vehicle-capability', capabilityText.some(t => /vehicle|fleet/.test(t)), names.join(', ')),
       gate('capability-inference:fuel-purchase-capability', capabilityText.some(t => /fuel/.test(t)), names.join(', ')),
       gate('capability-inference:invoice-capability', capabilityText.some(t => /invoice|settle|billing/.test(t)), names.join(', ')),

@@ -1,12 +1,12 @@
-/**
- * Retrieval backends for the gauntlet's competitor arms.
- *
- * Each backend models a real retrieval strategy an agent could use to decide
- * which files to read first:
- *   - cursor-proxy   -> lexical BM25 index (Cursor-style)
- *   - ctags          -> symbol index via the system ctags binary
- *   - embeddings-rag -> offline TF-IDF chunk embedding + cosine (RAG proxy)
- */
+
+
+
+
+
+
+
+
+
 
 import type { RetrievalBackend } from './types';
 import { lexicalBackend } from './lexical';

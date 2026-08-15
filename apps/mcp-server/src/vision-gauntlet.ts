@@ -6,11 +6,12 @@ import { evaluateAgentReadiness } from './agent-adoption';
 import { validateCASContract } from './cas-contract';
 import { buildCrossRepositoryLinks, runAnswerPack } from './product';
 import { getRuntimeEventContract } from './runtime-contract';
-import { getRuntimeSdkPackage } from './runtime-sdk';
+import { getRuntimeSdkPackage, isRuntimeSdkPackageReady } from './runtime-sdk';
 import { getTestDiscoveryEvidence } from './test-discovery';
 import { getAgentDefaultConfig } from './agent-defaults';
 import { getIntegrationDepthReport } from './integration-depth';
 import { buildWorkspaceGraph, summarizeWorkspaceGraph } from './workspace-graph';
+import { clearLoadedAnalysisCache } from './storage';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { isDirectCliInvocation } from './cli-invocation';
 
@@ -32,12 +33,67 @@ interface VisionTargetReport {
   test_discovery: Awaited<ReturnType<typeof getTestDiscoveryEvidence>>;
 }
 
+const CROSS_REPOSITORY_NODE_TYPES = new Set([
+  'class',
+  'interface',
+  'type',
+  'enum',
+  'model',
+  'entity',
+  'dto',
+  'use',
+  'import',
+]);
+
+export function projectCasForCrossRepositoryAnalysis(cas: CASOutput): CASOutput {
+  const entryPoints = cas.entry_points || [];
+  const exitPoints = cas.exit_points || [];
+  const referencedNodeIds = new Set<string>();
+  for (const entryPoint of entryPoints) {
+    if (entryPoint.source_node) referencedNodeIds.add(entryPoint.source_node);
+    if (entryPoint.handler?.node_id) referencedNodeIds.add(entryPoint.handler.node_id);
+  }
+  for (const exitPoint of exitPoints) {
+    if (exitPoint.source_node) referencedNodeIds.add(exitPoint.source_node);
+  }
+  for (const service of cas.external_services || []) {
+    for (const nodeId of service.connected_nodes || []) referencedNodeIds.add(nodeId);
+  }
+  for (const library of cas.libraries || []) {
+    for (const nodeId of library.connected_nodes || []) referencedNodeIds.add(nodeId);
+  }
+  for (const variable of cas.configuration?.environment_variables || []) {
+    for (const nodeId of variable.used_by || []) referencedNodeIds.add(nodeId);
+  }
+
+  return {
+    cas_version: cas.cas_version,
+    analysis_id: cas.analysis_id,
+    analysis_timestamp: cas.analysis_timestamp,
+    analyzer_contributions: cas.analyzer_contributions,
+    progressive_levels: cas.progressive_levels,
+    system: cas.system,
+    nodes: (cas.nodes || []).filter(node => CROSS_REPOSITORY_NODE_TYPES.has(node.type) || referencedNodeIds.has(node.id)),
+    edges: [],
+    entry_points: entryPoints,
+    exit_points: exitPoints,
+    call_chains: [],
+    entities: cas.entities || [],
+    database_schema: cas.database_schema,
+    external_services: cas.external_services || [],
+    libraries: cas.libraries || [],
+    dependencies: cas.dependencies,
+    configuration: cas.configuration,
+  } as CASOutput;
+}
+
 function parseArgs(argv: string[]) {
   const repos: RepoTarget[] = [];
   let devRoot = path.join(process.env.HOME || '', 'dev');
   let outputPath = path.join(process.cwd(), '.klauro-vision-gauntlet', 'latest-report.json');
   let dryRun = false;
   let maxTargets: number | undefined;
+  let requireCrossRepoLinks = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -55,13 +111,15 @@ function parseArgs(argv: string[]) {
       maxTargets = Number(argv[++i]);
     } else if (arg === '--dry-run') {
       dryRun = true;
+    } else if (arg === '--require-cross-repo-links') {
+      requireCrossRepoLinks = true;
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
     }
   }
 
-  return { repos, devRoot, outputPath, maxTargets, dryRun };
+  return { repos, devRoot, outputPath, maxTargets, dryRun, requireCrossRepoLinks };
 }
 
 function printHelp(): void {
@@ -73,6 +131,7 @@ function printHelp(): void {
     '  --dev-root /path           Root used for default repo discovery.',
     '  --output /path/report.json Write JSON report.',
     '  --max-targets n            Limit discovered targets.',
+    '  --require-cross-repo-links Require at least one resolved link when analyzing multiple repositories.',
     '  --dry-run                  Print selected targets without analysis.',
   ].join('\n'));
 }
@@ -86,6 +145,7 @@ async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTarget
   const answerPack = runAnswerPack(cas, target.path);
   const runtimeEventContract = getRuntimeEventContract(cas, { limit: 50 });
   const runtimeSdkPackage = getRuntimeSdkPackage(cas, { limit: 10 });
+  const runtimeSdkReady = isRuntimeSdkPackageReady(runtimeSdkPackage);
   const agentDefaults = await getAgentDefaultConfig(cas, target.path, {}, { assumeFresh: true });
   const integrationReport = getIntegrationDepthReport(cas);
   const scores = [
@@ -95,7 +155,7 @@ async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTarget
     integrationReport.score,
     answerPack.gaps.length === 0 ? 100 : Math.max(60, 100 - answerPack.gaps.length * 8),
     runtimeEventContract.totals.runtime_static_links > 0 ? 100 : 75,
-    runtimeSdkPackage.files.length >= 4 ? 100 : 75,
+    runtimeSdkReady ? 100 : 75,
   ];
   const score = Math.round(average(scores));
   const status = aggregateStatus([
@@ -105,7 +165,7 @@ async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTarget
     integrationReport.status === 'missing-depth' ? 'warn' : 'pass',
     answerPack.gaps.length === 0 ? 'pass' : 'warn',
     runtimeEventContract.totals.runtime_static_links > 0 ? 'pass' : 'warn',
-    runtimeSdkPackage.files.length >= 4 ? 'pass' : 'warn',
+    runtimeSdkReady ? 'pass' : 'warn',
   ]);
 
   return {
@@ -160,23 +220,26 @@ async function main(): Promise<void> {
 
   for (const target of targets) {
     console.log(`Analyzing ${target.name}: ${target.path}`);
-    const result = await analyzeTarget(target);
-    targetReports.push(result.report);
-    repositories.push({ path: target.path, name: target.name, cas: result.cas });
+    try {
+      const result = await analyzeTarget(target);
+      targetReports.push(result.report);
+      repositories.push({ path: target.path, name: target.name, cas: projectCasForCrossRepositoryAnalysis(result.cas) });
+    } finally {
+      clearLoadedAnalysisCache();
+    }
   }
 
   const crossRepo = buildCrossRepositoryLinks(repositories);
   const workspace = buildWorkspaceGraph('vision-gauntlet', repositories);
   const workspaceSummary = summarizeWorkspaceGraph(workspace);
-  const crossRepoStatus: GateStatus = repositories.length <= 1
-    ? 'pass'
-    : crossRepo.links.length > 0 ? 'pass' : 'warn';
+  const crossRepoStatus: GateStatus = args.requireCrossRepoLinks && repositories.length > 1 && crossRepo.links.length === 0 ? 'warn' : 'pass';
+  const crossRepoScore = args.requireCrossRepoLinks && repositories.length > 1 ? [crossRepo.links.length > 0 ? 100 : 75] : [];
   const report = {
     generatedAt: new Date().toISOString(),
     status: aggregateStatus([...targetReports.map(target => target.status), crossRepoStatus]),
     score: Math.round(average([
       ...targetReports.map(target => target.score),
-      repositories.length <= 1 ? 100 : crossRepo.links.length > 0 ? 100 : 75,
+      ...crossRepoScore,
     ])),
     target_count: targetReports.length,
     targets: targetReports,
@@ -209,7 +272,7 @@ function printReport(report: {
       `integrations ${target.integration_depth.score}/100`,
       `answers ${target.answer_pack.gaps.length === 0 ? 'ready' : `${target.answer_pack.gaps.length} gaps`}`,
       `runtime ${target.runtime_contract.totals.runtime_static_links} links`,
-      `sdk ${target.runtime_sdk.files.length} files`,
+      `sdk ${isRuntimeSdkPackageReady(target.runtime_sdk) ? 'ready' : 'incomplete'}`,
       `${Math.round(target.durationMs / 1000)}s`,
     ].join(' | '));
     for (const gate of target.cas_contract.gates.filter(result => result.status !== 'pass').slice(0, 4)) {

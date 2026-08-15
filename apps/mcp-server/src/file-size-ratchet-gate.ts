@@ -1,24 +1,24 @@
-/**
- * File-size ratchet — the gate that was missing while orchestrator.ts grew from
- * 23,103 lines (2026-07-05) to 33,441 (2026-08-11) without ever shrinking once.
- *
- * WHY A RATCHET AND NOT A LIMIT: a flat "no file over N lines" rule cannot be
- * turned on here — the worst file is 22× any sane N, so the gate would be red
- * from the first commit and would be disabled within a day. A ratchet is
- * enforceable immediately: every file's CURRENT size becomes its ceiling, so the
- * rule is only "no file gets worse". Extractions then lower ceilings, and the
- * lowered number is permanent because raising it fails the build.
- *
- * This is the step task #121 never had. Modules WERE extracted (system-type.ts,
- * deployable-evidence.ts, product-map.ts, journey-builder.ts are all real) but
- * they were additive: nothing stopped the god file growing faster than the
- * extractions drained it, and nobody measured the one number that defined
- * success. A ratchet makes that number impossible to ignore, because it is the
- * build failing rather than a report nobody reads.
- *
- * Deliberately counts LINES, not tokens or AST nodes: the number has to be
- * obvious to whoever sees the failure, and reproducible without parsing.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -35,31 +35,63 @@ export interface RatchetViolation {
 
 export interface RatchetResult {
   violations: RatchetViolation[];
-  /** Files at least 10% under their ceiling — the ceiling should be lowered. */
+
   slack: Array<{ file: string; ceiling: number; actual: number }>;
   checked: number;
-  /** Baseline entries whose file no longer exists (renamed/deleted). */
+
   missing: string[];
 }
 
 export const RATCHET_BASELINE_FILE = 'file-size-ratchet.json';
+export const OVERSIZED_SOURCE_THRESHOLD = 1000;
+export const PRODUCTION_SOURCE_ROOTS = [
+  'apps/mcp-server/src',
+  'packages/analyzer-core/src',
+  'packages/klauro-sdk-js/src',
+  'packages/klauro-sdk-py/src',
+];
 
-/** Count lines the same way `wc -l` does, so a human can verify a failure. */
+
 export function countLines(contents: string): number {
   if (contents.length === 0) return 0;
   let lines = 0;
   for (let i = 0; i < contents.length; i += 1) if (contents[i] === '\n') lines += 1;
-  // A trailing fragment with no newline is still a line to a reader.
+
   if (!contents.endsWith('\n')) lines += 1;
   return lines;
 }
 
-/**
- * Compare every baseline entry against the tree. Pure apart from reading the
- * files named in the baseline — it never writes, and it never walks the repo
- * looking for new files to police (adding a file to the ratchet is a deliberate
- * act, so a gate run cannot start failing because someone added a module).
- */
+export function findOversizedProductionSources(
+  repoRoot: string,
+  threshold = OVERSIZED_SOURCE_THRESHOLD,
+): RatchetEntry[] {
+  const entries: RatchetEntry[] = [];
+  const extensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py']);
+  const rejectedSegments = new Set(['node_modules', 'dist', 'build', 'target', 'fixtures', '__tests__', 'test-data', 'test-fixtures']);
+  const visit = (directory: string): void => {
+    if (!fs.existsSync(directory)) return;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!rejectedSegments.has(entry.name)) visit(absolute);
+        continue;
+      }
+      if (!entry.isFile() || !extensions.has(path.extname(entry.name).toLowerCase())) continue;
+      if (/\.(?:test|spec)\.[^.]+$/.test(entry.name)) continue;
+      const ceiling = countLines(fs.readFileSync(absolute, 'utf8'));
+      if (ceiling > threshold) entries.push({ file: path.relative(repoRoot, absolute), ceiling });
+    }
+  };
+  for (const root of PRODUCTION_SOURCE_ROOTS) visit(path.join(repoRoot, root));
+  return entries.sort((left, right) => right.ceiling - left.ceiling || left.file.localeCompare(right.file));
+}
+
+
+
+
+
+
+
 export function checkRatchet(repoRoot: string, baseline: RatchetEntry[]): RatchetResult {
   const violations: RatchetViolation[] = [];
   const slack: RatchetResult['slack'] = [];
@@ -72,8 +104,8 @@ export function checkRatchet(repoRoot: string, baseline: RatchetEntry[]): Ratche
     try {
       contents = fs.readFileSync(absolute, 'utf8');
     } catch {
-      // A baseline entry whose file is gone is reported, never silently passed:
-      // "the file I was policing vanished" must not read as success.
+
+
       missing.push(entry.file);
       continue;
     }

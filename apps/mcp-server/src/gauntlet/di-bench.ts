@@ -1,16 +1,16 @@
-/**
- * Camp-C OUT-OF-CATEGORY bench — dependency-injection graphs ("what is injected").
- *
- * A structural indexer sees that UserController IMPORTS and USES UserService —
- * but not that UserService is INJECTED into it by the framework's container, with
- * the lifecycle/ownership semantics that implies. Klauro emits a `depends_on`
- * edge tagged `dependency_type: "injection"` for each constructor-injected
- * collaborator, so it answers "UserController injects UserService" directly.
- * Embeddings / scip / stack-graphs / codebase-memory have no DI concept at all.
- *
- * Fixture = a dir with source + truth.json:
- *   { "task": "di-graph", "expected_injections": ["UserController injects UserService", ...] }
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -54,7 +54,7 @@ async function sourceBytes(dir: string): Promise<number> {
   return total;
 }
 
-/** Klauro: read the injection edges (`depends_on` tagged dependency_type:injection). */
+
 async function klauroInjections(dir: string): Promise<{ injections: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
   const cas: any = await analyzeForBench(dir);
@@ -91,8 +91,8 @@ export async function runDiGraphBench(fixtureDir: string): Promise<DiBenchResult
     { arm: 'klauro', injections: kl.injections, f1: klQ / 100, bytes: kl.bytes, can_answer: true },
   ];
 
-  // Camp A + Camp B: no DI concept — they see imports/usages, never the injected
-  // collaborator with container semantics. Un-attempted (categorical Camp-C win).
+
+
   for (const armId of ['codebase-memory', 'scip-typescript', 'stack-graphs', 'embeddings-nomic']) {
     arms.push({
       arm_id: armId,

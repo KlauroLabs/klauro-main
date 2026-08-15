@@ -1,12 +1,12 @@
-/**
- * Coverage data — what Klauro can analyze.
- *
- * Enumerates every registered analyzer (languages, frameworks, libraries) from
- * the live orchestrator so the coverage page reflects reality, not a hand-kept
- * list. Cross-references the corpus-expand scorecard verdicts when present, and
- * carries an explicit BACKLOG of stacks we know we don't cover yet — so the page
- * shows both reach and the honest gaps.
- */
+
+
+
+
+
+
+
+
+
 
 import * as os from 'os';
 import * as path from 'path';
@@ -20,13 +20,13 @@ import { scoreAllFixtures } from './analyzer-quality';
 export interface AnalyzerCoverage {
   id: string;
   name: string;
-  type: string;            // language | framework | library
+  type: string;
   requires: string[];
   detect: { dependencies?: string[]; files?: string[]; content?: string[] };
   incremental: boolean;
-  /** corpus-expand verdict if this stack was measured: supported | thin | blind. */
+
   verdict?: string;
-  /** real-repo proof when measured (nodes/fns). */
+
   measured?: { repo: string; nodes: number; fns: number };
 }
 
@@ -39,20 +39,20 @@ export interface CoverageBacklogItem {
 export interface CoverageReport {
   generated_at: string;
   totals: { languages: number; frameworks: number; libraries: number; total: number; incremental: number };
-  /** Distinct stacks present in the analyzed corpus (frameworks detected on real repos). */
+
   corpus: { repos: number; frameworks: Array<{ name: string; repos: number }> };
   analyzers: AnalyzerCoverage[];
   scorecard: Array<{ stack: string; kind: string; verdict: string; repo?: string; nodes?: number; fns?: number }>;
   backlog: CoverageBacklogItem[];
-  /** Measured precision/recall/F1 against hand-curated truth fixtures — turns
-   *  "is the analyzer good?" from an assertion into a number on the page. */
+
+
   quality?: {
     mean_f1: number;
     fixtures: Array<{ fixture: string; stack: string; precision: number; recall: number; f1: number }>;
   };
 }
 
-/** Stacks we know are NOT yet covered (kept honest + visible on the page). */
+
 const BACKLOG: CoverageBacklogItem[] = [
   { name: 'SolidStart', kind: 'framework', note: 'Solid.js meta-framework' },
   { name: 'Qwik', kind: 'framework' },
@@ -75,14 +75,14 @@ export interface StackDrilldown {
   stack: string;
   matched: number;
   total_repos: number;
-  /** Mean projected delta across the matching repos. */
+
   delta: Delta;
   repos: Array<{ name: string; nodes: number; edges: number; frameworks: string[]; delta: Delta }>;
 }
 
-/** Repos in the corpus that use a given stack (framework name), with per-repo
- *  projected deltas — backs the coverage drill-down. Matches case-insensitively
- *  either direction so 'react' finds 'React' and 'express' finds 'Express.js'. */
+
+
+
 export async function reposUsingStack(stack: string): Promise<StackDrilldown> {
   const entries = discoverAllRealRepoEntries(await listAnalyses());
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -122,7 +122,7 @@ export async function reposUsingStack(stack: string): Promise<StackDrilldown> {
 }
 
 function scorecardPath(): string {
-  // corpus-expand writes its latest scorecard here (best-effort; absent is fine).
+
   return path.join(os.homedir(), '.klauro', 'gauntlet', 'corpus-scorecard.json');
 }
 
@@ -135,7 +135,7 @@ async function loadScorecard(): Promise<CoverageReport['scorecard']> {
         repo: r.repo, nodes: r.nodes, fns: r.fns,
       }));
     }
-  } catch { /* no scorecard yet */ }
+  } catch {   }
   return [];
 }
 
@@ -145,7 +145,7 @@ export async function buildCoverageReport(): Promise<CoverageReport> {
   const verdictByStack = new Map(scorecard.map(s => [s.stack, s] as const));
 
   const analyzers: AnalyzerCoverage[] = analyzersRaw.map(a => {
-    // Match a scorecard verdict by analyzer id or a detect-dependency token.
+
     const sc = verdictByStack.get(a.id);
     return {
       ...a,
@@ -161,7 +161,7 @@ export async function buildCoverageReport(): Promise<CoverageReport> {
     incremental: analyzers.filter(a => a.incremental).length,
   };
 
-  // Frameworks actually present in the analyzed corpus (real coverage demand).
+
   const entries = discoverAllRealRepoEntries(await listAnalyses());
   const fwCount = new Map<string, number>();
   for (const e of entries) for (const f of e.frameworks || []) fwCount.set(f, (fwCount.get(f) || 0) + 1);
@@ -169,8 +169,8 @@ export async function buildCoverageReport(): Promise<CoverageReport> {
     .map(([name, repos]) => ({ name, repos }))
     .sort((a, b) => b.repos - a.repos);
 
-  // Measured truth-fixture quality (precision/recall/F1). Best-effort: a scoring
-  // failure must not break the coverage report.
+
+
   let quality: CoverageReport['quality'];
   try {
     const reports = await scoreAllFixtures();
@@ -182,7 +182,7 @@ export async function buildCoverageReport(): Promise<CoverageReport> {
       const mean = fixtures.reduce((a, f) => a + f.f1, 0) / fixtures.length;
       quality = { mean_f1: Math.round(mean * 1000) / 1000, fixtures };
     }
-  } catch { /* measurement unavailable — omit rather than fail the report */ }
+  } catch {   }
 
   return {
     generated_at: new Date().toISOString(),

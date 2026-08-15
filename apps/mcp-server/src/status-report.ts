@@ -11,37 +11,37 @@ import { getAnalysisEntry } from './storage';
 import { summarizeAnalysisFreshness } from './freshness';
 import { listActiveSessions } from './session-lock';
 
-/**
- * `klauro status` / `klauro doctor`'s "one glance, every subsystem `klauro
- * init` connects" report, and the small pieces of hosted-analysis-state
- * plumbing it needs. Lives HERE, not in cli.ts, for the same reason
- * self-update.ts does (see that file's header comment): cli.ts is the
- * developer entry point and is never bundled into the customer tarball
- * (scripts/build-bundle.mjs entryPoints only ever include installed-cli.ts).
- * `status` was ALSO missing from the shipped CLI through 1.0.129 — restoring
- * it by re-implementing it a second time inside installed-cli.ts would only
- * set up the next divergence; a module both entry points import cannot
- * silently drift apart the way two copies of the same logic did.
- */
 
-// --- Hosted analysis state (`Analysis:` line) -------------------------------
 
-/** 'failed' = a structural layer errored: the analysis crashed server-side.
- *  Distinct from 'populating' so a crashed run is visible, not an endless
- *  "in progress" (prod 2026-07-16: a torn deploy killed every analysis and
- *  status read 'populating' forever).
- *
- *  TASK #143: this type used to omit BOTH 'queryable' (L0-L4 landed, L5
- *  still running — see hosted-analysis.ts's HostedAnalysisState, the fuller
- *  twin of this interface) and 'degraded' (the AI comprehension pass itself
- *  failed) even though GET /api/projects/{id}/analysis-status can return
- *  either — so `klauro status` silently fell through to generic local-store
- *  wording for both instead of surfacing them. Kept as a SEPARATE interface
- *  from hosted-analysis.ts's (not merged) because this one intentionally
- *  carries a slimmer `summary` for the CLI's one-line rendering; the status
- *  UNION itself must stay in sync with the server's actual vocabulary. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export interface HostedAnalysisState {
-  status: 'ready' | 'queryable' | 'populating' | 'degraded' | 'failed' | 'no_analysis';
+  status: 'ready' | 'queryable' | 'populating' | 'degraded' | 'failed' | 'no_analysis' | 'inaccessible';
   project_id?: string;
   analysis_id?: string;
   analysis_error?: string;
@@ -65,34 +65,45 @@ export async function remoteJson<T>(serverUrl: string, token: string, route: str
   }
   const payload = await response.json().catch(() => ({})) as any;
   if (response.status === 401) throw new Error(payload?.error || `Klauro authentication failed (HTTP 401) at ${serverUrl}. Run \`klauro login\` to sign in again.`);
-  if (!response.ok) throw new Error(payload?.error || `Klauro API request failed with HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(payload?.error || `Klauro API request failed with HTTP ${response.status}`) as Error & { httpStatus?: number };
+    error.httpStatus = response.status;
+    throw error;
+  }
   return payload as T;
 }
 
-/**
- * Hosted analysis state for `klauro status`: the SAME GET
- * /api/projects/{id}/analysis-status read `klauro init` (analyzeCodebaseRemotely)
- * and the web app's progress ladder key off. Cold-customer audit (2026-07,
- * v1.0.65): seconds after a successful hosted init+analysis, `status` said
- * "not analyzed (klauro analyze .)" because it consulted only the LOCAL
- * analysis store — a hosted-init repo has nothing there by design. Returns
- * null when unreachable/unauthorized so the caller can fall back to
- * local-store wording.
- */
+
+
+
+
+
+
+
+
+
+
 export async function fetchHostedAnalysisState(serverUrl: string, token: string, projectId: string): Promise<HostedAnalysisState | null> {
   try {
     const state = await remoteJson<HostedAnalysisState>(serverUrl, token, `/api/projects/${encodeURIComponent(projectId)}/analysis-status`);
     return state && typeof state.status === 'string' ? state : null;
-  } catch {
+  } catch (error) {
+    if ((error as Error & { httpStatus?: number })?.httpStatus === 404) {
+      return {
+        status: 'inaccessible',
+        project_id: projectId,
+        analysis_error: 'The bound project does not exist or belongs to a workspace this account cannot access.',
+      };
+    }
     return null;
   }
 }
 
-/**
- * The single human-readable `Analysis:` line for `klauro status`, assembled
- * from the hosted state (authoritative when the repo is bound + signed in)
- * with the local store as fallback.
- */
+
+
+
+
+
 export function buildAnalysisStatusLine(input: {
   repoPath: string;
   hosted: HostedAnalysisState | null;
@@ -100,32 +111,35 @@ export function buildAnalysisStatusLine(input: {
   local: { analyzed: boolean; analysis_complete: boolean; system?: string; analyzed_at?: string; staleness?: string };
 }): string {
   const { hosted, local } = input;
+  if (hosted?.status === 'inaccessible') {
+    return `Analysis: hosted project ${input.hostedProjectId || hosted.project_id || 'unknown'} is inaccessible — it does not exist or belongs to another workspace. Sign in with a workspace member account, ask an owner to add this account, or run \`klauro init --force\` only if you intend to bind a separate new project.`;
+  }
   if (hosted?.status === 'populating') {
     return `Analysis: server analysis in progress (populating)${input.hostedProjectId ? ` · hosted project ${input.hostedProjectId}` : ''} — results appear shortly`;
   }
-  // TASK #143: L0-L4 (architecture, entry points, capabilities) already
-  // landed and are queryable right now via get_summary/resolve_agent_
-  // analysis — AI enrichment (naming/description polish) is still running.
-  // Before this branch existed, 'queryable' fell through to the generic
-  // "not analyzed" local-store wording below, hiding a genuinely usable
-  // analysis behind the exact message a customer sees when nothing has run
-  // at all.
+
+
+
+
+
+
+
   if (hosted?.status === 'queryable') {
     const system = hosted.summary?.name || local.system || 'analyzed';
     return `Analysis: ${system} · structure ready on server, AI enrichment still running · queryable now`;
   }
-  // A crashed server-side analysis must SAY SO (and what to do), never masquerade
-  // as "in progress" — zero dead ends: every error a customer can hit says the
-  // next step.
+
+
+
   if (hosted?.status === 'failed') {
     const why = hosted.analysis_error ? ` — ${hosted.analysis_error}` : '';
     return `Analysis: server analysis FAILED${input.hostedProjectId ? ` · hosted project ${input.hostedProjectId}` : ''}${why} · retry with \`klauro analyze .\`; if it persists run \`klauro support-bundle .\``;
   }
-  // TASK #143: 'degraded' = the AI comprehension pass ITSELF failed (not a
-  // partial capability-catalog shortfall — that now reports 'ready', see
-  // remote-analyzer-service.ts's comprehensionPartial split). The structure
-  // is real and queryable; only comprehension is missing, so this is
-  // distinct wording from 'failed', not silently folded into "analyzed".
+
+
+
+
+
   if (hosted?.status === 'degraded') {
     const system = hosted.summary?.name || local.system || 'analyzed';
     const when = hosted.summary?.analysis_timestamp || local.analyzed_at;
@@ -137,13 +151,13 @@ export function buildAnalysisStatusLine(input: {
     const staleness = local.analyzed ? local.staleness : undefined;
     return `Analysis: ${system} · analyzed on server · ${staleness || 'fresh'}${when ? ` · ${when}` : ''}`;
   }
-  // hosted 'no_analysis', or unreachable/offline/unbound → local-store wording.
+
   return local.analyzed
     ? `Analysis: ${local.system || 'analyzed'} · ${local.analysis_complete ? (local.staleness || 'unknown') : 'populating (layers still filling in)'} · ${local.analyzed_at || ''}`.trim()
     : `Analysis: ${input.repoPath} not analyzed  (klauro analyze .)`;
 }
 
-// --- Connection report (`Project:`/`In-flight:`/`MCP:`/`Fabric:` lines) ----
+
 
 type WorkspaceIdentityReport = ReturnType<typeof detectWorkspaceIdentity>;
 
@@ -155,45 +169,45 @@ export interface ConnectionReport {
   fabric: { enabled: boolean; mode: 'remote' | 'local'; endpoint: string | null; workspace: string; active_claims: number | null; note?: string };
 }
 
-/** Best-effort list of uncommitted (dirty + untracked) file paths; undefined = not a git repo. */
+
 export function listDirtyFiles(projectPath: string): string[] | undefined {
   const result = spawnSync('git', ['-C', projectPath, 'status', '--porcelain', '-uall'], { encoding: 'utf8', timeout: 5000 });
   if (result.status !== 0 || typeof result.stdout !== 'string') return undefined;
   return result.stdout
     .split('\n')
     .filter(line => line.trim())
-    // porcelain: "XY path" (or "XY old -> new" for renames — keep the new path).
+
     .map(line => line.slice(3).replace(/^.* -> /, '').replace(/^"|"$/g, ''));
 }
 
-/** Best-effort count of uncommitted (dirty + untracked) files; undefined = not a git repo. */
+
 export function countDirtyFiles(projectPath: string): number | undefined {
   return listDirtyFiles(projectPath)?.length;
 }
 
-/** true = registered, false = claude present but klauro not registered, undefined = no claude CLI. */
+
 export function detectClaudeMcpRegistration(): boolean | undefined {
   const probe = spawnSync('claude', ['mcp', 'get', 'klauro'], { encoding: 'utf8', timeout: 10000 });
   if (probe.error || probe.status === null) return undefined;
   return probe.status === 0;
 }
 
-/**
- * One-glance connection report for `klauro status` / `klauro doctor`: every
- * subsystem `klauro init` connects, for the current repo.
- */
+
+
+
+
 export async function buildConnectionReport(
   repoPath: string,
   options: { fabricCliAvailable?: boolean } = {},
 ): Promise<ConnectionReport> {
-  // `klauro fabric on|off|status` is a cli.ts-only (developer) command — it
-  // is never registered in installed-cli.ts, by design (coordination-fabric
-  // fine-control is a dev/fleet feature, not a customer-facing one; see
-  // installed-cli-ops-commands.test.ts's SCANNED_FILES comment). This
-  // function is shared by BOTH entry points (`klauro status` in each), so
-  // the fabric note must not claim a command exists that only cli.ts has —
-  // fabricCliAvailable defaults to true (cli.ts's own behavior, unchanged)
-  // and installed-cli.ts passes false.
+
+
+
+
+
+
+
+
   const fabricCliAvailable = options.fabricCliAvailable ?? true;
   const loaded = await loadKlauroConfig(repoPath).catch(() => undefined);
   const initialized = Boolean(loaded?.configPath);
@@ -256,7 +270,7 @@ export function formatConnectionReportLines(report: ConnectionReport): string[] 
 
 export { connectorToken };
 
-// --- `klauro status`: the full composed report ------------------------------
+
 
 export interface StatusReport {
   version: string;
@@ -265,14 +279,14 @@ export interface StatusReport {
   platform: string;
   server_url: string;
   signed_in: boolean;
-  /**
-   * Real server-verified auth state (see connector-auth.ts resolveAuthStatus)
-   * — 'no-token' | 'signed-in' | 'rejected' | 'unreachable'. `signed_in` is
-   * derived from this, not from local token presence, so `klauro status`
-   * can never report signed_in: true for a dead/expired token the way it
-   * used to (task #117: local-only check said signed_in: true right up
-   * until the next real call 401'd).
-   */
+
+
+
+
+
+
+
+
   auth_state: string;
   auth_detail: string;
   email: string | null;
@@ -298,13 +312,13 @@ export interface StatusReport {
   running_mcp_sessions_on_old_build: number;
 }
 
-/**
- * Renders a StatusReport as the human-readable multi-line form. Needs the
- * connection/hosted-state internals too (for the Analysis:/MCP: lines), so
- * it takes the same inputs `renderStatusReport` computed rather than
- * re-deriving them. Callers should use `renderStatusReport` below, which
- * does both steps together.
- */
+
+
+
+
+
+
+
 function formatStatusLines(
   report: StatusReport,
   connection: ConnectionReport,
@@ -351,13 +365,13 @@ function formatStatusLines(
   ];
 }
 
-/**
- * `klauro status`, end to end: builds the report and returns BOTH the JSON
- * shape and the human-readable lines. This is the single function
- * cli.ts's runStatusCommand and installed-cli.ts's `status` handler each
- * call, so `--json` and text output can never disagree between the two
- * entry points.
- */
+
+
+
+
+
+
+
 export async function renderStatusReport(options: { repoPath: string; serverUrl?: string; fabricCliAvailable?: boolean }): Promise<{ report: StatusReport; lines: string[] }> {
   const identity = getBuildIdentity();
   const auth = loadStoredConnectorAuth();
@@ -365,9 +379,9 @@ export async function renderStatusReport(options: { repoPath: string; serverUrl?
   const manifest = await fetchReleaseManifest(serverUrl);
   const latest = manifest?.version || null;
   const stored = auth.accounts[serverUrl];
-  // Server-verified, not local-token-presence — see the StatusReport.auth_state
-  // doc comment and task #117. A dead/expired/server-dropped token must never
-  // render as "signed in" just because a token file happens to exist.
+
+
+
   const authStatus = await resolveAuthStatus({ serverUrl });
 
   const repoPath = options.repoPath;
@@ -408,14 +422,14 @@ export async function renderStatusReport(options: { repoPath: string; serverUrl?
     auth_detail: authStatus.detail,
     email: authStatus.email ?? stored?.email ?? null,
     latest_available: latest,
-    // #142: `latest !== identity.base_version` used to fire in BOTH
-    // directions — including when a stalled/partial deploy left the server
-    // advertising a version BEHIND what this client is already running, in
-    // which case it told a customer "Release: <older version> available —
-    // run: klauro update", which would have downgraded them had they
-    // followed it (self-update.ts had the identical bug — see there).
-    // isNewerVersion() is the direction-aware comparator this file already
-    // had available (stale-client-hint.ts) but never used here.
+
+
+
+
+
+
+
+
     update_available: Boolean(latest && isNewerVersion(latest, identity.base_version)),
     repo: repoPath,
     repo_analyzed: repo.analyzed,

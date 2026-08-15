@@ -136,6 +136,19 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     assert.equal(midWriteAnalysis.status, 'populating', 'the /analysis route must agree — a client polling either surface gets the same verdict');
     assert.equal(midWriteAnalysis.last_attempt?.state, 'in-progress');
 
+    fs.writeFileSync(attemptRecordPath, JSON.stringify({
+      state: 'failed',
+      trigger: 'analyze',
+      analysis_revision: 22,
+      started_at: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+      reason: 'analysis worker failed',
+    }));
+    const failedUploadStatus = JSON.parse((await request(port, 'GET', `/v1/analyses/${analyzed.analysis_id}/status`, undefined, token)).body);
+    assert.equal(failedUploadStatus.status, 'failed');
+    assert.equal(failedUploadStatus.analysis_revision, 22);
+    assert.equal(failedUploadStatus.last_attempt?.reason, 'analysis worker failed');
+
     // Once the attempt resolves (succeeded), both routes go back to reading
     // the (now current) landed entry normally.
     fs.writeFileSync(attemptRecordPath, JSON.stringify({

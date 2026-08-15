@@ -1,21 +1,20 @@
-/**
- * Gauntlet UI server.
- *
- * A tiny dependency-free HTTP server that serves the dashboard and the report.
- * Routes:
- *   GET /                -> dashboard.html
- *   GET /api/report      -> latest.json (the GauntletReport)
- *   GET /api/events      -> SSE stream; pushes the report whenever latest.json
- *                           changes on disk, so a running gauntlet animates live
- *   POST /api/run        -> kicks off a projected run in-process (for the
- *                           "Run gauntlet" button), streaming progress to SSE
- *
- * The dashboard renders nothing but a GauntletReport, so the same UI works for
- * a finished report, a live-streaming run, or a historical one.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as http from 'http';
-import * as os from 'os';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { URL } from 'url';
@@ -69,13 +68,13 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
 
   const pushReport = async () => {
     let payload = '{}';
-    try { payload = await fs.readFile(reportPath, 'utf8'); } catch { /* no report yet */ }
+    try { payload = await fs.readFile(reportPath, 'utf8'); } catch {   }
     for (const res of clients) {
       res.write(`event: report\ndata: ${payload.replace(/\n/g, ' ')}\n\n`);
     }
   };
 
-  // Watch the report file; debounce bursts from rapid emits.
+
   let watchTimer: NodeJS.Timeout | undefined;
   try {
     fs.watch(gauntletHomeDir(), (_evt, file) => {
@@ -83,7 +82,7 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
       if (watchTimer) clearTimeout(watchTimer);
       watchTimer = setTimeout(() => { void pushReport(); }, 120);
     });
-  } catch { /* fs.watch unsupported; SSE still works for POST /api/run */ }
+  } catch {   }
 
   const server = http.createServer(async (req, res) => {
     const url = req.url || '/';
@@ -96,15 +95,15 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
       }
       if (url.startsWith('/api/report')) {
         let payload = '{}';
-        try { payload = await fs.readFile(reportPath, 'utf8'); } catch { /* none */ }
+        try { payload = await fs.readFile(reportPath, 'utf8'); } catch {   }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(payload);
         return;
       }
       if (url.startsWith('/api/tests')) {
         const inventory = await buildTestInventory();
-        // Merge the latest pass/fail status + per-test trend so the docket shows
-        // a real run history, not just declared tests.
+
+
         const status = await testStatusIndex().catch(() => ({} as Record<string, any>));
         const latest = await latestTestRun().catch(() => null);
         for (const area of inventory.areas) {
@@ -120,8 +119,8 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
         return;
       }
       if (url.startsWith('/api/catalog')) {
-        // The full docket of what the gauntlet will run, independent of any run —
-        // so the page is never blank before the first run. Includes user-proposed.
+
+
         const userScenarios = await listUserScenarios();
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ scenarios: [...SCENARIOS, ...userScenarios], arms: ARMS }));
@@ -132,12 +131,12 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
       const qp = u.searchParams;
 
       if (p === '/api/coverage') { return sendJson(res, await buildCoverageReport()); }
-      // Camps: the three head-to-heads (A embeddings / B structural / C comprehension)
-      // + breadth, measured live from the real engine. Cached in-process (expensive).
+
+
       if (p === '/api/camps') { return sendJson(res, await buildCampsReport(new Date().toISOString())); }
-      // Full grid: the exhaustive honest (row × metric) matrix — every supported
-      // language/framework/library cell with an explicit verdict, folding in the
-      // camp-a-langs structural-retrieval wins. Cached in-process (expensive).
+
+
+
       if (p === '/api/grid') { return sendJson(res, await buildFullGrid()); }
       if (p === '/api/coverage/stack') { return sendJson(res, await reposUsingStack(qp.get('stack') || qp.get('framework') || '')); }
       if (p === '/api/overview') { return sendJson(res, await overview()); }
@@ -170,7 +169,7 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
         const result = await addUserScenario(body, new Date().toISOString());
         return sendJson(res, result, result.ok ? 201 : 400);
       }
-      // Test run history.
+
       if (p === '/api/test-runs') {
         return sendJson(res, { latest: await latestTestRun(), history: await testRunHistory(num(qp.get('limit'), 20)) });
       }
@@ -180,7 +179,7 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
         void runTestSuite().then(() => pushReport()).catch(err => console.error('[gauntlet-ui] test run failed:', err));
         return;
       }
-      // Incremental gauntlet.
+
       if (p === '/api/incremental') {
         return sendJson(res, { records: await listIncrementalRecords(qp.get('repo') || undefined, num(qp.get('limit'), 100)) });
       }
@@ -191,7 +190,7 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
         const body = await readBody(req);
         return sendJson(res, await runIncrementalGauntlet({ repoName: body.repoName, change: body.change }), 201);
       }
-      // Watchers (MCP-installable; also installable from the UI).
+
       if (p === '/api/watchers' && req.method === 'GET') { return sendJson(res, { watchers: await listGauntletWatchers() }); }
       if (p === '/api/watchers' && req.method === 'POST') {
         const body = await readBody(req);
@@ -219,7 +218,7 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
         const body = await readBody(req);
         res.writeHead(202, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ started: true }));
-        // Fire-and-forget; progress reaches the UI via the file watcher + SSE.
+
         void runGauntlet({
           scenarioIds: Array.isArray(body.scenarioIds) && body.scenarioIds.length ? body.scenarioIds : undefined,
           live: body.live === true,
@@ -240,7 +239,7 @@ export async function startUiServer(opts: UiOptions = {}): Promise<void> {
   });
 
   await new Promise<void>(resolve => server.listen(port, resolve));
-  // Auto-start any installed gauntlet watchers so incremental testing resumes.
+
   try { const started = await startInstalledWatchers(); if (started.started) console.log(`[gauntlet-ui] resumed ${started.started} gauntlet watcher(s)`); }
   catch (err) { console.error('[gauntlet-ui] watcher resume failed:', err); }
   console.log(`[gauntlet-ui] http://localhost:${port}  (report: ${reportPath})`);

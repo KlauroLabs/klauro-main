@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { formatRemoteResult, formatUploadManifest, withAnalysisState } from './remote-result-format';
 import { buildUploadManifest } from './remote-source';
+import { summarizeUploadManifest } from './upload-manifest-summary';
 import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
 import { writeDefaultKlauroConfig } from './klauro-config';
@@ -15,40 +16,41 @@ import { formatClientDoctor, runClientDoctor } from './client-doctor';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
 import { missingEmailMessage, missingPasswordMessage, promptLine, promptPassword, readAllStdin } from './password-prompt';
 import { extractServerUrlFlag, getStaleClientUpdateHint } from './stale-client-hint';
-// §AUTH-LIFECYCLE — admin-mint-reset-token talks to the account store
-// directly (no HTTP hop, no site-wide admin role to gate an endpoint with —
-// see AccountStore.mintPasswordResetToken's doc comment). account-store.ts
-// has no dependency on any hosted-only module (analyzer.ts, orchestrator,
-// etc.), so it is safe to pull into the installed-client bundle the same way
-// every other shared module here is.
+
+
+
+
+
+
 import { AccountStore } from './account-store';
+import { isAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 
 function value(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-/**
- * What `klauro install` registers as the MCP server launch command — differs
- * by distribution channel:
- *
- *  - npm-installed client: `node <package>/dist/index.cjs` (unchanged,
- *    exactly what every registration up to and including 1.0.131 wrote).
- *  - self-contained (Node SEA) binary, from `curl .../install | sh`: there is
- *    no `dist/` directory beside a single embedded executable, so the
- *    registered command is the binary ITSELF (`process.execPath` inside a
- *    SEA build IS the klauro binary's own path) invoked with the
- *    `__mcp_server` sentinel argv that installed-sea-entry.ts dispatches on
- *    to start the same server logic instead of the CLI.
- *
- * `node:sea` (stable Node 21.7+/22+) is the documented way to tell these
- * apart at runtime; it is absent from older Node, so failure to load it is
- * read as "not running inside a SEA binary" rather than an error.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function resolveMcpRegistrationCommand(): string[] {
   let isSea = false;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     isSea = (require('node:sea') as { isSea(): boolean }).isSea();
   } catch {
     isSea = false;
@@ -57,54 +59,55 @@ export function resolveMcpRegistrationCommand(): string[] {
   return [process.execPath, path.join(__dirname, 'index.cjs')];
 }
 
-// ---------------------------------------------------------------------------
-// Flag validation + `--help`, generalised across every subcommand.
-//
-// The defect this closes: `target` below was computed by treating anything
-// NOT starting with `-` as the positional path, and anything else (including
-// an unrecognized or misspelled flag, and `--help`/`-h` themselves) was
-// silently dropped. `klauro analyze --help` therefore never printed usage —
-// `--help` vanished, the positional slot fell back to `.`, and a real
-// analysis of the current directory ran. Task #49 fixed one shape of this
-// (an unknown flag silently becoming the path) for `init` in the developer
-// CLI's parseArgs (cli.ts); it was never ported to this file, which is the
-// one actually shipped (dist/cli.cjs, built from this file — see
-// scripts/build-bundle.mjs). Fixed generally here: every subcommand honours
-// `--help`/`-h`, and every subcommand rejects a flag it does not recognize
-// instead of swallowing it.
-// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const HELP_FLAGS = new Set(['--help', '-h']);
 
-/** Flags that consume the next argv slot as their value, so flag validation
- *  below does not misread that value as a second, unrecognized flag. */
+
+
 const FLAGS_WITH_VALUES = new Set([
   '--server-url', '--project-id', '--organization-id', '--workspace', '--output',
   '--email', '--password', '--token', '--new-password', '--current-password',
   '--data-dir', '--minted-by', '--claude-scope', '--use',
+  '--analysis-id', '--analysis-focus',
 ]);
 
-/** The flags each subcommand actually reads (via `value()` or
- *  `argv.includes()` above/below). A command absent from this map is not
- *  flag-validated here — it either isn't a real command (falls through to
- *  the usage block, unchanged) or its flags are validated elsewhere. */
+
+
+
+
 const COMMAND_FLAGS: Record<string, Set<string>> = {
   ...Object.fromEntries(SELF_UPDATE_COMMANDS.map(name => [name, new Set(['--server-url', '--check', '--force', '--json'])])),
   version: new Set(['--json']),
   '--version': new Set(['--json']),
   '-v': new Set(['--json']),
-  // --force (task #132): was documented in cli.ts's usage text but never
-  // even ACCEPTED here — the installed (customer-shipped) CLI threw "Unknown
-  // option" for it, a loud failure rather than the dev CLI's silent no-op,
-  // but still not the feature. Now wired through to analyzeCodebaseRemotely.
-  // --yes (task #134): confirms an upload whose resolved root looks like a
-  // folder containing several unrelated projects rather than one project —
-  // see upload-scope-guard.ts. Without it, an unsafe scope on a non-TTY
-  // (scripted/CI) run refuses instead of uploading; on a TTY it prompts.
-  analyze: new Set(['--json', '--force', '--yes']),
-  'remote-analyze': new Set(['--json', '--force', '--yes']),
-  'remote-sync': new Set(['--json', '--yes']),
-  sync: new Set(['--json', '--yes']),
+
+
+
+
+
+
+
+
+  analyze: new Set(['--server-url', '--analysis-id', '--analysis-focus', '--json', '--quiet', '--force', '--yes', '--wait']),
+  'remote-analyze': new Set(['--server-url', '--analysis-id', '--analysis-focus', '--json', '--quiet', '--force', '--yes', '--wait']),
+  'remote-sync': new Set(['--server-url', '--analysis-id', '--json', '--quiet', '--yes', '--wait']),
+  sync: new Set(['--server-url', '--analysis-id', '--json', '--quiet', '--yes', '--wait']),
   'upload-manifest': new Set(['--json', '--dirty-tree']),
   index: new Set(['--json', '--dirty-tree']),
   status: new Set(['--server-url', '--json']),
@@ -112,6 +115,7 @@ const COMMAND_FLAGS: Record<string, Set<string>> = {
   'support-bundle': new Set(['--output', '--json']),
   init: new Set(['--server-url', '--project-id', '--organization-id', '--workspace', '--force', '--json']),
   install: new Set(['--claude-scope', '--json']),
+  uninstall: new Set(['--no-deregister', '--json']),
   'auth-status': new Set(['--server-url', '--json']),
   whoami: new Set(['--server-url', '--json']),
   logout: new Set(['--server-url', '--json']),
@@ -122,19 +126,19 @@ const COMMAND_FLAGS: Record<string, Set<string>> = {
   'admin-mint-reset-token': new Set(['--email', '--data-dir', '--minted-by', '--json']),
 };
 
-/** Commands that read `target` as a real filesystem path (as opposed to
- *  ignoring it, e.g. `login`). An explicitly-given path that doesn't exist,
- *  or isn't a directory, must fail here with a clear message rather than
- *  fail deep inside git/upload plumbing with a confusing error — or, worse,
- *  silently fall back to `.` the way a swallowed `--help` used to. Path
- *  omitted (defaulting to cwd) is always valid, so it is not checked. */
+
+
+
+
+
+
 const PATH_COMMANDS = new Set([
   'analyze', 'remote-analyze', 'remote-sync', 'sync', 'upload-manifest', 'index',
   'init', 'status', 'doctor', 'support-bundle',
 ]);
 
-/** Throws by flag name instead of letting an unrecognized `--flag` fall
- *  through to the positional path slot or get silently ignored. */
+
+
 function validateFlags(command: string, argv: string[]): void {
   const allowed = COMMAND_FLAGS[command];
   if (!allowed) return;
@@ -144,28 +148,35 @@ function validateFlags(command: string, argv: string[]): void {
     if (!allowed.has(arg)) {
       throw new Error(`Unknown option for \`klauro ${command}\`: ${arg} (run \`klauro ${command} --help\` for supported flags)`);
     }
-    if (FLAGS_WITH_VALUES.has(arg)) i += 1;
+    if (FLAGS_WITH_VALUES.has(arg)) {
+      const optionValue = argv[i + 1];
+      if (!optionValue || optionValue.startsWith('-')) throw new Error(`Option ${arg} for \`klauro ${command}\` requires a value`);
+      if (arg === '--analysis-focus' && !isAnalysisFocus(optionValue)) {
+        throw new Error('--analysis-focus must be agent-fast, ui-overview, deep-context, or full');
+      }
+      i += 1;
+    }
   }
 }
 
-/** Finds the positional path argument regardless of where it falls relative
- *  to flags — `klauro init --force /some/path` and `klauro init /some/path
- *  --force` must resolve identically. The naive version of this (`argv[3]`)
- *  only worked for the second ordering: with a flag first, argv[3] is the
- *  flag itself, which starts with `-`, so the target silently fell back to
- *  cwd instead of the given path — no error, no path field on the config
- *  that matched what was asked for, just a `.klaurorc` written into (and a
- *  hosted project bound to) whatever directory the command happened to run
- *  from. Skips every recognized flag, and — critically — skips the VALUE
- *  slot of any flag in FLAGS_WITH_VALUES too, so `klauro init --project-id
- *  p_123 /some/path` resolves path=/some/path, not path=p_123. Relies on
- *  validateFlags() having already run and rejected any unrecognized flag,
- *  so every `-`-prefixed token reaching this loop is a known flag. */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function resolvePositionalArg(argv: string[]): string | undefined {
   for (let i = 3; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg.startsWith('-')) {
-      if (FLAGS_WITH_VALUES.has(arg)) i += 1; // skip its value too
+      if (FLAGS_WITH_VALUES.has(arg)) i += 1;
       continue;
     }
     return arg;
@@ -173,13 +184,13 @@ function resolvePositionalArg(argv: string[]): string | undefined {
   return undefined;
 }
 
-/** An explicit path argument must resolve to a real directory before any
- *  command acts on it — see the `klauro analyze --help` incident in the
- *  block comment above: silently proceeding on a wrong/nonexistent path is
- *  what turned a swallowed flag into a real 28k-file analysis. */
+
+
+
+
 function validateTargetPath(command: string, rawArg: string | undefined, resolved: string): void {
   if (!PATH_COMMANDS.has(command)) return;
-  if (!rawArg || rawArg.startsWith('-')) return; // no explicit path; cwd default is always valid
+  if (!rawArg || rawArg.startsWith('-')) return;
   if (!existsSync(resolved)) throw new Error(`\`klauro ${command}\`: path does not exist: ${resolved}`);
   if (!statSync(resolved).isDirectory()) throw new Error(`\`klauro ${command}\`: path is not a directory: ${resolved}`);
 }
@@ -188,7 +199,8 @@ const USAGE_TEXT = [
   'Usage: klauro <command> [path] [options]', '',
   '  init [path]                 Configure a project for hosted Klauro analysis',
   '  install                     Register the lightweight MCP with Claude and Codex',
-  '  analyze [path] [--force] [--yes]',
+  '  uninstall [--no-deregister] Remove Klauro MCP registrations; keep account and analysis data',
+  '  analyze [path] [--server-url url] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--json] [--quiet] [--force] [--yes] [--wait]',
   '                               Upload a committed source snapshot for hosted analysis',
   '                               --force bypasses BOTH the server\'s reuse-of-unchanged-snapshot shortcut AND the',
   '                               AI response cache, so structure and AI-generated names/descriptions are freshly',
@@ -196,8 +208,10 @@ const USAGE_TEXT = [
   '                               --yes confirms uploading a root that looks like it contains several unrelated',
   '                               projects instead of one (no Git repo/manifest of its own, multiple nested repos',
   '                               beneath it) — without it this refuses (scripted) or prompts (interactive).',
+  '                               --wait blocks until the hosted analysis is complete and returns its CAS.',
   '                               Alias: remote-analyze',
-  '  remote-sync [path] [--yes]  Upload in-flight changes for hosted analysis',
+  '  remote-sync [path] [--yes] [--wait]',
+  '                               Upload in-flight changes; --wait returns the completed incremental CAS',
   '                               Alias: sync',
   '  upload-manifest [path]      Preview source files selected for upload',
   '  status [path] [--server-url URL]',
@@ -229,15 +243,15 @@ function printUsage(): void {
   process.stdout.write(USAGE_TEXT);
 }
 
-/**
- * Task #134: gate before `analyze`/`remote-sync` upload anything. Always
- * prints the resolved root to STDERR first (never stdout, so it can't
- * corrupt a `--json` caller's output) — item 2 of the fix: the root must be
- * shown prominently and BEFORE the upload, not buried in the eventual
- * response. Then, only if the scope looks unsafe (assessUploadScope),
- * confirms via `--yes` or an interactive prompt; see upload-scope-guard.ts
- * for why a non-TTY/scripted run can never hang here.
- */
+
+
+
+
+
+
+
+
+
 async function resolveUploadScopeConfirmation(target: string): Promise<{ proceed: boolean; confirmScope: boolean }> {
   process.stderr.write(`Resolved project root: ${target}\n`);
   const yes = process.argv.includes('--yes');
@@ -247,10 +261,10 @@ async function resolveUploadScopeConfirmation(target: string): Promise<{ proceed
 
 async function main() {
   const command = process.argv[2] || 'help';
-  // `--help`/`-h` on ANY subcommand prints usage and does nothing else —
-  // checked before flag validation and before any command runs, so it can
-  // never be shadowed by an unknown-option error or (the original defect)
-  // silently discarded into a real run of the command.
+
+
+
+
   if (HELP_FLAGS.has(command) || process.argv.slice(3).some(arg => HELP_FLAGS.has(arg))) {
     printUsage();
     return;
@@ -260,22 +274,22 @@ async function main() {
   const target = path.resolve(rawPathArg ?? '.');
   validateTargetPath(command, rawPathArg, target);
   const json = process.argv.includes('--json');
-  // Every command in this file accepts --json (it is in COMMAND_FLAGS) with an
-  // implied plain-text default when it is omitted — the pattern every OTHER
-  // command here already follows (status/doctor/support-bundle/auth-status/
-  // accounts/analyze). version/upload-manifest/init/install/logout/login used
-  // to hand a bare object straight to output() regardless of `json`, and
-  // output() JSON.stringifies anything that isn't already a string — so
-  // `klauro version` (no --json) printed a JSON blob instead of the version
-  // string, exactly the class of bug #129 fixed for `analyze`/`remote-sync`
-  // but never ported to these six. Fixed by giving each a real plain-text
-  // branch below.
+
+
+
+
+
+
+
+
+
+
   if (command === 'version' || command === '--version' || command === '-v') return output(json ? { version: formatBuildIdentity() } : formatBuildIdentity(), json);
-  // Self-update. This MUST exist in the shipped CLI: the hosted server's
-  // protocol-mismatch remediation (HTTP 426, remote-analyzer-service.ts) tells
-  // customers to run it, and through 1.0.127 it fell through to the usage text
-  // below and exited 0 — bricking every installed client behind an instruction
-  // that did nothing. See self-update.ts.
+
+
+
+
+
   if ((SELF_UPDATE_COMMANDS as readonly string[]).includes(command)) {
     const auth = loadStoredConnectorAuth();
     const serverUrl = normalizeServerUrl(value('--server-url') || auth.defaultServerUrl || process.env.KLAURO_URL);
@@ -287,58 +301,67 @@ async function main() {
     });
     return;
   }
-  // #129 — this branch used to hand the raw result straight to `output()`,
-  // which JSON.stringifies ANY non-string value even in plain-text mode: a
-  // customer running `klauro analyze .` (no --json) got a full JSON dump —
-  // reuse_decision, analysis_id, manifest — that reads exactly like a
-  // finished result the instant the upload was merely ACCEPTED (`status:
-  // 'accepted'`, seconds in, server-side analysis still running). cli.ts's
-  // dev-only `analyze` always rendered this honestly via formatRemoteResult;
-  // it just never shipped to customers. Both entry points now go through the
-  // same shared formatter (remote-result-format.ts) so they can't diverge
-  // again, and --json now also carries an explicit `analysis_state` field
-  // ('running' | 'complete') so a script/harness has one unambiguous field
-  // to check instead of having to already know 'accepted' means not-done.
-  //
-  // task #132: --force (validated above in COMMAND_FLAGS) is now actually
-  // threaded through — previously this file didn't even accept the flag.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   if (command === 'analyze' || command === 'remote-analyze') {
     const scope = await resolveUploadScopeConfirmation(target);
     if (!scope.proceed) { process.exitCode = 1; return; }
-    const result = await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true, force: process.argv.includes('--force'), confirmScope: scope.confirmScope });
+    const result = await analyzeCodebaseRemotely({
+      projectPath: target,
+      serverUrl: value('--server-url'),
+      analysisId: value('--analysis-id'),
+      analysisFocus: value('--analysis-focus') as AnalysisFocus | undefined,
+      requireBoundProject: true,
+      force: process.argv.includes('--force'),
+      confirmScope: scope.confirmScope,
+      wait: process.argv.includes('--wait'),
+    });
     return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
   }
   if (command === 'remote-sync' || command === 'sync') {
     const scope = await resolveUploadScopeConfirmation(target);
     if (!scope.proceed) { process.exitCode = 1; return; }
-    const result = await syncWorkingTreeRemotely({ projectPath: target, requireBoundProject: true, confirmScope: scope.confirmScope });
+    const result = await syncWorkingTreeRemotely({ projectPath: target, serverUrl: value('--server-url'), analysisId: value('--analysis-id'), requireBoundProject: true, confirmScope: scope.confirmScope, wait: process.argv.includes('--wait') });
     return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
   }
   if (command === 'upload-manifest' || command === 'index') {
     const manifest = await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full');
-    return output(json ? manifest : formatUploadManifest(manifest), json);
+    return output(json ? summarizeUploadManifest(manifest) : formatUploadManifest(manifest), json);
   }
-  // status/doctor/support-bundle: the same class of dead end `update` was
-  // (see the comment above SELF_UPDATE_COMMANDS) — the product's own text
-  // tells customers to run all three (server error remediations, `klauro
-  // init`'s "check any time with `klauro status`", the 401 remediation's
-  // "if it recurs, run `klauro support-bundle`"), and none of them were ever
-  // registered in this file, so each fell through to the usage block and
-  // exited 0. All three share their logic with cli.ts via status-report.ts /
-  // client-doctor.ts / support-bundle.ts — see installed-cli-ops-commands.test.ts.
+
+
+
+
+
+
+
+
   if (command === 'status') {
-    // fabricCliAvailable: false — `klauro fabric` is a cli.ts-only developer
-    // command, never registered below; see status-report.ts's
-    // buildConnectionReport comment for why this must be threaded through
-    // rather than left at the (cli.ts-appropriate) default.
+
+
+
+
     const { report, lines } = await renderStatusReport({ repoPath: target, serverUrl: value('--server-url'), fabricCliAvailable: false });
     return output(json ? report : lines.join('\n'), json);
   }
   if (command === 'doctor') {
-    // Always the lightweight customer environment/connection check — never
-    // the local-CAS-backed "agent doctor" cli.ts's `doctor <path>` also
-    // answers, which requires a local analysis this client never performs
-    // ("Analysis... execute only on Klauro infrastructure").
+
+
+
+
     const report = await runClientDoctor({ projectPath: target, serverUrl: value('--server-url') });
     if (json) { process.stdout.write(`${JSON.stringify(report, null, 2)}\n`); } else { process.stdout.write(`${formatClientDoctor(report)}\n`); }
     process.exitCode = report.status === 'fail' ? 1 : 0;
@@ -357,10 +380,10 @@ async function main() {
     let workspaceId = value('--organization-id');
     let projectName: string | undefined;
     const token = connectorToken(undefined, serverUrl);
-    // Warn BEFORE the placement calls below if the token is close to (or
-    // past) the server's TTL — init is the very first authenticated command
-    // most sessions run, so this is the earliest point to catch a session
-    // that's about to strand the rest of the first-session flow.
+
+
+
+
     if (token) warnIfSessionExpiringSoon(serverUrl, loadStoredConnectorAuth().accounts[serverUrl]);
     if (token && !projectId) {
       const placement = await ensureHostedPlacement(target, serverUrl, token, value('--workspace'));
@@ -389,15 +412,15 @@ async function main() {
     const mcpCommand = resolveMcpRegistrationCommand();
     const scope = value('--claude-scope') || 'user';
     const results: Record<string, unknown> = {};
-    // Best-effort remove of any existing registration BEFORE re-adding.
-    // Without this, `claude mcp add`/`codex mcp add` on an already-registered
-    // name either no-ops or errors depending on client version, so re-running
-    // `klauro install` after upgrading from the npm client to the
-    // self-contained binary (or back) would leave the OLD command (`node
-    // .../dist/index.cjs`, now possibly gone) registered forever — an MCP
-    // that silently stops loading is worse than one that fails loudly, and
-    // this is how that gets avoided: always re-register clean. Failure here
-    // is fine (nothing registered yet) and ignored.
+
+
+
+
+
+
+
+
+
     spawnSync('claude', ['mcp', 'remove', '--scope', scope, 'klauro'], { encoding: 'utf8' });
     spawnSync('codex', ['mcp', 'remove', 'klauro'], { encoding: 'utf8' });
     const claude = spawnSync('claude', ['mcp', 'add', '--scope', scope, 'klauro', '--', ...mcpCommand], { encoding: 'utf8' });
@@ -411,12 +434,28 @@ async function main() {
       `Codex: ${codex.status === 0 ? 'registered' : results.codex}`,
     ].join('\n'), json);
   }
+  if (command === 'uninstall') {
+    const deregister = !process.argv.includes('--no-deregister');
+    const removals = deregister ? removeMcpRegistrations() : [];
+    const payload = {
+      status: 'uninstalled' as const,
+      registrations_removed: deregister,
+      removals,
+      data_preserved: true,
+      package_removal: 'If installed with npm, run `npm uninstall -g @klauro/mcp-server`. If installed as a standalone binary, remove that binary after this command exits.',
+    };
+    return output(json ? payload : [
+      deregister ? 'Removed Klauro MCP registrations from Claude Code and Codex where present.' : 'MCP deregistration skipped.',
+      'Account sessions and analysis data under ~/.klauro were preserved.',
+      payload.package_removal,
+    ].join('\n'), json);
+  }
   if (command === 'auth-status' || command === 'whoami') {
-    // Round-trips to GET /api/me instead of only checking that a token FILE
-    // exists — see resolveAuthStatus's doc comment in connector-auth.ts. The
-    // old version here answered "signed_in: true" purely from
-    // ~/.klauro/auth.json's presence, which is exactly the lie that let a
-    // dead (server-rejected) session report as healthy.
+
+
+
+
+
     const status = await resolveAuthStatus({ serverUrl: value('--server-url') });
     return output(json
       ? { ...status, signed_in: status.state === 'signed-in', email: status.email ?? null }
@@ -446,20 +485,20 @@ async function main() {
   }
   if (command === 'login') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
-    // Credentials must travel over HTTPS only — never send a password in the clear.
+
     if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
       throw new Error(`Refusing to send credentials over a non-HTTPS server URL: ${serverUrl}`);
     }
     const email = value('--email') || await promptLine('Email: ');
-    // Password read, in priority order — see password-prompt.ts:
-    //  1. --password-stdin  (scriptable; read the piped/redirected stdin stream)
-    //  2. --password VALUE  (legacy; DEPRECATED — visible in shell history and
-    //     to other processes on this machine via `ps`; kept working for
-    //     existing scripted/CI callers, but flagged on every use)
-    //  3. interactive no-echo TTY prompt (characters are never echoed)
-    // This is the actual fix for the dead end this command used to hit with
-    // no arguments ("login requires --email and --password or
-    // --password-stdin") — it now prompts instead of demanding flags.
+
+
+
+
+
+
+
+
+
     const legacyPassword = value('--password');
     const passwordStdin = process.argv.includes('--password-stdin');
     if (legacyPassword && !passwordStdin) {
@@ -481,13 +520,13 @@ async function main() {
     const saved = saveStoredConnectorSession({ serverUrl, token, email });
     return output(json ? { status: 'signed-in', ...saved } : `Signed in as ${email} to ${serverUrl}. Session saved to ${saved.file}.`, json);
   }
-  // §AUTH-LIFECYCLE — `klauro reset-password`. Redeems a single-use token an
-  // operator minted (see `admin-mint-reset-token` below); PUBLIC endpoint by
-  // design (the whole point is recovering an account with no valid session,
-  // so authorization is possession of the token, not a Bearer header). On
-  // success every existing session for the account is dead server-side —
-  // this command deliberately does not auto-login, so `klauro login`
-  // exercises the new password at least once.
+
+
+
+
+
+
+
   if (command === 'reset-password') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
     if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
@@ -511,11 +550,11 @@ async function main() {
       : `Password reset. Every previous session for ${payload.email || 'this account'} has been signed out.\nRun \`klauro login --email ${payload.email || '<email>'}\` to sign in with the new password.`,
       json);
   }
-  // §AUTH-LIFECYCLE — `klauro change-password`. Requires an existing session
-  // (this repo/host's stored connector auth) and the CURRENT password. On
-  // success the server revokes every OTHER session and rotates this one's
-  // token; the new token is saved immediately so the caller isn't logged out
-  // by their own password change.
+
+
+
+
+
   if (command === 'change-password') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
     if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
@@ -546,17 +585,17 @@ async function main() {
       : `Password changed for ${payload.user?.email || 'your account'}. Every other session was signed out; this session's token was rotated and saved to ${stored.file}.`,
       json);
   }
-  // §AUTH-LIFECYCLE — `klauro admin-mint-reset-token`. OPERATOR-ONLY. Talks
-  // to the AccountStore DIRECTLY against the same data directory the hosted
-  // analyzer server uses (--data-dir, or KLAURO_REMOTE_ANALYZER_DATA) — not
-  // an HTTP call, and deliberately so: this product has no site-wide admin
-  // role (workspace roles are owner/admin/member, scoped per-workspace), so
-  // rather than invent one to gate an HTTP admin-mint endpoint, the trust
-  // boundary is the same one that already gates read-only inspection of
-  // accounts.json — being able to run this command with access to /data IS
-  // the operator authentication. Prints the raw single-use token to stdout
-  // exactly once; relay it to the account owner out-of-band, never re-print
-  // or log it. Redeemed via `klauro reset-password --token <token>`.
+
+
+
+
+
+
+
+
+
+
+
   if (command === 'admin-mint-reset-token') {
     const email = value('--email');
     if (!email) throw new Error('admin-mint-reset-token requires --email <account-email>');
@@ -581,14 +620,14 @@ async function main() {
       ].join('\n'),
       json);
   }
-  // Reached only when `command` matched none of the branches above. Bare
-  // invocation (`command` defaults to 'help' when argv[2] is absent) and an
-  // explicit `klauro help` both fall through here too, and both should stay
-  // exit 0 — printing usage on request is not a failure. Anything else
-  // reaching this point is a typo'd/unrecognized command: printing the same
-  // usage text but exiting 0 (the previous behavior) made it indistinguishable
-  // from success to a script, e.g. `klauro definitely-not-a-command` could
-  // not be told apart from a real command by exit code alone.
+
+
+
+
+
+
+
+
   if (command !== 'help') {
     process.exitCode = 1;
   }
@@ -596,6 +635,23 @@ async function main() {
 }
 
 interface HostedChoice { id: string; name: string; repo_url?: string; local_path?: string }
+
+function removeMcpRegistrations(): Array<{ client: string; status: number | null; detail: string }> {
+  const commands: Array<{ client: string; executable: string; args: string[] }> = [
+    { client: 'claude-user', executable: 'claude', args: ['mcp', 'remove', '--scope', 'user', 'klauro'] },
+    { client: 'claude-project', executable: 'claude', args: ['mcp', 'remove', '--scope', 'project', 'klauro'] },
+    { client: 'claude-local', executable: 'claude', args: ['mcp', 'remove', '--scope', 'local', 'klauro'] },
+    { client: 'codex', executable: 'codex', args: ['mcp', 'remove', 'klauro'] },
+  ];
+  return commands.map(command => {
+    const result = spawnSync(command.executable, command.args, { encoding: 'utf8' });
+    return {
+      client: command.client,
+      status: result.status,
+      detail: result.error?.message || result.stderr?.trim() || result.stdout?.trim() || (result.status === 0 ? 'removed' : 'not registered'),
+    };
+  });
+}
 
 async function ensureHostedPlacement(projectPath: string, serverUrl: string, token: string, requestedWorkspace?: string): Promise<{ workspace: HostedChoice; project: HostedChoice }> {
   const manifest = await buildUploadManifest(projectPath);
@@ -624,17 +680,17 @@ function output(value: unknown, json: boolean) {
 
 main().catch(async error => {
   process.stderr.write(`${error instanceof Error ? error.message : error}\n`);
-  // Staleness-on-failure (see stale-client-hint.ts's header comment): only
-  // ever runs here, after a real failure has already been printed, never on
-  // the happy path and never blocking longer than the module's own bounded
-  // timeout. A failure inside this check must never replace or hide the
-  // error above it.
+
+
+
+
+
   try {
     const hint = await getStaleClientUpdateHint({
       serverUrl: normalizeServerUrl(extractServerUrlFlag(process.argv) || loadStoredConnectorAuth().defaultServerUrl),
       currentVersion: getBuildIdentity().base_version,
     });
     if (hint) process.stderr.write(`${hint}\n`);
-  } catch { /* never let the hint itself fail the process */ }
+  } catch {   }
   process.exit(1);
 });

@@ -1,33 +1,33 @@
-/**
- * NEW-CONTEXT IMPACT BENCHMARK — honest, metered with-vs-without measurement of
- * the four *new* agent-context sections we shipped but never measured:
- *
- *   1. communication_seams   — who talks to whom, and is it sync / async / passive
- *   2. node_metrics / telemetry hotspots — busiest / most error-prone route + p95
- *   3. runtime_topology      — what a deployable depends on at runtime
- *   4. consistency_model     — is a read eventually-consistent (staleness risk)
- *
- * For each question we run TWO arms against the SAME metered model (gpt-5.5 via the
- * Azure OpenAI v1 chat endpoint), and sum provider tokens per arm:
- *
- *   with-context : the agent is handed ONLY the relevant Klauro new-context section
- *                  (compacted), and answers directly.
- *   baseline     : the agent gets grep/read tools ONLY — no Klauro new context. We
- *                  simulate the cheapest honest "grep the repo" surface: a repo file
- *                  listing + the raw route/entry inventory, and let the model reason.
- *
- * Ground truth is Klauro's OWN facts (deterministic checks). This is a DIRECTIONAL
- * METERED SAMPLE (small N — a few questions across a couple of real repos), reusable
- * like the existing token-grid. It is intentionally honest: when a section produces
- * NO facts on the sampled repo (e.g. runtime_topology is empty because the infra
- * linker found no DEPLOYS/EXPOSES joins), we report that the section could not be
- * measured here rather than fabricating a fixture.
- *
- * BLACKBOX: the only product surface imported is analyzeForBench (the sanctioned CAS
- * blackbox) plus the telemetry ingest + operational-priorities builders (the product's
- * own runtime-impact path, reused exactly as runtime-impact-benchmark.ts does). No
- * engine internals (orchestrateAnalysis / createOrchestrator) are ever imported.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -36,9 +36,9 @@ import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildOperationalPriorities } from './product';
 import { ingestTelemetryBatch, loadTelemetryObservations, type TelemetryEvent } from './telemetry-ingestion';
 
-// ---------------------------------------------------------------------------
-// Metered model client (Azure OpenAI v1 chat completions — gpt-5.5).
-// ---------------------------------------------------------------------------
+
+
+
 
 const AZURE_ENDPOINT =
   process.env.KLAURO_BENCH_CHAT_URL ||
@@ -81,41 +81,34 @@ async function askModel(system: string, user: string): Promise<ChatResult> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Grading (deterministic — Klauro's own facts are ground truth).
-// ---------------------------------------------------------------------------
+
+
+
 
 const SYSTEM_PROMPT =
   'You are a senior engineer answering a precise question about a codebase. ' +
   'Answer in at most 2 sentences. Be concrete: name the modality/route/dependency/' +
   'consistency posture asked for. Do not hedge or list options — commit to one answer.';
 
-function includesAll(text: string, needles: string[]): boolean {
-  const hay = text.toLowerCase();
-  return needles.every(n => hay.includes(n.toLowerCase()));
-}
 function includesAny(text: string, needles: string[]): boolean {
   const hay = text.toLowerCase();
   return needles.some(n => hay.includes(n.toLowerCase()));
 }
-/** Whole-word match — avoids "async"⊃"sync" and "eventually"⊃"event" collisions. */
-function hasWord(text: string, word: string): boolean {
-  return new RegExp(`(^|[^a-z])${word.toLowerCase()}([^a-z]|$)`).test(text.toLowerCase());
-}
-/** Prose forms of each modality (the model may write "synchronously" not "sync"). */
+
+
 const MODALITY_FORMS: Record<string, RegExp> = {
   sync: /\bsync(?:hronous(?:ly)?)?\b/,
   async: /\basync(?:hronous(?:ly)?)?\b/,
   passive: /\bpassive(?:ly)?\b|\bshared[- ]state\b/,
 };
-/** Does the answer CLAIM this modality (prose), not merely echo a "modality=N" count?
- *  Strips "sync=0 / async: 2 / passive=0" style tokens so echoed inventory counts of
- *  the OTHER modalities don't read as a claim. */
+
+
+
 function claimsModality(text: string, mod: string): boolean {
   const stripped = text.toLowerCase().replace(/\b(sync|async|passive)\s*[:=]\s*\d+/g, ' ');
   return MODALITY_FORMS[mod].test(stripped);
 }
-/** True only if the answer commits to an answer (not "cannot determine / need telemetry"). */
+
 function refuses(text: string): boolean {
   return /cannot (?:determine|be determined)|can'?t (?:determine|be determined)|not determinable|(?:is|are) unknown|not (?:enough|present|available|determinable)|requires? (?:production|apm|telemetry|log)|no (?:telemetry|apm|data)|insufficient|unable to|not derivable/i.test(text);
 }
@@ -124,11 +117,11 @@ interface Question {
   id: string;
   section: 'communication_seams' | 'node_metrics' | 'runtime_topology' | 'consistency_model';
   prompt: string;
-  /** The compacted new-context payload handed to the with-context arm. */
+
   withContext: string;
-  /** Grader: given the model's answer, is it correct vs Klauro facts? */
+
   grade: (answer: string) => boolean;
-  /** Human-readable statement of the ground truth for the report. */
+
   groundTruth: string;
 }
 
@@ -146,11 +139,11 @@ interface QuestionResult {
   note?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Baseline surface: the cheapest honest "grep/read only" context. We give the
-// model a repo file listing + the raw entry/route inventory (what a grep-driven
-// agent would cheaply pull) but NONE of the derived new-context facts.
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 function baselineSurface(cas: CASOutput): string {
   const routes = (cas.route_table || []).slice(0, 40)
@@ -170,21 +163,21 @@ function baselineSurface(cas: CASOutput): string {
   ].join('\n\n');
 }
 
-// ---------------------------------------------------------------------------
-// Question builders — one per section, grounded in the repo's REAL facts.
-// Each returns null when the section produced no facts on this repo (honest skip).
-// ---------------------------------------------------------------------------
+
+
+
+
 
 function buildSeamQuestion(cas: any): Question | null {
   const inv = cas.communication_seams?.inventory;
   const comp = inv?.component_seams as any[] | undefined;
   if (!comp?.length) return null;
-  // Ground truth: the busiest component->target seam and its dominant modality.
+
   const top = [...comp].sort((a, b) => b.total - a.total)[0];
   const dominant: 'sync' | 'async' | 'passive' =
     top.sync >= top.async && top.sync >= top.passive ? 'sync' :
     top.async >= top.passive ? 'async' : 'passive';
-  // Also surface an async seam if one exists, to make the question non-trivial.
+
   const asyncSeam = cas.communication_seams.seams.find((s: any) => s.modality === 'async');
   const target = String(top.target);
   const source = String(top.source);
@@ -202,8 +195,8 @@ function buildSeamQuestion(cas: any): Question | null {
       asyncSeam ? `Note an async seam exists: ${asyncSeam.summary}` : '',
     ].filter(Boolean).join('\n\n'),
     groundTruth: `${source} -> ${target} is dominantly ${dominant} (sync=${top.sync} async=${top.async} passive=${top.passive}).`,
-    // Correct = names the target AND commits to the RIGHT modality (word-boundary so
-    // "asynchronous" does not satisfy "sync"), AND does not assert a wrong modality.
+
+
     grade: ans => {
       const namesTarget = includesAny(ans, [target, target.split('/').pop() || target]);
       const saysRight = claimsModality(ans, dominant);
@@ -218,7 +211,7 @@ function buildConsistencyQuestion(cas: any): Question | null {
   const cons = cas.consistency_model;
   const passive = cons?.passive_seams as any[] | undefined;
   const stores = cons?.store_consistency as any[] | undefined;
-  // Prefer an eventual/staleness-risk seam (the interesting case).
+
   const stale = (passive || []).find((s: any) => s.consistency?.staleness_risk)
     || (stores || []).find((s: any) => s.consistency?.staleness_risk);
   if (!stale) return null;
@@ -234,9 +227,9 @@ function buildConsistencyQuestion(cas: any): Question | null {
       `Relevant posture: resource=${resource} model=${model} staleness_risk=${stale.consistency?.staleness_risk} cap_lean=${stale.consistency?.cap_lean} evidence="${stale.consistency?.evidence}"`,
     ].join('\n\n'),
     groundTruth: `${resource} is ${model} with staleness_risk=true (evidence: ${stale.consistency?.evidence}).`,
-    // Correct = says eventual / staleness risk AND does not (positively) assert strong
-    // consistency. "NOT a strongly consistent read" is correct, so a "strongly consistent"
-    // phrase only disqualifies when it is NOT preceded by a negation within ~10 chars.
+
+
+
     grade: ans => {
       const saysEventual = includesAny(ans, ['eventual', 'stale', 'staleness']);
       const strongClaim = /(not|isn't|never|n't)[^.]{0,12}(strongly consistent|strong consistency)/i.test(ans)
@@ -269,9 +262,9 @@ function buildTopologyQuestion(cas: any): Question | null {
 }
 
 async function buildTelemetryQuestion(cas: any, projectPath: string, storageDir: string): Promise<{ q: Question; cleanup: () => void } | null> {
-  // Seed a small, honest telemetry batch onto the repo's REAL routes (same pattern
-  // as runtime-impact-benchmark.ts), then let Klauro's operational-priorities pick
-  // the hotspot. Ground truth = the priority Klauro itself computes.
+
+
+
   const routes = (cas.route_table || []) as any[];
   const entries = (cas.entry_points || []) as any[];
   const httpEntries = entries.filter(e => e.trigger?.path || e.trigger?.method);
@@ -288,7 +281,7 @@ async function buildTelemetryQuestion(cas: any, projectPath: string, storageDir:
   const coolFile = cool.file || cool.handler_file || cool.source?.file || hotFile;
   const now = Date.now();
   const events: TelemetryEvent[] = [];
-  // Hot route: many 500s, high p95.
+
   for (let i = 0; i < 10; i++) {
     events.push({
       kind: 'error', timestamp: new Date(now - i * 12_000).toISOString(),
@@ -297,7 +290,7 @@ async function buildTelemetryQuestion(cas: any, projectPath: string, storageDir:
       error: { type: 'HotRouteError', message: 'hot route failing', stack_top_frames: [{ file: hotFile, line: 1 }] as any },
     });
   }
-  // Cool route: healthy, low volume.
+
   for (let i = 0; i < 3; i++) {
     events.push({
       kind: 'request', timestamp: new Date(now - i * 20_000).toISOString(),
@@ -328,10 +321,10 @@ async function buildTelemetryQuestion(cas: any, projectPath: string, storageDir:
       `Runner-up priorities: ${priorities.priorities.slice(1, 3).map(p => `${p.title} (errors=${p.runtime.errors})`).join('; ') || '(none)'}`,
     ].join('\n\n'),
     groundTruth: `Hotspot = ${topLabel} (${hotMethod} ${hotPath}), errors=${top.runtime.errors}, p95=${topLatency ?? 'n/a'}ms.`,
-    // Correct = commits to the hot route as the hotspot. A baseline that honestly
-    // refuses ("requires production telemetry not present") is NOT correct — it did
-    // not answer the question. This is the crux: the fact is only knowable WITH the
-    // telemetry section.
+
+
+
+
     grade: ans => !refuses(ans) &&
       includesAny(ans, [hotPath, hotPath.split('/').filter(Boolean).pop() || hotPath, hotMethod]) &&
       includesAny(ans, ['error', 'busiest', 'hotspot', 'most', '500', 'p95']),
@@ -339,14 +332,14 @@ async function buildTelemetryQuestion(cas: any, projectPath: string, storageDir:
   return { q, cleanup };
 }
 
-// ---------------------------------------------------------------------------
-// Runner
-// ---------------------------------------------------------------------------
+
+
+
 
 async function runArm(section: string, prompt: string, contextBlock: string): Promise<ArmResult> {
   const user = `${contextBlock}\n\nQuestion: ${prompt}`;
-  // One slow/failed metered call must not throw away the whole run. Retry once,
-  // then record the failure as an (uncounted, incorrect) result and continue.
+
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await askModel(SYSTEM_PROMPT, user);
@@ -432,7 +425,7 @@ export async function runNewContextImpactBenchmark(repoPaths: string[]): Promise
       report.section_rollup[q.section] = roll;
     }
 
-    // Honest skip note: which sections produced NO facts on this repo.
+
     const present = new Set(questions.map(q => q.section));
     const missing = (['communication_seams', 'node_metrics', 'runtime_topology', 'consistency_model'] as const)
       .filter(s => !present.has(s));
@@ -497,8 +490,8 @@ function renderTable(report: NewContextImpactReport): string {
 }
 
 if (require.main === module) {
-  // Parse positionals, skipping flags AND flag values (e.g. the path after --json),
-  // so a --json target is never mistaken for a repo path.
+
+
   const argv = process.argv.slice(2);
   const flagsWithValue = new Set(['--json']);
   const repoArgs: string[] = [];

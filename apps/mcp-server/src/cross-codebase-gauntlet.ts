@@ -176,7 +176,7 @@ async function main() {
     {
       name: 'zerac-critical-relationships-inferred',
       pass: hasZeracCriticalRelationships(namedSystem(systems, 'Zerac')?.graph),
-      observed: relationshipEvidence(namedSystem(systems, 'Zerac')?.graph, ['client-service->user-api', 'client-service->admin-api', 'drop-server->admin-api', 'mcp-agent-surface', 'client->coordinator', 'agent->drop-server', 'redis-unused']),
+      observed: relationshipEvidence(namedSystem(systems, 'Zerac')?.graph, ['client-service->user-api', 'client-service->admin-api', 'drop-server->admin-api', 'client->coordinator', 'agent->drop-server', 'redis-unused']),
     },
     {
       name: 'zerac-no-known-false-workspace-links',
@@ -1188,7 +1188,7 @@ function hasWorkspaceEnvironments(graph: CrossCodebaseSystemGraph | undefined, n
 
 function hasZeracCriticalRelationships(graph: CrossCodebaseSystemGraph | undefined): boolean {
   if (!graph) return false;
-  const evidence = relationshipEvidence(graph, ['client-service->user-api', 'client-service->admin-api', 'drop-server->admin-api', 'mcp-agent-surface', 'client->coordinator', 'agent->drop-server', 'redis-unused']);
+  const evidence = relationshipEvidence(graph, ['client-service->user-api', 'client-service->admin-api', 'drop-server->admin-api', 'client->coordinator', 'agent->drop-server', 'redis-unused']);
   return Object.values(evidence).every(Boolean);
 }
 
@@ -1358,11 +1358,6 @@ function relationshipEvidence(graph: CrossCodebaseSystemGraph | undefined, keys:
   for (const key of keys) {
     if (key === 'redis-unused') {
       const insight = insights.find(item => item.type === 'declared-unused-infrastructure' && /redis/i.test(item.title));
-      result[key] = insight ? insight.title : false;
-      continue;
-    }
-    if (key === 'mcp-agent-surface') {
-      const insight = insights.find(item => item.type === 'mcp-agent-surface' && /mcp/i.test(item.title));
       result[key] = insight ? insight.title : false;
       continue;
     }

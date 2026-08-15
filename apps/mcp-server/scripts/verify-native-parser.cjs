@@ -1,30 +1,30 @@
 #!/usr/bin/env node
-/**
- * postinstall guard: confirms the native `tree-sitter` N-API addon (and the
- * grammars this package bundles workers around — C#/Go/PHP) actually loaded
- * in THIS Node runtime, and fails the install loudly if not.
- *
- * Why this runs at install time, not just in jest's globalSetup (see
- * packages/analyzer-core/src/__tests__/globalSetup.ts, the equivalent guard
- * for that package's own test run): a plain `npm install`/`npm ci` (no
- * `--foreground-scripts`, no approved scripts allowlist) silently skips
- * third-party install scripts — including tree-sitter's own `node-gyp
- * rebuild` — and still exits 0. The install reports success;
- * `require('tree-sitter')` then throws "No native build was found" the
- * first time any file is parsed, deep inside the analysis pipeline, and a
- * parsing suite run against that install measures nothing while reporting
- * green. That class already invalidated a full day of test results once.
- *
- * This script is declared in THIS package's own `postinstall`, so it is not
- * subject to the third-party install-scripts allowlist that skips
- * dependency scripts — npm always runs a project's own lifecycle scripts.
- * That asymmetry is exactly what makes an install-time check load-bearing
- * here instead of just another script that gets silently skipped alongside
- * tree-sitter's.
- *
- * Set KLAURO_SKIP_NATIVE_ADDON_PRECHECK=1 to bypass (e.g. an install that
- * deliberately never parses).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 if (process.env.KLAURO_SKIP_NATIVE_ADDON_PRECHECK === '1') {
   process.exit(0);
 }

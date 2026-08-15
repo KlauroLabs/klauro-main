@@ -161,8 +161,8 @@ export function buildCodebaseAgentRules(
   projectPath: string,
   options: { target?: string; files?: string[]; limit?: number } = {},
 ) {
-  // full detail: architectureRules() below reads pattern.guidance, which
-  // compact mode omits — this internal caller needs the complete shape.
+
+
   const summary = buildSummary(cas, { detail: 'full' });
   const overview = getSystemOverview(cas);
   const idiomContext = buildFocusedIdiomContext(cas, {
@@ -670,7 +670,7 @@ function buildSignalQuality(cas: CASOutput) {
   const anyCas = cas as any;
   const tests = Array.isArray(cas.test_suites) ? cas.test_suites.length : 0;
   const patterns = Array.isArray(cas.patterns) ? cas.patterns.length : 0;
-  const capabilities = Array.isArray(cas.system_capabilities) ? cas.system_capabilities.length : 0;
+  const capabilities = Array.isArray(cas.capabilities) ? cas.capabilities.length : 0;
   const idioms = Array.isArray(cas.codebase_idioms) ? cas.codebase_idioms.length : 0;
   const invariants = Array.isArray(cas.behavioral_invariants) ? cas.behavioral_invariants.length : 0;
   const errors = Array.isArray(cas.analysis_errors) ? cas.analysis_errors.length : 0;

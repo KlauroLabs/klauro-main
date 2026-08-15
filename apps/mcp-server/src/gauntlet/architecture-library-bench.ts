@@ -1,14 +1,14 @@
-/**
- * Architecture-library bench — libraries that materially define code shape.
- *
- * This measures the rules that are too important to hide inside generic
- * dependency detection: DI containers, mediator/CQRS, actor systems, workflow
- * engines, state machines, service SDKs, AI SDKs, queues, brokers, and similar
- * architecture-shaping dependencies. The target is not "package listed in
- * package.json"; it is "Klauro names the boundary, finds usage sites, emits
- * exit points when applicable, and carries agent guidance for preserving the
- * local architecture."
- */
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -67,7 +67,7 @@ async function sourceBytes(dir: string): Promise<number> {
       const stat = await fs.stat(filePath);
       if (stat.isFile()) total += stat.size;
     } catch {
-      /* noop */
+
     }
   }
   return total;

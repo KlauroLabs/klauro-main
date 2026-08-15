@@ -1,28 +1,28 @@
-/**
- * INTERFACE-SIGNATURE bench — validates get_interface_signature (the I/L/S/O
- * join, SPEC-INTELLIGENCE-CAPITALIZATION.md concept #2).
- *
- * What is being proven
- * ---------------------
- * Today an agent asking "what is this function's full contract" must call
- * get_entry_points, get_exit_points, get_data_lineage, and get_callers/
- * get_callees separately and intersect the results by node_id/source_node by
- * hand — 4+ tool calls, manual joins, real risk of missing a side-effect that
- * isn't in the tool the agent happened to check. get_interface_signature is a
- * pure JOIN over the SAME underlying facts (no new analyzer pass): one call
- * should contain everything the 4-call manual join would have found.
- *
- * This bench is BLACKBOX (goes through analyzeForBench, the product's real
- * analysis path — never imports orchestrator internals directly) and asserts
- * the single-call signature's I/O/S/L fields match the real underlying facts
- * computed independently via the same query.ts functions the manual join
- * would use.
- *
- * Fixture: fixtures/analysis-truth/express-mongoose — a small, self-contained
- * Express + Mongoose API with a real param-typed handler, entry points
- * (routes), exit points (Mongoose calls), and data_lineage (User entity
- * writers/readers) — every I/L/S/O quadrant has real data to check against.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as path from 'path';
 import { analyzeForBench } from './product-analysis';
@@ -32,7 +32,6 @@ import {
   getExitPoints,
   getDataLineage,
   getCallers,
-  getCallees,
 } from '../query';
 
 const FIXTURE_DIR = path.join(__dirname, '..', '..', 'fixtures', 'analysis-truth', 'express-mongoose');
@@ -61,20 +60,20 @@ export async function runInterfaceSignatureBench(): Promise<InterfaceSignatureBe
 
   const targetNodeId = 'function_src/server.ts_createUser_2';
 
-  // -- The single call under test --
+
   const signature: any = getInterfaceSignature(cas, targetNodeId, {});
 
-  // -- The OLD way: 4 separate calls + manual node_id/source_node join,
-  // exactly as an agent without get_interface_signature would have to do. --
+
+
   const manualEntryPoints = getEntryPoints(cas, { limit: 500 }).entry_points
     .filter((ep: any) => ep.source_node === targetNodeId || ep.handler?.node_id === targetNodeId);
   const manualExitPoints = getExitPoints(cas, { limit: 500 }).exit_points
     .filter((ep: any) => ep.source_node === targetNodeId);
   const manualLineage = (getDataLineage(cas, { limit: 500 }) as any).entities
     .filter((e: any) => {
-      // getDataLineage's compact shape only carries writer/reader FILE+via, not
-      // node_id at top-level list scope — re-fetch full entity detail to check
-      // node_id membership the way a careful manual join would have to.
+
+
+
       const full = (cas.data_lineage || []).find((d: any) => d.entity_id === e.entity_id);
       return full && (
         full.writers.some((w: any) => w.node_id === targetNodeId) ||
@@ -82,7 +81,6 @@ export async function runInterfaceSignatureBench(): Promise<InterfaceSignatureBe
       );
     });
   const manualCallers = getCallers(cas, targetNodeId, 1, 50);
-  const manualCallees = getCallees(cas, targetNodeId, 1, 50);
 
   const realParamNode = cas.nodes.find((n: any) => n.id === targetNodeId);
   const realParamNames: string[] = (realParamNode?.signature?.parameters || []).map((p: any) => p.name);
@@ -97,15 +95,25 @@ export async function runInterfaceSignatureBench(): Promise<InterfaceSignatureBe
   const sideEffectExitIds = (signature.side_effects || [])
     .filter((s: any) => s.kind === 'exit_point')
     .map((s: any) => s.id);
+  const sideEffectRecipients = (signature.side_effects || [])
+    .filter((s: any) => s.kind === 'external_recipient')
+    .map((s: any) => s.service);
+  const sideEffectBoundaries = (signature.side_effects || [])
+    .filter((s: any) => s.kind === 'boundary')
+    .map((s: any) => s.boundary);
 
   const inputMatchesManualJoin =
     realParamNames.every(name => inputParamNames.includes(name)) &&
     manualEntryPoints.every((ep: any) => inputEntryPointIds.includes(ep.id));
 
   const sideEffectsMatchesManualJoin =
-    manualExitPoints.length > 0 &&
     manualExitPoints.every((ep: any) => sideEffectExitIds.includes(ep.id)) &&
-    manualLineage.length > 0; // confirms lineage-based side-effects exist in this fixture, exercising that join path
+    manualLineage.length > 0 &&
+    manualLineage.every((entry: any) => {
+      const full = (cas.data_lineage || []).find((candidate: any) => candidate.entity_id === entry.entity_id);
+      return full.external_recipients.every((recipient: any) => sideEffectRecipients.includes(recipient.service)) &&
+        full.boundaries_crossed.every((boundary: any) => sideEffectBoundaries.includes(boundary.boundary));
+    });
 
   const logicCallersTotalMatches = signature.logic?.callers_total === manualCallers.total;
 
@@ -126,7 +134,7 @@ export async function runInterfaceSignatureBench(): Promise<InterfaceSignatureBe
       typeof signature.logic?.callers_total === 'number',
   };
 
-  // -- Project-level rollup: proves the level-aware aggregation path. --
+
   const projectSignature: any = getInterfaceSignature(cas, 'project', { level: 'project' });
   const projectLevel = {
     target: 'project',

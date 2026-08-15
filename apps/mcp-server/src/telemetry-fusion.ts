@@ -1,36 +1,36 @@
-/**
- * WS-A — Telemetry Fusion (L3): fuse OTEL-ish spans onto the live CAS.
- *
- * Reuses the ALREADY-VETTED span->node correlation logic (`correlateRuntimeEvent`
- * in ./product, proven in gauntlet/telemetry-overlay-bench.ts) rather than
- * reinventing correlation. This module's job is narrow: turn a batch of
- * lightweight runtime spans into persisted `RuntimeFact`s keyed to CAS node ids,
- * and provide a thin disk-persistence sibling to storage.ts (a dedicated
- * per-workspace file, not touching the shared storage index).
- *
- * `fuseTelemetry` is pure over a given CAS (no I/O) so it is directly unit- and
- * bench-testable. `ingestAndPersist` is the thin I/O wrapper used by the
- * `POST /v1/telemetry/ingest` route (`remote-analyzer-service.ts`) — wired,
- * but with no producer in this repo: the shipped `@klauro/telemetry` SDK
- * (`packages/klauro-sdk-js`) posts to `/api/telemetry/runtime-events/:projectId`
- * instead, which routes through `telemetry-ingestion.ts`'s
- * `ingestTelemetryBatch`, not through this module.
- *
- * ADJUDICATED (docs/STOCK-TAKE-TIERS.md, Tier 4 addendum): this module's
- * `RuntimeFact` is node-id-keyed only and is never joined to flow/step/
- * capability (unlike `telemetry-ingestion.ts`'s `RuntimeObservation`, which
- * flows through `product.buildNodeRuntimeMetrics` ->
- * `attachTelemetryToFlows`). It is not structurally blocked from that join —
- * `RuntimeFact.node_id`/`matched_id` already match the same key family
- * `RuntimeMetricLike` uses — it simply has never been wired through. Target
- * state is to route `fuseTelemetry`'s output through that same join and
- * retire this module's separate `runtime-facts.json` store and the additive
- * `fused_runtime_facts` field, once `fix/tier4-telemetry-join` lands and
- * production traffic to `/v1/telemetry/ingest` is confirmed absent. Until
- * then this module and `telemetry-ingestion.ts` are two live, disagreeing-
- * capable ingest paths onto the same CAS — see the addendum for why that is
- * a known-risky shape for this product, not a new one.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -38,7 +38,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 import { correlateRuntimeEvent, type RuntimeCorrelationResult, type RuntimeEventInput } from './product';
 import { getProjectStorageDir } from './storage';
 
-/** A single OTEL-ish runtime span as delivered by a collector/SDK. */
+
 export interface TelemetrySpan {
   service: string;
   endpoint: string;
@@ -46,22 +46,22 @@ export interface TelemetrySpan {
   error?: boolean;
   count?: number;
   stack?: string;
-  /** Optional explicit method (GET/POST/...) when `endpoint` is an HTTP route. */
+
   method?: string;
-  /** Optional window label for the observation (e.g. "1h", "24h"). Defaults to "1h". */
+
   window?: string;
 }
 
 export type RuntimeFactKind = 'hot' | 'slow' | 'error';
 
-/** A persisted runtime fact bound to a CAS node, ready to inject onto the stored CAS. */
+
 export interface RuntimeFact {
   node_id: string;
   kind: RuntimeFactKind;
   metric: number;
   window: string;
   count: number;
-  /** Provenance: the span's service+endpoint and the CAS evidence id it matched. */
+
   service: string;
   endpoint: string;
   matched_id: string;
@@ -82,21 +82,20 @@ export interface FuseTelemetryResult {
 
 const DEFAULT_WINDOW = '1h';
 
-/** Slow if the span's own duration crosses this threshold, mirroring telemetry-overlay-bench's deriveFact. */
-const SLOW_DURATION_MS = 1000;
-/** Hot if observed call volume in the window crosses this threshold. */
-const HOT_COUNT = 100;
 
-/**
- * Map a fusion-batch span to the RuntimeEventInput shape(s) correlateRuntimeEvent
- * expects. A span's endpoint may be an inbound route (matched via entry points,
- * any event `type`) or an outbound call (matched via exit points, which
- * `correlateRuntimeEvent`'s matchRuntimeExit only attempts for `type: 'exit'`).
- * We don't know which side of the fence a span's endpoint sits on ahead of
- * time, so we build both candidate events and let correlation itself decide —
- * mirroring how telemetry-overlay-bench's spanToEvent branches on span.kind,
- * except here spans don't carry an explicit kind.
- */
+const SLOW_DURATION_MS = 1000;
+
+
+
+
+
+
+
+
+
+
+
+
 function spanToRuntimeEvents(span: TelemetrySpan): RuntimeEventInput[] {
   const base = {
     service_name: span.service,
@@ -131,13 +130,13 @@ function spanToRuntimeEvents(span: TelemetrySpan): RuntimeEventInput[] {
   return [exitEvent, requestEvent];
 }
 
-/**
- * Correlate a span against the CAS by trying its candidate RuntimeEventInput
- * shapes (outbound-exit first, then inbound-request/error) and keeping the
- * best (first matched, non-unmatched) result. Reusing `correlateRuntimeEvent`
- * as-is per candidate avoids duplicating or reimplementing its evidence
- * ranking/dedup logic.
- */
+
+
+
+
+
+
+
 function bestCorrelation(cas: CASOutput, span: TelemetrySpan): RuntimeCorrelationResult | undefined {
   let best: RuntimeCorrelationResult | undefined;
   for (const event of spanToRuntimeEvents(span)) {
@@ -149,7 +148,7 @@ function bestCorrelation(cas: CASOutput, span: TelemetrySpan): RuntimeCorrelatio
   return best;
 }
 
-/** Derive the operational fact kind from a span, same thresholds as telemetry-overlay-bench.deriveFact. */
+
 function deriveFactKind(span: TelemetrySpan): RuntimeFactKind {
   if (span.error) return 'error';
   if (Number(span.duration_ms || 0) >= SLOW_DURATION_MS) return 'slow';
@@ -162,11 +161,11 @@ function factMetric(kind: RuntimeFactKind, span: TelemetrySpan): number {
   return Number(span.count || 0);
 }
 
-/**
- * Resolve a correlateRuntimeEvent EvidenceRef to the underlying CAS node id.
- * Entry/exit points reference their owning node via `source_node`; a direct
- * node match already IS a node id.
- */
+
+
+
+
+
 function resolveNodeId(cas: CASOutput, matchId: string): string | undefined {
   const node = cas.nodes.find(candidate => candidate.id === matchId);
   if (node) return node.id;
@@ -180,15 +179,15 @@ function resolveNodeId(cas: CASOutput, matchId: string): string | undefined {
   return undefined;
 }
 
-/**
- * Fuse a batch of runtime spans onto a CAS: correlate each span to a static
- * node via the existing vetted `correlateRuntimeEvent`, then derive a
- * RuntimeFact from the observed hot/slow/error signal. Spans that don't
- * correlate to any CAS node are rejected as unmatched, never force-fit.
- *
- * Pure — no I/O, no persistence, no engine/AI dependency. Safe for both the
- * production ingest path and the blackbox bench.
- */
+
+
+
+
+
+
+
+
+
 export function fuseTelemetry(cas: CASOutput, spans: TelemetrySpan[], options: { window?: string } = {}): FuseTelemetryResult {
   const window = options.window || DEFAULT_WINDOW;
   const facts: RuntimeFact[] = [];
@@ -234,9 +233,9 @@ export function fuseTelemetry(cas: CASOutput, spans: TelemetrySpan[], options: {
   return { facts, unmatched };
 }
 
-// =============================================================================
-// PERSISTENCE — a sibling writer to storage.ts, not an edit to it.
-// =============================================================================
+
+
+
 
 const RUNTIME_FACTS_FILE = 'runtime-facts.json';
 
@@ -247,23 +246,23 @@ export interface PersistedRuntimeFacts {
 }
 
 function runtimeFactsPath(dataDir: string, workspace: string): string {
-  // Mirror getProjectStorageDir's per-project slugging so facts live alongside
-  // the analysis for the same project/workspace key, without touching storage.ts.
+
+
   const projectDir = getProjectStorageDir(workspace);
-  // getProjectStorageDir is rooted at the global storage path; when a dedicated
-  // dataDir is supplied (e.g. by the analyzer server), prefer it as the root so
-  // fusion facts co-locate with that server's own storage instance.
+
+
+
   return dataDir
     ? path.join(dataDir, path.basename(projectDir), RUNTIME_FACTS_FILE)
     : path.join(projectDir, RUNTIME_FACTS_FILE);
 }
 
-/**
- * Fuse telemetry for a workspace/repo and persist the resulting facts to disk,
- * merging with any previously persisted facts (last-write-wins per node_id+kind
- * +service+endpoint). Mirrors the storage.ts write-json-atomic-ish pattern
- * (ensureDir + writeJson) without editing storage.ts.
- */
+
+
+
+
+
+
 export async function ingestAndPersist(
   dataDir: string,
   workspace: string,
@@ -296,7 +295,7 @@ export async function ingestAndPersist(
   return { ...result, persisted_path: filePath, total_facts: merged.length };
 }
 
-/** Load previously persisted runtime facts for a workspace, if any. */
+
 export async function loadPersistedRuntimeFacts(dataDir: string, workspace: string): Promise<PersistedRuntimeFacts | null> {
   const filePath = runtimeFactsPath(dataDir, workspace);
   if (!(await fs.pathExists(filePath))) return null;
@@ -314,6 +313,6 @@ function factKey(fact: RuntimeFact): string {
 function mergeFacts(existing: RuntimeFact[], incoming: RuntimeFact[]): RuntimeFact[] {
   const byKey = new Map<string, RuntimeFact>();
   for (const fact of existing) byKey.set(factKey(fact), fact);
-  for (const fact of incoming) byKey.set(factKey(fact), fact); // incoming wins
+  for (const fact of incoming) byKey.set(factKey(fact), fact);
   return [...byKey.values()];
 }

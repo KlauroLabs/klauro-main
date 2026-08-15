@@ -549,9 +549,9 @@ export function removeOperatingLoop(existingContent) {
   );
   content = content.replace(markedBlock, '');
 
-  // Legacy installs wrote the bare snippet without markers; remove the exact
-  // block. Tolerate trailing-list drift by also matching from the heading to
-  // the end of the numbered list when the exact text is absent.
+
+
+
   const legacy = legacyOperatingLoopSnippet();
   if (content.includes(legacy)) {
     content = content.replace(legacy, '');

@@ -129,16 +129,20 @@ test('conceptual + semantic-coverage responses are cached byte-identical and inv
     const reAnalyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: analyzeResult.analysis_id, wait: true });
     assert.equal(reAnalyzeResult.status, 'success');
 
+    const statsBeforeCoverageRefresh = getCasReadResponseCacheStats();
     const afterReanalyze = await request(port, 'GET', `/api/projects/${project.id}/semantic-coverage`, undefined, token);
     assert.equal(afterReanalyze.statusCode, 200);
     const afterBody = JSON.parse(afterReanalyze.body);
     assert.equal(afterBody.status, 'ready');
-    assert.notEqual(afterReanalyze.body, coverageFirst.body, 'new analysis must never be served the pre-reanalyze cached body');
+    const statsAfterCoverageRefresh = getCasReadResponseCacheStats();
+    assert.equal(statsAfterCoverageRefresh.misses - statsBeforeCoverageRefresh.misses, 1, 'new analysis fingerprint must miss the pre-reanalyze semantic-coverage cache entry');
 
+    const statsBeforeConceptualRefresh = getCasReadResponseCacheStats();
     const conceptualAfter = await request(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, token);
     assert.equal(conceptualAfter.statusCode, 200);
     assert.equal(JSON.parse(conceptualAfter.body).status, 'ready');
-    assert.notEqual(conceptualAfter.body, first.body, 'conceptual must recompute for the new CAS');
+    const statsAfterConceptualRefresh = getCasReadResponseCacheStats();
+    assert.equal(statsAfterConceptualRefresh.misses - statsBeforeConceptualRefresh.misses, 1, 'new analysis fingerprint must miss the pre-reanalyze conceptual cache entry');
     // And the fresh CAS's own repeat GET is again a byte-identical cache hit.
     const conceptualAfterRepeat = await request(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, token);
     assert.equal(conceptualAfterRepeat.body, conceptualAfter.body);

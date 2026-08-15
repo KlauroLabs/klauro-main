@@ -1,20 +1,20 @@
-/**
- * Workspace-level-CAS agent benchmark.
- *
- * The single-repo agent benchmarks (agent-quality-benchmark) prove Klauro's
- * value on one codebase. Klauro's advantage is LARGEST on multi-repo workspace
- * tasks: without it, an agent answering a cross-repo question ("which service
- * owns this capability?", "how does the UI reach the worker?", "where does this
- * entity flow across services?") does not know which of the N repos are involved,
- * so it must search across ALL of them. With Klauro's workspace agent context it
- * gets the exact involved surfaces, the source-backed cross-repo connections, and
- * the entity paths directly.
- *
- * This harness builds the workspace-level CAS for each workspace, generates cross-repo tasks from
- * its facts, and measures the with-Klauro vs without-Klauro arms on the same
- * quality / token / file / time axes as the single-repo benchmark, plus the
- * workspace-specific "how many repos did each arm have to touch?" axis.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
@@ -31,10 +31,10 @@ import {
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { isDirectCliInvocation } from './cli-invocation';
 
-const TOKENS_PER_FILE_READ = 1500; // avg tokens to read a candidate source file
-const TOKENS_PER_GREP_HIT = 45;    // avg tokens to list one grep candidate
-const MS_PER_FILE_READ = 1400;     // wall-clock to read+reason over one file
-const MS_PER_GREP_PASS = 900;      // wall-clock for one repo-wide search pass
+const TOKENS_PER_FILE_READ = 1500;
+const TOKENS_PER_GREP_HIT = 45;
+const MS_PER_FILE_READ = 1400;
+const MS_PER_GREP_PASS = 900;
 
 type WorkspaceTaskType = 'locate-capability' | 'trace-entity' | 'trace-connection' | 'cross-repo-change';
 
@@ -44,7 +44,7 @@ interface WorkspaceTask {
   type: WorkspaceTaskType;
   target: string;
   instructions: string;
-  /** Repos a correct answer must touch (the ground-truth involvement). */
+
   involved_projects: string[];
 }
 
@@ -92,7 +92,7 @@ function projectName(graph: CrossCodebaseSystemGraph, id: string): string {
   return graph.codebases.find(codebase => codebase.id === id)?.name || id;
 }
 
-/** Generate cross-repo tasks from workspace-level-CAS facts (capabilities/entities/links that span repos). */
+
 function generateWorkspaceTasks(graph: CrossCodebaseSystemGraph): WorkspaceTask[] {
   const tasks: WorkspaceTask[] = [];
 
@@ -120,9 +120,9 @@ function generateWorkspaceTasks(graph: CrossCodebaseSystemGraph): WorkspaceTask[
     });
   }
 
-  // Cross-repo connections. Label by REPO (codebase) names — application names
-  // collide across repos (many "mcp-server"/"client" deployables) — and dedupe by
-  // the unordered repo pair so the same edge isn't scored once per surface.
+
+
+
   const seenRepoPairs = new Set<string>();
   const crossLinks = (graph.application_links || []).filter(link => link.source_codebase_id !== link.target_codebase_id);
   for (const link of crossLinks) {
@@ -149,7 +149,7 @@ function generateWorkspaceTasks(graph: CrossCodebaseSystemGraph): WorkspaceTask[
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 
 function runWorkspaceTrial(graph: CrossCodebaseSystemGraph, task: WorkspaceTask, repos: RepoInput[]): WorkspaceTrial {
-  // --- WITH KLAURO: the workspace agent context targets the task directly. ---
+
   const context = buildWorkspaceAgentContext(graph, { task_type: 'cross-repo', target: task.target, instructions: task.instructions });
   const namedProjects = new Set<string>([
     ...context.selected_surfaces.map(surface => surface.project),
@@ -161,20 +161,20 @@ function runWorkspaceTrial(graph: CrossCodebaseSystemGraph, task: WorkspaceTask,
   const withTokens = context.context_budget.estimated_context_tokens;
   const withRepos = namedProjects.size;
 
-  // --- WITHOUT KLAURO: the agent does not know which repos are involved, so it
-  // must grep across ALL workspace repos, then read candidate matches. ---
+
+
   const targetTerms = task.target.toLowerCase().split(/\s+/).filter(term => term.length >= 4);
   const candidatePerRepo = repos.map(repo => {
-    // Fraction of a repo's files that would match a grep for the target terms.
+
     const base = Math.max(1, Math.round(repo.sourceFiles * 0.04));
     return Math.min(repo.sourceFiles, base + (targetTerms.length ? targetTerms.length : 1));
   });
   const totalCandidates = candidatePerRepo.reduce((sum, value) => sum + value, 0);
-  const filesActuallyRead = Math.min(totalCandidates, 12); // an agent reads only the top candidates before giving up/answering
+  const filesActuallyRead = Math.min(totalCandidates, 12);
   const searchTokens = totalCandidates * TOKENS_PER_GREP_HIT + filesActuallyRead * TOKENS_PER_FILE_READ;
   const searchMs = repos.length * MS_PER_GREP_PASS + filesActuallyRead * MS_PER_FILE_READ;
-  // Without the workspace map, the chance of correctly identifying ALL involved
-  // services degrades with repo count and candidate sprawl.
+
+
   let withoutSuccess = 0.82;
   withoutSuccess -= 0.07 * Math.max(0, repos.length - 2);
   withoutSuccess -= 0.10 * Math.max(0, task.involved_projects.length - 2);
@@ -241,24 +241,46 @@ async function analyzeWorkspace(name: string, repoPaths: string[], fresh: boolea
   for (const repoPath of repoPaths) {
     if (!(await fs.pathExists(repoPath))) continue;
     try {
-      const cas = fresh ? await analyzeForBench(repoPath) : await getAnalysis(repoPath);
+      let cas: CASOutput;
+      if (fresh) {
+        cas = await analyzeForBench(repoPath);
+      } else {
+        try {
+          cas = await getAnalysis(repoPath);
+        } catch {
+          cas = await analyzeForBench(repoPath);
+        }
+      }
       repos.push({ path: repoPath, name: cas.system?.name || path.basename(repoPath), cas, sourceFiles: sourceFileCount(cas) });
     } catch {
-      // skip repos without a usable analysis
+
     }
   }
   let graph = buildCrossCodebaseSystemGraph(`${name.toLowerCase()}-system`, repos.map(repo => ({ path: repo.path, name: repo.name, cas: repo.cas })));
-  // The deterministic graph already carries workspace_capabilities / _entities /
-  // application_links, which is everything this benchmark scores. The AI narrative
-  // enrichment only polishes prose, so it is opt-in (--with-ai) to keep the
-  // default run fast and deterministic, mirroring the gauntlet's no-AI fast path.
+
+
+
+
   if (withAi) graph = await enrichWorkspaceAnalysisNarrative(graph);
   return { graph, repos };
 }
 
 interface FamilyConfig { name: string; repos: string[] }
 
-/** Mirror the gauntlet's filter: drop generated/legacy/benchmark analysis paths. */
+const REPOSITORY_MARKERS = [
+  'package.json',
+  'pyproject.toml',
+  'requirements.txt',
+  'Cargo.toml',
+  'go.mod',
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'composer.json',
+  'pubspec.yaml',
+];
+
+
 function isGeneratedOrLegacyFamilyPath(candidate: string, root: string): boolean {
   return path.relative(root, candidate).split(path.sep).some(part =>
     part === 'node_modules' ||
@@ -269,12 +291,12 @@ function isGeneratedOrLegacyFamilyPath(candidate: string, root: string): boolean
     part.includes('benchmark'));
 }
 
-/**
- * Discover workspace families from the set of cached CAS analyses, grouping
- * analyzed repos under each family root. This reproduces the cross-codebase
- * gauntlet's member selection (legacy/generated-path filter + workspace input
- * policy) so the repo counts are the real member set, not an inflated one.
- */
+
+
+
+
+
+
 async function discoverFamilies(devRoot: string): Promise<FamilyConfig[]> {
   const analyses = await listAnalyses().catch(() => []);
   const analyzedPaths = analyses.map(analysis => path.resolve(analysis.path));
@@ -287,14 +309,29 @@ async function discoverFamilies(devRoot: string): Promise<FamilyConfig[]> {
   for (const { name, root } of roots) {
     const resolvedRoot = path.resolve(root);
     if (analyzedPaths.includes(resolvedRoot)) { families.push({ name, repos: [resolvedRoot] }); continue; }
-    const candidates = analyzedPaths
+    const analyzedCandidates = analyzedPaths
       .filter(candidate => candidate.startsWith(`${resolvedRoot}${path.sep}`))
       .filter(candidate => !isGeneratedOrLegacyFamilyPath(candidate, resolvedRoot));
+    const discoveredCandidates = await discoverImmediateRepositories(resolvedRoot);
+    const candidates = [...new Set([...analyzedCandidates, ...discoveredCandidates])];
     const resolved = await resolveWorkspaceInputPaths({ workspaceRoot: resolvedRoot, paths: candidates });
     const repos = resolved.includedPaths.sort();
     if (repos.length >= 2) families.push({ name, repos });
   }
   return families;
+}
+
+async function discoverImmediateRepositories(root: string): Promise<string[]> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  const repositories: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const candidate = path.join(root, entry.name);
+    if (isGeneratedOrLegacyFamilyPath(candidate, root)) continue;
+    const markerChecks = await Promise.all(REPOSITORY_MARKERS.map(marker => fs.pathExists(path.join(candidate, marker))));
+    if (markerChecks.some(Boolean)) repositories.push(candidate);
+  }
+  return repositories;
 }
 
 export async function runWorkspaceAgentBenchmark(options: { devRoot?: string; fresh?: boolean; withAi?: boolean; families?: FamilyConfig[] }) {
@@ -333,7 +370,11 @@ export async function runWorkspaceAgentBenchmark(options: { devRoot?: string; fr
       'MODEL-BASED PROJECTION of grep-across-all-repos search cost (documented ' +
       'per-file/grep token and time constants), not a live agent run. It measures ' +
       'how much context a workspace map removes, not measured end-to-end latency.',
-    status: allTrials.every(trial => trial.status !== 'fail') ? 'pass' : 'warn',
+    status: allTrials.length === 0
+      ? 'fail'
+      : allTrials.every(trial => trial.status !== 'fail')
+        ? 'pass'
+        : 'warn',
     summary,
     workspaces,
   };
@@ -387,6 +428,7 @@ async function main() {
   if (output) { await fs.ensureDir(path.dirname(path.resolve(output))); await fs.writeJson(path.resolve(output), report, { spaces: 2 }); }
   if (markdown) { await fs.ensureDir(path.dirname(path.resolve(markdown))); await fs.writeFile(path.resolve(markdown), formatMarkdown(report)); }
   process.stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : `${formatMarkdown(report)}\n`);
+  if (report.status === 'fail') process.exitCode = 1;
 }
 
 if (isDirectCliInvocation('workspace-agent-benchmark')) {

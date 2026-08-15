@@ -198,6 +198,16 @@ const FROM_ZERO_SCENARIOS: FromZeroScenario[] = [
 ];
 
 export async function runFromZeroBuildContextProof(args: Args = parseArgs(process.argv.slice(2))) {
+  const callerStoragePath = process.env.KLAURO_STORAGE_PATH;
+  try {
+    const report = await buildFromZeroBuildContextProof(args);
+    restoreStoragePath(callerStoragePath);
+    await saveAgenticBenchmarkReport(report);
+    return report;
+  } finally { restoreStoragePath(callerStoragePath); }
+}
+
+async function buildFromZeroBuildContextProof(args: Args) {
   const outputRoot = path.resolve(args.outputRoot);
   await fs.remove(outputRoot);
   await fs.ensureDir(outputRoot);
@@ -253,9 +263,10 @@ export async function runFromZeroBuildContextProof(args: Args = parseArgs(proces
   await fs.writeJson(args.reportPath, report, { spaces: 2 });
   await fs.ensureDir(path.dirname(args.markdownPath));
   await fs.writeFile(args.markdownPath, formatMarkdown(report), 'utf8');
-  await saveAgenticBenchmarkReport(report);
   return report;
 }
+
+function restoreStoragePath(storagePath: string | undefined): void { storagePath === undefined ? delete process.env.KLAURO_STORAGE_PATH : process.env.KLAURO_STORAGE_PATH = storagePath; }
 
 async function runScenarioProof(outputRoot: string, scenario: FromZeroScenario) {
   const scenarioRoot = path.join(outputRoot, scenario.id);
@@ -914,372 +925,6 @@ test('operations expansion keeps evidence and external incidents on existing own
 });
 `;
 }
-
-async function writeInitialSlice(root: string) {
-  await fs.outputJson(path.join(root, 'package.json'), {
-    name: 'market-signal-ops',
-    type: 'module',
-    scripts: { test: 'node --test tests/*.test.js' },
-  }, { spaces: 2 });
-  await fs.outputFile(path.join(root, 'src/domain/concepts.js'), `
-export class Organization {
-  constructor({ id, name }) { this.id = id; this.name = name; }
-}
-
-export class Workspace {
-  constructor({ id, organizationId, name }) { this.id = id; this.organizationId = organizationId; this.name = name; }
-}
-
-export class SignalSource {
-  constructor({ id, workspaceId, name, type }) { this.id = id; this.workspaceId = workspaceId; this.name = name; this.type = type; }
-}
-
-export class SignalRule {
-  constructor({ id, workspaceId, sourceId, threshold, severity }) { this.id = id; this.workspaceId = workspaceId; this.sourceId = sourceId; this.threshold = threshold; this.severity = severity; }
-}
-
-export class AlertPolicy {
-  constructor({ id, workspaceId, severity, channel }) { this.id = id; this.workspaceId = workspaceId; this.severity = severity; this.channel = channel; }
-}
-
-export class OperatorReview {
-  constructor({ id, workspaceId, signalRuleId, status = 'pending' }) { this.id = id; this.workspaceId = workspaceId; this.signalRuleId = signalRuleId; this.status = status; }
-}
-
-export class AuditEvent {
-  constructor({ id, workspaceId, actor, action, subjectId }) { this.id = id; this.workspaceId = workspaceId; this.actor = actor; this.action = action; this.subjectId = subjectId; }
-}
-
-export class SignalDigest {
-  constructor({ workspaceId, date, reviewCount, alertCount }) { this.workspaceId = workspaceId; this.date = date; this.reviewCount = reviewCount; this.alertCount = alertCount; }
-}
-`);
-  await fs.outputFile(path.join(root, 'src/services/signal-operations-service.js'), `
-import { AuditEvent, OperatorReview, SignalDigest, SignalSource } from '../domain/concepts.js';
-
-export class SignalOperationsService {
-  constructor({ auditLog = [], reviews = [], sources = [] } = {}) {
-    this.auditLog = auditLog;
-    this.reviews = reviews;
-    this.sources = sources;
-  }
-
-  registerSignalSource(workspace, input) {
-    const source = new SignalSource({ id: input.id, workspaceId: workspace.id, name: input.name, type: input.type });
-    this.sources.push(source);
-    this.recordAuditEvent(workspace, { actor: input.actor || 'system', action: 'signal_source.registered', subjectId: source.id });
-    return source;
-  }
-
-  evaluateSignal(workspace, rule, signal) {
-    if (rule.workspaceId !== workspace.id) throw new Error('Signal rule does not belong to workspace');
-    if (signal.value < rule.threshold) return { status: 'ignored', severity: rule.severity };
-    return this.enqueueOperatorReview(workspace, rule);
-  }
-
-  enqueueOperatorReview(workspace, rule) {
-    const review = new OperatorReview({ id: 'review_' + rule.id, workspaceId: workspace.id, signalRuleId: rule.id });
-    this.reviews.push(review);
-    this.recordAuditEvent(workspace, { actor: 'system', action: 'operator_review.queued', subjectId: review.id });
-    return { status: 'queued', severity: rule.severity, review };
-  }
-
-  recordAuditEvent(workspace, input) {
-    const event = new AuditEvent({ id: 'audit_' + (this.auditLog.length + 1), workspaceId: workspace.id, actor: input.actor, action: input.action, subjectId: input.subjectId });
-    this.auditLog.push(event);
-    return event;
-  }
-
-  buildDailyDigest(workspace, date) {
-    const reviewCount = this.reviews.filter(review => review.workspaceId === workspace.id).length;
-    const alertCount = this.auditLog.filter(event => event.workspaceId === workspace.id && event.action.includes('queued')).length;
-    return new SignalDigest({ workspaceId: workspace.id, date, reviewCount, alertCount });
-  }
-}
-`);
-  await fs.outputFile(path.join(root, 'tests/signal-operations.test.js'), `
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { Workspace, SignalRule } from '../src/domain/concepts.js';
-import { SignalOperationsService } from '../src/services/signal-operations-service.js';
-
-test('queues operator review and records audit event for threshold breach', () => {
-  const workspace = new Workspace({ id: 'ws_1', organizationId: 'org_1', name: 'Ops' });
-  const rule = new SignalRule({ id: 'rule_1', workspaceId: 'ws_1', sourceId: 'src_1', threshold: 90, severity: 'high' });
-  const service = new SignalOperationsService();
-  const result = service.evaluateSignal(workspace, rule, { value: 95 });
-  assert.equal(result.status, 'queued');
-  assert.equal(service.auditLog[0].action, 'operator_review.queued');
-});
-`);
-}
-
-async function writeGuidedContinuation(root: string) {
-  await fs.appendFile(path.join(root, 'src/domain/concepts.js'), `
-
-export class NotificationPreference {
-  constructor({ id, workspaceId, channel, enabled = true }) { this.id = id; this.workspaceId = workspaceId; this.channel = channel; this.enabled = enabled; }
-}
-
-export class SavedQueueFilter {
-  constructor({ id, workspaceId, name, severity }) { this.id = id; this.workspaceId = workspaceId; this.name = name; this.severity = severity; }
-}
-
-export class SignalRuleComparisonOverlay {
-  constructor({ workspaceId, baseRuleId, compareRuleId, delta }) { this.workspaceId = workspaceId; this.baseRuleId = baseRuleId; this.compareRuleId = compareRuleId; this.delta = delta; }
-}
-`);
-  const servicePath = path.join(root, 'src/services/signal-operations-service.js');
-  let service = await fs.readFile(servicePath, 'utf8');
-  service = service.replace(
-    "import { AuditEvent, OperatorReview, SignalDigest, SignalSource } from '../domain/concepts.js';",
-    "import { AuditEvent, NotificationPreference, OperatorReview, SavedQueueFilter, SignalDigest, SignalRuleComparisonOverlay, SignalSource } from '../domain/concepts.js';"
-  );
-  service = service.replace(
-    'constructor({ auditLog = [], reviews = [], sources = [] } = {}) {\n    this.auditLog = auditLog;\n    this.reviews = reviews;\n    this.sources = sources;\n  }',
-    'constructor({ auditLog = [], reviews = [], sources = [], preferences = [], filters = [] } = {}) {\n    this.auditLog = auditLog;\n    this.reviews = reviews;\n    this.sources = sources;\n    this.preferences = preferences;\n    this.filters = filters;\n  }'
-  );
-  service = service.replace('\n  buildDailyDigest(workspace, date) {', `
-  setNotificationPreference(workspace, input) {
-    const preference = new NotificationPreference({ id: input.id, workspaceId: workspace.id, channel: input.channel, enabled: input.enabled });
-    this.preferences.push(preference);
-    this.recordAuditEvent(workspace, { actor: input.actor || 'system', action: 'notification_preference.updated', subjectId: preference.id });
-    return preference;
-  }
-
-  saveQueueFilter(workspace, input) {
-    const filter = new SavedQueueFilter({ id: input.id, workspaceId: workspace.id, name: input.name, severity: input.severity });
-    this.filters.push(filter);
-    this.recordAuditEvent(workspace, { actor: input.actor || 'system', action: 'operator_queue_filter.saved', subjectId: filter.id });
-    return filter;
-  }
-
-  compareSignalRules(workspace, baseRule, compareRule) {
-    if (baseRule.workspaceId !== workspace.id || compareRule.workspaceId !== workspace.id) throw new Error('Signal rules must belong to workspace');
-    return new SignalRuleComparisonOverlay({ workspaceId: workspace.id, baseRuleId: baseRule.id, compareRuleId: compareRule.id, delta: compareRule.threshold - baseRule.threshold });
-  }
-
-  buildDailyDigest(workspace, date) {`);
-  await fs.writeFile(servicePath, service);
-  await fs.appendFile(path.join(root, 'tests/signal-operations.test.js'), continuationTest());
-}
-
-async function writeUnguidedContinuation(root: string) {
-  await fs.outputFile(path.join(root, 'src/notification-preferences.js'), `
-export class Workspace {
-  constructor({ id, organizationId, label }) { this.id = id; this.organizationId = organizationId; this.label = label; }
-}
-
-export class SignalRule {
-  constructor({ id, workspace, threshold }) { this.id = id; this.workspace = workspace; this.threshold = threshold; }
-}
-
-export class ReviewQueueItem {
-  constructor({ id, workspace, rule }) { this.id = id; this.workspace = workspace; this.rule = rule; }
-}
-
-export class NotificationPreference {
-  constructor({ id, workspace, channel }) { this.id = id; this.workspace = workspace; this.channel = channel; }
-}
-
-export function saveNotificationPreference(workspace, input) {
-  return new NotificationPreference({ id: input.id, workspace, channel: input.channel });
-}
-`);
-  await fs.outputFile(path.join(root, 'src/rule-comparison.js'), `
-export class Workspace {
-  constructor({ id }) { this.id = id; }
-}
-
-export class SignalRule {
-  constructor({ id, workspaceId, threshold }) { this.id = id; this.workspaceId = workspaceId; this.threshold = threshold; }
-}
-
-export class SignalDigest {
-  constructor({ workspaceId, items }) { this.workspaceId = workspaceId; this.items = items; }
-}
-
-export function compareSignalRules(workspace, baseRule, compareRule) {
-  return { workspaceId: workspace.id, baseRuleId: baseRule.id, compareRuleId: compareRule.id, delta: compareRule.threshold - baseRule.threshold };
-}
-`);
-  await fs.appendFile(path.join(root, 'tests/signal-operations.test.js'), `
-
-test('unguided continuation behavior works but creates parallel concepts', async () => {
-  const notifications = await import('../src/notification-preferences.js');
-  const comparison = await import('../src/rule-comparison.js');
-  const workspace = new notifications.Workspace({ id: 'ws_1', organizationId: 'org_1', label: 'Ops' });
-  const preference = notifications.saveNotificationPreference(workspace, { id: 'pref_1', channel: 'email' });
-  const overlay = comparison.compareSignalRules(
-    new comparison.Workspace({ id: 'ws_1' }),
-    new comparison.SignalRule({ id: 'rule_low', workspaceId: 'ws_1', threshold: 70 }),
-    new comparison.SignalRule({ id: 'rule_high', workspaceId: 'ws_1', threshold: 95 })
-  );
-  assert.equal(preference.channel, 'email');
-  assert.equal(overlay.delta, 25);
-});
-`);
-}
-
-async function writeGuidedScaleExpansion(root: string) {
-  await fs.appendFile(path.join(root, 'src/domain/concepts.js'), `
-
-export class EscalationWindow {
-  constructor({ id, workspaceId, alertPolicyId, startsAt, endsAt }) { this.id = id; this.workspaceId = workspaceId; this.alertPolicyId = alertPolicyId; this.startsAt = startsAt; this.endsAt = endsAt; }
-}
-
-export class AuditExport {
-  constructor({ id, workspaceId, requestedBy, eventCount }) { this.id = id; this.workspaceId = workspaceId; this.requestedBy = requestedBy; this.eventCount = eventCount; }
-}
-
-export class WorkspaceRiskRollup {
-  constructor({ workspaceId, reviewCount, alertCount, digestSubscriberCount }) { this.workspaceId = workspaceId; this.reviewCount = reviewCount; this.alertCount = alertCount; this.digestSubscriberCount = digestSubscriberCount; }
-}
-
-export class DigestSubscription {
-  constructor({ id, workspaceId, actor, cadence }) { this.id = id; this.workspaceId = workspaceId; this.actor = actor; this.cadence = cadence; }
-}
-`);
-  const servicePath = path.join(root, 'src/services/signal-operations-service.js');
-  let service = await fs.readFile(servicePath, 'utf8');
-  service = service.replace(
-    "import { AuditEvent, NotificationPreference, OperatorReview, SavedQueueFilter, SignalDigest, SignalRuleComparisonOverlay, SignalSource } from '../domain/concepts.js';",
-    "import { AuditEvent, AuditExport, DigestSubscription, EscalationWindow, NotificationPreference, OperatorReview, SavedQueueFilter, SignalDigest, SignalRuleComparisonOverlay, SignalSource, WorkspaceRiskRollup } from '../domain/concepts.js';"
-  );
-  service = service.replace(
-    'constructor({ auditLog = [], reviews = [], sources = [], preferences = [], filters = [] } = {}) {\n    this.auditLog = auditLog;\n    this.reviews = reviews;\n    this.sources = sources;\n    this.preferences = preferences;\n    this.filters = filters;\n  }',
-    'constructor({ auditLog = [], reviews = [], sources = [], preferences = [], filters = [], escalationWindows = [], digestSubscriptions = [] } = {}) {\n    this.auditLog = auditLog;\n    this.reviews = reviews;\n    this.sources = sources;\n    this.preferences = preferences;\n    this.filters = filters;\n    this.escalationWindows = escalationWindows;\n    this.digestSubscriptions = digestSubscriptions;\n  }'
-  );
-  service = service.replace('\n  buildDailyDigest(workspace, date) {', `
-  scheduleEscalationWindow(workspace, alertPolicy, input) {
-    if (alertPolicy.workspaceId !== workspace.id) throw new Error('Alert policy does not belong to workspace');
-    const window = new EscalationWindow({ id: input.id, workspaceId: workspace.id, alertPolicyId: alertPolicy.id, startsAt: input.startsAt, endsAt: input.endsAt });
-    this.escalationWindows.push(window);
-    this.recordAuditEvent(workspace, { actor: input.actor || 'system', action: 'escalation_window.scheduled', subjectId: window.id });
-    return window;
-  }
-
-  exportAuditEvents(workspace, requestedBy) {
-    const events = this.auditLog.filter(event => event.workspaceId === workspace.id);
-    return new AuditExport({ id: 'audit_export_' + workspace.id, workspaceId: workspace.id, requestedBy, eventCount: events.length });
-  }
-
-  subscribeToDigest(workspace, input) {
-    const subscription = new DigestSubscription({ id: input.id, workspaceId: workspace.id, actor: input.actor, cadence: input.cadence });
-    this.digestSubscriptions.push(subscription);
-    this.recordAuditEvent(workspace, { actor: input.actor || 'system', action: 'digest_subscription.created', subjectId: subscription.id });
-    return subscription;
-  }
-
-  buildWorkspaceRiskRollup(workspace) {
-    const digest = this.buildDailyDigest(workspace, new Date().toISOString().slice(0, 10));
-    const digestSubscriberCount = this.digestSubscriptions.filter(subscription => subscription.workspaceId === workspace.id).length;
-    return new WorkspaceRiskRollup({ workspaceId: workspace.id, reviewCount: digest.reviewCount, alertCount: digest.alertCount, digestSubscriberCount });
-  }
-
-  buildDailyDigest(workspace, date) {`);
-  await fs.writeFile(servicePath, service);
-  await fs.appendFile(path.join(root, 'tests/signal-operations.test.js'), scaleExpansionTest());
-}
-
-async function writeUnguidedScaleExpansion(root: string) {
-  await fs.outputFile(path.join(root, 'src/escalation-reporting.js'), `
-export class Workspace {
-  constructor({ id, name }) { this.id = id; this.name = name; }
-}
-
-export class AlertPolicy {
-  constructor({ id, workspace }) { this.id = id; this.workspace = workspace; }
-}
-
-export class AuditEvent {
-  constructor({ id, workspace, action }) { this.id = id; this.workspace = workspace; this.action = action; }
-}
-
-export class SignalDigest {
-  constructor({ workspace, count }) { this.workspace = workspace; this.count = count; }
-}
-
-export class EscalationWindow {
-  constructor({ id, policy }) { this.id = id; this.policy = policy; }
-}
-
-export function scheduleEscalationWindow(policy, id) {
-  return new EscalationWindow({ id, policy });
-}
-
-export function buildAuditExport(workspace, events) {
-  return { workspaceId: workspace.id, count: events.length };
-}
-`);
-  await fs.outputFile(path.join(root, 'src/review-rollups.js'), `
-export class Workspace {
-  constructor({ id }) { this.id = id; }
-}
-
-export class OperatorReview {
-  constructor({ id, workspaceId }) { this.id = id; this.workspaceId = workspaceId; }
-}
-
-export class SignalDigest {
-  constructor({ workspaceId, reviewCount }) { this.workspaceId = workspaceId; this.reviewCount = reviewCount; }
-}
-
-export function buildWorkspaceRiskRollup(workspace, reviews) {
-  return new SignalDigest({ workspaceId: workspace.id, reviewCount: reviews.filter(review => review.workspaceId === workspace.id).length });
-}
-`);
-  await fs.appendFile(path.join(root, 'tests/signal-operations.test.js'), `
-
-test('unguided scale expansion works but forks reporting concepts', async () => {
-  const reporting = await import('../src/escalation-reporting.js');
-  const rollups = await import('../src/review-rollups.js');
-  const workspace = new reporting.Workspace({ id: 'ws_1', name: 'Ops' });
-  const policy = new reporting.AlertPolicy({ id: 'policy_1', workspace });
-  const window = reporting.scheduleEscalationWindow(policy, 'window_1');
-  const digest = rollups.buildWorkspaceRiskRollup(new rollups.Workspace({ id: 'ws_1' }), [new rollups.OperatorReview({ id: 'review_1', workspaceId: 'ws_1' })]);
-  assert.equal(window.policy.id, 'policy_1');
-  assert.equal(digest.reviewCount, 1);
-});
-`);
-}
-
-function continuationTest() {
-  return `
-
-test('continuation slice reuses workspace and signal rule model chain', () => {
-  const workspace = new Workspace({ id: 'ws_1', organizationId: 'org_1', name: 'Ops' });
-  const baseRule = new SignalRule({ id: 'rule_low', workspaceId: 'ws_1', sourceId: 'src_1', threshold: 70, severity: 'medium' });
-  const compareRule = new SignalRule({ id: 'rule_high', workspaceId: 'ws_1', sourceId: 'src_1', threshold: 95, severity: 'high' });
-  const service = new SignalOperationsService();
-  const preference = service.setNotificationPreference(workspace, { id: 'pref_1', channel: 'email' });
-  const filter = service.saveQueueFilter(workspace, { id: 'filter_1', name: 'High only', severity: 'high' });
-  const overlay = service.compareSignalRules(workspace, baseRule, compareRule);
-  assert.equal(preference.workspaceId, workspace.id);
-  assert.equal(filter.workspaceId, workspace.id);
-  assert.equal(overlay.delta, 25);
-});
-`;
-}
-
-function scaleExpansionTest() {
-  return `
-
-test('scale expansion keeps reporting on existing workspace and audit chain', () => {
-  const workspace = new Workspace({ id: 'ws_1', organizationId: 'org_1', name: 'Ops' });
-  const service = new SignalOperationsService();
-  const policy = { id: 'policy_1', workspaceId: 'ws_1', severity: 'high', channel: 'email' };
-  const window = service.scheduleEscalationWindow(workspace, policy, { id: 'window_1', startsAt: '09:00', endsAt: '17:00' });
-  service.subscribeToDigest(workspace, { id: 'sub_1', actor: 'operator_1', cadence: 'weekly' });
-  const auditExport = service.exportAuditEvents(workspace, 'operator_1');
-  const rollup = service.buildWorkspaceRiskRollup(workspace);
-  assert.equal(window.workspaceId, workspace.id);
-  assert.equal(auditExport.eventCount, 2);
-  assert.equal(rollup.digestSubscriberCount, 1);
-});
-`;
-}
-
 async function scoreArm(projectPath: string, contextFiles: string[], requiredReuse: string[]): Promise<ProofArm> {
   const testsPassed = await runTests(projectPath).then(() => true, () => false);
   const analysis = await analyzeForBench(projectPath);
@@ -1321,7 +966,7 @@ async function scoreArm(projectPath: string, contextFiles: string[], requiredReu
     analysis: {
       nodes: analysis.nodes?.length || 0,
       edges: analysis.edges?.length || 0,
-      capabilities: analysis.system_capabilities?.length || 0,
+      capabilities: analysis.capabilities?.length || 0,
       tests: analysis.test_summary?.total_tests || analysis.test_suites?.reduce((sum: number, suite: any) => sum + (suite.tests?.length || 0), 0) || 0,
     },
     duplicate_classes: duplicateClasses,
@@ -1464,13 +1109,9 @@ function formatMarkdown(report: any): string {
 
 function parseArgs(argv: string[]): Args {
   const parsed: Args = {
-    // Scratch workspaces are debug dumps, not durable data (local-persistence
-    // doctrine): default under os.tmpdir(); pass --output-root to keep them.
     outputRoot: path.join(os.tmpdir(), 'klauro-from-zero-build-context-proof'),
-    // Reports are debug output too — never dropped into the repo tree (cwd);
-    // tmpdir by default, override with the explicit flags to keep them.
-    reportPath: path.join(os.tmpdir(), 'klauro-from-zero-build-context-proof', 'latest-report.json'),
-    markdownPath: path.join(os.tmpdir(), 'klauro-from-zero-build-context-proof', 'latest-report.md'),
+    reportPath: path.join(process.cwd(), '.klauro-from-zero-build-context-proof', 'latest-report.json'),
+    markdownPath: path.join(process.cwd(), '.klauro-from-zero-build-context-proof', 'latest-report.md'),
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];

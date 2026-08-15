@@ -93,6 +93,39 @@ test('GET /v1/coordination/stream pushes a claim delta after POST /v1/coordinati
     assert.equal(claimEvent!.data.agent_id, 'agent-sse-test');
     assert.equal(claimEvent!.data.verdict, 'granted');
 
+    const inFlightBody = JSON.stringify({
+      workspace,
+      agent_id: 'agent-sse-test',
+      base_commit: 'base',
+      diff_context: '{}',
+      attribution_source: 'participant-worktree',
+      changes: [{
+        symbol_id: 'sym:shared',
+        name: 'shared',
+        file: 'src/smoke.ts',
+        change_kind: 'body',
+      }],
+    });
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port, path: '/v1/coordination/in-flight', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(inFlightBody) } },
+        (res) => {
+          res.on('data', () => {});
+          res.on('end', resolve);
+        }
+      );
+      req.on('error', reject);
+      req.end(inFlightBody);
+    });
+
+    const deadlineC = Date.now() + 5000;
+    while (!events.some((event) => event.event === 'in-flight') && Date.now() < deadlineC) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const inFlightEvent = events.find((event) => event.event === 'in-flight');
+    assert.equal(inFlightEvent?.data.attribution_source, 'participant-worktree');
+    assert.equal(inFlightEvent?.data.changes[0].symbol_id, 'sym:shared');
+
     streamReq.destroy();
   } finally {
     server.close();

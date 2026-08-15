@@ -518,7 +518,7 @@ async function extractSourceConcepts(workspacePath: string, files: string[]): Pr
 
 function buildCurrentMemory(cas: CASOutput, workspacePath: string, files: string[], sourceConcepts: string[], planText: string) {
   const summary = buildSummary(cas);
-  const capabilities = (cas.system_capabilities || []).slice(0, 18).map(capability => ({
+  const capabilities = (cas.capabilities || []).slice(0, 18).map(capability => ({
     name: capability.name,
     description: capability.description,
     domains: capability.related_domains || [],
@@ -526,7 +526,7 @@ function buildCurrentMemory(cas: CASOutput, workspacePath: string, files: string
   }));
   const entities = unique([
     ...sourceConcepts,
-    ...(cas.data_entities || []).map(entity => entity.name),
+    ...(cas.entities || []).map(entity => entity.name),
     ...(cas.database_schema?.entities || []).map(entity => entity.name),
     ...(cas.domain_concepts || []).map(concept => concept.name),
   ].filter(isReusableProductConcept)).slice(0, 40);

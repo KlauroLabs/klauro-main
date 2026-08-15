@@ -1,56 +1,57 @@
-/**
- * fab.ts — a thin CLI over the real coordination local-store, so parallel
- * agents on one feature coordinate through the actual fabric (~/.klauro/coordination).
- *
- *   npx tsx apps/mcp-server/scripts/fab.ts active
- *   npx tsx apps/mcp-server/scripts/fab.ts claim <agentId> "<intent>" <comma,paths> [symbols]
- *   npx tsx apps/mcp-server/scripts/fab.ts announce <agentId> <comma,files>
- *   npx tsx apps/mcp-server/scripts/fab.ts check <agentId> <comma,paths>
- *   npx tsx apps/mcp-server/scripts/fab.ts release <agentId>
- *   npx tsx apps/mcp-server/scripts/fab.ts watch [agentId]
- *   npx tsx apps/mcp-server/scripts/fab.ts diff <agentId>
- *   npx tsx apps/mcp-server/scripts/fab.ts stash <agentId>
- *   npx tsx apps/mcp-server/scripts/fab.ts extend <agentId> <comma,addPaths> [comma,addSymbols]
- *
- * `diff`/`stash` must stay limited to agentId's own active claim paths, never
- * the whole tree — a tree-global `git stash` can sweep a peer's uncommitted
- * work, since git has no concept of "whose paths these are." `stash` refuses
- * (exits non-zero) only when agentId holds no claimed paths and other agents
- * are active — the dangerous whole-tree-fallback case. This is a guardrail on
- * the destructive whole-tree command only; every other surface here never denies a claim.
- *
- * `extend` appends scope onto agentId's active work-claim without losing
- * claim identity (same claim_id, union of old+new paths/symbols); conflicts
- * surface inline, extension always succeeds. Local-only for now.
- *
- * `watch` is a foreground process for a human running a fleet from a
- * terminal: starts the local write-hook plus the in-flight publisher when a
- * remote fabric is configured, prints events to stdout until Ctrl-C.
- *
- * Remote mode (cross-machine, docs/FABRIC-REMOTE.md) is config-driven: `klauro
- * init` persists fabric.endpoint/fabric.workspace into .klaurorc, and every
- * command above goes over HTTPS with zero per-shell env setup. Network
- * failure never crashes a command — it warns loudly and degrades to the local
- * fabric so the advisory system keeps working.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { spawnSync } from 'node:child_process';
 
 import {
   appendClaim,
   getActiveClaims,
   announceEdit,
-  checkEditLock, // used by `check` and (belt-and-suspenders) the pre-claim overlap scan
+  checkEditLock,
   releaseAgent,
   findAgentInOtherWorkspaces,
   getStoreDir,
-  planScopedGitOp, // W6 — scope diff/stash to the caller's own claim paths
-  warnIfTreeGlobalOp, // W6 — awareness print before a tree-global git op
-  extendClaim, // W7 — mid-task claim-scope extension
+  planScopedGitOp,
+  warnIfTreeGlobalOp,
+  extendClaim,
 } from '../src/coordination/local-store';
 import {
   remoteActive,
   remoteCheck,
   remoteClaim,
+  remoteExtend,
   remoteRelease,
   RemoteFabricError,
   REMOTE_ADVISORY_DEFAULT_TTL_MS,
@@ -58,6 +59,7 @@ import {
 import { resolveFabricSettings, findFabricProjectRoot } from '../src/coordination/fabric-config';
 import { startWriteHook } from '../src/coordination/write-hook';
 import { startInFlightWatcher } from '../src/coordination/in-flight-sync';
+import { captureInFlightChanges } from '../src/coordination/in-flight-capture';
 import { buildWorkingTreeChangeContext } from '../src/remote-source';
 import type { InFlightDiffFile } from '../src/coordination/security';
 
@@ -65,12 +67,12 @@ function csv(s: string | undefined): string[] {
   return (s || '').split(',').map((x) => x.trim()).filter(Boolean);
 }
 
-/**
- * Advisory-system degrade contract: a remote failure must never crash the
- * caller — warn LOUDLY (so the agent knows cross-machine awareness is
- * currently blind) and fall back to the local fabric so same-machine
- * coordination keeps working.
- */
+
+
+
+
+
+
 function warnRemoteDegrade(op: string, err: unknown): void {
   const msg = err instanceof RemoteFabricError ? err.message : String(err);
   console.error(
@@ -82,15 +84,15 @@ function warnRemoteDegrade(op: string, err: unknown): void {
 
 async function main() {
   const [cmd, agentId, a3, a4] = process.argv.slice(2);
-  // Config-driven transport (coordination/fabric-config.ts): `klauro fabric
-  // on` in this repo makes every command remote; the FAB_* env vars remain a
-  // low-priority CI escape hatch. Workspace never defaults to cwd basename
-  // (the old wrong-workspace papercut) — explicit > .klaurorc > FAB_WS > 'poc'.
+
+
+
+
   const settings = await resolveFabricSettings({ cwd: process.cwd() });
   const WS = settings.workspace;
   const REMOTE = settings.remote;
-  // Remote claims default to the WAN TTL (30min; heartbeat = re-claim). Local
-  // claims keep the original 6h. FAB_TTL_MS overrides either.
+
+
   const TTL_MS = process.env.FAB_TTL_MS
     ? Number(process.env.FAB_TTL_MS)
     : REMOTE
@@ -104,6 +106,9 @@ async function main() {
           if (!res.active.length) { console.log(`(no active claims) [remote ${REMOTE.baseUrl}]`); break; }
           for (const c of res.active) {
             console.log(`${c.agent_id} [${c.status}] intent="${c.intent}" paths=${JSON.stringify(c.paths)} symbols=${JSON.stringify(c.symbols)} seq=${c.seq}`);
+          }
+          for (const snapshot of res.in_flight ?? []) {
+            console.log(`${snapshot.agent_id} [in-flight:${snapshot.attribution_source}] changes=${snapshot.changes_count} updated=${snapshot.updated_at}`);
           }
           console.log(`[remote ${REMOTE.baseUrl} max_seq=${res.max_seq} server_time=${res.server_time}]`);
           break;
@@ -119,7 +124,7 @@ async function main() {
       break;
     }
     case 'claim': {
-      // claim <agentId> <intent> <comma,paths> [comma,symbols]
+
       const intent = a3 || 'work';
       const paths = csv(a4);
       const symbols = csv(process.argv[6]);
@@ -140,10 +145,10 @@ async function main() {
           warnRemoteDegrade('claim', err);
         }
       }
-      // Belt-and-suspenders (papercut fix): run the SAME overlap scan `check`
-      // does BEFORE claiming, and warn inline when the paths are already
-      // claimed by another agent. Advisory — the claim still succeeds — but an
-      // agent that skipped `check` still gets the collision signal.
+
+
+
+
       const preConflicts = paths.length ? await checkEditLock(WS, paths, agentId) : [];
       if (preConflicts.length) {
         console.error(`WARNING: ${preConflicts.length} other agent(s) already claim overlapping paths (claim still succeeds — coordinate before writing):`);
@@ -168,8 +173,8 @@ async function main() {
     case 'announce': {
       if (REMOTE) {
         try {
-          // Same edit-lock claim_id scheme local announceEdit uses, so a
-          // re-announce LWW-supersedes rather than duplicating.
+
+
           const res = await remoteClaim(REMOTE, {
             workspace: WS,
             agentId,
@@ -221,11 +226,11 @@ async function main() {
       const rel = await releaseAgent(WS, agentId);
       console.log(`released ${agentId} (${rel.length} claim${rel.length === 1 ? '' : 's'}) workspace="${WS}" dir=${getStoreDir(WS)}`);
       if (rel.length === 0) {
-        // 0-released is ambiguous: "nothing left to release" (fine) vs. "you
-        // targeted the wrong FAB_WS/KLAURO_COORD_DIR and your real claim is
-        // still active elsewhere" (silent failure — the bug this CLI must
-        // never let recur). Actively check sibling workspaces and surface it
-        // instead of letting the caller believe release succeeded.
+
+
+
+
+
         const elsewhere = await findAgentInOtherWorkspaces(agentId, WS);
         if (elsewhere.length > 0) {
           console.error(
@@ -239,10 +244,10 @@ async function main() {
       break;
     }
     case 'diff': {
-      // fab diff <agentId> — `git diff` LIMITED to agentId's own active claim
-      // paths (W6). Never falls back to a whole-tree diff silently: if the
-      // agent holds no claim, say so and let the caller decide (awareness,
-      // never a guess at scope).
+
+
+
+
       const plan = await planScopedGitOp(WS, agentId);
       if (plan.paths.length === 0) {
         console.error(
@@ -260,12 +265,12 @@ async function main() {
       break;
     }
     case 'stash': {
-      // fab stash <agentId> — `git stash push` LIMITED to agentId's own active
-      // claim paths (W6). REFUSES only the one dangerous case: no claim paths
-      // to scope to AND other agents are active — the exact whole-tree-fallback
-      // that swept a peer's uncommitted work in the incident this exists to
-      // answer. Otherwise the stash is already scoped by construction, so it
-      // cannot touch anyone else's files regardless of who else is active.
+
+
+
+
+
+
       const plan = await planScopedGitOp(WS, agentId);
       if (plan.paths.length === 0) {
         if (plan.peers.length > 0) {
@@ -287,9 +292,9 @@ async function main() {
         process.exitCode = 1;
         break;
       }
-      // Still print the awareness warning even for a SCOPED stash — peers may
-      // be active elsewhere in the tree and benefit from knowing a stash just
-      // happened, even though this one cannot touch their paths.
+
+
+
       await warnIfTreeGlobalOp(WS, agentId);
       const root = findFabricProjectRoot(process.cwd())?.root ?? process.cwd();
       const res = spawnSync('git', ['stash', 'push', '--', ...plan.paths], { cwd: root, encoding: 'utf8' });
@@ -299,18 +304,27 @@ async function main() {
       break;
     }
     case 'extend': {
-      // extend <agentId> <comma,addPaths> [comma,addSymbols] — W7 mid-task
-      // claim-scope extension. Targets the same claim_id `claim` uses
-      // (`<workspace>:<agentId>`); LOCAL-ONLY today (see module header).
+
+
+
       const claimId = `${WS}:${agentId}`;
       const addPaths = csv(a3);
       const addSymbols = csv(a4);
       if (REMOTE) {
-        console.error(
-          `NOTE: \`extend\` is LOCAL-ONLY for now — this workspace has a remote fabric configured, but the ` +
-            `extension below only lands in the LOCAL claim log. Peers on OTHER machines will not see this scope ` +
-            `growth until the remote mirror is wired (see the W6/W7 build report's proposed server.ts diff).`
-        );
+        try {
+          const outcome = await remoteExtend(REMOTE, { workspace: WS, claimId, addPaths, addSymbols });
+          console.log(
+            `extended seq=${outcome.seq} ${agentId} -> paths=${JSON.stringify(outcome.paths)} ` +
+              `symbols=${JSON.stringify(outcome.symbols)} [remote ${REMOTE.baseUrl}]`
+          );
+          if (outcome.conflicts.length) {
+            console.error(`WARNING: ${outcome.conflicts.length} other agent(s) already claim overlapping paths in the added scope:`);
+            for (const conflict of outcome.conflicts) console.error(`  ${conflict.agent_id} overlaps ${JSON.stringify(conflict.overlapping_paths)}`);
+          }
+          break;
+        } catch (err) {
+          warnRemoteDegrade('extend', err);
+        }
       }
       try {
         const outcome = await extendClaim(WS, claimId, addPaths, addSymbols);
@@ -332,14 +346,14 @@ async function main() {
       break;
     }
     case 'watch': {
-      // fab.ts watch [agentId] — the human-in-a-terminal counterpart to the
-      // MCP-server lifecycle activation in server.ts's `advisoryFabricSettings`
-      // (W5, SPEC-COORDINATION-FABRIC-V3 §8): a foreground process that keeps
-      // the write-hook running for as long as the terminal is open, printing
-      // announced/unclaimed events as they happen. Unlike the MCP-server path,
-      // this is opt-in by construction (a human runs it) so it does NOT gate
-      // on `shouldActivateWriteHook`/fabric.enabled — running `fab watch` IS
-      // the opt-in.
+
+
+
+
+
+
+
+
       const root = findFabricProjectRoot(process.cwd())?.root ?? process.cwd();
       console.log(
         `fab watch: observing ${root} for workspace "${WS}" ` +
@@ -348,12 +362,13 @@ async function main() {
       const hookHandle = startWriteHook(root, WS, {
         onAnnounce: (e) => console.log(`[announce] ${e.agentId} <- ${e.path} (claim ${e.claimId})`),
         onUnclaimedEdit: (e) => console.log(`[unclaimed] ${e.path}`),
+        onAmbiguousEdit: (e) => console.log(`[ambiguous] ${e.path} candidates=${e.candidateAgentIds.join(',')}`),
         onError: (err) => console.error(`[write-hook error] ${err instanceof Error ? err.message : String(err)}`),
       });
-      // Cross-machine in-flight publishing (WS-B) only makes sense when a
-      // remote fabric is actually configured — with no remote there is
-      // nowhere to publish to, so `fab watch` stays local-only (write-hook)
-      // exactly like every other command in this file.
+
+
+
+
       let inFlightHandle: { stop: () => void } | undefined;
       if (REMOTE) {
         inFlightHandle = startInFlightWatcher(
@@ -371,15 +386,17 @@ async function main() {
                 )
                 .map((f) => ({ path: f.path, content: f.content }));
             } catch {
-              // Best-effort: e.g. .klaurorc upload.allowDirtyTreeSync=false,
-              // or not a git repo. Publish nothing rather than crash the watch loop.
+
+
               return [];
             }
           },
           {
+            attributionSource: process.argv.includes('--participant-worktree') ? 'participant-worktree' : 'workspace-tree',
             onPublished: (r) => console.log(`[in-flight] published ${r.kept_files} file(s), ${r.dropped_files} dropped`),
             onError: (err) => console.error(`[in-flight error] ${err instanceof Error ? err.message : String(err)}`),
-          }
+          },
+          () => captureInFlightChanges({ repoPath: root, maxFiles: 200 })
         );
       }
       await new Promise<void>((resolve) => {
@@ -395,7 +412,7 @@ async function main() {
       break;
     }
     default:
-      console.error('usage: fab.ts active|claim|announce|check|release|watch|diff|stash|extend ...');
+      console.error('usage: fab.ts active|claim|announce|check|release|watch [agentId] [--participant-worktree]|diff|stash|extend ...');
       process.exit(1);
   }
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CASOutput, CASFlowRef } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASOutput, FlowConcept } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getFlowConcepts } from './query';
 
 /**
@@ -25,7 +25,7 @@ function buildPagedCas(flowCount: number): CASOutput {
   const entry_points: any[] = [];
   const exit_points: any[] = [];
   const call_chains: any[] = [];
-  const flows: CASFlowRef[] = [];
+  const flows: FlowConcept[] = [];
 
   for (let i = 0; i < flowCount; i++) {
     // Deliberately inverted: the LOWEST index (which derivation reaches first,
@@ -57,18 +57,29 @@ function buildPagedCas(flowCount: number): CASOutput {
       name: `Route ${id}`,
       intent: `serve /r/${id}`,
       entry_point: `ep_${id}`,
-      call_chain_id: `chain_${id}`,
       criticality: 'low',
-      step_count: stepCount,
-      terminus: { kind: 'api', produces: `res_${id}` },
+      entities: [],
+      contract: { input: [], logic: `serve /r/${id}`, side_effects: { state_changes: [], external_integrations: [] }, output: [`res_${id}`], constraints: [] },
+      steps: Array.from({ length: stepCount }, (_, stepIndex) => ({
+        step_id: `flow::chain_${id}::step${stepIndex}`,
+        order: stepIndex,
+        name: `Step ${stepIndex}`,
+        description: `Executes step ${stepIndex} for route ${id}`,
+        description_source: 'deterministic-label',
+        contract: { input: [], logic: `step ${stepIndex}`, side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] },
+        functions: [{ function_id: `n_${id}` }],
+        entities: [],
+      })),
+      terminus: { exit_point_id: `xp_${id}`, kind: 'api', produces: `res_${id}`, node_id: `n_${id}` },
     });
   }
 
   return {
     analysis_id: 'test-flow-pagination',
     nodes, edges: [], entry_points, exit_points, call_chains,
+    flows,
     flow_graph: {
-      capabilities: [], dependencies: [], flows,
+      capability_candidates: [], dependencies: [],
       topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
     },
   } as unknown as CASOutput;

@@ -10,6 +10,10 @@ import {
   type LayeredRunSummary,
 } from './analyzer';
 import { AnalysisRunLog } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
+import { applyAnalysisFocus, type AnalysisFocus } from './analysis-focus';
+import { saveAnalysis } from './storage';
+import type { RepoFacts } from './remote-source';
+import { applyLayeredAnalysisMetadata } from './layered-analysis-metadata';
 
 interface WorkerAnalyzeRequest {
   type: 'analyze';
@@ -20,22 +24,25 @@ interface WorkerAnalyzeRequest {
   env: Record<string, string>;
 }
 
-// The 'layered' job kind (see analyzer.ts's analyzeProjectLayered) runs the
-// ENTIRE progressive pipeline — L0 index, L1-4 deterministic pass, and L5 AI
-// enrichment — inside THIS child, so the API/coordinator process only ever
-// dispatches and watches; it never holds the large in-memory analysis itself.
-// The child persists every phase to storage as it lands (analyzeProjectLayered
-// already does this internally) and reports back only small phase-completion
-// MESSAGES (see WorkerPhaseMessage below) plus a final summary — never the
-// full CASOutput over IPC. The parent reloads from disk (getAnalysis) for
-// anything it needs, mirroring the 275e9dc7 pattern for the sync routes.
+
+
+
+
+
+
+
+
+
 interface WorkerLayeredRequest {
   type: 'layered';
   id: number;
   projectPath: string;
   displayName?: string;
   env: Record<string, string>;
-  /** See RunLayeredAnalysisOptions.forceFullRebuild (analyzer.ts). */
+  analysisFocus?: AnalysisFocus;
+  repoFacts?: RepoFacts;
+  repoFactsUnavailable?: boolean;
+
   forceFullRebuild?: boolean;
 }
 
@@ -80,36 +87,36 @@ function sendProgress(id: number, event: { sequence: number; phase: string; comp
   process.send!({ type: 'progress', id, ...event });
 }
 
-/**
- * Runs analyzeProjectLayered's full progressive pipeline (L0 -> L1-4 -> L5 AI
- * enrichment) IN THIS CHILD, reporting each phase's completion back to the
- * parent as a small message rather than the full CASOutput. Design decision:
- * AI enrichment runs in the SAME child, immediately after the L1-4 save,
- * rather than being handed off — analyzeProjectLayered/analyzeProjectDeferred
- * already manage enrichment as a promise chained off the deterministic pass
- * on one dedicated orchestrator instance (the closure holding the enrichment
- * continuation lives only on that instance, see analyzeProjectDeferred's own
- * comment), so splitting it into a second dispatch would mean either
- * serializing a second worker round-trip for no benefit or re-implementing
- * that orchestrator handoff. The worker's heap cap bounds memory, while
- * provider-level retries and timeouts handle individual AI requests. The child
- * remains alive (jobChain, see below) until every required enrichment stage
- * settles; parent-side elapsed-time alarms observe slow work but never publish
- * an incomplete CAS or abandon a still-running writer.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<LayeredRunSummary> {
   if (process.env.KLAURO_TEST_ANALYSIS_WORKER_STALL === 'before-start') {
     await new Promise<void>(() => undefined);
   }
-  // SEGMENT TIMING. The parent now reports the worker span, and the orchestrator
-  // reports its own phase breakdown, but nothing attributed the gap BETWEEN them.
-  // Measured on prod (5,284-file repo): worker=320s with the orchestrator's own
-  // "Analysis completed in" at 163s — leaving ~157s inside this function
-  // unaccounted, which is the largest single unknown in the pipeline.
-  //
-  // This function has three awaited segments, each persisting as it lands
-  // (l0 -> rest -> enrichment), so the missing time belongs to one of them and
-  // guessing which has already cost three misdirected attempts today. Time each.
+
+
+
+
+
+
+
+
+
   const workerStartedAt = Date.now();
   let l0DoneAt = workerStartedAt;
   let restDoneAt = workerStartedAt;
@@ -125,42 +132,47 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
     l0DoneAt = Date.now();
     sendPhase(request.id, 'l0', 'succeeded');
   } catch (error) {
-    // analyzeProjectLayered's own L0 path already swallows the common
-    // lock-contention case internally (see its withProjectAnalysisLockIfAvailable
-    // .catch) — a rejection here means computeL0Index/buildL0OnlyCas itself
-    // threw, which also fails `rest` below (it chains off l0Promise), so no
-    // CAS landed at all for this attempt.
+
+
+
+
+
     sendPhase(request.id, 'l0', 'failed', errorMessage(error));
   }
 
   if (process.env.KLAURO_TEST_ANALYSIS_WORKER_CRASH === 'sigkill-after-l0') {
-    // Test hook: emulate a mid-pipeline OOM/crash AFTER L0 has landed but
-    // before L1-4 (`rest`) completes — the scenario that left a hung
-    // 'in-progress' record with no terminal state in the real incident.
+
+
+
     process.kill(process.pid, 'SIGKILL');
   }
 
   let deferred: Awaited<typeof layered.rest>;
   try {
     deferred = await layered.rest;
+    applyLayeredAnalysisMetadata(deferred.output, request);
     restDoneAt = Date.now();
     sendPhase(request.id, 'rest', 'succeeded');
   } catch (error) {
     sendPhase(request.id, 'rest', 'failed', errorMessage(error));
-    throw error; // nothing landed beyond (at best) the L0 stub; fail the whole job
+    throw error;
   }
 
   if (process.env.KLAURO_TEST_ANALYSIS_WORKER_CRASH === 'sigkill-after-rest') {
-    // Test hook: L1-4 landed, but the child dies before/during L5 enrichment.
+
     process.kill(process.pid, 'SIGKILL');
   }
 
+  const enrichmentPersistsOutput = deferred.output.ai_enrichment === 'pending';
   await deferred.enrichment.catch(() => {
-    // analyzeProjectDeferred/Layered already mark ai_enrichment='error' and
-    // persist it on any enrichment failure (comprehension is AI-only, no
-    // deterministic substitute — docs/cas/DETERMINISM-BOUNDARY.md); this catch
-    // just prevents that (already-handled) rejection from failing this job.
+
+
+
+
   });
+  if ((request.repoFacts || request.repoFactsUnavailable) && !enrichmentPersistsOutput) {
+    await saveAnalysis(request.projectPath, deferred.output);
+  }
   const aiEnrichment = deferred.output.ai_enrichment;
   sendPhase(
     request.id,
@@ -182,9 +194,10 @@ let jobChain: Promise<unknown> = Promise.resolve();
 
 async function handleRequest(request: WorkerRequest): Promise<void> {
   applyEnvSnapshot(request.env);
+  if (request.type === 'layered') applyAnalysisFocus(request.analysisFocus);
 
   if (process.env.KLAURO_TEST_ANALYSIS_WORKER_CRASH === 'sigkill') {
-    // Test hook: emulate an abrupt heap abort after the run-start record exists.
+
     new AnalysisRunLog(request.projectPath, `analysis_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
     process.kill(process.pid, 'SIGKILL');
     return;

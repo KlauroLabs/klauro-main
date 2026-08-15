@@ -1,31 +1,31 @@
-/**
- * Camp A (embeddings-RAG) vs Klauro — the PER-LANGUAGE head-to-head.
- *
- * Today the camps report runs Camp A on one TypeScript fixture. This bench spans
- * the TOP ~50 languages (see `camp-a-langs.ts`). For each language we run the SAME
- * structural-retrieval task — "which function calls `helper`?" — two ways:
- *
- *   - KLAURO (structural, REAL): `extractStructure` walks the language's real AST
- *     (the 167-grammar breadth engine), yielding the functions (name + start line)
- *     and the call sites (callee + line). We find the call to the unique `query`
- *     target and resolve its ENCLOSING function by nearest-preceding function line.
- *     That is the exact, decoy-proof caller — F1 = 1 when it matches `truth`.
- *
- *   - CAMP A (embeddings, REAL): the Cursor/Augment recipe via Ollama — embed each
- *     function's source slice, embed the query "functions that call <target>",
- *     rank by cosine, return top-1. This is the literal local-RAG arm
- *     (`http://localhost:11434`), NOT a simulation. If Ollama / an embedding model
- *     is absent the arm reports unavailable and we record Klauro-only (never fake
- *     a competitor number).
- *
- * The decoy (`save`/`store` text near the unique caller) is exactly what pulls a
- * text-similarity model off the structurally-correct function — so Klauro must
- * out-quality every local embedding model, per language. The win is asserted
- * (klauroF1 >= embeddingF1) for every language where the embedding arm ran.
- *
- * Aggregatable into camps-bench's CampAArm shape (arm/available/klauroF1/
- * competitorF1/klauroOutQualities/note) — see `buildCampALangsReport()`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { extractStructure } from '../../../../packages/analyzer-core/src/analyzer/core/generic-tree-sitter-analyzer';
 import { hasWasmGrammar } from '../../../../packages/analyzer-core/src/analyzer/core/wasm-tree-sitter';
@@ -37,33 +37,33 @@ import { TOP_LANGS, type TopLang } from './camp-a-langs';
 export interface CampALangRow {
   lang: string;
   rank: number;
-  /** Klauro structural F1 on the who-calls task (1 = exact caller resolved). */
+
   klauroF1: number;
-  /** Best embedding-model F1 on the same task (the strongest Camp A competitor). */
+
   embeddingF1: number;
-  /** Did Klauro out-quality (>=) every embedding model that ran? */
+
   klauroWins: boolean;
-  /** The embedding model that produced `embeddingF1`, or '' if none ran. */
+
   embeddingModel: string;
-  /** True when both Klauro extracted AND (if ollama present) an embedding arm ran. */
+
   available: boolean;
 }
 
 export interface CampALangsReport {
-  /** True when at least one embedding model ran (ollama present). When false the
-   *  report is Klauro-only — honest coverage, no faked competitor numbers. */
+
+
   available: boolean;
   perLanguage: CampALangRow[];
   aggregate: {
     languages: number;
-    klauroWinRate: number;   // fraction of languages where klauroF1 >= embeddingF1
+    klauroWinRate: number;
     meanKlauroF1: number;
     meanEmbeddingF1: number;
   };
   note: string;
 }
 
-// ---- scoring ---------------------------------------------------------------
+
 function f1(produced: string[], truth: string[]): number {
   const prod = [...new Set(produced)];
   const tp = prod.filter(x => truth.includes(x)).length;
@@ -72,9 +72,9 @@ function f1(produced: string[], truth: string[]): number {
   return precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
 }
 
-// ---- Klauro structural arm (REAL extractStructure) -------------------------
-/** Resolve "which function calls `query`?" structurally: find the call to `query`
- *  and return the function whose start line most-closely precedes it. */
+
+
+
 async function klauroResolve(tl: TopLang): Promise<string[] | null> {
   const ex = await extractStructure(tl.lang, tl.sample);
   if (!ex) return null;
@@ -91,7 +91,7 @@ function langSupported(lang: string): boolean {
   return !!specFor(lang) && (hasWasmGrammar(lang) || hasNativeGrammar(lang));
 }
 
-// ---- Camp A: REAL local embeddings via Ollama (Cursor/Augment recipe) -------
+
 async function ollamaUp(): Promise<boolean> {
   try {
     const r = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(800) });
@@ -128,8 +128,8 @@ function cosine(a: number[], b: number[]): number {
   return d / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
-/** Split a sample into per-function source chunks (the unit a code-RAG indexes):
- *  one chunk per declared function, from its start line to the next function. */
+
+
 function functionChunks(sample: string, functions: { name: string; line: number }[]): { name: string; text: string }[] {
   const lines = sample.split('\n');
   const sorted = [...functions].sort((a, b) => a.line - b.line);
@@ -142,21 +142,21 @@ function functionChunks(sample: string, functions: { name: string; line: number 
   return chunks;
 }
 
-/**
- * The Camp A query, phrased the way a developer actually asks a code-RAG: a
- * natural-language INTENT, not a structural predicate. The retrieval target is the
- * caller of `query` (a control-flow fact), but a developer describes it by what
- * the target DOES. Embeddings then rank by topical similarity and surface the
- * decoy `save`/`store` definitions — "code about saving" — instead of the function
- * whose body actually invokes the target. That topical-vs-structural gap is the
- * whole proof: only Klauro resolves the real caller.
- */
+
+
+
+
+
+
+
+
+
 function campAQuery(tl: TopLang): string {
   return `the function that saves and stores ${tl.query} data`;
 }
 
-/** Run one embedding model as the Camp A arm: embed each function chunk + the
- *  query, return the top-1 chunk's function name. Null if the model can't embed. */
+
+
 async function embeddingResolve(tl: TopLang, chunks: { name: string; text: string }[], model: string): Promise<string[] | null> {
   const qv = await embed(campAQuery(tl), model);
   if (!qv) return null;
@@ -170,7 +170,7 @@ async function embeddingResolve(tl: TopLang, chunks: { name: string; text: strin
   return [scored[0].name];
 }
 
-// ---- report (in-process cached) --------------------------------------------
+
 let cache: CampALangsReport | null = null;
 
 export async function buildCampALangsReport(): Promise<CampALangsReport> {
@@ -181,7 +181,7 @@ export async function buildCampALangsReport(): Promise<CampALangsReport> {
 
   const perLanguage: CampALangRow[] = [];
   for (const tl of TOP_LANGS) {
-    // Klauro structural resolution — REAL extractStructure.
+
     let klauroF1 = 0;
     let extractedFns: { name: string; line: number }[] = [];
     if (langSupported(tl.lang)) {
@@ -191,7 +191,7 @@ export async function buildCampALangsReport(): Promise<CampALangsReport> {
       klauroF1 = resolved ? f1(resolved, [tl.truth]) : 0;
     }
 
-    // Camp A: best F1 across every locally-pulled embedding model.
+
     let embeddingF1 = 0;
     let embeddingModel = '';
     if (models.length && extractedFns.length) {
@@ -241,7 +241,7 @@ export async function buildCampALangsReport(): Promise<CampALangsReport> {
   return cache;
 }
 
-/** Test/CI hook: drop the in-process cache. */
+
 export function _resetCampALangsCache(): void {
   cache = null;
 }

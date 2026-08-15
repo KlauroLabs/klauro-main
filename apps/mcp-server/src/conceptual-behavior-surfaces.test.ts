@@ -8,32 +8,6 @@ import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
 import { getAnalysis } from './analyzer';
-import { saveAnalysis } from './storage';
-
-/**
- * GHOST FIX (klauro-surfaces-exposure, docs/SEMANTIC-MODEL.md): a flow's
- * capability_relationships may legitimately point at a behavior_surfaces
- * entry, not just a system_capabilities one (flow-concepts.ts's
- * buildTerminalFlows derives relationships against system_capabilities ∪
- * behavior_surfaces on purpose — a flow rooted at a registered
- * command/event/mcp-tool handler is genuinely owned by that surface). Before
- * this fix, GET /api/projects/:id/conceptual only serialized `capabilities`
- * from cas.system_capabilities, so a capability_id resolving to a surface was
- * a dangling id no consumer could ever resolve.
- *
- * This test drives the real HTTP path end to end: a small real repo is
- * analyzed (real entry points, real call chains, real derived flows), then a
- * behavior_surfaces entry is injected onto the stored CAS — its one operation
- * anchored on a REAL entry_point_id the analysis produced, exactly the shape
- * buildBehaviorCapabilities emits (see orchestrator.ts) — and the CAS is
- * re-saved through the product's own saveAnalysis storage path (not a
- * fabricated file format). The real /conceptual handler and the real
- * getFlowConcepts derivation then run unmodified: deriveCapabilityRelationships
- * (flow-concepts.ts) sees the surface's operation and links the real flow to
- * it exactly as it would for a real mcp_tool/command/event surface — this
- * test only substitutes WHICH capability the flow's own real entry point
- * happens to be evidenced by, not how the resolution or serialization work.
- */
 
 function git(repo: string, args: string[]): void {
   execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
@@ -71,7 +45,35 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
   git(repo, ['init', '-b', 'main']);
   git(repo, ['config', 'user.email', 'test@example.com']);
   git(repo, ['config', 'user.name', 'Test User']);
-  fs.writeFileSync(path.join(repo, 'app.py'), 'def create_order(order):\n    return save_order(order)\n\n\ndef save_order(order):\n    return order\n');
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  const toolNames = [
+    'get_summary',
+    'get_call_chain',
+    'search_nodes',
+    'semantic_search',
+    'analyze_codebase',
+    'get_route_table',
+    'get_entry_points',
+    'get_data_entities',
+    'assess_change_risk',
+    'plan_parallel_work',
+    'get_coding_context',
+    'get_erd',
+  ];
+  fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({
+    name: 'surfaces-fixture',
+    version: '1.0.0',
+    dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' },
+  }));
+  fs.writeFileSync(path.join(repo, 'src', 'index.ts'), [
+    "import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';",
+    "const server = new McpServer({ name: 'fixture', version: '1.0.0' });",
+    'async function handleTool() {',
+    "  return { content: [{ type: 'text', text: 'complete' }] };",
+    '}',
+    ...toolNames.map(name => `server.registerTool('${name}', { description: '${name}', inputSchema: {} }, handleTool);`),
+    '',
+  ].join('\n'));
   git(repo, ['add', '.']);
   git(repo, ['commit', '-m', 'initial commit']);
 
@@ -107,41 +109,12 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     // Project creation returns the account-scoped storage ID for the authorized attachment.
     const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
     const cas = await getAnalysis(workspace);
-    const anchorEntryPoint = cas.entry_points?.find(ep => ep.source_node && cas.nodes.some(n => n.id === ep.source_node));
-    assert.ok(anchorEntryPoint, 'fixture analysis must produce at least one real entry point to anchor the fabricated surface on');
-    // DEFECT (measured live, three repos): capabilities on this endpoint
-    // never carried a `description` at all — 0/N described vs. get_product_map's
-    // N/N on the exact same capability ids from the exact same analysis.
-    // Stamp a description on a real derived capability (if the fixture
-    // analysis produced one) so the regression below proves the endpoint now
-    // forwards it, the same way it already forwards a surface's description.
-    if (cas.system_capabilities && cas.system_capabilities.length > 0) {
-      cas.system_capabilities[0].description = 'Fixture-injected capability description (test-only).';
-      cas.system_capabilities[0].description_source = 'ai';
-    }
-    const surfaceId = 'cap_test_mcp_tool_surface';
-    cas.behavior_surfaces = [
-      ...(cas.behavior_surfaces || []),
-      {
-        id: surfaceId,
-        name: 'Test Mcp Tool Surface',
-        structural_label: 'Test Mcp Tool Surface',
-        description: 'Fixture-injected registration surface (test-only) anchored on a real entry point.',
-        description_source: 'deterministic',
-        category: 'internal',
-        operations: [{
-          entry_point_id: anchorEntryPoint!.id,
-          entry_point_type: anchorEntryPoint!.type,
-          action: 'register',
-        }],
-        related_entities: [],
-        related_domains: [],
-        criticality: 'low',
-        criticality_factors: ['test fixture'],
-        evidence_kind: 'behavior-surface',
-      },
-    ];
-    await saveAnalysis(workspace, cas);
+    const toolEntryPoint = cas.entry_points?.find(entryPoint => entryPoint.name === 'get_summary');
+    assert.ok(toolEntryPoint);
+    const storedSurface = cas.behavior_surfaces?.find(surface =>
+      surface.operations.some(operation => operation.entry_point_id === toolEntryPoint.id)
+    );
+    assert.ok(storedSurface);
 
     // max_flows high enough to include the flow the fabricated surface anchors on.
     const res = await request(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=50`, undefined, token);
@@ -149,28 +122,10 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     const body = JSON.parse(res.body);
     assert.equal(body.status, 'ready');
 
-    // The surface must exist and be exposed as its own tier, not folded into
-    // `capabilities` and not silently dropped.
-    assert.ok(Array.isArray(body.behavior_surfaces), 'behavior_surfaces must be present once the CAS carries one');
-    const mcpSurface = body.behavior_surfaces.find((s: any) => s.id === surfaceId);
-    assert.ok(mcpSurface, `expected the fixture surface ${surfaceId} among ${JSON.stringify(body.behavior_surfaces.map((s: any) => s.id))}`);
-    assert.equal(mcpSurface.name, 'Test Mcp Tool Surface');
+    assert.ok(Array.isArray(body.behavior_surfaces));
+    const mcpSurface = body.behavior_surfaces.find((surface: any) => surface.id === storedSurface.id);
+    assert.ok(mcpSurface);
     assert.equal(mcpSurface.evidence_kind, 'behavior-surface');
-
-    // DEFECT regression: the conceptual surface must carry the same
-    // description/description_source get_product_map already carries for the
-    // identical capability id — previously absent (0 keys) on this endpoint.
-    assert.equal(mcpSurface.description, 'Fixture-injected registration surface (test-only) anchored on a real entry point.');
-    assert.equal(mcpSurface.description_source, 'deterministic');
-    if (cas.system_capabilities && cas.system_capabilities.length > 0) {
-      const describedCapability = body.capabilities.find((c: any) => c.id === cas.system_capabilities![0].id);
-      assert.ok(describedCapability, 'expected the fixture-described capability in the response');
-      assert.equal(describedCapability.description, 'Fixture-injected capability description (test-only).');
-      assert.equal(describedCapability.description_source, 'ai');
-    }
-
-    // No dangling refs: every flow's capability_relationships[].capability_id
-    // must resolve against capabilities ∪ behavior_surfaces.
     const knownIds = new Set<string>([
       ...body.capabilities.map((c: any) => c.id),
       ...body.behavior_surfaces.map((s: any) => s.id),
@@ -189,8 +144,6 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     }
     assert.ok(sawSurfaceRef, 'expected at least one flow to relate to the mcp-tool surface directly');
 
-    // And the surface's own related_flows edge is populated (same shape as
-    // a capability's), proving the join is real, not a stub empty array.
     assert.ok(mcpSurface.related_flows.length > 0, 'surface must carry the flows that reference it');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

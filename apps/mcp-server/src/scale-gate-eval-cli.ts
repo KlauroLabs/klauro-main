@@ -1,10 +1,10 @@
-/**
- * Thin CLI wrapper around evaluateScaleGateObservation() for
- * scale-survivability-gate.sh — takes the observation as a single JSON arg
- * (so the shell runner never has to duplicate the evaluation logic) and
- * prints the finding as JSON on stdout, exiting non-zero on failure.
- * Run via `tsx` directly; no build step required.
- */
+
+
+
+
+
+
+
 import { evaluateScaleGateObservation, DEFAULT_SCALE_GATE_BUDGETS, type ScaleGateObservation, type ScaleGateBudgets } from './scale-survivability-gate';
 
 function main() {

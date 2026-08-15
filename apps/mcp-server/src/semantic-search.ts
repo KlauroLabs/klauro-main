@@ -17,21 +17,21 @@ export interface SemanticSearchOptions {
   files?: string[];
   types?: string[];
   mode?: 'lexical' | 'semantic' | 'hybrid';
-  /**
-   * 'compact' (default): drop the sub-score breakdown and graph_context,
-   * keep a single final score, and lower the default limit — see
-   * docs/SPEC-RESPONSE-BUDGET.md §4. 'full' restores today's shape
-   * (all sub-scores + graph_context) at the historical default limit.
-   */
+
+
+
+
+
+
   detail?: 'compact' | 'full';
-  /**
-   * Freshness-gated CAS loader override. Callers on the agent-entry path (e.g.
-   * search_nodes) pass getFreshAnalysisForAgent here so semantic/hybrid search
-   * reads a refreshed CAS instead of the raw stored one; defaults to the plain
-   * getAnalysis(path) for callers that don't need the guarantee. Keeping this as
-   * an injected function avoids a circular import between semantic-search.ts and
-   * server.ts (the freshness gate lives in server.ts).
-   */
+
+
+
+
+
+
+
+
   getCas?: (projectPath: string) => Promise<CASOutput>;
 }
 
@@ -76,9 +76,9 @@ export async function semanticSearch(
   options: SemanticSearchOptions = {},
 ): Promise<SemanticSearchResponse> {
   const detail = options.detail || 'compact';
-  // compact default (8) covers what most agents actually consume from a
-  // search (top 3-5 results) without replaying ~20 unused hits on every
-  // subsequent turn; full keeps the historical default of 25.
+
+
+
   const defaultLimit = detail === 'full' ? 25 : 8;
   const limit = options.limit && options.limit > 0 ? options.limit : defaultLimit;
   const cas = await (options.getCas ? options.getCas(projectPath) : getAnalysis(projectPath));
@@ -262,14 +262,14 @@ export function fuseAndRank(
     }
   }
 
-  // Symbol-name boost: when the query looks like an identifier (buildSummary,
-  // searchNodes, AnalyzerOrchestrator, ...), a node whose own name matches it
-  // should win regardless of how the embedding happens to score — semantic
-  // similarity is a heuristic for concept queries, but for a literal symbol
-  // name the ground truth is the name itself. This runs as an additive tier
-  // ABOVE the RRF/structural blend rather than replacing it, so hybrid/semantic
-  // ranking is unaffected for natural-language queries (which rarely produce a
-  // nameMatchTier > 0 for anything).
+
+
+
+
+
+
+
+
   const nameMatchTier = new Map<string, number>();
   if (isSymbolLikeQuery(query)) {
     for (const id of candidateIds) {
@@ -277,10 +277,10 @@ export function fuseAndRank(
       if (!node) continue;
       nameMatchTier.set(id, computeNameMatchTier(node, queryLower));
     }
-    // Symbol-like queries can also hit names that never surfaced in the
-    // vector/lexical candidate pool at all (e.g. index skipped it, or the
-    // hash-embedding provider scored an unrelated node higher). Pull in any
-    // node with a strong name-tier match so it can compete for the top slot.
+
+
+
+
     for (const node of cas.nodes) {
       if (candidateIds.has(node.id) || !passesFilter(node, options)) continue;
       const tier = computeNameMatchTier(node, queryLower);
@@ -291,22 +291,22 @@ export function fuseAndRank(
     }
   }
 
-  // Intent-query name-token coverage. `isSymbolLikeQuery` only fires for a
-  // single identifier token, so a multi-word INTENT query ("orchestrate
-  // incremental analysis", "full rebuild reason") gets no name-level credit
-  // at all — a function literally named orchestrateIncrementalAnalysis scores
-  // zero for the query words that make up its own name, and with the local
-  // hash-embedding giving near-random semantic scores it loses to test-file
-  // namesakes and generic files. This computes, for multi-token queries, the
-  // fraction of QUERY content tokens covered by the node's own name/qualified-
-  // name word tokens, and lifts strongly-covered production control-flow /
-  // orchestration / decision functions (*orchestrate*/*rebuild*/*reason*/
-  // *decide*/*resolve* and other high-fan-in gates) so they surface for the
-  // intent that describes them. It occupies a score band BELOW the exact
-  // symbol tiers (so a literal symbol query still wins) and requires real
-  // coverage (>= a threshold) so pure natural-language concept queries that
-  // match no name tokens are unaffected — the base fused/structural blend
-  // still governs them.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const nameCoverageBoost = new Map<string, number>();
   const queryTokens = contentTokens(query);
   if (queryTokens.length >= 2) {
@@ -314,21 +314,21 @@ export function fuseAndRank(
     const considerCoverage = (node: CASNode): void => {
       const coverage = nameTokenCoverage(node, queryTokenSet);
       const controlFlow = controlFlowNudge(node);
-      // Require a majority of query tokens to land in the node's own name so a
-      // one-word overlap ("analysis" matching every *Analysis* type) can't
-      // hijack the band. Two-token queries need both; larger queries need
-      // >= 60%. Production control-flow / decision gates get a lower bar (>=
-      // 40%): a concept query like "incremental analysis cache reuse decision"
-      // only shares "incremental"+"analysis" with orchestrateIncrementalAnalysis,
-      // but that partial-plus-control-flow match is exactly the decision point
-      // the query is after, and the CONTROL_FLOW_NAME gate keeps noise out.
+
+
+
+
+
+
+
+
       const baseThreshold = queryTokenSet.size <= 2 ? 1 : 0.6;
       const threshold = controlFlow > 0 ? Math.min(baseThreshold, 0.4) : baseThreshold;
       if (coverage < threshold) return;
-      // Graded within a sub-tier: coverage in [threshold,1] maps to (0,0.6],
-      // plus a decision/control-flow nudge (up to +0.4) so a production gate
-      // function outranks an identically-named test helper. The whole boost
-      // stays < 1 so it never crosses into the exact-symbol tier-1 band above.
+
+
+
+
       const boost = 0.6 * coverage + 0.4 * controlFlow;
       const existing = nameCoverageBoost.get(node.id) ?? 0;
       if (boost > existing) nameCoverageBoost.set(node.id, boost);
@@ -337,8 +337,8 @@ export function fuseAndRank(
       const node = nodesById.get(id);
       if (node) considerCoverage(node);
     }
-    // As with the symbol path, pull in strongly-covered nodes that never made
-    // the vector/lexical candidate pool so they can compete for the window.
+
+
     for (const node of cas.nodes) {
       if (candidateIds.has(node.id) || !passesFilter(node, options)) continue;
       const before = nameCoverageBoost.size;
@@ -370,18 +370,18 @@ export function fuseAndRank(
     const fusedNorm = maxFused > 0 ? (fused.get(entry.id) ?? 0) / maxFused : 0;
     const structural = graph.structuralScore(entry.id, candidateIds);
     const baseFinal = rerank.alpha * fusedNorm + rerank.beta * structural;
-    // Name-match tiers occupy disjoint score bands above the [0,1] base range
-    // (tier 3 = exact name >= 3, tier 2 = startsWith/contains >= 2, tier 1 =
-    // word-boundary token match >= 1) so a match always outranks every
-    // non-matching node, while ties within a tier still fall back to the
-    // normal fused/structural score.
+
+
+
+
+
     const tier = nameMatchTier.get(entry.id) ?? 0;
-    // Exact-symbol tiers dominate (band >= 1). Below them, the intent name-
-    // coverage boost lifts strongly-covered nodes above the plain fused/
-    // structural blend. The boost band ([0,1]) is kept strictly under tier 1
-    // by adding the base blend as a fractional tie-breaker (base is in [0,1],
-    // scaled by 0.999 so a coverage boost of 1.0 + max base can't reach 2.0
-    // and collide with a genuine tier-2 exact match).
+
+
+
+
+
+
     let final: number;
     if (tier > 0) {
       final = tier + baseFinal;
@@ -517,9 +517,9 @@ function toResult(
     framework_role: determineFrameworkRole(cas, node),
     file: node.source?.file,
     score: scores.final,
-    // compact (default): drop the semantic/lexical/structural sub-score
-    // breakdown and graph_context — diagnostic, not decision-relevant for
-    // most calls (docs/SPEC-RESPONSE-BUDGET.md §4). full restores both.
+
+
+
     ...(detail === 'full' ? {
       scores,
       graph_context: {
@@ -563,7 +563,7 @@ function resolveVectorStore(
 ): VectorStore | null {
   let resolved: 'file' | 'pgvector';
   if (setting === 'auto') {
-    // Availability decision, not a "mode": pgvector when a database is configured.
+
     resolved = process.env[databaseUrlEnv] ? 'pgvector' : 'file';
   } else {
     resolved = setting;
@@ -622,21 +622,21 @@ function rankToScore(rank: number, total: number): number {
   return (total - 1 - rank) / (total - 1);
 }
 
-// A query "looks like a symbol" when it's a single identifier-shaped token
-// (camelCase, PascalCase, snake_case, or a bare word) rather than a natural-
-// language phrase. Multi-word phrases ("where are driver status updates
-// handled") should keep using pure semantic/hybrid ranking — forcing a name
-// tier onto them would defeat the point of semantic search.
+
+
+
+
+
 function isSymbolLikeQuery(query: string): boolean {
   const trimmed = query.trim();
   if (!trimmed || /\s/.test(trimmed)) return false;
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(trimmed);
 }
 
-// Returns a tier: 3 = exact name/qualified-name match (case-insensitive),
-// 2 = name starts with or contains the query as a substring, 1 = the query
-// matches one of the node's camelCase/snake_case word tokens exactly,
-// 0 = no name-level match at all.
+
+
+
+
 function computeNameMatchTier(node: CASNode, queryLower: string): number {
   const nameLower = node.name.toLowerCase();
   const qualifiedLower = node.qualified_name?.toLowerCase();
@@ -652,27 +652,27 @@ function computeNameMatchTier(node: CASNode, queryLower: string): number {
   return 0;
 }
 
-// Stopwords stripped from intent queries before name-coverage matching so
-// filler ("the", "for", "reason") and generic retrieval verbs don't count as
-// covered/uncovered tokens. "reason" stays IN — it is a load-bearing word for
-// decision-gate names like fullRebuildReasonForPreviousOutput.
+
+
+
+
 const QUERY_STOPWORDS = new Set([
   'the', 'a', 'an', 'of', 'for', 'to', 'in', 'on', 'and', 'or', 'is', 'are',
   'how', 'where', 'what', 'which', 'when', 'do', 'does', 'this', 'that', 'with',
   'find', 'get', 'show', 'code', 'function', 'method',
 ]);
 
-// Content tokens of a query: camel/snake-split, lowercased, stopwords and
-// 1-char tokens dropped. Used to decide whether a query is "intent-shaped"
-// (>= 2 content tokens) and to measure name coverage.
+
+
+
 function contentTokens(query: string): string[] {
   return splitCamelCaseWords(query).filter(
     token => token.length > 1 && !QUERY_STOPWORDS.has(token),
   );
 }
 
-// Fraction of query content tokens that appear as word tokens of the node's own
-// name or qualified name. 1.0 means every query word is present in the name.
+
+
 function nameTokenCoverage(node: CASNode, queryTokens: Set<string>): number {
   if (queryTokens.size === 0) return 0;
   const nameWords = new Set(splitCamelCaseWords(node.name));
@@ -686,12 +686,12 @@ function nameTokenCoverage(node: CASNode, queryTokens: Set<string>): number {
   return covered / queryTokens.size;
 }
 
-// Control-flow / decision-gate signal in [0,1]: production (non-test) functions
-// and methods whose name reads as orchestration or a rebuild/reuse decision are
-// the real "why it runs" entry points an intent query is usually after. Test
-// helpers, types, and files that merely reuse the same words score 0 so they
-// don't get the extra lift. Deliberately name-shape based (not a keyword
-// categorizer of domain concepts): these are structural control-flow verbs.
+
+
+
+
+
+
 const CONTROL_FLOW_NAME = /orchestrat|rebuild|reason|decide|decision|resolve|dispatch|coordinat|invalidat|reconcile|schedule|gate|route/i;
 
 function controlFlowNudge(node: CASNode): number {

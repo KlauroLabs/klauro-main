@@ -8,6 +8,7 @@ import { saveAnalysis } from '../storage';
 import { appendClaim, announceEdit, recordUnclaimedEdit } from './local-store';
 import type { WorkClaim } from './types';
 import type { ConflictCas } from './conceptual-conflict';
+import { appendParticipantInFlightSnapshot } from './participant-in-flight-store';
 import {
   getInFlightSemanticDelta,
   getAttributedInFlightState,
@@ -78,7 +79,7 @@ function makeCas(opts: {
       criticality: c.criticality ?? 'medium',
       characteristics: {},
     })),
-    system_capabilities: [],
+    capabilities: [],
     analyzer_contributions: [],
   };
 }
@@ -237,6 +238,63 @@ test('getAttributedInFlightState: overlapping claims over the SAME change are un
   assert.ok(shared);
   assert.equal(shared!.reason, 'overlapping-claims');
   assert.deepEqual([...shared!.overlapping_agents!].sort(), ['agent-a', 'agent-b']);
+
+  await env.cleanup();
+});
+
+test('participant snapshots preserve overlapping changes as two attributed streams', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-overlapping-streams');
+  const now = new Date().toISOString();
+
+  await saveAnalysis(workspace, makeCas({
+    timestamp: now,
+    nodes: [{ id: 'sym:shared', name: 'shared', file: 'src/shared.ts', return_type: 'A' }],
+  }), 'main');
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-a', agent_id: 'agent-a', intent: 'refine shared result',
+    scope: { repo: workspace, paths: ['src/shared.ts'], symbols: [] },
+  }));
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-b', agent_id: 'agent-b', intent: 'refine shared result',
+    scope: { repo: workspace, paths: ['src/shared.ts'], symbols: [] },
+  }));
+  await appendParticipantInFlightSnapshot(workspace, {
+    workspace,
+    agent_id: 'agent-a',
+    base_commit: 'base',
+    diff_context: '{}',
+    updated_at: now,
+    attribution_source: 'participant-worktree',
+    changes: [{
+      symbol_id: 'sym:shared', name: 'shared', file: 'src/shared.ts', change_kind: 'return_type',
+      before: { return_type: 'A' }, after: { return_type: 'B' },
+    }],
+  });
+  await appendParticipantInFlightSnapshot(workspace, {
+    workspace,
+    agent_id: 'agent-b',
+    base_commit: 'base',
+    diff_context: '{}',
+    updated_at: now,
+    attribution_source: 'participant-worktree',
+    changes: [{
+      symbol_id: 'sym:shared', name: 'shared', file: 'src/shared.ts', change_kind: 'return_type',
+      before: { return_type: 'A' }, after: { return_type: 'C' },
+    }],
+  });
+
+  const attributed = await getAttributedInFlightState(workspace);
+  assert.deepEqual(attributed.participants.map((participant) => participant.agent_id).sort(), ['agent-a', 'agent-b']);
+  assert.equal(attributed.unattributed.length, 0);
+  assert.equal(attributed.participants[0].delta.changes.length, 1);
+  assert.equal(attributed.participants[1].delta.changes.length, 1);
+
+  const result = await detectConceptualConflictsFromSubstrate(workspace, {
+    nodes: [{ id: 'sym:shared', name: 'shared' }],
+    edges: [],
+  });
+  assert.ok(result.conflicts.some((conflict) => conflict.kind === 'duplicate-work'));
 
   await env.cleanup();
 });
@@ -452,7 +510,7 @@ test('detectConceptualConflictsFromSubstrate: W4 step 2 fold — a write-hook-TI
   // announced-edit whose lease has since expired (ttlMs: 0). getActiveClaims
   // will never see it, so src/profile.ts's delta can ONLY be resolved via the
   // write-hook tiebreaker (attributed.tiebroken), never attributed.participants.
-  await announceEdit(workspace, 'agent-b', ['src/profile.ts'], { intent: 'add avatar to renderProfile', ttlMs: 0 });
+  await announceEdit(workspace, 'agent-b', ['src/profile.ts'], { intent: 'add avatar to renderProfile', ttlMs: -1 });
 
   const cas: ConflictCas = {
     nodes: [

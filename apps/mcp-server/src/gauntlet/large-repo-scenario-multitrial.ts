@@ -1,33 +1,33 @@
-/**
- * #96 MULTI-TRIAL wrapper around large-repo-scenario.ts / autonomous-mcp-trial.ts /
- * deepinfra-agent.ts.
- *
- * WHY THIS EXISTS: a single-trial #96 run is not credible evidence. Across 3
- * back-to-back single-trial runs on this exact scenario, the Klauro arm's
- * task_success flipped TRUE -> FALSE while its own token usage stayed in a
- * tight band (207k-212k), and the BASELINE arm's tokens swung wildly on an
- * IDENTICAL setup (857 / 34,658 / 4,027). That is model non-determinism
- * (Llama-3.3-70B-Instruct-Turbo via DeepInfra), not signal. A single trial
- * cannot distinguish "Klauro helped" from "the model got a lucky/unlucky
- * rollout." This file runs N trials per arm and reports a DISTRIBUTION
- * (success rate, median + p25/p75 tokens, median quality, median duration)
- * instead of a single noisy number.
- *
- * This file does NOT modify large-repo-scenario.ts, autonomous-mcp-trial.ts,
- * or deepinfra-agent.ts — it composes their exported functions.
- *
- * CLI:
- *   tsx src/gauntlet/large-repo-scenario-multitrial.ts [--trials N] [--projected]
- *       [--max-iters N] [--model id] [--out dir]
- *
- * Without DEEPINFRA_API_KEY (checked in process.env AND in the repo-root
- * `.env`, since `.env` is not auto-loaded into the shell — see
- * large-repo-scenario.ts) this auto-falls-back to PROJECTED mode: it runs the
- * full harness wiring (materialize, task construction) with a FAKE runner
- * that produces a synthetic-but-labeled-as-projected distribution, so the
- * multi-trial code path and report shape are exercised with NO live LLM
- * calls and NO network, and the test suite can assert on it offline.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
@@ -47,11 +47,11 @@ import {
   type AgentRunner,
 } from './autonomous-mcp-trial';
 
-// ---------------------------------------------------------------------------
-// .env fallback (repo root `.env` is not auto-loaded into the shell — same
-// caveat large-repo-scenario.ts documents). Only used to DETECT the key for
-// the live/projected decision; never overwrites an already-set env var.
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 function loadDotEnvKey(key: string): string | undefined {
   if (process.env[key]) return process.env[key];
@@ -72,21 +72,21 @@ function loadDotEnvKey(key: string): string | undefined {
         }
       }
     } catch {
-      // ignore unreadable .env candidates
+
     }
   }
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Stats helpers — small, dependency-free, honest (no interpolation tricks).
-// ---------------------------------------------------------------------------
+
+
+
 
 function sorted(nums: number[]): number[] {
   return [...nums].sort((a, b) => a - b);
 }
 
-/** Nearest-rank percentile (simple, no interpolation) — fine for N in the 3-20 range. */
+
 function percentile(nums: number[], p: number): number {
   if (nums.length === 0) return 0;
   const xs = sorted(nums);
@@ -167,11 +167,11 @@ function summarizeArm(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Projected-mode synthetic runner. Deterministic (seeded by trial index) and
-// clearly out-of-band from real token magnitudes so it can never be mistaken
-// for a live result — the report's `mode: 'projected'` field is authoritative.
-// ---------------------------------------------------------------------------
+
+
+
+
+
 
 function createProjectedRunner(): AgentRunner {
   let call = 0;
@@ -192,25 +192,25 @@ function createProjectedRunner(): AgentRunner {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Orchestration.
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface RunMultiTrialOptions {
   trials?: number;
   forceProjected?: boolean;
   model?: string;
   maxIters?: number;
-  /** Temperature to request from the model (default 0 for determinism). */
+
   temperature?: number;
   keepWorkspaces?: boolean;
   outDir?: string;
-  /** Hard cap on trials actually executed live, independent of `trials` (cost/time guard). */
+
   maxLiveTrials?: number;
 }
 
 const DEFAULT_TRIALS = 5;
-/** Hard safety cap regardless of what the caller asks for — live LLM calls cost money/time. */
+
 const HARD_TRIAL_CAP = 10;
 
 export async function runLargeRepoMultiTrial(opts?: RunMultiTrialOptions): Promise<MultiTrialReport> {
@@ -222,8 +222,8 @@ export async function runLargeRepoMultiTrial(opts?: RunMultiTrialOptions): Promi
   const maxIters = opts?.maxIters ?? LARGE_REPO_MAX_ITERS;
   const temperature = opts?.temperature ?? 0;
 
-  // Pass the resolved key through to the child process env for the live runner,
-  // since we only found it via .env, not the ambient shell.
+
+
   if (apiKey && !process.env.DEEPINFRA_API_KEY) process.env.DEEPINFRA_API_KEY = apiKey;
 
   const serverUrl = resolveDeployedAnalyzer().serverUrl;
@@ -255,12 +255,12 @@ export async function runLargeRepoMultiTrial(opts?: RunMultiTrialOptions): Promi
     ? createProjectedRunner()
     : createDeepInfraDirectRunner({ model, maxIters });
 
-  // temperature pass-through: deepinfra-agent.ts's runAgentLoop hardcodes
-  // temperature: 0.2 in its chat request and does not expose a pass-through
-  // option. We do NOT modify deepinfra-agent.ts (out of scope / owned by
-  // another surface of this same task, and the instruction says without
-  // changing default behavior). Recorded honestly below instead of silently
-  // claiming determinism we can't deliver.
+
+
+
+
+
+
   const temperatureApplied: number | 'unsupported' = mode === 'live' ? 'unsupported' : temperature;
 
   const materialized = await materializeLargeRepoTask();
@@ -316,9 +316,9 @@ export async function runLargeRepoMultiTrial(opts?: RunMultiTrialOptions): Promi
   return report;
 }
 
-// ---------------------------------------------------------------------------
-// Reporting / CLI.
-// ---------------------------------------------------------------------------
+
+
+
 
 function fmtDist(d: ArmDistribution): string {
   return [

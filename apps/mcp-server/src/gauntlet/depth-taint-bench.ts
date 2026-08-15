@@ -1,71 +1,71 @@
-/**
- * DEPTH-1 — cross-function data/value-flow (source -> sink) head-to-head:
- * Klauro user-journey flow vs the REAL installed codebase-memory-mcp binary's
- * `trace_path` call-graph tracer.
- *
- * THE QUESTION (deepest Camp-C axis): "does tainted/sensitive data flow from a
- * SOURCE (an HTTP entry carrying req.body / user input / a PII field) to a SINK
- * (SQL query / fs write / external HTTP) ACROSS FUNCTIONS?" — answered as a
- * STRUCTURED fact, not a grep.
- *
- * ------------------------------------------------------------------------------
- * WHAT KLAURO'S DATA-FLOW ACTUALLY IS TODAY (grounded, not assumed):
- *
- *   Klauro has TWO data-flow surfaces in the CAS:
- *     1. `cas.data_lineage` (CASEntityLineage[]) — ENTITY-centric: per data
- *        entity, which functions WRITE it, which READ it, which external
- *        services RECEIVE it, and which boundaries it crosses. This is a
- *        cross-function *who-touches-this-entity* view, surfaced by the
- *        `get_data_lineage` MCP tool.
- *     2. `cas.user_journeys` (CASUserJourney[]) — the CROSS-FUNCTION SOURCE->SINK
- *        view. A journey binds an `entry` (the SOURCE — an HTTP handler taking
- *        req.body / user input), an ordered `steps` call chain ACROSS FUNCTIONS,
- *        and `terminal_entities` / `terminal_effects` (the SINK — the function /
- *        entity the chain terminates at: a SQL query, an fs write, an external
- *        HTTP call). Surfaced by the `get_user_journeys` MCP tool.
- *
- *   So the structured fact "data from SOURCE reaches SINK across functions" is
- *   carried by a JOURNEY: source = journey.entry (METHOD /path), path =
- *   journey.steps (the call hops), sink = journey.terminal_entities[].name.
- *
- *   HONEST SCOPE: this is *structural* cross-function flow (handler -> ... ->
- *   sink along the real call chain), NOT per-variable taint propagation. Klauro
- *   does not track an individual variable symbol byte-for-byte; it proves the
- *   call-chain flow from the user-input entry to the sink. That is precisely the
- *   "source -> sink across functions" fact this bench scores — and it correctly
- *   does NOT manufacture a flow for a decoy handler whose chain never reaches a
- *   sink (the decoy journey has an empty terminal_entities set).
- *
- * ------------------------------------------------------------------------------
- * CODEBASE-MEMORY AT ITS BEST (give the competitor its strongest shot):
- *
- *   cbm's `trace_path {project, function_name}` returns the call-graph neighbours
- *   of a function (callees + callers, by hop). That is a genuine call-edge graph
- *   — its best tool for "is there a path from A to B". We drive it at full
- *   strength: index the fixture, then trace_path from each truth entry function
- *   and walk callees to see if it can reach the sink function.
- *
- *   But cbm has NO value-flow / taint concept and NO HTTP-source concept:
- *     - The SOURCE here is `req.body.x` at an inline `app.post(...)` handler. cbm
- *       has no Route node for inline handlers and no notion that req.body is
- *       tainted user input; the caller it reports is just `server.ts`. It cannot
- *       BIND the source `POST /path` to anything.
- *     - Even where its call edges reach the sink FUNCTION, cbm only asserts "f
- *       calls g", never "the DATA from the source reaches g". It cannot state the
- *       source->sink *flow* fact, only a call adjacency.
- *     - For the decoy it equally cannot say "does NOT reach a sink" because it has
- *       no sink concept at all.
- *
- *   Therefore cbm's source->sink tuple set is empty: it can produce call-edge
- *   fragments but never the structured (HTTP source -> sink, reaches) fact. We
- *   record what trace_path DID return (its callee reach) for full transparency.
- *
- * VERDICT (out-of-category by construction, measured honestly):
- *   - win  : cbm cannot produce the source->sink flow (F1 strictly below Klauro).
- *   - tie  : cbm somehow produces a source->sink set with F1 >= Klauro (would be
- *            surprising; surfaced honestly if it happens).
- *   - loss : cbm STRICTLY beats Klauro on source->sink F1 -> surface LOUD.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -91,7 +91,7 @@ interface TaintTruth {
   sink_functions: string[];
 }
 
-/** A normalized source->sink flow tuple "SOURCE => SINK [hop|hop]". */
+
 function flowKey(source: string, sink: string, hops: string[]): string {
   return `${source.trim()} => ${sink.trim()} [${[...hops].sort().join('|')}]`;
 }
@@ -102,17 +102,17 @@ export interface DepthTaintCaseResult {
   fixture: string;
   sinkKind: string;
   truthFlows: string[];
-  /** Klauro's emitted source->sink flow tuples (from user journeys). */
+
   klauroFlows: string[];
   klauroF1: number;
   klauroTokens: number;
-  /** cbm's source->sink flow tuples (empty — it has no value-flow/HTTP-source). */
+
   cbmFlows: string[];
   cbmF1: number;
   cbmTokens: number;
-  /** What cbm.trace_path DID surface (call-edge reach), for transparency. */
+
   cbmTracePath: string;
-  /** Did Klauro correctly refuse to claim a source->sink flow for the decoy? */
+
   decoyHandledByKlauro: boolean | null;
   verdict: TaintVerdict;
   tokenSaving: number;
@@ -120,9 +120,9 @@ export interface DepthTaintCaseResult {
 
 export interface DepthTaintReport {
   available: boolean;
-  /** The MCP query path that surfaced Klauro's cross-function source->sink fact. */
+
   klauroQueryPath: string;
-  /** What cbm's best tool is and why it cannot produce the fact. */
+
   cbmQueryPath: string;
   results: DepthTaintCaseResult[];
   aggregate: {
@@ -159,32 +159,32 @@ function normEntry(j: any): string {
   return method && p ? `${method} ${p}` : (j?.entry?.name || j?.name || '');
 }
 
-/**
- * Klauro: orchestrate -> get_user_journeys, then read each journey as a
- * cross-function source->sink flow. source = entry (METHOD /path), sink =
- * terminal_entities[].name, path = the function hops in steps. A journey with no
- * terminal entity (the decoy) yields NO flow tuple — Klauro does not manufacture
- * a sink-reaching flow where the chain never reaches one.
- */
+
+
+
+
+
+
+
 async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: number }> {
   const cas: any = await analyzeForBench(dir);
-  // get_user_journeys (list form) confirms the journeys exist + are paginated for
-  // an agent; the per-journey `steps` call chain is on the detail view
-  // (get_user_journeys {journey_id}) / the raw cas.user_journeys. We read the full
-  // journeys (with steps) here — the same data the detail MCP call returns.
+
+
+
+
   const listed: any = getUserJourneys(cas, { limit: 200 });
-  void listed; // surfaced the list query path; flow detail comes from full journeys
+  void listed;
   const journeys: any[] = cas.user_journeys || [];
   const flows: string[] = [];
   for (const j of journeys) {
     const source = normEntry(j);
     const stepNames: string[] = (j.steps || []).map((s: any) => s.name);
-    // The function hops in this journey's call chain (drop the route step itself).
+
     const hops = stepNames.filter(n => n && n !== source && !/\s\//.test(n));
     for (const t of j.terminal_entities || []) {
       const sink = t?.name;
       if (!sink) continue;
-      // The sink function is part of the chain; include it among the hops.
+
       const hopSet = [...new Set([...hops, sink])];
       flows.push(flowKey(source, sink, hopSet));
     }
@@ -193,15 +193,15 @@ async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: numbe
   return { flows: uniq, bytes: Buffer.byteLength(JSON.stringify(uniq), 'utf8') };
 }
 
-/**
- * codebase-memory at its BEST: index the fixture, then trace_path from each truth
- * entry function and walk callees (BFS) to see whether it can reach a known sink
- * function via call edges. Returns:
- *   - flows : cbm's source->sink TUPLE set. cbm has no HTTP-source binding and no
- *             value-flow, so it cannot emit the (POST /path -> sink) fact -> [].
- *   - trace : a transparency string of what trace_path actually surfaced (which
- *             sink functions its call edges reach from the entry function).
- */
+
+
+
+
+
+
+
+
+
 function cbmFlows(
   dir: string,
   truth: TaintTruth,
@@ -245,7 +245,7 @@ function cbmFlows(
     return (parsed.callees || []).map((c: any) => String(c.name));
   };
 
-  // BFS over call edges from each entry function — cbm's strongest reachability.
+
   for (const entry of truth.entry_functions) {
     const seen = new Set<string>([entry]);
     const queue = [entry];
@@ -262,10 +262,10 @@ function cbmFlows(
   }
 
   const uniqReaches = [...new Set(tracedReaches)];
-  // cbm's call edges may REACH the sink function, but it cannot bind the HTTP
-  // SOURCE (req.body at the inline handler) nor assert the DATA flows — so it
-  // produces ZERO source->sink flow tuples. We surface the call-edge reach for
-  // honesty.
+
+
+
+
   const trace = uniqReaches.length
     ? `trace_path call-edge reach: ${uniqReaches.join(', ')} (call adjacency only — no HTTP source binding, no value-flow)`
     : 'trace_path: no call-edge reach to a sink function';
@@ -275,17 +275,17 @@ function cbmFlows(
 
 let cached: DepthTaintReport | null = null;
 
-/**
- * Build the DEPTH-1 cross-function source->sink head-to-head vs the real
- * codebase-memory binary.
- *
- * Signature for central integration (camps-bench.ts / dashboard.html):
- *   import { buildDepthTaintReport } from './depth-taint-bench';
- *   const report = await buildDepthTaintReport();
- *   // report.available === false when the cbm binary is not installed.
- *
- * Result is cached in-process after the first build.
- */
+
+
+
+
+
+
+
+
+
+
+
 export async function buildDepthTaintReport(): Promise<DepthTaintReport> {
   if (cached) return cached;
 
@@ -311,10 +311,10 @@ export async function buildDepthTaintReport(): Promise<DepthTaintReport> {
       : { flows: [] as string[], bytes: 0, trace: 'cbm absent' };
     const cbmF1 = f1(cbm.flows, truthFlows);
 
-    // Decoy check: for the decoy fixture, Klauro must NOT emit a source->sink
-    // flow whose SOURCE is the decoy entry (the same-named var that never reaches
-    // a sink). decoyHandledByKlauro = true iff no Klauro flow starts at a decoy
-    // source.
+
+
+
+
     let decoyHandledByKlauro: boolean | null = null;
     if (truth.decoys.length > 0) {
       const decoySources = new Set(truth.decoys.map(d => d.source.trim()));
@@ -331,8 +331,8 @@ export async function buildDepthTaintReport(): Promise<DepthTaintReport> {
     if (cbm.flows.length > 0) {
       cbmTokens = toTokens(cbm.bytes);
     } else {
-      // cbm produced no flow fact; model its read cost as the source bytes it had
-      // to ingest (plus any trace_path output) to (fail to) answer.
+
+
       let srcBytes = cbm.bytes;
       try {
         for (const f of await fs.readdir(dir)) {
@@ -340,7 +340,7 @@ export async function buildDepthTaintReport(): Promise<DepthTaintReport> {
           const st = await fs.stat(path.join(dir, f));
           if (st.isFile()) srcBytes += st.size;
         }
-      } catch { /* noop */ }
+      } catch {   }
       cbmTokens = toTokens(srcBytes);
     }
     const tokenSaving = cbmTokens > 0 ? (cbmTokens - klauroTokens) / cbmTokens : 0;
@@ -395,7 +395,7 @@ export async function buildDepthTaintReport(): Promise<DepthTaintReport> {
   return cached;
 }
 
-/** Test/diagnostic hook: clear the in-process cache. */
+
 export function __resetDepthTaintCache(): void {
   cached = null;
 }

@@ -1,17 +1,17 @@
-/**
- * Gauntlet CLI.
- *
- *   npm run gauntlet:run            # projected run across all scenarios, writes report
- *   npm run gauntlet:run -- --live  # escalate agent scenarios to real runs
- *   npm run gauntlet:ui             # serve the dashboard (auto-runs if no report yet)
- *
- * Flags:
- *   --live                 real agent runs for agent scenarios (costly)
- *   --max-repos <n>        cap repos feeding projections (default 12)
- *   --scenarios a,b,c      only run these scenario ids
- *   --ui                   start the UI server after the run
- *   --port <n>             UI port (default 7878)
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { isDirectCliInvocation } from '../cli-invocation';
 import { runGauntlet, gauntletHomeDir } from './runner';
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { printHelp(); return; }
 
-  // --agent fills ready launcher commands; --judge enables LLM-judged quality.
+
   if (args.judge) process.env.KLAURO_JUDGE = '1';
   const agentDefaults = args.agent ? defaultAgentCommands(args.agent) : undefined;
 

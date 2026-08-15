@@ -2,45 +2,45 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { findStoredAccountOwningProject, listStoredAccounts } from './connector-auth';
 import { probeHostedProjectBinding } from './klauro-config';
 
-/**
- * Transport for the installed MCP client's hosted read/query calls.
- *
- * Every hosted MCP tool funnels through one of two callers in
- * installed-client-server.ts, so whatever those two do on a transport failure
- * IS the product's failure behaviour for the entire tool surface. Bare
- * `fetch()` there means a single transient network condition presents to the
- * agent as the two-word string `fetch failed`: no URL, no cause, no
- * remediation, and no retry — an agent that receives it has no next step.
- *
- * Three constraints therefore hold here:
- *
- *  1. A transport error MUST be retried before it is reported. Node's fetch
- *     rejects identically for a permanent misconfiguration and a one-off reset
- *     or TLS record failure, and the upload path already treats that class as
- *     retriable; the read path must not be the only surface where a blip is
- *     terminal.
- *  2. A reported error MUST carry the unwrapped `cause` chain, the target URL,
- *     and a remediation naming a command the shipped CLI implements. Node wraps
- *     every network-level failure in an opaque `TypeError: fetch failed` whose
- *     real content lives in `error.cause` (recursively) — reporting the wrapper
- *     alone discards the entire diagnosis.
- *  3. A retry MUST NOT reuse the connection that just failed. The server
- *     negotiates HTTP/2, and Node's global `fetch` pools that h2 session per
- *     origin for the lifetime of the process. When the server side of that
- *     session is torn down (a deploy restart, which recycles the API
- *     container), the pooled session does not self-heal: every subsequent
- *     `fetch()` to that origin hands back the same destroyed session and
- *     fails identically forever, with no client-visible way to evict it. This
- *     module therefore owns its own `undici` dispatcher instead of using
- *     global `fetch`, so a dead-session error can throw the pooled connection
- *     away and force a real, fresh TCP+TLS+h2 handshake on the very next
- *     attempt.
- */
 
-/** The dispatcher (connection pool) `hostedFetch` and the hosted-upload path
- *  share, so both surfaces evict the same broken h2 session at once rather
- *  than one healing while the other stays stuck on a pool of its own. Lazily
- *  created so tests that never call `hostedFetch` never open a socket. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 let hostedDispatcher: Agent | undefined;
 
 export function getHostedDispatcher(): Agent {
@@ -48,33 +48,33 @@ export function getHostedDispatcher(): Agent {
   return hostedDispatcher;
 }
 
-/** Throw away the current pooled connection(s) so the next request opens a
- *  fresh one. Called after a dead-connection error, never on a healthy path —
- *  destroying a live session on every retriable blip would turn a working
- *  keep-alive connection into a fresh handshake on every timeout. `destroy()`
- *  is fire-and-forget: the pooled session is already useless, so cleanup must
- *  not delay the retry that follows it. */
+
+
+
+
+
+
 export function resetHostedDispatcher(): void {
   const stale = hostedDispatcher;
   hostedDispatcher = undefined;
   if (stale) stale.destroy().catch(() => {});
 }
 
-/** Node/undici error codes that mean the specific connection or h2 session
- *  just used is gone, not that the server or network path is unreachable.
- *  Retrying on the SAME pooled connection would fail identically forever
- *  (this is exactly the bug: a session cached across a server restart never
- *  recovers on its own) — a retry on one of these must force a fresh
- *  connection first. */
+
+
+
+
+
+
 const DEAD_CONNECTION_CODES = new Set([
   'ERR_HTTP2_INVALID_SESSION', 'ERR_HTTP2_GOAWAY_SESSION', 'ERR_HTTP2_SESSION_ERROR',
   'ERR_HTTP2_STREAM_ERROR', 'ERR_HTTP2_STREAM_CANCEL', 'ECONNRESET', 'UND_ERR_SOCKET',
 ]);
 
-/** True when the failure is a specific connection/session having died under
- *  us, rather than the destination being unreachable. Checked in addition to
- *  `code` because some Node versions surface the destroyed-session condition
- *  as message text on a generic error without populating `code`. */
+
+
+
+
 export function isDeadConnectionError(error: unknown): boolean {
   const code = findErrorCode(error);
   if (code && DEAD_CONNECTION_CODES.has(code)) return true;
@@ -82,17 +82,17 @@ export function isDeadConnectionError(error: unknown): boolean {
   return /session has been destroyed|session is closed|other side closed|socket hang up/i.test(text);
 }
 
-/** Per-request timeout. Hosted reads are slices, not uploads, so this is far
- *  below the upload timeout: past this point a hang is more useful reported
- *  than waited on. */
+
+
+
 function hostedRequestTimeoutMs(): number {
   const override = Number(process.env.KLAURO_HOSTED_REQUEST_TIMEOUT_MS);
   return Number.isFinite(override) && override > 0 ? override : 60_000;
 }
 
-/** Backoff before attempts 2-4. Kept short: a hosted read is on an agent's
- *  critical path, so the ladder must outlast a restart blip without turning a
- *  hard-down server into a minute of silence. */
+
+
+
 function hostedRetryDelaysMs(): number[] {
   const override = Number(process.env.KLAURO_HOSTED_RETRY_DELAY_MS);
   if (Number.isFinite(override) && override >= 0) return [override, override, override];
@@ -103,8 +103,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/** Carries the diagnosis so callers can re-report it verbatim rather than
- *  re-deriving it from a message string. */
+
+
 export class HostedTransportError extends Error {
   readonly url: string;
   readonly attempts: number;
@@ -121,14 +121,14 @@ export class HostedTransportError extends Error {
   }
 }
 
-/**
- * Flatten an error and every nested `cause` into readable frames.
- *
- * The frame that names the actual condition is usually two or three levels
- * down (`TypeError: fetch failed` -> `AggregateError` -> `Error: connect
- * ECONNREFUSED 127.0.0.1:443`), and each level may carry its own `code`, so
- * every level is emitted rather than only the innermost.
- */
+
+
+
+
+
+
+
+
 export function unwrapCauseChain(error: unknown, maxDepth = 8): string[] {
   const frames: string[] = [];
   const seen = new Set<unknown>();
@@ -137,9 +137,9 @@ export function unwrapCauseChain(error: unknown, maxDepth = 8): string[] {
     if (seen.has(current)) break;
     seen.add(current);
     frames.push(describeErrorFrame(current));
-    // AggregateError (what Happy Eyeballs produces when every candidate
-    // address fails) hides the real per-address errors in `errors`, not in
-    // `cause`; without this branch the chain dead-ends at the aggregate.
+
+
+
     const aggregated = (current as { errors?: unknown[] }).errors;
     if (Array.isArray(aggregated) && aggregated.length > 0) {
       for (const nested of aggregated.slice(0, 3)) frames.push(describeErrorFrame(nested));
@@ -162,9 +162,9 @@ function describeErrorFrame(value: unknown): string {
   return String(value);
 }
 
-/** First error code found anywhere in the chain. Remediation is chosen from
- *  this, so it reads the whole chain rather than only the outermost frame
- *  (which for `fetch failed` never carries one). */
+
+
+
 export function findErrorCode(error: unknown, maxDepth = 8): string | undefined {
   let current: unknown = error;
   const seen = new Set<unknown>();
@@ -189,32 +189,32 @@ const RETRIABLE_CODES = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH',
   'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
   'ERR_SSL_SSLV3_ALERT_BAD_RECORD_MAC', 'ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_STREAM_PREMATURE_CLOSE',
-  // A destroyed/GOAWAY'd h2 session (see the dispatcher note above, and
-  // DEAD_CONNECTION_CODES): the specific connection is gone, but another
-  // attempt on a fresh one is exactly as safe as any other transport retry.
+
+
+
   ...DEAD_CONNECTION_CODES,
 ]);
 
-/** True for conditions that another attempt can plausibly clear: transport
- *  faults, our own timeout, and TLS record-level corruption (a damaged record
- *  on one connection says nothing about the next one). A wrong hostname,
- *  a rejected certificate, or an application-level status is NOT retried —
- *  retrying those only delays an honest report. */
+
+
+
+
+
 export function isRetriableTransportError(error: unknown): boolean {
   if (error instanceof Error && error.name === 'AbortError') return true;
-  // Checked ahead of the code allowlist below: a destroyed h2 session can
-  // surface without a `code` at all on some Node versions, and the allowlist
-  // treats "has a code but it's unrecognised" as definitive — that branch
-  // must not swallow a dead-session message that happens to also carry an
-  // unrelated code somewhere in the chain.
+
+
+
+
+
   if (isDeadConnectionError(error)) return true;
   const code = findErrorCode(error);
   if (code && RETRIABLE_CODES.has(code)) return true;
   if (code) return false;
   const text = unwrapCauseChain(error).join(' ');
   if (/bad record mac|decryption failed|record layer failure/i.test(text)) return true;
-  // undici's generic envelope with nothing more specific attached: still a
-  // transport fault, still worth one more attempt.
+
+
   return error instanceof Error && error.message === 'fetch failed';
 }
 
@@ -245,7 +245,7 @@ function safeOrigin(url: string): string {
   try { return new URL(url).origin; } catch { return url; }
 }
 
-/** Strip credentials before a URL is put in an error an agent will echo. */
+
 export function redactUrl(url: string): string {
   try {
     const parsed = new URL(url);
@@ -260,20 +260,20 @@ export function redactUrl(url: string): string {
   }
 }
 
-/**
- * Build the message an agent actually receives. It must answer three
- * questions on its own: what failed, where, and what to do next.
- */
+
+
+
+
 export function describeTransportFailure(error: unknown, context: { url: string; operation: string; attempts: number }): string {
   const chain = unwrapCauseChain(error);
   const code = findErrorCode(error);
   const chainText = chain.join(' <- ');
   const attemptNote = context.attempts > 1 ? ` after ${context.attempts} attempts` : '';
-  // "Could not reach the hosted server" implies the server is unreachable or
-  // down. That is wrong for a dead-connection error: the server answered
-  // fine a moment ago on a different connection (this is, in fact, exactly
-  // the bug this distinction exists to stop misreporting) — the honest claim
-  // is that a specific connection was reset, not that the server is out.
+
+
+
+
+
   const headline = isDeadConnectionError(error)
     ? `Klauro's connection to the hosted server was reset for ${context.operation}${attemptNote}`
     : `Klauro could not reach the hosted server for ${context.operation}${attemptNote}`;
@@ -283,20 +283,20 @@ export function describeTransportFailure(error: unknown, context: { url: string;
     remediationFor(code, chainText, context.url);
 }
 
-/**
- * `klauro init` binds a project by matching the repo's git remote, so a
- * fork/re-clone/teammate copy of the SAME repo silently binds to the SAME
- * hosted project — the server 404s every one of that project's queries for
- * any account that isn't a member, and does not distinguish "does not exist"
- * from "exists, not yours" (to avoid leaking a private project's existence).
- * Before telling the caller to `klauro login` — which replaces whichever
- * account is currently active instead of just switching — check every OTHER
- * account already signed into on this machine (`klauro accounts`): if one of
- * them can already see this project, switching to it is the real fix and
- * needs no password. Falls back to a message that still never names
- * `klauro login` as the remedy for this specific 404 shape; `klauro init
- * --force` starts a separate analysis rather than touching the existing one.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function describeProjectNotFoundRemediation(url: string): Promise<string> {
   const base = "The hosted project was not found for the currently signed-in account. The server returns this same 404 whether the project id in this repo's .klaurorc no longer exists OR it exists but belongs to a workspace this account is not a member of.";
   const match = /^(https?:\/\/[^/]+)\/api\/projects\/([^/]+)/.exec(url);
@@ -312,19 +312,19 @@ async function describeProjectNotFoundRemediation(url: string): Promise<string> 
       return `${base} It belongs to ${owner}, an account already signed in on this machine but not the active one. Run \`klauro accounts --use ${owner}\` to switch (no password needed), then retry. Do not run \`klauro login\` — it would replace the active account's session instead of switching to one already stored here.`;
     }
   } catch {
-    // Local auth-store read failed (e.g. no auth.json yet) — fall through to
-    // the generic remediation below rather than letting a probe failure mask
-    // the original 404.
+
+
+
   }
   return `${base} Run \`klauro accounts\` to see who is signed in here; if the owning account has never signed in on this machine, ask them to add your account to its workspace, or run \`klauro init --force\` to bind a NEW project (${projectId}'s existing analysis is untouched). Do not run \`klauro login\` to try to "become" the owning account unless you actually intend to replace the currently active session.`;
 }
 
-/**
- * Turn a non-OK hosted response into an error that names the status, the URL,
- * and what to do — never a bare status number. Reads the body defensively:
- * an edge that intercepts the request returns HTML, and JSON.parse-ing that
- * yields a syntax error unrelated to the real failure.
- */
+
+
+
+
+
+
 export async function describeHttpFailure(response: Response, context: { url: string; operation: string }): Promise<string> {
   const contentType = response.headers.get('content-type') || '';
   let serverMessage = '';
@@ -334,7 +334,7 @@ export async function describeHttpFailure(response: Response, context: { url: st
     try {
       const parsed = JSON.parse(bodyText) as { error?: unknown; message?: unknown };
       serverMessage = String(parsed?.error || parsed?.message || '');
-    } catch { /* fall through to the raw snippet below */ }
+    } catch {   }
   }
   if (!serverMessage) snippet = bodyText.slice(0, 300).replace(/\s+/g, ' ').trim();
 
@@ -360,12 +360,12 @@ export async function describeHttpFailure(response: Response, context: { url: st
   return `Klauro's hosted server returned HTTP ${status} for ${context.operation}. Target: ${target}. Detail: ${detail}. ${remediation}`;
 }
 
-/**
- * `fetch` with a timeout, a bounded retry ladder, and a terminal error that
- * carries the unwrapped cause. Resolves with the Response for ANY completed
- * exchange — status interpretation belongs to the caller, which knows whether
- * a given status is an error for that endpoint.
- */
+
+
+
+
+
+
 export async function hostedFetch(
   url: string | URL,
   init: RequestInit,
@@ -380,16 +380,16 @@ export async function hostedFetch(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      // Routed through our own dispatcher (see the module doc) rather than
-      // global fetch, so a dead h2 session found below can actually be
-      // evicted instead of being silently reused forever.
+
+
+
       return await undiciFetch(target, { ...init, signal: controller.signal, dispatcher: getHostedDispatcher() } as any) as unknown as Response;
     } catch (error) {
       lastError = error;
       if (!isRetriableTransportError(error) || attempt === delays.length) break;
-      // The connection that just failed must not be handed to the next
-      // attempt — that is precisely how this bug reproduces (a session
-      // cached across a server restart fails identically on every retry).
+
+
+
       if (isDeadConnectionError(error)) resetHostedDispatcher();
       await sleep(delays[attempt]);
     } finally {

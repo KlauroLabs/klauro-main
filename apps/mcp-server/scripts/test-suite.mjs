@@ -16,33 +16,33 @@ const cachePath = path.join(packageRoot, 'node_modules', '.cache', 'klauro-test-
 const artifactTestFiles = new Set([
   'src/gauntlet/grammar-packaging.test.ts',
   'src/installed-client-boundary.test.ts',
-  // Runs the BUILT dist/cli.cjs to prove the shipped CLI implements `klauro
-  // update` (the 2026-07-27 P0: it did not, while the server's 426 told every
-  // customer to run it).
+
+
+
   'src/installed-cli-update-command.test.ts',
-  // Same class, generalized: scans ALL customer-facing text for `klauro
-  // <command>` mentions and asserts installed-cli.ts registers each one
-  // (the 2026-07-28 follow-up audit that found status/doctor/support-bundle
-  // missing the same way `update` was). Also runs the built dist/cli.cjs.
+
+
+
+
   'src/installed-cli-ops-commands.test.ts',
-  // Drives the BUILT dist/index.cjs over stdio the way a registered MCP client
-  // does. The class it gates — "the MCP surface is down while HTTP is fine" —
-  // was invisible to every other test in this package, because they exercise
-  // handlers and library functions rather than the transport agents speak.
+
+
+
+
   'src/mcp-surface-live-e2e.test.ts',
 ]);
 
-// Role, not directory: a file is a BENCHMARK if it lives under src/gauntlet/
-// OR its own name says so (`*-benchmark.test.ts`, `*-benchmark-copy.test.ts`,
-// etc). The `core` group used to be "not under src/gauntlet/", which let 9
-// benchmark files sitting directly in src/ (agent-existing-task-benchmark,
-// competitor-baseline-benchmark, architecture-pattern-benchmark,
-// agent-idiom-benchmark, capability-inference-benchmark,
-// analysis-focus-benchmark, agent-greenfield-benchmark,
-// runtime-impact-benchmark, incremental-benchmark-copy — ~250 CPU-seconds)
-// ride along in the pre-deploy gate purely because of where they happened to
-// be saved, not what they are. `fast` is the actual pre-deploy gate now;
-// `bench` (gauntlet + every *-benchmark file, wherever it lives) is nightly.
+
+
+
+
+
+
+
+
+
+
+
 const BENCHMARK_ROLE_RE = /-benchmark(-|\.)|^src\/gauntlet\//;
 export function isBenchmarkRole(file) {
   return BENCHMARK_ROLE_RE.test(file);
@@ -54,27 +54,28 @@ export const TEST_GROUPS = Object.freeze({
   gauntlet: file => file.startsWith('src/gauntlet/'),
   fast: file => !isBenchmarkRole(file),
   bench: file => isBenchmarkRole(file),
+  live: file => file === 'src/mcp-surface-live-e2e.test.ts',
 });
 
 export function defaultConcurrency(cpuCount = availableParallelism()) {
   return Math.max(1, Math.min(3, cpuCount - 1));
 }
 
-/**
- * Shortest usable temp root.
- *
- * tsx opens a unix domain socket at `$TMPDIR/tsx-<uid>/<pid>.pipe` for every
- * child it runs, and a unix socket path is hard-capped by the kernel at 104
- * bytes on macOS (108 on Linux) — `listen` fails with EINVAL past that, before
- * a single test executes. macOS's default TMPDIR is `/var/folders/xx/<30
- * chars>/T` (~48 bytes) all by itself, so nesting a per-file isolated TMPDIR
- * under it overflowed the cap and made the ENTIRE suite unrunnable on any Mac:
- * all 165 core files exited 1 in ~60ms and the summary line read
- * `tests=0 pass=0 fail=0`. Linux CI never saw it because /tmp is 4 bytes.
- *
- * `/tmp` is still outside packageRoot, so the isolation this root exists to
- * provide (fixtures must not walk up into this repo's real .klaurorc) holds.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function shortTempBase(platform = process.platform, systemTemp = tmpdir()) {
   if (platform === 'win32') return systemTemp;
   return systemTemp.length <= '/tmp'.length ? systemTemp : '/tmp';
@@ -148,9 +149,9 @@ async function main() {
   const tsxCli = require.resolve('tsx/cli');
   const started = Date.now();
   process.stderr.write(`[Klauro test suite] group=${group} files=${plan.length} concurrency=${concurrency}\n`);
-  // Test fixtures frequently walk upward for .klaurorc, exactly like the
-  // installed client. Keeping their HOME/TMPDIR below packageRoot makes an
-  // allegedly isolated fixture inherit this repository's real configuration.
+
+
+
   const runParent = path.join(shortTempBase(), 'klauro-tests');
   await mkdir(runParent, { recursive: true });
   const runRoot = await mkdtemp(path.join(runParent, 'run-'));
@@ -176,10 +177,10 @@ async function main() {
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.exitCode !== 0) failures.push(item.file);
-      // A file that exits non-zero having reported NO tests did not fail a
-      // test — it never got to run one (import error, harness/env breakage).
-      // Counted separately so the summary can never read `fail=0` while the
-      // run is red, which is how a whole-suite macOS breakage stayed invisible.
+
+
+
+
       if (result.exitCode !== 0 && result.summary.tests === 0) totals.crashed += 1;
     };
     const exclusive = plan.filter(item => artifactTestFiles.has(item.file));
@@ -224,8 +225,8 @@ async function runBuildPrerequisite(hosted) {
 }
 
 async function runTestFile(tsxCli, file, forwarded, runRoot, activeChildren) {
-  // 10 hex chars over 245 files: collision probability ~1e-7, and every byte
-  // counts against the unix-socket path cap described on shortTempBase().
+
+
   const key = crypto.createHash('sha256').update(file).digest('hex').slice(0, 10);
   const isolatedRoot = path.join(runRoot, key);
   const home = path.join(isolatedRoot, 'home');
@@ -242,6 +243,7 @@ async function runTestFile(tsxCli, file, forwarded, runRoot, activeChildren) {
       KLAURO_STORAGE_PATH: path.join(isolatedRoot, 'storage'),
       KLAURO_REMOTE_ANALYZER_DATA: path.join(isolatedRoot, 'remote-data'),
       KLAURO_ANALYSIS_WORKER_IDLE_MS: process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS || '25',
+      KLAURO_EMBEDDING_ENABLED: process.env.KLAURO_EMBEDDING_ENABLED || 'false',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -269,11 +271,11 @@ async function runTestFile(tsxCli, file, forwarded, runRoot, activeChildren) {
 }
 
 export function parseTapSummary(output) {
-  // node:test's default reporter prefixes its summary block with `# ` on older
-  // Node and `ℹ ` from Node 22 on. Matching only `# ` meant every count read 0
-  // on a modern local Node while the container's older Node reported real
-  // numbers — the suite's headline `tests=/pass=/fail=` line was silently
-  // fabricating zeros depending on where you ran it. Accept both.
+
+
+
+
+
   const value = label => Number(output.match(new RegExp(`^(?:#|\\u2139) ${label} (\\d+)$`, 'm'))?.[1] || 0);
   return { tests: value('tests'), passed: value('pass'), failed: value('fail'), skipped: value('skipped') };
 }

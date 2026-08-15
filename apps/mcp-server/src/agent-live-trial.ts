@@ -2203,12 +2203,12 @@ function slugify(input: string | undefined): string {
     .substring(0, 80) || 'target';
 }
 
-// ---------------------------------------------------------------------------
-// Internal engine helpers re-exported for the multi-arm gauntlet runner
-// (src/gauntlet/multi-arm-trial.ts). These are the same primitives the
-// with/without-Klauro pair uses, exposed so additional arms (ctags, embeddings,
-// cursor-style index) run through identical measurement, not a parallel path.
-// ---------------------------------------------------------------------------
+
+
+
+
+
+
 export {
   copyRepo as _copyRepo,
   initializeBaseline as _initializeBaseline,

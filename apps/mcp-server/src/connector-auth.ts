@@ -25,22 +25,22 @@ export interface StoredConnectorAccount {
   updated_at: string;
 }
 
-/**
- * Multi-account storage (task #127's third defect). `accounts[serverUrl]`
- * remains the single ACTIVE account per server — every existing read site
- * (`connectorToken`, `resolveAuthStatus`, `klauro status`, `klauro init`,
- * etc.) keeps working unchanged, because "the active account" is exactly
- * what those call sites always meant by "the" account.
- *
- * What changes: `klauro login` for a SECOND email on the same server no
- * longer overwrites and loses the first one. Every account ever signed into
- * on a given server is additionally kept in `accountsByServer[serverUrl]`,
- * keyed by email, so `klauro accounts` can list them and `klauro accounts
- * use <email>` can flip the active pointer back WITHOUT re-authenticating.
- * `accountsByServer` is optional so a pre-existing v1 auth.json (single
- * account, no roster) loads and behaves exactly as before until the next
- * login populates the roster.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export interface StoredConnectorAuth {
   version: 1;
   defaultServerUrl?: string;
@@ -48,24 +48,24 @@ export interface StoredConnectorAuth {
   accountsByServer?: Record<string, Record<string, StoredConnectorAccount>>;
 }
 
-/**
- * Network-unreachable classification: a nonexistent host / refused connection /
- * DNS failure / timeout is NOT an auth problem, and telling the user to
- * `klauro login` against a server that doesn't exist (2026-07 cold-customer
- * audit: a typo'd --server-url produced "Klauro account required") sends them
- * chasing the wrong fix. undici's fetch wraps these as TypeError('fetch
- * failed') with the syscall error on `cause`.
- */
+
+
+
+
+
+
+
+
 export function isNetworkUnreachableError(error: unknown): boolean {
   if (!error) return false;
   const name = (error as { name?: string }).name;
   if (name === 'AbortError' || name === 'TimeoutError') return true;
   const cause = (error as { cause?: unknown }).cause ?? error;
   const code = (cause as { code?: unknown })?.code;
-  // spec-purity:vocab-ok — closed set of Node.js/libuv + undici errno-style
-  // system error codes, matched against the real `error.code`/`cause.code`
-  // structural field (not a name/domain guess); see MDN/Node's documented
-  // `error.code` values and undici's UND_ERR_* connect/socket/timeout codes.
+
+
+
+
   if (typeof code === 'string' &&
     /^(ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|UND_ERR_HEADERS_TIMEOUT)$/.test(code)) {
     return true;
@@ -74,10 +74,10 @@ export function isNetworkUnreachableError(error: unknown): boolean {
 }
 
 export function unreachableServerError(serverUrl: string, error: unknown): Error {
-  // The condition is rarely one `cause` deep — undici nests, and an
-  // AggregateError from address selection hides its real errors elsewhere
-  // again — so this reads the whole chain rather than a single level, and
-  // names a command instead of leaving the reader to guess a next step.
+
+
+
+
   const chain = unwrapCauseChain(error);
   const code = findErrorCode(error);
   const chainText = chain.join(' <- ');
@@ -89,19 +89,19 @@ export function unreachableServerError(serverUrl: string, error: unknown): Error
   );
 }
 
-/**
- * Server session TTL, days. Must track remote-analyzer-service.ts's 401
- * remediation text ("session TTL is 14 days") — duplicated here (and again in
- * client-doctor.ts) rather than imported from the server module, because that
- * module is server-only and is never bundled into the installed client
- * (build-bundle.mjs's forbidden list). installed-cli-ops-commands.test.ts
- * asserts the literal string "14 days" appears in the 401 remediation, so the
- * copies can't quietly drift apart unnoticed.
- */
+
+
+
+
+
+
+
+
+
 export const SESSION_TOKEN_TTL_DAYS = 14;
 
-/** Warn this many days before the TTL, so a session that is about to strand a
- *  command is flagged BEFORE the request that needs it 401s — not after. */
+
+
 export const TOKEN_EXPIRY_WARN_DAYS = 11;
 
 export interface SessionAge {
@@ -109,7 +109,7 @@ export interface SessionAge {
   daysRemaining: number | null;
 }
 
-/** Local, offline, synchronous — no network round trip. */
+
 export function describeSessionAge(updatedAt: string | undefined, now: Date = new Date()): SessionAge {
   if (!updatedAt) return { ageDays: null, daysRemaining: null };
   const parsed = new Date(updatedAt);
@@ -118,24 +118,24 @@ export function describeSessionAge(updatedAt: string | undefined, now: Date = ne
   return { ageDays, daysRemaining: SESSION_TOKEN_TTL_DAYS - ageDays };
 }
 
-// At most one expiry warning per process: a single command can resolve
-// entitlement more than once (e.g. `analyze` on a dirty tree runs a shared
-// pass and an in-flight pass), and repeating the warning would just be noise.
+
+
+
 let warnedThisProcess = false;
 
-/** Test-only: reset the once-per-process warning latch between test cases. */
+
 export function resetSessionWarningStateForTests(): void {
   warnedThisProcess = false;
 }
 
-/**
- * Local pre-flight for commands that are about to need the stored token:
- * if the session is close to (or past) the server's TTL, warn on stderr
- * BEFORE the request that needs it runs — instead of the first signal being
- * an opaque mid-command 401. Advisory only: never throws, never blocks, and
- * does not replace the real 401 the server will still send if the guess is
- * wrong either way (clock skew, a session the server dropped early, etc).
- */
+
+
+
+
+
+
+
+
 export function warnIfSessionExpiringSoon(
   serverUrl: string,
   account: StoredConnectorAuth['accounts'][string] | undefined,
@@ -168,20 +168,20 @@ export interface AuthStatusResult {
   detail: string;
 }
 
-/**
- * The REAL answer to "am I signed in", for `auth-status` / `whoami`. Unlike a
- * check of whether ~/.klauro/auth.json contains a token (which says nothing
- * about whether the server still honors it), this round-trips to GET
- * /api/me with the stored token and reports one of four states:
- *  - no-token:    nothing stored for this server.
- *  - signed-in:   the server accepted the token; includes days remaining.
- *  - rejected:    a token IS stored but the server 401'd it (expired or
- *                 server-side dropped) — the exact "signed_in: true but every
- *                 call 401s" lie this function exists to stop reporting.
- *  - unreachable: the server could not be reached (or errored oddly) to
- *                 verify; reports the local token's presence/age instead of
- *                 guessing, and never hangs — the request is time-boxed.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function resolveAuthStatus(input: {
   serverUrl?: string;
   fetchImpl?: typeof fetch;
@@ -293,25 +293,25 @@ export async function requireConnectorEntitlement(input: {
   }
 
   const serverUrl = normalizeServerUrl(input.serverUrl);
-  // Local, offline, synchronous: warn before the network round trip below if
-  // the stored session is already close to (or past) the server's TTL — see
-  // warnIfSessionExpiringSoon's doc comment. This is the single place that
-  // gates every command needing the token (login/index/analyze/remote-sync),
-  // so hooking the warning here surfaces it everywhere those commands run,
-  // not just in `klauro doctor`.
+
+
+
+
+
+
   warnIfSessionExpiringSoon(serverUrl, loadStoredConnectorAuth().accounts[serverUrl]);
   const token = connectorToken(input.token, input.serverUrl);
   if (!token) {
-    // No stored token for THIS server url. Before claiming auth is the
-    // problem, check the url is even reachable: with a wrong/typo'd
-    // --server-url there is never a stored account for it, so this branch
-    // used to misdiagnose an unreachable host as "account required".
+
+
+
+
     try {
       await fetch(`${serverUrl}/api/me`, { signal: AbortSignal.timeout(5000) });
     } catch (error) {
       if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
-      // Reachability probe failed for a non-network reason — fall through to
-      // the honest auth message.
+
+
     }
     throw new Error(`Klauro account required for ${serverUrl}. Run \`klauro login\` or set KLAURO_ACCOUNT_TOKEN before local indexing, sync, or MCP hosted context.`);
   }
@@ -322,9 +322,9 @@ export async function requireConnectorEntitlement(input: {
       headers: {
         authorization: `Bearer ${token}`,
       },
-      // Bounded so an unreachable/hung server produces the clear
-      // unreachable-server error below instead of hanging the command
-      // indefinitely — this endpoint gates login/index/analyze/remote-sync.
+
+
+
       signal: AbortSignal.timeout(8000),
     });
   } catch (error) {
@@ -364,7 +364,7 @@ export function loadStoredConnectorAuth(): StoredConnectorAuth {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as StoredConnectorAuth;
     if (parsed && parsed.version === 1 && parsed.accounts && typeof parsed.accounts === 'object') return parsed;
   } catch {
-    // Missing or invalid auth should behave like signed-out.
+
   }
   return { version: 1, accounts: {} };
 }
@@ -375,8 +375,8 @@ export function loadStoredConnectorToken(serverUrl?: string): string | undefined
   return auth.accounts[normalized]?.token;
 }
 
-/** Shared tail of every auth.json mutator: write, then best-effort chmod
- *  0600 (the file holds bearer tokens for every signed-in account). */
+
+
 function persistAuth(auth: StoredConnectorAuth): string {
   const file = authConfigPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -384,21 +384,21 @@ function persistAuth(auth: StoredConnectorAuth): string {
   try {
     fs.chmodSync(file, 0o600);
   } catch {
-    // Best effort on platforms/filesystems that do not support chmod.
+
   }
   return file;
 }
 
-/**
- * Signs an account in as the ACTIVE account for `serverUrl`, and — the fix
- * for task #127's "`klauro login` is a session clobberer" — records it in
- * that server's account roster WITHOUT touching any other email's entry.
- * Before this, `auth.accounts[serverUrl] = {...}` unconditionally overwrote
- * whatever account was previously active, so a second `klauro login` for a
- * work/personal split (or an agent signing in as a beta-test account) always
- * silently evicted the first session with no warning and no way back short
- * of logging in again with the original password.
- */
+
+
+
+
+
+
+
+
+
+
 export function saveStoredConnectorSession(input: {
   serverUrl?: string;
   token: string;
@@ -422,16 +422,16 @@ export function saveStoredConnectorSession(input: {
   return { file, serverUrl };
 }
 
-/**
- * Signs out the currently-ACTIVE account for `serverUrl` (unchanged
- * behavior/signature — logout has always meant "sign out the account I'm
- * using", not "sign out everyone"). Removes it from the roster too so
- * `klauro accounts` does not keep listing a token that was just revoked
- * client-side. Other accounts in the roster for this server are untouched;
- * if any remain, the most-recently-used one becomes the new active account
- * automatically (still logged in beats silently logged out when the roster
- * is non-empty) — otherwise the server has no active account, same as today.
- */
+
+
+
+
+
+
+
+
+
+
 export function clearStoredConnectorSession(serverUrl?: string): { file: string; removed: boolean; serverUrl: string; switched_to?: string } {
   const auth = loadStoredConnectorAuth();
   const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
@@ -457,14 +457,14 @@ export function clearStoredConnectorSession(serverUrl?: string): { file: string;
   return { file, removed, serverUrl: normalized, ...(switchedTo ? { switched_to: switchedTo } : {}) };
 }
 
-/**
- * Every account ever signed into `serverUrl` (the roster
- * `saveStoredConnectorSession` builds up), each flagged with whether it is
- * the current active account. Falls back to a single-entry list built from
- * `accounts[serverUrl]` for auth.json files written before the roster
- * existed, so `klauro accounts` never reports "no accounts" for a session
- * that plainly works.
- */
+
+
+
+
+
+
+
+
 export function listStoredAccounts(serverUrl?: string): Array<{ email: string; updated_at: string; active: boolean }> {
   const auth = loadStoredConnectorAuth();
   const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
@@ -479,13 +479,13 @@ export function listStoredAccounts(serverUrl?: string): Array<{ email: string; u
   return active?.email ? [{ email: active.email, updated_at: active.updated_at, active: true }] : [];
 }
 
-/**
- * Token for a SPECIFIC stored account by email, not necessarily the active
- * one — lets a caller probe "does account X own this project" without first
- * switching the active account. Returns undefined if that email was never
- * signed into on this server (or its session predates the multi-account
- * roster and isn't the single legacy active entry).
- */
+
+
+
+
+
+
+
 export function tokenForStoredAccount(serverUrl: string | undefined, email: string): string | undefined {
   const auth = loadStoredConnectorAuth();
   const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
@@ -495,22 +495,22 @@ export function tokenForStoredAccount(serverUrl: string | undefined, email: stri
   return active?.email === email ? active.token : undefined;
 }
 
-/**
- * When the ACTIVE account 404s a bound project, check every OTHER account
- * already signed into on this machine (the `klauro accounts` roster) before
- * concluding the project is unreachable. `klauro init` binds a project by
- * matching the repo's git remote, so a fork, re-clone, or teammate's copy of
- * the SAME repo silently binds to the SAME hosted project — if that project
- * belongs to an account this machine has already signed into (just not the
- * currently active one), `klauro login` is never the right first answer: it
- * would replace whichever account IS active instead of just switching to the
- * one that already works. `probeImpl` is injected (rather than importing
- * klauro-config.ts's probeHostedProjectBinding directly) to avoid a circular
- * import — connector-auth.ts is imported by hosted-transport.ts, which
- * klauro-config.ts's probe-adjacent code paths can end up depending on.
- * Returns the owning email, or undefined if no other stored account can see
- * the project either.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function findStoredAccountOwningProject(
   serverUrl: string,
   projectId: string,
@@ -527,14 +527,14 @@ export async function findStoredAccountOwningProject(
   return undefined;
 }
 
-/**
- * Flips the ACTIVE account for `serverUrl` to `email`, reusing the already-
- * stored token — no re-authentication, no password. This is the "way to
- * see/switch which account is active" task #127 asked for: e.g. an agent
- * that discovers it is signed in as the wrong account for a bound project
- * can switch back without anyone re-typing a password (`klauro login`
- * remains the only way to ADD a new account to the roster).
- */
+
+
+
+
+
+
+
+
 export function switchStoredAccount(serverUrl: string | undefined, email: string): { file: string; serverUrl: string; email: string } {
   const auth = loadStoredConnectorAuth();
   const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);

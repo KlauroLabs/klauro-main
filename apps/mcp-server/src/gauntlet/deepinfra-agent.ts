@@ -1,54 +1,54 @@
-/**
- * #96 DeepInfra-backed CODING-AGENT RUNNER.
- *
- * A self-contained coding agent that runs entirely on DeepInfra (an
- * OpenAI-compatible endpoint) so the live agent-vs-agent trials can run WITHOUT
- * an external agent CLI (no authed `claude`/`codex` needed). It is designed to
- * be dropped into the existing gauntlet harnesses as the injected/autonomous
- * runner command:
- *
- *   BASELINE / injected (no --mcp-config): a plain DeepInfra chat loop with a
- *     small filesystem tool set (read_file / write_file / list_dir) sandboxed to
- *     the workspace. The model edits files by calling write_file.
- *
- *   AUTONOMOUS (--mcp-config <f>): ALSO exposes the Klauro MCP tools so the model
- *     can autonomously gather codebase context before editing. It connects to the
- *     Klauro stdio MCP server described in the .mcp.json via the MCP SDK
- *     (@modelcontextprotocol/sdk). If the SDK is unavailable or the server fails
- *     to start, it FALLS BACK to a single HTTP-backed `klauro_analyze` tool that
- *     posts a source snapshot to the DEPLOYED analyzer (KLAURO_ANALYZER_URL /
- *     KLAURO_ANALYZER_TOKEN) and returns a compact CAS summary.
- *
- * CLI:
- *   tsx src/gauntlet/deepinfra-agent.ts --prompt-file <f> --workspace <dir> \
- *       --result-file <f> [--mcp-config <f>] [--model <id>] [--max-iters N]
- *
- * Result JSON written to --result-file:
- *   { summary, files_changed: string[], provider_total_tokens, klauro_tool_calls }
- *
- * Everything the harness needs (token count, files_changed) is derived from that
- * JSON by the default runner in autonomous-mcp-trial.ts.
- *
- * The DeepInfra client and MCP connector are INJECTABLE so the unit test drives
- * the whole runner with NO network.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from '../remote-analyzer-protocol';
 
 export const DEFAULT_DEEPINFRA_BASE_URL = 'https://api.deepinfra.com/v1/openai';
-/** Tool-calling-capable DeepInfra model (matches the analyzer-core default). */
-// A real, tool-calling-capable DeepInfra model id (verified against the models API).
+
+
 export const DEFAULT_DEEPINFRA_AGENT_MODEL = 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
 
 const SYSTEM_PROMPT =
   'You are a coding agent. Complete the task by editing files under the workspace. ' +
   'When done, output a short summary.';
 
-// ---------------------------------------------------------------------------
-// OpenAI-compatible chat types (minimal — we only use what we need).
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface ChatToolFunction {
   name: string;
@@ -92,21 +92,21 @@ export interface ChatCompletionResponse {
   usage?: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number };
 }
 
-/** Pluggable chat client. The default calls DeepInfra; tests inject a fake. */
+
 export type ChatClient = (request: ChatCompletionRequest) => Promise<ChatCompletionResponse>;
 
-/** A tool the model can call. Handlers return a string result. */
+
 export interface AgentTool {
   spec: ChatTool;
   handler: (args: Record<string, unknown>) => Promise<string>;
-  /** True for Klauro-provided tools (MCP or HTTP fallback), for call counting. */
+
   isKlauro?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Default DeepInfra chat client (raw fetch — no dependency on the `openai` pkg,
-// which is not resolvable from the mcp-server workspace).
-// ---------------------------------------------------------------------------
+
+
+
+
 
 export function createDeepInfraChatClient(opts: {
   apiKey: string;
@@ -139,11 +139,11 @@ export function createDeepInfraChatClient(opts: {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Workspace-sandboxed filesystem tools.
-// ---------------------------------------------------------------------------
 
-/** Resolve a possibly-relative path and ensure it stays under the workspace. */
+
+
+
+
 export function resolveInWorkspace(workspace: string, target: string): string {
   const root = path.resolve(workspace);
   const resolved = path.resolve(root, target);
@@ -244,9 +244,9 @@ export function createFilesystemTools(workspace: string, changed: Set<string>): 
   return [readFile, writeFile, listDir];
 }
 
-// ---------------------------------------------------------------------------
-// Klauro tools — MCP SDK (primary) or HTTP fallback.
-// ---------------------------------------------------------------------------
+
+
+
 
 interface McpJsonServer {
   command: string;
@@ -258,14 +258,14 @@ interface McpJson {
   mcpServers?: Record<string, McpJsonServer>;
 }
 
-/** A connected Klauro tool provider that can be closed. */
+
 export interface KlauroToolProvider {
   tools: AgentTool[];
   close: () => Promise<void>;
   transport: 'mcp' | 'http' | 'none';
 }
 
-/** Injection seam for tests: build Klauro tools without spawning anything. */
+
 export type KlauroConnector = (mcpConfigPath: string) => Promise<KlauroToolProvider>;
 
 function readMcpConfig(mcpConfigPath: string): { server?: McpJsonServer; name: string } {
@@ -275,17 +275,17 @@ function readMcpConfig(mcpConfigPath: string): { server?: McpJsonServer; name: s
   return { server: servers[name], name };
 }
 
-/** JSON-schema-ish object with a fallback for MCP tools that omit a schema. */
+
 function toolParameters(inputSchema: unknown): Record<string, unknown> {
   if (inputSchema && typeof inputSchema === 'object') return inputSchema as Record<string, unknown>;
   return { type: 'object', properties: {} };
 }
 
-/**
- * Default Klauro connector: spawn the stdio MCP server from the .mcp.json using
- * @modelcontextprotocol/sdk, list its tools, and expose each as an AgentTool. If
- * the SDK import or connection fails, fall back to an HTTP `klauro_analyze` tool.
- */
+
+
+
+
+
 export function createDefaultKlauroConnector(): KlauroConnector {
   return async (mcpConfigPath: string): Promise<KlauroToolProvider> => {
     const { server } = readMcpConfig(mcpConfigPath);
@@ -347,11 +347,11 @@ async function connectViaMcpSdk(server: McpJsonServer): Promise<KlauroToolProvid
   };
 }
 
-/**
- * HTTP fallback: a single `klauro_analyze` tool that snapshots the given repo
- * path and posts it to the deployed analyzer, returning a compact CAS summary.
- * Uses the analyzer URL/token from the .mcp.json server env.
- */
+
+
+
+
+
 function connectViaHttp(server?: McpJsonServer): KlauroToolProvider {
   const env = server?.env || {};
   const url = (env.KLAURO_ANALYZER_URL || env.KLAURO_API_URL || process.env.KLAURO_ANALYZER_URL || '').replace(/\/$/, '');
@@ -422,9 +422,9 @@ function summarizeCas(response: any): string {
   ].join('\n');
 }
 
-// ---------------------------------------------------------------------------
-// Agent loop.
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface RunAgentOptions {
   chat: ChatClient;
@@ -483,7 +483,7 @@ export async function runAgentLoop(opts: RunAgentOptions, changed: Set<string>):
     if (!message) break;
 
     const toolCalls = message.tool_calls || [];
-    // Record the assistant turn (content may be null when it's a pure tool call).
+
     messages.push({
       role: 'assistant',
       content: message.content ?? '',
@@ -492,7 +492,7 @@ export async function runAgentLoop(opts: RunAgentOptions, changed: Set<string>):
 
     if (message.content && message.content.trim()) summary = message.content.trim();
 
-    if (!toolCalls.length) break; // model is done
+    if (!toolCalls.length) break;
 
     for (const call of toolCalls) {
       const name = call.function?.name;
@@ -526,9 +526,9 @@ export async function runAgentLoop(opts: RunAgentOptions, changed: Set<string>):
   };
 }
 
-// ---------------------------------------------------------------------------
-// Orchestration: wire tools, run the loop, write the result file.
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface DeepInfraAgentOptions {
   promptFile: string;
@@ -538,9 +538,9 @@ export interface DeepInfraAgentOptions {
   model?: string;
   maxIters?: number;
   timeoutMs?: number;
-  /** Injected chat client (tests). Defaults to a DeepInfra fetch client. */
+
   chat?: ChatClient;
-  /** Injected Klauro connector (tests). Defaults to MCP-SDK-with-HTTP-fallback. */
+
   klauroConnector?: KlauroConnector;
 }
 
@@ -610,9 +610,9 @@ function requireEnv(name: string): string {
   return value;
 }
 
-// ---------------------------------------------------------------------------
-// CLI.
-// ---------------------------------------------------------------------------
+
+
+
 
 export function parseArgs(argv: string[]): {
   promptFile?: string;

@@ -1,22 +1,22 @@
-/**
- * Camp-C OUT-OF-CATEGORY bench — named design/architecture patterns.
- *
- * A structural knowledge graph (codebase-memory, scip, stack-graphs) can tell you
- * the TOPOLOGY: which node is an entry, which is a leaf, which cluster it sits in.
- * Measured live against codebase-memory-mcp's `get_architecture` on this fixture,
- * it returns `layers: controller=entry, service=internal, repository=leaf` and
- * `clusters: [user, user]` — but it has NO field that NAMES the pattern. It
- * describes the shape; it never says "this is the Service Layer pattern."
- *
- * Klauro's pattern detector emits the named architectural intent (Service Layer,
- * Repository, Controller, Dependency Injection, Module, Guard) plus anti-patterns
- * (God Object, Circular Dependency). Naming the intent is the comprehension a
- * graph cannot reach — out of category.
- *
- * Honest scoring: competitors are modelled at their best — they read/index the
- * source to TRY (token cost = source bytes) and still name zero patterns. The
- * codebase-memory result was verified live (no pattern/paradigm key exists).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -26,7 +26,7 @@ import type { ArmResult, WinVerdict } from './report-schema';
 
 interface PatternTruth {
   task: 'pattern-facts';
-  /** Named patterns Klauro should recognize in the fixture. */
+
   expected_patterns: string[];
 }
 
@@ -38,7 +38,7 @@ export interface PatternBenchResult {
 }
 
 function f1(produced: string[], truth: string[]): number {
-  // Substring-tolerant match: "Service Layer Pattern" satisfies "Service Layer".
+
   const hit = (t: string) => produced.some(p => p.toLowerCase().includes(t.toLowerCase()));
   const tp = truth.filter(hit).length;
   const precision = produced.length ? tp / produced.length : truth.length ? 0 : 1;
@@ -58,7 +58,7 @@ async function sourceBytes(dir: string): Promise<number> {
       const st = await fs.stat(path.join(dir, f));
       if (st.isFile()) total += st.size;
     } catch {
-      /* noop */
+
     }
   }
   return total;
@@ -93,8 +93,8 @@ export async function runPatternFactsBench(fixtureDir: string): Promise<PatternB
     { arm: 'klauro', patterns: kl.patterns, f1: klQuality / 100, bytes: kl.bytes, can_answer: true },
   ];
 
-  // Structural graphs / embeddings have no named-pattern concept. codebase-memory
-  // was verified live to expose only topology (layers/clusters), no pattern field.
+
+
   for (const armId of ['codebase-memory', 'scip-typescript', 'stack-graphs', 'embeddings-nomic']) {
     arms.push({
       arm_id: armId,

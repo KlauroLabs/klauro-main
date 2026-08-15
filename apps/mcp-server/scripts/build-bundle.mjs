@@ -1,10 +1,11 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import stageFingerprintModule from './stage-fingerprints.cjs';
+import buildSourceIdentity from './build-source-identity.cjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(packageRoot, '..', '..');
@@ -12,19 +13,11 @@ const analyzerCoreRoot = path.join(repoRoot, 'packages', 'analyzer-core');
 const sourceRoot = path.join(packageRoot, 'src');
 const hostedBuild = process.argv.includes('--hosted');
 
-function gitSha() {
-  const result = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: packageRoot, encoding: 'utf8' });
-  if (result.status !== 0) return 'unknown';
-  const sha = String(result.stdout || '').trim();
-  const status = spawnSync('git', ['status', '--porcelain'], { cwd: packageRoot, encoding: 'utf8' });
-  return status.status === 0 && String(status.stdout || '').trim() ? `${sha}-dirty` : sha;
-}
-
 const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version || '1.0.0';
 const stageFingerprints = stageFingerprintModule.computeBuildStageFingerprints(analyzerCoreRoot);
 const definitions = {
-  __KLAURO_GIT_SHA__: JSON.stringify(gitSha()),
-  __KLAURO_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  __KLAURO_GIT_SHA__: JSON.stringify(buildSourceIdentity.resolveBuildGitSha(packageRoot)),
+  __KLAURO_BUILD_TIME__: JSON.stringify(buildSourceIdentity.resolveBuildTime()),
   __KLAURO_VERSION__: JSON.stringify(packageVersion),
   __KLAURO_PARSER_FINGERPRINT__: JSON.stringify(stageFingerprints.parser_fingerprint),
   __KLAURO_DERIVED_FINGERPRINT__: JSON.stringify(stageFingerprints.derived_fingerprint),
@@ -95,6 +88,7 @@ if (hostedBuild) {
 const clientRuntime = path.join(sourceRoot, 'installed-client-runtime.ts');
 const analyzerSource = path.join(sourceRoot, 'analyzer.ts');
 const semanticSearchSource = path.join(sourceRoot, 'semantic-search.ts');
+const deployableAnalysisSource = path.join(sourceRoot, 'deployable-analysis.ts');
 const s3Source = path.join(sourceRoot, 's3-artifacts.ts');
 const orchestratorSource = path.join(analyzerCoreRoot, 'src', 'analyzer', 'core', 'orchestrator.ts');
 const buildIdentitySource = path.join(analyzerCoreRoot, 'src', 'analyzer', 'core', 'build-identity.ts');
@@ -118,7 +112,7 @@ const installedBoundary = {
       if (resolved === analyzerSource || resolved === semanticSearchSource) {
         throw new Error(`Installed client attempted to import hosted-only module: ${resolved}`);
       }
-      if ([s3Source, orchestratorSource, buildIdentitySource, deployableUtilSource].includes(resolved)) return { path: clientRuntime };
+      if ([s3Source, deployableAnalysisSource, orchestratorSource, buildIdentitySource, deployableUtilSource].includes(resolved)) return { path: clientRuntime };
       return null;
     });
   },
@@ -133,37 +127,37 @@ const cliResult = await build({ ...shared, entryPoints: ['src/installed-cli.ts']
 chmodSync(path.join(output, 'cli.cjs'), 0o755);
 await build({ ...shared, entryPoints: ['src/bootstrap.ts'], outfile: 'dist/index.cjs', external: ['./server.cjs'] });
 
-// Single-file bundle for the self-contained (Node SEA) binary — see
-// scripts/build-sea-binary.mjs. Same installed-client-boundary plugin as the
-// npm-shipped cli.cjs/server.cjs, so a hosted-only import (analyzer.ts,
-// orchestrator, tree-sitter, ...) fails this build exactly like it would
-// fail those, before it can ever reach a customer's machine either way.
-// Written OUTSIDE dist/ (dist-sea/, not dist/) so it never rides along in the
-// npm tarball's `files: ['dist/']` — it exists only as an input to the SEA
-// binary build, not something an npm-installed client ever runs.
+
+
+
+
+
+
+
+
 const seaEntryResult = await build({ ...shared, entryPoints: ['src/installed-sea-entry.ts'], outfile: 'dist-sea/klauro-sea-entry.cjs', plugins: [installedBoundary], metafile: true });
 
-// §AUTH-LIFECYCLE (2026-08-08) — build-time backstop against the SAME class
-// of defect twice now: a command built entirely in cli.ts (the dev CLI) and
-// never ported to installed-cli.ts, the only file bundled here. The unit
-// test at src/installed-cli-ops-commands.test.ts catches this from source;
-// this check catches it against the ACTUAL COMPILED ARTIFACT that ships to
-// customers — the thing that actually matters, since a source-level match
-// can't prove esbuild didn't tree-shake a branch out, and this is the step
-// that runs on every real build (dev test runs are opt-in; this is not).
-// Route literals are read from the server's own route table
-// (remote-analyzer-service.ts) rather than hand-listed, so a new
-// `/api/auth/*` endpoint automatically becomes a required string in the
-// built dist/cli.cjs with no separate list to remember to update.
+
+
+
+
+
+
+
+
+
+
+
+
 {
   const serviceSource = readFileSync(path.join(packageRoot, 'src', 'remote-analyzer-service.ts'), 'utf8');
   const authRoutes = [...new Set([...serviceSource.matchAll(/route === '(\/api\/auth\/[a-zA-Z0-9/_-]+)'/g)].map(match => match[1]))];
   if (authRoutes.length === 0) throw new Error('build-bundle: found zero /api/auth/* routes in remote-analyzer-service.ts — the extraction regex broke, fix it rather than silently skipping this gate.');
   const builtCli = readFileSync(path.join(output, 'cli.cjs'), 'utf8');
   const missingRoutes = authRoutes.filter(route => !builtCli.includes(route));
-  // admin-mint-reset-token has no HTTP route (see its doc comment — no
-  // site-wide admin role exists to gate an endpoint with), so it needs its
-  // own explicit pin here alongside the mechanical route scan.
+
+
+
   const requiredCommandLiterals = ['admin-mint-reset-token'];
   const missingCommands = requiredCommandLiterals.filter(command => !builtCli.includes(command));
   if (missingRoutes.length || missingCommands.length) {
@@ -176,31 +170,31 @@ const seaEntryResult = await build({ ...shared, entryPoints: ['src/installed-sea
   }
 }
 
-// Released-bundle retired-vocabulary gate (task #129). WAS/DAS were retired
-// in favor of the recursive-CAS model (6606732a/4bb416d2/c5eef85e/c0f4694b,
-// 2026-08-09): every source string was rewritten, and
-// apps/mcp-server/src/spec-purity-gate-cli.ts (a SOURCE gate) keeps that
-// rewrite from silently regressing going forward. Neither of those catches
-// the actual defect observed live: a customer running the shipped 1.0.134
-// npm/SEA bundle still saw `klauro --help` print the retired "Analysis,
-// CAS/WAS construction, ... execute only on Klauro infrastructure." line —
-// not because the SOURCE regressed (it hadn't; this repo's tree already read
-// "CAS construction at every level" days before that build was cut), but
-// because the RELEASED ARTIFACT was built from a tree that predated the
-// purge and was never rebuilt afterward. A source-only gate is structurally
-// blind to this class: it can only ever see what's in the tree right now,
-// never what already shipped from an older tree. So the check has to run
-// here too — against the actual bytes this build is about to hand to
-// `npm publish` / the SEA binary — so a build cut from a stale-vocabulary
-// tree fails LOUDLY instead of quietly re-shipping the same retired string
-// forever (this bundle, once built, is exactly what klauro-install-oneliner
-// installs and what `klauro update` hands out — see self-update.ts).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 {
-  // Deliberately narrow (acronym pairs, not bare "WAS"/"DAS" — those are an
-  // ordinary English word and a common short identifier fragment and would
-  // false-positive constantly). `validate_was_contract` (the MCP tool id) is
-  // intentionally NOT banned here — renaming it is a breaking API change
-  // tracked separately (see 4bb416d2's doc comment), not a vocabulary defect.
+
+
+
+
+
   const RETIRED_VOCAB = ['CAS/WAS', 'WAS/DAS', 'DAS/WAS'];
   const builtFiles = [
     ['dist/cli.cjs', path.join(output, 'cli.cjs')],
@@ -271,10 +265,10 @@ function captureHandshake(profile) {
 const handshake = { core: await captureHandshake('core'), full: await captureHandshake('full') };
 writeFileSync(path.join(output, 'handshake.json'), JSON.stringify(handshake));
 
-// Build stamp for the stale-bundle guard (src/bundle-staleness.ts). MCP
-// clients are registered against dist/, so without a recorded build time a
-// bundle that no longer matches the sources beside it starts and serves
-// happily with no signal that anything is out of date.
+
+
+
+
 writeFileSync(path.join(output, 'build-stamp.json'), `${JSON.stringify({
   version: packageVersion,
   git_sha: JSON.parse(definitions.__KLAURO_GIT_SHA__),

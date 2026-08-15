@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
+import { constants as bufferConstants } from 'node:buffer';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import { saveAnalysis } from './storage';
 import type { RemoteAnalyzeResponse, RemoteAnalyzerResponse, RemoteProjectRevisionsResponse } from './remote-analyzer-protocol';
@@ -20,49 +21,53 @@ import { assessUploadScope } from './upload-scope-guard';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { fetch as undiciFetch } from 'undici';
 import { describeHttpFailure, describeTransportFailure, getHostedDispatcher, hostedFetch, isDeadConnectionError, resetHostedDispatcher } from './hosted-transport';
+import type { AnalysisFocus } from './analysis-focus';
+import { decodeCasExport, decodeCasExportStream } from './cas-export-decoder';
+import { CAS_SECTION_NAMES, hydrateCasSections, type CasSectionManifest, type CasSectionName } from './cas-sections';
 
 export interface RemoteSyncOptions {
   projectPath: string;
   serverUrl?: string;
   token?: string;
   analysisId?: string;
-  /** Operator/test completion mode. Customer uploads omit this so acceptance
-   *  stays asynchronous and the installed client reads bounded CAS sections. */
+  analysisFocus?: AnalysisFocus;
+
+
   wait?: boolean;
-  /**
-   * Refuse the upload up front (see assertUploadTargetIsReachable) instead of
-   * accepting source this repo/account cannot actually reach a destination
-   * for. Every REAL customer entry point sets this — the CLI `analyze` /
-   * `remote-analyze` / `remote-sync` commands, the `analyze_codebase` /
-   * `analyze_codebase_remote` / `sync_codebase_remote` MCP tools, and the
-   * installed client. Left false by default so this low-level function keeps
-   * behaving exactly as before for callers that intentionally exercise an
-   * arbitrary/mock server with an explicit analysisId and no .klaurorc — most
-   * of this file's own test suite, and analysisId-bypass callers in general
-   * (an explicit analysisId is itself a deliberate placement decision).
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   requireBoundProject?: boolean;
-  /**
-   * `klauro analyze --force` (task #132). Tells the server to bypass both the
-   * snapshot/analyzer-identity reuse gate and the AI response cache for this
-   * analyze call — see RemoteAnalyzeRequest.force. Only meaningful on
-   * analyzeCodebaseRemotely; syncWorkingTreeRemotely/analyzeBranchDiffRemotely
-   * don't take this path in the server (their routes have no reuse gate to
-   * bypass) so it is intentionally not read there.
-   */
+
+
+
+
+
+
+
+
   force?: boolean;
-  /**
-   * Task #134: the caller (CLI `--yes`, or an interactive TTY prompt already
-   * answered yes) has confirmed the upload scope even though
-   * `assessUploadScope` flagged it as an unexpectedly large/multi-repo
-   * folder. Left false by default so this low-level function refuses on an
-   * unsafe scope rather than silently uploading it — see
-   * assertUploadScopeIsSafe below. Only meaningful together with
-   * `requireBoundProject: true` (same gating as assertUploadTargetIsReachable):
-   * callers that don't set requireBoundProject are intentionally exercising
-   * this function directly (most of this file's own test suite) and keep
-   * behaving exactly as before.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
   confirmScope?: boolean;
 }
 
@@ -72,7 +77,7 @@ export interface RemoteElementDescriptionOptions extends RemoteSyncOptions {
   instructions?: string;
 }
 
-/** How the working-tree (in-flight) side of a dirty-tree analyze went. */
+
 export interface InFlightSyncOutcome {
   status: 'completed' | 'skipped' | 'failed';
   changed_files?: number;
@@ -80,55 +85,55 @@ export interface InFlightSyncOutcome {
 }
 
 export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'status' | 'cas' | 'analysis_revision' | 'analysis_type'> {
-  /** 'accepted' = the default fast path: snapshot uploaded, analysis running
-   *  entirely server-side (progressive disclosure). 'success' = an explicit
-   *  operator/test completion request carrying the finished CAS. */
+
+
+
   status: 'success' | 'accepted';
   analysis_revision?: number;
   analysis_type?: 'full' | 'incremental' | 'unchanged' | 'analyzer_upgrade' | 'forced';
   reused?: boolean;
-  /** Why the server did or did not serve the stored analysis — see
-   *  RemoteAnalyzeAcceptedResponse.reuse_decision. Surfaced so a client can
-   *  tell "your analysis is current" from "you got a cached old one". */
+
+
+
   reuse_decision?: import('./remote-analyzer-protocol').RemoteAnalyzeAcceptedResponse['reuse_decision'];
   cas?: RemoteAnalyzeResponse['cas'];
-  /** What the shared snapshot was built from (committed HEAD vs working tree).
-   *  Optional so plain sync responses remain assignable for shared formatting. */
+
+
   snapshot_source?: 'committed-head' | 'working-tree';
-  /** Present when the tree was dirty: outcome of the automatic in-flight pass. */
+
   in_flight?: InFlightSyncOutcome;
 }
 
-/**
- * Refuse to upload source into a project this repo/account cannot actually
- * reach — the "never accept work you will drop" gate for every write path
- * (analyze / sync / branch-diff). Two failure shapes, both caught BEFORE any
- * bytes leave this machine:
- *
- *  1. No `klauro init` ever ran (or an older CLI left a placeholder): there is
- *     no project.id at all, so an upload would land under a path-hash slug
- *     that appears in no workspace (see defaultAnalysisId below) — accepted,
- *     stored, and unreachable. This is a local, offline check.
- *
- *  2. `klauro init` ran once, but under a different account, or the project
- *     was since deleted, or this account was removed from its workspace: the
- *     id LOOKS bound (prj_…) but the server would 404 it for THIS account.
- *     Caught with one lightweight GET (mirrors klauro init's own self-heal
- *     probe) rather than letting the upload accept and a LATER read 404 —
- *     the 404 the server returns there does not distinguish "does not exist"
- *     from "exists, not yours", so catching it here — where we can still
- *     name both possibilities and point at the fix — beats catching it after
- *     the fact.
- *
- * A network hiccup / 5xx / auth blip during the probe is 'indeterminate' and
- * NEVER blocks the upload — only a definite local absence or a definite
- * server 404 does.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function assertUploadTargetIsReachable(loaded: LoadedKlauroConfig, serverUrl: string | undefined, options: RemoteSyncOptions): Promise<void> {
   if (!options.requireBoundProject) return;
-  // An explicit analysisId is itself a deliberate placement decision (it wins
-  // over .klaurorc's project.id in resolveAnalysisId) — trust it rather than
-  // second-guessing a caller who named their destination directly.
+
+
+
   if (options.analysisId) return;
   const projectId = loaded.config.project.id;
   if (isUnboundHostedProjectId(projectId)) {
@@ -143,14 +148,14 @@ async function assertUploadTargetIsReachable(loaded: LoadedKlauroConfig, serverU
   if (!token) return;
   const probe = await probeHostedProjectBinding(serverUrl, token, String(projectId));
   if (probe === 'not_found') {
-    // `klauro init` binds a project by matching the repo's git remote, so a
-    // fork/re-clone/teammate copy of this SAME repo silently binds to the
-    // SAME hosted project. Before treating that as unreachable, check every
-    // OTHER account already signed into on this machine (`klauro accounts`)
-    // — if one of them can see this project, switching to it (no password,
-    // no session loss for the currently active account) is the fix, never
-    // `klauro login`, which would replace the active account's session
-    // instead of just switching to the one that already works.
+
+
+
+
+
+
+
+
     const activeEmail = listStoredAccounts(serverUrl).find(account => account.active)?.email;
     const owner = await findStoredAccountOwningProject(serverUrl, String(projectId), activeEmail, probeHostedProjectBinding);
     if (owner) {
@@ -161,23 +166,23 @@ async function assertUploadTargetIsReachable(loaded: LoadedKlauroConfig, serverU
     }
     throw new Error(
       `The project bound in this repo's .klaurorc (${projectId}) was not found for any account signed in on this machine. ` +
-      "The server returns the same 404 whether the project truly no longer exists or exists but belongs to a workspace none of those accounts is a member of — refusing to upload rather than accepting source into a destination this machine cannot reach. " +
+      "The server returns the same 404 whether the project truly does not exist or exists but belongs to a workspace none of those accounts is a member of — refusing to upload rather than accepting source into a destination this machine cannot reach. " +
       `Run \`klauro accounts\` to see who is signed in here (or \`klauro whoami\` for just the active one). If the account that owns ${projectId} has never signed in on this machine, ask them to add your account to its workspace, or run \`klauro init --force\` to bind a NEW project the active account can see — this starts a separate analysis, it does not touch or delete ${projectId}'s existing one. Do not run \`klauro login\` to try to "become" the owning account unless you actually intend to replace the currently active session.`
     );
   }
 }
 
-/**
- * Task #134: refuse to upload a folder that structurally looks like a
- * container of several unrelated projects (multiple sibling Git repos, no
- * manifest/`.git` at the root — see upload-scope-guard.ts) unless the caller
- * already confirmed the scope. This is a hard, non-interactive refusal —
- * there is no terminal on the other side of a library/MCP call to prompt on
- * — matching "fail loudly, never silently proceed". The CLI entry points
- * (cli.ts / installed-cli.ts) run the interactive/`--yes` confirmation THEN
- * set `confirmScope: true`, so a human at a terminal gets a prompt instead
- * of this throw; a script or MCP caller that never confirms gets this error.
- */
+
+
+
+
+
+
+
+
+
+
+
 async function assertUploadScopeIsSafe(projectPath: string, options: RemoteSyncOptions): Promise<void> {
   if (!options.requireBoundProject) return;
   if (options.confirmScope) return;
@@ -191,15 +196,15 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
   const serverUrl = resolveAnalyzerUrl(loaded, options.serverUrl);
   assertRemoteAnalyzerAllowed(loaded, serverUrl);
   if (!serverUrl) throw new Error('Klauro server URL is not configured');
-  // Scope BEFORE the network entitlement round-trip: a folder that's obviously
-  // the wrong upload target should refuse locally, without first spending a
-  // round-trip proving credentials for an upload we're about to reject anyway.
+
+
+
   await assertUploadScopeIsSafe(projectPath, options);
   await requireConnectorEntitlement({ serverUrl, token: options.token });
   await assertUploadTargetIsReachable(loaded, serverUrl, options);
-  // On a dirty tree this reads the COMMITTED HEAD content from git objects (never
-  // the dirty files, never touching the working tree); on a clean tree it walks
-  // the working tree as before. See buildSourceSnapshot/buildHeadSourceSnapshot.
+
+
+
   const snapshot = await buildStreamingSourceSnapshot(projectPath);
   const analysisId = resolveAnalysisId(loaded, defaultAnalysisId(projectPath), options.analysisId);
   const response = await postRemote(options, '/v1/analyze', createAnalyzeUploadRequest({
@@ -208,15 +213,20 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
     project_path: projectPath,
     snapshot,
     async: true,
+    analysis_focus: options.analysisFocus,
     force: options.force,
   }), serverUrl) as AnalyzeRemotelyResult;
-  if (options.wait && response.status === 'accepted') {
+  const incompleteCas = response.cas && (
+    response.cas.layers_ready?.complete === false ||
+    response.cas.ai_enrichment === 'pending'
+  );
+  if (options.wait && (response.status === 'accepted' || incompleteCas)) {
     if (!response.analysis_id) throw new Error('Remote analyzer accepted source without an analysis_id');
-    const completed = await waitForRemoteAnalysis(serverUrl, analysisId, options.token);
+    const completed = await waitForRemoteAnalysis(serverUrl, analysisId, options.token, response.analysis_revision);
     Object.assign(response, {
       status: 'success',
       cas: completed,
-      analysis_revision: Date.now(),
+      analysis_revision: response.analysis_revision || Date.now(),
       analysis_type: 'full',
     });
   }
@@ -226,14 +236,14 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
   response.snapshot_source = snapshot.snapshot_source;
 
   if (snapshot.snapshot_source === 'committed-head' && response.status === 'accepted') {
-    // Fast path: don't block the seconds-long accept on a synchronous
-    // in-flight pass — the dirty-tree track is captured on demand
-    // (get_in_flight_changes / remote-sync) whenever an agent asks for it.
+
+
+
     response.in_flight = { status: 'skipped', detail: 'captured on demand' };
   } else if (snapshot.snapshot_source === 'committed-head') {
-    // The tree was dirty: the shared revision above is HEAD-only, so ALSO run the
-    // in-flight (dirty working tree) pass for local agent context. Its failure
-    // must never fail the shared analysis that already succeeded.
+
+
+
     try {
       const sync = await syncWorkingTreeRemotely(options);
       const summary = sync.change_report?.summary;
@@ -254,54 +264,182 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
   return response;
 }
 
-async function waitForRemoteAnalysis(serverUrl: string, analysisId: string, explicitToken?: string): Promise<RemoteAnalyzeResponse['cas']> {
+export async function waitForRemoteAnalysis(
+  serverUrl: string,
+  analysisId: string,
+  explicitToken?: string,
+  expectedRevision?: number,
+  completionTimeoutMs?: number,
+  requestedSections?: readonly CasSectionName[],
+): Promise<RemoteAnalyzeResponse['cas']> {
   const token = connectorToken(explicitToken, serverUrl);
   const headers: Record<string, string> = {};
   if (token) headers.authorization = `Bearer ${token}`;
-  const deadline = Date.now() + remoteCompletionTimeoutMs();
+  const deadline = Date.now() + remoteCompletionTimeoutMs(completionTimeoutMs);
   let lastStatus = 'populating';
   while (Date.now() < deadline) {
-    const statusResponse = await fetchWithTimeout(
-      `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/status`,
-      { headers },
-      remoteRequestTimeoutMs(),
-    );
+    let statusResponse: Response;
+    try {
+      statusResponse = await fetchWithTimeout(
+        `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/status`,
+        { headers },
+        remoteRequestTimeoutMs(),
+      );
+    } catch (error) {
+      lastStatus = `temporarily unreachable (${error instanceof Error ? error.message : String(error)})`;
+      await sleep(100);
+      continue;
+    }
     const statusPayload = await statusResponse.json().catch(() => ({})) as {
       status?: string;
+      analysis_revision?: number;
+      error?: string;
       failed_layers?: Array<{ layer?: string; error?: string }>;
-      last_attempt?: { error?: string };
+      last_attempt?: { error?: string; reason?: string };
     };
-    if (!statusResponse.ok) throw new Error(`Remote analysis status returned ${statusResponse.status}`);
+    if (!statusResponse.ok) {
+      const detail = statusPayload.error ? `: ${statusPayload.error}` : '';
+      if (statusResponse.status >= 500) {
+        lastStatus = `temporarily unavailable (HTTP ${statusResponse.status}${detail})`;
+        await sleep(100);
+        continue;
+      }
+      throw new Error(`Remote analysis status returned ${statusResponse.status}${detail}`);
+    }
     lastStatus = statusPayload.status || lastStatus;
     if (lastStatus === 'failed') {
       const detail = statusPayload.failed_layers?.map(layer => `${layer.layer || 'unknown'}: ${layer.error || 'failed'}`).join(', ')
         || statusPayload.last_attempt?.error
+        || statusPayload.last_attempt?.reason
         || 'unknown analysis failure';
       throw new Error(`Remote analysis ${analysisId} failed: ${detail}`);
     }
     if (lastStatus === 'ready') {
-      const exportResponse = await fetchWithTimeout(
-        `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/export`,
-        { headers },
-        remoteRequestTimeoutMs(),
-      );
-      if (!exportResponse.ok) throw new Error(`Remote CAS export returned ${exportResponse.status}`);
-      const codec = exportResponse.headers.get('x-klauro-cas-codec') || 'none';
-      const raw = Buffer.from(await exportResponse.arrayBuffer());
-      let json = raw;
-      if (codec === 'zstd') {
-        const decoded = spawnSync('zstd', ['-q', '-d', '-c'], { input: raw, maxBuffer: 1024 * 1024 * 1024 });
-        if (decoded.status !== 0) throw new Error('Remote CAS export uses zstd but the decoder is unavailable');
-        json = decoded.stdout;
+      if (expectedRevision !== undefined && (!statusPayload.analysis_revision || statusPayload.analysis_revision < expectedRevision)) {
+        lastStatus = `waiting for revision ${expectedRevision}`;
+        await sleep(100);
+        continue;
       }
-      return JSON.parse(json.toString('utf8')) as RemoteAnalyzeResponse['cas'];
+      if (expectedRevision !== undefined && statusPayload.analysis_revision && statusPayload.analysis_revision > expectedRevision) {
+        throw new Error(`Remote analysis ${analysisId} revision ${expectedRevision} was superseded by revision ${statusPayload.analysis_revision}`);
+      }
+      const segmented = await fetchSegmentedRemoteCas(
+        serverUrl,
+        analysisId,
+        headers,
+        requestedSections || CAS_SECTION_NAMES,
+      );
+      if (segmented) return segmented;
+      let exportResponse: Response;
+      try {
+        exportResponse = await fetchWithTimeout(
+          `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/export`,
+          { headers },
+          remoteRequestTimeoutMs(),
+        );
+      } catch (error) {
+        lastStatus = `CAS export temporarily unreachable (${error instanceof Error ? error.message : String(error)})`;
+        await sleep(100);
+        continue;
+      }
+      if (exportResponse.status === 404 || exportResponse.status === 409) {
+        lastStatus = 'CAS export is still populating';
+        await sleep(100);
+        continue;
+      }
+      if (!exportResponse.ok) throw new Error(`Remote CAS export returned ${exportResponse.status}`);
+      const exportedRevisionValue = exportResponse.headers.get('x-klauro-analysis-revision');
+      const exportedRevision = exportedRevisionValue ? Number(exportedRevisionValue) : undefined;
+      if (expectedRevision !== undefined && exportedRevision !== undefined && exportedRevision !== expectedRevision) {
+        if (exportedRevision > expectedRevision) {
+          throw new Error(`Remote analysis ${analysisId} revision ${expectedRevision} was superseded by revision ${exportedRevision}`);
+        }
+        lastStatus = `waiting for revision ${expectedRevision} export`;
+        await sleep(100);
+        continue;
+      }
+      const codec = exportResponse.headers.get('x-klauro-cas-codec') || 'none';
+      if (exportResponse.body) {
+        return decodeCasExportStream<RemoteAnalyzeResponse['cas']>(Readable.fromWeb(exportResponse.body as any), codec);
+      }
+      return fetchUncompressedRemoteCas(serverUrl, analysisId, headers);
     }
     await sleep(100);
   }
   throw new Error(`Timed out waiting for remote analysis ${analysisId}; server status remains ${lastStatus} and analysis continues remotely`);
 }
 
-function remoteCompletionTimeoutMs(): number {
+async function fetchSegmentedRemoteCas(
+  serverUrl: string,
+  analysisId: string,
+  headers: Record<string, string>,
+  requestedSections: readonly CasSectionName[],
+): Promise<RemoteAnalyzeResponse['cas'] | undefined> {
+  const manifest = await withRemoteReadRetry(async () => {
+    const response = await fetchWithTimeout(
+      `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/manifest`,
+      { headers },
+      remoteRequestTimeoutMs(),
+    );
+    if (response.status === 404) return undefined;
+    if (response.status >= 500) throw new RetriableRemoteError(`Remote CAS manifest returned ${response.status}`);
+    if (!response.ok) throw new Error(`Remote CAS manifest returned ${response.status}`);
+    return response.json() as Promise<CasSectionManifest>;
+  });
+  if (!manifest) return undefined;
+  const available = new Set(manifest.sections.map(section => section.name));
+  const parts: Array<Partial<RemoteAnalyzeResponse['cas']>> = [];
+  for (const section of requestedSections) {
+    if (!available.has(section)) continue;
+    parts.push(await withRemoteReadRetry(async () => {
+      const response = await fetchWithTimeout(
+        `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/sections/${section}`,
+        { headers },
+        remoteRequestTimeoutMs(),
+      );
+      if (response.status >= 500) throw new RetriableRemoteError(`Remote CAS section ${section} returned ${response.status}`);
+      if (!response.ok) throw new Error(`Remote CAS section ${section} returned ${response.status}`);
+      return parseRemoteCasSection(response);
+    }));
+  }
+  return hydrateCasSections(parts) as RemoteAnalyzeResponse['cas'];
+}
+
+async function parseRemoteCasSection(response: Response): Promise<Partial<RemoteAnalyzeResponse['cas']>> {
+  const codec = response.headers.get('x-klauro-cas-codec') || 'none';
+  const raw = Buffer.from(await response.arrayBuffer());
+  const decoded = decodeCasExport(raw, codec);
+  if (!decoded) throw new Error(`Remote CAS section could not be decoded with ${codec}`);
+  if (decoded.length <= bufferConstants.MAX_STRING_LENGTH) {
+    return JSON.parse(decoded.toString('utf8')) as Partial<RemoteAnalyzeResponse['cas']>;
+  }
+  return decodeCasExportStream<Partial<RemoteAnalyzeResponse['cas']>>(Readable.from([raw]), codec);
+}
+
+async function fetchUncompressedRemoteCas(
+  serverUrl: string,
+  analysisId: string,
+  headers: Record<string, string>,
+): Promise<RemoteAnalyzeResponse['cas']> {
+  const response = await fetchWithTimeout(
+    `${serverUrl}/api/projects/${encodeURIComponent(analysisId)}/cas`,
+    { headers },
+    remoteRequestTimeoutMs(),
+  );
+  const payload = await response.json().catch(() => ({})) as {
+    status?: string;
+    error?: string;
+    cas?: RemoteAnalyzeResponse['cas'];
+  };
+  if (!response.ok || payload.status !== 'ready' || !payload.cas) {
+    const detail = payload.error ? `: ${payload.error}` : '';
+    throw new Error(`Remote uncompressed CAS export returned ${response.status}${detail}`);
+  }
+  return payload.cas;
+}
+
+function remoteCompletionTimeoutMs(explicit?: number): number {
+  if (Number.isFinite(explicit) && Number(explicit) > 0) return Number(explicit);
   const override = Number(process.env.KLAURO_REMOTE_COMPLETION_TIMEOUT_MS);
   return Number.isFinite(override) && override > 0 ? override : 180_000;
 }
@@ -321,8 +459,8 @@ export async function generateElementDescriptionRemotely(options: RemoteElementD
   }, serverUrl) as unknown as Record<string, unknown>;
 }
 
-/** Persist the analyzed commit SHA onto the stored CAS so the local cache is
- *  revision-identifiable (revision-accurate freshness; see revision.ts). */
+
+
 function stampAnalyzedCommit<T>(cas: T, baseCommit: string | undefined): T {
   if (baseCommit && cas && typeof cas === 'object' && (cas as any).base_commit == null) {
     (cas as any).base_commit = baseCommit;
@@ -360,11 +498,11 @@ export interface RemoteBranchDiffOptions extends RemoteSyncOptions {
   baseBranch?: string;
 }
 
-/**
- * Analyze ONLY the files changed on a non-default branch (a light diff-only
- * payload), then persist the resulting CAS on the dedicated 'other-branch' track
- * so it never overwrites the committed 'main' analysis.
- */
+
+
+
+
+
 export async function analyzeBranchDiffRemotely(options: RemoteBranchDiffOptions): Promise<RemoteAnalyzeResponse> {
   const projectPath = path.resolve(options.projectPath);
   const loaded = await loadKlauroConfig(projectPath);
@@ -396,8 +534,8 @@ export async function fetchRemoteProjectRevisions(options: RemoteSyncOptions): P
   if (token) headers.authorization = `Bearer ${token}`;
   const url = `${serverUrl}/v1/projects/${encodeURIComponent(analysisId)}/revisions`;
   const operation = 'GET revisions';
-  // Same constraint as the hosted read tools: a bare fetch here reports
-  // `fetch failed` with no cause, no URL, and no retry.
+
+
   const response = await hostedFetch(url, { headers }, { operation });
   if (!response.ok) throw new Error(await describeHttpFailure(response, { url, operation }));
   const payload = await response.json().catch(() => ({})) as RemoteProjectRevisionsResponse | { status: 'error'; error: string };
@@ -409,51 +547,65 @@ export function defaultAnalysisId(projectPath: string): string {
   return crypto.createHash('sha256').update(path.resolve(projectPath)).digest('hex').slice(0, 24);
 }
 
-/** Default per-request timeout for uploads to the remote analyzer (ms).
- *  Analyze payloads can be large; this must comfortably exceed normal
- *  processing time while still turning a true hang into a retriable error
- *  instead of hanging the CLI forever. Overridable via
- *  KLAURO_REMOTE_REQUEST_TIMEOUT_MS (primarily for tests that need to
- *  exercise the timeout path without waiting the full production timeout). */
+
+
+
+
+
+
 function remoteRequestTimeoutMs(): number {
   const override = Number(process.env.KLAURO_REMOTE_REQUEST_TIMEOUT_MS);
   return Number.isFinite(override) && override > 0 ? override : 120_000;
 }
 
-/** Retry schedule for transient failures talking to the remote analyzer
- *  (short exponential backoff): attempt 1 immediate, then wait ~1s, ~3s, ~9s
- *  before attempts 2-4. Total = 4 attempts. */
+
+
+
 const REMOTE_RETRY_DELAYS_MS = [1_000, 3_000, 9_000];
+
+async function withRemoteReadRetry<T>(read: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= REMOTE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      lastError = error;
+      if (!isRetriableNetworkError(error) || attempt === REMOTE_RETRY_DELAYS_MS.length) throw error;
+      await sleep(REMOTE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw lastError;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/** Thrown when the remote analyzer's edge (e.g. Cloudflare) or the server
- *  itself misbehaves in a way that is worth retrying. Distinguishing this
- *  from a plain Error lets postRemote's retry loop tell "worth another try"
- *  apart from a definitive application-level failure (e.g. a 4xx from the
- *  analyzer itself, which retrying will not fix). */
+
+
+
+
+
 class RetriableRemoteError extends Error {}
 
-/** True for network-level failures (DNS, connection reset, TLS) that Node's
- *  fetch/undici surfaces as a rejected promise rather than a response.
- *
- *  This also covers a destroyed/GOAWAY'd h2 session (see hosted-transport.ts
- *  for the mechanism). Retrying that here on a write is a deliberate choice,
- *  not an oversight: `/v1/analyze`, `/v1/sync`, and `/v1/analyze-diff` are all
- *  upserts keyed by `analysisId` (the server replaces the stored snapshot for
- *  that id; see remote-analyzer-service.ts's `workspacePath(dataDir,
- *  analysisId)`), not an append-only event log — re-sending the same body is
- *  a no-op-or-overwrite, never a duplicate. That is also why this function
- *  already retried the bare `fetch failed` envelope before this change;
- *  a dead h2 session is the same class of client-side condition. */
+
+
+
+
+
+
+
+
+
+
+
+
 function isRetriableNetworkError(error: unknown): boolean {
   if (error instanceof RetriableRemoteError) return true;
   if (!(error instanceof Error)) return false;
-  // AbortError comes from our own timeout (see withTimeout below) and is
-  // always worth a retry: it means we gave up waiting, not that the server
-  // definitively rejected the request.
+
+
+
   if (error.name === 'AbortError') return true;
   if (isDeadConnectionError(error)) return true;
   const cause = (error as { cause?: unknown }).cause;
@@ -461,10 +613,10 @@ function isRetriableNetworkError(error: unknown): boolean {
   if (['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(causeCode || '')) {
     return true;
   }
-  // undici's generic network-failure envelope: `TypeError: fetch failed` with
-  // no more specific `cause.code` populated. Still a transient condition
-  // (DNS hiccup, connection refused, TLS reset) worth retrying rather than
-  // failing the whole upload on the first blip.
+
+
+
+
   return error.message === 'fetch failed';
 }
 
@@ -472,10 +624,10 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // Shares hosted-transport.ts's dispatcher (not global fetch) so a dead h2
-    // session discovered by a read and one discovered by a write evict the
-    // same pooled connection rather than each surface getting stuck on a
-    // broken pool of its own.
+
+
+
+
     return await undiciFetch(url, {
       ...init, signal: controller.signal, dispatcher: getHostedDispatcher(),
       ...(isStreamingJsonRequestBody(init.body) ? { duplex: 'half' } : {}),
@@ -489,12 +641,12 @@ function isStreamingJsonRequestBody(body: BodyInit | null | undefined): boolean 
   return Boolean(body && typeof body === 'object' && typeof (body as any).pipe === 'function');
 }
 
-/** Parse a remote analyzer response robustly: check content-type BEFORE
- *  attempting JSON.parse. A Cloudflare edge that intercepts the request
- *  (challenge page, 5xx error page, rate-limit page) returns
- *  `text/html` — JSON.parse-ing that produces an opaque
- *  `Unexpected token '<'` SyntaxError with no indication of what actually
- *  happened. Detect that case and raise an honest, retriable error instead. */
+
+
+
+
+
+
 async function parseRemoteResponse(response: Response, endpoint: string): Promise<RemoteAnalyzerResponse> {
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
@@ -510,9 +662,9 @@ async function parseRemoteResponse(response: Response, endpoint: string): Promis
   try {
     return await response.json() as RemoteAnalyzerResponse;
   } catch (error) {
-    // Content-type claimed JSON but the body didn't parse — treat as a
-    // retriable edge glitch (e.g. truncated response) rather than crashing
-    // with a raw SyntaxError.
+
+
+
     const detail = error instanceof Error ? error.message : String(error);
     throw new RetriableRemoteError(`The Klauro server returned malformed JSON for ${endpoint}: ${detail}`);
   }
@@ -550,8 +702,8 @@ async function postRemote(
       try {
         const requestBody = streaming ? body.createBody() : bufferedRequestBody!;
         const response = await fetchWithTimeout(url, { method: 'POST', headers, body: requestBody } as RequestInit, timeoutMs);
-      // 5xx is always worth retrying (transient edge/origin failure); 4xx is
-      // a definitive application-level rejection retrying will not fix.
+
+
       if (response.status >= 500) {
         const bodyText = await response.text().catch(() => '');
         const snippet = bodyText.slice(0, 200).replace(/\s+/g, ' ').trim();
@@ -561,8 +713,8 @@ async function postRemote(
       }
       const payload = await parseRemoteResponse(response, endpoint);
       if (!response.ok || payload.status === 'error') {
-        // A well-formed JSON error from the application itself — not an edge
-        // glitch, so do not retry.
+
+
         throw new Error(payload.status === 'error' ? payload.error : `Remote analyzer returned ${response.status}`);
       }
         return payload as RemoteAnalyzeResponse;
@@ -572,11 +724,11 @@ async function postRemote(
         const isLastAttempt = attempt === maxAttempts;
         if (!retriable || isLastAttempt) {
           if (retriable) {
-          // Exhausted retries on a transient condition. RetriableRemoteError
-          // already carries an authored, readable message; a raw transport
-          // rejection does not — its diagnosis lives in `cause`, so it goes
-          // through the unwrapper rather than being reported as its opaque
-          // wrapper message.
+
+
+
+
+
           const timedOut = error instanceof Error && error.name === 'AbortError';
           const summary = timedOut
             ? `The Klauro server did not respond within ${Math.round(timeoutMs / 1000)}s for ${endpoint}. Target: ${url}.`
@@ -587,9 +739,9 @@ async function postRemote(
           }
           throw error;
         }
-        // See fetchWithTimeout above: force a fresh connection before the
-        // retry when the one just used is confirmed dead, so the retry
-        // cannot land on the same broken pooled session.
+
+
+
         if (isDeadConnectionError(error)) resetHostedDispatcher();
         await sleep(REMOTE_RETRY_DELAYS_MS[attempt - 1]);
       }
@@ -597,7 +749,7 @@ async function postRemote(
   } finally {
     if (streaming) await body.dispose();
   }
-  // Unreachable, but keeps TypeScript satisfied.
+
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 

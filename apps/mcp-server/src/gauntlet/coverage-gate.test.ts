@@ -75,16 +75,17 @@ test('multiple failing metrics are all reported', () => {
   assert.deepEqual(new Set(v.violation!.failing_metrics), new Set(['reachable_code_to_steps', 'flows_to_capabilities']));
 });
 
-// --- REAL regression gate: compute coverage over a real fixture through the
-//     product path and assert the gate stays green. This is the wired-in gauntlet
-//     gate — if a change ever drops a real repo's coverage below floor, it fails. ---
-test('REAL: express-mongoose fixture clears the semantic-coverage floors', async () => {
+test('REAL: coverage gate reports missing capability comprehension without deterministic labels', async () => {
+  process.env.KLAURO_AI_INTERPRETATION = 'false';
   const FIXTURE = path.join(__dirname, '..', '..', 'fixtures', 'analysis-truth', 'express-mongoose');
   const cas: any = await analyzeForBench(FIXTURE);
   const cov = computeSemanticCoverage(cas, computeFlowConcepts(cas));
   const v = validateSemanticCoverage(cov);
-  assert.equal(v.passed, true, `coverage gate must pass on express-mongoose. reasons: ${v.reasons.join(' | ')}`);
-  // sanity: the measured ratios are the real, documented ones (not vacuous).
+  assert.equal(v.passed, false);
+  assert.deepEqual(v.violation?.failing_metrics, ['flows_to_capabilities']);
+  assert.equal(cov.flows_to_capabilities.total, 2);
+  assert.equal(cov.flows_to_capabilities.mapped, 0);
+  assert.equal(cas.capabilities, undefined);
   assert.ok(cov.reachable_code_to_steps.total > 0);
   assert.ok(cov.reachable_code_to_steps.ratio >= SEMANTIC_COVERAGE_FLOORS.reachable_code_to_steps);
 });

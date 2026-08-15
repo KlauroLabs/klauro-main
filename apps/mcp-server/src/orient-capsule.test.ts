@@ -27,8 +27,8 @@ function richCas(): CASOutput {
     entry_points: Array.from({ length: 8 }, () => ({ type: 'http' })),
     exit_points: Array.from({ length: 3 }, () => ({ type: 'http_call' })),
     route_table: Array.from({ length: 12 }, (_, i) => ({ method: 'GET', path: `/r${i}` })),
-    data_entities: Array.from({ length: 6 }, (_, i) => ({ name: `E${i}` })),
-    system_capabilities: Array.from({ length: 4 }, (_, i) => ({ name: `C${i}` })),
+    entities: Array.from({ length: 6 }, (_, i) => ({ name: `E${i}` })),
+    capabilities: Array.from({ length: 4 }, (_, i) => ({ name: `C${i}` })),
     test_suites: Array.from({ length: 9 }, (_, i) => ({ name: `T${i}` })),
     runtime_static_links: Array.from({ length: 2 }, () => ({})),
     communication_seams: {

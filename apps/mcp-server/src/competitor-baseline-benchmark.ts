@@ -80,25 +80,25 @@ interface CompetitorBaselineReport {
     cursor: CompetitorSummary;
     linear: CompetitorSummary;
 
-    /** @deprecated Kept for older acceptance reports and docs. Use summary.cursor.*. */
+
     competitor_model: 'cursor-style-index-context-proxy-v2';
-    /** @deprecated Use summary.cursor.average_raw_score. */
+
     average_index_retrieval_score: number;
-    /** @deprecated Use summary.cursor.average_context_readiness_score. */
+
     average_index_context_readiness_score: number;
-    /** @deprecated Use summary.cursor.average_context_readiness_delta. */
+
     average_context_readiness_delta_vs_index: number;
-    /** @deprecated Use summary.cursor.average_tokens. */
+
     average_index_retrieval_tokens: number;
-    /** @deprecated Use summary.cursor.average_token_reduction_percentage. */
+
     average_token_reduction_vs_index_percentage: number;
-    /** @deprecated Use summary.cursor.average_file_recall. */
+
     average_index_retrieval_file_recall: number;
-    /** @deprecated Use summary.cursor.average_file_precision. */
+
     average_index_retrieval_file_precision: number;
-    /** @deprecated Use summary.cursor.scenarios_with_positive_context_readiness_delta. */
+
     scenarios_with_positive_context_readiness_delta: number;
-    /** @deprecated Use summary.cursor.scenarios_with_positive_token_reduction. */
+
     scenarios_with_positive_token_reduction: number;
   };
   gates: BenchmarkGate[];

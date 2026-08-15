@@ -18,14 +18,14 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
         recommendation: 'Analysis was generated for the current evaluation run.',
       }
     : await getAnalysisFreshness(projectPath);
-  // `klauro status` and the auto-refresh gate (cli.ts loadOrAnalyze) both treat
-  // summarizeAnalysisFreshness's git-diff-based `staleness` as the authoritative
-  // "is this analysis complete/current" signal. `getAnalysisFreshness` above uses
-  // an independent mtime-glob heuristic over a different file-pattern set, so the
-  // two could (and did — cold-customer feedback 2026-07-06) disagree for minutes
-  // during the populating-to-ready window. Reconcile here: if the shared
-  // staleness check disagrees with the mtime-glob status, defer to it — same
-  // source of truth `status` reports, so `doctor` and `status` never contradict.
+
+
+
+
+
+
+
+
   const sharedStaleness = options.assumeFresh ? null : summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
   const reconciledFreshnessStatus: typeof freshness.status = sharedStaleness
     ? (sharedStaleness.staleness === 'fresh' ? 'fresh' : sharedStaleness.staleness === 'stale' ? 'stale' : freshness.status)
@@ -34,10 +34,10 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
     (freshness as { status: typeof freshness.status }).status = reconciledFreshnessStatus;
     (freshness as { recommendation: string }).recommendation = sharedStaleness.recommendation;
   }
-  // Same layers_ready manifest `klauro status` now surfaces (repo_analysis_complete)
-  // and the hosted API's populating/ready status already use (remote-analyzer-
-  // service.ts) — a CAS mid-progressive-analysis is real and queryable but not
-  // fully layered, and both surfaces must agree on that, not just on staleness.
+
+
+
+
   const layersReady = cas.layers_ready;
   const analysisComplete = !layersReady || layersReady.complete !== false;
   const pendingLayers = (layersReady?.layers || []).filter(layer => layer.status === 'pending').map(layer => layer.layer);

@@ -43,6 +43,21 @@ export function getInstalledKlauroVersion(options: InstalledKlauroRunOptions = {
   return (result.stdout || result.stderr || '').trim();
 }
 
+export async function initializeInstalledKlauroProject(
+  projectPath: string,
+  options: InstalledKlauroRunOptions = {},
+): Promise<any> {
+  const installed = resolveInstalledKlauroCommand();
+  const args = [
+    ...installed.args,
+    'init',
+    projectPath,
+    '--json',
+  ];
+  if (options.serverUrl) args.push('--server-url', options.serverUrl);
+  return runJsonCommand(installed.command, args, options);
+}
+
 export async function analyzeWithInstalledKlauro(
   projectPath: string,
   options: InstalledKlauroRunOptions & { forceFull?: boolean; analysisFocus?: AnalysisFocus } = {},
@@ -53,20 +68,23 @@ export async function analyzeWithInstalledKlauro(
     'analyze',
     projectPath,
     '--json',
-    '--quiet',
+    '--wait',
   ];
   if (options.serverUrl) args.push('--server-url', options.serverUrl);
   if (options.forceFull) args.push('--force');
   if (options.analysisFocus) args.push('--analysis-focus', options.analysisFocus);
 
   const result = await runJsonCommand(installed.command, args, options);
-  // Normalize across the two CLI payload shapes:
-  //   local  analyze -> { output: <cas>, changeReport, state, wasFullRebuild, ... }
-  //   remote analyze -> { cas: <cas>, change_report, analysis_type, ... }  (hosted product path)
+
+
+
   const output = result?.output ?? result?.cas;
   const changeReport = result?.changeReport ?? result?.change_report ?? null;
   if (!output?.nodes) {
     throw new Error(`Installed Klauro CLI returned an unexpected analyze payload for ${projectPath}`);
+  }
+  if (!changeReport?.summary || !changeReport?.impact) {
+    throw new Error(`Installed Klauro CLI returned an analyze payload without an incremental change report for ${projectPath}`);
   }
   return {
     output,

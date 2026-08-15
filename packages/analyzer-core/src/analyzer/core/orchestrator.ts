@@ -253,27 +253,20 @@ function aiConcurrencyLimit(): number {
   const configured = Number(process.env.KLAURO_AI_CONCURRENCY || '');
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
 }
-
 function writeAnalyzerStatus(...values: unknown[]): void {
   const line = values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(' ');
   process.stderr.write(`${line}\n`);
 }
-
 const STUTTER_MAX_TOKENS = 3;
-
 const CAPABILITY_SUBSTANTIAL_OPERATIONS = 3;
-
-const CATALOG_HARD_DEADLINE_MS = (() => {
-  const configured = Number(process.env.KLAURO_AI_CATALOG_HARD_DEADLINE_MS || '');
-  return Number.isFinite(configured) && configured > 0 ? configured : 100_000;
-})();
-
+const configuredCatalogHardDeadlineMs = Number(process.env.KLAURO_AI_CATALOG_HARD_DEADLINE_MS || '');
+const CATALOG_HARD_DEADLINE_MS = Number.isFinite(configuredCatalogHardDeadlineMs) && configuredCatalogHardDeadlineMs > 0
+  ? configuredCatalogHardDeadlineMs
+  : 100_000;
 const AI_CATALOG_HARD_DEADLINE_MARKER = 'ai-catalog-hard-deadline-exceeded';
-
 function isAiCatalogHardDeadlineExceeded(error: unknown): boolean {
   return error instanceof Error && error.message.includes(AI_CATALOG_HARD_DEADLINE_MARKER);
 }
-
 const CAPABILITY_STRUCTURAL_AREA_NAMES = new Set([
   'src', 'lib', 'libs', 'app', 'apps', 'core', 'common', 'shared', 'base',
   'util', 'utils', 'helper', 'helpers', 'main', 'index', 'internal', 'external',

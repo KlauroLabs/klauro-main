@@ -1,22 +1,22 @@
-/**
- * Camp-C COMPREHENSION aggregation bench.
- *
- * Camp C is NOT just HTTP routes. It is the entire COMPREHENSION layer that the
- * structural/embedding camps (Camp A = scip/stack-graphs symbol graphs, Camp B =
- * embeddings retrieval) fundamentally cannot produce. Each dimension below is an
- * out-of-category framework fact: a directional ORM cardinality edge, a DI wiring
- * graph, a GraphQL field→resolver binding, a pub/sub topic graph, a component
- * render tree, a named GoF/design pattern, an endpoint auth/guard fact, a runtime
- * telemetry correlation, or an HTTP route table. Camp A/B see classes, references,
- * and "similar code" — none of them model these relationships.
- *
- * Klauro already has a passing out-of-category bench for each of these dimensions.
- * They simply were never aggregated into ONE Camp-C report. This module runs every
- * comprehension bench over ALL of its real fixtures and aggregates measured Klauro
- * mean F1 + mean token-saving vs the best competitor. Nothing is hardcoded: every
- * number comes from the real bench over real fixtures. A dimension whose fixtures
- * are absent is recorded honestly as fixtures:0 (never fabricated).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -32,49 +32,51 @@ import { runRouteAuthBench } from './auth-bench';
 import { runTelemetryCorrelationBench } from './telemetry-bench';
 import { runRouteFactsBench } from './framework-bench';
 
-/**
- * A Camp-C dimension is benched in one of two honest modes:
- *  - 'head-to-head'    : a real competitor TRIES; we score Klauro mean F1 + mean
- *                        token-saving over all fixtures (fields: fixtures, meanKlauroF1,
- *                        meanTokenSaving, allWin).
- *  - 'emission-coverage': NO competitor produces the fact at all; the win is EMISSION
- *                        COVERAGE — Klauro emits N structured facts with provenance on a
- *                        real repo, Camp A/B emit nothing (field: emitted, examples).
- */
+
+
+
+
+
+
+
+
+
 export interface CampCDimension {
   key: string;
   label: string;
   description: string;
   mode: 'head-to-head' | 'emission-coverage';
   outOfCategory: boolean;
-  /** One line: what Camp A/B fundamentally cannot answer/produce for this dimension. */
+
   campABCannot: string;
   examples: string[];
 
-  // head-to-head fields:
-  /** number of fixtures scored (head-to-head). */
+
+
   fixtures: number;
+  attemptedFixtures: number;
+  failedFixtures: number;
   meanKlauroF1: number;
   meanTokenSaving: number;
-  /** True iff Klauro wins or ceiling-ties every fixture (head-to-head). */
+
   allWin: boolean;
 
-  // emission-coverage fields:
-  /** count of Camp-C facts Klauro emitted for this category on the representative repo. */
+
+
   emitted: number;
 
-  /** Set when a dimension is empty/unmeasurable in this tree — why. */
+
   note?: string;
 }
 
 export interface CampCComprehensionReport {
-  /** The representative repo used for emission-coverage counting. */
+
   emissionFixture: string;
   dimensions: CampCDimension[];
   aggregate: {
-    /** total dimensions reported (both modes). */
+
     dimensions: number;
-    // head-to-head roll-up:
+
     headToHead: {
       dimensions: number;
       totalFixtures: number;
@@ -82,20 +84,20 @@ export interface CampCComprehensionReport {
       meanTokenSaving: number;
       allWin: boolean;
     };
-    // emission-coverage roll-up:
+
     emissionCoverage: {
       dimensions: number;
       totalEmitted: number;
     };
-    /** True iff every head-to-head dimension wins/ceiling-ties (never a loss). */
+
     allWin: boolean;
   };
 }
 
 const FIXTURES_ROOT = path.resolve(__dirname, '../../fixtures');
 
-/** A bench result is uniform: detail[] with a 'klauro' entry carrying f1, and
- *  arms[] carrying klauro/competitor metrics.tokens, plus a verdict. */
+
+
 interface UniformBenchResult {
   fixture: string;
   arms: Array<{ arm_id: string; metrics?: { tokens?: number } }>;
@@ -113,9 +115,9 @@ interface DimensionSpec {
   label: string;
   description: string;
   campABCannot: string;
-  /** fixture root dir under fixtures/ */
+
   fixtureDir: string;
-  /** which subdirs are fixtures (default: any dir containing truth.json). */
+
   filter?: (name: string) => boolean;
   run: (dir: string) => Promise<UniformBenchResult>;
 }
@@ -223,7 +225,7 @@ async function listFixtures(spec: DimensionSpec): Promise<string[]> {
       if (!(await fs.pathExists(path.join(dir, 'truth.json')))) continue;
       out.push(dir);
     } catch {
-      /* skip */
+
     }
   }
   return out;
@@ -236,6 +238,8 @@ async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
     description: spec.description,
     mode: 'head-to-head',
     fixtures: 0,
+    attemptedFixtures: 0,
+    failedFixtures: 0,
     meanKlauroF1: 0,
     meanTokenSaving: 0,
     outOfCategory: true,
@@ -258,13 +262,19 @@ async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
   const f1s: number[] = [];
   const savings: number[] = [];
   const examples: string[] = [];
+  const errors: string[] = [];
   let allWin = true;
+  let failedFixtures = 0;
 
   for (const dir of fixtureDirs) {
     try {
       const r = await spec.run(dir);
       const klauro = r.detail.find(d => d.arm === 'klauro');
-      if (!klauro) continue;
+      if (!klauro) {
+        failedFixtures++;
+        if (errors.length < 3) errors.push(`${path.basename(dir)}: missing Klauro result`);
+        continue;
+      }
       const kTokens = r.arms.find(a => a.arm_id === 'klauro')?.metrics?.tokens ?? 1;
       const compTokens = Math.max(
         1,
@@ -274,9 +284,11 @@ async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
       savings.push(tokenSaving(kTokens, compTokens));
       if (examples.length < 6) examples.push(path.basename(dir));
       if (!r.verdict.klauro_wins) allWin = false;
-    } catch {
-      // One missing/in-progress fixture must not sink the report.
-      continue;
+    } catch (error) {
+      failedFixtures++;
+      if (errors.length < 3) {
+        errors.push(`${path.basename(dir)}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 
@@ -287,35 +299,38 @@ async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
   return {
     ...base,
     fixtures: n,
+    attemptedFixtures: fixtureDirs.length,
+    failedFixtures,
     meanKlauroF1: f1s.reduce((a, b) => a + b, 0) / n,
     meanTokenSaving: savings.reduce((a, b) => a + b, 0) / n,
     examples,
-    allWin,
+    allWin: allWin && failedFixtures === 0,
+    note: errors.length > 0 ? errors.join('; ') : undefined,
   };
 }
 
-/* ----------------------------------------------------------------------------
- * MODE 2 — emission-coverage dimensions.
- *
- * No competitor (Camp A symbol graphs, Camp B embeddings) produces these facts at
- * all, so there is no F1 curve to score against. The honest measurement is EMISSION
- * COVERAGE: run ONE real analysis over a representative multi-file repo already in
- * the tree and COUNT the structured Camp-C facts the engine emitted per category.
- * Every number is read straight off the CASOutput — nothing is hardcoded.
- * -------------------------------------------------------------------------- */
+
+
+
+
+
+
+
+
+
 
 interface EmissionSpec {
   key: string;
   label: string;
   description: string;
   campABCannot: string;
-  /** CASOutput fields whose contents are this category's facts. */
+
   fields: string[];
 }
 
-/** Representative repos, in preference order. The first one that analyzes and emits
- *  any Camp-C fact is used for emission-coverage counting. Both are real multi-file
- *  fixtures already in this tree. */
+
+
+
 const EMISSION_FIXTURE_CANDIDATES = [
   'analysis-truth/rails-work-orders',
   'analysis-truth/nest-react-prisma',
@@ -326,10 +341,10 @@ const EMISSION_SPECS: EmissionSpec[] = [
   {
     key: 'capabilities',
     label: 'Product capabilities & domain (C1)',
-    description: 'system_capabilities + product_map + system_purpose + domain_concepts — what the system is / why it exists.',
+    description: 'capabilities + product_map + system_purpose + domain_concepts — what the system is / why it exists.',
     campABCannot:
       'a capability is composed from many files into a product spec; scip/stack-graphs and embeddings have no "capability" abstraction and emit nothing for what the system is or why it exists.',
-    fields: ['system_capabilities', 'product_map', 'system_purpose', 'enhanced_system_purpose', 'domain_concepts'],
+    fields: ['capabilities', 'product_map', 'system_purpose', 'enhanced_system_purpose', 'domain_concepts'],
   },
   {
     key: 'journeys',
@@ -435,6 +450,8 @@ function buildEmissionDimensions(
       campABCannot: spec.campABCannot,
       examples: [],
       fixtures: 0,
+      attemptedFixtures: 0,
+      failedFixtures: 0,
       meanKlauroF1: 0,
       meanTokenSaving: 0,
       allWin: true,
@@ -467,7 +484,7 @@ async function analyzeEmissionFixture(): Promise<{ fixture: string; cas: Record<
     try {
       if (!(await fs.pathExists(dir))) continue;
       const cas = (await analyzeForBench(dir)) as unknown as Record<string, unknown>;
-      // Use the first fixture that produces any Camp-C emission.
+
       const any = EMISSION_SPECS.some(s => s.fields.some(f => countFact(cas[f]) > 0));
       if (any) return { fixture: rel, cas };
     } catch {
@@ -482,19 +499,19 @@ let cache: CampCComprehensionReport | null = null;
 export async function buildCampCComprehensionReport(): Promise<CampCComprehensionReport> {
   if (cache) return cache;
 
-  // MODE 1 — head-to-head dimensions (real competitor tries; score F1 + tokens).
+
   const headToHead: CampCDimension[] = [];
   for (const spec of SPECS) {
     headToHead.push(await buildDimension(spec));
   }
 
-  // MODE 2 — emission-coverage dimensions (no competitor; count emitted facts).
+
   const { fixture: emissionFixture, cas } = await analyzeEmissionFixture();
   const emission = buildEmissionDimensions(cas, emissionFixture);
 
   const dimensions = [...headToHead, ...emission];
 
-  // Head-to-head roll-up over scored dimensions.
+
   const h2h = headToHead.filter(d => d.fixtures > 0);
   const totalFixtures = h2h.reduce((a, d) => a + d.fixtures, 0);
   const meanKlauroF1 = h2h.length
@@ -505,7 +522,7 @@ export async function buildCampCComprehensionReport(): Promise<CampCComprehensio
     : 0;
   const allWin = h2h.length > 0 && h2h.every(d => d.allWin);
 
-  // Emission-coverage roll-up over dimensions that emitted ≥1 fact.
+
   const emitted = emission.filter(d => d.emitted > 0);
   const totalEmitted = emitted.reduce((a, d) => a + d.emitted, 0);
 

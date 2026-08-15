@@ -12,17 +12,12 @@ import * as path from 'node:path';
  * apps/mcp-server/src/analyzer.ts. It is the only list wired into the
  * deployed product (Dockerfile.analyzer -> `npm run analyzer-server` ->
  * remote-analyzer-service.ts -> getOrchestrator()/createOrchestrator()) and
- * into analyzeForBench. Two other analyzer-registration-shaped lists exist in
- * this codebase for non-product reasons:
+ * into analyzeForBench. One other analyzer-registration-shaped list exists as
+ * benchmark metadata:
  *
  *   - packages/analyzer-core/src/analyzer/frameworks/index.ts
  *     (FRAMEWORK_ANALYZERS) — benchmark-grid metadata only
  *     (apps/mcp-server/src/gauntlet/full-grid.ts), never drives real analysis.
- *   - packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts
- *     (CASAnalyzerService.registerAnalyzers()) — belongs to a NestJS app
- *     (packages/analyzer-core/src/main.ts -> AppModule) that is never
- *     bootstrapped in production or CI.
- *
  * A new analyzer implementation added to disk but never wired into
  * apps/mcp-server/src/analyzer.ts's createOrchestrator() will *look* done
  * (file exists, may even have its own passing unit tests) while silently
@@ -90,7 +85,6 @@ interface DiscoveredAnalyzerClass {
 
 function discoverAnalyzerClasses(): DiscoveredAnalyzerClass[] {
   const found: DiscoveredAnalyzerClass[] = [];
-  const classDeclRe = /^export class ([A-Za-z0-9_]+Analyzer)\b.*extends\s+BaseAnalyzer/m;
   for (const dir of SCAN_DIRS) {
     for (const file of listTsFilesRecursive(dir)) {
       const content = fs.readFileSync(file, 'utf8');
@@ -199,7 +193,7 @@ test('inline registration ids equal the analyzer instance self-id (no id drift)'
   );
 });
 
-test('the two non-live analyzer-registration-shaped lists are not silently consumed as if they were live', () => {
+test('the benchmark-only analyzer registration list is not silently consumed as if it were live', () => {
   // packages/analyzer-core/src/analyzer/frameworks/index.ts: FRAMEWORK_ANALYZERS must only be
   // imported by the benchmark grid, not by any production entry point.
   const frameworksIndexConsumers = grepRepoForImportersOf('FRAMEWORK_ANALYZERS');
@@ -220,20 +214,10 @@ test('the two non-live analyzer-registration-shaped lists are not silently consu
     `listRegisteredAnalyzers(), not this dead list.`
   );
 
-  // CASAnalyzerService: must only be consumed by the never-bootstrapped legacy NestJS app
-  // (analysis/analyzer modules) and its own tests, not by any live analyzer.ts / MCP entry point.
-  const casServiceConsumers = grepRepoForImportersOf('CASAnalyzerService');
-  const unexpectedCasServiceConsumers = casServiceConsumers.filter(
-    f => f.startsWith('apps/mcp-server/src/') && !f.includes('.test.ts')
-  );
-  assert.deepEqual(
-    unexpectedCasServiceConsumers,
-    [],
-    `CASAnalyzerService (packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts) is ` +
-    `legacy/dead-path code (never-bootstrapped NestJS app). Found it imported from a live ` +
-    `apps/mcp-server production file: ${JSON.stringify(unexpectedCasServiceConsumers)} — if the MCP ` +
-    `product now depends on it, this test's assumptions are stale and need updating; otherwise this ` +
-    `is a real registration-path bug.`
+  assert.equal(
+    fs.existsSync(path.join(ANALYZER_CORE_SRC, 'services/cas-analyzer.service.ts')),
+    false,
+    'the removed duplicate CASAnalyzerService registration path must not return',
   );
 });
 

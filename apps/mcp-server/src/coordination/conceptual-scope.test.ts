@@ -133,7 +133,7 @@ function buildTwoFlowCas(): CASOutput {
     },
   ];
 
-  const data_entities: CASDataEntity[] = [
+  const entities: CASDataEntity[] = [
     {
       id: 'entity_order',
       name: 'Order',
@@ -144,7 +144,7 @@ function buildTwoFlowCas(): CASOutput {
     },
   ];
 
-  const system_capabilities: SystemCapability[] = [
+  const capabilities: SystemCapability[] = [
     {
       id: 'cap_checkout',
       name: 'Checkout',
@@ -164,8 +164,8 @@ function buildTwoFlowCas(): CASOutput {
     entry_points,
     exit_points,
     data_lineage,
-    data_entities,
-    system_capabilities,
+    entities,
+    capabilities,
   } as unknown as CASOutput;
 }
 

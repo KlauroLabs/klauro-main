@@ -189,7 +189,7 @@ function foundSurfacesFor(cas: CASOutput, integration: IntegrationRule, evidence
       const hasPaymentSdk = /\b(stripe|braintree|paypal|adyen|square)\b/.test(evidenceText) || matchingExits.some(exitPoint => /\b(stripe|braintree|paypal|adyen|square|payment|checkout)\b/i.test(`${exitPoint.name} ${exitPoint.target?.sdk || ''} ${exitPoint.target?.service_id || ''}`));
       if (hasPaymentSdk) found.add('payment SDK calls');
       if (matchingEntries.some(entry => /webhook/i.test(`${entry.name} ${entry.trigger?.path || ''}`))) found.add('webhook entry points');
-      if (hasPaymentSdk && [...(cas.database_schema?.entities || []), ...(cas.data_entities || [])].some(entity => /\b(payment|invoice|subscription|billing|checkout|refund)\b/i.test(entity.name))) found.add('billing data entities');
+      if (hasPaymentSdk && [...(cas.database_schema?.entities || []), ...(cas.entities || [])].some(entity => /\b(payment|invoice|subscription|billing|checkout|refund)\b/i.test(entity.name))) found.add('billing data entities');
       if (/\b(idempot|retry|refund|webhook secret|signature)\b/.test(evidenceText) || matchingExits.some(exitPoint => Boolean(exitPoint.reliability?.retry_attempts))) found.add('idempotency and retry behavior');
       break;
     case 'ai-sdk':
@@ -218,7 +218,7 @@ function foundSurfacesFor(cas: CASOutput, integration: IntegrationRule, evidence
       break;
     case 'database':
       if ((cas.database_schema?.entities?.length || 0) > 0) found.add('data schema');
-      if ((cas.data_entities || []).some(entity => Object.values(entity.lifecycle || {}).some(nodes => nodes.length > 0)) || matchingExits.some(exitPoint => exitPoint.type === 'database')) found.add('CRUD lifecycle');
+      if ((cas.entities || []).some(entity => Object.values(entity.lifecycle || {}).some(nodes => nodes.length > 0)) || matchingExits.some(exitPoint => exitPoint.type === 'database')) found.add('CRUD lifecycle');
       if (matchingExits.some(exitPoint => exitPoint.type === 'database') || (cas.nodes || []).some(node => node.type === 'repository' || node.subcategories?.includes('repository')) || /\b(repository|asyncsession|sessionmaker|get_db|db\.|database client|sqlalchemy|prisma|mongoose|knex|entitymanager)\b/.test(evidenceText)) found.add('repository calls');
       if ((cas.configuration?.config_files || []).some(file => /migration|prisma|schema\.prisma|alembic/i.test(file.path || '')) || (cas.nodes || []).some(node => /(^|\/)(migrations?|schema\.prisma|alembic)(\/|$)/i.test(node.source?.file || ''))) found.add('migration/config evidence');
       break;
@@ -274,7 +274,7 @@ function surfaceApplicable(cas: CASOutput, integration: IntegrationRule, surface
       return true;
     case 'payments':
       if (surface === 'webhook entry points') return /\b(webhook)\b/.test(evidenceText) || entries.some(entry => /webhook/i.test(`${entry.name} ${entry.trigger?.path || ''}`));
-      if (surface === 'billing data entities') return [...(cas.database_schema?.entities || []), ...(cas.data_entities || [])].some(entity => /\b(payment|invoice|subscription|billing|checkout|refund)\b/i.test(entity.name));
+      if (surface === 'billing data entities') return [...(cas.database_schema?.entities || []), ...(cas.entities || [])].some(entity => /\b(payment|invoice|subscription|billing|checkout|refund)\b/i.test(entity.name));
       if (surface === 'idempotency and retry behavior') return /\b(idempot|retry|refund|webhook secret|signature)\b/.test(evidenceText) || exits.some(exitPoint => Boolean(exitPoint.reliability?.retry_attempts));
       return true;
     case 'ai-sdk':
@@ -296,7 +296,7 @@ function surfaceApplicable(cas: CASOutput, integration: IntegrationRule, surface
       return true;
     case 'database':
       if (surface === 'data schema') return (cas.database_schema?.entities?.length || 0) > 0 || /\b(entity|model|schema)\b/.test(evidenceText);
-      if (surface === 'CRUD lifecycle') return (cas.data_entities || []).some(entity => Object.values(entity.lifecycle || {}).some(nodes => nodes.length > 0)) || exits.some(exitPoint => exitPoint.type === 'database') || /\b(create|read|update|delete|insert|select|query|save|session)\b/.test(evidenceText);
+      if (surface === 'CRUD lifecycle') return (cas.entities || []).some(entity => Object.values(entity.lifecycle || {}).some(nodes => nodes.length > 0)) || exits.some(exitPoint => exitPoint.type === 'database') || /\b(create|read|update|delete|insert|select|query|save|session)\b/.test(evidenceText);
       if (surface === 'repository calls') return exits.some(exitPoint => exitPoint.type === 'database') || (cas.nodes || []).some(node => node.type === 'repository' || node.subcategories?.includes('repository')) || /\b(repository|asyncsession|sessionmaker|get_db|db\.|database client|sqlalchemy|prisma|mongoose|knex|entitymanager)\b/.test(evidenceText);
       if (surface === 'migration/config evidence') return (cas.configuration?.config_files || []).some(file => /migration|prisma|schema\.prisma|alembic/i.test(file.path || '')) || (cas.nodes || []).some(node => /(^|\/)(migrations?|schema\.prisma|alembic)(\/|$)/i.test(node.source?.file || ''));
       return true;

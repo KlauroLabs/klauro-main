@@ -109,13 +109,32 @@ function assertCheck(condition, label, failures) {
 }
 
 const failures = [];
+const expectedInstalledToolCount = 40;
+const requiredInstalledTools = [
+  'analyze_codebase',
+  'resolve_agent_analysis',
+  'get_agent_start_context',
+  'get_agent_context',
+  'get_coding_context',
+  'assess_change_risk',
+  'fab_claim_work',
+  'check_conceptual_conflicts',
+  'plan_intent_merge',
+  'list_workspaces',
+  'run_workspace_analysis',
+  'get_workspace_analysis',
+];
 
 const core = await probeProfile('core');
 assertCheck(core.initializeMs !== null && core.initializeMs <= maxStartupMs,
   `core: initialize answered in ${core.initializeMs?.toFixed(0)}ms (limit ${maxStartupMs}ms)`, failures);
 assertCheck(core.instructions, 'core: instructions field present', failures);
-assertCheck(core.toolNames.length === 14, `core: exactly 14 tools (got ${core.toolNames.length})`, failures);
-assertCheck(core.toolNames.includes('klauro_query'), 'core: klauro_query gateway tool present', failures);
+assertCheck(core.toolNames.length === expectedInstalledToolCount,
+  `core: exactly ${expectedInstalledToolCount} installed-client tools (got ${core.toolNames.length})`, failures);
+assertCheck(new Set(core.toolNames).size === core.toolNames.length, 'core: tool names are unique', failures);
+for (const tool of requiredInstalledTools) {
+  assertCheck(core.toolNames.includes(tool), `core: ${tool} present`, failures);
+}
 assertCheck(core.handoverToolCount === core.toolNames.length,
   `core: real server answers tools/list after handover with same count (got ${core.handoverToolCount})`, failures);
 assertCheck(core.stderr.trim() === '', `core: no stderr output at startup (got: ${core.stderr.trim().slice(0, 200) || 'none'})`, failures);
@@ -124,7 +143,10 @@ const full = await probeProfile('full');
 assertCheck(full.initializeMs !== null && full.initializeMs <= maxStartupMs,
   `full: initialize answered in ${full.initializeMs?.toFixed(0)}ms (limit ${maxStartupMs}ms)`, failures);
 assertCheck(full.instructions, 'full: instructions field present', failures);
-assertCheck(full.toolNames.length >= 150, `full: at least 150 tools (got ${full.toolNames.length})`, failures);
+assertCheck(full.toolNames.length === expectedInstalledToolCount,
+  `full: exactly ${expectedInstalledToolCount} installed-client tools (got ${full.toolNames.length})`, failures);
+assertCheck(JSON.stringify([...full.toolNames].sort()) === JSON.stringify([...core.toolNames].sort()),
+  'full: installed-client surface matches core', failures);
 assertCheck(full.handoverToolCount === full.toolNames.length,
   `full: real server answers tools/list after handover with same count (got ${full.handoverToolCount})`, failures);
 assertCheck(full.stderr.trim() === '', `full: no stderr output at startup (got: ${full.stderr.trim().slice(0, 200) || 'none'})`, failures);

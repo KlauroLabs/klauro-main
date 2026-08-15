@@ -5,7 +5,7 @@ import pLimit from 'p-limit';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { dominantUnanalyzedLanguage, getAgentContext } from './agent-adoption';
 import { classifyAnalysisProfile, type AnalysisProfile } from './analysis-profile';
-import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
+import { discoverRealRepos } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { isCommandShapedLabel, isHostnameLikeServiceName } from '../../../packages/analyzer-core/src/ai/external-service-plausibility';
@@ -252,7 +252,7 @@ export async function reviewAnalysisUsefulness(cas: CASOutput, projectPath: stri
       architecture_system_type: cas.architecture_summary?.system_type,
       primary_domain: cas.enhanced_system_purpose?.primary_domain,
       description: cas.enhanced_system_purpose?.inferred_description || cas.system?.description,
-      capability_count: cas.system_capabilities?.length || 0,
+      capability_count: cas.capabilities?.length || 0,
       workflow_count: cas.user_journeys?.length || 0,
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
@@ -297,7 +297,7 @@ export function reviewAnalysisUsefulnessStatic(cas: CASOutput, projectPath: stri
       architecture_system_type: cas.architecture_summary?.system_type,
       primary_domain: cas.enhanced_system_purpose?.primary_domain,
       description: cas.enhanced_system_purpose?.inferred_description || cas.system?.description,
-      capability_count: cas.system_capabilities?.length || 0,
+      capability_count: cas.capabilities?.length || 0,
       workflow_count: cas.user_journeys?.length || 0,
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
@@ -328,7 +328,7 @@ function scoreDomainPurpose(cas: CASOutput, profile: AnalysisProfile): Usefulnes
   const description = clean(cas.enhanced_system_purpose?.inferred_description || cas.system?.description);
   const concepts = cas.enhanced_system_purpose?.core_concepts || [];
   const domainConcepts = cas.domain_concepts || [];
-  const capabilityNames = (cas.system_capabilities || []).map(capability => capability.name).filter(Boolean);
+  const capabilityNames = (cas.capabilities || []).map(capability => capability.name).filter(Boolean);
   const weakDescriptionReasons = findWeakDescriptionReasons(cas, profile, description);
   const domainBreadthProblems = findDomainBreadthProblems(cas, profile, domain);
   let score = 0;
@@ -353,7 +353,7 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
   const systemDescription = clean(cas.enhanced_system_purpose?.inferred_description || cas.system?.description);
   const systemSource = clean(cas.enhanced_system_purpose?.description_source);
   const systemGeneration = cas.enhanced_system_purpose?.description_generation;
-  const capabilities = cas.system_capabilities || [];
+  const capabilities = cas.capabilities || [];
   const relevantCapabilities = capabilities
     .filter(capability => isUsefulCapabilityName(capability.name))
     .sort((a, b) => capabilityPriority(b) - capabilityPriority(a))
@@ -436,7 +436,8 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
         .slice(0, 5)
         .map(item => `${clean(item.capability.name) || item.capability.id}: ${item.generation!.status}${item.generation!.reason ? ` (${item.generation!.reason})` : ''}`);
       details.push(`capability AI generation failed or was rejected: ${badExamples.join('; ')}`);
-      hardCap = Math.min(hardCap, badGeneration.length >= Math.max(1, requiredCapabilities) ? 60 : 70);
+      const degradedCoreCapability = badGeneration.some(item => item.capability.category === 'core');
+      hardCap = Math.min(hardCap, degradedCoreCapability || badGeneration.length >= Math.max(1, requiredCapabilities) ? 60 : 70);
     }
     if (overNarrow.length > 0) {
       const examples = overNarrow
@@ -494,7 +495,7 @@ export function getDescriptionEnrichmentTargets(cas: CASOutput, projectPath?: st
     });
   }
 
-  const capabilities = (cas.system_capabilities || [])
+  const capabilities = (cas.capabilities || [])
     .filter(capability => isUsefulCapabilityName(capability.name))
     .sort((a, b) => capabilityPriority(b) - capabilityPriority(a));
   for (const capability of capabilities) {
@@ -608,12 +609,12 @@ function appendManualElementDescriptionTargets(cas: CASOutput, targets: Descript
     if (targets.length >= 24) return;
   }
 
-  // FLOW targets — the interpretive half of the flow layer (ICELOT doctrine):
-  // step/flow descriptions are deterministic labels until this AI pass runs.
-  // Budget-bounded: only the TOP capability-linked flows (they realize a
-  // named product capability — the flows agents/the UI actually drill), never
-  // the full union set. The generated descriptions persist in the
-  // element-description store and join back via get_flow_concepts.
+
+
+
+
+
+
   try {
     const flows = computeFlowConcepts(cas, { maxFlows: 60 })
       .filter(flow => Boolean(flow.capability_id))
@@ -637,7 +638,7 @@ function appendManualElementDescriptionTargets(cas: CASOutput, targets: Descript
       if (targets.length >= 30) return;
     }
   } catch {
-    // Flow computation must never break the enrichment queue.
+
   }
 }
 
@@ -662,10 +663,10 @@ function descriptionNodeScore(node: any, degree: Map<string, number>): number {
   if (node.type === 'controller') score += 5;
   if (node.type === 'repository') score += 4;
   if (node.type === 'component') score += 3;
-  // Structural importance (normalized [0,1], deterministic graph layer) is the
-  // PRIMARY enrichment ordering when the CAS carries it: highest-importance
-  // elements get described first. Ordering only — never a cutoff; the degree/
-  // type terms remain the fallback and the tiebreaker for pre-layer analyses.
+
+
+
+
   if (typeof node.structural_importance === 'number') {
     score += node.structural_importance * 1000;
   }
@@ -677,7 +678,7 @@ function isHighValueNode(node: any): boolean {
 }
 
 function highValueDescriptionEntities(cas: CASOutput): any[] {
-  return [...(cas.data_entities || [])]
+  return [...(cas.entities || [])]
     .filter(entity => clean(entity.name))
     .sort((left, right) => descriptionEntityScore(right) - descriptionEntityScore(left))
     .slice(0, 6);
@@ -690,9 +691,9 @@ function descriptionEntityScore(entity: any): number {
 }
 
 function highValueDescriptionEntryPoints(cas: CASOutput): any[] {
-  // Structural importance of the entry point's handler/source node orders the
-  // enrichment queue (ordering only, never a cutoff) — security/criticality
-  // remain as secondary terms and the pre-layer fallback.
+
+
+
   const importanceById = new Map<string, number>();
   for (const node of cas.nodes || []) {
     if (typeof (node as any).structural_importance === 'number') {
@@ -741,7 +742,7 @@ function descriptionAcknowledgesCoverageGap(description: string, languageName: s
 }
 
 function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
-  const capabilities = cas.system_capabilities || [];
+  const capabilities = cas.capabilities || [];
   const systemGeneration = cas.enhanced_system_purpose?.description_generation;
   const capabilityGenerations = capabilities.map(capability => capability.description_generation).filter(Boolean);
   const aiApplied = [
@@ -770,8 +771,8 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
   return gate('description-layering', score, details.length ? details.join('; ') : 'agent-fast includes required AI summary/capability descriptions while deferring deeper element descriptions');
 }
 
-function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {
-  const capabilities = cas.system_capabilities || [];
+export function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {
+  const capabilities = cas.capabilities || [];
   const workflows = cas.user_journeys || [];
   const required = profile.kind === 'library-package' || profile.kind === 'test-package' || profile.kind === 'infrastructure' ? 1 : 2;
   let score = 0;
@@ -789,6 +790,14 @@ function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): Usefulnes
     (capability.operations || []).length > 0
   ).length;
   if (linked >= Math.min(required, capabilities.length || required)) score += 20; else details.push('capabilities lack entity/domain/operation links');
+  const catalogCoverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
+  if (catalogCoverage?.status === 'rejected' || (
+    catalogCoverage &&
+    catalogCoverage.published_capabilities < catalogCoverage.minimum_published_capabilities
+  )) {
+    score = Math.min(score, 35);
+    details.push(catalogCoverage.reason || `${catalogCoverage.published_capabilities}/${catalogCoverage.evidence_families} evidence families represented`);
+  }
   if (workflows.length > 0 || profile.expectations.flow_coverage !== 'required') score += 10; else details.push('no workflows for behavior-level orientation');
 
   return gate('capability-map', score, details.length ? details.join('; ') : `${capabilities.length} capabilities`);
@@ -823,8 +832,7 @@ function scoreArchitectureMap(cas: CASOutput, profile: AnalysisProfile): Usefuln
 function scoreCasOrganization(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {
   const nodes = cas.nodes || [];
   const edges = cas.edges || [];
-  const entryPoints = cas.entry_points || [];
-  const capabilities = cas.system_capabilities || [];
+  const capabilities = cas.capabilities || [];
   const domains = cas.domain_concepts || [];
   const facts = cas.analysis_facts || [];
   const validation = cas.validation;
@@ -876,7 +884,6 @@ function scoreCasOrganization(cas: CASOutput, profile: AnalysisProfile): Usefuln
 export function findArchitectureSystemTypeProblems(cas: CASOutput, profile: AnalysisProfile): string[] {
   const problems: string[] = [];
   const systemType = clean(cas.architecture_summary?.system_type);
-  const lower = systemType.toLowerCase();
   if (!systemType && !['empty', 'infrastructure'].includes(profile.kind)) {
     problems.push('architecture system_type is missing');
     return problems;
@@ -1070,7 +1077,7 @@ function scoreIdiomAndInvariantGuidance(cas: CASOutput, agentContext: any, profi
 }
 
 export function scoreDuplicationAvoidance(cas: CASOutput, agentContext: any, profile: AnalysisProfile): UsefulnessGate {
-  const capabilities = cas.system_capabilities || [];
+  const capabilities = cas.capabilities || [];
   const workflows = cas.user_journeys || [];
   const concepts = cas.domain_concepts || [];
   const selected = agentContext?.selected_node;
@@ -1106,12 +1113,12 @@ function scoreExternalIntegrationEvidence(cas: CASOutput, profile: AnalysisProfi
   const services: string[] = ((cas as any).external_services || [])
     .map((service: any) => clean(service?.name || service?.service || service))
     .filter((name: string) => Boolean(name) && !isRuntimeIntegrationNoise(name));
-  // An "external integration" whose name is command-shaped (a leaked CI/shell
-  // fragment, e.g. `dotnet pack "Foo.csproj" -p:Version=$VER`) is not evidence
-  // of a real integration. Score it as an unexplained claim using the SAME lens
-  // the product path uses to reject such labels (isCommandShapedLabel), so the
-  // referee and the product agree and this gate can catch regressions of the
-  // class it exists to catch.
+
+
+
+
+
+
   const weakNames = services.filter(name => looksLikeInternalMemberAccess(name) || isCommandShapedLabel(name));
   if (services.length === 0) return gate('external-integration-evidence', 100, 'no external integrations claimed');
   if (weakNames.length === 0) return gate('external-integration-evidence', 100, `${services.length} external integration claims look service-like`);
@@ -1135,7 +1142,7 @@ function patternInventoryIsConsistent(patterns: any[], inventory: any): boolean 
 }
 
 function inferReviewTarget(cas: CASOutput): string {
-  const capability = (cas.system_capabilities || []).find(item => item.category === 'core') || (cas.system_capabilities || [])[0];
+  const capability = (cas.capabilities || []).find(item => item.category === 'core') || (cas.capabilities || [])[0];
   if (capability?.name) return capability.name;
   const domain = cas.enhanced_system_purpose?.primary_domain;
   if (domain) return domain;
@@ -1397,7 +1404,7 @@ export function findWeakDescriptionReasons(cas: CASOutput, profile: AnalysisProf
   const concepts = [
     ...(cas.enhanced_system_purpose?.core_concepts || []),
     ...(cas.domain_concepts || []).map(concept => concept.name),
-    ...(cas.system_capabilities || []).map(capability => capability.name),
+    ...(cas.capabilities || []).map(capability => capability.name),
   ].map(value => clean(value).toLowerCase()).filter(Boolean);
   const distinctiveConcepts = concepts.filter(value => isDistinctiveDescriptionTerm(value));
 
@@ -1487,7 +1494,7 @@ function findWeakCapabilityDescriptionReasons(capability: any): string[] {
   if (/\b(?:specific functions?|helper functions?|parseArgs|formatTable|renderRow|argument parsing|table formatting|row rendering|process and structure data|structured data handling)\b/i.test(description)) {
     reasons.push('implementation-function-restatement');
   }
-  if (/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/.test(description) || /\bcoordinates?\s+(?:scripts?|functions?|helpers?|files?|modules?|operations?)\b/i.test(description)) {
+  if (/\b(?:[a-z][a-z0-9]+[A-Z]|[A-Z][a-z0-9]+[A-Z])[A-Za-z0-9]*\b/.test(description) || /\bcoordinates?\s+(?:scripts?|functions?|helpers?|files?|modules?|operations?)\b/i.test(description)) {
     reasons.push('implementation detail restatement');
   }
   if (/\bthrough\s+[^.]{0,140}\b(?:handlers?|controllers?|routes?|pages?|components?|ws operations)\b/i.test(description) ||
@@ -1557,11 +1564,11 @@ export function findDomainBreadthProblems(cas: CASOutput, profile: AnalysisProfi
   const normalizedDomain = domain.toLowerCase();
   if (!/^(auth|authentication|login|user|users|session|sessions|identity|account|accounts)$/.test(normalizedDomain)) return [];
 
-  const nonAuthCapabilities = (cas.system_capabilities || [])
+  const nonAuthCapabilities = (cas.capabilities || [])
     .map(capability => clean(capability.name).toLowerCase())
     .filter(name => name && isNonAuthProductTerm(name));
   const nonAuthEntities = [
-    ...((cas.data_entities || []) as any[]).map(entity => clean(entity.name).toLowerCase()),
+    ...((cas.entities || []) as any[]).map(entity => clean(entity.name).toLowerCase()),
     ...((cas.database_schema?.entities || []) as any[]).map(entity => clean(entity.name).toLowerCase()),
     ...((cas.domain_concepts || []) as any[]).map(concept => clean(concept.name).toLowerCase()),
   ].filter(name => name && isNonAuthProductTerm(name));
@@ -1609,10 +1616,10 @@ function descriptionTermIsGrounded(cas: CASOutput, term: string): boolean {
     domain: cas.enhanced_system_purpose?.primary_domain,
     concepts: cas.enhanced_system_purpose?.core_concepts,
     domainConcepts: (cas.domain_concepts || []).map(concept => concept.name),
-    capabilities: (cas.system_capabilities || []).map(capability => capability.name),
+    capabilities: (cas.capabilities || []).map(capability => capability.name),
     entities: [
       ...((cas.database_schema?.entities || []).map((entity: any) => entity?.name || '')),
-      ...((cas.data_entities || []).map(entity => entity.name)),
+      ...((cas.entities || []).map(entity => entity.name)),
     ],
     entries: (cas.entry_points || []).map(entry => `${entry.name} ${entry.type}`),
     integrations: ((cas as any).external_services || []).map((service: any) => `${service?.name || ''} ${service?.service || ''} ${service?.type || ''}`),
@@ -1683,9 +1690,9 @@ function capabilityPriority(capability: any): number {
     ...(Array.isArray(capability?.related_domains) ? capability.related_domains : []),
   ].length;
   score += Math.min(20, links);
-  // Structural-importance mass (signals.centrality_score, 0-100, computed by
-  // the deterministic graph layer via flow-scorer) breaks capability ordering
-  // toward what the call graph says matters — ordering only, never a cutoff.
+
+
+
   score += Math.round((capability?.signals?.centrality_score || 0) / 2);
   return score;
 }
@@ -1697,9 +1704,9 @@ function countInventoryNodes(inventory: Record<string, any>): number {
 function looksLikeInternalMemberAccess(name: string): boolean {
   const value = clean(name);
   if (!value.includes('.')) return false;
-  // Real hostnames (auth0.com, api.stripe.com, sentry.io) are external services,
-  // not member-access chains — accept them via the shared product lens so the
-  // referee and the product agree on what a domain is.
+
+
+
   if (isHostnameLikeServiceName(value)) return false;
   if (/^[a-z]+:\/\//i.test(value) || /[\/@]/.test(value)) return false;
   if (/^[a-z0-9-]+\.[a-z0-9-]+\.[a-z]{2,}$/i.test(value)) return false;

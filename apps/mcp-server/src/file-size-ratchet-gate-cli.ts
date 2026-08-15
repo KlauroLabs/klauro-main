@@ -1,38 +1,40 @@
-/**
- * CLI for the file-size ratchet (see file-size-ratchet-gate.ts). Invoked from
- * infrastructure/vps/deploy.sh alongside the spec-purity gate.
- *
- *   npx tsx src/file-size-ratchet-gate-cli.ts <repoRoot>            # check
- *   npx tsx src/file-size-ratchet-gate-cli.ts <repoRoot> --adopt    # (re)record
- *
- * --adopt writes every tracked file's current size as its ceiling. It is how the
- * baseline is created and how a deliberate ceiling change is made; it is never
- * run by the gate itself, because a gate that can rewrite its own expectations
- * is not a gate. Same lesson as the spec-purity gate's assertGateActuallyScanned:
- * a check must fail when it cannot prove it checked.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   RATCHET_BASELINE_FILE,
   checkRatchet,
   countLines,
+  findOversizedProductionSources,
   formatRatchetFailure,
   formatRatchetSlack,
   type RatchetEntry,
 } from './file-size-ratchet-gate';
 
-// The tracked set lives ONLY in the baseline file. It used to be duplicated here
-// as a literal array, which the spec-purity gate rejected as a new hardcoded list
-// — correctly, and for the same reason it is bad design: two copies of one list
-// drift, and this repo's dominant defect is exactly that. `--adopt` re-records
-// ceilings for whatever the baseline already tracks, plus any paths passed on the
-// command line, so adding a file to the ratchet is one deliberate act in one place.
+
+
+
+
+
+
 function trackedFiles(repoRoot: string, extra: string[]): string[] {
   const existing = fs.existsSync(baselinePath(repoRoot))
     ? ((JSON.parse(fs.readFileSync(baselinePath(repoRoot), 'utf8')) as { files?: RatchetEntry[] }).files || []).map(entry => entry.file)
     : [];
-  return Array.from(new Set([...existing, ...extra.map(value => path.relative(repoRoot, path.resolve(repoRoot, value)))]));
+  const oversized = findOversizedProductionSources(repoRoot).map(entry => entry.file);
+  return Array.from(new Set([...existing, ...oversized, ...extra.map(value => path.relative(repoRoot, path.resolve(repoRoot, value)))]));
 }
 
 function baselinePath(repoRoot: string): string {
@@ -76,6 +78,14 @@ function main(): void {
   const baseline = parsed.files || [];
   if (baseline.length === 0) {
     console.error('ERROR: FILE-SIZE RATCHET baseline is empty — it would pass everything. Run --adopt.');
+    process.exit(1);
+  }
+  const registered = new Set(baseline.map(entry => entry.file));
+  const unregistered = findOversizedProductionSources(repoRoot).filter(entry => !registered.has(entry.file));
+  if (unregistered.length > 0) {
+    console.error(`ERROR: FILE-SIZE RATCHET found ${unregistered.length} oversized production file(s) without ceilings:`);
+    for (const entry of unregistered) console.error(`  ${entry.file}: ${entry.ceiling} lines`);
+    console.error(`Refactor below the threshold or add the file with --adopt; ${RATCHET_BASELINE_FILE} ceilings may only decrease afterward.`);
     process.exit(1);
   }
 

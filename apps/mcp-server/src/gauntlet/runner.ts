@@ -1,26 +1,26 @@
-/**
- * Gauntlet runner — orchestrates SCENARIOS x ARMS into one GauntletReport.
- *
- * Modes:
- *  - projected (default): fast, populates the whole matrix from the grounded
- *    projection model so the UI and win-validator have real structure to work
- *    with. Every projected number is flagged so it is never mistaken for a
- *    measurement.
- *  - engine: the analysis-readiness scenario is measured directly from the
- *    stored analysis (no agent, no projection) — real numbers today.
- *  - live (--live): replaces projected agent scenarios with real agent runs via
- *    agent-live-trial's runLiveAgentPair. Wired as the escalation path; this is
- *    what actually *proves* "Klauro always wins".
- *
- * The runner streams progress (onProgress) so the UI can show scenarios moving
- * pending -> running -> done in real time, and writes the report to
- * ~/.klauro/gauntlet/latest.json (+ a timestamped copy) after every update.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { listAnalyses, type AnalysisEntry } from '../storage';
+import { listAnalyses } from '../storage';
 import { getAnalysis } from '../analyzer';
 import { evaluateAgentReadiness } from '../agent-adoption';
 import {
@@ -34,25 +34,25 @@ import {
 } from './report-schema';
 import { validateWin, summarize } from './win-validator';
 import { projectArm, type RepoFact } from './projection-model';
-import { discoverCorpus, type Corpus, type WorkspaceFact } from './corpus';
+import { discoverCorpus, type Corpus } from './corpus';
 import type { ArmMetrics } from './report-schema';
 import { resolveLiveCommands, liveAvailable, runLiveScenario, liveTargetFor, type LiveCommandConfig, type LiveTarget } from './live-driver';
 import { listUserScenarios } from './proposals';
 
 export interface RunOptions {
-  /** Run real agents for agent scenarios. Costly; the only true proof. */
+
   live?: boolean;
-  /** Limit how many discovered repos feed the projections. */
+
   maxRepos?: number;
-  /** Only run scenarios whose id is in this set. */
+
   scenarioIds?: string[];
-  /** Live agent command templates (else read from env). */
+
   liveCommands?: LiveCommandConfig;
-  /** Target a specific repo for live runs (by analysis name). */
+
   targetRepo?: string;
-  /** Target a specific workspace for live runs (by name). */
+
   targetWorkspace?: string;
-  /** Called after every scenario state change, for the UI. */
+
   onProgress?: (report: GauntletReport) => void;
 }
 
@@ -60,7 +60,7 @@ export function gauntletHomeDir(): string {
   return path.join(os.homedir(), '.klauro', 'gauntlet');
 }
 
-/** Mean of a set of ArmMetrics (used to aggregate per-workspace projections). */
+
 function meanMetrics(list: ArmMetrics[]): ArmMetrics | undefined {
   const valid = list.filter(Boolean);
   if (!valid.length) return undefined;
@@ -120,11 +120,11 @@ async function persist(report: GauntletReport): Promise<void> {
   await fs.writeJson(path.join(dir, `gauntlet-${report.run_id}.json`), report, { spaces: 2 });
 }
 
-// ---------------------------------------------------------------------------
-// Drivers — produce ArmResult[] for one scenario.
-// ---------------------------------------------------------------------------
 
-/** Objective readiness: measured directly from each stored analysis. */
+
+
+
+
 async function driveReadiness(repos: RepoFact[]): Promise<{ arms: ArmResult[]; target: string }> {
   const entries = await listAnalyses();
   const byName = new Map(entries.map(e => [e.name, e] as const));
@@ -139,7 +139,7 @@ async function driveReadiness(repos: RepoFact[]): Promise<{ arms: ArmResult[]; t
       scores.push(readiness.score);
       measured++;
     } catch {
-      /* skip unreadable */
+
     }
   }
   const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
@@ -155,13 +155,13 @@ async function driveReadiness(repos: RepoFact[]): Promise<{ arms: ArmResult[]; t
   };
 }
 
-/**
- * Projected agent scenario, grounded in the real corpus.
- *  - single-repo / incremental: project against a diverse sample of real repos.
- *  - workspace / cross-repo: project against each REAL workspace (summed member
- *    sizes) and average across workspaces, so the numbers reflect soon/zerac/…
- *    rather than a flat repo blob.
- */
+
+
+
+
+
+
+
 function driveProjected(spec: ScenarioSpec, corpus: Corpus): { arms: ArmResult[]; target: string } {
   const arms = armsForScenario(spec);
   const isMulti = spec.group === 'workspace' || spec.group === 'cross-repo';
@@ -175,7 +175,7 @@ function driveProjected(spec: ScenarioSpec, corpus: Corpus): { arms: ArmResult[]
     let metrics: ArmMetrics | undefined;
     let grounding: string;
     if (isMulti) {
-      // One projection per workspace, averaged.
+
       const perWs = usableWorkspaces
         .map(w => projectArm(spec.group, arm.id, w.repos))
         .filter((m): m is ArmMetrics => !!m);
@@ -200,14 +200,14 @@ function driveProjected(spec: ScenarioSpec, corpus: Corpus): { arms: ArmResult[]
   return { arms: armResults, target };
 }
 
-// ---------------------------------------------------------------------------
-// Main entry.
-// ---------------------------------------------------------------------------
+
+
+
 
 export async function runGauntlet(opts: RunOptions = {}): Promise<GauntletReport> {
   const runId = makeRunId();
-  // User-proposed scenarios run alongside the built-in catalog — proposing one
-  // and then running the gauntlet actually executes it.
+
+
   const userScenarios = await listUserScenarios();
   const allScenarios: ScenarioSpec[] = [
     ...SCENARIOS,
@@ -232,9 +232,9 @@ export async function runGauntlet(opts: RunOptions = {}): Promise<GauntletReport
     report.mode = 'projected';
   }
 
-  // Resolve real on-disk paths for live targets (name -> path). Live runs copy
-  // the repo, so a target whose path no longer exists is useless — in live mode
-  // gate the map on existence so liveTargetFor never picks a ghost analysis.
+
+
+
   const entries = await listAnalyses();
   const pathByName = new Map<string, string>();
   for (const e of entries) {
@@ -262,9 +262,9 @@ export async function runGauntlet(opts: RunOptions = {}): Promise<GauntletReport
         result.arms = arms;
         result.target = target;
       } else if (canLive && spec.execution === 'projected') {
-        // Live escalation: measure klauro + no-tools with real agents, and keep
-        // competitor arms projected-and-labeled (no live backend yet). Honest
-        // mixed mode — measured arms say mode:'live', the rest say 'projected'.
+
+
+
         const projected = driveProjected(spec, corpus);
         result.target = projected.target;
         const liveTarget = explicitTarget(spec, opts, pathByName)
@@ -301,7 +301,7 @@ export async function runGauntlet(opts: RunOptions = {}): Promise<GauntletReport
   return report;
 }
 
-/** Resolve an explicit per-entity live target from run options, when on disk. */
+
 function explicitTarget(spec: ScenarioSpec, opts: RunOptions, pathByName: Map<string, string>): LiveTarget | null {
   const multi = spec.group === 'workspace' || spec.group === 'cross-repo';
   const name = multi ? opts.targetWorkspace : opts.targetRepo;
@@ -311,7 +311,7 @@ function explicitTarget(spec: ScenarioSpec, opts: RunOptions, pathByName: Map<st
 }
 
 function makeRunId(): string {
-  // Date.now is available here (Node, not the workflow sandbox).
+
   const ts = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
   const rand = Math.random().toString(36).slice(2, 7);
   return `${ts}-${rand}`;

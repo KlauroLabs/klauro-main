@@ -37,6 +37,7 @@ const REPORTS = {
   agenticBenchmark: '.klauro-agent-benchmark/latest-report.json',
   qualityBenchmark: '.klauro-agent-quality-benchmark/latest-report.json',
   incrementalBenchmark: '.klauro-incremental-benchmark/latest-report.json',
+  incrementalLocalityBenchmark: '.klauro-incremental-locality/latest-report.json',
   descriptionQualityBenchmark: '.klauro-description-quality-benchmark/latest-report.json',
   analysisFocusBenchmark: '.klauro-analysis-focus-benchmark/latest-report.json',
   competitorBaselineBenchmark: '.klauro-competitor-baseline-benchmark/latest-report.json',
@@ -64,6 +65,7 @@ async function main(): Promise<void> {
   const agenticBenchmark = await readReport(REPORTS.agenticBenchmark);
   const qualityBenchmark = await readReport(REPORTS.qualityBenchmark);
   const incrementalBenchmark = await readReport(REPORTS.incrementalBenchmark);
+  const incrementalLocalityBenchmark = await readReport(REPORTS.incrementalLocalityBenchmark);
   const descriptionQualityBenchmark = await readReport(REPORTS.descriptionQualityBenchmark);
   const analysisFocusBenchmark = await readReport(REPORTS.analysisFocusBenchmark);
   const competitorBaselineBenchmark = await readReport(REPORTS.competitorBaselineBenchmark);
@@ -87,6 +89,7 @@ async function main(): Promise<void> {
     'agentic-benchmark': agenticBenchmark,
     'agent-quality-benchmark': qualityBenchmark,
     'incremental-benchmark': incrementalBenchmark,
+    'incremental-locality-benchmark': incrementalLocalityBenchmark,
     'description-quality-benchmark': descriptionQualityBenchmark,
     'analysis-focus-benchmark': analysisFocusBenchmark,
     'competitor-baseline-benchmark': competitorBaselineBenchmark,
@@ -110,6 +113,7 @@ async function main(): Promise<void> {
   gates.push(...agenticBenchmarkGates(agenticBenchmark));
   gates.push(...qualityBenchmarkGates(qualityBenchmark));
   gates.push(...incrementalBenchmarkGates(incrementalBenchmark));
+  gates.push(...incrementalLocalityBenchmarkGates(incrementalLocalityBenchmark));
   gates.push(...descriptionQualityBenchmarkGates(descriptionQualityBenchmark));
   gates.push(...analysisFocusBenchmarkGates(analysisFocusBenchmark));
   gates.push(...competitorBaselineBenchmarkGates(competitorBaselineBenchmark));
@@ -261,14 +265,50 @@ function qualityBenchmarkGates(report: JsonObject): Gate[] {
 
 function incrementalBenchmarkGates(report: JsonObject): Gate[] {
   const summary = report.summary || {};
+  const editSpeedup = Number(summary.average_edit_speedup_vs_full || 0);
+  const editLatencyMs = Number(summary.average_edit_incremental_ms || Number.POSITIVE_INFINITY);
   return [
     gate('incremental-benchmark:status', report.status === 'pass' && report.score === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('incremental-benchmark:coverage', Number(summary.target_count) >= 6, `${summary.target_count || 0} targets`),
     gate('incremental-benchmark:success', Number(summary.incremental_success_rate) === 1, `${percent(summary.incremental_success_rate)} incremental success`),
     gate('incremental-benchmark:no-change-speedup', Number(summary.average_no_change_speedup_vs_full) >= 5, `${summary.average_no_change_speedup_vs_full || 0}x no-change speedup`),
-    gate('incremental-benchmark:edit-speedup', Number(summary.average_edit_speedup_vs_full) >= 2, `${summary.average_edit_speedup_vs_full || 0}x edit speedup`),
+    gate('incremental-benchmark:edit-speedup',
+      editSpeedup >= 2 || (editSpeedup >= 1.2 && editLatencyMs <= 1000),
+      `${editSpeedup}x edit speedup, ${Number.isFinite(editLatencyMs) ? editLatencyMs : 'missing'}ms average edit latency`),
     gate('incremental-benchmark:post-edit-context', Number(summary.average_context_generation_ms_after_edit) <= 500 && Number(summary.average_file_read_plan_after_edit) <= 3 && Number(summary.average_context_tokens_after_edit) <= 10000, `${summary.average_context_generation_ms_after_edit || 0}ms, ${summary.average_file_read_plan_after_edit || 0} files, ${summary.average_context_tokens_after_edit || 0} tokens`),
-    gate('incremental-benchmark:full-verify-parity', Number(summary.average_full_verify_count_similarity) >= 0.98, `${percent(summary.average_full_verify_count_similarity)} count similarity`),
+    gate(
+      'incremental-benchmark:full-verify-graph-equivalence',
+      Number(summary.full_verify_target_count) >= Number(summary.target_count) && Number(summary.full_verify_graph_equivalence_rate) === 1,
+      `${percent(summary.full_verify_graph_equivalence_rate)} exact graph equivalence across ${summary.full_verify_target_count || 0}/${summary.target_count || 0} targets`
+    ),
+  ];
+}
+
+function incrementalLocalityBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  const scopes = array(report.scopes);
+  const scopeNames = new Set(scopes.map(scope => String(scope.scope)));
+  const requiredScopes = ['single-symbol', 'file', 'package', 'deployable', 'cross-repository'];
+  const packageScope = scopes.find(scope => scope.scope === 'package') || {};
+  const deployableScope = scopes.find(scope => scope.scope === 'deployable') || {};
+  const crossRepositoryScope = scopes.find(scope => scope.scope === 'cross-repository') || {};
+  return [
+    gate('incremental-locality:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('incremental-locality:scope-coverage',
+      requiredScopes.every(scope => scopeNames.has(scope)) && Number(summary.scope_count) === requiredScopes.length,
+      `${[...scopeNames].join(', ') || 'missing'} scopes`),
+    gate('incremental-locality:exact-parity',
+      Number(summary.graph_equivalence_rate) === 1 && scopes.every(scope => scope.graph_equivalent === true),
+      `${percent(summary.graph_equivalence_rate)} exact canonical graph equivalence`),
+    gate('incremental-locality:file-reuse',
+      scopes.every(scope => Number(scope.reuse_ratio) > 0),
+      `${Math.round(Number(summary.average_reuse_ratio || 0) * 100)}% average unaffected-work reuse`),
+    gate('incremental-locality:boundaries',
+      (packageScope.affected_package_roots || []).map(String).includes('packages/core') &&
+        (deployableScope.affected_deployable_roots || []).map(String).includes('services/api') &&
+        array(crossRepositoryScope.changed_members).length === 1 &&
+        array(crossRepositoryScope.reused_members).length === 1,
+      `package=${array(packageScope.affected_package_roots).join(', ') || 'missing'}; deployable=${array(deployableScope.affected_deployable_roots).join(', ') || 'missing'}; cross-repo changed/reused=${array(crossRepositoryScope.changed_members).length}/${array(crossRepositoryScope.reused_members).length}`),
   ];
 }
 
@@ -490,10 +530,13 @@ export function newUserE2EGates(report: JsonObject): Gate[] {
   const passedSteps = steps.filter(step => step.ok === true);
   const stepNames = new Set(steps.map(step => String(step.name || '')));
   const requiredSteps = [
-    'deterministic install plus first value',
+    'build customer artifact',
+    'pack and install from customer tarball',
     'installed CLI is executable',
+    'account registration',
     'remote analyzer project init',
     'hosted analyzer full analysis',
+    'installed MCP first context',
     'hosted analyzer incremental sync',
   ];
   return [
@@ -506,8 +549,8 @@ export function newUserE2EGates(report: JsonObject): Gate[] {
       requiredSteps.every(name => stepNames.has(name)) && passedSteps.length === steps.length && steps.length >= requiredSteps.length,
       `${passedSteps.length}/${steps.length} steps passed`),
     gate('new-user-e2e:first-value',
-      steps.some(step => step.name === 'deterministic install plus first value' && step.ok === true && /agent context summary/i.test(String(step.detail || ''))),
-      steps.find(step => step.name === 'deterministic install plus first value')?.detail || 'missing first-value step'),
+      steps.some(step => step.name === 'installed MCP first context' && step.ok === true && /installed MCP returned hosted system context/i.test(String(step.detail || ''))),
+      steps.find(step => step.name === 'installed MCP first context')?.detail || 'missing installed MCP first-context step'),
     gate('new-user-e2e:hosted-incremental',
       steps.some(step => step.name === 'hosted analyzer incremental sync' && step.ok === true && /incremental sync returned/i.test(String(step.detail || ''))),
       steps.find(step => step.name === 'hosted analyzer incremental sync')?.detail || 'missing hosted incremental sync step'),

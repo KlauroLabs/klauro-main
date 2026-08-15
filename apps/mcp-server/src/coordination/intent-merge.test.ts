@@ -234,9 +234,9 @@ test('mergeless metrics: fully orthogonal fleet -> merge_decisions_required=0, s
 // shouldUseSubstratePlan — the W4 selection rule
 // ---------------------------------------------------------------------------
 
-test('shouldUseSubstratePlan: auto-selects substrate at >1 active participant, git-ambient at <=1', () => {
-  assert.equal(shouldUseSubstratePlan(0), false);
-  assert.equal(shouldUseSubstratePlan(1), false);
+test('shouldUseSubstratePlan: semantic substrate is the default at every participant count', () => {
+  assert.equal(shouldUseSubstratePlan(0), true);
+  assert.equal(shouldUseSubstratePlan(1), true);
   assert.equal(shouldUseSubstratePlan(2), true);
   assert.equal(shouldUseSubstratePlan(5), true);
 });
@@ -286,7 +286,7 @@ function makeCas(opts: {
     entry_points: [],
     exit_points: [],
     call_chains: [],
-    system_capabilities: [],
+    capabilities: [],
     analyzer_contributions: [],
   };
 }
@@ -347,7 +347,7 @@ test('planIntentMergeFromSubstrate: disjoint claims + distinct deltas -> each at
   };
 
   const plan = await planIntentMergeFromSubstrate(workspace, substrateCas);
-  assert.equal(plan.attribution.source, 'substrate');
+  assert.equal(plan.attribution.source, 'workspace-semantic-fallback');
   assert.equal(plan.attribution.participants, 2);
   assert.equal(plan.attribution.unattributed, 0);
   assert.equal(plan.merge_decisions_required, 0);

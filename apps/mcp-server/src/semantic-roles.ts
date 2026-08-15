@@ -1,26 +1,26 @@
-/**
- * Semantic role classification — the single source of truth for the
- * core / supporting / infrastructure vocabulary.
- *
- * This module holds the name-driven primitives that the workspace-level
- * capability/item classifier (`semanticRoleForWorkspaceItem` in
- * cross-codebase-analysis.ts) already relied on, so that the same evidence
- * and logic can be reused per-ENTITY and per-FLOW without forking a parallel
- * classifier. cross-codebase-analysis.ts imports these primitives; it does
- * NOT keep its own copy.
- *
- * Vocabulary (shared across capabilities, entities, and flows):
- *   - core           — business/domain: the nouns the product exists for, the
- *                      domain capability flows.
- *   - supporting     — enabling but not the point: auth, notifications, config,
- *                      users/sessions, audit.
- *   - infrastructure — plumbing: logging, telemetry, framework glue, DB access,
- *                      health, serialization, migrations.
- *
- * Every classifier is evidence-gated and conservative: when the honest label
- * is unclear it returns the weaker role (or `undefined` for "unknown"), and it
- * carries the evidence that drove the decision. Nothing is fabricated.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import type { CASDomainConcept, CASDataEntity, CASDatabaseSchema, CASNode, CASEdge } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
@@ -32,44 +32,31 @@ import {
 
 export type SemanticRole = 'core' | 'supporting' | 'infrastructure';
 
-/** A classification plus the evidence that produced it. `role` is omitted
- *  (undefined) when there is no honest signal at all — callers surface that as
- *  "unknown" rather than guessing. */
+
+
+
 export interface RoleClassification {
   role?: SemanticRole;
   role_evidence: string[];
 }
 
-/** Rank used to pick the "stronger"/"more core" role when several signals
- *  disagree, and to compare against a threshold. */
+
+
 const ROLE_RANK: Record<SemanticRole, number> = { core: 3, supporting: 2, infrastructure: 1 };
 
 export function normalizeRoleName(value: unknown): string {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function countUniqueMatches(text: string, patterns: RegExp[]): number {
-  return patterns.reduce((count, pattern) => count + (pattern.test(text) ? 1 : 0), 0);
-}
 
-/** Names that are unambiguously plumbing. Kept byte-for-byte identical to the
- *  workspace item classifier's original regex so importing it here does not
- *  shift any workspace-level classification (single source of truth, no fork). */
-export function isInfrastructureSemanticName(normalized: string): boolean {
-  return /\b(database|postgres|mysql|redis|cache|queue|broker infrastructure|cloud|infrastructure|terraform|pulumi|kubernetes|docker|compose|deployment|provisioning|monitoring|observability|logging|ci|cd|build|pipeline|container|backend provisioning)\b/.test(normalized);
-}
 
-/** Extra plumbing vocabulary that is honest infrastructure for a data ENTITY or
- *  FLOW (migration/log/telemetry/health/serialization tables and endpoints) but
- *  that the workspace CAPABILITY classifier deliberately does not fold into its
- *  name gate. Applied only in the entity/flow classifiers below, so the
- *  workspace path is byte-for-byte unchanged. */
-export function isEntityFlowInfrastructureName(normalized: string): boolean {
-  return isInfrastructureSemanticName(normalized) ||
-    /\b(migration|migrations|schema migration|serialization|serializer|health|healthcheck|heartbeat|telemetry|metric|metrics|tracing|span|changelog|schema version|flyway|liquibase|knex migration)\b/.test(normalized);
-}
 
-/** A runtime endpoint literal ("host:port", "https://host:port") — plumbing. */
+
+
+
+
+
+
 export function isRuntimeEndpointSemanticName(name: unknown): boolean {
   const raw = String(name || '');
   const compact = raw.trim();
@@ -79,94 +66,45 @@ export function isRuntimeEndpointSemanticName(name: unknown): boolean {
     /^[a-z0-9 ._-]+\s+\d{2,5}$/.test(normalizedText);
 }
 
-/** Names that enable the product but are not the point of it. Byte-for-byte
- *  identical to the workspace item classifier's original supporting regex. */
-export function isSupportingSemanticName(normalized: string): boolean {
-  return /\b(license|licensing|notification|notifications|terms|conditions|impersonation|revocation|audit|activity log|password reset|email|mailer|usage|settings|configuration|logo|avatar|theme|session|token|apikey|api key|identity|authentication|forgot password|reset password|profile|preference|preferences|document|documents|cancellation|feedback|credential|credentials|platform)\b/.test(normalized) ||
-    /\b(passwordreset|cancellationfeedback|userapikey|apikey|credential|credentials)\b/.test(normalized);
-}
 
-/** Product/domain vocabulary — a positive signal that a noun is core. The first
- *  block mirrors the workspace `workspaceProductCapabilitySignal` exactly; the
- *  second block adds common business nouns (client/customer/order/invoice/…)
- *  that the entity/flow classifiers benefit from. Additive only. */
-export function productDomainSignal(name: string): number {
-  const text = normalizeRoleName(name);
-  return countUniqueMatches(text, [
-    /\bfinance\b/, /\bfinancial\b/, /\binvest(?:ment|ing)?\b/, /\basset\b/,
-    /\bportfolio\b/, /\btransaction\b/, /\bpayment\b/, /\bbilling\b/,
-    /\binvoice\b/, /\bsettlement\b/, /\bliquidation\b/, /\bpurchase\b/,
-    /\bspending\b/, /\bexchange\b/, /\border\b/, /\btrad(?:e|ing)\b/,
-    /\bcrypto\b/, /\bblockchain\b/, /\bweb3\b/, /\bdigital asset/,
-    /\bon-?chain\b/, /\bdefi\b/, /\bwallet\b/, /\bcustod(?:y|ian|ial)\b/,
-    /\bswap\b/, /\bstak(?:e|ing)\b/, /\bmint(?:ing)?\b/, /\bdeposit\b/,
-    // entity/flow-oriented business nouns (additive to the workspace set):
-    /\bclient\b/, /\bcustomer\b/, /\bproduct\b/, /\bshipment\b/,
-    /\bvehicle\b/, /\bdriver\b/, /\bbooking\b/, /\breservation\b/,
-    /\bcontract\b/, /\bclaim\b/, /\bappointment\b/,
-    /\bcatalog\b/, /\binventory\b/, /\bcart\b/, /\bcheckout\b/,
-  ]);
-}
 
-/** Fold two role judgements into the stronger (more-core) of the two. */
+
 export function strongerRole(left?: SemanticRole, right?: SemanticRole): SemanticRole | undefined {
   if (!left) return right;
   if (!right) return left;
   return ROLE_RANK[right] > ROLE_RANK[left] ? right : left;
 }
 
-/**
- * The name-only classifier — the same shape of decision
- * `semanticRoleForWorkspaceItem` makes, minus the workspace score machinery
- * (there is no per-entity/per-flow terminal score, so name + a caller-supplied
- * corroborating signal do the work). Conservative: an ambiguous name with no
- * product signal is supporting, never core.
- */
-export function roleFromName(
-  name: unknown,
-  opts: { productSignal?: boolean } = {}
-): { role: SemanticRole; evidence: string } {
-  const raw = String(name || '');
-  const normalized = normalizeRoleName(raw);
-  // Entity/flow contexts use the broadened infra gate (migration/log/telemetry
-  // /health/serialization). This never runs on the workspace path.
-  if (isEntityFlowInfrastructureName(normalized)) return { role: 'infrastructure', evidence: 'name matches infrastructure vocabulary (plumbing)' };
-  if (isRuntimeEndpointSemanticName(raw)) return { role: 'infrastructure', evidence: 'name is a runtime endpoint literal (host:port)' };
-  if (isSupportingSemanticName(normalized)) return { role: 'supporting', evidence: 'name matches supporting vocabulary (auth/config/notifications/audit)' };
-  if (opts.productSignal || productDomainSignal(raw) > 0) return { role: 'core', evidence: 'name carries product/domain vocabulary' };
-  return { role: 'supporting', evidence: 'no domain or infrastructure signal in name (conservative default)' };
-}
 
-/**
- * Index domain concepts by the entity names and entry-point ids they appear
- * in, so an entity or flow can look up which already-classified domain
- * concept(s) reference it. `domain_concepts[].classification` is the
- * core/supporting/infrastructure signal computed by the domain-extractor from
- * real structural evidence (entry-point + entity anchoring, node dominance) —
- * exactly the terminal/domain signal to reuse here rather than re-derive.
- */
+
+
+
+
+
+
+
 export interface DomainConceptIndex {
-  /** Keyed by an ENTITY KEY that matches whichever reference form the domain
-   *  extractor emitted for `appears_in.entities`. In practice that array holds
-   *  entity NODE IDs (e.g. "entity_billing"), not display names, so we index
-   *  each concept reference under its raw value AND a stripped/normalized form
-   *  ("billing"), and `entityKeys(entity)` produces the same candidate set for
-   *  a data entity so id-based and name-based references both join. */
+
+
+
+
+
+
   byEntityKey: Map<string, CASDomainConcept[]>;
   byEntryPoint: Map<string, CASDomainConcept[]>;
   byNode: Map<string, CASDomainConcept[]>;
   size: number;
 }
 
-/** Strip a leading "entity_" / "entity " prefix and normalize, so an entity
- *  node id ("entity_billing") and a display name ("Billing") collapse to the
- *  same key ("billing"). */
+
+
+
 function stripEntityRef(value: unknown): string {
   return normalizeRoleName(String(value || '').replace(/^entity[_\s]+/i, ''));
 }
 
-/** The candidate join keys for a data entity — its id, its stripped id, and its
- *  normalized name — so a concept reference in any of those forms matches. */
+
+
 export function entityKeys(entity: { id?: string; name?: string }): string[] {
   const keys = new Set<string>();
   if (entity.id) { keys.add(entity.id); keys.add(stripEntityRef(entity.id)); }
@@ -186,8 +124,8 @@ export function buildDomainConceptIndex(concepts: CASDomainConcept[] | undefined
   };
   for (const concept of concepts || []) {
     for (const ent of concept.appears_in?.entities || []) {
-      // Index under the raw reference and its stripped/normalized form so the
-      // entity can look up by id OR by name.
+
+
       push(byEntityKey, String(ent), concept);
       push(byEntityKey, stripEntityRef(ent), concept);
       push(byEntityKey, normalizeRoleName(ent), concept);
@@ -202,7 +140,7 @@ export function buildDomainConceptIndex(concepts: CASDomainConcept[] | undefined
   return { byEntityKey, byEntryPoint, byNode, size: (concepts || []).length };
 }
 
-/** Look up the concepts referencing an entity across all its candidate keys. */
+
 function conceptsForEntity(entity: { id?: string; name?: string }, index: DomainConceptIndex): CASDomainConcept[] {
   const seen = new Set<CASDomainConcept>();
   for (const key of entityKeys(entity)) {
@@ -211,7 +149,7 @@ function conceptsForEntity(entity: { id?: string; name?: string }, index: Domain
   return [...seen];
 }
 
-/** Pick the strongest classification among a set of concepts, with evidence. */
+
 function roleFromConcepts(concepts: CASDomainConcept[] | undefined): { role?: SemanticRole; evidence?: string } {
   if (!concepts || concepts.length === 0) return {};
   let best: SemanticRole | undefined;
@@ -228,12 +166,12 @@ function roleFromConcepts(concepts: CASDomainConcept[] | undefined): { role?: Se
   };
 }
 
-/** A single relation, resolved to real node names, keyed by the
- *  RELATION SOURCE entity's own name (lowercased) — the join key
- *  `classifyEntityRole` uses to look up "what does this entity relate to".
- *  `kind` distinguishes a DATA relation (ORM association / typed composition)
- *  from a STRUCTURAL one (interface/trait/superclass), so a caller can never
- *  mistake an interface list for the entity's data model. */
+
+
+
+
+
+
 export interface EntityRelationEvidence {
   targetName: string;
   relationType: string;
@@ -248,53 +186,53 @@ export interface EntityRelationEvidence {
 }
 
 export interface EntityRelationIndex {
-  /** Every relation (data first, then structural) — the shape role
-   *  classification consumes, since a trait-composed association is evidence
-   *  about an entity's shape just as an ORM relation is. */
+
+
+
   byEntityNameLower: Map<string, EntityRelationEvidence[]>;
-  /** DATA relations only — the entity's actual data model. */
+
   dataByEntityNameLower: Map<string, EntityRelationEvidence[]>;
-  /** STRUCTURAL relations only (implements / trait / extends). */
+
   structuralByEntityNameLower: Map<string, EntityRelationEvidence[]>;
-  /** Field names on each entity that ARE relations, not scalar columns. */
+
   relationFieldsByEntityNameLower: Map<string, Set<string>>;
 }
 
-/**
- * Build an entity-name-keyed relation index from the CAS.
- *
- * Delegates to the SHARED evidence-gated extractor
- * (analyzer-core analyzer/core/entity-relations.ts) so the entity surface, the
- * ERD, and role classification all read the same relation graph from the same
- * carriers — ORM relation edges, property-level relation declarations, typed
- * composition where a field's type IS another entity, and structural
- * interface/trait edges. Previously this function read ONLY `references` edges
- * carrying `relationType` plus `implements`/`uses_trait`, which meant a
- * decorator-ORM entity's whole relation list could be one
- * entity -> UI-component `implements` edge.
- *
- * Keyed by NAME rather than node id because a `CASDataEntity`
- * (data_entities[]) and its originating graph NODE (nodes[], the edge
- * endpoint) carry different id schemes — the entity name is the only reliable
- * join key between the two.
- *
- * Relations already persisted on `data_entities[].relations` (written at
- * analysis time, where source-level relation decorators are still readable)
- * are preferred and merged in: they are the only carrier for a decorator ORM
- * whose analyzer records nothing about the relation on the graph itself.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function buildEntityRelationIndex(
   cas: {
     nodes?: CASNode[];
     edges?: CASEdge[];
-    data_entities?: CASDataEntity[];
+    entities?: CASDataEntity[];
     database_schema?: CASDatabaseSchema;
   },
 ): EntityRelationIndex {
   const graph = extractEntityRelations({
     nodes: cas.nodes,
     edges: cas.edges,
-    dataEntities: cas.data_entities,
+    dataEntities: cas.entities,
   });
 
   const toEvidence = (relation: {
@@ -327,9 +265,9 @@ export function buildEntityRelationIndex(
     key: string,
     evidence: EntityRelationEvidence,
   ) => {
-    // ONE data relation per (entity, field). A field declares at most one
-    // association, so the persisted analysis-time reading of it must not be
-    // joined by a weaker re-derivation of the same field from the stored graph.
+
+
+
     if (evidence.kind === 'data' && evidence.field) {
       const claimed = claimedDataFields.get(key);
       if (claimed?.has(evidence.field)) return;
@@ -347,10 +285,10 @@ export function buildEntityRelationIndex(
     else bucket.set(key, [evidence]);
   };
 
-  // Persisted relations FIRST — analysis-time source-decorator evidence that
-  // cannot be re-derived from the stored graph, so it carries the strongest
-  // cardinality and wins the dedupe.
-  for (const entity of cas.data_entities || []) {
+
+
+
+  for (const entity of cas.entities || []) {
     const key = entity.name.toLowerCase();
     for (const relation of entity.relations || []) {
       const evidence: EntityRelationEvidence = {
@@ -377,17 +315,17 @@ export function buildEntityRelationIndex(
     }
   }
 
-  // `database_schema` relations SECOND. buildDatabaseSchema reads relation
-  // decorators off the SOURCE FILE during analysis — evidence that exists
-  // nowhere on the stored graph — so for a decorator ORM this is the only
-  // carrier that knows the real cardinality. Reading it here is what keeps the
-  // entity surface agreeing with the ERD on analyses stored BEFORE relations
-  // were persisted on the entity itself.
+
+
+
+
+
+
   const schemaEntityNames = new Map(
     (cas.database_schema?.entities || []).map(entity => [entity.name.toLowerCase(), entity.name]),
   );
   const knownTargetName = (name: string): string | undefined =>
-    (cas.data_entities || []).find(entity => entity.name.toLowerCase() === name.toLowerCase())?.name
+    (cas.entities || []).find(entity => entity.name.toLowerCase() === name.toLowerCase())?.name
     || schemaEntityNames.get(name.toLowerCase());
   for (const schemaEntity of cas.database_schema?.entities || []) {
     const key = schemaEntity.name.toLowerCase();
@@ -423,8 +361,8 @@ export function buildEntityRelationIndex(
     for (const relation of relations) add(structuralByEntityNameLower, key, toEvidence(relation));
   }
 
-  // Combined view: data relations first so a truncating consumer keeps the
-  // data model, structural composition after.
+
+
   const byEntityNameLower = new Map<string, EntityRelationEvidence[]>();
   for (const key of new Set([...dataByEntityNameLower.keys(), ...structuralByEntityNameLower.keys()])) {
     byEntityNameLower.set(key, [
@@ -441,10 +379,10 @@ export function buildEntityRelationIndex(
   };
 }
 
-/** Field-name vocabulary that corroborates a relation TARGET being an
- *  external-integration/connection hub (credential/provider-shaped storage)
- *  rather than a domain record — e.g. Doctrine's `Connection` entity storing
- *  `auth`/`type`/`enabled` for a third-party sync provider. */
+
+
+
+
 function hasIntegrationCredentialFieldShape(fields: CASDataEntity['fields'] | undefined): boolean {
   const vocab = new Set(['auth', 'credential', 'credentials', 'token', 'apikey', 'api', 'key', 'secret', 'oauth', 'webhook', 'access', 'refresh']);
   return (fields || []).some(field => {
@@ -453,45 +391,45 @@ function hasIntegrationCredentialFieldShape(fields: CASDataEntity['fields'] | un
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .filter(Boolean);
-    // Require at least two matching tokens (e.g. "api"+"key", "access"+"token")
-    // OR one unambiguous single-word hit (auth/credential/secret/oauth/webhook)
-    // so a lone "key" (a primary-key field) never trips this alone.
+
+
+
     const unambiguous = new Set(['auth', 'credential', 'credentials', 'oauth', 'webhook']);
     if (words.some(word => unambiguous.has(word))) return true;
     return words.filter(word => vocab.has(word)).length >= 2;
   });
 }
 
-/** Name-based signal that a relation TARGET (not the entity being
- *  classified) is a connection/integration hub. This is evidence about a
- *  DIFFERENT entity than the one under classification — not the name-pattern
- *  the caller is asked to avoid on the classified entity itself — and is
- *  only ever combined with the structural relation-pairing test below, never
- *  used alone.
- *
- *  Splits camelCase/PascalCase before testing so a compound identifier with
- *  no natural word boundary (a trait/interface name like
- *  `ConnectionBindInterface` or `ConnectionBindTrait` — the shape
- *  STRUCTURAL_COMPOSITION_EDGE_TYPES relations resolve to) still matches:
- *  `\bconnection\b` alone never fires inside one unbroken run of letters. */
+
+
+
+
+
+
+
+
+
+
+
+
 function isConnectionIntegrationTargetName(name: string): boolean {
   const spaced = String(name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
   return /\b(connection|integration|oauth|webhook)\b/i.test(spaced);
 }
 
-/**
- * Evidence-first integration-sync JOIN RECORD detection. An entity whose ORM
- * relations pair it to BOTH (a) another entity present in this codebase's own
- * domain-entity set and (b) a connection/integration hub entity (by name
- * and/or credential-field shape) is a sync/bind record joining the two — not
- * a core domain entity in its own right, regardless of what its own name
- * looks like (a name ending in "ConnectionBind" is corroboration only, never
- * required and never sufficient alone). Real example: a benchmarked fleet-management repo's
- * `DeviceConnectionBind` ManyToOne-relates to both `Device` (a real domain
- * entity) and `Connection` (a `type`/`auth`/`enabled`-shaped integration
- * hub) — the SAME structural shape repeats across 14 `*ConnectionBind`
- * entities, each pairing a different domain entity with `Connection`.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function classifyIntegrationSyncEntity(
   entityName: string,
   relations: EntityRelationIndex,
@@ -523,23 +461,23 @@ export function classifyIntegrationSyncEntity(
   };
 }
 
-/**
- * Classify a data ENTITY. Evidence, strongest-first:
- *   0. STRUCTURAL relation-pairing evidence: an entity whose ORM relations
- *      pair a domain entity with a connection/integration hub is an
- *      integration-sync join record (demoted to infrastructure) — this
- *      outranks the domain-concept/name signals below, the same way flow
- *      classification's structural terminus evidence outranks its name
- *      fallback, because the relation SHAPE is stronger evidence than a
- *      name-derived concept guess.
- *   1. domain-concept classification (reused terminal/domain signal), if a
- *      concept references this entity by name;
- *   2. lifecycle shape — a single owning writer (created/updated by one node)
- *      is a core-entity signal; a write-nowhere read-only table leans infra;
- *   3. the name-based classifier (shared with the workspace item classifier).
- * The domain-concept signal, when present, is authoritative; name/lifecycle
- * corroborate or fill in when no concept references the entity.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function classifyEntityRole(
   entity: Pick<CASDataEntity, 'id' | 'name' | 'lifecycle'>,
   index: DomainConceptIndex,
@@ -571,86 +509,59 @@ export function classifyEntityRole(
   const writers = created + updated;
   const singleOwnerWrite = writers > 0 && writers <= 2;
 
-  const nameRole = roleFromName(entity.name);
-
-  // Domain concept is the authoritative signal when present.
   if (conceptHit.role) {
     evidence.push(conceptHit.evidence!);
-    // Corroborate with name only when it strengthens; never let a bare name
-    // override a concept-derived infrastructure/supporting judgement upward
-    // unless the name itself carries genuine product vocabulary.
-    if (nameRole.role === 'core' && productDomainSignal(entity.name) > 0 && conceptHit.role !== 'core') {
-      evidence.push(nameRole.evidence);
-      return { role: strongerRole(conceptHit.role, 'core'), role_evidence: evidence };
-    }
     if (singleOwnerWrite && conceptHit.role === 'core') {
       evidence.push(`single-owner writes (${writers} writer node(s)) — core-entity lifecycle`);
     }
     return { role: conceptHit.role, role_evidence: evidence };
   }
-
-  // No concept references this entity — fall back to name, corroborated by
-  // lifecycle. A clearly-infra name stays infra regardless of lifecycle.
-  evidence.push(nameRole.evidence);
-  if (nameRole.role === 'infrastructure') {
-    return { role: 'infrastructure', role_evidence: evidence };
-  }
-  if (nameRole.role === 'core') {
-    if (singleOwnerWrite) evidence.push(`single-owner writes (${writers} writer node(s)) corroborate core`);
-    return { role: 'core', role_evidence: evidence };
-  }
-  // Supporting-by-name: a read-only / write-nowhere table with heavy reads and
-  // no product vocabulary is closer to infrastructure plumbing (e.g. a
-  // log/lookup/reference table); keep it supporting otherwise.
-  if (writers === 0 && read > 0) {
-    evidence.push('never written in-app (read-only) — plumbing/reference table');
-    return { role: 'infrastructure', role_evidence: evidence };
-  }
-  return { role: 'supporting', role_evidence: evidence };
+  evidence.push(`no domain-concept or relation-shape evidence; lifecycle has ${writers} writer and ${read} reader reference(s)`);
+  return { role_evidence: evidence };
 }
 
-/** Structural (terminal/product) evidence for a flow's role, resolved by the
- *  query layer from the CAS entry point + the flow's terminus. This is TYPE
- *  evidence (entry-point handler file kind, exit-point kind, capability
- *  membership), never a name blocklist. */
+
+
+
+
 export interface FlowRoleStructuralEvidence {
-  /** Entry point type ('http' | 'cli' | 'event' | ...). */
+
   entry_type?: string;
-  /** Entry point handler/source file, when resolvable. */
+
   entry_file?: string;
-  /** The flow's resolved terminus exit kind ('api' | 'database' | 'sdk' | ...). */
+
   terminus_kind?: string;
-  /** What the terminus produces (service id / resource / route). */
+
   terminus_produces?: string;
-  /** True when a system_capabilities operation references this flow's entry point. */
+
   capability_linked?: boolean;
 }
 
-/** Shell/batch/build-script file — a script ENTRY is structural evidence that
- *  the flow is operational plumbing (deploy/install/release/build), regardless
- *  of what domain vocabulary its name happens to contain. */
+
+
+
 function isScriptEntryFile(file: string | undefined): boolean {
   return /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i.test(String(file || ''));
 }
 
-/** Product-facing terminus kinds — the flow ends by emitting a response,
- *  persisting state, or raising a product event (vs. a build/deploy artifact). */
+
+
 const PRODUCT_TERMINUS_KINDS = new Set(['api', 'database', 'cache', 'event', 'webhook', 'message', 'queue', 'navigation']);
 
-/**
- * Classify a FLOW. Evidence, strongest-first:
- *   0. STRUCTURAL terminal/product evidence, when supplied: a flow rooted at a
- *      build/deploy/install script entry is infrastructure (script entry IS
- *      the evidence — no name blocklist); a flow serving a capability
- *      operation with an api-response/persisted terminus is core. This
- *      outranks domain-concept anchors: a shell domain concept classified
- *      "core" must not make deploy.sh a core product flow, and a capability
- *      operation that responds/persists is core product surface even when its
- *      name carries no domain vocabulary.
- *   1. domain-concept classification for the flow's entry point (reused signal);
- *   2. domain-concept classification for any data entity the flow touches;
- *   3. the name-based classifier applied to the flow name / intent.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function classifyFlowRole(
   flow: { name?: string; intent?: string; entry_point?: string; entities?: string[] },
   index: DomainConceptIndex,
@@ -658,8 +569,8 @@ export function classifyFlowRole(
 ): RoleClassification {
   const evidence: string[] = [];
 
-  // 0. Structural terminal/product evidence (entry TYPE + terminus), when the
-  // caller resolved it. Evidence-gated: each branch names the concrete fact.
+
+
   if (structural) {
     const scriptEntry = isScriptEntryFile(structural.entry_file);
     const productTerminus = Boolean(structural.terminus_kind && PRODUCT_TERMINUS_KINDS.has(structural.terminus_kind));
@@ -680,13 +591,13 @@ export function classifyFlowRole(
     }
   }
 
-  // 1. Entry-point-anchored concept.
+
   const epHit = flow.entry_point ? roleFromConcepts(index.byEntryPoint.get(flow.entry_point)) : {};
   if (epHit.role) {
     evidence.push(epHit.evidence!);
   }
 
-  // 2. Concept via any touched entity.
+
   let entityRole: SemanticRole | undefined;
   let entityEvidence: string | undefined;
   for (const ent of flow.entities || []) {
@@ -695,26 +606,13 @@ export function classifyFlowRole(
     if (stronger !== entityRole) { entityRole = stronger; entityEvidence = hit.evidence ? `${hit.evidence} (touched entity "${ent}")` : undefined; }
   }
 
-  // 3. Name-based, using product vocab from the flow name AND its touched
-  // entities (a flow named "Handle POST /clients" is core because Client is).
-  const combinedName = [flow.name, flow.intent, ...(flow.entities || [])].filter(Boolean).join(' ');
-  const nameRole = roleFromName(flow.name || flow.intent || '', { productSignal: productDomainSignal(combinedName) > 0 });
-
   const conceptRole = strongerRole(epHit.role, entityRole);
   if (conceptRole) {
     if (entityRole && (!epHit.role || strongerRole(epHit.role, entityRole) === entityRole) && entityEvidence) {
       evidence.push(entityEvidence);
     }
-    // A concept-core flow can still be pulled down by an unambiguous infra name
-    // (e.g. a health/metrics endpoint that merely mentions a domain entity).
-    if (isEntityFlowInfrastructureName(normalizeRoleName(flow.name || '')) || isRuntimeEndpointSemanticName(flow.name || '')) {
-      evidence.push(nameRole.evidence);
-      return { role: 'infrastructure', role_evidence: evidence };
-    }
     return { role: conceptRole, role_evidence: evidence };
   }
-
-  // No concept anchor — name only.
-  evidence.push(nameRole.evidence);
-  return { role: nameRole.role, role_evidence: evidence };
+  evidence.push('no structural terminus or domain-concept evidence');
+  return { role_evidence: evidence };
 }

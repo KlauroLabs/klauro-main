@@ -1,33 +1,33 @@
-/**
- * perf:budget — the enforced latency-budget gate (task #115).
- *
- * Runs the REAL product analysis path (analyzeProjectLayered, same function
- * the MCP server/CLI call) against the two pinned reference fixtures under
- * fixtures/perf-budget/{small,medium}, measuring:
- *   - time-to-L0 (the l0 promise resolving — pure filesystem walk, no
- *     analyzer-pipeline dependency)
- *   - deterministic-pass wall time (the rest promise — orchestrateAnalysis
- *     via analyzeProjectDeferred, i.e. L1-L4)
- *   - per-phase breakdown, read from the same AnalysisRunLog record that
- *     KLAURO_DEBUG_ANALYZER_PHASES=1 prints to stderr (packages/analyzer-core/
- *     src/analyzer/core/run-log.ts), so this gate and that debug flag always
- *     agree on phase names.
- *
- * Compares actuals against fixtures/perf-budget/budgets.json. Any exceeded
- * budget (L0, deterministic wall time, or any named phase ceiling) prints a
- * clear actual-vs-budget table and exits nonzero.
- *
- * Every run appends one record to ~/.klauro/logs/perf-budget.jsonl (or
- * $KLAURO_LOG_DIR/perf-budget.jsonl) so trends are visible over time,
- * independent of pass/fail.
- *
- * This is a NAMED gate step (npm run perf:budget), not part of the default
- * test suite — it is too slow to run on every `npm test`.
- *
- * Usage:
- *   npm run perf:budget
- *   npm run perf:budget -- --budgets=/path/to/alternate-budgets.json
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
@@ -124,7 +124,7 @@ async function measureFixture(name: string, projectPath: string, runLogPath: str
   const fileCount = await countFiles(projectPath);
   const overallStart = Date.now();
 
-  const { l0, rest } = await analyzeProjectLayered(projectPath, `perf-budget-${name}`);
+  const { l0, rest } = await analyzeProjectLayered(projectPath, `perf-budget-${name}`, undefined, true);
   await l0;
   const l0Ms = Date.now() - overallStart;
 
@@ -133,6 +133,9 @@ async function measureFixture(name: string, projectPath: string, runLogPath: str
   const deterministicMs = Date.now() - restStart;
 
   const runRecord = await readLatestRunCompleteRecord(runLogPath, restStart);
+  if (!runRecord) {
+    throw new Error(`No completed analysis run record was written for fixture "${name}" at ${runLogPath}`);
+  }
   const phases: MeasuredPhase[] = (runRecord?.phases ?? []).map((p) => ({ phase: p.phase, duration_ms: p.duration_ms }));
 
   return {
@@ -169,7 +172,10 @@ function evaluateGate(measurement: FixtureMeasurement, budget: FixtureBudget): G
   }
 
   for (const [phase, ceiling] of Object.entries(budget.phases)) {
-    const actual = phaseTotals.get(phase) ?? 0;
+    const actual = phaseTotals.get(phase);
+    if (actual === undefined) {
+      throw new Error(`Analysis run for fixture "${measurement.fixture}" did not report required phase "${phase}"`);
+    }
     rows.push({
       fixture: measurement.fixture,
       metric: `phase:${phase}`,
@@ -202,6 +208,7 @@ function formatTable(rows: GateRow[]): string {
 
 function getLogDir(): string {
   if (process.env.KLAURO_LOG_DIR) return process.env.KLAURO_LOG_DIR;
+  if (process.env.KLAURO_STORAGE_PATH) return path.join(process.env.KLAURO_STORAGE_PATH, 'logs');
   const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
   return path.join(home, '.klauro', 'logs');
 }
@@ -216,6 +223,7 @@ async function appendHistory(entry: Record<string, unknown>): Promise<void> {
 async function main(): Promise<void> {
   const { budgetsPath } = parseArgs(process.argv.slice(2));
   const budgetsFile: BudgetsFile = await fs.readJson(budgetsPath);
+  if (!process.env.KLAURO_LOG_DIR) process.env.KLAURO_LOG_DIR = getLogDir();
   const runLogPath = getAnalysisRunLogPath();
 
   const fixtureNames = Object.keys(budgetsFile.fixtures);

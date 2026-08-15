@@ -27,7 +27,7 @@ test('hosted project query exposes only the explicit read-only allowlist', () =>
   assert.deepEqual([...HOSTED_PROJECT_QUERY_TOOL_NAMES].sort(), [
     'assess_change_risk', 'find_tests', 'get_agent_context', 'get_agent_start_context',
     'get_agent_tool_plan', 'get_behavioral_invariants', 'get_codebase_idioms',
-    'get_coding_context', 'get_product_map', 'get_user_journeys', 'run_answer_pack', 'search_nodes',
+    'get_coding_context', 'get_module_health', 'get_product_map', 'get_user_journeys', 'run_answer_pack', 'search_nodes',
     'validate_behavioral_invariants', 'validate_codebase_idioms',
   ]);
 });

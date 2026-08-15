@@ -2,6 +2,10 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync, spawn } from 'child_process';
 import { isDirectCliInvocation } from './cli-invocation';
+import { sampleProcessTreeRss } from './process-tree-rss';
+import { appendSemanticSourceProbe, supportsSemanticSourceProbe } from './semantic-source-probe';
+
+export { semanticProbeForExtension } from './semantic-source-probe';
 
 const OUTPUT_ROOT = '/tmp/klauro-scale-curve';
 const STORAGE_ROOT = path.join(OUTPUT_ROOT, 'storage');
@@ -42,7 +46,9 @@ interface IncrementalEditSample {
   wasFullRebuild: boolean;
   fullRebuildReason?: string;
   filesModified: number;
+  nodesAdded: number;
   nodesModified: number;
+  nodesDeleted: number;
 }
 
 interface IncrementalChildResult {
@@ -427,17 +433,24 @@ interface SpawnResult {
 }
 
 async function runChild(args: string[], timeoutMs: number): Promise<SpawnResult> {
-  const tsxBin = path.join(APP_DIR, 'node_modules', '.bin', 'tsx');
+  const tsxCli = require.resolve('tsx/cli');
   const scriptPath = path.join(APP_DIR, 'src', 'analysis-scale-benchmark.ts');
   return new Promise((resolve, reject) => {
-    const child = spawn('/usr/bin/time', ['-l', tsxBin, scriptPath, ...args], {
+    const child = spawn(process.execPath, [tsxCli, scriptPath, ...args], {
       cwd: APP_DIR,
       env: benchmarkEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let peakRssBytes = 0;
+    const sample = () => {
+      if (child.pid) peakRssBytes = Math.max(peakRssBytes, sampleProcessTreeRss(child.pid));
+    };
+    const sampler = setInterval(sample, 100);
+    sample();
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
+      clearInterval(sampler);
       child.kill('SIGKILL');
       reject(new Error(`Child timed out after ${timeoutMs}ms: ${args.join(' ')}`));
     }, timeoutMs);
@@ -446,18 +459,20 @@ async function runChild(args: string[], timeoutMs: number): Promise<SpawnResult>
       stderr += chunk;
       if (stderr.length > 4_000_000) stderr = stderr.slice(-2_000_000);
     });
-    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('error', error => { clearTimeout(timer); clearInterval(sampler); reject(error); });
     child.on('close', code => {
       clearTimeout(timer);
+      clearInterval(sampler);
       const markerLine = stdout.split('\n').find(line => line.startsWith(RESULT_MARKER));
       if (code !== 0 || !markerLine) {
         reject(new Error(`Child failed (code ${code}) for ${args.join(' ')}\nstderr tail:\n${stderr.slice(-4000)}`));
         return;
       }
-      const rssMatch = stderr.match(/(\d+)\s+maximum resident set size/);
+      const result = JSON.parse(markerLine.slice(RESULT_MARKER.length));
+      peakRssBytes = Math.max(peakRssBytes, Number(result.finalRssBytes || 0));
       resolve({
-        result: JSON.parse(markerLine.slice(RESULT_MARKER.length)),
-        peakRssBytes: rssMatch ? Number(rssMatch[1]) : 0,
+        result,
+        peakRssBytes,
         stderrTail: stderr.slice(-8000),
       });
     });
@@ -516,36 +531,12 @@ async function childFullAnalysis(projectPath: string): Promise<void> {
   process.stdout.write(`${RESULT_MARKER}${JSON.stringify(result)}\n`);
 }
 
-function probeForExtension(extension: string, index: number): string | null {
-  switch (extension) {
-    case '.ts':
-    case '.tsx':
-    case '.js':
-    case '.jsx':
-    case '.mjs':
-    case '.cjs':
-    case '.php':
-    case '.java':
-    case '.cs':
-    case '.go':
-    case '.rs':
-    case '.dart':
-      return `// analysis probe: scale-edit-${index}`;
-    case '.py':
-    case '.rb':
-      return `# analysis probe: scale-edit-${index}`;
-    default:
-      return null;
-  }
-}
-
 function isEditableProductFile(relativeFile: string): boolean {
   const normalized = relativeFile.replace(/\\/g, '/');
   if (normalized.includes('node_modules/') || normalized.includes('.git/')) return false;
   if (/\.(spec|test)\./.test(normalized) || /(^|\/)(tests?|__tests__|spec)\//.test(normalized)) return false;
   if (/(^|\/)(dist|build|vendor|coverage|migrations)\//.test(normalized)) return false;
-  const extension = path.extname(normalized).toLowerCase();
-  return probeForExtension(extension, 0) !== null;
+  return supportsSemanticSourceProbe(normalized);
 }
 
 async function childIncremental(workspace: string, editCount: number): Promise<void> {
@@ -580,19 +571,28 @@ async function childIncremental(workspace: string, editCount: number): Promise<v
   for (let i = 0; i < editFiles.length; i++) {
     const relativeFile = editFiles[i];
     const absolute = path.join(workspace, relativeFile);
-    const probe = probeForExtension(path.extname(relativeFile).toLowerCase(), i);
     const content = await fs.readFile(absolute, 'utf-8');
-    await fs.writeFile(absolute, `${content.replace(/\s+$/u, '')}\n\n${probe}\n`, 'utf-8');
+    const editedContent = appendSemanticSourceProbe(relativeFile, content, i);
+    if (!editedContent) throw new Error(`No semantic source probe is available for ${relativeFile}`);
+    await fs.writeFile(absolute, editedContent, 'utf-8');
 
     startedAt = Date.now();
     const result = await analyzeProjectIncremental(workspace);
+    const summary = result.changeReport.summary;
+    const filesChanged = summary.filesAdded + summary.filesModified + summary.filesDeleted;
+    const nodesChanged = summary.nodesAdded + summary.nodesModified + summary.nodesDeleted;
+    if (filesChanged === 0 || nodesChanged === 0) {
+      throw new Error(`Semantic edit was not observed for ${relativeFile}: filesChanged=${filesChanged}, nodesChanged=${nodesChanged}`);
+    }
     edits.push({
       file: relativeFile,
       ms: Date.now() - startedAt,
       wasFullRebuild: result.wasFullRebuild,
       fullRebuildReason: result.fullRebuildReason,
-      filesModified: result.changeReport.summary.filesModified + result.changeReport.summary.filesAdded,
-      nodesModified: result.changeReport.summary.nodesModified,
+      filesModified: filesChanged,
+      nodesAdded: summary.nodesAdded,
+      nodesModified: summary.nodesModified,
+      nodesDeleted: summary.nodesDeleted,
     });
   }
 
@@ -649,13 +649,14 @@ function formatSeconds(ms: number): string {
 async function copyWorkspace(source: string, destination: string): Promise<void> {
   await fs.remove(destination);
   await fs.ensureDir(path.dirname(destination));
-  const excludes = ['node_modules', '.git', 'dist', 'build', '.next', '.angular', 'coverage', 'log', 'tmp', '.klauro'];
-  execFileSync('rsync', [
-    '-a',
-    ...excludes.flatMap(name => ['--exclude', name]),
-    `${source}/`,
-    `${destination}/`,
-  ], { stdio: 'ignore', maxBuffer: 1024 * 1024 * 64 });
+  const excludedSegments = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.angular', 'coverage', 'log', 'tmp', '.klauro']);
+  await fs.copy(source, destination, {
+    preserveTimestamps: true,
+    filter: sourcePath => {
+      const relativePath = path.relative(source, sourcePath);
+      return !relativePath.split(path.sep).some(segment => excludedSegments.has(segment));
+    },
+  });
 }
 
 function initializeGitBaseline(workspace: string): void {
@@ -676,29 +677,21 @@ function initializeGitBaseline(workspace: string): void {
   });
 }
 
-function tierDefinitions(giantOptions: GiantGenerationOptions): TierDefinition[] {
-  const home = process.env.HOME || '';
+function tierDefinitions(
+  giantOptions: GiantGenerationOptions,
+  targets: Array<{ id: string; label: string; targetPath: string }>,
+): TierDefinition[] {
   return [
     {
       id: 'tiny',
       label: 'rails-work-orders fixture',
       resolvePath: async () => path.join(APP_DIR, 'fixtures', 'analysis-truth', 'rails-work-orders'),
     },
-    {
-      id: 'small',
-      label: 'washup (Rails)',
-      resolvePath: async () => path.join(home, 'dev/clients/outcode/washup'),
-    },
-    {
-      id: 'medium',
-      label: 'truckspyui (Angular)',
-      resolvePath: async () => path.join(home, 'dev/clients/outcode/truckspy/truckspyui'),
-    },
-    {
-      id: 'large',
-      label: 'truckspyapp (PHP)',
-      resolvePath: async () => path.join(home, 'dev/clients/outcode/truckspy/truckspyapp'),
-    },
+    ...targets.map(target => ({
+      id: target.id,
+      label: target.label,
+      resolvePath: async () => target.targetPath,
+    })),
     {
       id: 'giant',
       label: `synthetic monorepo (${giantOptions.packages} pkgs, NestJS + React)`,
@@ -730,7 +723,7 @@ function buildReportMarkdown(
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push('AI interpretation, AI element descriptions, and embeddings disabled for all runs.');
-  lines.push('Peak RSS measured per isolated child process via /usr/bin/time -l.');
+  lines.push('Peak RSS is the maximum sampled aggregate resident set of each isolated child process tree.');
   lines.push('');
   lines.push('## Full analysis scale table');
   lines.push('');
@@ -784,16 +777,26 @@ function buildReportMarkdown(
 
 async function runOrchestrator(argv: string[]): Promise<void> {
   const tiersArg = readFlag(argv, '--tiers');
+  const targets = readFlags(argv, '--target').map((value, index) => {
+    const separator = value.indexOf('=');
+    const targetPath = path.resolve(separator >= 0 ? value.slice(separator + 1) : value);
+    const label = separator >= 0 ? value.slice(0, separator).trim() : path.basename(targetPath);
+    return { id: `target-${index + 1}`, label: label || `target-${index + 1}`, targetPath };
+  });
   const editCount = Number(readFlag(argv, '--edits') || '20');
-  const incrementalTier = readFlag(argv, '--incremental-tier') || 'large';
+  const incrementalTier = readFlag(argv, '--incremental-tier') || targets[0]?.id || 'giant';
   const giantPackages = Number(readFlag(argv, '--giant-packages') || String(DEFAULT_GIANT_OPTIONS.packages));
   const giantOptions: GiantGenerationOptions = {
     ...DEFAULT_GIANT_OPTIONS,
     packages: giantPackages,
   };
-  const requestedTiers = tiersArg ? tiersArg.split(',').map(value => value.trim()) : ['tiny', 'small', 'medium', 'large', 'giant'];
+  const requestedTiers = tiersArg
+    ? tiersArg.split(',').map(value => value.trim())
+    : targets.length > 0 ? targets.map(target => target.id) : ['tiny', 'giant'];
 
   await fs.ensureDir(OUTPUT_ROOT);
+  await fs.remove(STORAGE_ROOT);
+  await fs.remove(WORK_ROOT);
   await fs.ensureDir(STORAGE_ROOT);
   await fs.ensureDir(WORK_ROOT);
 
@@ -801,7 +804,7 @@ async function runOrchestrator(argv: string[]): Promise<void> {
   const incrementalReports: IncrementalReport[] = [];
   const failures: Array<{ tier: string; error: string }> = [];
 
-  for (const definition of tierDefinitions(giantOptions)) {
+  for (const definition of tierDefinitions(giantOptions, targets)) {
     if (!requestedTiers.includes(definition.id)) continue;
     try {
       const repoPath = await definition.resolvePath();
@@ -875,7 +878,12 @@ async function runOrchestrator(argv: string[]): Promise<void> {
   }
 }
 
-const TIER_ORDER = ['tiny', 'small', 'medium', 'large', 'giant'];
+function tierOrder(tier: string): number {
+  if (tier === 'tiny') return 0;
+  if (tier.startsWith('target-')) return 1 + Number(tier.slice('target-'.length) || 0);
+  if (tier === 'giant') return Number.MAX_SAFE_INTEGER;
+  return Number.MAX_SAFE_INTEGER - 1;
+}
 
 async function mergeWithPreviousResults(
   rawPath: string,
@@ -896,12 +904,12 @@ async function mergeWithPreviousResults(
   const mergedTiers = [
     ...(previous.tiers || []).filter(tier => !tierIds.has(tier.tier) && !failureIds.has(tier.tier)),
     ...tiers,
-  ].sort((a, b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier));
+  ].sort((a, b) => tierOrder(a.tier) - tierOrder(b.tier) || a.tier.localeCompare(b.tier));
   const incrementalIds = new Set(incrementals.map(report => report.tier));
   const mergedIncrementals = [
     ...(previous.incrementals || []).filter(report => !incrementalIds.has(report.tier)),
     ...incrementals,
-  ].sort((a, b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier));
+  ].sort((a, b) => tierOrder(a.tier) - tierOrder(b.tier) || a.tier.localeCompare(b.tier));
   const mergedFailures = [
     ...(previous.failures || []).filter(failure => !tierIds.has(failure.tier) && !failureIds.has(failure.tier)),
     ...failures,
@@ -913,6 +921,14 @@ function readFlag(argv: string[], flag: string): string | null {
   const index = argv.indexOf(flag);
   if (index === -1 || index + 1 >= argv.length) return null;
   return argv[index + 1];
+}
+
+function readFlags(argv: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < argv.length - 1; index += 1) {
+    if (argv[index] === flag) values.push(argv[index + 1]);
+  }
+  return values;
 }
 
 async function main(): Promise<void> {

@@ -1,16 +1,16 @@
-/**
- * Narrowing, pagination, and compact projection for the analysis-listing MCP
- * tools (`list_analyses`, `list_workspace_analyses`).
- *
- * Why this exists: a real machine accumulates thousands of analyses (this one
- * has ~9,600). Returning them all blows the MCP response budget and is useless
- * to an agent. These tools must let an agent ASK for what it needs — by name,
- * size, framework — and page through results deterministically.
- *
- * Pure, validated, and unit-tested. No I/O here; callers pass the already-loaded
- * entries. Enterprise posture: every bound is clamped, ordering is total and
- * stable, and the response always tells the caller how to get the next page.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import type { AnalysisEntry } from './storage';
 import type { AnalysisTrack } from './track';
@@ -21,31 +21,31 @@ export const MAX_LIMIT = 500;
 export type AnalysisSort = 'nodes' | 'edges' | 'name' | 'recent';
 
 export interface ListAnalysesQuery {
-  /** Page size. Clamped to [1, MAX_LIMIT]. */
+
   limit?: number;
-  /** Page offset. Negative values are treated as 0. */
+
   offset?: number;
-  /** Case-insensitive substring matched against name AND path. */
+
   name?: string;
-  /** Case-insensitive substring matched against any framework. */
+
   framework?: string;
-  /** Case-insensitive substring matched against system_type. */
+
   system_type?: string;
-  /** Keep only analyses with at least this many nodes. */
+
   min_nodes?: number;
-  /** Keep only analyses with at least this many edges. */
+
   min_edges?: number;
-  /** Collapse re-analyses: keep the largest entry per name or per path. */
+
   dedupe_by?: 'name' | 'path' | 'none';
-  /** Sort key (default 'nodes' desc; 'name' asc; 'recent' by analyzed_at desc). */
+
   sort?: AnalysisSort;
-  /** When false, return the full AnalysisEntry instead of the compact shape. */
+
   compact?: boolean;
-  /**
-   * Optional track filter. When set, keep only entries on this track. Omitted
-   * (default) shows every track — backward compatible; nothing shown today is
-   * hidden. Legacy entries with no track are treated as 'main'.
-   */
+
+
+
+
+
   track?: AnalysisTrack;
 }
 
@@ -58,7 +58,7 @@ export interface CompactAnalysis {
   edge_count: number;
   analyzed_at: string;
   cas_version?: string;
-  /** Which analysis track this entry belongs to. Legacy entries → 'main'. */
+
   track: AnalysisTrack;
 }
 
@@ -71,7 +71,7 @@ export interface ListAnalysesResult {
   has_more: boolean;
   next_offset: number | null;
   query: Required<Pick<ListAnalysesQuery, 'sort' | 'dedupe_by' | 'compact'>> & Partial<ListAnalysesQuery>;
-  /** Guidance the agent can act on when the match set is large or empty. */
+
   hint?: string;
   analyses: Array<CompactAnalysis | AnalysisEntry>;
 }

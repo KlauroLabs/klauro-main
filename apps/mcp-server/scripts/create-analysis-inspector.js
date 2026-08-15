@@ -320,9 +320,9 @@ function pillarAbsence(cas, featureLabel) {
     : { present: false, notice: '' };
 }
 
-// Journey presentation helpers. These mirror src/journey-presentation.ts so
-// the generator stays a standalone CommonJS script the bridge can run with
-// bare node. Presentation only: every value derives from stored fields.
+
+
+
 function journeyWordsFromIdentifier(value) {
   const raw = clean(value);
   if (!raw) return '';

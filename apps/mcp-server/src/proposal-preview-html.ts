@@ -56,7 +56,6 @@ function buildHtml(payload: Awaited<ReturnType<typeof getPreviewAnalysis>>): str
   const comparison = payload.comparison as any;
   const visualization = payload.visualization as any;
   const proposed = payload.proposed_cas as any;
-  const baseline = payload.baseline_cas as any | undefined;
   const proposedView = visualization.proposed || {};
   const baselineView = visualization.baseline || null;
   const changedContracts = comparison.changed_contracts || [];
@@ -68,7 +67,6 @@ function buildHtml(payload: Awaited<ReturnType<typeof getPreviewAnalysis>>): str
   const baselineCounts = baselineView?.counts || {};
   const systemName = proposed?.system?.name || preview.title || 'Proposed codebase';
   const summary = proposalSummary(preview, proposed, comparison);
-  const architecture = architectureItems(proposed);
   const entries = entryItems(proposed);
   const outputs = outputItems(proposed);
   const entities = criticalEntities(proposed, comparison);
@@ -422,7 +420,7 @@ function proposalTypeBody(preview: any, proposed: any, comparison: any): string 
 }
 
 function primaryCapability(proposed: any): string {
-  return proposed?.system_capabilities?.[0]?.name || proposed?.system?.description || proposed?.system?.type || 'System behavior';
+  return proposed?.capabilities?.[0]?.name || proposed?.system?.description || proposed?.system?.type || 'System behavior';
 }
 
 function primaryCapabilityBody(proposed: any): string {
@@ -443,14 +441,6 @@ function changeBody(comparison: any): string {
   return `${delta.nodes_added || 0} nodes added, ${delta.edges_added || 0} edges added, ${delta.nodes_removed || 0} nodes removed, ${delta.edges_removed || 0} edges removed.`;
 }
 
-function architectureItems(proposed: any): CardItem[] {
-  return [
-    { label: 'Languages', value: proposed?.system?.technologies?.languages?.length || 0, tone: 'blue' },
-    { label: 'Frameworks', value: proposed?.system?.technologies?.frameworks?.length || 0, tone: 'green' },
-    { label: 'Modules', value: nodesByType(proposed, ['module']).length, tone: 'yellow' },
-    { label: 'Services', value: nodesByType(proposed, ['service', 'provider']).length, tone: 'green' },
-  ];
-}
 
 function entryItems(proposed: any): Array<{ name: string; meta: string; tone: CardItem['tone'] }> {
   return (proposed?.entry_points || []).slice(0, 8).map((entry: any) => ({

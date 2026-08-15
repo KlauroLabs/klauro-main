@@ -152,7 +152,6 @@ import {
   type AnalysisRunStartRecord,
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
-import { backfillIngestedTelemetry } from './telemetry-ingestion';
 import {
   assertAnalysisVersionSupported,
   getAnalysisVersionInfo,
@@ -166,7 +165,7 @@ import {
   listAnalysisSnapshots,
   saveFileCache,
   loadFileCache,
-  getProjectStorageDir,
+  getProjectStorageDir, getAnalysisEntry,
   withProjectAnalysisLock,
   withProjectAnalysisLockIfAvailable,
   writeJsonAtomic
@@ -174,6 +173,7 @@ import {
 import { CAS_SECTION_NAMES, type CasSectionName } from './cas-sections';
 import { loadKlauroConfig, validateEmbeddingConfig, validateConventions, type KlauroConventions } from './klauro-config';
 import { clearFreshnessSummaryCache } from './freshness';
+import { describeAnalysisVersion } from './analysis-version';
 import { createEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
 import { createVectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
 import type { VectorStoreSetting } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
@@ -400,14 +400,14 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       analyzer: new CloudFormationAnalyzer(),
     },
     {
-      // THE LIVE LIST. Registered first in cas-analyzer.service.ts, whose own
-      // header says it is "NOT a registration path for the real product" — so the
-      // analyzer parsed correctly in unit tests, typechecked, deployed twice, and
-      // never ran: `SQL Schema Analyzer ran? false`, entities stuck at 3,
-      // flows_to_capabilities stuck at 0/38. Exactly the failure that file warns
-      // about (McpToolRegistrationAnalyzer was once registered ONLY there and
-      // silently never ran), and scripts/verify-live-analyzer-registration.ts
-      // exists to catch it — I did not run it.
+
+
+
+
+
+
+
+
       id: 'sql-schema',
       name: 'SQL Schema Analyzer',
       type: 'language',
@@ -581,9 +581,9 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       analyzer: new CliAnalyzer(),
     },
     {
-      // Breadth fallback: any grammar-backed language without a deep analyzer
-      // (zig, haskell, lua, ocaml, erlang, clojure, julia, nim, fortran, …).
-      // Detection is via canAnalyze, which covers ~130 registered extensions.
+
+
+
       id: 'generic-tree-sitter',
       name: 'Generic Tree-sitter Analyzer',
       type: 'language',
@@ -722,12 +722,12 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'cron', name: 'Scheduled Job (Cron) Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['cron', 'node-cron', '@nestjs/schedule'] }, requires: ['typescript-javascript'], analyzer: new CronAnalyzer() },
     { id: 'mcp-tool-registration', name: 'MCP Tool Registration Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@modelcontextprotocol/sdk'], content: [/\.registerTool\s*\(/, /\.setRequestHandler\s*\(/] }, requires: ['typescript-javascript'], analyzer: new McpToolRegistrationAnalyzer() },
     { id: 'di-container-bindings', name: 'DI Container Binding Graph Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['inversify', 'tsyringe', 'Ninject', 'Autofac', 'Microsoft.Extensions.DependencyInjection', 'dagger', 'com.google.dagger', 'com.google.inject', 'guice', 'io.insert-koin', 'symfony/dependency-injection', 'php-di/php-di', 'dependency_injector', 'dependency-injector'] }, analyzer: new DiContainerBindingAnalyzer() },
-    // Registration id MUST equal the analyzer's own id (MockingLibraryAnalyzer's
-    // super() id, 'mocking-test-double-fixtures'): the orchestrator keys its
-    // analyzer map on registration.id while every node/tag/contribution carries
-    // the analyzer's self-id (analyzer_id, `analyzer:<id>` tag, source_analyzer).
-    // A drift (plural 'doubles') left node-level consumers unable to correlate
-    // mocking nodes back to the registered analyzer. See docs/CORPUS-DEPTH-SWEEP.md #5.
+
+
+
+
+
+
     { id: 'mocking-test-double-fixtures', name: 'Mocking, Test Double and Fixture Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sinon', 'jest', '@jest/globals', 'vitest', 'testdouble', 'responses', 'requests-mock', 'org.mockito:mockito-core', 'mockito-core', 'org.easymock:easymock', 'github.com/golang/mock', 'go.uber.org/mock', 'github.com/stretchr/testify', 'Moq', 'NSubstitute', 'rspec-mocks', 'fishery', 'factory-boy', '@faker-js/faker', 'factory_bot', 'factory_bot_rails'], content: [/\b(?:jest|vi)\.(?:mock|fn|spyOn)\s*\(/, /\bsinon\.(?:stub|spy|mock|fake)\s*\(/, /@Mock\b/, /\bNewMock[A-Z]/, /\bSubstitute\.For</, /\bMock\.Of</, /\bpatch\s*\(\s*['"]/, /\bmonkeypatch\./, /\bFactory\.define\b/, /\binstance_double\s*\(/] }, analyzer: new MockingLibraryAnalyzer() },
     { id: 'auth', name: 'Authentication and Authorization Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['passport', '@nestjs/passport', '@nestjs/jwt', 'passport-jwt', 'next-auth', '@auth/core', '@auth0/nextjs-auth0', '@auth0/auth0-react', 'auth0', 'express-oauth2-jwt-bearer', '@clerk/nextjs', '@clerk/clerk-react', '@clerk/clerk-sdk-node', '@clerk/express', 'firebase-admin', 'firebase', 'lucia', 'jsonwebtoken', 'express-jwt', 'spring-security', 'spring-boot-starter-security', 'Django', 'djangorestframework', 'Flask-Login', 'flask-login', 'PyJWT', 'Authlib', 'authlib', 'devise', 'pundit', 'cancancan', 'casbin', 'node-casbin', '@casl/ability', 'oso'], files: ['**/*.rego'], content: [/passport\.authenticate\s*\(/, /@(PreAuthorize|Secured|RolesAllowed)\b/, /\bpermission_classes\b/, /@login_required\b/, /\bauthorize!?\b/] }, analyzer: new AuthAnalyzer() },
     ...architectureLibraryAnalyzerDefinitions().map(definition => ({
@@ -740,17 +740,17 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     })),
   ];
 
-  // Declarative analyzer-pack engine: ONE 'pattern'-type analyzer that runs
-  // every applicable pack (built-in packs bundled in analyzer-core/analyzer/
-  // packs/examples/*.pack.yaml + any local packs a project declares in
-  // .klaurorc `packs:`, threaded in via orchestrateAnalysis({ packGlobs }) —
-  // see analyzeProject below). A pack is a *.pack.yaml with tree-sitter queries
-  // that emit real CAS entry_points/entities/edges, the declarative equivalent
-  // of a hand-coded *-analyzer.ts (docs/SPEC-ANALYZER-PACKS.md). Additive and
-  // evidence-gated: its canAnalyze() is false when no packs load, and each
-  // pack's applies_when must match, so a repo with no applicable packs is
-  // unaffected. A malformed pack degrades to a scoped load/rule error (surfaced
-  // in the contribution metadata) and never crashes the analysis.
+
+
+
+
+
+
+
+
+
+
+
   const patternRegistrations: AnalyzerRegistration[] = [
     {
       id: 'analyzer-packs',
@@ -769,14 +769,14 @@ export function createOrchestrator(): AnalyzerOrchestrator {
   return created;
 }
 
-/**
- * Process-wide orchestrator singleton for read-only introspection ONLY (e.g.
- * listRegisteredAnalyzers() in apps/mcp-server/src/gauntlet/coverage.ts).
- * Actual analysis runs (analyzeProject/analyzeProjectIncremental/
- * analyzeProjectDeferred below) each get their own dedicated orchestrator
- * instance via createOrchestrator() through the lane pool — see "Analysis
- * lane pool" below for why a shared instance is unsafe across concurrent runs.
- */
+
+
+
+
+
+
+
+
 export function getOrchestrator(): AnalyzerOrchestrator {
   if (process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS === '1') {
     return createOrchestrator();
@@ -788,22 +788,22 @@ export function getOrchestrator(): AnalyzerOrchestrator {
   return orchestrator;
 }
 
-/**
- * Load .klaurorc `conventions:` for a project, validated. A malformed
- * convention degrades to a logged warning and the whole section is dropped
- * (never crashes a real analysis run for a config typo) — declare_convention
- * and get_klauro_project_config are the surfaces that report validation
- * errors back to the caller before they ever reach here.
- */
-/**
- * Load .klaurorc `packs:` globs for a project, mirroring how conventions are
- * discovered. These local declarative-pack globs are loaded IN ADDITION to the
- * built-in packs bundled with analyzer-core. Purely additive: absent/empty
- * config yields no local packs (built-ins still apply), and a config read
- * failure degrades to a logged warning rather than failing the analysis. Actual
- * pack validation happens in the pack loader (never throws), so a malformed
- * pack surfaces as a scoped load error in the contribution, not here.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function loadPackGlobsForAnalysis(projectPath: string): Promise<string[]> {
   try {
     const loaded = await loadKlauroConfig(projectPath);
@@ -862,8 +862,8 @@ async function buildEmbeddingPhaseConfig(projectPath: string): Promise<Embedding
       maxConcurrency: embedding.maxConcurrency,
       apiKeyEnv: embedding.apiKeyEnv,
     };
-    // Provider construction enforces that the configured model name matches
-    // the implementation that produces the vectors.
+
+
     const provider = createEmbeddingProvider(embedding.provider, providerOptions);
 
     const store = buildVectorStore(
@@ -898,8 +898,8 @@ function buildVectorStore(
 
   let resolved: VectorStoreSetting;
   if (setting === 'auto') {
-    // Availability decision, not a "mode": use pgvector when a database is actually
-    // configured (the hosted server), otherwise the file store.
+
+
     resolved = process.env[databaseUrlEnv] ? 'pgvector' : 'file';
   } else {
     resolved = setting;
@@ -927,25 +927,25 @@ function buildVectorStore(
   });
 }
 
-/**
- * True when the description in this output is deterministic because AI
- * interpretation never ran (disabled by env, no provider configured, feature
- * off, cooldown, or zero budget). AI-attempted-and-rejected/failed outputs
- * return false: those keep their deterministic description on purpose.
- */
+
+
+
+
+
+
 function aiInterpretationWasUnavailable(output: CASOutput): boolean {
   const generation = output.enhanced_system_purpose?.description_generation;
   return generation?.status === 'ai_skipped' && generation.attempted === false;
 }
 
-/**
- * Full re-analyses that run with AI unavailable must not downgrade a stored
- * AI-enriched analysis to deterministic text. Mirrors the incremental reuse
- * hook in AnalyzerOrchestrator.orchestrateIncrementalAnalysis: carry the prior
- * AI system description/domain (and AI/manual capability descriptions) forward
- * with 'reused' provenance. The carried text is not re-validated against the
- * new state of the repo, so it is marked may_be_stale.
- */
+
+
+
+
+
+
+
+
 export function preservePreviousAIDescriptions(
   previousOutput: CASOutput | null | undefined,
   output: CASOutput
@@ -956,13 +956,12 @@ export function preservePreviousAIDescriptions(
   if (!aiInterpretationWasUnavailable(output)) return output;
 
   const previousCapabilities = new Map(
-    (previousOutput?.system_capabilities || []).map(capability => [capability.id, capability])
+    (previousOutput?.capabilities || []).map(capability => [capability.id, capability])
   );
-  for (const capability of output.system_capabilities || []) {
+  for (const capability of output.capabilities || []) {
     const previous = previousCapabilities.get(capability.id);
     if (previous?.description &&
       capabilityReuseSubjectsMatch(previous, capability) &&
-      !hasCapabilityDescriptionDomainMismatch(previous.description, output) &&
       validateDescription(previous.description, { kind: 'capability', name: capability.name, target: capability }, output).ok &&
       (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
       capability.description = previous.description;
@@ -982,8 +981,7 @@ export function preservePreviousAIDescriptions(
     return output;
   }
   if (hasLowLevelExternalServicePollution(previousPurpose.inferred_description) ||
-    hasStaleNarrativePattern(previousPurpose.inferred_description, previousPurpose.primary_domain, output) ||
-    hasProductDomainDescriptionMismatch(previousPurpose.inferred_description, output)) {
+    hasStaleNarrativePattern(previousPurpose.inferred_description, previousPurpose, output)) {
     return output;
   }
   purpose.inferred_description = previousPurpose.inferred_description;
@@ -1013,21 +1011,6 @@ function capabilityReuseSubjectsMatch(previous: any, current: any): boolean {
   return currentDomains.some((domain: string) => previousDomains.has(domain));
 }
 
-function hasCapabilityDescriptionDomainMismatch(description: string, output: CASOutput): boolean {
-  const domain = String(output.enhanced_system_purpose?.primary_domain || '').toLowerCase();
-  const text = String(description || '').toLowerCase();
-  if (/zero-trust|network-access|webauthn/.test(domain) && /\b(commerce|cart|checkout|order fulfillment|merchandising)\b/.test(text)) {
-    return true;
-  }
-  if (/website|marketing/.test(domain) && /\b(database schema|backend service|trading|portfolio holdings|wallet)\b/.test(text)) {
-    return true;
-  }
-  if (/solana|trading|portfolio/.test(domain) && /\b(marketing page|careers|company page|contact page)\b/.test(text)) {
-    return true;
-  }
-  return false;
-}
-
 function normalizeCapabilityReuseSubject(value: unknown): string {
   return String(value || '')
     .toLowerCase()
@@ -1051,146 +1034,124 @@ function hasLowLevelExternalServicePollution(description: string): boolean {
   return false;
 }
 
-function hasProductDomainDescriptionMismatch(description: string, output: CASOutput): boolean {
-  const lower = description.toLowerCase();
-  const productText = [
-    output.enhanced_system_purpose?.primary_domain || '',
-    ...(output.enhanced_system_purpose?.core_concepts || []),
-    ...(output.system_capabilities || []).map(capability => capability.name),
-  ].join(' ').toLowerCase();
+const PURPOSE_EVIDENCE_STOP_WORDS = new Set([
+  'application', 'applications', 'capability', 'capabilities', 'management', 'manager', 'platform',
+  'service', 'services', 'software', 'system', 'systems', 'tool', 'tools', 'workflow', 'workflows',
+]);
 
-  if (/\b(solana|arbitrage|dex|cex|liquidity|trading)\b/.test(productText) &&
-    /\btoken authentication\b|\bauthentication tokens\b|\bidentity sessions?\b/.test(lower)) {
-    return true;
+function purposeEvidenceTokens(values: unknown[]): Set<string> {
+  const tokens = new Set<string>();
+  for (const value of values) {
+    for (const token of String(value || '').toLowerCase().split(/[^a-z0-9]+/)) {
+      if (token.length > 2 && !PURPOSE_EVIDENCE_STOP_WORDS.has(token)) tokens.add(token);
+    }
   }
-
-  return false;
+  return tokens;
 }
 
-function hasStaleNarrativePattern(description: string, previousDomain: string | undefined, output: CASOutput): boolean {
-  const lower = description.toLowerCase();
-  const nextDomain = output.enhanced_system_purpose?.primary_domain || '';
+function hasPurposeEvidenceDrift(previousPurpose: CASOutput['enhanced_system_purpose'], output: CASOutput): boolean {
+  const currentPurpose = output.enhanced_system_purpose;
+  if (!previousPurpose || !currentPurpose) return false;
+  const previousTokens = purposeEvidenceTokens([
+    previousPurpose.primary_domain,
+    ...(previousPurpose.core_concepts || []),
+  ]);
+  const currentTokens = purposeEvidenceTokens([
+    currentPurpose.primary_domain,
+    ...(currentPurpose.core_concepts || []),
+    ...(output.capabilities || []).flatMap(capability => [capability.name, ...(capability.related_domains || [])]),
+  ]);
+  if (previousTokens.size === 0 || currentTokens.size < 2) return false;
+  return ![...currentTokens].some(token => previousTokens.has(token));
+}
+
+function hasStaleNarrativePattern(
+  description: string,
+  previousPurpose: CASOutput['enhanced_system_purpose'],
+  output: CASOutput,
+): boolean {
   if (/\b(?:manages|coordinates?)\s+[^.]{3,140}\s+workflows\b/i.test(description)) return true;
   if (/\bworkflows?\s+to\s+produce\s+and\s+manage\b/i.test(description)) return true;
   if (/\bmain (?:grounded |product )?concepts are\b/i.test(description)) return true;
   if (/\bservice records?\b/i.test(description)) return true;
-  if (/\bzero[- ]trust security system\b/i.test(description) && !/\bzero[- ]trust|network-access|security\b/i.test(nextDomain)) return true;
-
-  const previous = previousDomain || '';
-  if (previous && nextDomain && previous !== nextDomain) {
-    const previousTokens = new Set(previous.split(/[-_\s]+/).filter(Boolean));
-    const nextTokens = nextDomain.split(/[-_\s]+/).filter(Boolean);
-    const overlaps = nextTokens.some(token => previousTokens.has(token));
-    if (!overlaps) return true;
-  }
-
-  if (nextDomain === 'user-identity-management' &&
-    /\b(document collaboration|collection organization|knowledge base|wallet withdrawal|decrypt|encrypt|proxy)\b/i.test(description)) {
-    return true;
-  }
-  if (/^(solana-trading|solana-arbitrage|portfolio-management)$/.test(nextDomain) &&
-    /\bzero[- ]trust|commerce platform|product catalog|cart and checkout|order fulfillment|knowledge base\b/i.test(lower)) {
-    return true;
-  }
-  if (nextDomain === 'fleet-management' &&
-    /\bcommerce platform|product catalog|cart and checkout|order fulfillment|knowledge base\b/i.test(lower)) {
-    return true;
-  }
-
-  return false;
+  return hasPurposeEvidenceDrift(previousPurpose, output);
 }
 
-export async function analyzeProject(projectPath: string, displayName?: string): Promise<CASOutput> {
-  if (!(await fs.pathExists(projectPath))) {
-    throw new Error(`Project path does not exist: ${projectPath}`);
-  }
+export async function analyzeProject(projectPath: string, displayName?: string, options: { reuseStoredContext?: boolean; persist?: boolean } = {}): Promise<CASOutput> {
+    if (!(await fs.pathExists(projectPath))) {
+      throw new Error(`Project path does not exist: ${projectPath}`);
+    }
 
-  // Measured BEFORE acquiring a lane permit so the queue can order by size —
-  // acquiring first would defeat the point (the job would already be running).
+
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async (orch) => {
     orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
     const conventions = await loadConventionsForAnalysis(projectPath);
     const packGlobs = await loadPackGlobsForAnalysis(projectPath);
-    const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-    const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
-      previousOutput,
-      await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs })
-    ));
-
-    await saveAnalysis(projectPath, result);
-    await saveIncrementalState(projectPath, orch.createIncrementalBaseline(projectPath, result));
-    clearFreshnessSummaryCache();
-    await saveAnalysisSnapshot(projectPath, result);
-
-    // Backfill: an analysis now exists, so re-correlate any runtime observations
-    // that were persisted as `unmatched` before this project was analyzed and
-    // upgrade the ones that now bind to a CAS node. Best-effort and non-blocking
-    // to the returned CAS — telemetry backfill must never fail an analysis.
-    await backfillIngestedTelemetry(result, projectPath).catch(() => undefined);
+    const analyzed = await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs });
+    const result = options.reuseStoredContext === false
+      ? analyzed
+      : await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
+        await loadAnalysis(projectPath, { preferCache: true }).catch(() => null), analyzed
+      ));
+    if (options.persist !== false) {
+      await saveAnalysis(projectPath, result);
+      await saveIncrementalState(projectPath, orch.createIncrementalBaseline(projectPath, result));
+      clearFreshnessSummaryCache();
+      await saveAnalysisSnapshot(projectPath, result);
+    }
 
     return result;
   }, sizeHint, projectPath));
 }
 
-/**
- * Result of a deferred (progressive) analysis. `output` is the deterministic
- * CAS, already saved and safe to return to the caller immediately. `enrichment`
- * is a promise that resolves after the background AI enrichment has completed
- * and been re-saved (or immediately if there was nothing to enrich). Callers
- * that don't care can ignore it — errors are swallowed internally. Tests await
- * it to observe the 'ready' state deterministically.
- */
+
+
+
+
+
+
+
+
 export interface DeferredAnalysisResult {
   output: CASOutput;
   enrichment: Promise<void>;
 }
 
-/**
- * Progressive-availability entrypoint: run the DETERMINISTIC analysis, save it
- * and return it immediately (ai_enrichment='pending'|'disabled'), then run the
- * slow AI enrichment in the background and re-save the upgraded CAS
- * (ai_enrichment='ready'). The next loadAnalysis picks up the enriched version.
- *
- * The background task re-uses the per-project file lock so the enrich re-save
- * never races a concurrent analysis of the same project, and re-acquires a
- * bounded lane permit (KLAURO_ANALYSIS_LANES) so deferred AI passes count
- * against the same concurrency cap as full analyses; it swallows all errors
- * (logging only) so a failed enrichment can never crash the process — the
- * deterministic CAS stays stored.
- */
+
+
+
+
 export async function analyzeProjectDeferred(
   projectPath: string,
   displayName?: string,
   onProgress?: (event: AnalysisProgressEvent) => void,
+  options: {
+    reuseStoredContext?: boolean;
+    prepareStructuralCheckpoint?: (output: CASOutput) => void;
+    persistEnrichmentResult?: boolean;
+  } = {},
 ): Promise<DeferredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
-
-  // enrichAnalysisAI(output) below must run on the SAME orchestrator instance
-  // that produced `output`: orchestrateAnalysis stashes the deferred-enrichment
-  // closure in a WeakMap keyed by the output object, held only on `this`
-  // (packages/analyzer-core/src/analyzer/core/orchestrator.ts). So this call
-  // owns one dedicated orchestrator instance across both phases, but only
-  // holds a lane pool *permit* (the bounded-concurrency slot) while each phase
-  // is actually running — the permit is released between the deterministic
-  // phase and the background AI phase so other analyses can use that slot
-  // while this one's enrichment is deferred/queued.
   const dedicatedOrch = createOrchestrator();
-  // Measured BEFORE acquiring a lane permit so the queue can order by size.
+
   const sizeHint = await estimateProjectSizeHint(projectPath);
 
   const output = await withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
     dedicatedOrch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
     const conventions = await loadConventionsForAnalysis(projectPath);
     const packGlobs = await loadPackGlobsForAnalysis(projectPath);
-    const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+    const previousOutput = options.reuseStoredContext === false
+      ? null
+      : await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
       previousOutput,
       await dedicatedOrch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions, packGlobs, onProgress })
     ));
 
+    options.prepareStructuralCheckpoint?.(result);
     await saveAnalysis(projectPath, result);
     await saveIncrementalState(projectPath, dedicatedOrch.createIncrementalBaseline(projectPath, result));
     clearFreshnessSummaryCache();
@@ -1199,23 +1160,23 @@ export async function analyzeProjectDeferred(
     return result;
   }, sizeHint, projectPath));
 
-  // Nothing to enrich (no AI provider, or already enriched) → done.
+
   if (output.ai_enrichment !== 'pending') {
     return { output, enrichment: Promise.resolve() };
   }
 
-  // Fire-and-forget: run the AI phase in the background, then re-save the
-  // upgraded CAS. Guarded by the project lock + a bounded AI-enrichment lane
-  // permit (task #118: a SEPARATE pool from the deterministic one — see
-  // aiEnrichmentLanePool above — so this I/O-bound pass never occupies a
-  // deterministic-analysis slot another project's fast parse is waiting on)
-  // + a catch so it can never crash.
+
+
+
+
+
+
   const enrichment = withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
-    // AI-CACHE VISIBILITY (task #132): the AI response cache is a long-lived
-    // process-wide singleton (packages/analyzer-core/src/ai/ai-cache.ts), so
-    // a single stats reading is meaningless — snapshot before/after THIS
-    // run's enrichment and diff, mirroring how the snapshot-reuse gate's
-    // `reuse_decision` always says why, not just whether.
+
+
+
+
+
     const statsBefore = aiService.getCacheStats();
     await dedicatedOrch.enrichAnalysisAI(output);
     const statsAfter = aiService.getCacheStats();
@@ -1224,23 +1185,27 @@ export async function analyzeProjectDeferred(
       misses: Math.max(0, statsAfter.misses - statsBefore.misses),
       bypassed: process.env.KLAURO_FORCE_AI_REFRESH === '1',
     };
-    await saveAnalysis(projectPath, output);
-    clearFreshnessSummaryCache();
-    await saveAnalysisSnapshot(projectPath, output);
+    if (options.persistEnrichmentResult !== false) {
+      await saveAnalysis(projectPath, output);
+      clearFreshnessSummaryCache();
+      await saveAnalysisSnapshot(projectPath, output);
+    }
   }, output.nodes.length, projectPath)).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md). A failed AI
-    // pass is a VISIBLE terminal state, never a silent stay-pending: mark
-    // ai_enrichment='error' and persist it so pollers see L5 failed instead of
-    // waiting forever. There is NO deterministic comprehension substitute; the
-    // Camp-B structure remains stored, comprehension fields stay unset.
+
+
+
+
+
     output.ai_enrichment = 'error';
-    // Capture the UNDERLYING reason so it's queryable via the API (surfaced
-    // onto layers_ready L5.error), not just in this container's stderr. This is
-    // the difference between "AI comprehension pass failed" (generic) and the
-    // real cause ("AI interpretation budget exceeded" / a provider 401/429 /
-    // a grounding-gate rejection) an operator needs to act on.
+
+
+
+
+
     output.ai_enrichment_error = message;
+    console.error(`[Klauro] deferred AI enrichment FAILED for ${projectPath} (${message}); marked ai_enrichment='error' (comprehension is AI-only, no deterministic substitute)`);
+    if (options.persistEnrichmentResult === false) return;
     try {
       await withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
         await saveAnalysis(projectPath, output);
@@ -1251,64 +1216,63 @@ export async function analyzeProjectDeferred(
       const saveMessage = saveError instanceof Error ? saveError.message : String(saveError);
       console.error(`[Klauro] failed to persist ai_enrichment='error' for ${projectPath} (${saveMessage})`);
     }
-    console.error(`[Klauro] deferred AI enrichment FAILED for ${projectPath} (${message}); marked ai_enrichment='error' (comprehension is AI-only, no deterministic substitute)`);
   });
 
   return { output, enrichment };
 }
 
-/**
- * Result of the layered/progressive entrypoint. `l0` resolves in seconds (the
- * fast index/inventory pre-pass, persisted before the deterministic pipeline
- * runs) so callers who only need "has this project been touched yet" can act
- * immediately. `rest` resolves once L1-L4 (and, if configured, L5 AI
- * enrichment) have landed and been saved — the same DeferredAnalysisResult
- * analyzeProjectDeferred always returned. Both promises resolve against the
- * SAME saved analysis lineage: the L1-L4 save supersedes the L0-only stub,
- * and (if AI is configured) the enrichment save supersedes that in turn. A
- * caller that only awaits `l0` and returns has a valid, honestly-partial CAS
- * on disk the whole time — `layers_ready` on it says exactly what's missing.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export interface LayeredAnalysisResult {
   l0: Promise<CASOutput>;
   rest: Promise<DeferredAnalysisResult>;
 }
 
-/**
- * Progressive-layering entrypoint (task #112): compute and PERSIST the L0
- * index/inventory first — a pure filesystem walk with no dependency on the
- * analyzer pipeline, so it lands in seconds — before the full deterministic
- * pass (L1-L4, still one entangled block inside AnalyzerOrchestrator) and the
- * existing L5 AI-enrichment deferral run to completion. Every intermediate
- * save is a fully honest CASOutput: `layers_ready` always reflects what has
- * actually landed on THIS stored copy, and no layer's fields are fabricated
- * ahead of that layer completing. The final saved CAS is byte-for-byte what
- * analyzeProjectDeferred/analyzeProject would have produced on their own —
- * this only changes WHEN facts become queryable, never what they are.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export async function analyzeProjectLayered(
   projectPath: string,
   displayName?: string,
   onProgress?: (event: AnalysisProgressEvent) => void,
-  /**
-   * `klauro analyze --force` (task #132), ROOT CAUSE FIX. The snapshot-reuse
-   * gate in remote-analyzer-service.ts's POST /v1/analyze wipes and rewrites
-   * the WORKSPACE directory (source files) before dispatching here — but the
-   * STORED ANALYSIS (previousOutput, read below) lives in a completely
-   * separate location keyed by a global index (storage.ts's
-   * resolveAnalysisFileForLoad reads getStoragePath()/index.analyses[...],
-   * never anything under the workspace directory), so the workspace wipe
-   * does NOT invalidate it. Without this flag, the warm/incremental branch
-   * below sees `hasCompletePrevious === true` (the untouched prior analysis)
-   * and — since the rewritten source is byte-identical — the incremental
-   * pass finds zero changes and returns the EXACT PREVIOUS CASOutput object
-   * verbatim, never calling analyzeProjectDeferred/orchestrateAnalysis at
-   * all. That is a second, independent silent-reuse path beyond the
-   * server's snapshot-identity gate this task started from: even after the
-   * gate correctly decides "do not reuse", this warm path quietly reused
-   * anyway. `forceFullRebuild: true` skips straight to the unconditional
-   * analyzeProjectDeferred (full) path.
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   forceFullRebuild?: boolean,
 ): Promise<LayeredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
@@ -1320,17 +1284,10 @@ export async function analyzeProjectLayered(
   const l0Promise = (async () => {
     const l0Index = await computeL0Index(projectPath);
     const l0Cas = buildL0OnlyCas(projectPath, displayName, l0Index);
-    // Best-effort, zero-wait: if a fuller analysis is already queued/running
-    // under the project lock, skip the L0 stub immediately rather than block
-    // seconds-scale availability on it (previously this waited out the FULL
-    // lock timeout — up to 120s in prod — before giving up anyway, since the
-    // fuller save always supersedes the L0 stub moments later regardless).
-    // withProjectAnalysisLockIfAvailable only ever short-circuits a lock held
-    // by a LIVE holder; a genuinely stale lock is still reclaimed as before.
     const lockAttempt = await withProjectAnalysisLockIfAvailable(projectPath, async () => {
-      const existing = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-      // Never regress a more-complete stored analysis back down to an L0-only
-      // stub (e.g. a re-analyze racing an already-fresh CAS on disk).
+      const existing = forceFullRebuild
+        ? null
+        : await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
       if (existing && (existing.layers_ready?.complete ?? true) && (existing.nodes?.length ?? 0) > 0) {
         return;
       }
@@ -1350,88 +1307,99 @@ export async function analyzeProjectLayered(
   const restPromise = l0Promise.then(async () => {
     const { buildLayersReady } = await import('./layered-analysis.js');
 
-    // WARM PATH: when a previous COMPLETE analysis exists for this workspace,
-    // take the incremental pipeline instead of a full deferred pass. Change
-    // detection is content-hash based, so a customer's warm re-push (snapshot
-    // rewritten, few files actually different) analyzes only the changed files
-    // — seconds instead of a full re-analysis. Falls through to the full
-    // deferred pass on any doubt (no previous, L0-only stub, or incremental
-    // throwing) so cold behavior is unchanged.
-    const previous = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+
+
+
+
+
+
+
+    const previous = forceFullRebuild
+      ? null
+      : await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const hasCompletePrevious = !forceFullRebuild && Boolean(
       previous && (previous.layers_ready?.complete ?? true) && (previous.nodes?.length ?? 0) > 0
     );
+    const stampStructuralLayers = (output: CASOutput): void => {
+      const contentGeneratedAt = output.analysis_timestamp || new Date().toISOString();
+      const aiConfigured = output.ai_enrichment !== undefined && output.ai_enrichment !== 'disabled';
+      output.layers_ready = buildLayersReady({
+        L0: { status: 'ready', completedAt: contentGeneratedAt },
+        L1: { status: 'ready', completedAt: contentGeneratedAt },
+        L2: { status: 'ready', completedAt: contentGeneratedAt },
+        L3: { status: 'ready', completedAt: contentGeneratedAt },
+        L4: { status: 'ready', completedAt: contentGeneratedAt },
+        L5: { status: aiConfigured ? (output.ai_enrichment === 'ready' || output.ai_enrichment === 'synchronous' ? 'ready' : 'pending') : 'ready' },
+      }, { generatedAt: contentGeneratedAt });
+    };
+    let structuralCheckpointPrepared = false;
+    const prepareStructuralCheckpoint = (output: CASOutput): void => {
+      stampStructuralLayers(output);
+      structuralCheckpointPrepared = true;
+    };
     let deferred: DeferredAnalysisResult;
     if (hasCompletePrevious) {
       try {
         const incremental = await analyzeProjectIncremental(projectPath, displayName, onProgress);
         deferred = { output: incremental.output, enrichment: Promise.resolve() };
       } catch (error) {
-        // The loop-breaker's refusal must NOT be swallowed by this fallback:
-        // analyzeProjectDeferred always runs a full rebuild unconditionally,
-        // with no version-mismatch guard of its own, so falling back here
-        // would immediately repeat the exact doomed rebuild the guard just
-        // refused — defeating it entirely. Propagate it as a hard failure of
-        // this layered pass instead.
+
+
+
+
+
+
         if (error instanceof AnalysisLoopBreakerError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] warm incremental pass failed for ${projectPath} (${message}); falling back to full deferred analysis`);
-        deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress);
+        deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress, {
+          prepareStructuralCheckpoint,
+          persistEnrichmentResult: false,
+        });
       }
     } else {
-      deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress);
+      deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress, {
+        reuseStoredContext: !forceFullRebuild,
+        prepareStructuralCheckpoint,
+        persistEnrichmentResult: false,
+      });
+    }
+    if (!structuralCheckpointPrepared) {
+      stampStructuralLayers(deferred.output);
+      await saveAnalysis(projectPath, deferred.output);
+      clearFreshnessSummaryCache();
     }
 
-    // Stamp the full ladder onto the landed CAS: L1-L4 are ready the moment
-    // orchestrateAnalysis returns (they're produced as one entangled block —
-    // see layered-analysis.ts for why), L5 mirrors the pre-existing
-    // ai_enrichment marker so `layers_ready` is a single place to read the
-    // whole ladder instead of two fields with different vocabularies.
-    const now = new Date().toISOString();
-    // Anchor the ladder's generated_at to the CAS content timestamp so a no-op
-    // incremental (which reuses previousOutput verbatim, keeping its older
-    // analysis_timestamp) doesn't advertise a fresh generated_at over stale
-    // content. Falls back to wall-clock only when the output lacks a timestamp.
-    const contentGeneratedAt = deferred.output.analysis_timestamp || now;
-    const aiConfigured = deferred.output.ai_enrichment !== undefined && deferred.output.ai_enrichment !== 'disabled';
-    deferred.output.layers_ready = buildLayersReady({
-      L0: { status: 'ready', completedAt: contentGeneratedAt },
-      L1: { status: 'ready', completedAt: contentGeneratedAt },
-      L2: { status: 'ready', completedAt: contentGeneratedAt },
-      L3: { status: 'ready', completedAt: contentGeneratedAt },
-      L4: { status: 'ready', completedAt: contentGeneratedAt },
-      L5: { status: aiConfigured ? (deferred.output.ai_enrichment === 'ready' || deferred.output.ai_enrichment === 'synchronous' ? 'ready' : 'pending') : 'ready' },
-    }, { generatedAt: contentGeneratedAt });
-    await saveAnalysis(projectPath, deferred.output);
-    clearFreshnessSummaryCache();
 
-    // If L5 is still enriching in the background, re-stamp layers_ready once
-    // that promise resolves and re-save — mirrors analyzeProjectDeferred's own
-    // re-save-on-enrich, adding the manifest flip so a caller polling
-    // layers_ready sees L5 flip too. Comprehension is AI-only
-    // (docs/cas/DETERMINISM-BOUNDARY.md): L5 flips to 'ready' on success or
-    // 'error' on a failed AI pass — it NEVER stays 'pending' forever, and the
-    // failure is surfaced visibly (never a deterministic substitute).
+
+
+
+
+
+
     const enrichment = deferred.enrichment.then(async () => {
+      const priorL5Status = deferred.output.layers_ready?.layers.find(layer => layer.layer === 'L5')?.status;
       const baseLayers = {
         L0: { status: 'ready' as const }, L1: { status: 'ready' as const }, L2: { status: 'ready' as const },
         L3: { status: 'ready' as const }, L4: { status: 'ready' as const },
       };
-      // L5 landing IS a genuine content change, so anchor generated_at to the
-      // (possibly refreshed) content timestamp rather than reverting to the
-      // deterministic-pass time. Falls back to the L5 completion instant.
+
+
+
       const l5GeneratedAt = deferred.output.analysis_timestamp || new Date().toISOString();
       if (deferred.output.ai_enrichment === 'ready') {
+        if (priorL5Status === 'ready') return;
         deferred.output.layers_ready = buildLayersReady({
           ...baseLayers,
           L5: { status: 'ready', completedAt: new Date().toISOString() },
         }, { generatedAt: l5GeneratedAt });
       } else if (deferred.output.ai_enrichment === 'error') {
-        // Visible terminal failure: L5 'error', not a silent stay-pending.
-        // Surface the UNDERLYING reason (captured on ai_enrichment_error by
-        // analyzeProjectDeferred's catch) so the real cause is queryable via
-        // the API, not just in container stderr; fall back to the generic
-        // message only if the detail wasn't captured.
+        if (priorL5Status === 'error') return;
+
+
+
+
+
         const l5Detail = deferred.output.ai_enrichment_error
           ? `AI comprehension pass failed (comprehension is AI-only, no deterministic fallback): ${deferred.output.ai_enrichment_error}`
           : 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)';
@@ -1440,8 +1408,8 @@ export async function analyzeProjectLayered(
           L5: { status: 'error', completedAt: new Date().toISOString(), error: l5Detail },
         }, { generatedAt: l5GeneratedAt });
       } else {
-        // 'disabled'/'synchronous' or nothing to enrich — leave the manifest as
-        // the restPromise already stamped it (L5 'ready' when AI isn't coming).
+
+
         return;
       }
       await saveAnalysis(projectPath, deferred.output);
@@ -1457,28 +1425,28 @@ export async function analyzeProjectLayered(
   return { l0: l0Promise, rest: restPromise };
 }
 
-/**
- * Local/track-scoped analysis read. `sections` mirrors the hosted read path
- * (hosted-analysis.ts's resolveBoundAnalysis): when the caller only needs
- * part of the CAS, load just those sections from the on-disk `.sections`
- * segments instead of materializing and caching the whole parsed CAS — the
- * same mechanism `storage.ts`'s writeSegmentedAnalysis/loadAnalysisSections
- * already write/read, never a second segmentation scheme. A requested
- * section that genuinely cannot be produced fails loudly (missing section
- * data is a bug to surface, not a gap to paper over with a full-CAS
- * fallback). `applyStoredElementDescriptions` walks the full node graph to
- * validate manual-description fingerprints; running it against a narrowed
- * section set would read absent nodes as "target not found" and silently
- * invalidate real stored descriptions, so it only runs on full loads.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function getAnalysis(
   projectPath: string,
   options?: { track?: import('./track').AnalysisTrack; sections?: readonly CasSectionName[] }
 ): Promise<CASOutput> {
   if (options?.sections?.length && options.sections.length < CAS_SECTION_NAMES.length) {
-    // loadAnalysisSections itself fails loudly (naming the section) when a
-    // section the manifest promises turns out to be unreadable — no silent
-    // fallback here, and no full-CAS re-read on a partial-section miss.
+
+
+
     const partial = await loadAnalysisSections(projectPath, options.sections, options.track ? { track: options.track } : undefined);
     if (!partial) throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
     assertAnalysisVersionSupported(partial as CASOutput, projectPath);
@@ -1502,7 +1470,7 @@ export interface IncrementalAnalysisResult {
   previousCasVersion?: string;
 }
 
-const DEFAULT_INCREMENTAL_SNAPSHOT_INTERVAL_MS = 60_000;
+const DEFAULT_INCREMENTAL_SNAPSHOT_INTERVAL_MS = 10 * 60_000;
 
 function getIncrementalSnapshotIntervalMs(): number {
   const raw = process.env.KLAURO_INCREMENTAL_SNAPSHOT_INTERVAL_MS;
@@ -1518,7 +1486,7 @@ async function shouldSaveIncrementalSnapshot(projectPath: string, result: Increm
 
   try {
     const snapshots = await listAnalysisSnapshots(projectPath);
-    const latest = snapshots[0]?.timestamp ? new Date(snapshots[0].timestamp).getTime() : 0;
+    const latest = snapshots.reduce((maximum, snapshot) => Math.max(maximum, Date.parse(snapshot.saved_at)), 0);
     if (!latest || Number.isNaN(latest)) return true;
     return Date.now() - latest >= intervalMs;
   } catch {
@@ -1660,35 +1628,35 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
   };
 }
 
-// --- Analysis lane pool ------------------------------------------------
-//
-// Each concurrent analysis must get its own orchestrator instance
-// (createOrchestrator(), cheap: construction is just building/registering
-// analyzer objects, no I/O) — a shared singleton carries per-analysis mutable
-// state (active project path, discovery/inventory caches, embedding config),
-// so concurrent analyses of different projects would interleave and clobber
-// each other's state. withProjectAnalysisLock is the only serialization
-// same-path runs need. Concurrency stays bounded by a small permit pool since
-// analysis is CPU/memory-heavy; unbounded parallelism would thrash the VPS.
-//
-// Server-side config only (KLAURO_ANALYSIS_CONCURRENCY, with the older
-// KLAURO_ANALYSIS_LANES name kept as a fallback) — not customer-facing.
-//
-// Production survivability (2026-08): the old DEFAULT_ANALYSIS_LANES=2 was a
-// flat literal with no relationship to the host it happened to run on — the
-// VPS .env additionally pins KLAURO_ANALYSIS_CONCURRENCY=1 as a manual
-// workaround. When no explicit env is set, the default is now derived from
-// actual host RAM the same way resolveAnalysisHeapMb() already derives the
-// per-worker heap cap: how many worker-sized heaps fit in RAM after leaving
-// headroom for the main api process, Caddy, sshd, and OS/page-cache pressure.
-// Real peak-RSS probes against this repo (Aug 2026, packages/analyzer-core
-// 775 files / apps/mcp-server 1953 files / full repo 3355 files) measured
-// 1.5-2.4GB worker RSS on a 4096MB heap cap — RSS runs ~1.3-1.5x the heap
-// ceiling once non-heap buffers (parsed source, tree-sitter ASTs) are
-// counted. PER_LANE_RAM_FACTOR encodes that overhead; HOST_RESERVE_MB keeps
-// enough free memory for the rest of the host regardless of lane count — the
-// same "systemd got OOM-killed" failure mode this whole program exists to
-// prevent must never recur just because lanes were sized optimistically.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const DEFAULT_ANALYSIS_LANES = 2;
 const PER_LANE_RAM_FACTOR = 1.4;
 const HOST_RESERVE_MB = 1536;
@@ -1699,10 +1667,10 @@ function deriveAnalysisLaneCountFromHost(): number {
   const usableMb = heap.totalRamMb - HOST_RESERVE_MB;
   if (usableMb <= 0) return 1;
   const byRam = Math.floor(usableMb / perLaneMb);
-  // Never derive UP past the historical default — a bigger host should not
-  // silently start running more concurrent whales than this codepath has
-  // ever been proven safe at without a deliberate KLAURO_ANALYSIS_CONCURRENCY
-  // bump. It only ever derives DOWN from that ceiling on a smaller host.
+
+
+
+
   return Math.max(1, Math.min(DEFAULT_ANALYSIS_LANES, byRam));
 }
 
@@ -1713,19 +1681,19 @@ function getAnalysisLaneCount(): number {
   return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : deriveAnalysisLaneCountFromHost();
 }
 
-// --- Memory guard --------------------------------------------------------
-//
-// A whale analysis (tens of thousands of nodes) already holds significant
-// heap; admitting a SECOND concurrent one under memory pressure risks an OOM
-// that takes the whole process (and every in-flight analysis) down with it.
-// This guard only ever reduces the effective lane count to 1 — it never
-// blocks a lone in-flight analysis, so a single whale always makes forward
-// progress regardless of memory pressure. Container cgroup usage is
-// authoritative when readable (this process runs in a container with a real
-// memory ceiling); RSS-vs-fixed-threshold is the fallback for environments
-// (dev laptops, `tsc`/test runs) where cgroup files aren't present.
-const DEFAULT_MEMORY_RSS_LIMIT_BYTES = 5 * 1024 * 1024 * 1024; // 5GB
-const DEFAULT_MEMORY_CONTAINER_RATIO = 0.7; // 70% of the container limit
+
+
+
+
+
+
+
+
+
+
+
+const DEFAULT_MEMORY_RSS_LIMIT_BYTES = 5 * 1024 * 1024 * 1024;
+const DEFAULT_MEMORY_CONTAINER_RATIO = 0.7;
 
 function getMemoryRssLimitBytes(): number {
   const raw = process.env.KLAURO_ANALYSIS_MEMORY_RSS_LIMIT_BYTES;
@@ -1739,29 +1707,29 @@ function getMemoryContainerRatio(): number {
   return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : DEFAULT_MEMORY_CONTAINER_RATIO;
 }
 
-/** Reads cgroup v2 then v1 memory usage/limit. Returns null if neither is
- *  readable or the limit is effectively "unlimited" (cgroup v1 reports huge
- *  sentinel values for no limit) — callers fall back to the RSS check. */
+
+
+
 function readContainerMemory(): { usage: number; limit: number } | null {
   try {
     const limit = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim());
     const usage = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8').trim());
     if (Number.isFinite(limit) && limit > 0 && Number.isFinite(usage)) return { usage, limit };
-  } catch { /* not cgroup v2, or unreadable outside a container */ }
+  } catch {   }
   try {
     const limit = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim());
     const usage = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf8').trim());
-    // cgroup v1's "no limit" sentinel is close to 2^63 bytes; anything above
-    // 1TB is treated as unlimited so it falls through to the RSS check.
+
+
     if (Number.isFinite(limit) && limit > 0 && limit < 1024 ** 4 && Number.isFinite(usage)) {
       return { usage, limit };
     }
-  } catch { /* not cgroup v1, or unreadable outside a container */ }
+  } catch {   }
   return null;
 }
 
-/** Test-only override so tests can force tight/loose memory deterministically
- *  instead of depending on the actual host's memory state. */
+
+
 let memoryGuardOverrideForTests: (() => boolean) | null = null;
 
 function isMemoryTight(): boolean {
@@ -1771,23 +1739,23 @@ function isMemoryTight(): boolean {
   return process.memoryUsage().rss > getMemoryRssLimitBytes();
 }
 
-/** Test-only: force the memory guard to report tight (`true`), loose
- *  (`false`), or restore real measurement (`null`). */
+
+
 export function __setMemoryGuardOverrideForTests(override: boolean | null): void {
   memoryGuardOverrideForTests = override === null ? null : () => override;
 }
 
-// --- Size-aware, starvation-bounded wait queue ---------------------------
-//
-// Counting semaphore: `permitsInUse` vs. the configured lane count. Callers
-// beyond capacity queue with a size hint (smaller project = smaller hint) so
-// a freed slot goes to the SMALLEST waiting job, not strict FIFO — a small
-// repo's re-analyze should never sit behind a whale's 40-minute rebuild just
-// because it asked second. Pure shortest-job-first can starve the whale
-// forever if smaller jobs keep arriving, so any waiter old enough
-// (KLAURO_ANALYSIS_QUEUE_MAX_WAIT_MS, default 15 minutes) is promoted ahead
-// of size ordering — every waiter's worst case is bounded wait, not
-// indefinite wait.
+
+
+
+
+
+
+
+
+
+
+
 const DEFAULT_QUEUE_MAX_WAIT_MS = 15 * 60 * 1000;
 
 function getQueueMaxWaitMs(): number {
@@ -1798,27 +1766,27 @@ function getQueueMaxWaitMs(): number {
 
 interface LaneWaiter {
   resolve: () => void;
-  /** Smaller = higher priority. Unknown-size jobs use +Infinity so known
-   *  small jobs are never made to wait behind an unmeasured one; age-based
-   *  promotion still bounds their worst-case wait. */
+
+
+
   sizeHint: number;
   enqueuedAt: number;
 }
 
-/**
- * Size-aware, starvation-bounded counting semaphore, factored out so it can
- * be instantiated TWICE (task #118 — see deterministicLanePool /
- * aiEnrichmentLanePool below) instead of once. Behavior is unchanged from
- * the original single-pool implementation; this is a pure extraction.
- */
+
+
+
+
+
+
 function createLanePool(getCapacity: () => number) {
   let permitsInUse = 0;
   let waiters: LaneWaiter[] = [];
 
-  /** Picks the waiter that should get the next freed permit: the oldest
-   *  waiter past the starvation threshold if any, otherwise the smallest
-   *  sizeHint (ties broken by earliest arrival). Returns -1 if the queue is
-   *  empty. */
+
+
+
+
   function pickNextWaiterIndex(): number {
     if (waiters.length === 0) return -1;
     const now = Date.now();
@@ -1851,8 +1819,8 @@ function createLanePool(getCapacity: () => number) {
 
   function acquire(sizeHint: number): Promise<void> {
     const capacity = getCapacity();
-    // The memory guard only ever caps the SECOND+ concurrent slot at 1 — a lone
-    // in-flight analysis is never gated by it.
+
+
     const effectiveCapacity = permitsInUse >= 1 && isMemoryTight() ? 1 : capacity;
     if (permitsInUse < effectiveCapacity) {
       permitsInUse += 1;
@@ -1866,8 +1834,8 @@ function createLanePool(getCapacity: () => number) {
   function release(): void {
     const idx = pickNextWaiterIndex();
     if (idx !== -1) {
-      // Hand the freed permit straight to the chosen waiter (permitsInUse stays
-      // the same — it never actually dropped below capacity).
+
+
       const [waiter] = waiters.splice(idx, 1);
       waiter.resolve();
       return;
@@ -1887,39 +1855,39 @@ function createLanePool(getCapacity: () => number) {
   return { acquire, release, reset, inUse };
 }
 
-// --- task #118: two INDEPENDENT pools, not one -----------------------------
-//
-// PROBLEM (measured, blackbox, prod): a 94-file Electron app analysis was
-// observed queued for ~40s behind ANOTHER project's analysis before its own
-// deterministic phase even started — even though its own deterministic work
-// took ~1.5s and the peer analysis ahead of it was already past its
-// deterministic phase and deep into AI enrichment (a slow, externally
-// network-bound call to the AI provider). A 526-file Go repo analyzed when
-// the queue was empty finished in a fraction of that time. Wall-clock was
-// therefore dominated by which OTHER project's unpredictable AI-tail
-// happened to be queued ahead, not by this project's own size — exactly the
-// "size does not predict time" symptom task #118 exists to fix.
-//
-// ROOT CAUSE: deterministic parsing (CPU/memory-heavy — the reason this pool
-// exists at all, see DEFAULT_ANALYSIS_LANES above) and AI enrichment
-// (I/O-bound: waiting on an external HTTP provider, not the host's CPU or
-// RAM) drew permits from the SAME single-slot semaphore
-// (KLAURO_ANALYSIS_CONCURRENCY, pinned to 1 in production). analyzeProjectDeferred
-// already released and re-acquired the permit BETWEEN its deterministic and
-// AI phases (so the two phases don't hold one continuous permit) — but
-// re-acquiring from the SAME 1-slot pool means an AI phase that grabs the
-// lone slot still blocks every other project's deterministic work (which
-// has no CPU/memory reason to wait on it) for its own full, unpredictable
-// duration.
-//
-// FIX: AI enrichment gets its OWN pool (aiEnrichmentLanePool), sized by
-// KLAURO_AI_ENRICHMENT_CONCURRENCY rather than KLAURO_ANALYSIS_CONCURRENCY.
-// Because AI enrichment does not contend for the host's CPU/RAM the way
-// parsing does, its default capacity is materially higher than the
-// deterministic pool's — see DEFAULT_AI_ENRICHMENT_LANES. Deterministic work
-// for ANY project can now always proceed as soon as a deterministic slot is
-// free, never blocked behind another project's AI tail; AI enrichment across
-// several projects can genuinely overlap instead of serializing 1-at-a-time.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const DEFAULT_AI_ENRICHMENT_LANES = 4;
 
 function getAiEnrichmentLaneCount(): number {
@@ -1948,24 +1916,23 @@ function releaseAiEnrichmentLanePermit(): void {
   aiEnrichmentLanePool.release();
 }
 
-/** Best-effort size hint for queue ordering: the previously-analyzed node
- *  count for this project (cheap cached read), or +Infinity when there is no
- *  previous analysis to measure from (a cold/first-ever analysis is never
- *  assumed small — see the queue-ordering comment above). Never throws: a
- *  failed read just falls back to the unknown-size default. */
+
+
+
+
+
 async function estimateProjectSizeHint(projectPath: string): Promise<number> {
   try {
-    const previous = await loadAnalysis(projectPath, { preferCache: true });
-    const nodeCount = previous?.nodes?.length;
+    const nodeCount = (await getAnalysisEntry(projectPath))?.node_count;
     if (typeof nodeCount === 'number' && Number.isFinite(nodeCount)) return nodeCount;
-  } catch { /* no previous analysis, or unreadable — treat as unknown-size */ }
+  } catch {   }
   return Number.POSITIVE_INFINITY;
 }
 
-// --- Slow-analysis alarm --------------------------------------------------
-// Elapsed time is an SLO signal, never a completeness cutoff. The job keeps
-// its lock and lane until it completes or reports a real process failure.
-const DEFAULT_ANALYSIS_WATCHDOG_MS = 30 * 60_000; // 30 minutes
+
+
+
+const DEFAULT_ANALYSIS_WATCHDOG_MS = 30 * 60_000;
 
 function getAnalysisWatchdogMs(): number {
   const raw = process.env.KLAURO_ANALYSIS_WATCHDOG_MS;
@@ -1981,17 +1948,17 @@ function getAnalysisStallMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ANALYSIS_STALL_MS;
 }
 
-// --- Internal/boot rebuild attempt visibility ------------------------------
-// An internal, version-triggered full rebuild (schemaRebuildReason branch)
-// must leave a visible attempt record — unlike the HTTP-driven reanalyze
-// paths, nothing else writes a sidecar for this internally-triggered path, so
-// a poller would otherwise see only the old analysis with no sign a newer,
-// possibly hung, attempt is in flight.
-//
-// Mirrors remote-analyzer-service.ts's ReanalyzeAttemptRecord shape and path
-// convention so the existing last-attempt surface picks these up too, without
-// this module importing from remote-analyzer-service.ts. Written only when a
-// version mismatch is plausible — never on the common no-op incremental pass.
+
+
+
+
+
+
+
+
+
+
+
 interface InternalRebuildAttemptRecord {
   state: 'in-progress' | 'succeeded' | 'failed';
   trigger: 'version-rebuild';
@@ -1999,12 +1966,12 @@ interface InternalRebuildAttemptRecord {
   finished_at?: string;
   duration_ms?: number;
   reason?: string;
-  /**
-   * The exact (stored -> current) cas_version pair this attempt was rebuilding
-   * for. Recorded so a LATER attempt can tell whether it is about to retry the
-   * SAME rebuild that already failed (loop-breaker below) versus a genuinely
-   * new one (e.g. a subsequent deploy bumped the version again).
-   */
+
+
+
+
+
+
   stored_version?: string;
   current_version?: string;
 }
@@ -2017,7 +1984,7 @@ async function writeInternalRebuildAttempt(projectPath: string, record: Internal
   try {
     await writeJsonAtomic(internalRebuildAttemptPath(projectPath), record);
   } catch {
-    /* best-effort: attempt visibility must never mask or block the rebuild it describes */
+
   }
 }
 
@@ -2030,15 +1997,15 @@ async function readInternalRebuildAttempt(projectPath: string): Promise<Internal
   }
 }
 
-/**
- * Thrown when a version-bump full rebuild already failed with a
- * worker-OOM or progress-stall reason for this exact (stored_version -> current_version)
- * pair — the infinite-crash-loop breaker: without this, a restart-and-retrigger
- * cycle repeats the same doomed rebuild forever, reading as "in-progress" each
- * time rather than a repeating failure. Only trips on the memory/hang
- * signature; a real code bug or transient I/O error does not trip this guard.
- * Requires an explicit re-trigger (e.g. after raising KLAURO_ANALYSIS_HEAP_MB) to clear.
- */
+
+
+
+
+
+
+
+
+
 export class AnalysisLoopBreakerError extends Error {
   constructor(message: string) {
     super(message);
@@ -2078,19 +2045,11 @@ async function guardAgainstDoomedVersionRebuild(
   }
 }
 
-/**
- * Pre-flight, side-effect-free check for callers that must know before
- * writing their own 'in-progress' attempt record whether the next rebuild is
- * a doomed repeat — those callers write the same sidecar file the loop-breaker
- * reads, so an unconditional overwrite would erase its evidence before it can
- * be read. Returns the loop-breaker's message when the next rebuild would be
- * doomed, or null when safe to proceed.
- */
 export async function checkDoomedVersionRebuild(projectPath: string): Promise<string | null> {
   try {
-    const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-    if (!previousOutput) return null;
-    const versionInfo = getAnalysisVersionInfo(previousOutput);
+    const entry = await getAnalysisEntry(projectPath).catch(() => null);
+    if (!entry) return null;
+    const versionInfo = describeAnalysisVersion(entry.cas_version);
     await guardAgainstDoomedVersionRebuild(projectPath, versionInfo);
     return null;
   } catch (error) {
@@ -2099,12 +2058,12 @@ export async function checkDoomedVersionRebuild(projectPath: string): Promise<st
   }
 }
 
-/** Best-effort "what was it last doing" signal for the watchdog's log line.
- *  The run log (packages/.../core/run-log.ts) only writes a run's `phases`
- *  array when the run finishes (complete or failed) — a hung run never gets
- *  there, so there is no live "current phase" to read. What IS available is
- *  the run-start record for this project, if one was written and no
- *  completion record for the same run_id has landed yet. Never throws. */
+
+
+
+
+
+
 function describeLastRunLogState(projectPath: string): string {
   try {
     const records = readRecentRunRecords();
@@ -2123,13 +2082,13 @@ function describeLastRunLogState(projectPath: string): string {
   }
 }
 
-/**
- * Runs fn bounded to KLAURO_ANALYSIS_CONCURRENCY concurrent analyses (default
- * 2), smallest-project-first with age-based starvation promotion. A crashing
- * analysis releases its permit like any other and never blocks the pool.
- * Also races fn against the wall-clock watchdog (see above). `projectPath`
- * (when passed) is used only in watchdog log lines and run-log lookups.
- */
+
+
+
+
+
+
+
 async function withPoolPermit<T>(
   acquire: (sizeHint: number) => Promise<void>,
   release: () => void,
@@ -2158,19 +2117,19 @@ async function withPoolPermit<T>(
   }
 }
 
-/**
- * Runs fn bounded to KLAURO_ANALYSIS_CONCURRENCY concurrent DETERMINISTIC
- * analyses (default 2), smallest-project-first with age-based starvation
- * promotion. A crashing analysis releases its permit like any other and
- * never blocks the pool. Also races fn against the wall-clock watchdog (see
- * above). `projectPath` (when passed) is used only in watchdog log lines and
- * run-log lookups.
- *
- * task #118: this pool is now deliberately SEPARATE from
- * withAiEnrichmentLanePermit's — see the aiEnrichmentLanePool comment above
- * for why deterministic (CPU/memory-heavy) and AI-enrichment (I/O-bound)
- * work must never share one gate.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 function withLanePermit<T>(
   fn: () => Promise<T>,
   sizeHint: number = Number.POSITIVE_INFINITY,
@@ -2179,12 +2138,12 @@ function withLanePermit<T>(
   return withPoolPermit(acquireLanePermit, releaseLanePermit, fn, sizeHint, projectPath, 'ANALYSIS');
 }
 
-/**
- * Same shape as withLanePermit, but drawn from the INDEPENDENT AI-enrichment
- * pool (KLAURO_AI_ENRICHMENT_CONCURRENCY, default DEFAULT_AI_ENRICHMENT_LANES)
- * so a slow/queued AI pass never occupies a deterministic-analysis slot and
- * never makes another project's fast deterministic work wait on it.
- */
+
+
+
+
+
+
 function withAiEnrichmentLanePermit<T>(
   fn: () => Promise<T>,
   sizeHint: number = Number.POSITIVE_INFINITY,
@@ -2193,13 +2152,13 @@ function withAiEnrichmentLanePermit<T>(
   return withPoolPermit(acquireAiEnrichmentLanePermit, releaseAiEnrichmentLanePermit, fn, sizeHint, projectPath, 'AI ENRICHMENT');
 }
 
-/**
- * Run fn on a fresh, dedicated orchestrator instance, bounded by the same
- * lane permit pool as withLanePermit. Use this when the caller doesn't need
- * to retain the orchestrator instance beyond the call (analyzeProject,
- * analyzeProjectIncremental); analyzeProjectDeferred manages its own
- * dedicated instance across two phases and uses withLanePermit directly.
- */
+
+
+
+
+
+
+
 function withAnalysisLane<T>(
   fn: (orch: AnalyzerOrchestrator) => Promise<T>,
   sizeHint?: number,
@@ -2208,33 +2167,33 @@ function withAnalysisLane<T>(
   return withLanePermit(() => fn(createOrchestrator()), sizeHint, describe);
 }
 
-/** Test-only: reset BOTH lane pools' state (e.g. after changing
- *  KLAURO_ANALYSIS_CONCURRENCY / KLAURO_ANALYSIS_LANES /
- *  KLAURO_AI_ENRICHMENT_CONCURRENCY / KLAURO_AI_ENRICHMENT_LANES). */
+
+
+
 export function __resetAnalysisLanesForTests(): void {
   deterministicLanePool.reset();
   aiEnrichmentLanePool.reset();
   memoryGuardOverrideForTests = null;
 }
 
-/** Test-only: exercise the deterministic lane pool directly without a real
- *  analysis pipeline (used to verify concurrency, ordering, and crash
- *  isolation with fake slow/failing functions). */
+
+
+
 export function __withLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number, describe?: string): Promise<T> {
   return withLanePermit(fn, sizeHint, describe);
 }
 
-/** Test-only: exercise the INDEPENDENT AI-enrichment lane pool directly (task
- *  #118) — same shape as __withLanePermitForTests but proves the two pools
- *  never contend with each other for permits. */
+
+
+
 export function __withAiEnrichmentLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number, describe?: string): Promise<T> {
   return withAiEnrichmentLanePermit(fn, sizeHint, describe);
 }
 
-/** Test-only: exercise the OUTER worker-dispatch watchdog directly, without a
- *  real forked child process (which cannot be made to hang deterministically
- *  from a test). Verifies the same fire/free/mark/late-completion semantics
- *  as withLanePermit's inner watchdog, one layer further out. */
+
+
+
+
 export function __withOuterWorkerWatchdogForTests(
   projectPath: string,
   run: () => Promise<AnalysisRunSummary>
@@ -2242,21 +2201,21 @@ export function __withOuterWorkerWatchdogForTests(
   return withOuterWorkerWatchdog(projectPath, run);
 }
 
-/** Test-only: read back whatever internal-rebuild attempt record (if any) is
- *  currently on disk for `projectPath`, without needing a real version-bumped
- *  CAS on disk to trigger one. */
+
+
+
 export async function __readInternalRebuildAttemptForTests(projectPath: string): Promise<InternalRebuildAttemptRecord | null> {
   return readInternalRebuildAttempt(projectPath);
 }
 
-/** Test-only: current in-use permit count on the deterministic pool, for
- *  asserting overlap/exclusivity without timing-dependent sleeps. */
+
+
 export function __getLanePermitsInUseForTests(): number {
   return deterministicLanePool.inUse();
 }
 
-/** Test-only: current in-use permit count on the AI-enrichment pool (task
- *  #118) — separate from the deterministic pool's counter above. */
+
+
 export function __getAiEnrichmentLanePermitsInUseForTests(): number {
   return aiEnrichmentLanePool.inUse();
 }
@@ -2270,7 +2229,7 @@ export async function analyzeProjectIncremental(
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
-  // Measured BEFORE acquiring a lane permit so the queue can order by size.
+
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(
     projectPath,
@@ -2295,7 +2254,7 @@ async function runIncrementalAnalysis(
   const conventions = await loadConventionsForAnalysis(projectPath);
   const packGlobs = await loadPackGlobsForAnalysis(projectPath);
 
-  const previousOutput = await loadAnalysis(projectPath, { preferCache: true });
+  const previousOutput = await loadAnalysisSections(projectPath, CAS_SECTION_NAMES.filter(section => section !== 'tree')) as CASOutput | null;
   const previousState = await loadIncrementalState(projectPath);
   const previousCasVersion = previousOutput
     ? getAnalysisVersionInfo(previousOutput).stored_version
@@ -2336,23 +2295,23 @@ async function runIncrementalAnalysis(
     return freshResult;
   }
 
-  // Additive attempt-record visibility (see the "Internal/boot rebuild attempt
-  // visibility" comment above the Wall-clock watchdog section): if the stored
-  // analysis predates the running server's cas_version, orchestrateIncrementalAnalysis
-  // is about to enter its schemaRebuildReason branch and run a FULL rebuild —
-  // exactly the case that was measured hanging 65+ minutes with zero visible
-  // record anywhere. Only this (rare) predicted case pays for the sidecar
-  // write; the common no-op incremental pass never touches it.
+
+
+
+
+
+
+
   const versionInfo = getAnalysisVersionInfo(previousOutput);
   const likelyVersionRebuild = versionInfo.stored_version !== versionInfo.current_version;
   const attemptStartedAt = new Date();
   if (likelyVersionRebuild) {
-    // Loop-breaker (incident 2026-07-18): refuse to auto-retrigger the SAME
-    // version-bump rebuild that already died from a worker-oom/watchdog cause
-    // last time. Thrown BEFORE the 'in-progress' record below so a repeated
-    // doomed rebuild never overwrites the informative 'failed' record with a
-    // fresh 'in-progress' one that would just fail again — the failed record
-    // stays exactly as it was until a human/agent clears the underlying cause.
+
+
+
+
+
+
     await guardAgainstDoomedVersionRebuild(projectPath, versionInfo);
     await writeInternalRebuildAttempt(projectPath, {
       state: 'in-progress',
@@ -2409,9 +2368,9 @@ async function runIncrementalAnalysis(
   }
 
   if (result.wasFullRebuild && result.output !== previousOutput) {
-    // A full rebuild inside the incremental path bypasses the orchestrator's
-    // incremental description-reuse hook; keep prior AI descriptions when this
-    // rebuild ran without AI instead of downgrading the stored analysis.
+
+
+
     preservePreviousAIDescriptions(previousOutput, result.output);
   }
 
@@ -2422,7 +2381,7 @@ async function runIncrementalAnalysis(
   const outputChanged = result.output !== previousOutput || casChanged || layersManifestChanged;
   if (outputChanged) {
     phaseStartedAt = Date.now();
-    await saveAnalysis(projectPath, result.output);
+    await saveAnalysis(projectPath, result.output, 'main', { deferSegmentedWrite: true });
     clearFreshnessSummaryCache();
     debug('save-analysis', phaseStartedAt);
   }
@@ -2524,14 +2483,14 @@ export function summarizeIncrementalAnalysis(projectPath: string, result: Increm
   };
 }
 
-/**
- * A phase-completion event for a dispatched 'layered' worker job. Deliberately
- * tiny — id, status, and (on failure) a truncated-free error string — never
- * the CASOutput itself: the worker persists every phase to storage as it
- * lands, so the parent reloads (getAnalysis) whatever it needs instead of
- * carrying it over IPC. `l0` = the fast index/inventory pre-pass; `rest` = the
- * L1-4 deterministic pipeline; `enrichment` = the L5 AI-comprehension tail.
- */
+
+
+
+
+
+
+
+
 export interface LayeredJobPhaseEvent {
   phase: 'l0' | 'rest' | 'enrichment';
   status: 'succeeded' | 'failed';
@@ -2543,8 +2502,8 @@ interface WorkerProgressMessage extends AnalysisProgressEvent {
   id: number;
 }
 
-/** Small terminal summary for a completed 'layered' worker job — counts and
- *  the final AI-enrichment state, not the CAS itself (see LayeredJobPhaseEvent). */
+
+
 export interface LayeredRunSummary {
   name: string;
   nodes: number;
@@ -2574,13 +2533,13 @@ export function summarizeLayeredAnalysis(projectPath: string, output: CASOutput)
 
 export interface RunAnalysisOptions {
   forceFull?: boolean;
-  /**
-   * Real display name for this project, distinct from `projectPath`'s
-   * basename when the workspace directory is a hash (e.g. the remote
-   * analyzer service writes snapshots to a sha256-derived workspace dir).
-   * Threaded through to orchestrateAnalysis so deployable/system names never
-   * leak the hash workspace basename.
-   */
+
+
+
+
+
+
+
   displayName?: string;
 }
 
@@ -2606,21 +2565,24 @@ interface WorkerAnalyzeRequest {
   env: Record<string, string>;
 }
 
-// The 'layered' job kind dispatches analyzeProjectLayered's ENTIRE progressive
-// pipeline (L0 -> L1-4 -> L5 AI enrichment) into the forked child — see
-// analysis-worker.ts's executeLayeredAnalysis. The parent never receives the
-// CASOutput itself over IPC, only the small phase-completion messages below
-// plus a final LayeredRunSummary; it reloads from storage (getAnalysis) for
-// anything it needs, exactly as the sync analyze/diff/sync routes already do
-// (275e9dc7). This is what lets the whole layered pass — including the L5 AI
-// tail, which can run for minutes — happen OUTSIDE the API process's heap.
+
+
+
+
+
+
+
+
 interface WorkerLayeredRequest {
   type: 'layered';
   id: number;
   projectPath: string;
   displayName?: string;
   env: Record<string, string>;
-  /** See RunLayeredAnalysisOptions.forceFullRebuild. */
+  analysisFocus?: import('./analysis-focus').AnalysisFocus;
+  repoFacts?: import('./remote-source').RepoFacts;
+  repoFactsUnavailable?: boolean;
+
   forceFullRebuild?: boolean;
 }
 
@@ -2637,11 +2599,11 @@ interface WorkerErrorMessage {
   stackTop?: string;
 }
 
-// Sent zero or more times per 'layered' job, BEFORE its terminal
-// result/error message — the parent uses these to drive attempt-record
-// lifecycle transitions (queued -> in-progress -> succeeded/failed) without
-// waiting for the whole pipeline (including L5 AI enrichment) to finish. Never
-// removes the job from `pending`; only the terminal result/error message does.
+
+
+
+
+
 interface WorkerPhaseMessage extends LayeredJobPhaseEvent {
   type: 'phase';
   id: number;
@@ -2654,7 +2616,7 @@ interface PendingWorkerJob<T = AnalysisRunSummary> {
   startedAtMs: number;
   resolve: (summary: T) => void;
   reject: (error: Error) => void;
-  /** Only set for 'layered' jobs; invoked on each phase message, job stays pending. */
+
   onPhase?: (event: LayeredJobPhaseEvent) => void;
   lastProgressAtMs?: number;
   lastProgressSequence?: number;
@@ -2667,10 +2629,10 @@ interface WorkerHandle {
   heap: AnalysisHeapResolution;
   stderrTail: string;
   idleTimer?: NodeJS.Timeout;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- holds both
-  // AnalysisRunSummary ('analyze' jobs) and LayeredRunSummary ('layered' jobs)
-  // pending entries in one map keyed by job id; each dispatch site knows its
-  // own concrete T via the resolve/reject closures it constructs.
+
+
+
+
   pending: Map<number, PendingWorkerJob<any>>;
 }
 
@@ -2751,9 +2713,9 @@ function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
       return;
     }
     if (message.type === 'phase') {
-      // Lifecycle update only — the job stays pending until a terminal
-      // result/error message arrives (which may be long after, e.g. once L5
-      // AI enrichment settles).
+
+
+
       job.lastProgressAtMs = Date.now();
       job.lastProgressPhase = message.phase;
       job.onPhase?.({ phase: message.phase, status: message.status, error: message.error });
@@ -2806,7 +2768,6 @@ function workerLooksOutOfMemory(handle: WorkerHandle, code: number | null, signa
   if (/Reached heap limit|JavaScript heap out of memory|FATAL ERROR/i.test(handle.stderrTail)) return true;
   return signal === 'SIGABRT' || code === 134;
 }
-
 function buildWorkerCrashMessage(
   handle: WorkerHandle,
   job: PendingWorkerJob,
@@ -2825,8 +2786,9 @@ function buildWorkerCrashMessage(
   const suggestedHeap = Math.min(heap.totalRamMb, heap.heapMb * 2);
   return [
     `Analysis worker for ${job.projectPath} ${exitDescription}${oom ? ' after exhausting its heap' : ''}.`,
-    `The worker heap was ${heap.heapMb} MB (${heapSource}).`,
-    `Raise it with KLAURO_ANALYSIS_HEAP_MB=${suggestedHeap} in the analyzer service environment and retry the complete analysis.`,
+    oom
+      ? `The worker heap was ${heap.heapMb} MB (${heapSource}); raise it with KLAURO_ANALYSIS_HEAP_MB=${suggestedHeap} in the analyzer service environment and retry the complete analysis.`
+      : 'The process ended without heap-exhaustion evidence; inspect the worker lifecycle and service logs before retrying.',
     `The MCP server itself is unaffected; a run-failed record was written to ${getAnalysisRunLogPath()}.`,
   ].join(' ');
 }
@@ -2844,7 +2806,7 @@ function failPendingWorkerJobs(
     try {
       finalizeWorkerRunFailure(job.projectPath, job.startedAtMs, message);
     } catch {
-      // Run-log finalization is best effort; the error below still reaches the caller.
+
     }
     job.reject(new Error(message));
   }
@@ -2859,7 +2821,7 @@ function readRunLogRecords(): AnalysisRunRecord[] {
     try {
       records.push(JSON.parse(line) as AnalysisRunRecord);
     } catch {
-      // Skip unparseable lines; rotation owns log hygiene.
+
     }
   }
   return records;
@@ -2969,34 +2931,37 @@ function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Pr
 
 export interface RunLayeredAnalysisOptions {
   displayName?: string;
-  /** Fired on each phase-completion message (l0/rest/enrichment); see
-   *  LayeredJobPhaseEvent. The job stays outstanding until the terminal
-   *  result/error — callers use this purely for lifecycle bookkeeping
-   *  (e.g. updating an attempt-record sidecar), never for the CAS itself. */
+  analysisFocus?: import('./analysis-focus').AnalysisFocus;
+  repoFacts?: import('./remote-source').RepoFacts;
+  repoFactsUnavailable?: boolean;
+
+
+
+
   onPhase?: (event: LayeredJobPhaseEvent) => void;
-  /**
-   * `klauro analyze --force` (task #132): bypass the AI response cache for
-   * this run, so every AI description/capability-name call is a forced miss
-   * and the fresh result overwrites whatever was cached. Threaded to the
-   * analysis worker as a per-job KLAURO_FORCE_AI_REFRESH env var (see
-   * dispatchLayeredWorkerJob / analysis-worker.ts's applyEnvSnapshot) rather
-   * than a parameter, because ai-cache.ts's AICache instance is a
-   * process-wide singleton with no per-call plumbing to every one of its
-   * dozens of get() call sites in ai-service.ts — the env var is read fresh
-   * on every AICache.get() instead.
-   */
+
+
+
+
+
+
+
+
+
+
+
   forceAiRefresh?: boolean;
-  /**
-   * `klauro analyze --force` (task #132), root-cause structural fix: skips
-   * analyzeProjectLayered's warm/incremental shortcut so a full deterministic
-   * rebuild genuinely runs, instead of the incremental pass silently
-   * returning the untouched previous CASOutput verbatim when it (correctly,
-   * for the NON-forced case) detects the rewritten source as unchanged. See
-   * analyzeProjectLayered's `forceFullRebuild` parameter doc for the full
-   * mechanism. Always set together with forceAiRefresh by every caller in
-   * this codebase — kept as a separate field only because they bypass two
-   * genuinely different caches (structural warm-path vs. AI response cache).
-   */
+
+
+
+
+
+
+
+
+
+
+
   forceFullRebuild?: boolean;
 }
 
@@ -3032,7 +2997,7 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
       try {
         finalizeWorkerRunFailure(projectPath, active.startedAtMs, message);
       } catch {
-        // Best effort; the caller still receives the retryable failure.
+
       }
       active.reject(new Error(message));
       if (workerHandle === handle) workerHandle = null;
@@ -3048,6 +3013,9 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
       projectPath,
       displayName: options.displayName,
       env: envSnapshot,
+      analysisFocus: options.analysisFocus,
+      repoFacts: options.repoFacts,
+      repoFactsUnavailable: options.repoFactsUnavailable,
       forceFullRebuild: options.forceFullRebuild,
     };
     handle.child.send(request, (error) => {
@@ -3062,10 +3030,10 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
   });
 }
 
-/**
- * Parent-process slow-analysis alarm for worker dispatch. It observes elapsed
- * time without manufacturing a failure or abandoning a live child.
- */
+
+
+
+
 async function withOuterWorkerWatchdog<T>(
   projectPath: string,
   run: () => Promise<T>
@@ -3087,22 +3055,22 @@ async function withOuterWorkerWatchdog<T>(
   }
 }
 
-/**
- * The ONE place a worker job is queued, dispatched, watchdogged and timed.
- *
- * runAnalysis and runLayeredAnalysis each carried their own copy of this
- * queue-and-dispatch block. I instrumented one of them and measured nothing,
- * because /v1/analyze uses the OTHER — the same "fix landed in the copy
- * production does not use" defect this codebase has produced 15 times over.
- * Extracting the shared choke point fixes the duplication and makes the timing
- * unmissable for every path, present and future.
- *
- * Why the timing matters: measured on prod, the orchestrator reported 169.8s
- * (inside the 180s budget) while the customer waited 381s. Everything outside
- * the orchestrator -- serial queue wait, fork, startup, the worker's own save --
- * was unattributed, so three separate attempts at "latency" today aimed at the
- * only stage that was already compliant.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function queueWorkerJob<T>(
   projectPath: string,
   label: string,
@@ -3110,8 +3078,8 @@ function queueWorkerJob<T>(
 ): Promise<T> {
   const queuedAt = Date.now();
   const run = workerJobChain.then(() => {
-    // workerJobChain is SERIAL: this delta is time spent waiting behind another
-    // job, which head-of-line blocking has made large here before.
+
+
     const queueWaitMs = Date.now() - queuedAt;
     const dispatchedAt = Date.now();
     const report = (outcome: string): void => {
@@ -3122,8 +3090,8 @@ function queueWorkerJob<T>(
     };
     return withOuterWorkerWatchdog(projectPath, dispatch).then(
       result => { report('ok'); return result; },
-      // Logged on failure too: a run that dies after minutes of queueing is
-      // exactly the case where the number is needed.
+
+
       error => { report('FAILED'); throw error; },
     );
   });
@@ -3138,36 +3106,28 @@ export async function runAnalysis(projectPath: string, options: RunAnalysisOptio
   return queueWorkerJob(projectPath, 'analyze', () => dispatchWorkerJob(projectPath, options));
 }
 
-/**
- * Worker-isolated entrypoint for the progressive/layered pipeline — the
- * layered counterpart of runAnalysis. The whole pipeline, including L5 AI
- * enrichment, runs inside the same heap-capped forked worker, so a full
- * rebuild can only exhaust the worker's bounded heap, never the API server's.
- * `options.onPhase` fires as each phase lands so callers can drive their own
- * attempt-record lifecycle without waiting on the full pipeline; the resolved
- * value is only the small LayeredRunSummary, never the CAS itself. Rides the
- * same outer watchdog and shared workerJobChain as runAnalysis, so a layered
- * job and a plain analyze job never run concurrently against one forked child.
- */
+
+
+
+
+
+
+
+
+
+
+
 export async function runLayeredAnalysis(
   projectPath: string,
   options: RunLayeredAnalysisOptions = {},
 ): Promise<LayeredRunSummary> {
   if (analysisRunsInProcess()) {
-    // In-process fallback (tests / KLAURO_ANALYSIS_IN_PROCESS=1): drive
-    // analyzeProjectLayered directly in THIS process, still firing onPhase
-    // for parity with the worker-dispatched path so callers don't need to
-    // special-case which mode they're in. There is no per-job worker/env-
-    // snapshot boundary here (this process IS the "worker"), so set/restore
-    // KLAURO_FORCE_AI_REFRESH directly around the ENTIRE pipeline — including
-    // the deferred AI enrichment this function awaits below via
-    // `deferred.enrichment` — not just the synchronous kickoff call, or the
-    // flag would be gone before enrichAnalysisAI (which runs in the
-    // background) ever reads it.
     const previousForceAiRefresh = process.env.KLAURO_FORCE_AI_REFRESH;
     if (options.forceAiRefresh) process.env.KLAURO_FORCE_AI_REFRESH = '1';
     else delete process.env.KLAURO_FORCE_AI_REFRESH;
     try {
+      const { withAnalysisFocus } = await import('./analysis-focus');
+      return await withAnalysisFocus(options.analysisFocus, async () => {
       const layered = await analyzeProjectLayered(projectPath, options.displayName, undefined, options.forceFullRebuild);
       try {
         await layered.l0;
@@ -3178,12 +3138,16 @@ export async function runLayeredAnalysis(
       let deferred: DeferredAnalysisResult;
       try {
         deferred = await layered.rest;
+        const { applyLayeredAnalysisMetadata } = await import('./layered-analysis-metadata');
+        applyLayeredAnalysisMetadata(deferred.output, options);
         options.onPhase?.({ phase: 'rest', status: 'succeeded' });
       } catch (error) {
         options.onPhase?.({ phase: 'rest', status: 'failed', error: error instanceof Error ? error.message : String(error) });
         throw error;
       }
+      const enrichmentPersistsOutput = deferred.output.ai_enrichment === 'pending';
       await deferred.enrichment.catch(() => undefined);
+      if ((options.repoFacts || options.repoFactsUnavailable) && !enrichmentPersistsOutput) await saveAnalysis(projectPath, deferred.output);
       const aiEnrichment = deferred.output.ai_enrichment;
       options.onPhase?.({
         phase: 'enrichment',
@@ -3191,6 +3155,7 @@ export async function runLayeredAnalysis(
         error: aiEnrichment === 'error' ? deferred.output.ai_enrichment_error : undefined,
       });
       return summarizeLayeredAnalysis(projectPath, deferred.output);
+      });
     } finally {
       if (previousForceAiRefresh === undefined) delete process.env.KLAURO_FORCE_AI_REFRESH;
       else process.env.KLAURO_FORCE_AI_REFRESH = previousForceAiRefresh;

@@ -83,6 +83,8 @@ after(() => {
 test('layered job completes through the worker with phase messages, an honest enrichment tail, and a real persisted CAS', async () => {
   const events: LayeredJobPhaseEvent[] = [];
   const summary = await runLayeredAnalysis(fixtureProject, {
+    analysisFocus: 'full',
+    repoFacts: { contributor_count: 7, first_commit_at: '2020-01-01T00:00:00.000Z' },
     onPhase: (event) => { events.push(event); },
   });
 
@@ -103,6 +105,8 @@ test('layered job completes through the worker with phase messages, an honest en
   const landed = await getAnalysis(fixtureProject);
   assert.ok(landed.nodes.length > 0);
   assert.equal(landed.layers_ready?.complete, true, 'a completed layered run must report a complete layers_ready ladder');
+  assert.equal(landed.system.analysis_focus, 'full');
+  assert.equal(landed.system.repo_facts?.contributor_count, 7);
 });
 
 test('a child crash after L1-4 lands is a clean, phase-attributed failure — not a hang — and the worker recovers for the next call', async () => {
@@ -114,7 +118,7 @@ test('a child crash after L1-4 lands is a clean, phase-attributed failure — no
       () => runLayeredAnalysis(projectDir, { onPhase: (event) => { events.push(event); } }),
       (error: Error) => {
         assert.match(error.message, /killed by signal SIGKILL/);
-        assert.match(error.message, /exhausting its heap|KLAURO_ANALYSIS_HEAP_MB/);
+        assert.match(error.message, /without heap-exhaustion evidence/);
         return true;
       },
     );

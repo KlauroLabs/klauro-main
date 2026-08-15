@@ -1,7 +1,7 @@
-/**
- * Coordination fabric barrel — pure, transport-free core (§WS-C/WS-D).
- * See docs/SPEC-COORDINATION-FABRIC.md for the protocol this implements.
- */
+
+
+
+
 
 export * from './types';
 export { arbitrate } from './arbiter';
@@ -35,13 +35,13 @@ export {
 } from './event-drain';
 export { isExpired, reduceClaimLog, deriveActiveClaims, derivePresence } from './presence';
 export {
-  requestGrant,
-  releaseGrant,
-  heartbeatGrant,
-  getGrants,
-  type GrantRequest,
-  type GrantResult,
-  type GrantVerdict,
-  type GrantConflict,
-  type ActiveGrant,
-} from './grant-manager';
+  publishClaimStream,
+  releaseClaimStream,
+  heartbeatClaimStream,
+  getClaimStreams,
+  type ClaimStreamRequest,
+  type ClaimStreamResult,
+  type ClaimStreamVerdict,
+  type ClaimStreamOverlap,
+  type ActiveClaimStream,
+} from './claim-stream-store';

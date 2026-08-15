@@ -12,7 +12,7 @@ export interface RemoteSourceFile {
   hash: string;
 }
 
-/** A single file entry (path + content + hash) carried in a diff-only payload. */
+
 export type RemoteFileEntry = RemoteSourceFile;
 
 export interface BranchDiffContext {
@@ -38,13 +38,13 @@ export type RemoteFileChange = RemoteChangedFile | RemoteDeletedFile;
 export interface SourceSnapshot {
   project_name: string;
   base_commit?: string;
-  /**
-   * Where the snapshot content was read from:
-   * - 'committed-head': file contents read from the HEAD commit's git objects
-   *   (git-archive semantics) — the working tree may be dirty, but none of the
-   *   dirty content is in this snapshot.
-   * - 'working-tree': file contents read from disk (clean tree, or not a git repo).
-   */
+
+
+
+
+
+
+
   snapshot_source: 'committed-head' | 'working-tree';
   files: RemoteSourceFile[];
   manifest: SourceManifest;
@@ -82,13 +82,13 @@ export interface StreamingWorkingTreePlan {
   manifest: SourceManifest;
 }
 
-/**
- * Cheap, client-derived repo-level facts — contributor count and first/last
- * commit timestamps — read from git metadata (never file content). Additive
- * and honest: only present when derivable from a real git history, so a
- * non-git project or a repo with no commits simply omits this field rather
- * than shipping a fabricated zero/empty value.
- */
+
+
+
+
+
+
+
 export interface RepoFacts {
   contributor_count?: number;
   first_commit_at?: string;
@@ -106,8 +106,8 @@ export interface SourceManifest {
   transfer_recommendation?: SourceTransferRecommendation;
   file_count: number;
   total_bytes: number;
-  /** Stable digest of the exact uploaded path/content set. Unlike generated_at
-   * and local root metadata, this changes only when analyzable source changes. */
+
+
   snapshot_digest?: string;
   excluded_directories: string[];
   config_file?: string;
@@ -179,9 +179,9 @@ export interface WorkspaceRecommendation {
   candidates: WorkspaceCandidate[];
 }
 
-// Exported so other blackbox-client code (e.g. the gauntlet's bench staging step)
-// can align its own directory filtering with what the snapshot walk excludes,
-// instead of maintaining a second, potentially-divergent ignore list.
+
+
+
 export const EXCLUDED_DIRECTORIES = new Set([
   '.git',
   '.klauro',
@@ -189,6 +189,7 @@ export const EXCLUDED_DIRECTORIES = new Set([
   '.klauro-agent-proof-machine',
   '.claude',
   '.codex',
+  '.agents',
   'node_modules',
   'dist',
   'build',
@@ -212,52 +213,50 @@ export const EXCLUDED_DIRECTORIES = new Set([
   '.dart_tool',
   '.gradle',
   'Pods',
-  // NOTE: 'bin' is intentionally NOT excluded — it holds real source in several
-  // ecosystems (OCaml/Dune `bin/main.ml`, Rust `src/bin`, shell scripts). Compiled
-  // artifacts there (.dll/.exe/.o) are dropped anyway by the registered-source-ext
-  // gate below, so excluding the whole dir only lost legitimate source.
   'obj',
 ]);
 
-// Doctrine: EXCLUDED_DIRECTORIES above matches exact segment names only, so a
-// vendored build-output dir whose name embeds a project/service name (e.g.
-// `build-out-drop-server/`) slips through and gets uploaded wholesale — seen for
-// real as a 14,140-file vendored dump on a first-session customer repo. This list
-// adds a small set of PATTERNS for output *shapes*, not name guesses: every entry
-// here is a directory shape that build tooling produces and that nobody hand-names
-// a source directory after. Keep additions conservative and anchored — a miss
-// (some vendored dir slips through) is recoverable via .klauroignore; a false
-// positive (real source silently dropped) is not.
+
+
+
+
+
+
+
+
+
 export const EXCLUDED_DIRECTORY_PATTERNS: RegExp[] = [
-  // Generic "build-out" drop dirs, e.g. `build-out-drop-server/`, `build-out/`.
-  // Anchored at the start so `building-blocks/` and `buildings/` (real source
-  // dir names that merely start with "build") do NOT match.
+  /^\.tmp(?:[-_.].*)?$/,
+  /^dist(?:[-_.].+)?$/,
+
+
+
   /^build-out(-|$)/,
-  // Vendored-artifact staging dirs distinct from the already-excluded plain
-  // `build`/`dist` (which some ecosystems also use as a *source* dir name).
+
+
   /^\.?build-artifacts?$/,
-  // CMake out-of-source build dirs, e.g. `cmake-build-debug`, `cmake-build-release`.
+
   /^cmake-build-[a-z]+$/,
-  // Xcode's derived-data cache (build products, indexes, logs) — never source.
+
   /^DerivedData$/,
 ];
 
-/**
- * Single point of truth for "is this directory NAME a default exclusion" —
- * exact-name set first, then the vendored-output-shape patterns above. Returns
- * which rule matched so callers can surface a precise manifest/exclusion reason
- * instead of collapsing both classes into one generic message.
- */
-function matchExcludedDirectoryName(name: string): { excluded: boolean; matchedPattern?: string } {
+
+
+
+
+
+
+export function matchExcludedDirectoryName(name: string): { excluded: boolean; matchedPattern?: string } {
   if (EXCLUDED_DIRECTORIES.has(name)) return { excluded: true };
   const matched = EXCLUDED_DIRECTORY_PATTERNS.find(pattern => pattern.test(name));
   return matched ? { excluded: true, matchedPattern: matched.source } : { excluded: false };
 }
 
-/** Collapse a verbose per-file inclusion reason into the coarse category the
- * upload manifest surfaces to the customer — 'vendored-output-shape' gets its
- * own label (so it's visibly distinct from an ordinary ignore-pattern miss)
- * instead of disappearing into the generic 'excluded by source policy' bucket. */
+
+
+
+
 function manifestExclusionReason(verboseReason: string): string {
   return verboseReason.startsWith('vendored-output-shape') ? 'vendored-output-shape' : 'excluded by source policy';
 }
@@ -276,73 +275,73 @@ export function isDefaultSensitiveSourceFile(filePath: string): boolean {
   return EXCLUDED_FILES.has(base) || /^\.env(?:\.|$)/.test(base);
 }
 
-// Extensions carried into the remote snapshot even though they aren't a registered
-// programming-language source extension or a named manifest in language-registry.ts.
-// Several framework analyzers read plain, non-manifest-named config files by glob
-// (e.g. Symfony's config/routes*.yaml + config/packages/security.yaml for route-prefix
-// and access_control composition; container/CI YAML for topology). Without this
-// allowlist those files are silently dropped from every remote (analyzeForBench /
-// production) analysis even though a direct, on-disk analyzer run picks them up fine —
-// found via a route composition audit on a benchmarked Symfony repo: its config/routes.yaml prefix mapping
-// never reached the server, so Symfony route paths reported only the local fragment
-// (e.g. "/{id}/api-token" instead of "/api/customer/{id}/api-token").
+
+
+
+
+
+
+
+
+
+
 const EXTRA_INCLUDED_EXTENSIONS = new Set([
   '.yaml',
   '.yml',
   '.toml',
   '.ini',
-  // Play Framework sub-router include files (conf/api.routes etc.) — see the
-  // 'routes' entry in IMPORTANT_EXTENSIONLESS for the base conf/routes file.
+
+
   '.routes',
-  // Jupyter notebooks: JSON documents holding an ordered cell sequence, not
-  // registered-language source — JupyterNotebookAnalyzer parses this format
-  // directly (see analyzer/frameworks/dataml/jupyter-notebook-analyzer.ts).
+
+
+
   '.ipynb',
-  // Reverse-proxy / web-server configs: nginx.conf / Apache *.conf (VirtualHost
-  // + ProxyPass) and HAProxy haproxy.cfg — the "how public traffic routes to
-  // services" topology layer parsed by reverse-proxy-analyzer.ts. Not a
-  // registered language extension, so without this the routing config is
-  // silently dropped from every remote/analyzeForBench analysis even though a
-  // direct on-disk run reads it (same defect class as the routes/.yaml notes).
+
+
+
+
+
+
   '.conf',
   '.cfg',
-  // SOAP/WSDL contracts: service definitions and referenced schemas are parsed
-  // directly by SoapWsdlAnalyzer, not by a programming-language parser.
+
+
   '.wsdl',
   '.xsd',
-  // Product documentation (README/PRD/docs): the analyzer's TOP-DOWN naming and
-  // description grounding read these — resolveSystemDisplayName takes the
-  // README/PRD H1 as the strongest self-naming evidence, and
-  // extractProjectTextSignal seeds description/concept grounding from product
-  // docs. Because markdown is not a registered SOURCE extension, every hosted
-  // snapshot silently dropped it — so hosted analyses could never see a README
-  // and content-first naming was dead on arrival server-side (measured twice on
-  // real projects, 2026-07-16: Klauro-self "no README in prod snapshot", and
-  // rpg/server named "server" hosted while the same repo resolved
-  // "Sundered World - Simulation Server" from its README locally).
+
+
+
+
+
+
+
+
+
+
   '.md',
   '.markdown',
   '.rst',
 ]);
 
-// Platform MANIFEST files that a framework analyzer reads directly by exact
-// basename, not by extension — deliberately NOT a blanket ".xml" inclusion.
-// Blanket .xml would flood every hosted snapshot with build-tool/IDE/generated
-// XML (a Java/Gradle monorepo's own module descriptors, Maven site reports,
-// Android build intermediates, etc.) that no analyzer consumes, recreating
-// the same "vendored dump reaches the server" defect class EXCLUDED_DIRECTORY_PATTERNS
-// exists to prevent. Named by exact basename instead: kotlin-analyzer.ts globs
-// **/AndroidManifest.xml and resolves its <activity>/<service>/<receiver>/
-// <provider> declarations to entry points — same defect class as the
-// routes/.yaml/.md notes above: canAnalyze()/the glob reads this file directly
-// on disk, but the remote snapshot walker had no rule keeping it, so every
-// hosted analysis of an Android app silently lost service/receiver/provider
-// entry points (found 2026-07-17: a real Android/Compose repo's
-// NodeForegroundService + InstallResultReceiver never reached the hosted CAS —
-// zero manifest entry points, zero warnings — while local on-disk analysis of
-// the identical repo found both). Add to this set ONLY when a specific
-// analyzer is confirmed to read the file by exact name; do not widen to a
-// pattern or extension.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const PLATFORM_MANIFEST_BASENAMES = new Set([
   'AndroidManifest.xml',
 ]);
@@ -354,25 +353,25 @@ const IMPORTANT_EXTENSIONLESS = new Set([
   'Gemfile',
   'Rakefile',
   'artisan',
-  // Caddy's config file is extensionless (`Caddyfile`) and holds site-address
-  // blocks + `reverse_proxy <upstream>` — the public-traffic routing topology
-  // parsed by CaddyAnalyzer (reverse-proxy-analyzer.ts). Without this it never
-  // reaches the remote/analyzeForBench analyzer even though canAnalyze() reads
-  // it directly on disk.
+
+
+
+
+
   'Caddyfile',
-  // Play Framework's router: conf/routes is the actual route source of truth
-  // (see PlayAnalyzer) — it has no extension and would otherwise be silently
-  // dropped from the snapshot, leaving the analyzer nothing to read even
-  // though canAnalyze() found it directly on disk.
+
+
+
+
   'routes',
-  // .klaurorc itself: neither a registered source extension nor a
-  // manifest/extensionless name the language registry knows, so without this
-  // it never reaches the remote analyzer at all — meaning declared
-  // conventions (conventions-applier.ts) silently could never apply in the
-  // hosted/remote analysis path, only a direct on-disk local run. Found via
-  // the same class of bug the routes/routes.yaml fix above documents: a file
-  // canAnalyze()/the config loader reads directly on disk but the snapshot
-  // walker had no rule keeping it.
+
+
+
+
+
+
+
+
   '.klaurorc',
   '.klaurorc.json',
 ]);
@@ -387,21 +386,21 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
   const dirty = isGit && head ? listGitChanges(root).length > 0 : false;
   let fellBackFromEmptyHead = false;
   if (isGit && head && dirty) {
-    // Dirty working tree: the shared analysis still runs — on the COMMITTED HEAD
-    // content (git-archive semantics, read straight from git objects). The dirty
-    // working tree is never touched, stashed, or included; uncommitted work flows
-    // through the separate in-flight track (buildWorkingTreeChangeContext).
+
+
+
+
     const headSnapshot = await buildHeadSourceSnapshot(root, loaded, head);
-    // ...UNLESS the project has NO committed content at HEAD. A brand-new
-    // project directory the user hasn't committed yet (very common in a first
-    // session — e.g. a `server/` subdir added but never committed) yields an
-    // EMPTY head snapshot, and returning it is a customer-facing dead-end
-    // ("Remote analyze requires a source snapshot with files") with no hint
-    // that the cause is "nothing here is committed". The committed-HEAD rule
-    // exists to keep a SHARED analysis off one developer's dirty tree — but
-    // when there is nothing committed to prefer, the working tree is the only
-    // source of truth, so fall back to it (same path a non-git repo takes)
-    // instead of refusing.
+
+
+
+
+
+
+
+
+
+
     if (headSnapshot.files.length > 0) return headSnapshot;
     fellBackFromEmptyHead = true;
   }
@@ -515,10 +514,10 @@ async function buildStreamingHeadSnapshot(
   };
 }
 
-/** Cheap counters accumulated DURING the existing source walk (no second scan):
- *  how many files were seen before any ignore rule applied, how many survived,
- *  and — per exclusion reason/pattern — how many files it accounted for. Used
- *  only to build a self-diagnosing error when the final snapshot is empty. */
+
+
+
+
 interface WalkDiagnostics {
   candidatesBeforeIgnores: number;
   candidatesAfterIgnores: number;
@@ -549,7 +548,7 @@ function buildEmptySnapshotDiagnostic(
   const lines: string[] = [];
   lines.push(`Remote analyze requires a source snapshot with files, but the snapshot built for "${root}" is empty. Here is exactly what was checked:`);
 
-  // Snapshot mode chosen and why.
+
   let modeLine: string;
   if (!info.isGit) {
     modeLine = 'snapshot mode: working-tree (not a git repository, so there is no committed HEAD to prefer)';
@@ -602,15 +601,15 @@ function buildEmptySnapshotDiagnostic(
   return new Error(lines.join('\n'));
 }
 
-/**
- * Build a source snapshot from the COMMITTED HEAD only — `git ls-files`-at-HEAD /
- * `git archive` semantics. Every file's content is read from the HEAD commit's git
- * objects (`git show HEAD:<path>`), never from the working tree, so:
- * - dirty (uncommitted) edits to tracked files are absent,
- * - untracked files are absent,
- * - files deleted in the working tree but present at HEAD ARE included,
- * - the user's working tree is never mutated (no stash/checkout/reset).
- */
+
+
+
+
+
+
+
+
+
 export async function buildHeadSourceSnapshot(
   projectPath: string,
   preloadedConfig?: LoadedKlauroConfig,
@@ -720,13 +719,13 @@ export async function buildStreamingWorkingTreeChanges(projectPath: string): Pro
   };
 }
 
-/**
- * Build a light diff-only payload for a NON-default branch: only the files that
- * changed on `targetBranch` relative to its merge-base with `baseBranch`, read at
- * `targetBranch` (via `git show`, so it works without checking the branch out).
- * Deleted files and rename-sources are dropped; only registered-source files that
- * pass shouldIncludeRelativePath are carried as file entries.
- */
+
+
+
+
+
+
+
 export async function buildBranchDiffContext(
   projectPath: string,
   targetBranch: string,
@@ -743,8 +742,8 @@ export async function buildBranchDiffContext(
   const files: RemoteFileEntry[] = [];
   for (const change of listBranchDiff(root, range)) {
     const normalized = normalizeRelativePath(change.path);
-    // Read content from the git ref (works without checkout); use its byte size
-    // for the inclusion gate since the file may not exist in the working tree.
+
+
     const content = readFileAtRef(root, targetBranch, normalized);
     if (content == null) continue;
     const byteSize = Buffer.byteLength(content, 'utf8');
@@ -896,7 +895,7 @@ async function readKlauroProjectCandidate(root: string, directory: string, confi
     candidate.project_id = parsed?.project?.id;
     candidate.organization_id = parsed?.project?.organizationId;
   } catch {
-    // Candidate discovery should not fail the upload manifest.
+
   }
   return candidate;
 }
@@ -988,9 +987,9 @@ async function shouldIncludeRelativePath(
   root: string,
   relativePath: string,
   loaded: LoadedKlauroConfig,
-  // When set, use this byte size instead of stat-ing the working tree. Branch-diff
-  // files may not exist in the checked-out tree (they live at a git ref), so the
-  // caller supplies the git-blob size to keep the max-file-bytes gate working.
+
+
+
   sizeOverride?: number
 ): Promise<boolean> {
   return (await shouldIncludeRelativePathVerbose(root, relativePath, loaded, sizeOverride)).included;
@@ -998,13 +997,13 @@ async function shouldIncludeRelativePath(
 
 type IncludeVerdict = { included: true } | { included: false; reason: string };
 
-/**
- * Same inclusion gate as shouldIncludeRelativePath, but reports WHY a file was
- * dropped (which ignore source / pattern / rule) instead of a bare boolean —
- * used to build a self-diagnosing error when a snapshot ends up empty. Kept as
- * the single source of truth (shouldIncludeRelativePath is a thin wrapper) so
- * there is exactly one inclusion-rule implementation, not two to keep in sync.
- */
+
+
+
+
+
+
+
 async function shouldIncludeRelativePathVerbose(
   root: string,
   relativePath: string,
@@ -1049,10 +1048,10 @@ async function shouldIncludeRelativePathVerbose(
     }
   }
 
-  // Use the analyzer's language registry as the single source of truth for what is
-  // analyzable source/manifest — so the snapshot we send to the product can never
-  // drift behind the languages the analyzer supports (the stale hardcoded list
-  // dropped Kotlin/.kt, Ruby/.rb, C# .csproj manifests, Swift, C++, etc.).
+
+
+
+
   if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base) || PLATFORM_MANIFEST_BASENAMES.has(base)) {
     return { included: true };
   }
@@ -1061,8 +1060,8 @@ async function shouldIncludeRelativePathVerbose(
   return { included: false, reason: 'not a registered source/manifest file type' };
 }
 
-/** List every file path tracked at the HEAD commit (`git ls-tree -r HEAD`) —
- *  the committed tree, regardless of working-tree state. */
+
+
 function listGitTrackedPathsAtHead(root: string): string[] {
   try {
     const output = execFileSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], {
@@ -1104,9 +1103,9 @@ function listGitChanges(root: string): Array<{ path: string; status: 'added' | '
   }
 }
 
-/** List add/modify/rename-target paths for a diff range (skips deletions and
- *  rename-source paths). Handles `--name-status -z` where R/C entries emit two
- *  NUL-separated fields (old path, new path). */
+
+
+
 function listBranchDiff(root: string, range: string): Array<{ path: string; status: 'added' | 'modified' }> {
   try {
     const output = execFileSync('git', ['diff', '--name-status', '--no-renames', '-z', range], {
@@ -1119,17 +1118,17 @@ function listBranchDiff(root: string, range: string): Array<{ path: string; stat
     const changes: Array<{ path: string; status: 'added' | 'modified' }> = [];
     for (let i = 0; i < fields.length; i++) {
       const code = fields[i];
-      // Rename/copy status codes (R100, C75...) carry two path fields; with
-      // --no-renames these should not appear, but guard defensively anyway.
+
+
       if (/^[RC]\d*$/.test(code)) {
-        i += 1; // skip old path
+        i += 1;
         const newPath = fields[++i];
         if (newPath) changes.push({ path: newPath, status: 'modified' });
         continue;
       }
       const filePath = fields[++i];
       if (!filePath) continue;
-      if (code.startsWith('D')) continue; // deletion — nothing to read on target
+      if (code.startsWith('D')) continue;
       changes.push({ path: filePath, status: code.startsWith('A') ? 'added' : 'modified' });
     }
     return changes;
@@ -1164,16 +1163,16 @@ function readRevParse(root: string, ref: string): string | undefined {
 
 function readFileAtRef(root: string, ref: string, relativePath: string): string | null {
   try {
-    // `git show <ref>:<path>` resolves <path> from the REPO ROOT, but every path
-    // we pass here comes from `git ls-tree`/`git diff` run with cwd=root, which
-    // — when root is a SUBDIRECTORY of the repo — emits paths relative to that
-    // subdir (git strips the cwd prefix). Reading those subdir-relative paths as
-    // root-relative made `git show` miss every file ("path 'sub/foo' exists, but
-    // not 'foo'"), so a project that is a subfolder of a larger git repo (a very
-    // common shape) produced an EMPTY snapshot and a "requires a source snapshot
-    // with files" dead-end. The `:./` form resolves relative to cwd, matching
-    // how the paths were produced; when root IS the repo toplevel it is
-    // identical to the bare form, so this is safe for both shapes.
+
+
+
+
+
+
+
+
+
+
     return execFileSync('git', ['show', `${ref}:./${relativePath}`], {
       cwd: root,
       encoding: 'utf8',
@@ -1236,8 +1235,8 @@ function readFilesAtRef(root: string, ref: string, relativePaths: string[]): Map
   return contents;
 }
 
-/** Detect the repo's default branch (main/master), preferring an explicitly
- *  configured origin/HEAD, then a local main, then master. */
+
+
 function detectDefaultBranch(root: string): string | undefined {
   try {
     const ref = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], {
@@ -1247,7 +1246,7 @@ function detectDefaultBranch(root: string): string | undefined {
     }).trim();
     if (ref) return ref.replace(/^origin\//, '');
   } catch {
-    // fall through to local branch detection
+
   }
   for (const candidate of ['main', 'master']) {
     try {
@@ -1257,7 +1256,7 @@ function detectDefaultBranch(root: string): string | undefined {
       });
       return candidate;
     } catch {
-      // try next candidate
+
     }
   }
   return undefined;
@@ -1403,21 +1402,21 @@ function buildManifestFromStats(
   };
 }
 
-// Cap every git subprocess this derivation shells out to so a pathological
-// repo (huge shortlog, corrupted pack) cannot stall snapshot building — a
-// timeout or non-zero exit is treated the same as "not derivable" (silent
-// skip), never a thrown error.
+
+
+
+
 const REPO_FACTS_GIT_TIMEOUT_MS = 3000;
 
-/**
- * Cheap, best-effort repo-level facts read straight from git metadata:
- * contributor count (`git shortlog -sn HEAD`, one line per distinct author)
- * and the first/last commit timestamps (root commit via `rev-list
- * --max-parents=0` / HEAD via `git log -1`, ISO 8601 via `%aI`). Additive and
- * honest — returns undefined (not a zero/empty object) whenever the facts
- * can't be derived: not a git repo, no HEAD commit yet (working-tree-only
- * project), or any of the git invocations fail/timeout. Never throws.
- */
+
+
+
+
+
+
+
+
+
 function deriveRepoFacts(root: string): RepoFacts | undefined {
   if (!isGitRepository(root)) return undefined;
   const head = readGitHead(root);
@@ -1436,22 +1435,22 @@ function deriveRepoFacts(root: string): RepoFacts | undefined {
     const contributorCount = shortlog.split('\n').filter(line => line.trim().length > 0).length;
     if (contributorCount > 0) facts.contributor_count = contributorCount;
   } catch {
-    // Not derivable (e.g. shallow clone with no author history) — omit.
+
   }
 
   const firstCommitAt = readFirstCommitAt(root);
   const lastCommitAt = readLastCommitAt(root);
   const commitCount = readCommitCount(root);
 
-  // Defense in depth against the exact shape of the `--reverse -1` bug this
-  // fixes (and any future regression like it): a repo that genuinely has one
-  // commit legitimately has first_commit_at === last_commit_at, but a repo
-  // with MORE than one commit never should — that combination is exactly
-  // what a broken "first commit" derivation (or a fabricated single synthetic
-  // upload-time commit) looks like from the outside. When git itself reports
-  // more than one commit yet the derived timestamps collapsed onto each
-  // other, treat both as underivable rather than shipping a pair that reads
-  // as real but isn't.
+
+
+
+
+
+
+
+
+
   const timestampsCollapsed = !!firstCommitAt && !!lastCommitAt && firstCommitAt === lastCommitAt;
   const knownMultiCommit = typeof commitCount === 'number' && commitCount > 1;
   if (!(timestampsCollapsed && knownMultiCommit)) {
@@ -1490,17 +1489,17 @@ function readCommitCount(root: string): number | undefined {
   }
 }
 
-/**
- * `git log --reverse -1` does NOT return the oldest commit: `-1`/`--max-count`
- * truncates the default newest-first traversal to one entry before `--reverse`
- * ever runs, so it silently returns HEAD — identical to the `last_commit_at`
- * query. That collapsed first_commit_at === last_commit_at onto the most
- * recent commit for every repo, indistinguishable from (and mistakable for) a
- * single synthetic upload-time commit. Root commit(s) via `rev-list
- * --max-parents=0` are the actual oldest point(s) in history; on histories
- * with multiple roots (e.g. merged unrelated histories), the earliest of
- * their dates is used.
- */
+
+
+
+
+
+
+
+
+
+
+
 function readFirstCommitAt(root: string): string | undefined {
   try {
     const rootShas = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], {
@@ -1595,8 +1594,8 @@ function patternListMatches(filePath: string, patterns: string[]): boolean {
   return patterns.some(pattern => globLikeMatches(filePath, pattern));
 }
 
-/** Same test as patternListMatches, but returns the first pattern that matched
- *  (for diagnostics) instead of a bare boolean. */
+
+
 function findMatchingPattern(filePath: string, patterns: string[]): string | undefined {
   return patterns.find(pattern => globLikeMatches(filePath, pattern));
 }

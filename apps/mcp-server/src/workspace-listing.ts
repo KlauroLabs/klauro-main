@@ -1,15 +1,15 @@
-/**
- * Narrowing, pagination, and compact projection for `list_workspace_analyses`
- * (and its alias `list_cross_codebase_analyses`).
- *
- * Same problem as the analysis listing: a machine accumulates hundreds of
- * workspace-analysis re-runs (this one has ~700, mostly repeated gauntlet runs
- * of a handful of real workspaces). The raw list blows the MCP budget and buries
- * the real workspaces in duplicates. This collapses re-runs to the richest entry
- * per workspace name by default, filters, and pages — deterministically.
- *
- * Pure and unit-tested; callers pass the already-loaded entries.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 
 export interface WorkspaceListEntry {
   id: string;
@@ -32,24 +32,24 @@ export type WorkspaceSort = 'repos' | 'recent' | 'name';
 export interface ListWorkspaceQuery {
   limit?: number;
   offset?: number;
-  /** Case-insensitive substring matched against workspace name AND id. */
+
   name?: string;
-  /** Keep only workspaces with at least this many member repos. */
+
   min_repos?: number;
-  /** Collapse re-runs to the richest entry per workspace name. Default 'name'. */
+
   dedupe_by?: 'name' | 'none';
-  /** Sort key. Default 'repos' (desc). */
+
   sort?: WorkspaceSort;
-  /** Compact projection (default true). */
+
   compact?: boolean;
-  /** Max member-repo names to include per workspace in the compact shape. */
+
   max_members?: number;
 }
 
 export interface CompactWorkspace {
   id: string;
   name: string;
-  /** Logical workspace, with the run-id/variant stamp stripped (e.g. 'soon'). */
+
   workspace: string;
   generated_at?: string;
   repo_count: number;
@@ -78,36 +78,36 @@ function clamp(n: number | undefined, def: number, max: number): number {
   return Math.max(1, Math.min(max, Math.floor(n)));
 }
 
-/**
- * Reduce a run-stamped workspace name to its logical workspace.
- * e.g. 'gauntlet-acme-mqnrvdut-qgek0' -> 'acme',
- *      'spot-acme-ai-quality-1781948679890' -> 'acme',
- *      'acme-workspace' -> 'acme'.
- * Runs of the same workspace must collapse to one entry; this is the key.
- */
+
+
+
+
+
+
+
 export function normalizeWorkspaceName(name: string): string {
   let n = (name || '').toLowerCase();
   n = n.replace(/^(?:gauntlet|spot)-/, '');
   n = n.replace(/-workspace$/, '');
-  // Drop a run-id stamp (-<base36ts>-<rand>) plus any trailing qualifier tokens
-  // (e.g. -exclude-proof), but only when the id portion contains a digit — real
-  // run-ids do; English multi-word names like 'finance-context' do not, so a
-  // legitimate name is never truncated.
+
+
+
+
   const stamp = n.match(/-([a-z0-9]{6,})-([a-z0-9]{4,})((?:-[a-z0-9]+)*)$/);
   if (stamp && typeof stamp.index === 'number') {
     const id = stamp[1] + stamp[2];
     const hasDigit = /\d/.test(id);
-    // Date.now().toString(36) is 8 chars this era; the random suffix is 5. An
-    // all-letter id of that exact shape is still a run stamp, not a name.
+
+
     const runIdShape = stamp[1].length === 8 && stamp[2].length === 5;
     if (hasDigit || runIdShape) n = n.slice(0, stamp.index);
   }
-  // A bare numeric timestamp stamp (-<digits>) plus trailing qualifiers.
+
   n = n.replace(/-\d{10,}(?:-[a-z0-9]+)*$/, '');
-  // drop an -ai-<variant> qualifier (spot-acme-ai-quality-...)
+
   n = n.replace(/-ai-[a-z0-9]+$/, '');
   n = n.replace(/-ai$/, '');
-  // collapse a doubled product token (acme-acme -> acme) only at the head
+
   const parts = n.split('-');
   if (parts.length >= 2 && parts[0] === parts[1]) n = parts.slice(1).join('-');
   return n || (name || '').toLowerCase();
@@ -130,8 +130,8 @@ function repoCount(entry: WorkspaceListEntry): number {
 }
 
 function dedupeByName(entries: WorkspaceListEntry[]): WorkspaceListEntry[] {
-  // Collapse re-runs of the same LOGICAL workspace (run-id stamp stripped),
-  // keeping the richest (most member repos); tie-break on newest.
+
+
   const best = new Map<string, WorkspaceListEntry>();
   for (const e of entries) {
     const key = normalizeWorkspaceName(e.name);

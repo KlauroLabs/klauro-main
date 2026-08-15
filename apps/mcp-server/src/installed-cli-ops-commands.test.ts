@@ -195,6 +195,21 @@ test('installed-cli.ts registers reset-password, change-password, and admin-mint
   }
 });
 
+test('the shipped uninstall command is idempotent and preserves customer data', () => {
+  const result = runInstalledCliSync(['uninstall', '--no-deregister', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout) as {
+    status: string;
+    registrations_removed: boolean;
+    data_preserved: boolean;
+    package_removal: string;
+  };
+  assert.equal(payload.status, 'uninstalled');
+  assert.equal(payload.registrations_removed, false);
+  assert.equal(payload.data_preserved, true);
+  assert.match(payload.package_removal, /npm uninstall/);
+});
+
 /** Synchronous form — safe only when the CLI needs no in-process server. */
 function runInstalledCliSync(args: string[]): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [shippedCli, ...args], { encoding: 'utf8', timeout: 60_000 });
@@ -365,6 +380,21 @@ test('an unrecognized flag is rejected by name, on every subcommand, instead of 
   const init = await runInstalledCli(['init', '--not-a-real-flag']);
   assert.notEqual(init.status, 0);
   assert.match(init.stdout + init.stderr, /Unknown option for `klauro init`: --not-a-real-flag/);
+});
+
+test('installed analyze accepts every option used by the product proof runner', async () => {
+  const result = await runInstalledCli([
+    'analyze',
+    packageRoot,
+    '--json',
+    '--quiet',
+    '--server-url',
+    'http://127.0.0.1:1',
+    '--analysis-focus',
+    'agent-fast',
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout + result.stderr, /Unknown option/);
 });
 
 test('an explicit path that does not exist, or is not a directory, fails with a clear message instead of proceeding', async () => {

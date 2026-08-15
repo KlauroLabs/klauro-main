@@ -1,20 +1,20 @@
-/**
- * Response-size bench for docs/SPEC-RESPONSE-BUDGET.md — asserts that the
- * DEFAULT (compact) response of the high-traffic onboarding tools stays
- * under its target byte budget on a genuinely large, already-analyzed repo.
- *
- * This does not call the analyzer engine or re-run analysis: it reads the
- * already-stored CAS for the given project path via getAnalysis (the same
- * path the MCP tools themselves use), then calls the same response
- * builders the tools call (query.buildSummary, semanticSearch,
- * agentProjectMap.resolveAgentAnalysis) with their default (compact)
- * options and measures the serialized JSON byte size.
- *
- * If no stored analysis exists for the target repo (e.g. a CI box that
- * never ran analyze_codebase against itself), the bench reports
- * `skipped: true` instead of failing — this is a size regression guard,
- * not a coverage requirement.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import { getAnalysis } from '../analyzer';
 import * as query from '../query';
@@ -40,32 +40,32 @@ export interface ResponseSizeBenchReport {
   results: ResponseSizeResult[];
 }
 
-// Targets from docs/SPEC-RESPONSE-BUDGET.md §4 ("New default target"),
-// converted from the ~4-bytes-per-token estimate used throughout that spec.
+
+
 export const RESPONSE_SIZE_BUDGETS: ResponseSizeBudget[] = [
-  // 1500 tok was the original §4 target; raised twice for deliberate signal
-  // additions to buildSummary: +50 tok for the honest-AI-state fields
-  // (ai_enrichment status / ai_enrichment_error — degraded-but-final vs
-  // still-populating), then +150 tok for the flow-layer wave (per-layer
-  // status objects, capability↔flow linkage, semantic-role fields; measured
-  // 6,482B on the bench fixture). The bench guards order-of-magnitude bloat
-  // (the pre-cap get_flow_concepts was ~467k tok), not accretion of signal.
+
+
+
+
+
+
+
   { tool: 'get_summary', budget_bytes: 1700 * 4 },
   { tool: 'search_nodes', budget_bytes: 1000 * 4 },
   { tool: 'resolve_agent_analysis', budget_bytes: 1000 * 4 },
-  // get_flow_concepts had NO default cap on flows returned (one per entry
-  // point) — measured 1,133 flows / ~1.87MB / ~467k tokens on this repo
-  // before query.ts's DEFAULT_MAX_FLOWS=15 fix. 15 capped flows measure
-  // ~14.2k tokens on this repo (each flow carries a full I/L/S/O contract
-  // per flow AND per step, so this is real signal, not filler). Raised
-  // 16000->16500 tok for the semantic-model wave: the significance-first
-  // flow window (task #15) fills the default window with REAL flows instead
-  // of trivial test-entry flows, and each carries the C1 step_graph + D2
-  // reframed flow contract — measured 64,192B compact (the heavy
-  // facet_provenance/code_mappings tiers are already elided from the compact
-  // projection; detail:'full' carries them). The bench still catches any
-  // regression back toward "all entry points" by default (a regression would
-  // blow past this by 1-2 orders of magnitude, not marginally).
+
+
+
+
+
+
+
+
+
+
+
+
+
   { tool: 'get_flow_concepts', budget_bytes: 16500 * 4 },
 ];
 
@@ -88,22 +88,22 @@ export async function runResponseSizeBench(projectPath: string): Promise<Respons
 
   const results: ResponseSizeResult[] = [];
 
-  // get_summary — default (no detail passed) is compact.
+
   const summary = query.buildSummary(cas);
   results.push(budgetResult('get_summary', byteSize(summary)));
 
-  // search_nodes — default mode is hybrid, default detail is compact.
+
   const search = await semanticSearch(projectPath, 'orchestrator analysis', {
     getCas: async () => cas,
   });
   results.push(budgetResult('search_nodes', byteSize(search)));
 
-  // resolve_agent_analysis — default detail is compact.
+
   const resolved = await agentProjectMap.resolveAgentAnalysis({ path: projectPath });
   results.push(budgetResult('resolve_agent_analysis', byteSize(resolved)));
 
-  // get_flow_concepts — default (no maxFlows passed) must stay capped at
-  // DEFAULT_MAX_FLOWS, not silently return one flow per entry point.
+
+
   const flowConcepts = query.getFlowConcepts(cas, {});
   results.push(budgetResult('get_flow_concepts', byteSize(flowConcepts)));
 

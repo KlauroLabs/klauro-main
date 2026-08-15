@@ -39,11 +39,6 @@ const SUPPORTED_EXTENSIONS = [
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'java', 'cs', 'go', 'rs', 'php', 'rb', 'dart', 'vue', 'tf',
 ];
 
-function repeatToBytes(line: string, targetBytes: number): string {
-  const chunk = `${line}\n`;
-  const count = Math.ceil(targetBytes / Buffer.byteLength(chunk));
-  return chunk.repeat(count);
-}
 
 async function writeLargeFile(filePath: string, chunk: Buffer | string, totalBytes: number): Promise<void> {
   const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -465,14 +460,13 @@ async function storedAnalysisFileExists(storageDir: string): Promise<boolean> {
 }
 
 function runIncrementalInChild(projectDir: string, outFile: string, options: IncrementalRunOptions): Promise<IncrementalRunResult> {
-  const tsxBin = path.join(APP_DIR, 'node_modules', '.bin', 'tsx');
   const scriptPath = path.join(APP_DIR, 'src', 'robustness-battery.ts');
   const startedAt = Date.now();
 
   return new Promise(resolve => {
     const child = spawn(
-      tsxBin,
-      [scriptPath, '--run-incremental', projectDir, '--out', outFile],
+      process.execPath,
+      ['--import', 'tsx', scriptPath, '--run-incremental', projectDir, '--out', outFile],
       {
         cwd: APP_DIR,
         env: {
@@ -634,14 +628,13 @@ interface ChildResult {
 }
 
 function runCaseInChild(caseDir: string, outFile: string): Promise<ChildResult> {
-  const tsxBin = path.join(APP_DIR, 'node_modules', '.bin', 'tsx');
   const scriptPath = path.join(APP_DIR, 'src', 'robustness-battery.ts');
   const startedAt = Date.now();
 
   return new Promise(resolve => {
     const child = spawn(
-      'gtimeout',
-      ['--kill-after=15', String(CASE_TIMEOUT_SECONDS), tsxBin, scriptPath, '--run-case', caseDir, '--out', outFile],
+      process.execPath,
+      ['--import', 'tsx', scriptPath, '--run-case', caseDir, '--out', outFile],
       {
         cwd: APP_DIR,
         env: {
@@ -657,16 +650,23 @@ function runCaseInChild(caseDir: string, outFile: string): Promise<ChildResult> 
     );
 
     let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, CASE_TIMEOUT_SECONDS * 1000);
     child.stderr.on('data', chunk => {
       if (stderr.length < 1024 * 1024) stderr += chunk.toString();
     });
     child.on('error', error => {
+      clearTimeout(timer);
       resolve({ exitCode: null, timedOut: false, durationMs: Date.now() - startedAt, stderr: String(error) });
     });
     child.on('close', code => {
+      clearTimeout(timer);
       resolve({
         exitCode: code,
-        timedOut: code === 124 || code === 137,
+        timedOut,
         durationMs: Date.now() - startedAt,
         stderr,
       });
@@ -691,6 +691,8 @@ async function evaluateCase(fuzzCase: FuzzCase, result: ChildResult, outFile: st
 
   if (result.timedOut) {
     failures.push(`timed out after ${CASE_TIMEOUT_SECONDS}s (exit ${result.exitCode})`);
+  } else if (result.exitCode === null) {
+    failures.push(`failed to start analyzer child: ${result.stderr.slice(0, 400)}`);
   } else if (result.exitCode !== 0) {
     failures.push(`exited with code ${result.exitCode}`);
   }
@@ -773,8 +775,8 @@ function formatReport(verdicts: CaseVerdict[]): string {
 }
 
 async function runChildCase(caseDir: string, outFile: string): Promise<void> {
-  const { analyzeForBench } = await import('./gauntlet/product-analysis');
-  const cas = await analyzeForBench(caseDir);
+  const { analyzeProject } = await import('./analyzer');
+  const cas = await analyzeProject(caseDir);
   await fs.writeFile(outFile, JSON.stringify(cas));
 }
 

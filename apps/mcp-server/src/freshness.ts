@@ -3,12 +3,12 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { getRepoRevision, compareRevision, type RevisionMatch } from './revision';
 
-// The glob-backed, full-source-tree freshness scan (getAnalysisFreshness) and
-// its AnalysisFreshnessReport type live in ./analysis-freshness-deep, NOT
-// here: `glob` alone pulls in minimatch + path-scurry + lru-cache + minipass
-// + graceful-fs (~240KB bundled). summarizeAnalysisFreshness below (used by
-// `klauro status`, including in the installed customer client) is git-diff
-// + mtime based and must stay glob-free — see that file's header comment.
+
+
+
+
+
+
 
 export type FreshnessStatus = 'fresh' | 'stale' | 'no-analysis';
 
@@ -19,13 +19,13 @@ export interface RevisionFreshness {
   recommendation: string;
 }
 
-/**
- * Revision-accurate freshness: compares the stored analysis's commit SHA (stamped at
- * save time) against the current working copy. This is exact where the mtime heuristic
- * is approximate, and is the basis for never-stale, read-through caching. `behind`
- * means the cache should fetch the current revision from the VPS. See revision.ts and
- * docs/KLAURO-PRODUCT-MODEL.md.
- */
+
+
+
+
+
+
+
 export function revisionFreshness(projectPath: string, analyzedCommit: string | null | undefined): RevisionFreshness {
   const current = getRepoRevision(projectPath);
   const match = compareRevision(analyzedCommit, current);
@@ -111,15 +111,15 @@ function collectGitCandidates(projectPath: string, analyzedAtIso: string): { cha
   const changed = new Set<string>();
   const deleted = new Set<string>();
 
-  // `-uall` (as opposed to the default `-unormal`) makes git enumerate every
-  // untracked FILE individually instead of collapsing a brand-new, entirely
-  // untracked directory into a single `?? some/new/dir/` line. Without this, a
-  // freshly-added module (e.g. a new coordination/ directory with new source
-  // files, none of them tracked yet) is invisible to isSourceLikeFile below —
-  // it only ever sees the directory path, which has no recognized extension —
-  // and the freshness summary silently reports "fresh" even though a whole new
-  // module was just added. This was a real gap: added files were only picked
-  // up once at least one file in the new directory had been staged/tracked.
+
+
+
+
+
+
+
+
+
   for (const line of runGit(projectPath, ['status', '--porcelain', '-uall']).split('\n')) {
     if (line.length < 4) continue;
     const status = line.slice(0, 2);
@@ -298,6 +298,3 @@ export function summarizeAnalysisFreshness(projectPath: string, analyzedAt: stri
   freshnessSummaryCache.set(cacheKey, { computed_at: Date.now(), value: summary });
   return summary;
 }
-
-// getAnalysisFreshness (glob-backed full-tree scan) lives in
-// ./analysis-freshness-deep — see this file's header comment.

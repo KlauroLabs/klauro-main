@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   scopeCasToSubCasNode,
   getCachedDeployableAnalyses,
-  buildDeployableAnalyses,
 } from './deployable-analysis';
 import * as query from './query';
 import { buildCrossCodebaseSystemGraph, type CrossCodebaseInput } from './cross-codebase-analysis';
@@ -147,6 +146,21 @@ test('getCachedDeployableAnalyses: repeat calls on the same analysis_id reuse th
   assert.notEqual(first, third);
 });
 
+test('getCachedDeployableAnalyses does not retain results above the configured reference budget', () => {
+  const previousBudget = process.env.KLAURO_SUB_CAS_CACHE_REFERENCE_BUDGET;
+  process.env.KLAURO_SUB_CAS_CACHE_REFERENCE_BUDGET = '0';
+  try {
+    const cas = buildPromotedCas('sub-cas-node-scope-uncached-large-result');
+    const first = getCachedDeployableAnalyses(cas);
+    const second = getCachedDeployableAnalyses(cas);
+    assert.notEqual(first, second);
+    assert.deepEqual(first.sub_cas_nodes, second.sub_cas_nodes);
+  } finally {
+    if (previousBudget === undefined) delete process.env.KLAURO_SUB_CAS_CACHE_REFERENCE_BUDGET;
+    else process.env.KLAURO_SUB_CAS_CACHE_REFERENCE_BUDGET = previousBudget;
+  }
+});
+
 test('search_nodes contract: scoped search only returns nodes inside the unit\'s reachability closure', () => {
   const cas = buildPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
@@ -170,7 +184,7 @@ test('search_nodes contract: scoped search only returns nodes inside the unit\'s
 test('scopeCasToSubCasNode: unknown sub_cas_node_id throws a helpful error naming available units', () => {
   const cas = buildPromotedCas();
   assert.throws(
-    () => scopeCasToSubCasNode(cas, { sub_cas_node_id: 'das:does-not-exist' }),
+    () => scopeCasToSubCasNode(cas, { sub_cas_node_id: 'cas:does-not-exist' }),
     (error: Error) => {
       assert.match(error.message, /Unknown scope\.sub_cas_node_id/);
       assert.match(error.message, /api/);
@@ -192,7 +206,7 @@ test('scopeCasToSubCasNode: non-promoted repo reports WHY (not just an empty lis
 
   assert.equal(scopeCasToSubCasNode(cas, undefined), cas);
   assert.throws(
-    () => scopeCasToSubCasNode(cas, { sub_cas_node_id: 'das:anything' }),
+    () => scopeCasToSubCasNode(cas, { sub_cas_node_id: 'cas:anything' }),
     /has not promoted any sub-CAS nodes/
   );
 });

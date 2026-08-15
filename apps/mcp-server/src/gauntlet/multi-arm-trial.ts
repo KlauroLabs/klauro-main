@@ -1,25 +1,25 @@
-/**
- * Multi-arm live trial — runs N arms through the SAME real measurement path.
- *
- * The two-arm pair (runLiveAgentPair) proves Klauro vs the grep/read baseline.
- * To prove "Klauro beats every other indexer too", we need the competitor arms
- * (ctags, embeddings/RAG, Cursor-style lexical index) to run as real agents with
- * their retrieval injected — not projected. This module generalizes the pair's
- * per-arm runner to an arbitrary arm set, reusing the exact engine internals
- * (copyRepo, runShell, diffStats, readMetricFile, the prompt builders) so every
- * arm is measured identically. No parallel, divergent measurement path.
- *
- * Arm shapes:
- *  - klauro:     gets a precomputed agent context (promptWithKlauro).
- *  - no-tools:   bare baseline (promptWithoutKlauro, no candidates).
- *  - competitor: promptWithoutKlauro + the arm's retrieval backend ranked
- *                candidates injected as withoutArmRetrievedFiles, and the
- *                backend's index time folded into the arm's wall-clock.
- *
- * Quality is scored UNIFORMLY across arms (scoreArmQuality) from measured
- * execution signals so the comparison is fair; when an external judge command is
- * supplied it overrides the proxy. This is deliberately conservative for Klauro.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -39,9 +39,9 @@ export type ArmKind = 'klauro' | 'no-tools' | 'competitor';
 export interface ArmRunSpec {
   id: string;
   kind: ArmKind;
-  /** Launch command template; klauro arm uses the Klauro-enabled launcher. */
+
   command: string;
-  /** Retrieval backend for competitor arms (injects ranked candidates). */
+
   retrieval?: RetrievalBackend;
 }
 
@@ -49,16 +49,16 @@ export interface ArmMeasurement {
   arm_id: string;
   attempted: boolean;
   status: 'pass' | 'warn' | 'fail';
-  duration_ms: number;          // includes retrieval index time for competitors
-  agent_ms: number;             // agent run only
-  index_ms: number;             // retrieval build/query time (0 for klauro/no-tools)
+  duration_ms: number;
+  agent_ms: number;
+  index_ms: number;
   provider_total_tokens?: number;
   estimated_work_tokens: number;
-  tokens: number;               // best available token figure (lower = better)
+  tokens: number;
   token_source: 'provider-total' | 'estimated-work';
-  quality: number;              // 0..100, judged when a judge is enabled, else proxy
+  quality: number;
   quality_source?: 'judge' | 'execution-proxy';
-  judge?: string;               // which judge produced the score, when judged
+  judge?: string;
   command_passed: boolean;
   validation_passed?: boolean;
   task_success?: boolean;
@@ -76,15 +76,15 @@ export interface MultiArmTrialResult {
   arms: ArmMeasurement[];
 }
 
-/**
- * Uniform per-arm quality proxy from measured execution signals (0..100).
- *
- * For tasks with a validation command, passing tests dominates. For
- * understanding tasks (no validation), we fall back to whether the agent
- * completed cleanly plus its self-reported quality and change discipline. This
- * is intentionally modest for Klauro so the win-validator stays a real test; a
- * configured judge command should override it for headline numbers.
- */
+
+
+
+
+
+
+
+
+
 export function scoreArmQuality(m: {
   command_passed: boolean;
   validation_passed?: boolean;
@@ -96,21 +96,21 @@ export function scoreArmQuality(m: {
 }): number {
   if (m.error) return 5;
   let score = 0;
-  // Clean execution.
+
   score += m.command_passed ? 25 : 0;
-  // Validation (when present) is the strongest signal.
+
   if (m.validation_passed === true) score += 35;
   else if (m.validation_passed === false) score += 0;
-  else score += 18; // no validation available — neutral-positive
-  // Task self-assessment of success.
+  else score += 18;
+
   if (m.task_success === true) score += 15;
-  // Self-reported quality 0..10 -> 0..15.
+
   if (typeof m.self_reported_quality === 'number') {
     score += Math.max(0, Math.min(15, (m.self_reported_quality / 10) * 15));
   } else {
     score += 7;
   }
-  // Change discipline: made a focused change (not zero, not sprawling).
+
   if (m.files_changed > 0 && m.files_changed <= 8) score += 10;
   else if (m.files_changed === 0) score += 4;
   return Math.round(Math.max(0, Math.min(100, score)));
@@ -122,7 +122,7 @@ function statusOf(commandPassed: boolean, validationPassed?: boolean): 'pass' | 
   return validationPassed === undefined ? 'warn' : 'pass';
 }
 
-/** Run one arm and return its measurement. Never throws. */
+
 async function runArm(
   input: LiveAgentPairInput,
   arm: ArmRunSpec,
@@ -144,8 +144,8 @@ async function runArm(
   try {
     await _copyRepo(input.repoPath, workspace);
 
-    // Competitor arms: run their retrieval backend against the task and inject
-    // the ranked candidates into the prompt. Index time counts against the arm.
+
+
     let armInput = input;
     if (arm.kind === 'competitor' && arm.retrieval) {
       const query = `${input.taskLabel}\n${input.expectedOutcome}`;
@@ -200,14 +200,14 @@ async function runArm(
       command_passed: commandPassed, validation_passed: validationPassed, task_success: taskSuccess,
       self_reported_quality: selfQuality, files_changed: diff.files, retrieved_files: retrievedCount,
     });
-    // Prefer an LLM judge of the arm's actual answer when one is enabled; the
-    // judge scores the RESULT against the expected outcome, making quality
-    // measured rather than inferred. Falls back to the execution proxy.
+
+
+
     let quality = proxyQuality;
     let qualitySource: 'judge' | 'execution-proxy' = 'execution-proxy';
     let judgeLabel: string | undefined;
     let resultText = '';
-    try { resultText = await fs.readFile(resultFile, 'utf8'); } catch { /* none */ }
+    try { resultText = await fs.readFile(resultFile, 'utf8'); } catch {   }
     resultText = `${resultText}\n${(result.stdout || '').slice(-2000)}`.trim();
     const verdict = await judgeQuality({
       task: input.taskLabel,
@@ -251,7 +251,7 @@ async function runArm(
       agent_ms: 0,
       index_ms: indexMs,
       estimated_work_tokens: 0,
-      tokens: Number.MAX_SAFE_INTEGER, // worst on the efficiency axis
+      tokens: Number.MAX_SAFE_INTEGER,
       token_source: 'estimated-work',
       quality: 5,
       command_passed: false,
@@ -261,7 +261,7 @@ async function runArm(
   }
 }
 
-/** Run an arm set against one task; arms run sequentially to bound machine load. */
+
 export async function runMultiArmTrial(
   input: LiveAgentPairInput,
   arms: ArmRunSpec[],

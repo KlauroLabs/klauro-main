@@ -1,19 +1,19 @@
-/**
- * Coverage-intelligence sweep: run the codebase-TYPE classifier + coverage-gap
- * self-discovery (see packages/analyzer-core/src/analyzer/core/codebase-type.ts
- * and coverage-gaps.ts) across a broad sample of real ~/dev repos, and produce
- * the empirical "what are we behind on" map: docs/COVERAGE-INTELLIGENCE.md.
- *
- * BLACKBOX RULE (same as corpus-sweep.ts): this script calls analyzeForBench()
- * (./product-analysis.ts) — the product's own analyzer-server over HTTP — and
- * never imports the orchestrator/engine internals directly, never sets an
- * AI/model env var. codebase_type / coverage_gaps are read straight off the
- * CASOutput the product already attaches them to.
- *
- * Run: npx tsx apps/mcp-server/src/gauntlet/coverage-intel-sweep.ts
- *   COVERAGE_SWEEP_ROOT=~/dev            (default)
- *   COVERAGE_SWEEP_MAX_PROJECTS=40        (cap on discovered projects)
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as os from 'os';
@@ -46,16 +46,16 @@ async function manifestsIn(dir: string): Promise<string[]> {
   } catch {
     return [];
   }
-  // .sln BEFORE .csproj: a solution dir is ONE project boundary — without this,
-  // a 28-project .NET solution (e.g. soon/Finance-Context) eats 28 discovery
-  // slots as separate "repos" and skews any corpus-wide sweep.
+
+
+
   return entries.filter(e => MANIFEST_NAMES.includes(e) || e.endsWith('.sln') || e.endsWith('.csproj'));
 }
 
 async function discover(root: string, maxDepth = 3, maxProjects = 40): Promise<DiscoveredEntry[]> {
   const projects: DiscoveredEntry[] = [];
-  // COVERAGE_SWEEP_SKIP: comma-separated dir basenames to exclude (known-huge
-  // repos that would eat the whole per-repo timeout budget).
+
+
   const skipNames = new Set((process.env.COVERAGE_SWEEP_SKIP || '').split(',').map(s => s.trim()).filter(Boolean));
 
   async function walk(dir: string, depth: number): Promise<void> {
@@ -97,17 +97,17 @@ interface RepoResult {
   codebaseTypes?: Array<{ type: string; confidence: number }>;
   entryPointCount?: number;
   gaps?: CASCoverageGap[];
-  /** Depth capture (corpus-depth sweep): per-layer firing facts for the
-   *  v1.0.21-28 layers so breadth-vs-depth debt is measurable per repo. */
+
+
   depth?: RepoDepthCapture;
 }
 
-/** Per-repo capture of the v1.0.21-28 layer outputs, read straight off the
- *  CASOutput the product returns (blackbox — no engine imports). */
+
+
 interface RepoDepthCapture {
-  /** communication_seams inventory counts (sync/async/passive/total), or null when the layer did not run. */
+
   seams: { sync: number; async: number; passive: number; total: number } | null;
-  /** consistency-model counts + how many store egresses got a posture. */
+
   consistency: {
     passive_replica: number;
     passive_streaming: number;
@@ -116,14 +116,14 @@ interface RepoDepthCapture {
     tunable_stores: number;
     store_consistency: number;
   } | null;
-  /** product_map.runtime_topology: deployables + infra->code edge count. */
+
   topology: { deployables: number; edge_count: number } | null;
-  /** ci_pipeline / ci_job node counts. */
+
   ci: { pipelines: number; jobs: number };
-  /** nodes_created per analyzer_id, for EVERY analyzer that contributed —
-   *  the honest layer-firing record (0-node contributions included). */
+
+
   analyzer_nodes: Record<string, number>;
-  /** analysis_errors grouped by analyzer (degraded-analyzer signal). */
+
   errors: Array<{ analyzer?: string; severity: string; code: string; message: string }>;
   test_suites: number;
   exit_points: number;
@@ -295,10 +295,10 @@ ${crashed.length > 0 ? `## Crashed (${crashed.length})\n\n${crashed.map(r => `- 
 async function main() {
   const root = process.env.COVERAGE_SWEEP_ROOT || path.join(os.homedir(), 'dev');
   const maxProjects = Number(process.env.COVERAGE_SWEEP_MAX_PROJECTS || '40');
-  // Depth mode (corpus-depth sweep): resumable, writes raw per-repo JSON (incl.
-  // the depth capture) to COVERAGE_SWEEP_STATE instead of regenerating
-  // docs/COVERAGE-INTELLIGENCE.md. The analysis doc (docs/CORPUS-DEPTH-SWEEP.md)
-  // is authored from that JSON, not auto-rendered.
+
+
+
+
   const depthMode = process.env.COVERAGE_SWEEP_DEPTH === '1';
   const statePath = process.env.COVERAGE_SWEEP_STATE || path.join(os.tmpdir(), 'corpus-depth-sweep-state.json');
 

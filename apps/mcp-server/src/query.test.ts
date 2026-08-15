@@ -283,7 +283,7 @@ test('getFlowConcepts serializes capability_relationships and upgrades infrastru
         exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
       },
     ],
-    system_capabilities: [
+    capabilities: [
       {
         id: 'cap_orders', name: 'Order Management', description: 'Orders', category: 'core',
         operations: [{ entry_point_id: 'ep_create', entry_point_type: 'http', action: 'create' }],
@@ -561,7 +561,7 @@ test('getConfiguration(affecting_node_id) returns no env vars for a node with no
 // codebase was summarized as languages [shell,html,css,glimmer] with 3 entities,
 // because buildSummary read node.metadata.language (which the TS analyzer never
 // stamps) and cas.database_schema.entities (a narrow ORM/DDL view) instead of the
-// byte-ranked system.technologies.languages and the full cas.data_entities.
+// byte-ranked system.technologies.languages and the full cas.entities.
 function buildTwoSourceCas(): any {
   const nodes: any[] = [];
   // 40 primary TS product nodes that carry isTypeScript/extension but NOT a
@@ -600,7 +600,7 @@ function buildTwoSourceCas(): any {
       },
     },
     // Full domain-entity extraction (Camp-B): 202 in production; 5 representative here.
-    data_entities: [
+    entities: [
       { id: 'e1', name: 'Macd' }, { id: 'e2', name: 'BollingerBands' },
       { id: 'e3', name: 'RiskMetrics' }, { id: 'e4', name: 'AssetAnalysis' },
       { id: 'e5', name: 'OracleFeedMapping' },
@@ -619,19 +619,19 @@ test('buildSummary reports the byte-ranked primary language, not trailing markup
     `primary language must not be a trailing markup/shell file: ${JSON.stringify(summary.languages)}`);
 });
 
-test('buildSummary surfaces the full domain-entity set (data_entities), not the narrow database_schema view', () => {
+test('buildSummary surfaces the full domain-entity set (entities), not the narrow database_schema view', () => {
   const summary: any = buildSummary(buildTwoSourceCas(), { detail: 'compact' });
   assert.equal(summary.database_entities.length, 5,
-    `expected the 5 data_entities, got ${summary.database_entities.length}: ${JSON.stringify(summary.database_entities)}`);
+    `expected the 5 entities, got ${summary.database_entities.length}: ${JSON.stringify(summary.database_entities)}`);
   assert.ok(summary.database_entities.includes('Macd'),
     'domain entities (Macd, BollingerBands, ...) must be present, not just the 3 ORM entities');
   assert.ok(!summary.database_entities.includes('StrategyAlert') || summary.database_entities.length > 3,
     'must not collapse to the 3-entity database_schema view');
 });
 
-test('buildSummary falls back to database_schema entities only when data_entities is absent', () => {
+test('buildSummary falls back to database_schema entities only when entities is absent', () => {
   const cas = buildTwoSourceCas();
-  cas.data_entities = [];
+  cas.entities = [];
   const summary: any = buildSummary(cas, { detail: 'compact' });
   assert.deepEqual(summary.database_entities, ['Strategy', 'StrategyExecution', 'StrategyAlert']);
 });
@@ -642,9 +642,9 @@ test('buildSummary falls back to database_schema entities only when data_entitie
 // database_entities: [] even though the repo's own AI description named those
 // entities. The summary must surface entity-KIND nodes as the last-resort
 // source — without inflating plain structs/classes/DTOs in.
-test('buildSummary surfaces entity-kind nodes when data_entities and database_schema are both empty', () => {
+test('buildSummary surfaces entity-kind nodes when entities and database_schema are both empty', () => {
   const cas = buildTwoSourceCas();
-  cas.data_entities = [];
+  cas.entities = [];
   cas.database_schema = { entities: [] };
   cas.nodes.push(
     { id: 'ent1', name: 'NotificationModel', type: 'model', source: { file: 'bin/agent/src/notify.rs', line: 3 } },
@@ -699,7 +699,7 @@ test('buildSummary surfaces a terminal ai_enrichment error with its rejection re
 // never lead: supporting/admin rank strictly below core, internal is excluded.
 test('buildSummary top_capabilities is never led by supporting/admin plumbing', () => {
   const cas = buildTwoSourceCas();
-  cas.system_capabilities = [
+  cas.capabilities = [
     {
       id: 'c1', name: 'Deletes Profile data', category: 'supporting', criticality: 'high',
       operations: [{}, {}, {}], related_entities: [], related_domains: ['profile'],

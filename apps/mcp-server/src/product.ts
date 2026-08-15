@@ -135,7 +135,7 @@ export interface RuntimeEventInput {
   method?: string;
   route?: string;
   path?: string;
-  /** For `exit` (outbound) events: the external endpoint/target the call hit. */
+
   endpoint?: string;
   target?: string;
   status_code?: number;
@@ -147,17 +147,17 @@ export interface RuntimeEventInput {
 
 export interface RuntimeImpactStats {
   observations: number;
-  /** Traffic: total request-like events (volume-weighted), i.e. throughput. */
+
   request_count: number;
   errors: number;
-  /** Error count as a volume-weighted total (errors * volume). */
+
   error_count: number;
   slow_events: number;
   estimated_volume: number;
   traces: number;
-  /** ISO timestamp of the most recent observation in this group. */
+
   last_seen?: string;
-  /** Count of observations per HTTP status code, e.g. { "200": 12, "500": 3 }. */
+
   status_code_distribution: Record<string, number>;
   latency: {
     avg_ms?: number;
@@ -172,14 +172,8 @@ export interface RuntimeImpactStats {
   };
 }
 
-/**
- * Per-node operational metrics: the "how is this node behaving at runtime"
- * rollup keyed to a CAS static id. Traffic (request_count / throughput),
- * reliability (error_count / error_rate + status distribution), and speed
- * (latency percentiles), correlated back to the CAS node / entry point / route.
- */
 export interface NodeRuntimeMetrics {
-  /** CAS static id (node, entry point, exit point, call chain, or runtime link). */
+
   static_id: string;
   node_id?: string;
   entry_point_id?: string;
@@ -188,14 +182,14 @@ export interface NodeRuntimeMetrics {
   file?: string;
   route?: string;
   method?: string;
-  /** Traffic (throughput). */
+
   request_count: number;
   throughput_per_min?: number;
-  /** Reliability. */
+
   error_count: number;
   error_rate: number;
   status_code_distribution: Record<string, number>;
-  /** Speed. */
+
   latency: RuntimeImpactStats['latency'];
   slow_events: number;
   observations: number;
@@ -421,7 +415,7 @@ function answerData(cas: CASOutput) {
   const invariants = getBehavioralInvariants(cas, { invariantType: 'tenant-scope', limit: 10 });
   const hasData = dataEntities.total > 0 || databaseExits.total > 0 || Boolean(cas.database_schema?.entities?.length);
   return answer('data', {
-    data_entities: dataEntities,
+    entities: dataEntities,
     database_schema: cas.database_schema || null,
     database_exit_points: databaseExits,
     behavioral_invariants: invariants,
@@ -662,24 +656,6 @@ export function buildCrossRepoRouteDrift(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Cross-repo, field-level contract drift.
-//
-// buildCrossRepositoryLinks already fuses a consumer fetch in one repo to the
-// provider route in another (the seam). buildCrossRepoContractDrift goes one
-// layer deeper: at a confirmed seam it resolves the typed data-shape on EACH
-// side (from each repo's deterministically-extracted data_entities, which carry
-// {name, type} per field) and diffs them field-by-field. A field whose type
-// changed, was renamed, or was dropped between producer and consumer is a
-// contract drift at the seam. This is a workspace-level-CAS capability: a single-repo
-// indexer never sees both shapes at once, so it cannot compute the diff.
-//
-// Honest capability boundary: field NAMES and field TYPES are sourced from the
-// data_entities the analyzer already emits for class/model/entity declarations
-// and DTO-like interface/type declarations. Non-DTO interfaces still contribute
-// no shape (no fabricated drift).
-// ---------------------------------------------------------------------------
-
 export type ContractDriftKind = 'type-changed' | 'field-renamed' | 'field-removed' | 'field-added';
 
 export interface ContractFieldDrift {
@@ -708,7 +684,7 @@ interface EntityShape {
 
 function entityShapes(cas: CASOutput): EntityShape[] {
   const shapes: EntityShape[] = [];
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     if (!entity.fields || entity.fields.length === 0) continue;
     const fields = new Map<string, { type: string; sensitive: boolean }>();
     for (const field of entity.fields) {
@@ -719,14 +695,13 @@ function entityShapes(cas: CASOutput): EntityShape[] {
   return shapes;
 }
 
-/** Singularize the last meaningful segment of a route to a candidate entity name. */
 function contractNameFromRoute(route: string): string | undefined {
   const segments = routeSegments(normalizeRoute(route)).filter(
     seg => seg && seg !== 'api' && !/^v\d+$/.test(seg) && seg !== ':param' && !seg.startsWith(':')
   );
   const noun = segments[segments.length - 1];
   if (!noun) return undefined;
-  // accounts -> account, entries -> entry, addresses -> address
+
   if (/ies$/i.test(noun)) return noun.replace(/ies$/i, 'y');
   if (/(s|sh|ch|x|z)es$/i.test(noun)) return noun.replace(/es$/i, '');
   if (/s$/i.test(noun) && !/ss$/i.test(noun)) return noun.replace(/s$/i, '');
@@ -748,9 +723,7 @@ function diffShapes(producer: EntityShape, consumer: EntityShape): ContractField
   for (const [name, producerField] of producer.fields) {
     const consumerField = consumer.fields.get(name);
     if (!consumerField) {
-      // Field exists on producer but not consumer. Distinguish a rename (a
-      // consumer-only field whose type matches an unmatched producer field) from
-      // an outright removal, so we report the more specific kind.
+
       drift.push({ field: name, producer_type: producerField.type, kind: 'field-removed' });
       continue;
     }
@@ -773,8 +746,6 @@ function diffShapes(producer: EntityShape, consumer: EntityShape): ContractField
     drift.push({ field: name, consumer_type: consumerField.type, kind: 'field-added' });
   }
 
-  // Promote removed+added pairs that share a type into a rename, which is the
-  // truer description of what changed at the seam.
   const removed = drift.filter(d => d.kind === 'field-removed');
   const added = drift.filter(d => d.kind === 'field-added');
   for (const r of removed) {
@@ -817,8 +788,7 @@ export function buildCrossRepoContractDrift(
 
     const producerShape = matchShapeByName(entityShapes(producer.cas), contract);
     const consumerShape = matchShapeByName(entityShapes(consumer.cas), contract);
-    // Field-level drift needs a typed shape on BOTH sides. If either side did not
-    // surface a typed entity for this contract, we cannot honestly diff it.
+
     if (!producerShape || !consumerShape) continue;
 
     const drift = diffShapes(producerShape, consumerShape);
@@ -1320,7 +1290,7 @@ const ENTITY_NODE_TYPES = new Set(['class', 'interface', 'type', 'enum', 'model'
 
 function entityVocabulary(cas: CASOutput): Array<{ name: string; nodeIds: string[] }> {
   const names = new Map<string, string>();
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     if (isGenericEntityName(entity.name)) continue;
     names.set(entity.name.toLowerCase(), entity.name);
   }
@@ -1575,7 +1545,7 @@ export function buildCrossRepoJourneys(
     const strongServices = serviceCandidates.filter(name => /(service|manager|provider|handler)(interface)?$/i.test(name));
     const services = (strongServices.length > 0 ? strongServices : serviceCandidates).slice(0, 5);
 
-    const entityNames = new Set((provider.cas.data_entities || []).map(entity => entity.name.toLowerCase()));
+    const entityNames = new Set((provider.cas.entities || []).map(entity => entity.name.toLowerCase()));
     const importedEntities = [...new Set(handlerImports
       .map(node => qualifiedImportName(node) || node.name)
       .filter(name => /\\entity\\|\\model\\/i.test(name))
@@ -1636,7 +1606,7 @@ function handlerFileBase(file?: string): string | undefined {
 }
 
 function routeResourceEntities(routePath: string, cas: CASOutput): string[] {
-  const entityByKey = new Map((cas.data_entities || []).map(entity => [entity.name.toLowerCase(), entity.name]));
+  const entityByKey = new Map((cas.entities || []).map(entity => [entity.name.toLowerCase(), entity.name]));
   if (entityByKey.size === 0) return [];
   const segments = routePath.toLowerCase().split('/')
     .filter(segment => segment && !segment.startsWith(':') && !segment.startsWith('{') && !segment.startsWith('$'));
@@ -1835,13 +1805,13 @@ export function runtimeImpactStats(items: RuntimeObservation[]): RuntimeImpactSt
   const estimatedVolume = items.reduce((total, item) => total + volumeOf(item), 0);
   const traces = new Set(items.map(item => item.event.trace_id).filter(Boolean)).size;
   const errorVolume = items.reduce((total, item) => total + (isErrorItem(item) ? volumeOf(item) : 0), 0);
-  // last_seen: newest observation timestamp in this group.
+
   let lastSeen: string | undefined;
   for (const item of items) {
     const ts = item.event.timestamp || item.recorded_at;
     if (ts && (!lastSeen || ts > lastSeen)) lastSeen = ts;
   }
-  // status-code distribution (volume-weighted, so pre-aggregated events count fully).
+
   const statusDistribution: Record<string, number> = {};
   for (const item of items) {
     const code = item.event.status_code;
@@ -1889,13 +1859,6 @@ function percentile(sortedValues: number[], p: number): number {
   return sortedValues[index];
 }
 
-/**
- * Aggregate runtime observations into per-node operational metrics: traffic,
- * error rate, and latency percentiles for each CAS node / entry point / route.
- * This is the read-side rollup that answers "how does this node behave at
- * runtime", correlated to the CAS static id. Additive to the raw observation
- * stream; consumers that only read observations are unaffected.
- */
 export function buildNodeRuntimeMetrics(
   cas: CASOutput,
   observations: RuntimeObservation[],
@@ -1948,7 +1911,6 @@ export function buildNodeRuntimeMetrics(
     } satisfies NodeRuntimeMetrics;
   });
 
-  // Rank by operational signal: errors first, then traffic, then latency.
   metrics.sort((left, right) =>
     right.error_count - left.error_count ||
     right.request_count - left.request_count ||
@@ -2060,12 +2022,6 @@ function matchRuntimeRoute(cas: CASOutput, event: RuntimeEventInput): EvidenceRe
   return entryPoint ? entryPointRef(entryPoint, 0.9) : undefined;
 }
 
-/**
- * Correlate an `exit` (outbound) runtime event — a call your service made to an
- * external API/DB/queue — to the static EXIT POINT it exercised, by endpoint +
- * method. The mirror of matchRuntimeRoute for the outbound side: "which external
- * dependency is hot / failing" fused to where the code calls it.
- */
 function matchRuntimeExit(cas: CASOutput, event: RuntimeEventInput): EvidenceRef | undefined {
   if (event.type !== 'exit') return undefined;
   const endpoint = normalizeRoute(event.endpoint || event.target || event.route || event.path || '');
@@ -2089,9 +2045,7 @@ function matchStackFrames(cas: CASOutput, stack?: string): EvidenceRef[] {
   for (const match of fileMatches.slice(0, 5)) {
     const file = match[1];
     const line = Number(match[2]);
-    // Among every node in this file whose line range covers the frame, prefer the
-    // TIGHTEST enclosing one — a function/method, not the whole file/module — so a
-    // stack frame resolves to the symbol that actually threw, not its container.
+
     const enclosing = cas.nodes
       .filter(candidate =>
         candidate.source?.file &&
@@ -2258,18 +2212,27 @@ function confidence(...conditions: boolean[]): number {
 function databaseResources(cas: CASOutput): Array<{ id: string; key: string; name: string; nodeId?: string }> {
   const resources: Array<{ id: string; key: string; name: string; nodeId?: string }> = [];
 
-  for (const entity of cas.database_schema?.entities || []) {
-    const name = entity.table || entity.name;
-    resources.push({ id: `schema:${name}`, key: normalizeTopic(name), name });
-  }
-
   for (const exitPoint of cas.exit_points || []) {
     if (exitPoint.type !== 'database') continue;
-    const name = exitPoint.target?.resource || exitPoint.name;
-    resources.push({ id: exitPoint.id, key: normalizeTopic(name), name, nodeId: exitPoint.source_node });
+    const identity = databaseEndpointIdentity(exitPoint.target?.endpoint || exitPoint.target?.resource);
+    if (!identity) continue;
+    resources.push({ id: exitPoint.id, key: identity, name: identity, nodeId: exitPoint.source_node });
   }
 
   return dedupeBy(resources, resource => resource.key);
+}
+
+function databaseEndpointIdentity(value: string | undefined): string | undefined {
+  const raw = String(value || '').trim();
+  if (!raw.includes('://') || /\$\{|<[^>]+>/.test(raw)) return undefined;
+  try {
+    const parsed = new URL(raw);
+    if (!parsed.hostname || /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|::1)$/i.test(parsed.hostname)) return undefined;
+    const pathname = parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.protocol}//${parsed.hostname.toLowerCase()}${parsed.port ? `:${parsed.port}` : ''}${pathname}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function producerServiceNames(repository: { name: string; cas: CASOutput }): string[] {
@@ -2369,10 +2332,7 @@ function internalLibraries(cas: CASOutput): Array<{ name: string; version?: stri
   return (cas.libraries || [])
     .filter(library => {
       const name = library.name.toLowerCase();
-      // INTERNAL = evidence-based, never a hardcoded product list: a scoped
-      // package (@org/...) or a library whose name shares the repo's own
-      // identity token (the leading word of the CAS system name — the repo
-      // naming itself is the evidence that a like-named library is first-party).
+
       const selfToken = String(cas.system?.name || '').toLowerCase().replace(/[^a-z0-9].*$/, '');
       return name.startsWith('@') || (selfToken.length >= 4 && name.includes(selfToken));
     })

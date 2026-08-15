@@ -89,7 +89,7 @@ function weakNarrativeCas(repoPath: string, index: number): CASOutput {
       description_source: 'deterministic',
       description_generation: { attempted: false, status: 'ai_unavailable' },
     } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: `cap-${index}`,
       name: 'Task Management',
       description: 'execute operations for task management',
@@ -137,7 +137,7 @@ function noTargetNarrativeCas(repoPath: string): CASOutput {
       description_source: 'ai',
       description_generation: { attempted: true, status: 'ai_generated' },
     } as any,
-    system_capabilities: [],
+    capabilities: [],
     nodes: [],
     edges: [],
     analyzer_contributions: [],

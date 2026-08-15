@@ -209,14 +209,11 @@ test('a transport failure on the MCP surface never reaches an agent as an opaque
   }
 });
 
-test('the MCP surface answers representative hosted tools against the deployed server', async () => {
+const liveTest = process.env.KLAURO_RUN_LIVE_TESTS === '1' ? test : test.skip;
+
+liveTest('the MCP surface answers representative hosted tools against the deployed server', async () => {
   const credential = findLiveCredential();
-  if (!credential) {
-    // No account on this machine: the live half cannot run, and saying so is
-    // honest. It is NOT a pass on a machine that does have credentials — the
-    // assertions below are the gate there.
-    return;
-  }
+  assert.ok(credential, 'no installed Klauro account is available for the explicit live MCP gate');
   assert.ok(fs.existsSync(bundleEntry), `${bundleEntry} does not exist — the bundle must be built before this gate runs`);
 
   // A repo already bound to a hosted project on that server. This test proves
@@ -224,10 +221,14 @@ test('the MCP surface answers representative hosted tools against the deployed s
   // package's own binding rather than uploading anything.
   const boundRepoRoot = path.resolve(packageRoot, '..', '..');
   const configPath = path.join(boundRepoRoot, '.klaurorc');
-  if (!fs.existsSync(configPath)) return;
+  assert.ok(fs.existsSync(configPath), `${boundRepoRoot} has no .klaurorc project binding for the explicit live MCP gate`);
   const bound = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { project?: { id?: string }; analyzer?: { serverUrl?: string } };
-  if (!bound.project?.id) return;
-  if ((bound.analyzer?.serverUrl || '').replace(/\/+$/, '') !== credential.serverUrl) return;
+  assert.ok(bound.project?.id, `${configPath} has no hosted project id`);
+  assert.equal(
+    (bound.analyzer?.serverUrl || '').replace(/\/+$/, ''),
+    credential.serverUrl,
+    `${configPath} is bound to a different hosted server than the installed account`,
+  );
 
   const client = new McpStdioClient({ ...process.env, HOME: credential.home, USERPROFILE: credential.home });
   try {

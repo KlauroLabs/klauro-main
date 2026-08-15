@@ -1,21 +1,20 @@
-/**
- * Analyzer audit — honest stock-take of every analyzer.
- *
- * Static inspection of each analyzer's SOURCE (no running analysis, fast and
- * deterministic) across the dimensions that determine whether an analyzer is
- * actually GOOD, not just present:
- *   - parser:        AST/tree-sitter vs regex/line-based (fidelity ceiling)
- *   - loc:           source size (rough depth proxy)
- *   - capabilities:  how many concepts getCapabilities() declares (completeness proxy)
- *   - incremental:   single-file incremental support
- *   - truth_fixture: does an analysis-truth fixture exist to MEASURE accuracy
- *
- * This is the scorecard that drives the quality program; it deliberately does
- * not flatter — "no truth fixture" means accuracy is unproven.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
-import * as os from 'os';
 import * as path from 'path';
 
 export interface AnalyzerAudit {
@@ -39,7 +38,7 @@ function kindFromPath(p: string): AnalyzerAudit['kind'] {
   return 'unknown';
 }
 
-/** AST iff the analyzer actually parses via tree-sitter (not just a comment). */
+
 function detectParser(src: string): 'ast' | 'regex' {
   return /TreeSitterParser|tree-sitter|\.setLanguage\(|astRunner|@babel\/parser|\bacorn\b|parseAst\b/.test(src)
     ? 'ast' : 'regex';
@@ -73,7 +72,7 @@ function truthFixtureFor(stackTokens: string[], fixtures: string[]): boolean {
 export async function auditAnalyzers(): Promise<{ audits: AnalyzerAudit[]; summary: Record<string, number> }> {
   const files = await listAnalyzerFiles(CORE);
   let fixtures: string[] = [];
-  try { fixtures = await fs.readdir(FIXTURES); } catch { /* none */ }
+  try { fixtures = await fs.readdir(FIXTURES); } catch {   }
 
   const audits: AnalyzerAudit[] = [];
   for (const file of files) {

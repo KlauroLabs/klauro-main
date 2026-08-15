@@ -81,7 +81,7 @@ function forwardServerLine(rawLine: string): void {
         return;
       }
     } catch {
-      // forward non-JSON lines untouched
+
     }
   }
   process.stdout.write(rawLine);

@@ -1,20 +1,3 @@
-#
-# Klauro CLI/MCP one-line installer for Windows (PowerShell).
-#
-#   irm https://mcp.klauro.com/install.ps1 | iex
-#
-# Installs a SELF-CONTAINED `klauro.exe` — no Node.js, no npm, on any Windows
-# x64 machine. See install.sh's top-of-file comment for why: the published
-# client has never had a native dependency to compile, on any platform; the
-# binary embeds its own runtime (Node "single executable application").
-#
-# Falls back to the old npm-based install (EMERGENCY only, clearly labeled)
-# when no binary is published for this platform, or the download/verify/
-# smoke-test fails. NOTE: the win-x64 binary is built the same verified way
-# as the other platforms (see scripts/build-sea-binaries.mjs) but has not
-# been execution-verified on real Windows as of this writing — this script's
-# smoke-test-then-fallback below exists specifically so a bad binary release
-# degrades to the still-working npm path instead of bricking the install.
 $ErrorActionPreference = 'Stop'
 
 if (-not $env:KLAURO_URL) { $KlauroUrl = 'https://mcp.klauro.com' } else { $KlauroUrl = $env:KLAURO_URL }
@@ -86,8 +69,6 @@ if ($binaryPath) {
       Write-Host '  Checksum verified.'
     }
 
-    # Smoke-test BEFORE installing it as `klauro` -- a bad/corrupted binary
-    # must fall back to npm, never leave a broken `klauro.exe` in place.
     $smoke = & $tmpFile.FullName version 2>&1
     if ($LASTEXITCODE -ne 0) {
       throw "Downloaded binary failed a basic smoke test (klauro version): $smoke"

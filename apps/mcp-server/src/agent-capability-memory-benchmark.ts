@@ -121,7 +121,7 @@ export async function runAgentCapabilityMemoryBenchmark(options: {
       repo: target.name,
       path: target.path,
       status: aggregateStatus(trials.map(trial => trial.status as GateStatus)),
-      capability_count: cas.system_capabilities?.length || 0,
+      capability_count: cas.capabilities?.length || 0,
       trial_count: trials.length,
       average_delta: Math.round(average(trials.map(trial => trial.delta))),
       trials,
@@ -172,7 +172,7 @@ async function resolveTargets(options: { repos?: TargetInput[]; includeRealRepos
 }
 
 function selectCapabilities(cas: CASOutput): SystemCapability[] {
-  return [...(cas.system_capabilities || [])]
+  return [...(cas.capabilities || [])]
     .filter(capability => capability.category !== 'internal')
     .filter(capability => isProductCapabilityForMemoryProof(capability))
     .filter(capability => capability.operations.length > 0 || capability.related_entities.length > 0)

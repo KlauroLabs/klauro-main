@@ -8,7 +8,7 @@ const ROOT = path.resolve(__dirname, '../../fixtures/orm-bench');
 
 // The defect this gates, from an audit of three production analyses: relations
 // existed only as PROSE in `database_schema.relationships_summary` and never
-// reached the entity itself, so `data_entities[].relations` was empty on every
+// reached the entity itself, so `entities[].relations` was empty on every
 // persisted entity and the FK properties were reported as plain scalar fields.
 // orm-bench already proves the summary is right; this proves the relation lands
 // ON the entity, with cardinality and citable evidence, through the real product
@@ -33,7 +33,7 @@ for (const [fixture, expected] of Object.entries(ECOSYSTEM_EXPECTATIONS)) {
 
   test(`entity relations persist on the entity for ${fixture}`, async () => {
     const cas: any = await analyzeForBench(dir);
-    const entities: any[] = cas.data_entities || [];
+    const entities: any[] = cas.entities || [];
     assert.ok(entities.length > 0, 'entities were extracted');
 
     // Every relation on every entity must be evidence-cited and kind-tagged.

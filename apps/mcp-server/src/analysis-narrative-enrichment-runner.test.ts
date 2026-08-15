@@ -120,7 +120,7 @@ function fixtureCas(): CASOutput {
       evidence: [],
       supporting_workflow_ids: [],
     } as any,
-    system_capabilities: [{
+    capabilities: [{
       id: 'cap-save',
       name: 'Save Management',
       description: 'execute operations for save management',

@@ -203,7 +203,7 @@ function evidenceForIds(cas: CASOutput, ids: string[], type: EvidenceType, limit
       evidence.push({ type: 'call_chain', id, label: chain.chain_type });
       continue;
     }
-    const dataEntity = (cas.data_entities || []).find(candidate => candidate.id === id);
+    const dataEntity = (cas.entities || []).find(candidate => candidate.id === id);
     if (dataEntity) {
       evidence.push({ type: 'data_entity', id, label: dataEntity.name });
       continue;
@@ -403,7 +403,7 @@ function dataProbe(cas: CASOutput): AnswerProbe {
     'data-model',
     'What data does this system read or write?',
     {
-      data_entities: data,
+      entities: data,
       database_schema: dbSchema ? {
         entity_count: dbSchema.entities?.length || 0,
         relationship_count: dbSchema.entities?.reduce((count, entity) => count + (entity.relationships?.length || 0), 0) || 0,
@@ -513,7 +513,7 @@ function validateEvidence(cas: CASOutput, probeResult: AnswerProbe): AnswerProbe
   const exitPointIds = new Set((cas.exit_points || []).map(exit => exit.id));
   const chainIds = new Set((cas.call_chains || []).map(chain => chain.id));
   const factIds = new Set((cas.analysis_facts || []).map(fact => fact.id));
-  const dataEntityIds = new Set((cas.data_entities || []).map(entity => entity.id));
+  const dataEntityIds = new Set((cas.entities || []).map(entity => entity.id));
   const missing = probeResult.evidence.filter(ref => {
     if (ref.type === 'summary' || ref.type === 'test') return false;
     if (ref.type === 'node') return !nodeIds.has(ref.id);

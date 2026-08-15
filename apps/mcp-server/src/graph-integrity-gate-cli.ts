@@ -1,19 +1,19 @@
 #!/usr/bin/env -S npx tsx
-/**
- * EDGE REFERENTIAL-INTEGRITY GATE over a REAL stored analysis.
- *
- * The invariant (see graph-referential-integrity.ts for why it exists and what
- * it caught): every edge endpoint must resolve in nodes ∪ exit_points ∪
- * entry_points. Point this at a stored analysis document and it exits non-zero
- * with a per-class breakdown naming the id scheme at fault, so a regression in
- * ANY producer — an analyzer inventing a target, or a pass dropping a row
- * without reconciling its references — is attributable without a re-run.
- *
- * Accepts a plain `.json` document or a zstd-compressed `.json.zst` one (the
- * stored form), and either a full analysis document or a bare CAS.
- *
- * Usage: tsx src/graph-integrity-gate-cli.ts <analysis.json|analysis.json.zst>
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,8 +27,8 @@ import {
 
 function loadDocument(filePath: string): any {
   const raw = filePath.endsWith('.zst')
-    // zstd is how the stored form is written; decoding through the same tool
-    // avoids a dependency whose only job would be to read one file.
+
+
     ? execFileSync('zstd', ['-dc', filePath], { maxBuffer: 1024 * 1024 * 1024 })
     : fs.readFileSync(filePath);
   return JSON.parse(raw.toString('utf8'));

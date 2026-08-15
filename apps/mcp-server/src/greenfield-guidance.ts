@@ -72,14 +72,14 @@ export function buildGreenfieldArchitectureGuidance(options: GreenfieldGuidanceO
 
 function summarizeReference(reference: GreenfieldReferenceAnalysis) {
   const summary = buildSummary(reference.cas);
-  const capabilities = (reference.cas.system_capabilities || []).map(capability => ({
+  const capabilities = (reference.cas.capabilities || []).map(capability => ({
     name: capability.name,
     description: capability.description,
     domains: capability.related_domains || [],
     entities: capability.related_entities || [],
   }));
   const entities = [
-    ...(reference.cas.data_entities || []).map(entity => entity.name),
+    ...(reference.cas.entities || []).map(entity => entity.name),
     ...(reference.cas.database_schema?.entities || []).map(entity => entity.name),
     ...(reference.cas.domain_concepts || []).filter(concept => concept.classification !== 'infrastructure').map(concept => concept.name),
   ];

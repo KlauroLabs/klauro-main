@@ -1,6 +1,10 @@
 export type AnalysisFocus = 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
 export type AnalysisTrigger = 'mcp' | 'cli' | 'ui' | 'inspector' | 'manual-description' | 'runtime' | 'unknown';
 
+export function isAnalysisFocus(value: unknown): value is AnalysisFocus {
+  return value === 'agent-fast' || value === 'ui-overview' || value === 'deep-context' || value === 'full';
+}
+
 export interface AnalysisFocusProfile {
   focus: AnalysisFocus;
   default_for: AnalysisTrigger[];

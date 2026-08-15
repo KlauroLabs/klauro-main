@@ -13,7 +13,7 @@ export interface AnalysisTruthExpectation {
   libraries?: string[];
   routes?: Array<{ method?: string; path: string; handler?: string; controller?: string }>;
   nodes?: Array<{ name: string; type?: string; file?: string }>;
-  data_entities?: string[];
+  entities?: string[];
   relationships?: Array<{ source: string; target: string; type?: string }>;
   method_calls?: Array<{ caller: string; target?: string; method?: string; resolution_type?: string }>;
   exit_points?: Array<{ type?: string; name?: string; target?: string }>;
@@ -51,7 +51,7 @@ export function evaluateAnalysisTruth(cas: CASOutput, expectation: AnalysisTruth
     ...checkNames('library', expectation.libraries || [], detectedLibraries(cas)),
     ...checkRoutes(cas, expectation.routes || []),
     ...checkNodes(cas, expectation.nodes || []),
-    ...checkNames('data-entity', expectation.data_entities || [], dataEntityNames(cas)),
+    ...checkNames('data-entity', expectation.entities || [], dataEntityNames(cas)),
     ...checkRelationships(cas, expectation.relationships || []),
     ...checkMethodCalls(cas, expectation.method_calls || []),
     ...checkExitPoints(cas, expectation.exit_points || []),
@@ -94,7 +94,7 @@ export function getSemanticMap(cas: CASOutput, opts: { target?: string; limit?: 
     nodes: Array<Record<string, unknown>>;
     imports: Array<Record<string, unknown>>;
     exports: Array<Record<string, unknown>>;
-    data_entities: string[];
+    entities: string[];
     entry_points: string[];
     exit_points: string[];
   }>();
@@ -107,7 +107,7 @@ export function getSemanticMap(cas: CASOutput, opts: { target?: string; limit?: 
         nodes: [],
         imports: [],
         exports: [],
-        data_entities: [],
+        entities: [],
         entry_points: [],
         exit_points: [],
       });
@@ -132,7 +132,7 @@ export function getSemanticMap(cas: CASOutput, opts: { target?: string; limit?: 
     }
   }
 
-  for (const entity of cas.data_entities || []) {
+  for (const entity of cas.entities || []) {
     for (const nodeId of [
       ...(entity.lifecycle?.created_by || []),
       ...(entity.lifecycle?.read_by || []),
@@ -142,7 +142,7 @@ export function getSemanticMap(cas: CASOutput, opts: { target?: string; limit?: 
       const node = cas.nodes.find(candidate => candidate.id === nodeId);
       if (node?.source?.file && (!target || selectedIds.has(node.id))) {
         const file = ensureFile(normalizeFile(cas, node.source.file));
-        if (!file.data_entities.includes(entity.name)) file.data_entities.push(entity.name);
+        if (!file.entities.includes(entity.name)) file.entities.push(entity.name);
       }
     }
   }
@@ -627,7 +627,7 @@ function detectedLibraries(cas: CASOutput): string[] {
 
 function dataEntityNames(cas: CASOutput): string[] {
   return [
-    ...(cas.data_entities || []).map(entity => entity.name),
+    ...(cas.entities || []).map(entity => entity.name),
     ...(cas.database_schema?.entities || []).map(entity => entity.name),
     ...cas.nodes.filter(node => node.type === 'entity' || node.type === 'model').map(node => node.name),
   ];

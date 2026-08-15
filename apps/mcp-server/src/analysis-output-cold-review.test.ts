@@ -38,7 +38,7 @@ function repo(name: string, repoPath: string, kind: string, sourceFiles: number)
     proof_status: 'pass',
     cas: {
       nodes: sourceFiles * 3,
-      system_capabilities: 3,
+      capabilities: 3,
       codebase_idioms: 2,
       behavioral_invariants: 1,
       primary_domain: 'example-domain',

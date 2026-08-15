@@ -150,7 +150,7 @@ function buildFixtureCas(): CASOutput {
     },
   ];
 
-  const data_entities: CASDataEntity[] = [
+  const entities: CASDataEntity[] = [
     {
       id: 'entity_order', name: 'Order',
       lifecycle: { created_by: ['n_saveOrder'], read_by: ['n_validateOrder'], updated_by: [], deleted_by: [] },
@@ -178,8 +178,8 @@ function buildFixtureCas(): CASOutput {
     analysis_timestamp: '2026-01-01T00:00:00.000Z',
     analysis_id: 'test-entities-provenance',
     system: { name: 'test-system' } as any,
-    nodes, edges, entry_points, exit_points, data_lineage, data_entities,
-    system_capabilities: [],
+    nodes, edges, entry_points, exit_points, data_lineage, entities,
+    capabilities: [],
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }

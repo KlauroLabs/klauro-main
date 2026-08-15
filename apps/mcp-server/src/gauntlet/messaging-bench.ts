@@ -1,18 +1,18 @@
-/**
- * Camp-C OUT-OF-CATEGORY bench — message-broker pub/sub wiring.
- *
- * Event-driven systems are wired by TOPICS, not calls: a service `produces` to
- * `orders` and `consumes` from `shipments`. That topology — who publishes/
- * subscribes to which topic/queue — is the architecture of a Kafka/RabbitMQ/NATS
- * system. codebase-memory/scip/stack-graphs see the `producer.send(...)` /
- * `consumer.subscribe(...)` calls as generic method calls; embeddings retrieve
- * similar code. None model the topic graph. Klauro's architectural-library
- * detector emits `produces`/`consumes` edges to named topic nodes — the
- * event-driven wiring fact nobody else has.
- *
- * Fixture = a dir with messaging source + truth.json:
- *   { "task": "messaging-wiring", "expected": ["produces orders", "consumes shipments"] }
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -41,12 +41,12 @@ async function sourceBytes(dir: string): Promise<number> {
   let total = 0;
   for (const f of await fs.readdir(dir)) {
     if (f === 'truth.json') continue;
-    try { const st = await fs.stat(path.join(dir, f)); if (st.isFile()) total += st.size; } catch { /* noop */ }
+    try { const st = await fs.stat(path.join(dir, f)); if (st.isFile()) total += st.size; } catch {   }
   }
   return total;
 }
 
-/** Klauro: read produces/consumes edges to/from topic nodes → "produces|consumes <topic>". */
+
 async function klauroWiring(dir: string): Promise<{ wiring: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
   const cas: any = await analyzeForBench(dir);
@@ -55,13 +55,13 @@ async function klauroWiring(dir: string): Promise<{ wiring: string[]; bytes: num
   const topicName = (id: string, fallback: string): string => {
     const n: any = byId.get(id);
     if (n?.type === 'topic') return n.name;
-    // Topic embedded in a "<topic> producer/consumer" node name.
+
     return String(n?.name || fallback).replace(/\s+(producer|consumer)$/i, '');
   };
   const wiring: string[] = [];
   for (const e of (cas.edges || [])) {
-    // `produces` (broker pub) and `enqueues` (job-queue add) both publish to a
-    // topic/queue node — the producer side of the event-driven wiring.
+
+
     if (e.type === 'produces' || e.type === 'enqueues') {
       const t = [e.target, e.source].map(id => byId.get(id)).find((n: any) => n?.type === 'topic' || n?.type === 'queue');
       wiring.push(`produces ${t ? (t as any).name : topicName(e.target, e.target)}`);
@@ -87,7 +87,7 @@ export async function runMessagingWiringBench(fixtureDir: string): Promise<Messa
     { arm: 'klauro', wiring: kl.wiring, f1: klQ / 100, bytes: kl.bytes, can_answer: true },
   ];
 
-  // No topic/pub-sub concept → cannot say which topics a service produces/consumes.
+
   for (const armId of ['codebase-memory', 'scip-typescript', 'stack-graphs', 'embeddings-nomic']) {
     arms.push({ arm_id: armId, mode: 'engine', attempted: false, metrics: { quality: 0, time_ms: 1, tokens: toTokens(srcBytes) }, source: `messaging-bench:messaging-wiring:${armId}` });
     detail.push({ arm: armId, wiring: [], f1: 0, bytes: srcBytes, can_answer: false });

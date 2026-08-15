@@ -47,7 +47,7 @@ function hasDescriptions(cas: import('../../../packages/analyzer-core/src/types/
 
 function anyAiDescriptionSource(cas: import('../../../packages/analyzer-core/src/types/cas.types').CASOutput): boolean {
   if (cas.enhanced_system_purpose?.description_source === 'ai') return true;
-  return (cas.system_capabilities || []).some(capability => capability.description_source === 'ai');
+  return (cas.capabilities || []).some(capability => capability.description_source === 'ai');
 }
 
 test('default (non-deferred) analyze marks synchronous when AI is available, and is comprehension-AI-only', async () => {

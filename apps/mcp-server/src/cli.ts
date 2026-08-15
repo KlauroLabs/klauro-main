@@ -20,6 +20,7 @@ import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { AccountStore } from './account-store';
 import { buildUploadManifest } from './remote-source';
+import { summarizeUploadManifest } from './upload-manifest-summary';
 import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig, isUnboundHostedProjectId, probeHostedProjectBinding } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
@@ -32,9 +33,10 @@ import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analy
 import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { resolveManifestProjectName } from '../../../packages/analyzer-core/src/analyzer/core/deployable-evidence/util';
 import { runSelfUpdate } from './self-update';
-import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
+import { isAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { decideInitFlow, resolveNamedChoice, type RecognizedRemote } from './init-resolution';
-import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
+import { selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
+import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import { clearStoredConnectorSession, connectorToken, findStoredAccountOwningProject, isNetworkUnreachableError, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, unreachableServerError } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
 import { detectWorkspaceIdentity, findFabricProjectRoot, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
@@ -47,9 +49,7 @@ import { extractServerUrlFlag, getStaleClientUpdateHint } from './stale-client-h
 import {
   buildAnalysisStatusLine,
   buildConnectionReport,
-  countDirtyFiles,
   detectClaudeMcpRegistration,
-  fetchHostedAnalysisState,
   formatConnectionReportLines,
   listDirtyFiles,
   remoteJson,
@@ -96,7 +96,7 @@ interface ParsedArgs {
   password?: string;
   passwordStdin: boolean;
   register: boolean;
-  // §AUTH-LIFECYCLE — reset-password / change-password / admin-mint-reset-token.
+
   resetToken?: string;
   resetTokenStdin: boolean;
   currentPassword?: string;
@@ -104,7 +104,7 @@ interface ParsedArgs {
   newPassword?: string;
   newPasswordStdin: boolean;
   mintedBy?: string;
-  // Read-subcommand filters (cicd / seams / product-map / node-metrics).
+
   provider?: string;
   deployOnly: boolean;
   modality?: 'sync' | 'async' | 'passive';
@@ -114,7 +114,7 @@ interface ParsedArgs {
   markdown: boolean;
   limit?: number;
   offset?: number;
-  /** Fabric workspace override for `klauro init` (same semantics as `klauro fabric on --workspace`). */
+
   workspace?: string;
 }
 
@@ -165,14 +165,12 @@ async function main(): Promise<void> {
 
   if (args.command === 'doctor' && !args.path) {
     const report = await runEnvironmentDoctor({ projectPath: process.cwd() });
-    // Same one-glance subsystem view as `klauro status`: is THIS repo fully
-    // connected (project identity / in-flight / MCP / fabric)?
     const connection = await buildConnectionReport(process.cwd());
-    // The same customer-facing checks `klauro doctor` runs in the shipped CLI
-    // (client-doctor.ts, shared with installed-cli.ts) — auth/token age,
-    // server reachability + protocol match, CLI version vs latest. Run here
-    // too so a developer sees exactly what a customer would, instead of only
-    // the dev-package-layout checks above.
+
+
+
+
+
     const client = await runClientDoctor({ projectPath: process.cwd(), serverUrl: args.serverUrl });
     if (args.json) {
       process.stdout.write(`${JSON.stringify({ ...report, connection, client }, null, 2)}\n`);
@@ -240,13 +238,13 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'auth-status') {
-    // Round-trips to the server (GET /api/me) rather than only checking that
-    // a token FILE exists — a locally-present token can be expired or
-    // server-side dropped, and this command's whole job is to say so instead
-    // of reporting "signed_in: true" while every real API call 401s. See
-    // resolveAuthStatus's states: no-token / signed-in / rejected /
-    // unreachable. Bounded by an internal fetch timeout so an unreachable
-    // server reports as such quickly rather than hanging.
+
+
+
+
+
+
+
     const status = await resolveAuthStatus({ serverUrl: args.serverUrl });
     process.stdout.write(args.json
       ? `${JSON.stringify({ ...status, signed_in: status.state === 'signed-in' }, null, 2)}\n`
@@ -265,9 +263,9 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'whoami') {
-    // Same real-state check as auth-status (see that handler's comment) —
-    // whoami used to answer from the local token file alone and could say
-    // "signed in" for a session the server had already rejected.
+
+
+
     const status = await resolveAuthStatus({ serverUrl: args.serverUrl });
     if (args.json) {
       process.stdout.write(`${JSON.stringify({ ...status, signed_in: status.state === 'signed-in', email: status.email ?? null }, null, 2)}\n`);
@@ -325,15 +323,15 @@ async function main(): Promise<void> {
   ].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
   }
-  // Track whether the caller gave an explicit path vs. the '.' default below.
-  // `init` uses this to make the ambient-cwd case loud instead of silent —
-  // see the 2026-07-06 cold-customer audit: a `klauro init` run with no
-  // explicit path from a process whose cwd was NOT the intended repo (e.g. an
-  // agent invoked without first `cd`-ing into the target fixture) silently
-  // registered a hosted project under whatever directory `.` happened to
-  // resolve to, name/local_path and all. Ambient cwd is fine for a human at a
-  // terminal who obviously knows where they are; it is not a safe default for
-  // scripted/agent invocations.
+
+
+
+
+
+
+
+
+
   const pathWasExplicit = Boolean(args.path);
   if (!args.path && ['init', 'index', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan', 'agent-tracks', 'account-workspace-attach'].includes(args.command)) {
     args.path = '.';
@@ -351,7 +349,7 @@ async function main(): Promise<void> {
 
   if (args.command === 'upload-manifest') {
     const manifest = await buildUploadManifest(projectPath, args.dirtyTree ? 'dirty-tree' : 'full');
-    process.stdout.write(args.json ? `${JSON.stringify(manifest, null, 2)}\n` : formatUploadManifest(manifest));
+    process.stdout.write(args.json ? `${JSON.stringify(summarizeUploadManifest(manifest), null, 2)}\n` : formatUploadManifest(manifest));
     return;
   }
 
@@ -393,21 +391,22 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'analyze') {
-    // One product: analysis always goes to the hosted service (heavy work + AI on the
-    // VPS), production by default. No local/remote mode. serverUrl can point at a
-    // Customer installs always submit analysis to the hosted Klauro service.
+
+
+
     const scope = await resolveUploadScopeConfirmation(projectPath, args.yes);
     if (!scope.proceed) { process.exitCode = 1; return; }
     const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
       projectPath,
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
+      analysisFocus: args.analysisFocus,
       requireBoundProject: true,
-      // task #132: --force was parsed and documented but never threaded
-      // through — a "forced" re-run silently came back `reused: true`. It now
-      // bypasses BOTH the server's snapshot/analyzer-identity reuse gate and
-      // the AI response cache (see remote-analyzer-protocol.ts's
-      // RemoteAnalyzeRequest.force and CASOutput.ai_cache_reuse).
+
+
+
+
+
       force: args.force,
       confirmScope: scope.confirmScope,
     }));
@@ -422,6 +421,7 @@ async function main(): Promise<void> {
       projectPath,
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
+      analysisFocus: args.analysisFocus,
       requireBoundProject: true,
       force: args.force,
       confirmScope: scope.confirmScope,
@@ -549,7 +549,8 @@ async function main(): Promise<void> {
       const cas = await withLogHandling(args.json, args.quiet, () => loadOrAnalyze(absolute, args.refresh));
       repositories.push({ path: absolute, name: cas.system?.name || resolveManifestProjectName(absolute, path.basename(absolute)), cas });
     }
-    const graph = buildCrossCodebaseSystemGraph(args.task.target || 'analyzed-system', repositories);
+    const workspaceName = args.task.target || 'analyzed-system';
+    const graph = buildIncrementalCrossCodebaseSystemGraph({ name: workspaceName, repositories, previous: args.refresh ? null : await loadCrossCodebaseSystemGraph(workspaceName) });
     const saved = await saveCrossCodebaseSystemGraph(graph);
     const result = { saved, summary: summarizeCrossCodebaseSystemGraph(graph), graph };
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatWorkspaceAnalysisResult(result));
@@ -572,14 +573,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  // "account-workspace-*" (not "workspace-*") to avoid colliding with the
-  // pre-existing local cross-codebase workspace-level-CAS graph commands above
-  // (workspace-analysis/-get/-list), which are a completely different concept
-  // (a locally-saved multi-repo analysis graph, no server account involved).
-  // These two talk to the hosted AccountStore workspace/project model
-  // (account-store.ts) instead: `id + name` listing, and attaching an
-  // already-analyzed, already-`klauro init`-connected project to a different
-  // hosted workspace.
+
+
+
+
+
+
+
+
   if (args.command === 'account-workspaces') {
     const auth = loadStoredConnectorAuth();
     const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl);
@@ -621,9 +622,9 @@ async function main(): Promise<void> {
     }
     process.stdout.write([
       `Attached project "${result.project.name}" to workspace "${targetWorkspace.name}".`,
-      // Honest about the model: AccountProject.workspace_id is a single required
-      // foreign key, not a join table, so this is a MOVE — the project left
-      // whatever workspace it was previously in, it did not gain a second one.
+
+
+
       'This is a move, not an additional membership: a project belongs to exactly one workspace at a time.',
       `Workspace analysis for "${targetWorkspace.name}" is rebuilding in the background now that its membership changed (was_rebuild: ${result.was_rebuild}).`,
     ].join('\n') + '\n');
@@ -669,9 +670,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Thin read subcommands: engineer-facing CLI parity for the high-value MCP
-  // reads. Each wraps the SAME query builder as its MCP tool (no logic fork),
-  // so the CLI and MCP surfaces return byte-identical data for a given repo.
+
+
+
   if (args.command === 'orient') {
     const capsule = query.buildOrientCapsule(cas);
     process.stdout.write(`${JSON.stringify(capsule, null, 2)}\n`);
@@ -708,7 +709,7 @@ async function main(): Promise<void> {
 
   if (args.command === 'erd') {
     const result = query.getErd(cas, { format: args.format, entityName: args.task.target });
-    // Print the Mermaid diagram raw so it can be piped straight into a renderer.
+
     if (args.format === 'mermaid') {
       process.stdout.write(`${(result as any).mermaid}\n`);
     } else {
@@ -772,26 +773,26 @@ async function confirmDestructiveAction(description: string, preApproved: boolea
   return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
 }
 
-/**
- * Task #134: same gate as installed-cli.ts's resolveUploadScopeConfirmation
- * (kept in the shared upload-scope-guard.ts) — always prints the resolved
- * root to STDERR before any upload runs, then confirms (via `--yes` or an
- * interactive prompt) only when the scope structurally looks like a folder
- * of several unrelated projects rather than one. See upload-scope-guard.ts.
- */
+
+
+
+
+
+
+
 async function resolveUploadScopeConfirmation(target: string, yes: boolean): Promise<{ proceed: boolean; confirmScope: boolean }> {
   process.stderr.write(`Resolved project root: ${target}\n`);
   const assessment = await assessUploadScope(target);
   return confirmUploadScope(assessment, { yes });
 }
 
-/**
- * `klauro update` implementation moved to ./self-update so the SHIPPED CLI
- * (installed-cli.ts -> dist/cli.cjs) can import the same code. It used to live
- * here, in the developer-only entry point, which is why every released CLI
- * through 1.0.127 had no `update` command while the server told users to run
- * it. Re-exported for the existing unit tests that import from './cli'.
- */
+
+
+
+
+
+
+
 export {
   DEFAULT_MIN_NODE,
   checkNodeVersionForUpdate,
@@ -818,14 +819,14 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   });
 }
 
-// HostedAnalysisState / fetchHostedAnalysisState / buildAnalysisStatusLine
-// live in ./status-report (imported above) — shared with installed-cli.ts so
-// `klauro status`'s reporting logic can never re-diverge the way `klauro
-// update` did through 1.0.129 (see status-report.ts's header comment).
+
+
+
+
 
 async function runStatusCommand(args: ParsedArgs): Promise<void> {
-  // Full logic lives in ./status-report (renderStatusReport), shared with
-  // installed-cli.ts's `status` handler — see that module's header comment.
+
+
   const repoPath = path.resolve(args.path || '.');
   const { report, lines } = await renderStatusReport({ repoPath, serverUrl: args.serverUrl });
   if (args.json) {
@@ -837,23 +838,23 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
 
 async function runLoginCommand(args: ParsedArgs): Promise<void> {
   const serverUrl = normalizeServerUrl(args.serverUrl);
-  // Credentials must travel over HTTPS only — never send a password in the clear.
+
   if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
     throw new Error(`Refusing to send credentials over a non-HTTPS server URL: ${serverUrl}`);
   }
   const email = args.email || await promptLine('Email: ');
-  // Password read, in priority order:
-  //  1. --password-stdin  (scriptable; read the piped/redirected stdin stream)
-  //  2. --password VALUE  (legacy; DEPRECATED — see warning below)
-  //  3. interactive no-echo TTY prompt (characters are never echoed)
-  // The value is never echoed, logged, or persisted; only the exchanged token is stored.
+
+
+
+
+
   if (args.password && !args.passwordStdin) {
-    // A value passed with `--password` is written into the shell's history
-    // file and is visible to any other process/user on the machine via `ps`
-    // for as long as this process runs — that exposure is exactly what
-    // interactive prompting and --password-stdin exist to avoid. Kept
-    // working (not removed) for scripted/CI callers that already use it, but
-    // every use is flagged so a human at a terminal knows to stop.
+
+
+
+
+
+
     process.stderr.write(
       'Warning: --password on the command line is visible in your shell history and to other processes on this machine (via `ps`). Prefer the interactive prompt (omit --password) or --password-stdin for scripts.\n',
     );
@@ -875,7 +876,7 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
         : { email, password }),
     });
   } catch (error) {
-    // A typo'd --server-url is a URL problem, not a credentials problem.
+
     if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
     throw error;
   }
@@ -901,19 +902,19 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
     : `Signed in to ${stored.serverUrl} as ${identity.user?.email || email} (${identity.entitlement.status}).\nAuth stored at ${stored.file}\n`);
 }
 
-/**
- * §AUTH-LIFECYCLE — `klauro reset-password`. Redeems a single-use reset
- * token minted by an operator (there is no self-service email flow — see
- * account-store.ts's AccountPasswordResetToken doc comment) against
- * POST /api/auth/reset-password/redeem. PUBLIC endpoint by design: the
- * whole point is recovering an account that has no valid session, so
- * authorization here is possession of the token itself, never a stored
- * login. On success the account's password is changed and every existing
- * session for it is invalidated server-side — the caller must run
- * `klauro login` afterward to get a fresh session (this command
- * deliberately does not auto-login, so the new password is exercised at
- * least once by the human/operator confirming it works).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function runResetPasswordCommand(args: ParsedArgs): Promise<void> {
   const serverUrl = normalizeServerUrl(args.serverUrl);
   if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
@@ -950,15 +951,15 @@ async function runResetPasswordCommand(args: ParsedArgs): Promise<void> {
     : `Password reset. Every previous session for ${payload.email || 'this account'} has been signed out.\nRun \`klauro login --email ${payload.email || '<email>'}\` to sign in with the new password.\n`);
 }
 
-/**
- * §AUTH-LIFECYCLE — `klauro change-password`. Requires an already-signed-in
- * session (the stored connector auth this repo/host is using) and the
- * CURRENT password — see AccountStore.changePassword's doc comment for why.
- * On success the server rotates the session token (every other session is
- * revoked) and this command immediately persists the new token via the same
- * stored-connector-session mechanism `klauro login` uses, so the caller is
- * not logged out by their own password change.
- */
+
+
+
+
+
+
+
+
+
 async function runChangePasswordCommand(args: ParsedArgs): Promise<void> {
   const serverUrl = normalizeServerUrl(args.serverUrl);
   if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
@@ -1000,24 +1001,24 @@ async function runChangePasswordCommand(args: ParsedArgs): Promise<void> {
     : `Password changed for ${payload.user?.email || 'your account'}. Every other session was signed out; this session's token was rotated and saved to ${stored.file}.\n`);
 }
 
-/**
- * §AUTH-LIFECYCLE — `klauro admin-mint-reset-token`. OPERATOR-ONLY,
- * server-side/CLI command — NOT an HTTP endpoint. There is no site-wide
- * admin role in the product's authorization model (workspace roles are
- * owner/admin/member, scoped per-workspace, not a superuser concept), so
- * rather than inventing one to gate an HTTP admin-mint route, this command
- * talks to the AccountStore DIRECTLY against the same data directory the
- * `analyzer-server` process uses (--data-dir, or
- * KLAURO_REMOTE_ANALYZER_DATA). The trust boundary is the same one that
- * already gates read-only inspection of accounts.json: being able to run
- * this command on the box (or a shell with access to /data) IS the operator
- * authentication. Prints the raw single-use token to stdout exactly once —
- * this is the generated secret's only appearance; relay it to the account
- * owner out-of-band (chat/call), never re-print or log it. The token
- * expires in 30 minutes (see RESET_TOKEN_TTL_MS in account-store.ts) and is
- * consumed by `klauro reset-password --token <token>` (or
- * POST /api/auth/reset-password/redeem directly).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function runAdminMintResetTokenCommand(args: ParsedArgs): Promise<void> {
   if (!args.email) throw new Error('admin-mint-reset-token requires --email <account-email>');
   const dataDir = path.resolve(
@@ -1051,20 +1052,20 @@ async function runAdminMintResetTokenCommand(args: ParsedArgs): Promise<void> {
     ].join('\n') + '\n');
 }
 
-/**
- * `klauro fabric on|off|status` — FINE CONTROL over the coordination fabric
- * (docs/FABRIC-REMOTE.md). The happy path is `klauro init`, which enables the
- * fabric by default as part of connecting a repo; this subcommand survives for
- * the detail view (`status`), the rare explicit opt-out (`off`), and
- * re-enabling after an opt-out (`on`). `on` resolves the endpoint from the
- * repo's .klaurorc / stored login, the Bearer token from the SAME credential
- * store `klauro init`/`klauro login` maintain (~/.klauro/auth.json — never
- * prompted for, never written into the repo), autodetects a stable workspace
- * identity (project.id > git-remote hash > repo basename; --workspace
- * overrides), and persists `{fabric: {enabled, endpoint, workspace}}` into
- * .klaurorc so every fab.ts call and fab_* MCP tool in this repo is remote
- * automatically, across shells and sessions.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function runFabricCommand(argv: string[]): Promise<void> {
   let action: string | undefined;
   let workspaceFlag: string | undefined;
@@ -1144,7 +1145,7 @@ async function runFabricCommand(argv: string[]): Promise<void> {
     return;
   }
 
-  // action === 'on'
+
   if (!found) {
     throw new Error(
       `No .klaurorc found at or above ${startDir}. Run \`klauro init\` in the repo first, then \`klauro fabric on\`.`,
@@ -1164,8 +1165,8 @@ async function runFabricCommand(argv: string[]): Promise<void> {
     : detectWorkspaceIdentity(found.root, loaded.config.project.id);
   const { configPath } = writeFabricSection(found.root, { enabled: true, endpoint, workspace: identity.workspace });
 
-  // Reachability probe — advisory contract: an unreachable service is a loud
-  // warning, not a failure; the config persists and fab degrades gracefully.
+
+
   let activeCount: number | null = null;
   let probeError: string | undefined;
   try {
@@ -1202,19 +1203,19 @@ function args_json_write(json: boolean, payload: unknown): boolean {
   return true;
 }
 
-/**
- * `klauro init` — THE one onboarding command. Run in a repo, it connects the
- * project to Klauro end to end, in order: (a) auth (reuse stored credentials,
- * never prompts for a password), (b) project identity (.klaurorc + the stable
- * workspace identity), (c) analysis (kicks off the hosted analysis when signed
- * in), (d) in-flight tracking (automatic — reported, not configured), (e) MCP
- * agent wiring (detected; offered via `klauro install` when missing), and
- * (f) the coordination fabric — ENABLED BY DEFAULT as part of connecting
- * (parallel-through-fabric is the product's default mode, not an opt-in;
- * `klauro fabric off` remains the rare explicit opt-out and is respected on
- * re-runs). Re-running init on a connected repo is idempotent: it verifies and
- * refreshes each subsystem instead of erroring.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 interface InitStep {
   step: 'auth' | 'project' | 'analysis' | 'in-flight' | 'mcp' | 'fabric';
   status: 'ok' | 'warn' | 'skip';
@@ -1233,16 +1234,16 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
       process.stdout.write(`[${steps.length}/6] ${marker} ${labels[step]}: ${detail}\n`);
     }
   };
-  // ALWAYS surface the resolved absolute path being connected, in both human
-  // and --json output, and call out plainly when it came from an implicit
-  // cwd default rather than an explicit --path/positional argument. This is
-  // the single most consequential fact in the whole command: init writes
-  // .klaurorc AND (when signed in) registers/links a hosted project using
-  // this exact directory's name and absolute path (see resolveInitOptions).
-  // A scripted/agent caller that didn't explicitly pass a path has no other
-  // signal that it might be about to connect the wrong repo — see the
-  // 2026-07-06 cold-customer audit, where exactly this silently registered
-  // the operator's real repo under a brand-new account.
+
+
+
+
+
+
+
+
+
+
   if (!args.json) {
     process.stdout.write(`Connecting ${projectPath} to Klauro\n`);
     if (!options.pathWasExplicit) {
@@ -1250,8 +1251,8 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     }
   }
 
-  // (a) Auth — reuse/verify the stored credentials; login stays a separate,
-  // explicit command (init never prompts for a password).
+
+
   let loaded = await loadKlauroConfig(projectPath);
   const hadConfig = Boolean(loaded.configPath);
   const auth = loadStoredConnectorAuth();
@@ -1266,16 +1267,16 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     record('auth', 'warn', `not signed in to ${serverUrl} — hosted steps are skipped (run: klauro login --email you@example.com, then re-run klauro init)`);
   }
 
-  // (b) Project identity — resolve or register. Existing .klaurorc = keep it
-  // (idempotent refresh); missing = the existing init flow (interactive when a
-  // TTY, defaults otherwise). EXCEPTION: an existing config whose project.id
-  // is null/non-prj_ (written by an older broken CLI) is UNBOUND — keeping it
-  // verbatim just re-warns "orphaned slug" forever and forces the user to rm
-  // .klaurorc and start over. When signed in, self-heal it instead: run the
-  // same headless resolve-or-create placement the fresh path uses (honoring
-  // --workspace), then write ONLY the real ids into the existing file so
-  // source/exclude customizations survive. A bound (prj_) config is untouched
-  // — re-running init stays a no-op verify.
+
+
+
+
+
+
+
+
+
+
   let projectStatus: InitStep['status'] = 'ok';
   let projectNote = hadConfig && !args.force ? ' · existing .klaurorc kept' : '';
   if (!hadConfig || args.force) {
@@ -1308,23 +1309,23 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
       projectNote = ` · existing .klaurorc is UNBOUND (project.id missing) and could not self-heal (${error instanceof Error ? error.message : String(error)}) — re-run klauro init, or rm .klaurorc to start fresh`;
     }
   } else if (token && args.workspace && args.workspace.trim()) {
-    // The id LOOKS bound (prj_…) but the caller expressed explicit placement
-    // intent (--workspace): verify it actually resolves for this account. A
-    // stale .klaurorc can carry a well-formed prj_ the server no longer knows
-    // (deleted project, or written under a different account) — keeping it
-    // verbatim just fails every upload later. Rebind ONLY on a definite
-    // server 404 AND explicit intent; a valid binding, a flaky network, or an
-    // auth hiccup all leave the file untouched (never hijack a wrong-account
-    // sign-in silently).
+
+
+
+
+
+
+
+
     const staleId = String(loaded.config.project.id);
     const probe = await probeHostedProjectBinding(serverUrl, token, staleId);
     if (probe === 'not_found') {
-      // Before minting a NEW project under the active account, check whether
-      // another account already signed into on this machine can see staleId
-      // — a fork/re-clone/teammate copy of this repo binds to the SAME
-      // hosted project via git-remote matching, so this is common, and
-      // switching (no password) preserves the existing analysis instead of
-      // starting a fresh one.
+
+
+
+
+
+
       const activeEmail = listStoredAccounts(serverUrl).find(account => account.active)?.email;
       const owner = await findStoredAccountOwningProject(serverUrl, staleId, activeEmail, probeHostedProjectBinding);
       if (owner) {
@@ -1351,16 +1352,16 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
   record('project', projectStatus,
     `${loaded.config.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath))}${loaded.config.project.id ? ` (hosted project ${loaded.config.project.id})` : ''} · identity ${identity.workspace} (${identity.source})${projectNote}`);
 
-  // (c) Analysis — kick off / refresh the hosted analysis for this repo.
-  // Best-effort: a failed or slow analysis never fails the connect.
+
+
   const boundProjectId = loaded.config.project.id;
   if (!token) {
     record('analysis', 'skip', 'requires sign-in — run `klauro analyze .` after `klauro login`');
   } else if (isUnboundHostedProjectId(boundProjectId)) {
-    // Signed in but the project never bound to a hosted prj_ — an upload here
-    // lands under a path-hash slug and is orphaned (never appears in any
-    // workspace). Fail loudly instead of printing "ok", and make --json exit
-    // non-zero so a scripted caller notices.
+
+
+
+
     const workspaceName = (args.workspace && args.workspace.trim()) || path.basename(projectPath);
     record('analysis', 'warn', `project not bound — analysis would upload as an orphaned slug and will not appear in workspace ${workspaceName}; re-run with --workspace or check auth`);
     process.exitCode = 1;
@@ -1379,14 +1380,14 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     }
   }
 
-  // (d) In-flight — the dirty-tree track is automatic (no setup step): the
-  // working tree is captured on demand (get_in_flight_changes / remote-sync)
-  // and published through the fabric when remote. Report, don't configure.
+
+
+
   const dirtyFiles = listDirtyFiles(projectPath);
   const dirty = dirtyFiles?.length;
-  // init itself just wrote .klaurorc (and possibly .klauroignore) — counting
-  // them as anonymous "in flight" work reads as if init dirtied the user's
-  // repo with mystery changes. Call them out explicitly instead.
+
+
+
   const klauroConfigDirty = (dirtyFiles || []).filter(file => /(^|\/)\.klauro(rc|ignore)$/.test(file)).length;
   record('in-flight', 'ok', dirty === undefined
     ? 'automatic — uncommitted work is tracked on demand (no git repo detected here, so the track starts with the first commit history)'
@@ -1394,17 +1395,17 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
       ? 'automatic — working tree clean; uncommitted work is tracked on demand'
       : `automatic — ${dirty} uncommitted file(s) currently in flight${klauroConfigDirty > 0 ? ' (includes the Klauro config init just wrote — commit these)' : ''}`);
 
-  // (e) MCP — agents on this machine get the Klauro tools via the existing
-  // install flow. Detected here; offered (not force-run — it builds/installs).
+
+
   const mcp = detectClaudeMcpRegistration();
   if (mcp === true) record('mcp', 'ok', 'klauro MCP server registered with Claude Code');
   else if (mcp === false) record('mcp', 'warn', 'not registered with Claude Code — run: klauro install   (wires the MCP server + agent defaults for this machine)');
   else record('mcp', 'skip', 'claude CLI not found — run `klauro install` to wire agent MCP access when a client is present');
 
-  // (f) Fabric — enabled by default as part of connecting (same resolution
-  // `klauro fabric on` used: endpoint from config/login, token from the
-  // credential store, stable workspace identity). `klauro fabric off` is the
-  // explicit opt-out and survives re-runs.
+
+
+
+
   const priorFabric = loaded.config.fabric;
   if (priorFabric && priorFabric.enabled === false) {
     record('fabric', 'skip', 'disabled by explicit opt-out (`klauro fabric off`) — re-enable with: klauro fabric on');
@@ -1450,9 +1451,9 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return;
   }
-  // The closing banner must reflect how the run actually went: a WARN/SKIP-
-  // heavy init announcing a rosy "Klauro connected" buries the problems the
-  // step lines just reported (2026-07 cold-customer audit).
+
+
+
   const displayName = payload.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath));
   const banner = warnSteps.length > 0
     ? `Klauro connected with ${warnSteps.length} warning${warnSteps.length === 1 ? '' : 's'}: ${displayName}  (${warnSteps.map(step => labels[step.step]).join(', ')} above need attention)`
@@ -1468,21 +1469,21 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
   ].join('\n'));
 }
 
-// listDirtyFiles / countDirtyFiles / detectClaudeMcpRegistration live in
-// ./status-report (imported above), shared with installed-cli.ts.
 
-/**
- * One-glance connection report for `klauro status` / `klauro doctor`: every
- * subsystem `klauro init` connects, for the current repo.
- */
-// buildConnectionReport / formatConnectionReportLines live in ./status-report
-// (imported above), shared with installed-cli.ts.
 
-// isUnboundHostedProjectId / probeHostedProjectBinding now live in
-// ./klauro-config (shared with remote-sync-client.ts, which uses them to
-// refuse an upload up front instead of accepting source it cannot place —
-// see analyzeCodebaseRemotely). Re-exported here so cli.ts stays the stable
-// import path for existing tests/callers.
+
+
+
+
+
+
+
+
+
+
+
+
+
 export { isUnboundHostedProjectId, probeHostedProjectBinding };
 
 async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{
@@ -1494,11 +1495,11 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   kind?: 'project' | 'workspace';
 }> {
   if (args.json || !process.stdin.isTTY || args.projectId || args.organizationId) {
-    // An explicit --project-id (or --organization-id) is honored as-is, and a
-    // caller with no stored token stays local-only (undefined ids). Otherwise a
-    // non-interactive caller still gets a real hosted placement — mirror the
-    // interactive branch's resolve-or-create, headlessly — so the analysis
-    // lands in a workspace instead of an orphaned path-hash slug.
+
+
+
+
+
     const serverUrl = normalizeServerUrl(args.serverUrl);
     const token = args.projectId || args.organizationId ? undefined : connectorToken(undefined, serverUrl);
     if (token) {
@@ -1534,9 +1535,9 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     process.stdout.write(`Detected remote: ${remote}\n`);
   }
 
-  // Prefer the ecosystem manifest's declared name (package.json/pyproject.toml/
-  // Cargo.toml/go.mod) over the bare directory basename for every default-name
-  // suggestion below — a checkout dir frequently doesn't match the package name.
+
+
+
   const defaultProjectName = resolveManifestProjectName(projectPath, path.basename(projectPath));
 
   if (!token) {
@@ -1550,8 +1551,8 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     return { serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
   }
 
-  // Recognition first: has THIS remote already been connected? If so, offer a
-  // one-keystroke reconnect — the common re-init case — before asking anything.
+
+
   const recognized = remoteUrl ? await findConnectedRemote(serverUrl, token, remoteUrl) : null;
   const flow = decideInitFlow(recognized);
   if (flow.mode === 'reconnect' && recognized) {
@@ -1570,8 +1571,8 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     process.stdout.write('OK — setting this repo up fresh instead.\n');
   }
 
-  // Not recognized (or declined): fresh placement. Ask project vs workspace,
-  // then place BY NAME (never a bare number prompt).
+
+
   if (manifest.workspace_recommendation?.recommended) {
     process.stdout.write(`Detected child projects: ${manifest.workspace_recommendation.candidates.map(candidate => candidate.path).join(', ')}\n`);
   }
@@ -1595,8 +1596,8 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   const workspace = await selectOrCreateWorkspace(serverUrl, token, undefined);
   const projects = await listRemoteProjects(serverUrl, token, workspace.id);
   let project: RemoteProjectChoice | undefined;
-  // Recognition can still fire within the chosen workspace (e.g. the top-level
-  // recognition was declined, or the remote had no canonical url): offer it.
+
+
   const matched = remoteUrl ? projects.find(candidate => normalizeRepoUrl(candidate.repo_url) === normalizeRepoUrl(remoteUrl)) : undefined;
   if (matched) {
     const answer = await promptChoice<'yes' | 'no'>(
@@ -1630,7 +1631,7 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   };
 }
 
-/** Recognition lookup — asks the backend whether this remote is already connected for this user. */
+
 async function findConnectedRemote(serverUrl: string, token: string, repoUrl: string): Promise<RecognizedRemote | null> {
   try {
     const payload = await remoteJson<{ match?: RecognizedRemote | null }>(
@@ -1638,18 +1639,18 @@ async function findConnectedRemote(serverUrl: string, token: string, repoUrl: st
     );
     return payload.match ?? null;
   } catch {
-    // Recognition is a convenience; a lookup failure must never block init.
+
     return null;
   }
 }
 
-/**
- * Non-interactive equivalent of the interactive branch's resolve-or-create: pick
- * the hosted workspace named by --workspace (or the repo basename), reusing an
- * existing one with that name if present else creating it, then create the
- * project inside it. Same helpers and error handling as the TTY path — just
- * reachable with no prompts, so `--json` / scripted init binds a real prj_/wsp_.
- */
+
+
+
+
+
+
+
 async function placeHostedProjectHeadless(
   projectPath: string,
   serverUrl: string,
@@ -1665,11 +1666,11 @@ async function placeHostedProjectHeadless(
   const existing = workspaces.find(candidate => candidate.name === workspaceName);
   const workspace = existing ?? await createRemoteWorkspace(serverUrl, token, workspaceName);
 
-  // Idempotency: a repeat headless init must reuse the existing project rather
-  // than mint a duplicate. With no prompt available we auto-reuse a match — by
-  // canonical remote url (like the interactive path), or by local_path for a
-  // standalone repo that has no remote (this project's case). Only create when
-  // nothing matches.
+
+
+
+
+
   const projects = await listRemoteProjects(serverUrl, token, workspace.id);
   const reused = projects.find(candidate =>
     (remoteUrl && normalizeRepoUrl(candidate.repo_url) === normalizeRepoUrl(remoteUrl)) ||
@@ -1698,7 +1699,7 @@ interface RemoteProjectChoice {
 
 async function selectOrCreateWorkspace(serverUrl: string, token: string, defaultName?: string): Promise<RemoteWorkspaceChoice> {
   const workspaces = await listRemoteWorkspaces(serverUrl, token);
-  // Single workspace = no ambiguity: default to it (still name-based, one keystroke to accept).
+
   if (workspaces.length === 1) {
     const only = workspaces[0];
     const answer = await promptChoice<'yes' | 'new'>(
@@ -1733,11 +1734,11 @@ async function selectRemoteProject(projects: RemoteProjectChoice[]): Promise<Rem
   return selectByName('project', projects);
 }
 
-/**
- * Prompt the user to pick a named entity BY NAME (a list number is accepted as
- * a shorthand, but the prompt asks for a name and never a bare "… number"). Re-
- * prompts on an ambiguous or unknown answer instead of throwing.
- */
+
+
+
+
+
 async function selectByName<T extends { id: string; name: string }>(label: string, choices: readonly T[]): Promise<T> {
   if (!choices.length) throw new Error(`No ${label}s available`);
   for (;;) {
@@ -1790,19 +1791,19 @@ interface AttachProjectResult {
   was_rebuild: string;
 }
 
-/** POSTs { project_id } to the SAME route createRemoteProject uses — the server tells the two shapes apart. */
+
 async function attachRemoteProject(serverUrl: string, token: string, workspaceId: string, projectId: string): Promise<AttachProjectResult> {
   return remoteJson<AttachProjectResult>(serverUrl, token, `/api/workspaces/${encodeURIComponent(workspaceId)}/projects`, { project_id: projectId });
 }
 
-/**
- * Resolve `klauro account-workspace-attach --workspace <target>` where target
- * may be an id (`wsp_...`, matched exactly first since ids never collide with
- * resolveNamedChoice's name-based matching) or a name/prefix (delegated to the
- * same resolveNamedChoice ambiguity handling used for the `klauro init`
- * workspace/project prompts, so "matches 2 things" errors read the same way
- * everywhere in the CLI).
- */
+
+
+
+
+
+
+
+
 export function resolveWorkspaceTarget(workspaces: RemoteWorkspaceChoice[], target: string): RemoteWorkspaceChoice {
   const byId = workspaces.find(workspace => workspace.id === target);
   if (byId) return byId;
@@ -1814,7 +1815,7 @@ export function resolveWorkspaceTarget(workspaces: RemoteWorkspaceChoice[], targ
   throw new Error(`No workspace found matching "${target}". Run \`klauro account-workspaces\` to list them.`);
 }
 
-// remoteJson lives in ./status-report (imported above), shared with installed-cli.ts.
+
 
 function normalizeRepoUrl(value?: string): string | undefined {
   if (!value) return undefined;
@@ -1972,7 +1973,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       if (!['overview', 'connections', 'evidence', 'full'].includes(value)) throw new Error('--detail-level must be overview, connections, evidence, or full');
       parsed.detailLevel = value;
     } else if (arg === '--analysis-focus') {
-      parsed.analysisFocus = argv[++i] as ParsedArgs['analysisFocus'];
+      const value = argv[++i];
+      if (!isAnalysisFocus(value)) throw new Error('--analysis-focus must be agent-fast, ui-overview, deep-context, or full');
+      parsed.analysisFocus = value;
     } else if (arg === '--force') {
       parsed.force = true;
     } else if (arg === '--all') {
@@ -2016,10 +2019,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--response-profile') {
       parsed.task.response_profile = argv[++i] as AgentTask['response_profile'];
     } else if (arg.startsWith('-')) {
-      // An unrecognized flag must never fall through to the positional-path
-      // slot: `init --sometypo` would otherwise "connect" a directory literally
-      // named --sometypo and die with a baffling ENOENT instead of naming the
-      // real problem.
+
+
+
+
       throw new Error(`Unknown option: ${arg} (run \`klauro help\` for the supported flags)`);
     } else if (!parsed.path) {
       parsed.path = arg;
@@ -2159,8 +2162,8 @@ async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
         status: 'ready',
         service: 'klauro-remote-analyzer',
         url,
-        // Mirrors createRemoteAnalyzerHttpServer's resolution: explicit flag/env,
-        // else per-user tmpdir scratch (never a cwd-relative durable dir).
+
+
         data_dir: args.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`),
         auth: process.env.KLAURO_ANALYZER_TOKEN ? 'bearer-token-required' : 'none',
       };
@@ -2240,12 +2243,12 @@ function formatAgentRevisionTracks(result: Awaited<ReturnType<typeof getAgentRev
   ].join('\n');
 }
 
-// formatRemoteResult moved to remote-result-format.ts (task #129) so
-// installed-cli.ts — the surface customers actually run — renders `analyze`
-// the same honest, non-completion-shaped way this dev CLI always has. See
-// that file's header comment for why the two had drifted. Reuse-decision
-// visibility (task #132: --force must never come back looking like a silent
-// no-op) lives there now too.
+
+
+
+
+
+
 
 function formatGithubImportPlan(plan: ReturnType<typeof buildGithubImportPlan>): string {
   return [
@@ -2515,9 +2518,9 @@ function summarizeRiskForCli(risk: any) {
     score: selectedRisk.score || selectedRisk.impact_score || null,
     reasons: selectedRisk.reasons || selectedRisk.factors || selectedRisk.risk_factors || selectedRisk.details || [],
     recommendations: selectedRisk.recommendations || [],
-    // change_risk_context: assess_change_risk's per-change-scoped field
-    // (defect #2 — the old change_risk_summary here was the raw repo-wide
-    // list embedded under a one-node answer).
+
+
+
     summary: risk.change_risk_context || null,
   };
 }
@@ -2642,17 +2645,17 @@ main().catch(async error => {
     process.stderr.write(`Analysis run log: ${runLogPath}\n`);
   }
   process.stderr.write('For diagnostics, run: klauro support-bundle <project-path> and send the bundle to support.\n');
-  // Staleness-on-failure (see stale-client-hint.ts's header comment): only
-  // ever runs here, after a real failure has already been printed, never on
-  // the happy path and never blocking longer than the module's own bounded
-  // timeout. A failure inside this check must never replace or hide the
-  // error above it.
+
+
+
+
+
   try {
     const hint = await getStaleClientUpdateHint({
       serverUrl: normalizeServerUrl(extractServerUrlFlag(process.argv) || loadStoredConnectorAuth().defaultServerUrl),
       currentVersion: getBuildIdentity().base_version,
     });
     if (hint) process.stderr.write(`${hint}\n`);
-  } catch { /* never let the hint itself fail the process */ }
+  } catch {   }
   process.exit(1);
 });

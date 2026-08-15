@@ -1,45 +1,45 @@
-/**
- * fab-remote-e2e.ts — loopback "two machines" proof for the cross-machine
- * coordination fabric (docs/FABRIC-REMOTE.md), driven through the CONFIG
- * PATH: no FAB_* env vars anywhere in the client processes.
- *
- * Boots the REAL analyzer service (createRemoteAnalyzerHttpServer, Bearer
- * token ON) on an ephemeral port, then simulates the documented second-machine
- * flow for TWO "machines" (separate repo dirs, separate processes, separate
- * local coord stores):
- *
- *   [stored login]                (seeded auth.json via KLAURO_AUTH_CONFIG_PATH)
- *   klauro init <repo>            (THE one onboarding: writes .klaurorc AND
- *                                  enables the fabric by default — no
- *                                  separate `fabric on` needed)
- *   fab.ts claim/check/release    (cwd = repo; transport resolved FROM CONFIG)
- *
- * Each "machine" gets its OWN isolated KLAURO_COORD_DIR, so the only channel
- * through which they can possibly see each other is the HTTP API — exactly
- * the second-machine-at-mcp.klauro.com topology, minus the WAN.
- *
- * Proves:
- *   0. ONE `klauro init` connects the repo end to end: resolves endpoint+token
- *      from stored credentials/config, persists {fabric:{enabled,endpoint,
- *      workspace}} by DEFAULT, NEVER writes the token into .klaurorc, and
- *      re-running init is idempotent (refresh, not an error).
- *   1. A claims a path -> B's check sees the conflict (cross-machine).
- *   2. B's claim warns inline (advisory: succeeds anyway).
- *   3. A releases -> B's check clears.
- *   4. Degrade: `fabric on` (surviving fine control) pointed at a dead URL
- *      persists with a loud warning, and a fab command in that repo warns +
- *      falls back to local (exit 0 — the advisory system never crashes the
- *      caller).
- *   5. `fabric status` shows enabled/endpoint/workspace/active claims;
- *      `fabric off` (the rare explicit opt-out) returns the repo to the local
- *      fabric — and a re-run of `klauro init` RESPECTS that opt-out.
- *   6. No config + no env = the original LOCAL fabric, unchanged (a repo that
- *      was never init'd stays local).
- *   7. Stress: 20 concurrent remote claims from 2 simulated machines — no
- *      lost/duplicate seq, all visible; reports p50/p95 HTTP claim latency.
- *
- *   npx tsx apps/mcp-server/scripts/fab-remote-e2e.ts
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -60,12 +60,12 @@ interface ChildRun {
   status: number;
 }
 
-/**
- * Env for every child process: inherit, but SCRUB every fabric/credential
- * env var — the whole point of this e2e is that the config file + stored
- * auth drive the transport, so any FAB_ / KLAURO_ token or URL leaking in
- * from the host shell would invalidate the proof.
- */
+
+
+
+
+
+
 function scrubbedEnv(extra: Record<string, string>): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const key of [
@@ -77,12 +77,12 @@ function scrubbedEnv(extra: Record<string, string>): Record<string, string | und
   return { ...env, ...extra };
 }
 
-/**
- * Run a script as a REAL separate OS process, as one "machine". Async on
- * purpose: the analyzer service lives in THIS process, so a spawnSync here
- * would block the event loop and the server could never answer the child
- * (self-inflicted deadlock — the child times out "unreachable").
- */
+
+
+
+
+
+
 function run(script: string, args: string[], env: Record<string, string>, cwd?: string): Promise<ChildRun> {
   return new Promise((resolve) => {
     const child = spawn(fs.existsSync(TSX) ? TSX : 'npx', fs.existsSync(TSX) ? [script, ...args] : ['tsx', script, ...args], {
@@ -111,43 +111,49 @@ function percentile(sorted: number[], p: number): number {
   return sorted[Math.max(0, idx)];
 }
 
+function isConnectedStatus(status: unknown): boolean {
+  return status === 'connected' || status === 'connected_with_warnings';
+}
+
 async function main(): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-fab-remote-e2e-'));
-  // SERVER-side store (the shared truth) — isolated from both "machines".
-  process.env.KLAURO_COORD_DIR = path.join(root, 'server-coord');
-  process.env.KLAURO_REMOTE_ANALYZER_DATA = path.join(root, 'server-data');
 
-  const server = createRemoteAnalyzerHttpServer({ dataDir: path.join(root, 'server-data'), token: TOKEN });
+  const serverData = path.join(root, 'server-data');
+  process.env.KLAURO_COORD_DIR = path.join(serverData, 'coordination');
+  process.env.KLAURO_REMOTE_ANALYZER_DATA = serverData;
+
+  const server = createRemoteAnalyzerHttpServer({ dataDir: serverData, token: TOKEN });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   const baseUrl = `http://127.0.0.1:${port}`;
   console.log(`analyzer service up at ${baseUrl} (Bearer auth ON)\n`);
 
-  // The stored credential file `klauro init`/`klauro login` would have
-  // written (~/.klauro/auth.json in real life) — the ONLY place the token
-  // lives on a "machine". Both machines share the same account, as a real
-  // team would.
+
+
+
+
   const authPath = path.join(root, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify({
     version: 1,
     defaultServerUrl: baseUrl,
     accounts: {
       [baseUrl]: { token: TOKEN, email: 'e2e@klauro.test', updated_at: new Date().toISOString() },
-      // A second stored login for the "service is down" scenario [7]: the
-      // user authenticated against it earlier; it is currently unreachable.
+
+
       'http://127.0.0.1:1': { token: TOKEN, email: 'e2e@klauro.test', updated_at: new Date().toISOString() },
     },
   }, null, 2));
 
-  // Two "machines": separate repo dirs, separate processes, separate local
-  // coord dirs. NO FAB_* env vars — the .klaurorc written by `fabric on` is
-  // the only transport configuration. The ONLY shared state is the HTTP API.
+
+
+
   const repoA = path.join(root, 'machine-a', 'repo');
   const repoB = path.join(root, 'machine-b', 'repo');
   fs.mkdirSync(repoA, { recursive: true });
   fs.mkdirSync(repoB, { recursive: true });
   const machineA = { KLAURO_AUTH_CONFIG_PATH: authPath, KLAURO_COORD_DIR: path.join(root, 'machine-a-coord') };
   const machineB = { KLAURO_AUTH_CONFIG_PATH: authPath, KLAURO_COORD_DIR: path.join(root, 'machine-b-coord') };
+  const remoteB = { baseUrl, token: TOKEN };
   const fabA = (args: string[]) => run(FAB, args, machineA, repoA);
   const fabB = (args: string[]) => run(FAB, args, machineB, repoB);
 
@@ -156,9 +162,9 @@ async function main(): Promise<void> {
     for (const [name, repo, env] of [['A', repoA, machineA], ['B', repoB, machineB]] as const) {
       const init = await run(CLI, ['init', repo, '--workspace', WS, '--server-url', baseUrl, '--json'], env);
       let payload: any = {};
-      try { payload = JSON.parse(init.stdout); } catch { /* asserted below */ }
+      try { payload = JSON.parse(init.stdout); } catch {   }
       assert(init.status === 0 && fs.existsSync(path.join(repo, '.klaurorc')), `machine ${name}: klauro init writes .klaurorc`, init.stdout + init.stderr);
-      assert(payload.status === 'connected' && payload.signed_in === true,
+      assert(isConnectedStatus(payload.status) && payload.signed_in === true,
         `machine ${name}: init reused the STORED credentials (no prompt, no env var)`, init.stdout + init.stderr);
       assert(payload.fabric?.enabled === true && payload.fabric.endpoint === baseUrl && payload.fabric.workspace === WS,
         `machine ${name}: init enabled the fabric BY DEFAULT with endpoint+workspace (no separate \`fabric on\`)`, init.stdout + init.stderr);
@@ -175,8 +181,8 @@ async function main(): Promise<void> {
     console.log('[0b] re-running init is idempotent (refresh, not an error)');
     const reInit = await run(CLI, ['init', repoA, '--json'], machineA);
     let reInitPayload: any = {};
-    try { reInitPayload = JSON.parse(reInit.stdout); } catch { /* asserted below */ }
-    assert(reInit.status === 0 && reInitPayload.status === 'connected' && reInitPayload.idempotent === true,
+    try { reInitPayload = JSON.parse(reInit.stdout); } catch {   }
+    assert(reInit.status === 0 && isConnectedStatus(reInitPayload.status) && reInitPayload.idempotent === true,
       're-init exits 0 and reports the existing connection', reInit.stdout + reInit.stderr);
     assert(reInitPayload.fabric?.enabled === true && reInitPayload.fabric.endpoint === baseUrl && reInitPayload.fabric.workspace === WS,
       're-init preserves the fabric section (endpoint + workspace unchanged)', reInit.stdout + reInit.stderr);
@@ -194,10 +200,20 @@ async function main(): Promise<void> {
     assert(bClaim.status === 0 && /claimed seq=\d+/.test(bClaim.stdout), "B's claim still succeeds (advisory, never a lockout)", bClaim.stdout + bClaim.stderr);
     assert(bClaim.stderr.includes('agent-A'), "B's claim warns inline, naming agent-A", bClaim.stderr);
 
+    const aExtend = await fabA(['extend', 'agent-A', 'src/payments/refund.ts', 'refundCharge']);
+    assert(aExtend.status === 0 && aExtend.stdout.includes('[remote'), 'machine A extends its remote claim', aExtend.stdout + aExtend.stderr);
+    const extendedOnB = await remoteActive(remoteB, WS);
+    const extendedClaim = extendedOnB.active.find(claim => claim.agent_id === 'agent-A');
+    assert(
+      extendedClaim?.paths.includes('src/payments/refund.ts') && extendedClaim.symbols.includes('refundCharge'),
+      'machine B sees machine A remote claim extension',
+      JSON.stringify(extendedOnB),
+    );
+
     console.log('[4] fabric status on machine A shows the shared awareness surface');
     const status = await run(CLI, ['fabric', 'status', repoA, '--json'], machineA);
     let statusPayload: any = {};
-    try { statusPayload = JSON.parse(status.stdout); } catch { /* asserted below */ }
+    try { statusPayload = JSON.parse(status.stdout); } catch {   }
     assert(status.status === 0 && statusPayload.enabled === true && statusPayload.workspace === WS
       && Array.isArray(statusPayload.active_claims)
       && statusPayload.active_claims.some((c: any) => c.agent_id === 'agent-B'),
@@ -215,7 +231,7 @@ async function main(): Promise<void> {
     console.log('[7] degrade: fabric on to a DEAD endpoint persists with a warning; fab falls back to local');
     const deadOn = await run(CLI, ['fabric', 'on', repoB, '--workspace', WS, '--server-url', 'http://127.0.0.1:1', '--json'], machineB);
     let deadPayload: any = {};
-    try { deadPayload = JSON.parse(deadOn.stdout); } catch { /* asserted below */ }
+    try { deadPayload = JSON.parse(deadOn.stdout); } catch {   }
     assert(deadOn.status === 0 && deadPayload.status === 'enabled' && deadPayload.reachable === false,
       'fabric on persists even when the service is unreachable (advisory: loud, not fatal)', deadOn.stdout + deadOn.stderr);
     const dead = await fabB(['check', 'agent-B', 'src/anything.ts']);
@@ -233,7 +249,7 @@ async function main(): Promise<void> {
     console.log('[8b] re-running init RESPECTS the explicit fabric opt-out');
     const initAfterOff = await run(CLI, ['init', repoB, '--json'], machineB);
     let initAfterOffPayload: any = {};
-    try { initAfterOffPayload = JSON.parse(initAfterOff.stdout); } catch { /* asserted below */ }
+    try { initAfterOffPayload = JSON.parse(initAfterOff.stdout); } catch {   }
     const fabricStepAfterOff = (initAfterOffPayload.steps || []).find((s: any) => s.step === 'fabric');
     assert(initAfterOff.status === 0 && initAfterOffPayload.fabric?.enabled === false && fabricStepAfterOff?.status === 'skip',
       'init does not flip a deliberately disabled fabric back on', initAfterOff.stdout + initAfterOff.stderr);

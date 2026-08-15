@@ -34,17 +34,17 @@ export interface TelemetryEvent {
   trace_id?: string;
   span_id?: string;
   parent_span_id?: string;
-  /**
-   * Direct CAS static-id correlation keys — the FIRST-choice match keys per
-   * getRuntimeEventContract's advertised `correlation_order`
-   * (runtime-contract.ts): a caller that already knows which CAS unit it's
-   * reporting on (an SDK wrapping an instrumented call, a runtime link the
-   * product itself generated) should never have to fall back to fuzzy
-   * route/function-hint matching. `correlateRuntimeEvent` (product.ts) has
-   * always checked these first; this event contract previously had nowhere
-   * to carry them, so every real caller was forced through the fuzzy path
-   * regardless of what it actually knew.
-   */
+
+
+
+
+
+
+
+
+
+
+
   static_id?: string;
   node_id?: string;
   entry_point_id?: string;
@@ -118,30 +118,30 @@ export interface TelemetryLoadOptions {
   limit?: number;
 }
 
-/**
- * Empty CAS stub used when a batch arrives for a project that has NO analysis
- * yet. Every correlation helper the ingest path reaches (`resolveHintNode`,
- * `correlateRuntimeEvent` and its `match*`/`staticRefForId` helpers) reads CAS
- * collections via `.find`/`.filter`, so `nodes: []` + empty arrays make them all
- * resolve to `unmatched` without any code duplication. The raw observation —
- * route, method, status, duration, error, timestamp — is still normalized and
- * persisted verbatim; only the CAS correlation is skipped (to be redone lazily
- * once an analysis exists). This is why telemetry is never dropped pre-analysis.
- */
+
+
+
+
+
+
+
+
+
+
 function emptyCasStub(): CASOutput {
   return { nodes: [], edges: [] } as unknown as CASOutput;
 }
 
-/**
- * Ingest a batch of runtime events, persisting raw observations regardless of
- * whether the project has been analyzed.
- *
- * `cas` may be `null` — when it is (no analysis found for the project yet), the
- * events are STILL normalized and persisted to the same runtime-observation
- * store `loadTelemetryObservations` reads from, marked `unmatched`. Correlation
- * against a CAS happens lazily: now if an analysis exists, later if one appears.
- * Telemetry must never be silently lost just because analysis hasn't run.
- */
+
+
+
+
+
+
+
+
+
+
 export async function ingestTelemetryBatch(
   cas: CASOutput | null,
   projectPath: string,
@@ -219,9 +219,9 @@ export function normalizeTelemetryEvent(cas: CASOutput, event: TelemetryEvent): 
     environment: event.environment,
     signal,
     static_id: event.static_id,
-    // An explicit node_id on the event is a stronger, caller-asserted fact
-    // than a function/file-hint-resolved guess — prefer it, fall back to the
-    // hint resolution that already existed for callers with no direct id.
+
+
+
     node_id: event.node_id || hintNode?.id,
     entry_point_id: event.entry_point_id,
     exit_point_id: event.exit_point_id,
@@ -261,25 +261,25 @@ function volumeFor(event: TelemetryEvent): number {
   return attributeVolume > 0 ? Math.round(attributeVolume) : 1;
 }
 
-/**
- * Container/workspace mount roots the Klauro analyzer INFRASTRUCTURE itself
- * uses to place source on disk — `WORKDIR /app` in the analyzer container
- * image (Dockerfile.analyzer) and `<dataDir>/workspaces/<analysisId>/` for a
- * per-project analysis workspace (remote-analyzer-service.ts `workspacePath`).
- * These are structural facts of HOW Klauro's hosted analyzer mounts ANY
- * project's source (not of any single analyzed project's own code), so
- * stripping them is generic across every project that runs through this
- * infrastructure, not specific to Klauro's own repo.
- *
- * A process that instruments ITSELF (e.g. a runtime process emitting
- * telemetry from wherever its own source happens to be mounted) and the CAS
- * for the same code produced by analyzing it under a DIFFERENT mount (its own
- * upload workspace) both name the same repo-relative file/route; only the
- * mount-root prefix differs. `pathsCompatible` (a pure literal-suffix check)
- * cannot bridge two DIFFERENT absolute prefixes even when both resolve to the
- * same file, so this strips known mount roots down to a repo-relative form
- * before falling back to a bounded common-suffix comparison.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const KNOWN_MOUNT_ROOT_PATTERNS: RegExp[] = [
   /^\/app\//,
   /^\/data\/workspaces\/[^/]+\//,
@@ -297,15 +297,15 @@ function pathSegments(value: string): string[] {
   return value.replace(/\\/g, '/').split('/').filter(Boolean);
 }
 
-/**
- * Bounded fallback for two ABSOLUTE paths that share no literal suffix
- * relationship (so `pathsCompatible` returns false) because each is rooted
- * under a DIFFERENT mount — e.g. `/data/workspaces/prj_x/apps/api/src/foo.ts`
- * (an analysis workspace root) vs `/app/apps/api/src/foo.ts` (a container
- * runtime mount). Requires the trailing directory+filename CHAIN to agree for
- * at least 3 segments and at least half of the shorter path's segments, so a
- * bare shared filename (e.g. two unrelated `index.ts`) is never enough.
- */
+
+
+
+
+
+
+
+
+
 function sharesDeepPathTail(left: string, right: string): boolean {
   const leftSegments = pathSegments(left);
   const rightSegments = pathSegments(right);
@@ -321,15 +321,15 @@ function sharesDeepPathTail(left: string, right: string): boolean {
   return common >= 3 && common >= Math.ceil(minDepth / 2);
 }
 
-/**
- * Generic file-identity check for telemetry<->CAS correlation: same as
- * `pathsCompatible` for the literal-suffix case (repo-relative vs
- * absolute-with-extra-prefix), PLUS two mount-root-aware fallbacks for paths
- * that are absolute under two DIFFERENT roots — strip known analyzer mount
- * roots (see `KNOWN_MOUNT_ROOT_PATTERNS`) and compare, then fall back to a
- * bounded shared-tail comparison. Strictly additive: never returns false
- * where `pathsCompatible` would have returned true.
- */
+
+
+
+
+
+
+
+
+
 function filesLikelySameSource(left: string, right: string): boolean {
   if (pathsCompatible(left, right)) return true;
   const strippedLeft = stripKnownMountRoot(left);
@@ -452,12 +452,12 @@ function dayKey(timestamp: string): string {
   return safe.toISOString().slice(0, 10);
 }
 
-/**
- * Day-file readers accept BOTH formats: the legacy `<day>.json` array and the
- * append-only `<day>.jsonl` this writer now produces. Newest-first ordering is
- * preserved for callers that rely on it (see loadIngestedTelemetry's early
- * `limit` break) by reversing the append-ordered JSONL lines.
- */
+
+
+
+
+
+
 const DAY_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}\.jsonl?$/;
 
 function dayFromFileName(name: string): string {
@@ -475,12 +475,12 @@ async function readDayObservations(filePath: string): Promise<RuntimeObservation
         try {
           parsed.push(JSON.parse(trimmed) as RuntimeObservation);
         } catch {
-          // A torn final line is expected if the process died mid-append —
-          // skip it rather than discarding the whole day, which is the entire
-          // durability advantage of append-only over read-modify-write.
+
+
+
         }
       }
-      // Appended chronologically; callers expect newest first.
+
       return parsed.reverse();
     }
     const array = await fs.readJson(filePath);
@@ -490,20 +490,20 @@ async function readDayObservations(filePath: string): Promise<RuntimeObservation
   }
 }
 
-/**
- * Appends observations WITHOUT reading or rewriting the day file.
- *
- * Measured live on prod 2026-08-11: `local ingest of 1 event(s) took 29126ms`
- * and `2 event(s) took 27549ms`. The old implementation read the whole day file,
- * merged, and atomically REWROTE it on every ingest, then ran a compaction pass
- * over 14 days of files — so appending one event cost a full parse + stringify +
- * write of a 4.1MB, 5,000-observation array. O(existing) per event, on the
- * production API process, in-line with customer analyses.
- *
- * Append-only makes it O(new events). The per-day cap is still enforced, just
- * lazily during compaction instead of on every write — a cap is a storage bound,
- * not a reason to rewrite megabytes per event.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function appendIngestedTelemetry(projectPath: string, observations: RuntimeObservation[]): Promise<void> {
   if (observations.length === 0) return;
   const dir = ingestedTelemetryDir(projectPath);
@@ -519,37 +519,43 @@ export async function appendIngestedTelemetry(projectPath: string, observations:
     const lines = dayObservations.map(observation => `${JSON.stringify(observation)}\n`).join('');
     await fs.appendFile(path.join(dir, `${day}.jsonl`), lines, 'utf8');
   }
+
+  await removeExpiredIngestedTelemetryDays(dir, RETENTION_DAYS);
+}
+
+async function removeExpiredIngestedTelemetryDays(dir: string, retentionDays: number): Promise<string[]> {
+  if (!(await fs.pathExists(dir))) return [];
+  const cutoff = dayKey(new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString());
+  const expired = (await fs.readdir(dir))
+    .filter(name => DAY_FILE_PATTERN.test(name) && dayFromFileName(name) < cutoff);
+  await Promise.all(expired.map(name => fs.remove(path.join(dir, name))));
+  return expired.map(dayFromFileName).sort();
 }
 
 export async function compactIngestedTelemetry(projectPath: string, retentionDays = RETENTION_DAYS): Promise<{ removed_days: string[] }> {
   const dir = ingestedTelemetryDir(projectPath);
   if (!(await fs.pathExists(dir))) return { removed_days: [] };
 
-  const cutoff = dayKey(new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString());
+  const removedDays = await removeExpiredIngestedTelemetryDays(dir, retentionDays);
   const allDayFiles = (await fs.readdir(dir)).filter(name => DAY_FILE_PATTERN.test(name));
-  const expired = allDayFiles.filter(name => dayFromFileName(name) < cutoff);
-  // The per-day cap moved here from appendIngestedTelemetry: enforcing it on
-  // every write meant reading and rewriting a 4.1MB array per event (measured
-  // 29s for ONE event on prod). Trimming during compaction keeps the storage
-  // bound while leaving the write path O(new events).
+
+
+
+
   for (const name of allDayFiles) {
-    if (dayFromFileName(name) < cutoff) continue;
     if (!name.endsWith('.jsonl')) continue;
     const filePath = path.join(dir, name);
     const observations = await readDayObservations(filePath);
     if (observations.length <= MAX_OBSERVATIONS_PER_DAY) continue;
-    // readDayObservations returns newest-first; keep the newest N and rewrite
-    // in append (chronological) order so the format stays consistent.
+
+
     const kept = observations.slice(0, MAX_OBSERVATIONS_PER_DAY).reverse();
     await fs.writeFile(filePath, kept.map(item => `${JSON.stringify(item)}\n`).join(''), 'utf8');
   }
-  for (const name of expired) {
-    await fs.remove(path.join(dir, name));
-  }
-  return { removed_days: expired.map(dayFromFileName).sort() };
+  return { removed_days: removedDays };
 }
 
-/** Bounded number of persisted day-files a single backfill pass will rewrite. */
+
 const BACKFILL_MAX_DAYS = 30;
 
 export interface TelemetryBackfillResult {
@@ -558,13 +564,13 @@ export interface TelemetryBackfillResult {
   days_rewritten: string[];
 }
 
-/**
- * Rebuild the `TelemetryEvent`-shaped hint fields `resolveHintNode` reads
- * (file/function hints + stack frames) from an ALREADY-normalized, persisted
- * observation event, so a backfill pass can re-resolve a CAS node hint without
- * the original raw batch. Factual fields (route/status/duration) are never
- * touched — this only reconstructs the correlation inputs.
- */
+
+
+
+
+
+
+
 function hintEventFromObservation(event: RuntimeObservation['event']): TelemetryEvent {
   const fileHint = event.attributes?.file_hint;
   const functionHint = event.attributes?.function_hint;
@@ -592,23 +598,23 @@ function stackFrameFromLine(line: string): TelemetryStackFrame | undefined {
   return { file: match[2], line: Number(match[3]), ...(match[1] ? { function: match[1] } : {}) };
 }
 
-/**
- * BACKFILL — re-correlate persisted `unmatched` observations against a
- * now-available CAS and upgrade the ones that now bind to a static node.
- *
- * Runtime observations are persisted verbatim even when a project has no
- * analysis (see `ingestTelemetryBatch` + `emptyCasStub`), landing as
- * `unmatched`. Once an analysis first appears, those pre-analysis observations
- * would otherwise stay `unmatched` forever, leaving node-level metrics empty.
- * This pass loads each day-file, re-runs the SAME vetted `correlateRuntimeEvent`
- * (plus `resolveHintNode`) over its `unmatched` records, and rewrites only the
- * ones that now match — mutating solely `correlation` and the derived
- * `event.node_id`. Route/method/status/duration/timestamp are never altered.
- *
- * Idempotent (already-matched records are skipped; re-running finds nothing new),
- * bounded (at most `BACKFILL_MAX_DAYS` files), and safe to call opportunistically.
- * A day-file is only rewritten when at least one observation in it upgraded.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function backfillIngestedTelemetry(
   cas: CASOutput | null,
   projectPath: string,
@@ -629,7 +635,7 @@ export async function backfillIngestedTelemetry(
     const filePath = path.join(dir, name);
     let observations: RuntimeObservation[];
     try {
-      observations = await fs.readJson(filePath);
+      observations = await readDayObservations(filePath);
     } catch {
       continue;
     }
@@ -647,7 +653,7 @@ export async function backfillIngestedTelemetry(
       const correlation = correlateRuntimeEvent(cas, eventForCorrelation);
       if (correlation.status === 'unmatched') continue;
 
-      // Upgrade in place: only correlation + the derived node hint change.
+
       observation.correlation = correlation;
       if (hintNode && !observation.event.node_id) observation.event.node_id = hintNode.id;
       result.upgraded += 1;
@@ -655,14 +661,14 @@ export async function backfillIngestedTelemetry(
     }
 
     if (dayUpgraded) {
-      // Write back in the file's OWN format. Backfill rewrites a whole day after
-      // upgrading correlations, so emitting a JSON array into a `.jsonl` file
-      // would corrupt every observation in it — the readers would then parse the
-      // array's single line and silently return nothing. Rare path, total data
-      // loss if wrong, so it branches explicitly rather than assuming.
+
+
+
+
+
       if (filePath.endsWith('.jsonl')) {
-        // readDayObservations handed these back newest-first; restore append
-        // (chronological) order on disk.
+
+
         const chronological = [...observations].reverse();
         await fs.writeFile(filePath, chronological.map(item => `${JSON.stringify(item)}\n`).join(''), 'utf8');
       } else {
@@ -741,7 +747,7 @@ export interface TelemetryObservationSet {
   observations: RuntimeObservation[];
 }
 
-/** Per route+method traffic/latency, aggregated from RAW observations (no CAS). */
+
 export interface RouteRuntimeMetrics {
   route: string;
   method?: string;
@@ -758,12 +764,12 @@ function percentile(sortedAsc: number[], p: number): number | undefined {
   return sortedAsc[Math.max(0, rank)];
 }
 
-/**
- * Aggregate raw runtime observations into per-route+method metrics
- * (request_count / error_rate / p50 / p95 / p99 / max latency). CAS-free: works
- * purely off the persisted observation records, so traffic and latency are
- * visible even before the project has any analysis. Additive read-side helper.
- */
+
+
+
+
+
+
 export function summarizeRouteMetrics(observations: RuntimeObservation[]): RouteRuntimeMetrics[] {
   const groups = new Map<string, { route: string; method?: string; durations: number[]; errors: number; total: number; statuses: Record<string, number> }>();
 
@@ -888,26 +894,26 @@ export async function loadTelemetryTrace(
 }
 
 async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
-  // Ensure the destination directory exists BEFORE writing/moving. On a fresh
-  // project's first self-telemetry ingest the day-file's parent dir
-  // (…/ingested-telemetry/) may not exist yet, and `fs.move`'s internal
-  // rename/chmod then races to ENOENT ("chmod '…/<day>.json'"). mkdir -p is
-  // idempotent — once the dir exists this is a no-op with zero behavior change.
+
+
+
+
+
   await fs.mkdirp(path.dirname(filePath));
   const tmpPath = path.join(os.tmpdir(), `klauro-telemetry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
   await fs.writeJson(tmpPath, value, { spaces: 2 });
   try {
     await fs.move(tmpPath, filePath, { overwrite: true });
   } catch (error) {
-    // Residual TOCTOU: withProjectAnalysisLock's release path removes the
-    // project's storage dir if it finds it empty at that instant (see
-    // storage.ts removeProjectDirIfEmpty) — a self-telemetry write racing
-    // that check can have its just-created ingested-telemetry/ parent
-    // directory removed between the mkdirp above and this move/chmod,
-    // reproducing the same ENOENT one directory level up. One mkdirp+retry
-    // is enough: by the time this runs again, the directory is either back
-    // (because something else is also actively writing into it, same as
-    // us) or genuinely gone for good (nothing left to reconcile with).
+
+
+
+
+
+
+
+
+
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     await fs.mkdirp(path.dirname(filePath));
     await fs.move(tmpPath, filePath, { overwrite: true });

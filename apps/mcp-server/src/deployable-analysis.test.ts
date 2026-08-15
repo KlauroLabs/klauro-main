@@ -5,7 +5,9 @@ import {
   tierQualifiedShipUnits,
   sliceDeployableAnalysis,
   buildDeployableAnalyses,
+  materializeDeployableCasTree,
   resolveSubCasNodeScope,
+  scopeCasToSubCasNode,
 } from './deployable-analysis';
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildReachabilityIndexFromCas, buildReachabilityIndex, callEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
@@ -170,9 +172,9 @@ test('slices carry their reachability closure, shared code is tagged and counted
   assert.equal(result.promoted, true);
   assert.equal(result.units.length, 4);
 
-  const apiUnit = result.units.find(u => u.das_unit_name === 'api')!;
-  const workerUnit = result.units.find(u => u.das_unit_name === 'worker')!;
-  const tool1Unit = result.units.find(u => u.das_unit_name === 'tool1')!;
+  const apiUnit = result.units.find(u => u.unit_name === 'api')!;
+  const workerUnit = result.units.find(u => u.unit_name === 'worker')!;
+  const tool1Unit = result.units.find(u => u.unit_name === 'tool1')!;
 
   const apiNodeIds = apiUnit.slice.nodes.map(n => n.id).sort();
   const workerNodeIds = workerUnit.slice.nodes.map(n => n.id).sort();
@@ -223,6 +225,81 @@ test('slices carry their reachability closure, shared code is tagged and counted
   assert.equal(tool1IndexEntry.shared_node_count, 0);
 });
 
+test('deployable child CAS projects deep intelligence layers without sibling leakage', () => {
+  const cas = buildFixtureCas();
+  Object.assign(cas, {
+    call_chains: [
+      { id: 'chain-api', chain_type: 'entry-to-exit', entry_point: { node_id: 'A1', method_name: 'A1' }, call_path: [{ call_id: 'c1', node_id: 'A2', method_name: 'A2', depth: 1 }], characteristics: {}, risk_analysis: {} },
+      { id: 'chain-worker', chain_type: 'entry-to-exit', entry_point: { node_id: 'W1', method_name: 'W1' }, call_path: [], characteristics: {}, risk_analysis: {} },
+    ],
+    behavioral_invariants: [
+      { id: 'inv-api', name: 'api invariant', invariant_type: 'business-rule', description: '', scope: { node_ids: ['A1'] }, enforcement: [{ source: 'code', mechanism: 'A1', confidence: 'enforced', node_id: 'A1' }], evidence: [{ source: 'node', id: 'A1' }], confidence: 'high' },
+      { id: 'inv-worker', name: 'worker invariant', invariant_type: 'business-rule', description: '', scope: { node_ids: ['W1'] }, enforcement: [{ source: 'code', mechanism: 'W1', confidence: 'enforced', node_id: 'W1' }], evidence: [{ source: 'node', id: 'W1' }], confidence: 'high' },
+    ],
+    behavioral_invariant_summary: { total: 2, by_type: { 'business-rule': 2 }, by_confidence: { high: 2 }, enforced: 2, inferred: 0, missing: 0, gaps: [] },
+    security_boundaries: [
+      { id: 'boundary-api', name: 'api auth', boundary_type: 'authentication', enforcement_points: [{ node_id: 'A1', mechanism: 'guard', confidence: 'enforced' }], trust_transition: { from_trust_level: 'untrusted', to_trust_level: 'trusted' }, sensitive_operations: ['api write'] },
+      { id: 'boundary-worker', name: 'worker auth', boundary_type: 'authentication', enforcement_points: [{ node_id: 'W1', mechanism: 'guard', confidence: 'enforced' }], trust_transition: { from_trust_level: 'untrusted', to_trust_level: 'trusted' }, sensitive_operations: ['worker write'] },
+    ],
+    flow_coverage: [
+      { call_chain_id: 'chain-api', coverage_status: 'fully-covered', tested_segments: [{ node_id: 'A1', test_ids: ['test-api'], assertion_count: 1 }], untested_segments: [], test_quality: { has_unit_tests: true, has_integration_tests: false, has_e2e_tests: false, uses_mocks: false } },
+      { call_chain_id: 'chain-worker', coverage_status: 'not-covered', tested_segments: [], untested_segments: [{ node_id: 'W1', importance: 'high', reason: 'missing' }], test_quality: { has_unit_tests: false, has_integration_tests: false, has_e2e_tests: false, uses_mocks: false } },
+    ],
+    test_gaps: [
+      { gap_type: 'untested-branch', location: { node_id: 'A2' }, severity: 'medium', recommendation: 'cover api branch' },
+      { gap_type: 'untested-flow', location: { node_id: 'W1' }, severity: 'high', recommendation: 'cover worker' },
+    ],
+    idiom_violations: [
+      { id: 'idiom-api', idiom_id: 'idiom', category: 'error-handling', severity: 'warning', file: 'apps/api/handler.ts', node_id: 'A1', description: '', recommendation: '' },
+      { id: 'idiom-worker', idiom_id: 'idiom', category: 'error-handling', severity: 'warning', file: 'apps/worker/worker.ts', node_id: 'W1', description: '', recommendation: '' },
+    ],
+    change_risks: [
+      { node_id: 'A1', risk_level: 'high', risk_factors: [], downstream_impact: { direct_callers: [], transitive_callers: [], affected_call_chains: ['chain-api'], affected_entry_points: ['ep_api'] }, test_protection: { has_direct_tests: true, has_integration_tests: false }, stability_context: { recent_churn: false, commit_count_30d: 0, bug_fix_density: 0 } },
+      { node_id: 'W1', risk_level: 'low', risk_factors: [], downstream_impact: { direct_callers: [], transitive_callers: [], affected_call_chains: ['chain-worker'], affected_entry_points: ['ep_worker'] }, test_protection: { has_direct_tests: false, has_integration_tests: false }, stability_context: { recent_churn: false, commit_count_30d: 0, bug_fix_density: 0 } },
+    ],
+    temporal_stability: [
+      { node_id: 'A1', stability_score: 1, stability_class: 'stable', churn_metrics: { commits_30d: 0, commits_90d: 0, unique_authors_30d: 0, lines_changed_30d: 0 }, quality_signals: { bug_fix_rate: 0, refactor_frequency: 'rare', has_recent_regression: false }, age_context: { file_age_days: 1, is_legacy: false } },
+      { node_id: 'W1', stability_score: 1, stability_class: 'stable', churn_metrics: { commits_30d: 0, commits_90d: 0, unique_authors_30d: 0, lines_changed_30d: 0 }, quality_signals: { bug_fix_rate: 0, refactor_frequency: 'rare', has_recent_regression: false }, age_context: { file_age_days: 1, is_legacy: false } },
+    ],
+    test_suites: [
+      { id: 'suite-api', name: 'api', file_path: 'tests/api.test.ts', test_type: 'unit', framework: 'node:test', tests: [{ id: 'test-api', name: 'api', test_type: 'unit', targets: ['A1'], status: { skipped: false, focused: false, flaky: false } }] },
+      { id: 'suite-worker', name: 'worker', file_path: 'tests/worker.test.ts', test_type: 'unit', framework: 'node:test', tests: [{ id: 'test-worker', name: 'worker', test_type: 'unit', targets: ['W1'], status: { skipped: false, focused: false, flaky: false } }] },
+    ],
+  });
+
+  const api = buildDeployableAnalyses(cas).units.find(unit => unit.unit_name === 'api')!.slice;
+  assert.deepEqual(api.behavioral_invariants?.map(item => item.id), ['inv-api']);
+  assert.equal(api.behavioral_invariant_summary?.total, 1);
+  assert.deepEqual(api.security_boundaries?.map(item => item.id), ['boundary-api']);
+  assert.deepEqual(api.flow_coverage?.map(item => item.call_chain_id), ['chain-api']);
+  assert.deepEqual(api.test_gaps?.map(item => item.recommendation), ['cover api branch']);
+  assert.deepEqual(api.idiom_violations?.map(item => item.id), ['idiom-api']);
+  assert.deepEqual(api.change_risks?.map(item => item.node_id), ['A1']);
+  assert.deepEqual(api.temporal_stability?.map(item => item.node_id), ['A1']);
+  assert.deepEqual(api.test_suites?.map(item => item.id), ['suite-api']);
+  assert.ok(api.terminality?.nodes.every(item => item.id !== 'W1'));
+});
+
+test('materializes deployables as conformant child CAS objects with stable parent links', () => {
+  const tree = materializeDeployableCasTree(buildFixtureCas());
+  assert.equal(tree.id, 'cas:sys1');
+  assert.equal(tree.parent_id, null);
+  assert.equal(tree.composition_mode, 'derived');
+  assert.equal(tree.children?.length, 4);
+  for (const child of tree.children || []) {
+    assert.match(child.id || '', /^cas:/);
+    assert.equal(child.parent_id, tree.id);
+    assert.equal(child.composition_mode, undefined);
+    assert.equal(child.children, undefined);
+    assert.ok(Array.isArray(child.nodes));
+    assert.ok(Array.isArray(child.edges));
+    assert.ok(Array.isArray(child.analyzer_contributions));
+    assert.ok(child.progressive_levels);
+    assert.equal(scopeCasToSubCasNode(tree, { sub_cas_node_id: child.id! }), child);
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(tree)), tree);
+});
+
 /**
  * Task #100 (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): the persisted
  * `cas.reachability_index` now includes 'invokes' edges, so sub-CAS-node slicing reuses it
@@ -233,7 +310,7 @@ test('slices carry their reachability closure, shared code is tagged and counted
  * the slice produced when it doesn't (the rebuild fallback path) — the reuse
  * is a speedup, never a semantic change.
  */
-test('DAS closure follows invokes edges via the persisted index, and reuse == rebuild', () => {
+test('sub-CAS closure follows invokes edges via the persisted index, and reuse equals rebuild', () => {
   const cas = buildFixtureCas();
   // A1 -invokes-> a dispatch-only node (no literal 'calls' edge) that must
   // still land inside api's slice, exactly like S1 does via 'calls'.
@@ -242,7 +319,7 @@ test('DAS closure follows invokes edges via the persisted index, and reuse == re
   cas.edges = [...cas.edges, { id: 'edge_A1_D1', source: 'A1', target: 'D1', type: 'invokes' } as CASEdge];
 
   const withoutIndex = buildDeployableAnalyses(cas);
-  const apiWithout = withoutIndex.units.find(u => u.das_unit_name === 'api')!;
+  const apiWithout = withoutIndex.units.find(u => u.unit_name === 'api')!;
   assert.ok(
     apiWithout.slice.nodes.some(n => n.id === 'D1'),
     'invokes-dispatched node must be in the closure (rebuild path)'
@@ -253,7 +330,7 @@ test('DAS closure follows invokes edges via the persisted index, and reuse == re
     reachability_index: buildReachabilityIndexFromCas({ nodes: cas.nodes, edges: cas.edges, method_calls: [] }),
   };
   const withIndex = buildDeployableAnalyses(casWithIndex);
-  const apiWith = withIndex.units.find(u => u.das_unit_name === 'api')!;
+  const apiWith = withIndex.units.find(u => u.unit_name === 'api')!;
   assert.ok(
     apiWith.slice.nodes.some(n => n.id === 'D1'),
     'invokes-dispatched node must be in the closure (reused persisted-index path)'
@@ -277,7 +354,7 @@ test('DAS closure follows invokes edges via the persisted index, and reuse == re
  * regress that: a stale, flag-less index must be rejected and rebuilt, never
  * trusted just because `cas.reachability_index` is truthy.
  */
-test('a pre-task#100 stored index (no includes_invokes_edges) is not trusted — DAS still follows invokes', () => {
+test('a stored index without invokes-edge coverage is not trusted', () => {
   const cas = buildFixtureCas();
   const dispatched = node('D1', 'apps/api/dispatched-handler.ts');
   cas.nodes = [...cas.nodes, dispatched];
@@ -294,7 +371,7 @@ test('a pre-task#100 stored index (no includes_invokes_edges) is not trusted —
 
   const staleCas: CASOutput = { ...cas, reachability_index: staleIndex };
   const result = buildDeployableAnalyses(staleCas);
-  const apiUnit = result.units.find(u => u.das_unit_name === 'api')!;
+  const apiUnit = result.units.find(u => u.unit_name === 'api')!;
   assert.ok(
     apiUnit.slice.nodes.some(n => n.id === 'D1'),
     'a stale pre-fix index must be rejected, not silently narrow the closure'
@@ -358,8 +435,8 @@ test('a repo-root ship declaration does not blanket-match the whole repo', () =>
 
   const { units, sub_cas_nodes } = buildDeployableAnalyses(cas);
   assert.equal(units.length, 2);
-  const agent = units.find(u => u.das_unit_name === 'agent')!;
-  const coordinator = units.find(u => u.das_unit_name === 'coordinator')!;
+  const agent = units.find(u => u.unit_name === 'agent')!;
+  const coordinator = units.find(u => u.unit_name === 'coordinator')!;
   // Each unit gets the crate its ship evidence actually names — never the repo.
   // The unrelated tools/ tree belongs to neither and stays an honest orphan.
   assert.deepEqual(agent.slice.nodes.map(n => n.id).sort(), ['AG1', 'AG2']);
@@ -392,8 +469,8 @@ test('sibling build targets in one directory are told apart by their own entry f
   } as unknown as CASOutput;
 
   const { units } = buildDeployableAnalyses(cas);
-  const spike = units.find(u => u.das_unit_name === 'spike')!;
-  const host = units.find(u => u.das_unit_name === 'host')!;
+  const spike = units.find(u => u.unit_name === 'spike')!;
+  const host = units.find(u => u.unit_name === 'host')!;
   assert.deepEqual(spike.slice.nodes.map(n => n.id), ['SP1']);
   // host also carries the lib it calls — file-complete, and not spike's code.
   assert.deepEqual(host.slice.nodes.map(n => n.id).sort(), ['HO1', 'LIB']);
@@ -401,7 +478,7 @@ test('sibling build targets in one directory are told apart by their own entry f
 
 test("a slice's comprehension payload excludes other units' flows and resolves its own related_flows", () => {
   const cas = buildFixtureCas();
-  (cas as any).system_capabilities = [
+  (cas as any).capabilities = [
     {
       id: 'cap_api', name: 'Api', description: '', category: 'core',
       operations: [
@@ -416,7 +493,7 @@ test("a slice's comprehension payload excludes other units' flows and resolves i
     },
   ];
   (cas as any).flow_graph = {
-    capabilities: [
+    capability_candidates: [
       {
         id: 'cap_api', name: 'Api', description: '', entry_points: ['ep_api', 'ep_worker'],
         entry_point_summary: { types: ['http'], count: 2, primary_type: 'http' },
@@ -437,33 +514,37 @@ test("a slice's comprehension payload excludes other units' flows and resolves i
     layers: [],
     system_insights: { detected_patterns: [], primary_entry_type: 'http', data_flow_type: '' },
   };
+  (cas as any).flows = [
+    { flow_id: 'flow::ep_api', name: 'api flow', intent: '', entry_point: 'ep_api', capability_id: 'cap_api', capability_relationships: [{ capability_id: 'cap_api', role: 'primary', rationale: '' }], entities: [], contract: { input: [], logic: '', side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] }, steps: [] },
+    { flow_id: 'flow::ep_worker', name: 'worker flow', intent: '', entry_point: 'ep_worker', capability_id: 'cap_api', capability_relationships: [{ capability_id: 'cap_api', role: 'primary', rationale: '' }], entities: [], contract: { input: [], logic: '', side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] }, steps: [] },
+  ];
 
   const { units } = buildDeployableAnalyses(cas);
-  const apiUnit = units.find(u => u.das_unit_name === 'api')!;
+  const apiUnit = units.find(u => u.unit_name === 'api')!;
 
   // Only the flow rooted in THIS unit's entry point — sharing a capability with
   // the worker's flow is not containment.
-  assert.deepEqual(apiUnit.slice.flow_graph!.flows!.map(f => f.flow_id), ['flow::ep_api']);
-  assert.deepEqual(apiUnit.slice.flow_graph!.capabilities[0].entry_points, ['ep_api']);
+  assert.deepEqual(apiUnit.slice.flows!.map(f => f.flow_id), ['flow::ep_api']);
+  assert.deepEqual(apiUnit.slice.flow_graph!.capability_candidates[0].entry_points, ['ep_api']);
   // related_flows resolve to flows present IN this slice.
-  const related = (apiUnit.slice.system_capabilities as any[])[0].related_flows.map((r: any) => r.flow_id);
+  const related = (apiUnit.slice.capabilities as any[])[0].related_flows.map((r: any) => r.flow_id);
   assert.deepEqual(related, ['flow::ep_api']);
-  const sliceFlowIds = new Set(apiUnit.slice.flow_graph!.flows!.map(f => f.flow_id));
+  const sliceFlowIds = new Set(apiUnit.slice.flows!.map(f => f.flow_id));
   for (const flowId of related) assert.ok(sliceFlowIds.has(flowId), `${flowId} must resolve in the slice`);
   // Operations are narrowed to this unit's own entry points too.
-  assert.deepEqual((apiUnit.slice.system_capabilities as any[])[0].operations.map((o: any) => o.entry_point_id), ['ep_api']);
+  assert.deepEqual((apiUnit.slice.capabilities as any[])[0].operations.map((o: any) => o.entry_point_id), ['ep_api']);
 });
 
 test('resolveSubCasNodeScope: looks up a unit by id, undefined for unknown/non-promoted', () => {
   const cas = buildFixtureCas();
   const { units } = buildDeployableAnalyses(cas);
-  const apiId = units.find(u => u.das_unit_name === 'api')!.sub_cas_node_id;
+  const apiId = units.find(u => u.unit_name === 'api')!.sub_cas_node_id;
 
   const resolved = resolveSubCasNodeScope(cas, apiId);
   assert.ok(resolved);
-  assert.equal(resolved!.das_unit_name, 'api');
+  assert.equal(resolved!.unit_name, 'api');
 
-  assert.equal(resolveSubCasNodeScope(cas, 'das:nonexistent'), undefined);
+  assert.equal(resolveSubCasNodeScope(cas, 'cas:nonexistent'), undefined);
 
   const singleDeployableCas = {
     ...cas,
@@ -477,7 +558,7 @@ test('sliceDeployableAnalysis: single-unit call still produces a CASOutput-shape
   const apiEvidence = cas.deployable_evidence!.find(e => e.name === 'api')!;
   const slice = sliceDeployableAnalysis(cas, apiEvidence);
 
-  assert.equal(slice.das_unit_name, 'api');
+  assert.equal(slice.unit_name, 'api');
   assert.equal(slice.root_path, 'apps/api');
   assert.ok(Array.isArray(slice.slice.nodes));
   assert.ok(Array.isArray(slice.slice.edges));
@@ -550,7 +631,7 @@ test('REGRESSION collapseDuplicateClosureUnits: a third-party image service with
   assert.equal(sub_cas_nodes.qualified_unit_count, 5);
   assert.equal(promoted, true);
   assert.deepEqual(
-    units.map(u => u.das_unit_name).sort(),
+    units.map(u => u.unit_name).sort(),
     ['admin-server', 'api-gateway', 'customers-service', 'grafana-server', 'prometheus-server'],
   );
 
@@ -558,9 +639,9 @@ test('REGRESSION collapseDuplicateClosureUnits: a third-party image service with
   // a real slice covers something. grafana-server's blanket-fallback closure
   // is a courtesy (never claimed as evidence of identity), not zero, but the
   // named first-party services must each keep their OWN exclusive nodes.
-  const admin = units.find(u => u.das_unit_name === 'admin-server')!;
+  const admin = units.find(u => u.unit_name === 'admin-server')!;
   assert.deepEqual(admin.slice.nodes.map(n => n.id).sort(), ['AS1', 'AS2']);
-  const gateway = units.find(u => u.das_unit_name === 'api-gateway')!;
+  const gateway = units.find(u => u.unit_name === 'api-gateway')!;
   assert.deepEqual(gateway.slice.nodes.map(n => n.id).sort(), ['AG1', 'AG2']);
 });
 

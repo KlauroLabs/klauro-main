@@ -168,7 +168,7 @@ test('worker crash: server survives, gets a clear error, and a run-failed record
       () => runAnalysis(fixtureProject, { forceFull: true }),
       (error: Error) => {
         assert.match(error.message, /Analysis worker for .* killed by signal SIGKILL/);
-        assert.match(error.message, /KLAURO_ANALYSIS_HEAP_MB=\d+/);
+        assert.match(error.message, /without heap-exhaustion evidence/);
         assert.match(error.message, /run-failed record/);
         return true;
       },
@@ -180,7 +180,7 @@ test('worker crash: server survives, gets a clear error, and a run-failed record
   const failures = readRunLogEvents().filter(record =>
     record.event === 'run-failed' && record.project_path === fixtureProject);
   assert.ok(failures.length > 0, 'expected a run-failed record after the worker died');
-  assert.match(failures[failures.length - 1].error?.message || '', /KLAURO_ANALYSIS_HEAP_MB/);
+  assert.match(failures[failures.length - 1].error?.message || '', /without heap-exhaustion evidence/);
 
   const starts = readRunLogEvents().filter(record =>
     record.event === 'run-start' && record.project_path === fixtureProject);

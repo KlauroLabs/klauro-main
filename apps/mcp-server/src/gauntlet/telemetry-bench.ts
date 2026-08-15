@@ -1,20 +1,20 @@
-/**
- * Camp-C OUT-OF-CATEGORY bench — runtime telemetry ↔ static structure fusion.
- *
- * The un-won axis: "how is it actually RUNNING". Every Camp-A (embeddings) and
- * Camp-B (scip, stack-graphs, codebase-memory) tool is a PURELY STATIC indexer —
- * it has no API surface to ingest a runtime event, let alone correlate it to a
- * node in the code graph. Klauro's correlateRuntimeEvent fuses a live request /
- * error / span to the exact static route or function it exercised, and rejects
- * a phantom event with no matching code. The competitors cannot even attempt
- * this — there is no runtime input on their tools — so it is a categorical win,
- * not a quality margin.
- *
- * A fixture is a dir with source + truth.json:
- *   { "task": "telemetry-correlation",
- *     "events": [ { "event": {type,method,path,...}, "expect_method", "expect_path" },
- *                 { "event": {...}, "expect": "unmatched" } ] }
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -29,13 +29,13 @@ interface TelemetryEventCase {
   expect_method?: string;
   expect_path?: string;
   expect_function?: string;
-  /** For `exit` events: the external endpoint the call must fuse to (exit point). */
+
   expect_exit?: string;
 }
 interface TelemetryTruth {
   task: 'telemetry-correlation' | 'telemetry-hotpath';
   events: TelemetryEventCase[];
-  /** For telemetry-hotpath: the static target the #1 operational priority must hit. */
+
   expected_top?: string;
 }
 
@@ -57,7 +57,7 @@ async function sourceBytes(dir: string): Promise<number> {
     try {
       const st = await fs.stat(path.join(dir, f));
       if (st.isFile()) total += st.size;
-    } catch { /* noop */ }
+    } catch {   }
   }
   return total;
 }
@@ -66,7 +66,7 @@ function normPath(p: string): string {
   return (p || '').replace(/\{([^}:]+)\}/g, ':$1').replace(/<(?:[^>:]+:)?([^>]+)>/g, ':$1');
 }
 
-/** Klauro: analyze once, then correlate each runtime event to its static node. */
+
 async function klauroCorrelate(dir: string, truth: TelemetryTruth): Promise<{ correct: number; total: number; bytes: number; time_ms: number }> {
   const t0 = Date.now();
   const cas: any = await analyzeForBench(dir);
@@ -79,10 +79,10 @@ async function klauroCorrelate(dir: string, truth: TelemetryTruth): Promise<{ co
       answerLines.push(`${tc.event.type} -> ${r.status}`);
       continue;
     }
-    // Error/stack event: a frame must resolve to the static function that threw.
+
     if (tc.expect_function) {
-      // EvidenceRef carries the symbol as `label` = "<type>:<name>" (e.g.
-      // "function:persist"), so match the name segment.
+
+
       const labels = [r.best_match, ...(r.matches || [])]
         .map((m: any) => String(m?.label || ''))
         .filter(Boolean);
@@ -91,9 +91,9 @@ async function klauroCorrelate(dir: string, truth: TelemetryTruth): Promise<{ co
       answerLines.push(`error -> ${labels.join(',') || 'none'}`);
       continue;
     }
-    // Exit event: an outbound call must fuse to the static EXIT POINT (external
-    // dependency) it exercised. The match's label is the exit point name (e.g.
-    // "GET /charges"); verify it carries the expected endpoint.
+
+
+
     if (tc.expect_exit) {
       const labels = [r.best_match, ...(r.matches || [])]
         .filter((m: any) => m?.type === 'exit_point')
@@ -104,8 +104,8 @@ async function klauroCorrelate(dir: string, truth: TelemetryTruth): Promise<{ co
       answerLines.push(`exit ${tc.event.endpoint || tc.event.target} -> ${labels.join(',') || 'none'}`);
       continue;
     }
-    // Expect a fused static route. The best match is the entry point; verify its
-    // method+path (canonicalized) equal the expected route.
+
+
     const bm: any = r.best_match;
     const route: any = (cas.route_table || []).find((rt: any) =>
       bm && (rt.source_node === bm.id || `${rt.method} ${rt.path}` === bm.name || normPath(rt.path) === normPath(tc.expect_path || '')));
@@ -118,12 +118,12 @@ async function klauroCorrelate(dir: string, truth: TelemetryTruth): Promise<{ co
   return { correct, total: truth.events.length, bytes: Buffer.byteLength(answerLines.join('\n'), 'utf8'), time_ms: Date.now() - t0 };
 }
 
-/**
- * Klauro: ingest a stream of runtime events, correlate each to its static node,
- * then rank operational priorities. The #1 priority's static target must equal
- * the expected hot path — i.e. Klauro fuses "where the errors/load actually land"
- * to the exact route/function so an agent triages the real hot spot first.
- */
+
+
+
+
+
+
 async function klauroHotpath(dir: string, truth: TelemetryTruth): Promise<{ correct: number; total: number; bytes: number; time_ms: number }> {
   const t0 = Date.now();
   const cas: any = await analyzeForBench(dir);
@@ -163,9 +163,9 @@ export async function runTelemetryCorrelationBench(fixtureDir: string): Promise<
     { arm: 'klauro', correct: kl.correct, total: kl.total, f1: klF1, bytes: kl.bytes, can_answer: true },
   ];
 
-  // Camp A + Camp B: purely static indexers with NO runtime-event input. They
-  // cannot ingest a request/error/span, let alone correlate it to a node —
-  // un-attempted (can_answer=false), so the win is categorical, not efficiency.
+
+
+
   for (const armId of ['codebase-memory', 'scip-typescript', 'stack-graphs', 'embeddings-nomic']) {
     arms.push({
       arm_id: armId,

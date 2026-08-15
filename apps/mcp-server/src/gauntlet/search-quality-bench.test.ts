@@ -1,13 +1,3 @@
-/**
- * Validating test for the search-reliability fix. BLACKBOX: goes through
- * analyzeForBench (the product's analyzer-server) and the real
- * semanticSearch/search_nodes code path, no engine import, no AI env.
- *
- * This must FAIL on the pre-fix ranking (RRF/structural fusion alone can rank
- * an unrelated node above an exact symbol-name match) and PASS after the
- * name-match tier boost in semantic-search.ts / query.ts.
- */
-
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'path';

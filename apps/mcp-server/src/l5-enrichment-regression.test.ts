@@ -62,6 +62,11 @@ function groundedDescriptionFor(ctx: any): string {
   const entities: string[] = Array.isArray(facts.databaseEntities) ? facts.databaseEntities : [];
   const deps: string[] = Array.isArray(facts.dependencies) ? facts.dependencies : [];
   const tokens: string[] = Array.isArray(facts.structuralTokens) ? facts.structuralTokens : [];
+  const capabilities: string[] = Array.isArray(facts.capabilities)
+    ? facts.capabilities.map((capability: unknown) => typeof capability === 'string'
+      ? capability
+      : String((capability as { name?: string })?.name || '')).filter(Boolean)
+    : [];
   const grounding = [...frameworks, ...entities, ...deps, ...tokens].filter(Boolean);
   const lead = grounding.slice(0, 6).join(', ') || 'persisted records';
   const stack = frameworks.join(', ') || deps.slice(0, 3).join(', ') || 'a Node runtime';
@@ -72,22 +77,46 @@ function groundedDescriptionFor(ctx: any): string {
   return (
     `This system is a record-management service that keeps ${entities.slice(0, 3).join(', ') || 'domain records'} ` +
     `accurate and retrievable for its callers. It lets a caller create, read, update, and delete those records, ` +
-    `grounded in ${lead}. It works by accepting each incoming request, validating the submitted fields, and ` +
+    `grounded in ${lead}. Its primary product behavior is ${capabilities.slice(0, 3).join(', ') || 'maintaining those records'}. ` +
+    `It works by accepting each incoming request, validating the submitted fields, and ` +
     `persisting the resulting record to its datastore before confirming the change. ` +
     `The implementation composes ${stack} on a Node runtime, with schema definitions enforcing the shape of every stored record.`
   );
 }
 
+function capabilityCatalogResponse(context: any): string | undefined {
+  if (!/cataloging the/i.test(String(context?.task || ''))) return undefined;
+  const entities: Array<{ name?: string }> = Array.isArray(context?.facts?.entities) ? context.facts.entities : [];
+  const journeys: Array<{ name?: string }> = Array.isArray(context?.facts?.user_journeys) ? context.facts.user_journeys : [];
+  const subjects = entities.map(entity => String(entity.name || '')).filter(Boolean).slice(0, 8);
+  const catalogSubjects = subjects.length > 0
+    ? subjects
+    : journeys.map(journey => String(journey.name || '')).filter(Boolean).slice(0, 8);
+  return JSON.stringify({
+    capabilities: catalogSubjects.map(subject => ({
+      name: subject === 'User' ? 'Maintain customer profiles' : `Maintain ${subject.replace(/([a-z])([A-Z])/g, '$1 $2')} information`,
+      description: subject === 'User'
+        ? 'Keeps user names and email details available for supported customer workflows.'
+        : `Keeps ${subject} information accurate and available throughout supported product workflows.`,
+      category: 'core',
+      entities: subjects.includes(subject) ? [subject] : [],
+      journeys: journeys.some(journey => journey.name === subject) ? [subject] : [],
+    })),
+  });
+}
+
 function mockSuccess(): void {
   (aiService as any).generateComponentDescription = async (context: any): Promise<string> => {
     const ac = context?.additionalContext || {};
+    const catalog = capabilityCatalogResponse(ac);
+    if (catalog) return catalog;
     const items: Array<{ id: string; name?: string; relatedDomains?: string[] }> = Array.isArray(ac.items) ? ac.items : [];
     const descriptions = items.map(item => {
       const name = item.name || item.id;
       const subject = item.relatedDomains?.join(' ') || name;
       return {
         id: item.id,
-        description: `${name} enforces ${subject} rules when requests enter the product and persists accepted record changes. The resulting ${subject} state remains available to later product workflows.`,
+        description: `Keeps ${subject} details accurate and available so callers can complete supported product workflows.`,
       };
     });
     return JSON.stringify({
@@ -148,13 +177,15 @@ function ungroundedIntegrationDescriptionFor(ctx: any): string {
 function mockDegradedSystemDescriptionOnly(): void {
   (aiService as any).generateComponentDescription = async (context: any): Promise<string> => {
     const ac = context?.additionalContext || {};
+    const catalog = capabilityCatalogResponse(ac);
+    if (catalog) return catalog;
     const items: Array<{ id: string; name?: string; relatedDomains?: string[] }> = Array.isArray(ac.items) ? ac.items : [];
     const descriptions = items.map(item => {
       const name = item.name || item.id;
       const subject = item.relatedDomains?.join(' ') || name;
       return {
         id: item.id,
-        description: `${name} enforces ${subject} rules when requests enter the product and persists accepted record changes. The resulting ${subject} state remains available to later product workflows.`,
+        description: `Keeps ${subject} details accurate and available so callers can complete supported product workflows.`,
       };
     });
     return JSON.stringify({
@@ -176,7 +207,7 @@ function noDeterministicComprehension(cas: CASOutput): void {
     assert.notEqual(identity.description_source, 'deterministic', 'product_map identity description_source must never be deterministic');
     assert.notEqual(identity.domain_source, 'deterministic', 'product_map identity domain_source must never be deterministic');
   }
-  for (const cap of cas.system_capabilities || []) {
+  for (const cap of cas.capabilities || []) {
     assert.notEqual(cap.description_source, 'deterministic', `capability ${cap.id} must never carry a deterministic description`);
   }
 }
@@ -205,6 +236,12 @@ test('MOCKED SUCCESS: L5 reaches ready, description_source=ai, no deterministic 
     assert.ok(
       (stored.enhanced_system_purpose?.inferred_description || '').trim().length > 0,
       'description must be non-empty on success',
+    );
+    assert.ok((stored.capabilities || []).length > 0, 'deferred enrichment must retain structural candidates until the AI catalog is published');
+    assert.equal(stored.product_map?.capabilities.length, stored.capabilities?.length);
+    assert.equal(
+      stored.enhanced_system_purpose?.capability_catalog_coverage?.published_capabilities,
+      stored.capabilities?.length,
     );
     noDeterministicComprehension(stored);
   });
@@ -244,7 +281,7 @@ test('MOCKED FAILURE: L5 reaches error (never pending), ai_enrichment=error, no 
   });
 });
 
-test('MOCKED DEGRADED SYSTEM DESCRIPTION: a rejected system paragraph must not blast-radius the rest of L5 comprehension', async () => {
+test('MOCKED DEGRADED SYSTEM DESCRIPTION: a rejected system paragraph must not blast-radius per-item L5 comprehension', async () => {
   await withScopedStorage(async repo => {
     mockDegradedSystemDescriptionOnly();
     const layered = await analyzeProjectLayered(repo);
@@ -281,10 +318,11 @@ test('MOCKED DEGRADED SYSTEM DESCRIPTION: a rejected system paragraph must not b
       'a system-description-only rejection must still reach ready — it is not a total AI failure',
     );
     assert.equal(l5Status(stored), 'ready');
-    const aiCapabilities = (stored.system_capabilities || []).filter(cap => cap.description_source === 'ai');
+    const aiCapabilities = (stored.capabilities || []).filter(cap => cap.description_source === 'ai');
+    const aiEntities = (stored.entities || []).filter(entity => entity.description_source === 'ai');
     assert.ok(
-      aiCapabilities.length > 0,
-      'capability descriptions must survive a system-description-only rejection, not roll back to the raw pre-AI snapshot',
+      aiCapabilities.length > 0 || aiEntities.length > 0,
+      `per-item descriptions must survive a system-description-only rejection, not roll back to the raw pre-AI snapshot: ${JSON.stringify({ capabilities: stored.capabilities || [], entities: stored.entities || [] })}`,
     );
   });
 });

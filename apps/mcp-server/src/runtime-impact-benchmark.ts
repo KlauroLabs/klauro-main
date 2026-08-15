@@ -265,7 +265,7 @@ function buildRuntimeImpactCas(workspace: string): CASOutput {
       untested_critical_paths: ['entry-checkout-submit'],
       recent_hotspots: [],
     },
-    system_capabilities: [
+    capabilities: [
       capability('cap-checkout', 'Checkout submission', 'Submits checkout requests for paid orders.', 'entry-checkout-submit', ['checkout'], 'critical'),
       capability('cap-invoice-export', 'Invoice export', 'Exports invoice packages for finance operations.', 'entry-invoice-export', ['finance', 'exports'], 'high'),
       capability('cap-search', 'Search', 'Searches records for operators.', 'entry-search', ['search'], 'medium'),

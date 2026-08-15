@@ -1,11 +1,11 @@
-/**
- * Scratch measurement script for the token-efficiency audit (not part of the
- * shipped surface) — measures real response sizes for the 7 highest-traffic
- * MCP tools against an already-analyzed repo's stored CAS, using the exact
- * response builders in query.ts / agent-adoption.ts / semantic-search.ts.
- *
- *   npx tsx apps/mcp-server/scripts/measure-response-sizes.ts [path]
- */
+
+
+
+
+
+
+
+
 import { getAnalysis } from '../src/analyzer';
 import * as query from '../src/query';
 import * as agentAdoption from '../src/agent-adoption';
