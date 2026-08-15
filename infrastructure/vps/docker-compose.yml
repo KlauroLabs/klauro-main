@@ -3,130 +3,33 @@ services:
     build:
       context: /opt/klauro/source
       dockerfile: apps/api/Dockerfile
-      # Deploy-path-independent build stamp (see apps/api/Dockerfile's ARG
-      # comment): `docker compose build`/`up --build` reads these from
-      # whichever shell invokes it. deploy.sh exports them from its own
-      # git checkout before calling compose; any other invocation (a bare
-      # `docker compose up -d --build` from a different checkout/worktree)
-      # gets them too as long as it exports the same two vars, and degrades
-      # to an honest "unknown" stamp — never a silently missing one — if it
-      # doesn't.
       args:
         KLAURO_GIT_SHA: "${KLAURO_GIT_SHA:-}"
         KLAURO_BUILD_TIME: "${KLAURO_BUILD_TIME:-}"
     image: klauro/api:alpha
     restart: unless-stopped
-    # The current host has six vCPUs. Klauro may use at most four, preserving
-    # two for Caddy, SSH, health probes, and host operations even during a cold
-    # whale analysis. Completeness is unchanged; excess work queues.
     cpus: "4.0"
-    # Production survivability (2026-08): the host has 7.7GB RAM and NO
-    # container memory ceiling existed before this line — `docker stats`
-    # showed MEM USAGE/LIMIT as usage-vs-HOST-TOTAL, i.e. unbounded. The
-    # historical incidents (dmesg: anon-rss up to 7.4GB pre-worker-isolation;
-    # then, even after the 2026-07-18 heap-cap + worker-isolation fix, a
-    # cluster of concurrent non-API node processes on this same host drove
-    # the kernel's GLOBAL (not cgroup) OOM killer to take systemd itself
-    # twice on 2026-07-30) both land on the SAME underlying gap: nothing ever
-    # stopped this container's total RSS (main process + forked worker +
-    # tsx/esbuild helpers) from growing into the last GB of host memory.
-    # Direct peak-RSS probes against this repo (analyzeProjectLayered run
-    # through the SAME forked-worker path production uses, sampled via
-    # /proc/<pid>/status, AI enrichment disabled to isolate the deterministic
-    # pipeline) measured, at the current KLAURO_ANALYSIS_HEAP_MB=4096 heap
-    # cap:
-    #   775 files  (packages/analyzer-core) -> 27,477 nodes: peak RSS 1.66GB
-    #   1953 files (apps/mcp-server)        -> 21,660 nodes: peak RSS 1.54GB
-    #   3355 files (this repo, full)        -> 57,392 nodes: peak RSS 2.30GB
-    # RSS grows sub-linearly with node count (a large fixed baseline —
-    # full source text + AST retention across 25-38 concurrent analyzers —
-    # dominates more than the marginal per-node cost). Extrapolating that
-    # curve to the known 93,306-node/159.6s whale (the 3,856-file repo that
-    # used to crash on the edges.push(...deduped) argument-limit bug) puts
-    # its worker peak in the ~3-3.5GB range — NOT independently re-measured
-    # at that exact scale under this harness; re-run
-    # infrastructure/vps/README.md's memory-probe recipe against a true
-    # multi-thousand-node whale before trusting this number for a tighter
-    # cap. 6144MB gives the main api process (~300-500MB idle) plus one
-    # worker (4096MB heap + non-heap overhead, currently observed up to
-    # ~2.4GB but sized here for the extrapolated ~3.5GB whale case) real
-    # headroom while still leaving >1.5GB free on the host for Caddy, sshd,
-    # and page cache — the same floor this program's own operating
-    # instructions require checking before every batch of work.
     mem_limit: 6144m
     memswap_limit: 6144m
     env_file:
       - /opt/klauro/.env
     environment:
-      # Dogfood Klauro's own runtime telemetry: the service emits one runtime
-      # event per inbound HTTP request via @klauro/telemetry and self-ingests it
-      # into the observation store, correlated against Klauro's OWN analysis.
-      # Telemetry attaches to the canonical uploaded Klauro project. Telemetry
-      # never analyzes the source embedded in this container and never triggers
-      # analysis itself. ENDPOINT is unset intentionally for in-process ingest.
       KLAURO_SELF_TELEMETRY: "1"
-      # Durable coordination board (incident 2026-07-21): without this the
-      # server's claim log defaults to ~/.klauro/coordination on the
-      # container's EPHEMERAL overlay filesystem — every restart erased the
-      # board (claims, seq, epoch) while the persistent /data volume sat
-      # unused. /data is the mounted /opt/klauro/data volume, so the board
-      # survives container recreation. The server also warns loudly at startup
-      # if this ever regresses (warnIfEphemeralCoordDir).
       KLAURO_COORD_DIR: /data/coordination
       KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
       KLAURO_TS_EXTRACTION_CACHE_PATH: /data/cache/ts-extractions
       KLAURO_ANALYZER_CONTRIBUTION_CACHE_PATH: /data/cache/analyzer-contributions
       KLAURO_AI_CACHE_PATH: /data/cache/ai
       KLAURO_AI_INTERPRETATION_FORCE: "false"
-      # AI calls are one bounded attempt per chain entry. If the primary shared
-      # inference worker stalls, Klauro advances to the next explicit entry;
-      # it never multiplies hidden SDK retries into multi-minute silence.
       AI_TIMEOUT: "30000"
       KLAURO_AI_PROVIDER_RETRIES: "0"
-      # Narrative generation uses a compact product-only prompt. This model
-      # completed the representative four-sentence contract in ~1.3s; larger
-      # shared models exceeded the request SLO without improving that result.
       DEEPINFRA_NARRATIVE_MODEL: "${DEEPINFRA_NARRATIVE_MODEL:-mistralai/Mistral-Small-3.2-24B-Instruct-2506}"
       DEEPINFRA_FAST_FALLBACK_MODEL: "${DEEPINFRA_FAST_FALLBACK_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo}"
       OPENROUTER_MODEL: "${OPENROUTER_MODEL:-tencent/hy3}"
-      # One analysis worker at a time fits the 8GB host without competing heaps;
-      # two parser workers use bounded parallelism inside that isolated job.
       KLAURO_TS_PARSE_WORKERS: "1"
       KLAURO_ANALYSIS_CONCURRENCY: "1"
-      # A slow analysis keeps running. Only a worker whose real phase counter
-      # stops advancing for ten minutes is recycled from its durable checkpoint.
       KLAURO_ANALYSIS_STALL_MS: "600000"
-      # Incident (2026-07-18): a version-triggered full rebuild of a large
-      # monorepo (the async POST /reanalyze path's analyzeProjectLayered call —
-      # see the "ASYNC REANALYZE" comment in remote-analyzer-service.ts — still
-      # runs the heavy analysis IN-PROCESS via setImmediate, not through the
-      # worker-fork isolation analyzer.ts already has for other paths) grew
-      # this MAIN api process's heap past the host's total RAM (7.7GiB, no
-      # container memory limit configured). The kernel's HOST-WIDE OOM killer
-      # (dmesg: constraint=CONSTRAINT_NONE, i.e. not a cgroup-limit kill, so
-      # `docker inspect`'s .State.OOMKilled never reports it) SIGKILLed the
-      # node process directly, with zero log output, and docker's `restart:
-      # unless-stopped` policy silently revived it — repeating every ~5-7
-      # minutes since the killed rebuild never persists a completed
-      # cas_version, so the next freshness check re-triggers it.
-      # This heap ceiling does NOT fix that (the layered reanalyze path still
-      # needs worker isolation — tracked separately), but it bounds the blast
-      # radius (the process fails at ~4GB instead of exhausting the whole
-      # host, which could otherwise take down unrelated host processes too)
-      # AND makes the failure VISIBLE: V8 logs "FATAL ERROR: Reached heap
-      # limit ... JavaScript heap out of memory" to stderr before terminating,
-      # instead of the silent, unloggable SIGKILL this incident exhibited.
-      # Sized to match the existing worker heap ceiling (KLAURO_ANALYSIS_HEAP_MB
-      # in /opt/klauro/.env, applied via --max-old-space-size in analyzer.ts's
-      # spawnAnalysisWorker) so both the in-process and forked paths fail at
-      # the same, already-proven-safe threshold.
       NODE_OPTIONS: --max-old-space-size=4096
-      # ai.config.ts defaults REDIS_HOST to 'localhost', which inside this
-      # container is the container itself — nothing listens there, so every
-      # analysis logged "Redis unavailable (ECONNREFUSED 127.0.0.1:6379); using
-      # in-memory cache" and silently fell back to a PER-PROCESS map. The AI
-      # response cache has therefore never worked in production: it was empty on
-      # every restart and shared by nothing. Point it at the service below.
       REDIS_HOST: redis
     expose:
       - "8787"
@@ -135,19 +38,12 @@ services:
         condition: service_healthy
     volumes:
       - /opt/klauro/data:/data
-      # Release artifacts (tarball + latest.json) live on the host; the api
-      # serves /dist/klauro-latest.tgz and /dist/latest.json from here. Without
-      # this mount the container can't see them → tarball 404 + version:null.
       - /opt/klauro/downloads:/opt/klauro/downloads:ro
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "5"
-    # Defect #24: gives compose (and deploy.sh) a real signal for "the new api
-    # container is actually serving requests", not just "the process started".
-    # Used below so caddy only (re)starts against an api that is up, and by
-    # deploy.sh to gate the post-recreate `docker compose restart caddy`.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 5s
@@ -155,19 +51,6 @@ services:
       retries: 5
       start_period: 15s
 
-  # The AI response cache's backing store. Absent until 2026-08-10: the code has
-  # always dialed Redis and always fallen back to an in-memory map, so the
-  # documented "path-insensitive 24h AI response cache" was per-process and
-  # evaporated on every deploy. Two consequences worth stating, because both were
-  # being counted as already-solved: repeat analyses re-paid full AI latency (the
-  # AI phase is 67-99% of wall-clock), and no horizontally-scaled worker could
-  # ever share a cache entry with another.
-  #
-  # maxmemory-policy allkeys-lru so a full cache degrades by evicting cold
-  # entries rather than refusing writes — a cache that starts erroring is worse
-  # than one that forgets. 512mb leaves the box's ~6.4Gi headroom intact
-  # alongside the api's 4096mb heap ceiling; over-committing this VPS has
-  # OOM-killed systemd and sshd before.
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -178,8 +61,6 @@ services:
       --maxmemory-policy allkeys-lru
     volumes:
       - /opt/klauro/redis-data:/data
-    # Not published to the host: only the api talks to it, over the compose
-    # network. An exposed unauthenticated Redis is a well-known compromise path.
     expose:
       - "6379"
     healthcheck:
