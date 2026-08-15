@@ -3,39 +3,299 @@
   "files": [
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "ceiling": 25798
+      "ceiling": 25752
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
+      "ceiling": 12101
+    },
+    {
+      "file": "apps/mcp-server/src/server.ts",
+      "ceiling": 7997
+    },
+    {
+      "file": "apps/mcp-server/src/query.ts",
+      "ceiling": 6281
+    },
+    {
+      "file": "apps/mcp-server/src/agent-adoption.ts",
+      "ceiling": 6048
+    },
+    {
+      "file": "apps/mcp-server/src/remote-analyzer-service.ts",
+      "ceiling": 5699
+    },
+    {
+      "file": "packages/analyzer-core/src/types/cas.types.ts",
+      "ceiling": 5040
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer.ts",
+      "ceiling": 4098
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/php-analyzer.ts",
+      "ceiling": 4091
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
+      "ceiling": 3411
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/react-analyzer.ts",
+      "ceiling": 3420
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
+      "ceiling": 2819
+    },
+    {
+      "file": "apps/mcp-server/src/analyzer.ts",
+      "ceiling": 3177
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
+      "ceiling": 3151
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/csharp-analyzer.ts",
+      "ceiling": 3084
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/symfony-analyzer.ts",
+      "ceiling": 2858
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
-      "ceiling": 2939
+      "ceiling": 2748
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/go-analyzer.ts",
+      "ceiling": 2679
+    },
+    {
+      "file": "apps/mcp-server/src/cli.ts",
+      "ceiling": 2661
+    },
+    {
+      "file": "apps/mcp-server/src/product.ts",
+      "ceiling": 2580
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/angular-analyzer.ts",
+      "ceiling": 2564
+    },
+    {
+      "file": "apps/mcp-server/src/storage.ts",
+      "ceiling": 2316
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/java-analyzer.ts",
+      "ceiling": 2392
+    },
+    {
+      "file": "apps/mcp-server/src/agent-existing-task-benchmark.ts",
+      "ceiling": 2345
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/laravel-analyzer.ts",
+      "ceiling": 2295
+    },
+    {
+      "file": "apps/mcp-server/src/agent-scratch-build-benchmark.ts",
+      "ceiling": 2273
+    },
+    {
+      "file": "apps/mcp-server/src/agent-live-trial.ts",
+      "ceiling": 2226
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/vue-analyzer.ts",
+      "ceiling": 2098
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/tree-sitter-ts-extractor.ts",
-      "ceiling": 1967
+      "ceiling": 1960
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/express-analyzer.ts",
+      "ceiling": 1951
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/python-analyzer.ts",
+      "ceiling": 1946
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/fastapi-analyzer.ts",
+      "ceiling": 1916
+    },
+    {
+      "file": "apps/mcp-server/src/deployable-analysis.ts",
+      "ceiling": 1862
+    },
+    {
+      "file": "packages/analyzer-core/src/types/index.ts",
+      "ceiling": 1855
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/language-spec.ts",
       "ceiling": 1806
     },
     {
+      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
+      "ceiling": 1759
+    },
+    {
+      "file": "apps/mcp-server/src/machine-gauntlet.ts",
+      "ceiling": 1708
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/dotnet/wpf-analyzer.ts",
+      "ceiling": 1685
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/flask-analyzer.ts",
+      "ceiling": 1651
+    },
+    {
+      "file": "apps/mcp-server/src/remote-source.ts",
+      "ceiling": 1640
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/kotlin-analyzer.ts",
+      "ceiling": 1640
+    },
+    {
+      "file": "apps/mcp-server/src/agent-context-codec.ts",
+      "ceiling": 1634
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/spring-boot-analyzer.ts",
+      "ceiling": 1576
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-analyzer.ts",
+      "ceiling": 1574
+    },
+    {
+      "file": "apps/mcp-server/src/cross-codebase-gauntlet.ts",
+      "ceiling": 1541
+    },
+    {
+      "file": "apps/mcp-server/src/incremental-benchmark.ts",
+      "ceiling": 1496
+    },
+    {
       "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
       "ceiling": 1492
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/messaging/messaging-analyzer.ts",
+      "ceiling": 1431
+    },
+    {
+      "file": "apps/mcp-server/src/coordination/local-store.ts",
+      "ceiling": 1385
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/ruby-analyzer.ts",
+      "ceiling": 1332
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
+      "ceiling": 1316
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/workflow-analyzer.ts",
+      "ceiling": 1311
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/dotnet/aspnet-core-analyzer.ts",
+      "ceiling": 1290
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/enhanced-call-graph-extractor.ts",
+      "ceiling": 1286
+    },
+    {
+      "file": "apps/mcp-server/src/agent-greenfield-benchmark.ts",
+      "ceiling": 1277
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
       "ceiling": 1239
     },
     {
+      "file": "packages/analyzer-core/src/analyzer/languages/container-topology-analyzer.ts",
+      "ceiling": 1231
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/testing/jest-analyzer.ts",
+      "ceiling": 1207
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/iac-analyzer.ts",
+      "ceiling": 1192
+    },
+    {
+      "file": "apps/mcp-server/src/greenfield-build-session.ts",
+      "ceiling": 1171
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/soap-wsdl-analyzer.ts",
+      "ceiling": 1166
+    },
+    {
+      "file": "apps/mcp-server/src/description-enrichment.ts",
+      "ceiling": 1165
+    },
+    {
+      "file": "apps/mcp-server/src/agent-from-zero-build-context-proof.ts",
+      "ceiling": 1141
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/ci/ci-pipeline-analyzer.ts",
+      "ceiling": 1100
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/solidity-analyzer.ts",
+      "ceiling": 1058
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/testing/cypress-analyzer.ts",
+      "ceiling": 1046
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/architecture/validation-schema-analyzer.ts",
+      "ceiling": 1038
+    },
+    {
+      "file": "apps/mcp-server/src/agent-scratch-dogfood-build.ts",
+      "ceiling": 1033
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/angular-route-resolver.ts",
+      "ceiling": 1024
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/libraries/orm/doctrine-analyzer.ts",
+      "ceiling": 1024
+    },
+    {
+      "file": "apps/mcp-server/src/agent-task-family-coverage.ts",
+      "ceiling": 1018
+    },
+    {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
       "ceiling": 868
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
-      "ceiling": 831
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
       "ceiling": 812
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
+      "ceiling": 786
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/product-map.ts",

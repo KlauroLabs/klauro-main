@@ -5,8 +5,7 @@
   "description": "Klauro monorepo for CAS analysis, MCP agent context, hosted analyzers, and legacy product reference surfaces.",
   "workspaces": [
     "apps/*",
-    "packages/*",
-    "legacy/*"
+    "packages/*"
   ],
   "scripts": {
     "deploy": "bash infrastructure/vps/deploy.sh",
@@ -22,6 +21,7 @@
     "analyzer:test": "npm --prefix packages/analyzer-core test",
     "proof": "npm run mcp:typecheck && npm run mcp:test && npm run analyzer:build && npm run analyzer:test && npm run parity:extractor",
     "perf:budget": "npm --prefix apps/mcp-server run perf:budget",
+    "security:audit": "npm audit",
     "parity:extractor": "npm --prefix packages/analyzer-core run parity:extractor"
   },
   "overrides": {
