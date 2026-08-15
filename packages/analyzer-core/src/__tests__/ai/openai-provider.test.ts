@@ -157,6 +157,59 @@ describe('OpenAIProvider compatible endpoint support', () => {
       expect(seen[0]?.url).toBe('/api/chat');
       expect(seen[0]?.body?.think).toBe(false);
       expect(seen[0]?.body?.model).toBe('qwen3:8b');
+      expect(seen[0]?.body?.options?.num_ctx).toBe(10512);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('honors an explicit Ollama context window', async () => {
+    let requestBody: any;
+    const server = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', chunk => { raw += chunk; });
+      req.on('end', () => {
+        requestBody = JSON.parse(raw);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: { role: 'assistant', content: 'bounded' }, done: true }));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
+      process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${address.port}`;
+      process.env.OLLAMA_NUM_CTX = '32768';
+      const config = getAIConfig();
+      config.openai.apiKey = 'local';
+      config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
+      config.openai.model = 'local-model';
+      await new OpenAIProvider(config).generateDescription({ additionalContext: { maxTokens: 900 } });
+      expect(requestBody.options.num_ctx).toBe(32768);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('surfaces native Ollama errors returned with a successful HTTP status', async () => {
+    const server = http.createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'model runner stopped unexpectedly' }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
+      process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${address.port}`;
+      const config = getAIConfig();
+      config.openai.apiKey = 'local';
+      config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
+      config.openai.model = 'local-model';
+      config.openai.maxRetries = 0;
+      await expect(new OpenAIProvider(config).generateDescription({
+        additionalContext: { requestRetries: 0 },
+      })).rejects.toThrow('model runner stopped unexpectedly');
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }

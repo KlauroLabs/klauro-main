@@ -131,6 +131,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'coverage-gaps.ts': 2,
   'data-lineage.ts': 2,
   'behavior-diff.ts': 3,
+  'ai-context-budget.ts': 3,
   'ai-domain-recovery.ts': 3,
   'ai-product-narrative.ts': 3,
   'capability-audience-test.ts': 3,

@@ -247,7 +247,7 @@ export class OpenAIProvider implements AIProvider {
     }
 
     if (this.ollamaBaseURL) {
-      return await this.makeOllamaRequest(messages, requestParams, responseFormat);
+      return await this.makeOllamaRequest(messages, requestParams, responseFormat, signal, timeoutMs, retries);
     }
 
     return await pRetry(
@@ -298,19 +298,24 @@ export class OpenAIProvider implements AIProvider {
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
     requestParams: OpenAI.Chat.Completions.ChatCompletionCreateParams,
     responseFormat: 'text' | 'json',
+    signal?: AbortSignal,
+    requestTimeoutMs?: number,
+    retries?: number,
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
     const timeoutMs = Math.max(
       1,
-      Number(process.env.KLAURO_OLLAMA_TIMEOUT_MS || this.config.openai.timeout || 60000)
+      Number(requestTimeoutMs || process.env.KLAURO_OLLAMA_TIMEOUT_MS || this.config.openai.timeout || 60000)
     );
 
     return await pRetry(
       async () => {
-        this.logger.debug(`Making Ollama request with model ${this.config.openai.model}`);
+        this.logger.debug(`Making Ollama request with model ${requestParams.model}`);
         const start = Date.now();
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
         timeout.unref?.();
+        const abortFromCaller = () => controller.abort(signal?.reason);
+        signal?.addEventListener('abort', abortFromCaller, { once: true });
 
         let response: Response;
         try {
@@ -319,7 +324,7 @@ export class OpenAIProvider implements AIProvider {
             headers: { 'content-type': 'application/json' },
             signal: controller.signal,
             body: JSON.stringify({
-              model: this.config.openai.model,
+              model: requestParams.model,
               messages: messages.map(message => ({
                 role: message.role,
                 content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
@@ -330,20 +335,27 @@ export class OpenAIProvider implements AIProvider {
               options: {
                 temperature: requestParams.temperature ?? this.config.openai.temperature,
                 num_predict: requestParams.max_tokens ?? this.config.openai.maxTokens,
+                num_ctx: Math.max(
+                  2048,
+                  Number(process.env.OLLAMA_NUM_CTX)
+                    || this.config.prompts.maxContextLength + (requestParams.max_tokens ?? this.config.openai.maxTokens) + 512,
+                ),
               },
             }),
           });
         } catch (error) {
           if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError') {
+            if (signal?.aborted) throw new AbortError(signal.reason instanceof Error ? signal.reason : new Error('AI request aborted'));
             throw new Error(`Ollama request timed out after ${timeoutMs}ms`);
           }
           throw error;
         } finally {
           clearTimeout(timeout);
+          signal?.removeEventListener('abort', abortFromCaller);
         }
 
         const body = await response.json().catch(() => ({})) as Record<string, any>;
-        if (!response.ok) {
+        if (!response.ok || typeof body.error === 'string') {
           throw new Error(`Ollama returned ${response.status}: ${JSON.stringify(body)}`);
         }
 
@@ -355,7 +367,7 @@ export class OpenAIProvider implements AIProvider {
           id: `ollama-${Date.now()}`,
           object: 'chat.completion',
           created: Math.floor(Date.now() / 1000),
-          model: this.config.openai.model,
+          model: String(requestParams.model),
           choices: [{
             index: 0,
             message: {
@@ -372,7 +384,7 @@ export class OpenAIProvider implements AIProvider {
         } as OpenAI.Chat.Completions.ChatCompletion;
       },
       {
-        retries: Math.max(0, Number(process.env.KLAURO_OLLAMA_MAX_RETRIES ?? this.config.openai.maxRetries)),
+        retries: retries ?? Math.max(0, Number(process.env.KLAURO_OLLAMA_MAX_RETRIES ?? this.config.openai.maxRetries)),
         onFailedAttempt: (error) => {
           this.logger.warn(`Ollama request attempt ${error.attemptNumber} failed:`, error.message);
         },

@@ -147,6 +147,7 @@ import {
   firstPartySupportsIdentityProduct as supportsIdentityProduct,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
+import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens, testCapabilityNameAgainstIdentifierVocabulary, testCapabilityDescriptionAgainstAudience } from './capability-audience-test';
 import {
@@ -9387,9 +9388,7 @@ export class AnalyzerOrchestrator {
     if (signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle;
     if (signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary;
     if (signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription;
-    const hasFirstPartyProductText = Boolean(
-      signal?.productDocTitle || signal?.productDocSummary || signal?.manifestDescription || signal?.summary
-    );
+    const hasFirstPartyProductText = Boolean(signal?.productDocTitle || signal?.productDocSummary || signal?.manifestDescription || signal?.summary);
     if (!hasFirstPartyProductText && purpose.inferred_description) {
       topDownSignals.inferred_product_description = purpose.inferred_description;
     }
@@ -9399,34 +9398,33 @@ export class AnalyzerOrchestrator {
     const CATALOG_ATTEMPT_BOUND_MS = 70000;
     const CATALOG_MAX_BOUNDED_ATTEMPTS = 3;
     const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
+      const additionalContextWithoutFacts = {
+        model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
+        responseFormat: 'json',
+        maxTokens: Math.min(2200, Math.max(600, 180 + catalogCountMax * 110)),
+        requestTimeoutMs: 65000,
+        requestRetries: 0,
+        ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
+        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence.`,
+        style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports.',
+        product: {
+          name: input.systemName, domain: purpose.primary_domain,
+          concepts: (purpose.core_concepts || []).slice(0, 12),
+          description: hasFirstPartyProductText ? undefined : purpose.inferred_description,
+          frameworks: (input.frameworks || []).slice(0, 6),
+        },
+      };
+      const budgetedContext = fitCapabilityCatalogContext(additionalContextWithoutFacts, {
+        user_journeys: journeys, entities,
+        candidate_route_areas: candidateAreaFacts,
+        required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id),
+        external_services: services,
+        ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
+      });
       return this.awaitAiBoundedThenUncapped(
         (_boundedAttempt, signal) => aiService.generateComponentDescription({
             signal,
-            additionalContext: {
-              model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
-              responseFormat: 'json',
-              maxTokens: Math.min(2200, Math.max(600, 180 + catalogCountMax * 110)),
-              requestTimeoutMs: 65000,
-              requestRetries: 0,
-              ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
-              task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence.`,
-              style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports.',
-              product: {
-                name: input.systemName,
-                domain: purpose.primary_domain,
-                concepts: (purpose.core_concepts || []).slice(0, 12),
-                description: hasFirstPartyProductText ? undefined : purpose.inferred_description,
-                frameworks: (input.frameworks || []).slice(0, 6),
-              },
-              facts: {
-                user_journeys: journeys,
-                entities: entities,
-                candidate_route_areas: candidateAreaFacts,
-                required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id),
-                external_services: services,
-                ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
-              },
-            },
+            additionalContext: budgetedContext.context,
           }),
         'capability extraction',
         {
