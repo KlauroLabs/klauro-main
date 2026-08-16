@@ -3,10 +3,42 @@ import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { analyzeTerminality } from './terminality';
 
 export interface CapabilityCatalogProjectSignal {
+  concepts?: string[];
   productDocTitle?: string;
   productDocSummary?: string;
   manifestDescription?: string;
   summary?: string;
+}
+
+function normalizedSubjectTokens(value: string): Set<string> {
+  const scaffolding = new Set(['management', 'capability', 'workflow', 'handling', 'operation', 'operations']);
+  return new Set(String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !scaffolding.has(token))
+    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token));
+}
+
+function productTextCorroborates(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
+  if (!signal) return false;
+  const productTokens = normalizedSubjectTokens([
+    ...(signal.concepts || []),
+    signal.productDocTitle,
+    signal.productDocSummary,
+    signal.manifestDescription,
+    signal.summary,
+  ].filter(Boolean).join(' '));
+  const subjectTokens = normalizedSubjectTokens([candidate.structural_label, candidate.name].filter(Boolean).join(' '));
+  const matches = [...subjectTokens].filter(token => productTokens.has(token)).length;
+  return subjectTokens.size > 0 && matches >= Math.min(2, subjectTokens.size);
+}
+
+function isCorroboratedInternalBehavior(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
+  const operations = candidate.operations || [];
+  if (operations.length < 2 || !operations.every(operation => operation.entry_point_type === 'internal')) return false;
+  if (!productTextCorroborates(candidate, signal)) return false;
+  return candidate.category === 'core' || operations.some(operation => !/^(?:coordinate|handle|process)$/i.test(operation.action || ''));
 }
 
 export function catalogCandidateTerminality(candidates: SystemCapability[]) {
@@ -72,7 +104,7 @@ export function catalogEvidenceCandidates(
           USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as never) ||
           /^(?:message|event|schedule|queue)$/i.test(operation.entry_point_type || ''));
         const pageOnly = operations.length > 0 && operations.every(operation => /^(?:page|route)$/i.test(operation.entry_point_type || ''));
-        return (!pageOnly && userFacingOperation) || hasProductEntity;
+        return (!pageOnly && userFacingOperation) || hasProductEntity || isCorroboratedInternalBehavior(candidate, projectTextSignal);
       });
   const result = [...scopeCandidates];
   const ids = new Set(scopeCandidates.map(candidate => candidate.id).filter(Boolean));
