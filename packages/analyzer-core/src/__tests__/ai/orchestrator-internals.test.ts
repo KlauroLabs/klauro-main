@@ -32,7 +32,7 @@ describe('AI task model routing', () => {
     'KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS',
   ];
 
-  it('routes catalog structure and published prose to independent configured models', () => {
+  it('routes catalog structure and repair prose independently without redundant reauthoring', () => {
     const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
     try {
       process.env.DEEPINFRA_MODEL = 'primary';
@@ -42,7 +42,7 @@ describe('AI task model routing', () => {
       const description = resolveCapabilityDescriptionRoute(process.env, 'narrative');
       expect(catalog).toEqual({ model: 'structured', provider: 'deepinfra' });
       expect(description).toEqual({ model: 'narrative', provider: 'deepinfra' });
-      expect(shouldReauthorCatalogDescriptions(process.env, catalog, description)).toBe(true);
+      expect(shouldReauthorCatalogDescriptions(process.env, catalog, description)).toBe(false);
     } finally {
       for (const key of keys) {
         if (previous[key] === undefined) delete process.env[key];
@@ -64,6 +64,8 @@ describe('AI task model routing', () => {
       expect(catalog).toEqual({ model: 'catalog', provider: 'catalog-provider' });
       expect(description).toEqual({ model: 'prose', provider: 'prose-provider' });
       expect(shouldReauthorCatalogDescriptions(process.env, catalog, description)).toBe(false);
+      process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'true';
+      expect(shouldReauthorCatalogDescriptions(process.env, catalog, description)).toBe(true);
     } finally {
       for (const key of keys) {
         if (previous[key] === undefined) delete process.env[key];
@@ -9017,7 +9019,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('authors the system narrative and curated capability prose in one catalog-aware request', async () => {
+  it('runs catalog and narrative concurrently without rewriting valid catalog prose', async () => {
     const envKeys = [
       'OPENAI_API_KEY',
       'KLAURO_AI_INTERPRETATION',
@@ -9034,35 +9036,34 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'true';
     process.env.KLAURO_CAPABILITY_CATALOG_MODEL = 'catalog-model';
     process.env.KLAURO_CAPABILITY_DESCRIPTION_MODEL = 'prose-model';
-    process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'true';
+    process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'false';
 
-    let releaseCatalog!: () => void;
-    const catalogReleased = new Promise<void>(resolve => { releaseCatalog = resolve; });
-    let signalCatalogStarted!: () => void;
-    const catalogStarted = new Promise<void>(resolve => { signalCatalogStarted = resolve; });
+    let catalogStarted = false;
     let narrativeStarted = false;
-    let narrativeContext: any;
+    let releaseBoth!: () => void;
+    const bothStarted = new Promise<void>(resolve => { releaseBoth = resolve; });
+    const markStarted = (kind: 'catalog' | 'narrative') => {
+      if (kind === 'catalog') catalogStarted = true;
+      else narrativeStarted = true;
+      if (catalogStarted && narrativeStarted) releaseBoth();
+    };
 
     const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockImplementation(async () => {
-      signalCatalogStarted();
-      await catalogReleased;
+      markStarted('catalog');
+      await bothStarted;
       return [{
         id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
-        description: 'Builds relationship graphs that explain code behavior to engineering agents.',
+        description: 'Repository analysis builds relationship graphs that expose behavior, tests, risks, and dependencies to engineering agents before they edit code.',
         description_source: 'ai', category: 'core', operations: [], related_entities: ['entity_repository'],
         related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
       }];
     });
-    const narrativeSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (args: any) => {
-      narrativeStarted = true;
-      narrativeContext = args.additionalContext;
+    const narrativeSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async () => {
+      markStarted('narrative');
+      await bothStarted;
       return JSON.stringify({
         system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It identifies code structure, product capabilities, flows, and change boundaries for engineering agents. Source enters deterministic analyzers, which connect code facts into navigable system context and produce grounded codebase intelligence. The resulting analysis is exposed through MCP for development work.',
         domain: 'codebase-intelligence',
-        descriptions: [{
-          id: 'cap_analyze',
-          description: 'Repository analysis builds relationship graphs that expose behavior, tests, risks, and dependencies to engineering agents before they edit code.',
-        }],
       });
     });
 
@@ -9077,7 +9078,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         category: 'core', operations: [], related_entities: ['entity_repository'], related_domains: ['code-analysis'],
         criticality: 'high', criticality_factors: [],
       }];
-      const interpretation = orch.applyAIInterpretation(
+      await orch.applyAIInterpretation(
         purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [], capabilities,
         [], [], [{
           id: 'entity_repository', name: 'Repository', kind: 'persisted-entity', fields: [],
@@ -9085,14 +9086,9 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         }], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
         [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
       );
-      await catalogStarted;
-      expect(narrativeStarted).toBe(false);
-      releaseCatalog();
-      await interpretation;
+      expect(catalogStarted).toBe(true);
       expect(narrativeStarted).toBe(true);
       expect(narrativeSpy).toHaveBeenCalledTimes(1);
-      expect(narrativeContext.description_items.map((item: any) => item.id)).toEqual(['cap_analyze']);
-      expect(String(narrativeContext.task)).toContain('Include a descriptions array');
       expect(capabilities[0].description_source).toBe('ai');
       expect(capabilities[0].description).toContain('relationship graphs');
     } finally {

@@ -34,15 +34,12 @@ export function resolveCapabilityDescriptionRoute(
 
 export function shouldReauthorCatalogDescriptions(
   env: NodeJS.ProcessEnv,
-  catalog: AITaskModelRoute,
-  description: AITaskModelRoute,
+  _catalog: AITaskModelRoute,
+  _description: AITaskModelRoute,
 ): boolean {
   const override = env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS;
   if (override === '1' || override === 'true') return true;
-  if (override === '0' || override === 'false') return false;
-  const catalogModel = catalog.model?.trim().toLowerCase();
-  const descriptionModel = description.model?.trim().toLowerCase();
-  return Boolean(catalogModel && descriptionModel && catalogModel !== descriptionModel);
+  return false;
 }
 
 export function shouldReauthorCapabilityDescriptions(env: NodeJS.ProcessEnv, narrativeModel?: string): boolean {

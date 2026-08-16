@@ -10765,7 +10765,7 @@ export class AnalyzerOrchestrator {
         ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
         : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and either another evidenced product behavior or a distinctive evidenced operating/deployment property. Use concrete product nouns. Do not use generic servers, databases, backends, frontends, or storage mechanics as filler. Do not mention frameworks, libraries, tools, packages, programming languages, data formats, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns selected only from domainVocabulary when that list is present.${readOnlyNarrativeRule}`;
     const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
-    const catalogApplication = await scheduleCapabilityCatalog({
+    const catalogAppliedPromise = scheduleCapabilityCatalog({
       outcome: capabilityCatalogOutcome,
       capabilities: systemCapabilities,
       elementsEnabled,
@@ -10784,14 +10784,6 @@ export class AnalyzerOrchestrator {
         userJourneys,
       }),
     });
-    const capabilityTargets = catalogApplication.targets;
-    systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
-    narrativeRepairFacts.capabilities = catalogApplication.authoredFacts;
-    semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
-    semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
-    const combinedNarrativeTask = reauthorCatalogDescriptions && capabilityTargets.length > 0
-      ? `${systemNarrativeTask} Include a descriptions array in the same JSON object, shaped as [{"id":"...","description":"..."}], with exactly one entry for every supplied description_item id. Each capability description must be one grounded product sentence that explains what users or operators can accomplish and what that action means in this product. Use only the supplied evidence, add concrete information beyond the name, and never mention source mechanics, CRUD inventories, routes, files, capability scaffolding, or unsupported value claims.`
-      : systemNarrativeTask;
     try {
       timeoutHandle = setTimeout(() => {
         console.warn(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
@@ -10802,14 +10794,11 @@ export class AnalyzerOrchestrator {
             model: this.narrativeModel(),
             model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
             responseFormat: 'json',
-            maxTokens: Math.min(1100, 500 + capabilityTargets.length * 65),
-            task: combinedNarrativeTask,
+            maxTokens: 550,
+            task: systemNarrativeTask,
             primaryDomain: narrativePrimaryDomain,
             coreConcepts: narrativeCoreConcepts,
             ...systemNarrativeFacts,
-            ...(reauthorCatalogDescriptions && capabilityTargets.length > 0
-              ? { description_items: capabilityTargets }
-              : {}),
             dependencySignalInstruction: 'Declared libraries are supporting evidence only and the LAST-resort domain signal after repository text, distinctive entities, terminal outputs, and observed product behavior. Generic infrastructure, logging, transport, test, and build dependencies never establish the product domain by themselves.',
             ...(typeof deployableCount === 'number' ? { deployableUnits: deployableCount } : {}),
           },
@@ -10833,7 +10822,13 @@ export class AnalyzerOrchestrator {
         : `Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
+    const catalogApplication = await catalogAppliedPromise;
     systemCapabilities.splice(0, systemCapabilities.length, ...catalogApplication.capabilities);
+    const capabilityTargets = catalogApplication.targets;
+    systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
+    narrativeRepairFacts.capabilities = catalogApplication.authoredFacts;
+    semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
+    semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
 
     const distinctiveEntityNames = this.selectDistinctiveEntityNames(dataEntities);
     const gateEntityGrounding = distinctiveEntityNames.length > 0
