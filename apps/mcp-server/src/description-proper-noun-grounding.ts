@@ -1,8 +1,4 @@
-const SHORT_TITLE_CASE_LANGUAGE_TERMS = new Set([
-  'a', 'an', 'the', 'this', 'that', 'it', 'its', 'when', 'once', 'then',
-  'if', 'as', 'but', 'and', 'or', 'for', 'from', 'with', 'into', 'onto',
-  'than', 'each', 'some', 'many', 'most', 'more', 'less', 'also', 'key', 'data',
-]);
+const NON_CLAIM_TITLE_CASE_TERM = /^(A|An|The|This|It|Its|When|Key|Data|Entry|REST|API|UI|SQL|AWS|GPO)$/;
 
 export function unexplainedShortTitleCaseTerms(
   text: string,
@@ -11,7 +7,7 @@ export function unexplainedShortTitleCaseTerms(
   return Array.from(new Set(
     [...String(text || '').matchAll(/\b[A-Z][a-z]{1,3}\b/g)]
       .map(match => match[0])
-      .filter(term => !SHORT_TITLE_CASE_LANGUAGE_TERMS.has(term.toLowerCase()))
+      .filter(term => !NON_CLAIM_TITLE_CASE_TERM.test(term))
       .filter(term => !isGrounded(term)),
   ));
 }

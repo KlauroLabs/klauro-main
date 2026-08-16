@@ -43,6 +43,12 @@
       "reason": "Generic software nouns are excluded while verifying that reported domains are grounded by source evidence."
     },
     {
+      "file": "apps/mcp-server/src/description-proper-noun-grounding.ts",
+      "name": "NON_CLAIM_TITLE_CASE_TERM",
+      "category": "linguistic-noise",
+      "reason": "Capitalized sentence syntax and closed technical acronyms are excluded from the short-proper-noun false-positive check; this list can only prevent rejection and cannot generate product claims."
+    },
+    {
       "file": "apps/mcp-server/src/analyzer.ts",
       "name": "PURPOSE_EVIDENCE_STOP_WORDS",
       "category": "linguistic-noise",
