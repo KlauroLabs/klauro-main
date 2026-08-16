@@ -843,6 +843,9 @@ function scoreCasOrganization(cas: CASOutput, profile: AnalysisProfile): Usefuln
   if (profile.kind === 'empty') {
     return gate('cas-organization', 100, 'empty analysis does not require graph organization');
   }
+  if (validation?.graph_integrity?.dangling_edges) {
+    return gate('cas-organization', 0, `graph validation reports ${validation.graph_integrity.dangling_edges} dangling edges`);
+  }
 
   if (nodes.length > 0) score += 10; else details.push('no graph nodes');
   if (edges.length > 0 || profile.kind === 'infrastructure' || profile.kind === 'library-package') score += 15; else details.push('no graph edges');
@@ -853,7 +856,6 @@ function scoreCasOrganization(cas: CASOutput, profile: AnalysisProfile): Usefuln
 
   if (cas.index && Object.keys(cas.index).length > 0) score += 10; else details.push('missing CAS index');
   if (!validation?.graph_integrity || validation.graph_integrity.dangling_edges === 0) score += 10;
-  else details.push(`graph validation reports ${validation.graph_integrity.dangling_edges} dangling edges`);
   if (facts.length > 0 || profile.kind === 'infrastructure') score += 10; else details.push('missing analysis facts for traceability');
 
   const linkedCapabilities = capabilities.filter(capability =>

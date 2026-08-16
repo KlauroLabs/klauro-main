@@ -6,6 +6,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { DjangoAnalyzer } from '../../analyzer/frameworks/web/django-analyzer';
+import { checkEdgeReferentialIntegrity } from '../../analyzer/core/graph-referential-integrity';
 
 describe('DjangoAnalyzer', () => {
   let analyzer: DjangoAnalyzer;
@@ -980,6 +981,38 @@ describe('DjangoAnalyzer', () => {
       expect(itemEntries).toHaveLength(2);
       expect(new Set(ids).size).toBe(2);
       expect(itemEntries.map(e => (e.metadata as any)?.app).sort()).toEqual(['app_a', 'app_b']);
+    });
+
+    it('emits relationships only when their model endpoints were actually analyzed', async () => {
+      await writeApp('catalog', 'import graphene\nclass Query(graphene.ObjectType):\n    widget = graphene.Field(WidgetType)\n');
+      const appDir = path.join(projectPath, 'modules', 'catalog');
+      await fs.writeFile(
+        path.join(appDir, 'models.py'),
+        'from django.db import models\nclass Widget(models.Model):\n    missing = models.ForeignKey("MissingModel", on_delete=models.CASCADE)\n'
+      );
+      await fs.writeFile(
+        path.join(appDir, 'schemas', 'types.py'),
+        [
+          'from graphene_django import DjangoObjectType',
+          'class WidgetType(DjangoObjectType):',
+          '    class Meta:',
+          '        model = Widget',
+          'class MissingType(DjangoObjectType):',
+          '    class Meta:',
+          '        model = MissingModel',
+        ].join('\n')
+      );
+
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const integrity = checkEdgeReferentialIntegrity(contribution.edges, contribution);
+
+      expect(contribution.edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'maps_to', target: 'model_app_catalog_Widget' }),
+      ]));
+      expect(contribution.edges).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: 'model_app_catalog_MissingModel' }),
+      ]));
+      expect(integrity.ok).toBe(true);
     });
   });
 

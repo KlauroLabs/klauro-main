@@ -5658,7 +5658,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     const danglingCoverage = graphIntegrity.total_edges <= 0 ? 100 : ((graphIntegrity.total_edges - graphIntegrity.dangling_edges) / graphIntegrity.total_edges) * 100;
     rawGates.push(gate(
       'graph-integrity',
-      graphScore >= 85 && danglingCoverage >= 95 ? 'pass' : graphScore >= 70 && danglingCoverage >= 85 ? 'warn' : 'fail',
+      graphIntegrity.dangling_edges > 0 ? 'fail' : graphScore >= 85 ? 'pass' : graphScore >= 70 ? 'warn' : 'fail',
       Math.min(graphScore, danglingCoverage),
       `${graphIntegrity.connected_nodes} connected, ${graphIntegrity.orphaned_nodes} orphaned, ${graphIntegrity.dangling_edges} dangling`
     ));

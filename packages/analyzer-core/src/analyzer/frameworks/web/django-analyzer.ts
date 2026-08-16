@@ -783,15 +783,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           'contains'
         ));
 
-        if (gqlType.model) {
-          const modelId = `model_${appId}_${this.sanitizeId(gqlType.model)}`;
-          edges.push(this.createEdge(
-            `${typeId}_maps_to_${modelId}`,
-            typeId,
-            modelId,
-            'maps_to'
-          ));
-        }
       }
 
       for (const task of celeryTasks) {
@@ -3229,6 +3220,14 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const allModels = apps.flatMap(app => app.models.map(m => ({ ...m, appId: app.id })));
     const allSerializers = apps.flatMap(app => app.serializers.map(s => ({ ...s, appId: app.id })));
     const allGraphQLTypes = apps.flatMap(app => app.graphqlTypes);
+    const modelForName = (name: string, preferredAppId: string) => {
+      const matches = allModels.filter(model => model.name === name);
+      return matches.find(model => model.appId === preferredAppId) || (matches.length === 1 ? matches[0] : undefined);
+    };
+    const serializerForName = (name: string, preferredAppId: string) => {
+      const matches = allSerializers.filter(serializer => serializer.name === name);
+      return matches.find(serializer => serializer.appId === preferredAppId) || (matches.length === 1 ? matches[0] : undefined);
+    };
 
     apps.forEach(app => {
       const appId = app.id;
@@ -3246,10 +3245,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const modelId = `model_${appId}_${this.sanitizeId(model.name)}`;
 
         model.relationships.forEach(relationship => {
-          const targetModel = allModels.find(m => m.name === relationship.target);
-          const targetModelId = targetModel
-            ? `model_${targetModel.appId}_${this.sanitizeId(relationship.target)}`
-            : `model_${appId}_${this.sanitizeId(relationship.target)}`;
+          const targetModel = modelForName(relationship.target, appId);
+          if (!targetModel) return;
+          const targetModelId = `model_${targetModel.appId}_${this.sanitizeId(relationship.target)}`;
 
           edges.push(this.createEdge(
             `${modelId}_${relationship.type}_${targetModelId}`,
@@ -3264,10 +3262,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const serializerId = `serializer_${appId}_${this.sanitizeId(serializer.name)}`;
 
         if (serializer.meta?.model) {
-          const targetModel = allModels.find(m => m.name === serializer.meta?.model);
-          const modelId = targetModel
-            ? `model_${targetModel.appId}_${this.sanitizeId(serializer.meta.model)}`
-            : `model_${appId}_${this.sanitizeId(serializer.meta.model)}`;
+          const targetModel = modelForName(serializer.meta.model, appId);
+          if (!targetModel) return;
+          const modelId = `model_${targetModel.appId}_${this.sanitizeId(serializer.meta.model)}`;
 
           edges.push(this.createEdge(
             `${serializerId}_wraps_${modelId}`,
@@ -3282,12 +3279,10 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const viewId = this.viewNodeId(appId, view);
 
         if (view.serializerClass) {
-          const serializer = allSerializers.find(s => s.name === view.serializerClass);
-          const serializerId = serializer
-            ? `serializer_${serializer.appId}_${this.sanitizeId(view.serializerClass)}`
-            : `serializer_${appId}_${this.sanitizeId(view.serializerClass)}`;
+          const serializer = serializerForName(view.serializerClass, appId);
+          const serializerId = serializer && `serializer_${serializer.appId}_${this.sanitizeId(view.serializerClass)}`;
 
-          edges.push(this.createEdge(
+          if (serializerId) edges.push(this.createEdge(
             `${viewId}_uses_serializer_${this.sanitizeId(view.serializerClass)}`,
             viewId,
             serializerId,
@@ -3297,10 +3292,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
         for (const serializerName of view.serializerReferences || []) {
           if (serializerName === view.serializerClass) continue;
-          const serializer = allSerializers.find(s => s.name === serializerName);
-          const serializerId = serializer
-            ? `serializer_${serializer.appId}_${this.sanitizeId(serializerName)}`
-            : `serializer_${appId}_${this.sanitizeId(serializerName)}`;
+          const serializer = serializerForName(serializerName, appId);
+          if (!serializer) continue;
+          const serializerId = `serializer_${serializer.appId}_${this.sanitizeId(serializerName)}`;
 
           edges.push(this.createEdge(
             `${viewId}_uses_serializer_${this.sanitizeId(serializerName)}`,
@@ -3311,10 +3305,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         }
 
         for (const modelName of view.modelReferences || []) {
-          const targetModel = allModels.find(m => m.name === modelName);
-          const modelId = targetModel
-            ? `model_${targetModel.appId}_${this.sanitizeId(modelName)}`
-            : `model_${appId}_${this.sanitizeId(modelName)}`;
+          const targetModel = modelForName(modelName, appId);
+          if (!targetModel) continue;
+          const modelId = `model_${targetModel.appId}_${this.sanitizeId(modelName)}`;
 
           edges.push(this.createEdge(
             `${viewId}_queries_${modelId}`,
@@ -3325,12 +3318,10 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         }
 
         if (view.querysetModel) {
-          const targetModel = allModels.find(m => m.name === view.querysetModel);
-          const modelId = targetModel
-            ? `model_${targetModel.appId}_${this.sanitizeId(view.querysetModel)}`
-            : `model_${appId}_${this.sanitizeId(view.querysetModel)}`;
+          const targetModel = modelForName(view.querysetModel, appId);
+          const modelId = targetModel && `model_${targetModel.appId}_${this.sanitizeId(view.querysetModel)}`;
 
-          if (!view.modelReferences?.includes(view.querysetModel)) {
+          if (modelId && !view.modelReferences?.includes(view.querysetModel)) {
             edges.push(this.createEdge(
               `${viewId}_queries_${modelId}`,
               viewId,
@@ -3341,7 +3332,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         }
 
         for (const access of view.modelAccesses || []) {
-          const targetModel = allModels.find(m => m.name === access.model);
+          const targetModel = modelForName(access.model, appId);
           if (!targetModel) continue;
           const modelId = `model_${targetModel.appId}_${this.sanitizeId(access.model)}`;
 
@@ -3354,10 +3345,10 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         }
 
         for (const write of view.serializerWrites || []) {
-          const serializer = allSerializers.find(s => s.name === write.serializer);
+          const serializer = serializerForName(write.serializer, appId);
           const modelName = serializer?.meta?.model;
           if (!modelName) continue;
-          const targetModel = allModels.find(m => m.name === modelName);
+          const targetModel = modelForName(modelName, appId);
           if (!targetModel) continue;
           const modelId = `model_${targetModel.appId}_${this.sanitizeId(modelName)}`;
           const edgeId = `${viewId}_${write.access}_${modelId}`;
@@ -3392,7 +3383,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const taskId = `celery_task_${appId}_${this.sanitizeId(task.name)}`;
 
         for (const access of task.modelAccesses || []) {
-          const targetModel = allModels.find(m => m.name === access.model);
+          const targetModel = modelForName(access.model, appId);
           if (!targetModel) continue;
           const modelId = `model_${targetModel.appId}_${this.sanitizeId(access.model)}`;
 
@@ -3406,7 +3397,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       });
 
       const modelIdForName = (modelName: string): string | undefined => {
-        const targetModel = allModels.find(m => m.name === modelName);
+        const targetModel = modelForName(modelName, appId);
         return targetModel ? `model_${targetModel.appId}_${this.sanitizeId(modelName)}` : undefined;
       };
       const modelIdForTypeName = (typeName: string): string | undefined => {
@@ -3418,6 +3409,14 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         'crud-update': 'updates',
         'crud-delete': 'deletes'
       };
+
+      app.graphqlTypes.forEach(graphqlType => {
+        if (!graphqlType.model) return;
+        const modelId = modelIdForName(graphqlType.model);
+        if (!modelId) return;
+        const typeId = `graphql_type_${appId}_${this.sanitizeId(graphqlType.name)}`;
+        edges.push(this.createEdge(`${typeId}_maps_to_${modelId}`, typeId, modelId, 'maps_to'));
+      });
 
       app.graphqlMutations.forEach(mutation => {
         if (!mutation.name) return;

@@ -446,7 +446,7 @@ function scoreCas(output: CASOutput, target: RepoTarget, durationMs: number): Ta
     const danglingRatio = ratio(graphIntegrity.total_edges - graphIntegrity.dangling_edges, graphIntegrity.total_edges);
     gates.push(gate(
       'graph-integrity',
-      graphScore >= 80 && danglingRatio >= 0.95 ? 'pass' : graphScore >= 50 && danglingRatio >= 0.8 ? 'warn' : 'fail',
+      graphIntegrity.dangling_edges > 0 ? 'fail' : graphScore >= 80 ? 'pass' : graphScore >= 50 ? 'warn' : 'fail',
       Math.min(graphScore, danglingRatio * 100),
       `${graphIntegrity.connected_nodes} connected, ${graphIntegrity.orphaned_nodes} orphaned, ${graphIntegrity.dangling_edges} dangling`
     ));
