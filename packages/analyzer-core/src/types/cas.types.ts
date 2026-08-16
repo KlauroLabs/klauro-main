@@ -3983,27 +3983,23 @@ export interface CASDomainConcept {
 
 export type CASArtifactType = 'app' | 'library' | 'client-sdk' | 'cli-tool' | 'boilerplate' | 'infrastructure';
 
+export interface CASFirstPartyProductEvidenceValue {
+  value: string;
+  source: string;
+}
+
+export interface CASFirstPartyProductEvidence {
+  title?: CASFirstPartyProductEvidenceValue;
+  overview?: CASFirstPartyProductEvidenceValue;
+  manifest_description?: CASFirstPartyProductEvidenceValue;
+}
+
 export interface EnhancedSystemPurpose extends SystemPurpose {
   primary_domain: string;
   domain_source?: 'deterministic' | 'ai' | 'ai-refined' | 'reused';
-
-
-
+  first_party_product_evidence?: CASFirstPartyProductEvidence;
   domain_anchored?: boolean;
-
   domain_rejected_candidates?: Array<{ label: string; reason: string }>;
-
-
-
-
-
-
-
-
-
-
-
-
   capability_description_degradations?: Array<{
     id: string;
     name: string;

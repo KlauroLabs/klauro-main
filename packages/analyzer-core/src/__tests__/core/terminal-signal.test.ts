@@ -311,4 +311,44 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
     // Structure (Camp B) is still produced.
     expect(purpose.core_concepts).toContain('Portfolio');
   });
+
+  test('buildEnhancedSystemPurpose publishes bounded first-party product evidence with provenance', () => {
+    const orch = new AnalyzerOrchestrator() as any;
+    const result = orch.buildEnhancedSystemPurpose(
+      { primary_type: 'application', confidence: 0.7, evidence: [] },
+      [],
+      { getCoreConcepts: () => [] },
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      'storefront-theme',
+      {
+        concepts: ['product', 'cart'],
+        evidence: ['README.md', 'package.json description'],
+        productDocTitle: 'Dawn',
+        productDocSummary: 'A storefront theme for browsing products and managing carts.',
+        productDocSource: 'README.md',
+        manifestDescription: 'A fast commerce storefront theme.',
+      },
+      [],
+      '',
+      null,
+      [],
+    );
+
+    expect(result.first_party_product_evidence).toEqual({
+      title: { value: 'Dawn', source: 'README.md' },
+      overview: {
+        value: 'A storefront theme for browsing products and managing carts.',
+        source: 'README.md',
+      },
+      manifest_description: {
+        value: 'A fast commerce storefront theme.',
+        source: 'package.json',
+      },
+    });
+  });
 });

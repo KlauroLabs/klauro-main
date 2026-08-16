@@ -136,6 +136,33 @@ test('machine analysis quality grounds short proper nouns in technologies', () =
   assert.doesNotMatch(quality.failures.join('\n'), /unexplained short proper-noun/);
 });
 
+test('machine analysis quality grounds product identity from first-party CAS evidence', () => {
+  const quality = assessAnalysisQuality({
+    system: { name: 'storefront-theme' },
+    enhanced_system_purpose: {
+      primary_domain: 'commerce-storefront',
+      core_concepts: ['product', 'cart', 'collection'],
+      first_party_product_evidence: {
+        title: { value: 'Dawn', source: 'README.md' },
+        overview: { value: 'A storefront theme for commerce catalogs.', source: 'README.md' },
+      },
+      inferred_description: 'Dawn enables users to browse products and manage carts across a commerce storefront. When shoppers choose products, the theme preserves cart state for checkout.',
+      description_generation: { status: 'ai_applied' },
+    },
+    domain_concepts: [{ name: 'product' }, { name: 'cart' }],
+    capabilities: [{ name: 'Browse products' }, { name: 'Manage carts' }],
+    entry_points: [{ name: 'ProductPage', type: 'page' }],
+    nodes: [{ name: 'ProductPage', type: 'component', source: { file: 'sections/product.liquid' } }],
+    architecture_summary: {
+      architectural_patterns: [],
+      architectural_inventory: {},
+      pattern_balance: { status: 'balanced' },
+    },
+  }, '/tmp/dev/storefront-theme');
+
+  assert.doesNotMatch(quality.failures.join('\n'), /unexplained short proper-noun/);
+});
+
 test('machine analysis quality accepts rich architectures when pattern balance names primary patterns', () => {
   const patterns = [
     'MVC',

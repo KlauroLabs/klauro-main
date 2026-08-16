@@ -10,7 +10,7 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { isCommandShapedLabel, isHostnameLikeServiceName } from '../../../packages/analyzer-core/src/ai/external-service-plausibility';
 import { computeFlowConcepts } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
-import { unexplainedShortTitleCaseTerms } from './description-proper-noun-grounding';
+import { descriptionTermIsGroundedInCas, unexplainedShortTitleCaseTerms } from './description-proper-noun-grounding';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -1604,37 +1604,7 @@ function descriptionClaimIsSupportedByProfile(profile: AnalysisProfile, term: st
 }
 
 function descriptionTermIsGrounded(cas: CASOutput, term: string): boolean {
-  const normalized = clean(term).toLowerCase();
-  if (!normalized) return false;
-  if (normalized === 'command-line interface') {
-    return (cas.entry_points || []).some(entry => entry.type === 'cli');
-  }
-  const technologies = (cas.system as any)?.technologies || {};
-  const haystack = JSON.stringify({
-    system: cas.system?.name,
-    domain: cas.enhanced_system_purpose?.primary_domain,
-    concepts: cas.enhanced_system_purpose?.core_concepts,
-    domainConcepts: (cas.domain_concepts || []).map(concept => concept.name),
-    capabilities: (cas.capabilities || []).map(capability => capability.name),
-    entities: [
-      ...((cas.database_schema?.entities || []).map((entity: any) => entity?.name || '')),
-      ...((cas.entities || []).map(entity => entity.name)),
-    ],
-    entries: (cas.entry_points || []).map(entry => `${entry.name} ${entry.type}`),
-    integrations: ((cas as any).external_services || []).map((service: any) => `${service?.name || ''} ${service?.service || ''} ${service?.type || ''}`),
-    languages: (technologies.languages || []).map((language: any) => `${language?.name || language}`),
-    frameworks: [
-      ...((technologies.frameworks || []).map((framework: any) => `${framework?.name || framework}`)),
-      ...(((cas as any).frameworks || []).map((framework: any) => `${framework?.name || framework}`)),
-    ],
-    packages: [
-      ...((cas.libraries || []).map(library => library?.name || '')),
-      ...((cas.dependencies?.packages || []).map(pkg => pkg?.name || '')),
-      ...(Array.isArray((cas as any).dependencies) ? ((cas as any).dependencies as any[]).map(dependency => `${dependency?.name || dependency}`) : []),
-    ],
-    nodes: (cas.nodes || []).slice(0, 200).map(node => `${node.name} ${node.type} ${node.source?.file || ''}`),
-  }).toLowerCase();
-  return haystack.includes(normalized);
+  return descriptionTermIsGroundedInCas(cas, term);
 }
 
 function isLikelyTestPath(file: string): boolean {

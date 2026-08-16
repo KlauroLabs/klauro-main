@@ -412,6 +412,36 @@ test('usefulness review still flags short proper nouns with no grounding in the 
   assert.match(reasons.join('\n'), /unexplained short proper-noun/);
 });
 
+test('usefulness review grounds product identity from first-party CAS evidence', () => {
+  const reasons = findWeakDescriptionReasons({
+    system: { name: 'storefront-theme' },
+    enhanced_system_purpose: {
+      primary_domain: 'commerce-storefront',
+      core_concepts: ['product', 'cart', 'collection'],
+      first_party_product_evidence: {
+        title: { value: 'Dawn', source: 'README.md' },
+        overview: { value: 'A storefront theme for commerce catalogs.', source: 'README.md' },
+      },
+    },
+    domain_concepts: [{ name: 'product' }, { name: 'cart' }],
+    capabilities: [{ name: 'Browse products' }, { name: 'Manage carts' }],
+  } as any, {
+    kind: 'frontend-app',
+    confidence: 0.9,
+    evidence: ['frontend framework, page, or route signals'],
+    expectations: {
+      entry_points: 'required',
+      call_chains: 'required',
+      behavioral_invariants: 'required',
+      security: 'optional',
+      runtime_correlation: 'optional',
+      flow_coverage: 'required',
+    },
+  }, 'Dawn enables users to browse products and manage carts across a commerce storefront. When shoppers choose products, the theme preserves cart state for checkout.');
+
+  assert.doesNotMatch(reasons.join('\n'), /unexplained short proper-noun/);
+});
+
 test('description quality gate accepts AI-backed descriptions that orient agents to behavior', () => {
   const profile: any = {
     kind: 'backend-service',

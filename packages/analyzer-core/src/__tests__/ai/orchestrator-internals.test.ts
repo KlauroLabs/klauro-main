@@ -7874,6 +7874,7 @@ describe('top-down capability evidence (C2)', () => {
       const signal = orch.extractProjectTextSignal(root);
       expect(signal.productDocTitle).toBe('Arcane Table');
       expect(signal.productDocSummary).toMatch(/Commander platform/);
+      expect(signal.productDocSource).toBe('README.md');
       expect(signal.productVocabulary).toEqual(expect.arrayContaining(['trustworthy', 'relationship', 'concurrent', 'fabric']));
       // Badge line and the "Setup" list must not leak into the product summary.
       expect(signal.productDocSummary).not.toMatch(/shields\.io|npm install/);
@@ -7892,6 +7893,7 @@ describe('top-down capability evidence (C2)', () => {
       const signal = orch.extractProjectTextSignal(root);
       expect(signal.productDocTitle).toBe('Arcane Table - MTG Commander Platform');
       expect(signal.productDocSummary).toMatch(/Commander platform designed for friends/);
+      expect(signal.productDocSource).toBe('PRD.md');
       expect(signal.productDocSummary).not.toMatch(/Version|Status|Draft/);
       expect(signal.evidence).toContain('PRD.md');
     } finally {

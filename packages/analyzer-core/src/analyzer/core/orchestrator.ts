@@ -85,6 +85,7 @@ import {
   CASArtifactType
 } from '../../types/cas.types';
 import { classifyArtifactType, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS } from './artifact-type';
+import { buildFirstPartyProductEvidence } from './first-party-product-evidence';
 import { collectDeployableEvidence } from './deployable-evidence';
 import { attachDeployable } from './entry-point-deployable';
 import { determineSystemType as determineSystemTypeImpl } from './system-type';
@@ -350,6 +351,7 @@ interface ProjectTextSignal {
   manifestDescription?: string;
   productDocTitle?: string;
   productDocSummary?: string;
+  productDocSource?: string;
   productVocabulary?: string[];
 }
 
@@ -13961,7 +13963,6 @@ export class AnalyzerOrchestrator {
       databaseEntities,
       projectPath,
     );
-
     const criticalityRank: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
     const rankedFlows = [...flows].sort((a, b) => {
       const byCriticality = (criticalityRank[b.criticality || 'low'] ?? 0) - (criticalityRank[a.criticality || 'low'] ?? 0);
@@ -13970,14 +13971,14 @@ export class AnalyzerOrchestrator {
     });
     const primaryWorkflowId = rankedFlows[0]?.flow_id;
     const supportingWorkflowIds = rankedFlows.slice(1, 6).map(flow => flow.flow_id);
-
+    const firstPartyProductEvidence = buildFirstPartyProductEvidence(projectTextSignal);
     return {
       ...basePurpose,
       confidence: basePurpose.confidence,
       evidence: this.orderPurposeEvidence([...basePurpose.evidence, ...projectTextSignal.evidence]).slice(0, 20),
       artifact_type: artifactResult.artifactType,
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
-
+      ...(firstPartyProductEvidence ? { first_party_product_evidence: firstPartyProductEvidence } : {}),
       primary_domain: '',
       inferred_description: '',
       primary_workflow_id: primaryWorkflowId,
@@ -14417,6 +14418,7 @@ export class AnalyzerOrchestrator {
 
     let productDocTitle: string | undefined;
     let productDocSummary: string | undefined;
+    let productDocSource: string | undefined;
     const PRODUCT_DOC_CANDIDATES = [
       'README.md', 'README.mdx', 'readme.md',
       'docs/README.md',
@@ -14431,6 +14433,7 @@ export class AnalyzerOrchestrator {
       if (framing.title || framing.summary) {
         productDocTitle = framing.title;
         productDocSummary = framing.summary;
+        productDocSource = docName;
         if (!evidence.includes(docName)) evidence.push(docName);
         break;
       }
@@ -14502,6 +14505,7 @@ export class AnalyzerOrchestrator {
       manifestDescription,
       productDocTitle,
       productDocSummary,
+      productDocSource,
       productVocabulary,
     };
   }
