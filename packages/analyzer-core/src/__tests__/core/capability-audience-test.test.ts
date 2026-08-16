@@ -136,6 +136,18 @@ describe('capability description audience test', () => {
     expect(result.flaggedTokens).toContain('requests');
   });
 
+  it('does not confuse sentence casing or product prepositions with packages', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Import customer pricing',
+      'Load pricing records for customers and connect them with customer accounts.',
+      [{ name: 'load' }, { name: 'customer' }],
+      [],
+      ['pricing', 'customers', 'accounts'],
+    );
+
+    expect(result.failsAudienceTest).toBe(false);
+  });
+
   it('rejects implementation-led descriptions even when their nouns appear in structural evidence', () => {
     const result = testCapabilityDescriptionAgainstAudience(
       'Manage intent solvers',
