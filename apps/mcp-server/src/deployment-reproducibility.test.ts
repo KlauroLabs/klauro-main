@@ -18,6 +18,15 @@ test('analyzer images pin the verified Node runtime instead of following a float
   }
 });
 
+test('native C sharp grammar stays on the tree-sitter 0.21 compatible release', () => {
+  for (const manifest of ['apps/mcp-server/package.json', 'packages/analyzer-core/package.json']) {
+    const dependencies = JSON.parse(read(manifest)).dependencies as Record<string, string>;
+    assert.equal(dependencies['tree-sitter-c-sharp'], '0.23.1');
+  }
+  const lock = JSON.parse(read('package-lock.json')) as { packages: Record<string, { version?: string }> };
+  assert.equal(lock.packages['node_modules/tree-sitter-c-sharp']?.version, '0.23.1');
+});
+
 test('VPS source sync preserves remote generated workspaces outside the deployment snapshot', () => {
   const source = read('infrastructure/vps/deploy.sh');
   assert.match(source, /--exclude \.claude\/worktrees/);
