@@ -8000,6 +8000,10 @@ describe('top-down capability evidence (C2)', () => {
       expect(withCtx.facts.top_down_signals.product_overview).toMatch(/Commander/);
       expect(withCtx.task).toMatch(/PURPOSE TEST/);
       expect(withCtx.task).toMatch(/access control/i);
+      expect(withCtx.task).toMatch(/12-28 words and at least 55 characters/);
+      expect(withCtx.task).toMatch(/Do not start with actor scaffolding/);
+      expect(withCtx.style).toMatch(/Begin each description with its concrete product subject/);
+      expect(withCtx.style).not.toMatch(/Value verbs \(lets/);
 
       // No product doc => the block is omitted entirely (evidence-gated, no fabrication).
       await orch.aiExtractCapabilityCatalog({
