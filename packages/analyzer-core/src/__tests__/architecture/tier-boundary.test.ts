@@ -136,6 +136,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'ai-context-budget.ts': 3,
   'ai-task-model-routing.ts': 3,
   'ai-domain-recovery.ts': 3,
+  'ai-operation-timing.ts': 3,
   'ai-product-narrative.ts': 3,
   'capability-audience-test.ts': 3,
   'capability-catalog-audience.ts': 3,

@@ -149,6 +149,7 @@ import {
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
+import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { scheduleCapabilityCatalog } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
@@ -9082,21 +9083,6 @@ export class AnalyzerOrchestrator {
   ): SystemCapability[] {
     return selectCatalogEvidenceCandidates(candidates, behaviorSurfaces, dataEntities, artifactType, projectTextSignal);
   }
-  private async awaitAiWithoutCutoff<T>(promise: Promise<T>, operation: string, slowMs: number): Promise<T> {
-    let slowTimer: NodeJS.Timeout | undefined;
-    const startedAt = Date.now();
-    if (Number.isFinite(slowMs) && slowMs > 0) {
-      slowTimer = setTimeout(() => {
-        console.warn(`[Klauro] ${operation} is still running after ${Date.now() - startedAt}ms; continuing until the provider completes`);
-      }, slowMs);
-      slowTimer.unref?.();
-    }
-    try {
-      return await promise;
-    } finally {
-      if (slowTimer) clearTimeout(slowTimer);
-    }
-  }
   private async awaitAiBoundedThenUncapped<T>(
     attemptFactory: (attemptIndex: number, signal?: AbortSignal) => Promise<T>,
     operation: string,
@@ -9131,6 +9117,7 @@ export class AnalyzerOrchestrator {
           console.error(`[Klauro] ${operation} bounded attempt ${attemptIndex}/${opts.maxBoundedAttempts} exceeded ${opts.perAttemptTimeoutMs}ms (elapsed ${Date.now() - attemptStartedAt}ms); abandoning and retrying with a fresh call`);
           continue;
         }
+        writeAnalyzerStatus(`[Klauro] AI operation ${operation}: ok in ${Date.now() - attemptStartedAt}ms (attempt ${attemptIndex})`);
         return raced;
       } catch (error) {
         console.error(`[Klauro] ${operation} bounded attempt ${attemptIndex}/${opts.maxBoundedAttempts} failed after ${Date.now() - attemptStartedAt}ms (${error instanceof Error ? error.message : String(error)}); retrying with a fresh call`);
@@ -9174,7 +9161,7 @@ export class AnalyzerOrchestrator {
       }
     }
     console.error(`[Klauro] ${operation}: all ${opts.maxBoundedAttempts} bounded attempts (${opts.perAttemptTimeoutMs}ms each) were cut off or failed; committing to one final uncapped attempt — completion is guaranteed, latency is not`);
-    return this.awaitAiWithoutCutoff(attemptFactory(opts.maxBoundedAttempts + 1), operation, opts.slowWarnMs);
+    return awaitAiOperation(attemptFactory(opts.maxBoundedAttempts + 1), operation, opts.slowWarnMs);
   }
   private narrativeModel(): string | undefined {
     return process.env.DEEPINFRA_NARRATIVE_MODEL ||
@@ -9197,6 +9184,7 @@ export class AnalyzerOrchestrator {
     budgetMs: number;
     qualityNudge?: string;
     hardDeadlineAt?: number;
+    onResponse?: (raw: string) => void;
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
     const journeys = (input.userJourneys || [])
@@ -9280,11 +9268,12 @@ export class AnalyzerOrchestrator {
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with the concrete product or operational subject named by the cited evidence, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. Copy concrete nouns from the cited operations, entities, journeys, or first-party product text; do not replace them with generic "data" or "information". Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
     const catalogTaskBase = artifactType === 'infrastructure'
-      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
-        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
-        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Every subject noun in a capability name and description must come from a cited candidate's entity_names or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
-    const catalogTask = `${catalogTaskBase} DESCRIPTION CONTRACT: ${catalogDescriptionContract}`;
+        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Every subject noun in a capability name and description must come from a cited candidate's entity_names or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
+    const catalogNarrativeContract = 'The system_description must be exactly 4 concise, grammatical sentences for a non-technical reader: what the product or operational system is, what users or operators can do, one concrete action and result, and another evidenced behavior or operating property. Use concrete nouns from supplied evidence. Do not mention source files, routes, handlers, frameworks, libraries, tools, programming languages, prompt keys, graph evidence, or unsupported value claims. domain must be a lowercase kebab-case label of 2 to 4 evidence-backed product nouns.';
+    const catalogTask = `${catalogTaskBase} DESCRIPTION CONTRACT: ${catalogDescriptionContract} SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract}`;
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
       ...journeys.map(journey => journey.name),
@@ -9307,7 +9296,7 @@ export class AnalyzerOrchestrator {
       const additionalContextWithoutFacts = {
         ...toAIContextRoute(resolveCapabilityCatalogRoute(process.env, this.narrativeModel())),
         responseFormat: 'json',
-        maxTokens: Math.min(2200, Math.max(600, 180 + catalogCountMax * 110)),
+        maxTokens: Math.min(2600, Math.max(900, 420 + catalogCountMax * 110)),
         requestTimeoutMs: 65000,
         requestRetries: 0,
         ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
@@ -9377,7 +9366,7 @@ export class AnalyzerOrchestrator {
       const familyThreshold = effectiveCatalogSize === 1 ? 2 : effectiveCatalogSize * 3;
       if (promptFamilyCount >= familyThreshold) {
         try {
-          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence resolves to ${promptFamilyCount} DISTINCT candidate route-area families${allDistinctFamilies.length > distinctFamilies.length ? ` (top ${distinctFamilies.length} listed)` : ''}: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — a purpose (e.g. "Manage shift scheduling"), never a per-route CRUD verb ("Create X", "Update X") — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
+          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence resolves to ${promptFamilyCount} DISTINCT candidate route-area families${allDistinctFamilies.length > distinctFamilies.length ? ` (top ${distinctFamilies.length} listed)` : ''}: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above. Name the durable user or operator outcome, never an individual create, read, update, or delete operation. Merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
           const nudgeRaw = await requestCatalog(3, nudgeHint);
           const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
           if (effectiveSize(nudgeParsed) > effectiveCatalogSize) {
@@ -9420,6 +9409,7 @@ export class AnalyzerOrchestrator {
         gate_reason: 'empty-or-unparseable-catalog',
         final_outcome: 'degraded',
       });
+      input.onResponse?.(raw);
       return [];
     }
     const entityIdByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity.id]));
@@ -9838,6 +9828,7 @@ export class AnalyzerOrchestrator {
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
 
+    input.onResponse?.(raw);
     return out.slice(0, Math.max(16, catalogCountMax));
   }
 
@@ -10351,6 +10342,7 @@ export class AnalyzerOrchestrator {
     budgetMs: number;
     libraryNames?: string[];
     hardDeadlineAt?: number;
+    onInterpretationAccepted?: (raw: string) => void;
   }): Promise<SystemCapability[]> {
     const catalogCandidates = mergeCapabilityCatalogFlowEvidence(
       args.candidateSnapshot,
@@ -10374,6 +10366,7 @@ export class AnalyzerOrchestrator {
     let audienceRepairFeedback: string | undefined;
     let cyclesRun = 0;
     let deadlineExceeded = false;
+    let retainedInterpretationRaw = '';
     for (let cycle = 1; cycle <= 3; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
@@ -10384,6 +10377,7 @@ export class AnalyzerOrchestrator {
       const cycleNudge = cycle === 1 ? undefined
         : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} Return a FULL catalog of purposeful capabilities covering these distinct evidence families: ${[...evidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface'), ...evidenceCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface')].slice(0, 24).map(candidate => `${candidate.id}=${(candidate.evidence_examples || []).slice(0, 8).join(', ') || candidate.name}; allowed_subject_nouns=${(candidate.related_entities || []).map(id => catalogEntityNameById.get(id) || id).join(', ')}`).join('; ')}. Cite candidate_ids exactly. Merge only families that express the same user outcome. Name each result as a purpose a PM would write (verb-headed, never a bare noun or a page/view label). Use the exact allowed_subject_nouns or exact nouns from the cited operations, journeys, or top-down product text; never replace them with plausible synonyms. State why the ability exists without naming code types, interfaces, UI widgets, or implementation structures.`;
       let extracted: SystemCapability[];
+      let extractionRaw = '';
       try {
         extracted = await this.aiExtractCapabilityCatalog({
           systemName: args.systemName,
@@ -10398,6 +10392,7 @@ export class AnalyzerOrchestrator {
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
           hardDeadlineAt: args.hardDeadlineAt,
+          onResponse: raw => { extractionRaw = raw; },
           ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
         });
       } catch (error) {
@@ -10436,12 +10431,14 @@ export class AnalyzerOrchestrator {
       );
       if (!cycleQualityFailure) {
         reconciled = cycleReconciled;
+        retainedInterpretationRaw = extractionRaw;
         qualityFailure = undefined;
         retainedQualityFailure = undefined;
         break;
       }
       if (cycleReconciled.length > reconciled.length) {
         reconciled = cycleReconciled;
+        retainedInterpretationRaw = extractionRaw;
         retainedQualityFailure = cycleQualityFailure;
       }
       qualityFailure = cycleQualityFailure;
@@ -10456,6 +10453,9 @@ export class AnalyzerOrchestrator {
       ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
     const publishGroundedPartial = reconciled.length > 0 && Boolean(qualityFailure);
+    if ((publishGroundedPartial || (!deadlineExceeded && !qualityFailure)) && retainedInterpretationRaw) {
+      args.onInterpretationAccepted?.(retainedInterpretationRaw);
+    }
     writeAnalyzerStatus(
       `[Klauro] capability catalog path: ${catalogPath} (cycles=${cyclesRun}, capabilities=${reconciled.length}, families=${distinctFamilyCount}${gateReason ? `, last_failure=${gateReason}` : ''})`
     );
@@ -10625,6 +10625,7 @@ export class AnalyzerOrchestrator {
     );
 
     const catalogHardDeadlineAt = Date.now() + CATALOG_HARD_DEADLINE_MS;
+    let acceptedCatalogInterpretationRaw = '';
     const capabilityCatalogPromise = systemCapabilities.length > 0 ||
       userJourneys.length > 0 ||
       dataEntities.length > 0 ||
@@ -10646,6 +10647,7 @@ export class AnalyzerOrchestrator {
         budgetMs,
         libraryNames,
         hardDeadlineAt: catalogHardDeadlineAt,
+        onInterpretationAccepted: raw => { acceptedCatalogInterpretationRaw = raw; },
       })
       : Promise.resolve<SystemCapability[]>([]);
     const capabilityCatalogOutcome = capabilityCatalogPromise.then(
@@ -10765,7 +10767,7 @@ export class AnalyzerOrchestrator {
         ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
         : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and either another evidenced product behavior or a distinctive evidenced operating/deployment property. Use concrete product nouns. Do not use generic servers, databases, backends, frontends, or storage mechanics as filler. Do not mention frameworks, libraries, tools, packages, programming languages, data formats, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns selected only from domainVocabulary when that list is present.${readOnlyNarrativeRule}`;
     const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
-    const catalogAppliedPromise = scheduleCapabilityCatalog({
+    const catalogApplication = await scheduleCapabilityCatalog({
       outcome: capabilityCatalogOutcome,
       capabilities: systemCapabilities,
       elementsEnabled,
@@ -10784,12 +10786,20 @@ export class AnalyzerOrchestrator {
         userJourneys,
       }),
     });
-    try {
+    const capabilityTargets = catalogApplication.targets;
+    systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
+    narrativeRepairFacts.capabilities = catalogApplication.authoredFacts;
+    semanticEvidenceDigest.systemCapabilities = catalogApplication.capabilities.length;
+    semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
+    const catalogInterpretation = this.parseCombinedInterpretation(acceptedCatalogInterpretationRaw);
+    if (catalogInterpretation.systemDescription) {
+      raw = acceptedCatalogInterpretationRaw;
+    } else try {
       timeoutHandle = setTimeout(() => {
         console.warn(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
       }, budgetMs);
       timeoutHandle.unref?.();
-      raw = await aiService.generateComponentDescription({
+      raw = await awaitAiOperation(aiService.generateComponentDescription({
           additionalContext: {
             model: this.narrativeModel(),
             model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
@@ -10802,7 +10812,7 @@ export class AnalyzerOrchestrator {
             dependencySignalInstruction: 'Declared libraries are supporting evidence only and the LAST-resort domain signal after repository text, distinctive entities, terminal outputs, and observed product behavior. Generic infrastructure, logging, transport, test, and build dependencies never establish the product domain by themselves.',
             ...(typeof deployableCount === 'number' ? { deployableUnits: deployableCount } : {}),
           },
-        });
+        }), 'system narrative fallback', budgetMs);
     } catch (error) {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       const message = error instanceof Error ? error.message : String(error);
@@ -10822,13 +10832,7 @@ export class AnalyzerOrchestrator {
         : `Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    const catalogApplication = await catalogAppliedPromise;
     systemCapabilities.splice(0, systemCapabilities.length, ...catalogApplication.capabilities);
-    const capabilityTargets = catalogApplication.targets;
-    systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
-    narrativeRepairFacts.capabilities = catalogApplication.authoredFacts;
-    semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
-    semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
 
     const distinctiveEntityNames = this.selectDistinctiveEntityNames(dataEntities);
     const gateEntityGrounding = distinctiveEntityNames.length > 0
@@ -10930,14 +10934,16 @@ export class AnalyzerOrchestrator {
       let repairTimeoutHandle: NodeJS.Timeout | undefined;
       try {
         const remainingMs = budgetMs;
+        const repairRoute = validation.ok && rejectedElements.size > 0
+          ? resolveCapabilityCatalogRoute(process.env, this.narrativeModel())
+          : resolveCapabilityDescriptionRoute(process.env, this.narrativeModel());
         repairTimeoutHandle = setTimeout(() => {
           console.warn(`[Klauro] AI interpretation repair is still running after ${remainingMs}ms; continuing until the provider completes`);
         }, remainingMs);
         repairTimeoutHandle.unref?.();
-        const repairRaw = await aiService.generateComponentDescription({
+        const repairRaw = await awaitAiOperation(aiService.generateComponentDescription({
             additionalContext: {
-              model: this.narrativeModel(),
-              model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
+              ...toAIContextRoute(repairRoute),
               task: semanticRepairTask,
               style: 'Use descriptionContract as the acceptance test. No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, user-experience claims, or integrations beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               descriptionContract: descriptionPromptContract,
@@ -10952,7 +10958,7 @@ export class AnalyzerOrchestrator {
               dependencySignalInstruction: 'libraries lists a compact, evidence-ranked set of declared packages for grounding only — treat it as the LAST-resort domain signal, after readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs. Generic infrastructure/tooling dependencies (loggers, auto-updaters, IPC/RPC transports, test/build tooling) are never domain evidence by themselves.',
               integrationEvidenceInstruction: 'Omit integrations from the system description; capability cataloging handles them separately.',
             },
-          });
+          }), 'semantic comprehension repair', remainingMs);
         const repaired = this.parseCombinedInterpretation(repairRaw);
         if (repaired.domain) domainCandidates.push(repaired.domain);
         if (!validation.ok && (repaired.systemDescription || '').trim()) {
@@ -10986,7 +10992,7 @@ export class AnalyzerOrchestrator {
     }
     for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 2; focusedAttempt++) {
       try {
-        const focusedRepairRaw = await aiService.generateComponentDescription({
+        const focusedRepairRaw = await awaitAiOperation(aiService.generateComponentDescription({
           additionalContext: {
             model: this.narrativeModel(),
             model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
@@ -10997,7 +11003,7 @@ export class AnalyzerOrchestrator {
             coreConcepts: narrativeCoreConcepts,
             ...systemNarrativeFacts,
           },
-        });
+        }), 'focused system-description repair', budgetMs);
         const focusedRepair = this.parseCombinedInterpretation(focusedRepairRaw);
         if (focusedRepair.domain) domainCandidates.push(focusedRepair.domain);
         if ((focusedRepair.systemDescription || '').trim()) {
@@ -11686,7 +11692,7 @@ export class AnalyzerOrchestrator {
 
     await runWithConcurrency(batches, concurrency, async (batch) => {
       try {
-        const raw = await this.awaitAiWithoutCutoff(
+        const raw = await awaitAiOperation(
           aiService.generateComponentDescription({
             additionalContext: {
               ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
@@ -11724,7 +11730,7 @@ export class AnalyzerOrchestrator {
         let repaired: Map<string, string> | null = null;
         if (failedTargets.length > 0) {
           try {
-            const repairRaw = await this.awaitAiWithoutCutoff(
+            const repairRaw = await awaitAiOperation(
               aiService.generateComponentDescription({
                 additionalContext: {
                   ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
@@ -11769,7 +11775,7 @@ export class AnalyzerOrchestrator {
           if (repairedValidation.ok) continue;
 
           try {
-            const individualRaw = await this.awaitAiWithoutCutoff(
+            const individualRaw = await awaitAiOperation(
               aiService.generateComponentDescription({
                 additionalContext: {
                   ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),

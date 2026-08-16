@@ -9019,7 +9019,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('runs catalog and narrative concurrently without rewriting valid catalog prose', async () => {
+  it('uses one accepted catalog response for narrative and capability prose', async () => {
     const envKeys = [
       'OPENAI_API_KEY',
       'KLAURO_AI_INTERPRETATION',
@@ -9039,18 +9039,12 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'false';
 
     let catalogStarted = false;
-    let narrativeStarted = false;
-    let releaseBoth!: () => void;
-    const bothStarted = new Promise<void>(resolve => { releaseBoth = resolve; });
-    const markStarted = (kind: 'catalog' | 'narrative') => {
-      if (kind === 'catalog') catalogStarted = true;
-      else narrativeStarted = true;
-      if (catalogStarted && narrativeStarted) releaseBoth();
-    };
-
-    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockImplementation(async () => {
-      markStarted('catalog');
-      await bothStarted;
+    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockImplementation(async (args: any) => {
+      catalogStarted = true;
+      args.onInterpretationAccepted(JSON.stringify({
+        system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It identifies code structure, product capabilities, flows, and change boundaries for engineering agents. Source enters deterministic analyzers, which connect code facts into navigable system context and produce grounded codebase intelligence. The resulting analysis is exposed through MCP for development work.',
+        domain: 'codebase-intelligence',
+      }));
       return [{
         id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
         description: 'Repository analysis builds relationship graphs that expose behavior, tests, risks, and dependencies to engineering agents before they edit code.',
@@ -9058,14 +9052,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
       }];
     });
-    const narrativeSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async () => {
-      markStarted('narrative');
-      await bothStarted;
-      return JSON.stringify({
-        system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It identifies code structure, product capabilities, flows, and change boundaries for engineering agents. Source enters deterministic analyzers, which connect code facts into navigable system context and produce grounded codebase intelligence. The resulting analysis is exposed through MCP for development work.',
-        domain: 'codebase-intelligence',
-      });
-    });
+    const narrativeSpy = jest.spyOn(aiService, 'generateComponentDescription');
 
     try {
       const purpose: any = {
@@ -9087,8 +9074,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
       );
       expect(catalogStarted).toBe(true);
-      expect(narrativeStarted).toBe(true);
-      expect(narrativeSpy).toHaveBeenCalledTimes(1);
+      expect(narrativeSpy).not.toHaveBeenCalled();
       expect(capabilities[0].description_source).toBe('ai');
       expect(capabilities[0].description).toContain('relationship graphs');
     } finally {
