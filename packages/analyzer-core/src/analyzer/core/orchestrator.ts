@@ -9280,10 +9280,10 @@ export class AnalyzerOrchestrator {
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with the concrete product or operational subject named by the cited evidence, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. Copy concrete nouns from the cited operations, entities, journeys, or first-party product text; do not replace them with generic "data" or "information". Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
     const catalogTaskBase = artifactType === 'infrastructure'
-      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language, such as "Provision platform infrastructure" or "Deploy service runtime". Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability; "Manage Shell Deploy" and similar mechanism labels are invalid. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
-        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Every subject noun in a capability name and description must come from a cited candidate's entity_names or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
+        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Every subject noun in a capability name and description must come from a cited candidate's entity_names or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
     const catalogTask = `${catalogTaskBase} DESCRIPTION CONTRACT: ${catalogDescriptionContract}`;
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
@@ -10764,12 +10764,13 @@ export class AnalyzerOrchestrator {
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
         : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and either another evidenced product behavior or a distinctive evidenced operating/deployment property. Use concrete product nouns. Do not use generic servers, databases, backends, frontends, or storage mechanics as filler. Do not mention frameworks, libraries, tools, packages, programming languages, data formats, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns selected only from domainVocabulary when that list is present.${readOnlyNarrativeRule}`;
-    const catalogAppliedPromise = scheduleCapabilityCatalog({
+    const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
+    const catalogApplication = await scheduleCapabilityCatalog({
       outcome: capabilityCatalogOutcome,
       capabilities: systemCapabilities,
       elementsEnabled,
       elementLimit,
-      reauthorDescriptions: shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel()),
+      reauthorDescriptions: false,
       toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById),
       authorDescriptions: capabilities => this.applyAIElementDescriptions(capabilities, [], {
         systemName,
@@ -10783,6 +10784,14 @@ export class AnalyzerOrchestrator {
         userJourneys,
       }),
     });
+    const capabilityTargets = catalogApplication.targets;
+    systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
+    narrativeRepairFacts.capabilities = catalogApplication.authoredFacts;
+    semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
+    semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
+    const combinedNarrativeTask = reauthorCatalogDescriptions && capabilityTargets.length > 0
+      ? `${systemNarrativeTask} Include a descriptions array in the same JSON object, shaped as [{"id":"...","description":"..."}], with exactly one entry for every supplied description_item id. Each capability description must be one grounded product sentence that explains what users or operators can accomplish and what that action means in this product. Use only the supplied evidence, add concrete information beyond the name, and never mention source mechanics, CRUD inventories, routes, files, capability scaffolding, or unsupported value claims.`
+      : systemNarrativeTask;
     try {
       timeoutHandle = setTimeout(() => {
         console.warn(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
@@ -10793,11 +10802,14 @@ export class AnalyzerOrchestrator {
             model: this.narrativeModel(),
             model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
             responseFormat: 'json',
-            maxTokens: 550,
-            task: systemNarrativeTask,
+            maxTokens: Math.min(1100, 500 + capabilityTargets.length * 65),
+            task: combinedNarrativeTask,
             primaryDomain: narrativePrimaryDomain,
             coreConcepts: narrativeCoreConcepts,
             ...systemNarrativeFacts,
+            ...(reauthorCatalogDescriptions && capabilityTargets.length > 0
+              ? { description_items: capabilityTargets }
+              : {}),
             dependencySignalInstruction: 'Declared libraries are supporting evidence only and the LAST-resort domain signal after repository text, distinctive entities, terminal outputs, and observed product behavior. Generic infrastructure, logging, transport, test, and build dependencies never establish the product domain by themselves.',
             ...(typeof deployableCount === 'number' ? { deployableUnits: deployableCount } : {}),
           },
@@ -10821,13 +10833,7 @@ export class AnalyzerOrchestrator {
         : `Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    const catalogApplication = await catalogAppliedPromise;
     systemCapabilities.splice(0, systemCapabilities.length, ...catalogApplication.capabilities);
-    const capabilityTargets = catalogApplication.targets;
-    systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
-    narrativeRepairFacts.capabilities = catalogApplication.authoredFacts;
-    semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
-    semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
 
     const distinctiveEntityNames = this.selectDistinctiveEntityNames(dataEntities);
     const gateEntityGrounding = distinctiveEntityNames.length > 0
@@ -10900,7 +10906,6 @@ export class AnalyzerOrchestrator {
     }
     const acceptedElements = new Map<string, string>();
     const rejectedElements = new Map<string, string>();
-    await catalogApplication.descriptionPromise;
     for (const target of capabilityTargets) {
       const existingCatalogDescription = systemCapabilities.find(capability => capability.id === target.id)?.description || '';
       const existingCatalogValidation = this.validateElementDescription(existingCatalogDescription, target);
@@ -10911,9 +10916,10 @@ export class AnalyzerOrchestrator {
           reason: existingCatalogValidation.reason,
         });
       }
-      const originalCandidate = existingCatalogValidation.ok
-        ? existingCatalogDescription
-        : combined.elements.get(target.id) || '';
+      const combinedCandidate = combined.elements.get(target.id) || '';
+      const originalCandidate = reauthorCatalogDescriptions
+        ? combinedCandidate || (existingCatalogValidation.ok ? existingCatalogDescription : '')
+        : existingCatalogValidation.ok ? existingCatalogDescription : combinedCandidate;
       const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);
       const elementValidation = candidate
         ? this.validateElementDescription(candidate, target)
@@ -10925,7 +10931,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
-      if (validation.ok) break;
+      if (validation.ok && rejectedElements.size === 0) break;
       let repairTimeoutHandle: NodeJS.Timeout | undefined;
       try {
         const remainingMs = budgetMs;
@@ -11784,20 +11790,6 @@ export class AnalyzerOrchestrator {
                   items: [target],
                   rejected_description: originalDescription,
                   rejection_reason: this.validateElementDescription(originalDescription || '', byId.get(target.id) || target).reason,
-                  bad_examples: [
-                    `${target.name} covers read, analyze paths; spans source files.`,
-                    `${target.name} handles operations for internal files.`,
-                  ],
-                  good_examples: [
-                    'Contact Management centralizes contact records and communication details used by customer or account workflows.',
-                    'Ticket Management tracks service requests, status, assignment, and follow-up work across support flows.',
-                    'Provider Management maintains provider records and relationships used by protocol, member, or service coordination.',
-                    'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.',
-                    'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
-                    'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
-                    'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
-                    'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
-                  ],
                 },
               }),
               'individual element description repair',

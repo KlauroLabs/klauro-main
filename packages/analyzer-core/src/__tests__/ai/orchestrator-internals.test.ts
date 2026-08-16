@@ -9017,74 +9017,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('starts capability curation and the system narrative concurrently', async () => {
-    const previousOpenAI = process.env.OPENAI_API_KEY;
-    const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
-    const previousForce = process.env.KLAURO_AI_INTERPRETATION_FORCE;
-    process.env.OPENAI_API_KEY = 'test-openai-key';
-    process.env.KLAURO_AI_INTERPRETATION = 'true';
-    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
-    let catalogStarted = false;
-    let narrativeStarted = false;
-    let release!: () => void;
-    const bothStarted = new Promise<void>(resolve => { release = resolve; });
-    const markStarted = (kind: 'catalog' | 'narrative') => {
-      if (kind === 'catalog') catalogStarted = true;
-      else narrativeStarted = true;
-      if (catalogStarted && narrativeStarted) release();
-    };
-
-    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockImplementation(async () => {
-      markStarted('catalog');
-      await bothStarted;
-      return [{
-        id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
-        description: 'Builds relationship graphs that explain code behavior to engineering agents.',
-        description_source: 'ai', category: 'core', operations: [], related_entities: [],
-        related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
-      }];
-    });
-    const narrativeSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async () => {
-      markStarted('narrative');
-      await bothStarted;
-      return JSON.stringify({
-        system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It identifies code structure, product capabilities, flows, and change boundaries for engineering agents. Source enters deterministic analyzers, which connect code facts into navigable system context and produce grounded codebase intelligence. The resulting analysis is exposed through MCP for development work.',
-        domain: 'codebase-intelligence',
-        descriptions: [],
-      });
-    });
-
-    try {
-      const purpose: any = {
-        primary_type: 'developer-tool', confidence: 0.9, evidence: [],
-        primary_domain: 'codebase-intelligence', core_concepts: ['codebase', 'analysis'],
-        inferred_description: 'A codebase intelligence service.', supporting_workflow_ids: [],
-      };
-      const capabilities: any[] = [{
-        id: 'candidate_analyze', name: 'Analyze codebases', description: 'Analyze repositories.',
-        category: 'core', operations: [], related_entities: [], related_domains: ['code-analysis'],
-        criticality: 'high', criticality_factors: [],
-      }];
-      await orch.applyAIInterpretation(
-        purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [], capabilities,
-        [], [], [], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
-        [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
-      );
-      expect(catalogStarted).toBe(true);
-      expect(narrativeStarted).toBe(true);
-    } finally {
-      catalogSpy.mockRestore();
-      narrativeSpy.mockRestore();
-      if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
-      else process.env.OPENAI_API_KEY = previousOpenAI;
-      if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
-      else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
-      if (previousForce === undefined) delete process.env.KLAURO_AI_INTERPRETATION_FORCE;
-      else process.env.KLAURO_AI_INTERPRETATION_FORCE = previousForce;
-    }
-  });
-
-  it('starts capability prose as soon as catalog curation completes', async () => {
+  it('authors the system narrative and curated capability prose in one catalog-aware request', async () => {
     const envKeys = [
       'OPENAI_API_KEY',
       'KLAURO_AI_INTERPRETATION',
@@ -9103,39 +9036,33 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     process.env.KLAURO_CAPABILITY_DESCRIPTION_MODEL = 'prose-model';
     process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'true';
 
-    let releaseDescriptionStarted!: () => void;
-    const descriptionStarted = new Promise<void>(resolve => { releaseDescriptionStarted = resolve; });
-    let narrativeWaitingForDescription = false;
-    let capabilityProseStarted = false;
-    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockResolvedValue([{
-      id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
-      description: 'Builds relationship graphs that explain code behavior to engineering agents.',
-      description_source: 'ai', category: 'core', operations: [], related_entities: [],
-      related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
-    }]);
-    const generationSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (args: any) => {
-      const task = String(args.additionalContext?.task || '');
-      if (task.includes('{"descriptions"')) {
-        capabilityProseStarted = true;
-        releaseDescriptionStarted();
-        return JSON.stringify({
-          descriptions: [{
-            id: 'cap_analyze',
-            description: 'Analyze codebases turns repository structure into a CAS relationship graph so agents can inspect behavior, tests, risks, and dependencies before editing.',
-          }],
-        });
-      }
-      narrativeWaitingForDescription = true;
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('capability prose did not start concurrently')), 1000);
-        void descriptionStarted.then(() => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
+    let releaseCatalog!: () => void;
+    const catalogReleased = new Promise<void>(resolve => { releaseCatalog = resolve; });
+    let signalCatalogStarted!: () => void;
+    const catalogStarted = new Promise<void>(resolve => { signalCatalogStarted = resolve; });
+    let narrativeStarted = false;
+    let narrativeContext: any;
+
+    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockImplementation(async () => {
+      signalCatalogStarted();
+      await catalogReleased;
+      return [{
+        id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
+        description: 'Builds relationship graphs that explain code behavior to engineering agents.',
+        description_source: 'ai', category: 'core', operations: [], related_entities: ['entity_repository'],
+        related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
+      }];
+    });
+    const narrativeSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (args: any) => {
+      narrativeStarted = true;
+      narrativeContext = args.additionalContext;
       return JSON.stringify({
-        system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It gives engineering agents product capabilities, flows, and change boundaries before they edit. Source analysis connects code facts into navigable context and returns grounded codebase intelligence. The resulting analysis is available through MCP for development work.',
+        system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It identifies code structure, product capabilities, flows, and change boundaries for engineering agents. Source enters deterministic analyzers, which connect code facts into navigable system context and produce grounded codebase intelligence. The resulting analysis is exposed through MCP for development work.',
         domain: 'codebase-intelligence',
+        descriptions: [{
+          id: 'cap_analyze',
+          description: 'Repository analysis builds relationship graphs that expose behavior, tests, risks, and dependencies to engineering agents before they edit code.',
+        }],
       });
     });
 
@@ -9147,19 +9074,30 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       };
       const capabilities: any[] = [{
         id: 'candidate_analyze', name: 'Analyze codebases', description: 'Analyze repositories.',
-        category: 'core', operations: [], related_entities: [], related_domains: ['code-analysis'],
+        category: 'core', operations: [], related_entities: ['entity_repository'], related_domains: ['code-analysis'],
         criticality: 'high', criticality_factors: [],
       }];
-      await orch.applyAIInterpretation(
+      const interpretation = orch.applyAIInterpretation(
         purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [], capabilities,
-        [], [], [], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
+        [], [], [{
+          id: 'entity_repository', name: 'Repository', kind: 'persisted-entity', fields: [],
+          lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+        }], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
         [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
       );
-      expect(narrativeWaitingForDescription).toBe(true);
-      expect(capabilityProseStarted).toBe(true);
+      await catalogStarted;
+      expect(narrativeStarted).toBe(false);
+      releaseCatalog();
+      await interpretation;
+      expect(narrativeStarted).toBe(true);
+      expect(narrativeSpy).toHaveBeenCalledTimes(1);
+      expect(narrativeContext.description_items.map((item: any) => item.id)).toEqual(['cap_analyze']);
+      expect(String(narrativeContext.task)).toContain('Include a descriptions array');
+      expect(capabilities[0].description_source).toBe('ai');
+      expect(capabilities[0].description).toContain('relationship graphs');
     } finally {
       catalogSpy.mockRestore();
-      generationSpy.mockRestore();
+      narrativeSpy.mockRestore();
       for (const key of envKeys) {
         if (previous[key] === undefined) delete process.env[key];
         else process.env[key] = previous[key];
