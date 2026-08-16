@@ -1,3 +1,5 @@
+ARG NODE_VERSION=22.22.0
+
 FROM rust:1.88-bookworm AS native-parser-builder
 
 WORKDIR /build/klauro-parse
@@ -7,7 +9,7 @@ RUN mkdir src && printf 'fn main() {}\n' > src/main.rs && cargo build --release 
 COPY packages/analyzer-core/native/klauro-parse/src ./src
 RUN touch src/main.rs && cargo build --release
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
 WORKDIR /app
 

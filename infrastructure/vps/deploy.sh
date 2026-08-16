@@ -122,6 +122,17 @@ CM_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersis
 export SSHPASS="$VPS_PASSWORD"
 SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 $CM_OPTS"
 DEST="$VPS_USER@$VPS_HOST"
+SOURCE_SYNC_EXCLUDES=(
+  --exclude node_modules
+  --exclude dist
+  --exclude .git
+  --exclude .pack
+  --exclude logs
+  --exclude docs.zip
+  --exclude .claude/worktrees
+  --exclude '.klauro-*'
+  --exclude .customer-package
+)
 
 if [ -n "$WITH_RELEASE" ]; then
   echo "==> Cutting release ($WITH_RELEASE) before deploy"
@@ -153,11 +164,9 @@ echo "    staged $STAGED_FILES file(s) from the commit"
 echo "==> Syncing app-dist"
 rsync -az --delete -e "$SSH" apps/app/dist/ "$DEST:/opt/klauro/app-dist/"
 echo "==> Syncing source (excluding heavy/generated dirs)"
-rsync -az --delete-delay --exclude node_modules --exclude dist --exclude .git --exclude .pack \
-  --exclude logs --exclude docs.zip -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/source/"
+rsync -az --delete-delay "${SOURCE_SYNC_EXCLUDES[@]}" -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/source/"
 echo "==> Syncing remote gate source to the identical deployment snapshot"
-rsync -az --delete-delay --exclude node_modules --exclude dist --exclude .git --exclude .pack \
-  --exclude logs --exclude docs.zip -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/devgate/"
+rsync -az --delete-delay "${SOURCE_SYNC_EXCLUDES[@]}" -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/devgate/"
 echo "==> Syncing Caddyfile + docker-compose.yml"
 rsync -az -e "$SSH" infrastructure/vps/Caddyfile "$DEST:/opt/klauro/Caddyfile"
 rsync -az -e "$SSH" infrastructure/vps/docker-compose.yml "$DEST:/opt/klauro/docker-compose.yml"
