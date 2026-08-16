@@ -62,6 +62,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'capability-detector.ts': 3,
   'capability-naming.ts': 3,
   'capability-dependency-builder.ts': 3,
+  'capability-catalog-prompt-evidence.ts': 3,
   'entity-relations.ts': 3,
   'flow-graph-builder.ts': 3,
   'flow-concepts.ts': 3,

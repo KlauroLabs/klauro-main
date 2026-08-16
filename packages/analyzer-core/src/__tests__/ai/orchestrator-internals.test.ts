@@ -8827,7 +8827,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('presents a real behavior-surface candidate to the catalog step by its TRUE evidence weight and real handler names, not the capped ops count or the structural placeholder (task #99: magnitude + evidence-derived naming)', async () => {
+  it('presents a real behavior surface by its true evidence weight and language-neutral operation outcomes', async () => {
     // A large, single-file, diversely-named registration surface — exactly
     // the shape buildBehaviorCapabilities collapses to one candidate whose
     // structural label is the "<Kind> Surface" mechanism-noun placeholder.
@@ -8884,13 +8884,13 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       expect(areas.length).toBeGreaterThan(0);
       for (const presented of areas) {
         const source = behaviorSurfaces.find((surface: any) =>
-          (surface.evidence_examples || []).join(', ') === presented.name);
+          surface.name === presented.family);
         expect(source).toBeDefined();
         expect(presented.entry_points).toBe(orch.behaviorSurfaceEntryCount(source));
         expect(presented.name).not.toMatch(/\bSurface\b/);
-        for (const example of presented.name.split(', ')) {
-          expect(names).toContain(example);
-        }
+        expect(presented.name).not.toMatch(/[_.:]/);
+        expect(presented.operations.length).toBeGreaterThan(0);
+        expect(presented.operations.join(' ')).not.toMatch(/[_.:]/);
         expect(JSON.stringify(presented)).not.toMatch(/primary|core|main|central|flagship/i);
       }
     } finally {

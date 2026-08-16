@@ -126,6 +126,7 @@ import {
   updatedIncrementalFileRecord,
 } from './incremental-contribution-refresh';
 import { previousDescriptionNeedsCurrentValidation } from './previous-description-validation';
+import { projectCapabilityCatalogPromptEvidence } from './capability-catalog-prompt-evidence';
 import { refreshIncrementalStateFromGraph } from './incremental-state-refresh';
 import { buildImportedHandlerResolver } from './imported-handler-resolver';
 import { dedupeCanonicalEdges } from './canonical-edge-deduplication';
@@ -9228,21 +9229,22 @@ export class AnalyzerOrchestrator {
       .slice(0, candidateWindowSize);
     const candidateAreaFacts = promptCandidateAreas
       .slice(0, candidateWindowSize)
-      .map(capability => ({
-        candidate_id: capability.id,
-        family: capability.name,
-        operations: (capability.evidence_examples || []).slice(0, 8),
-        name: capability.evidence_kind === 'behavior-surface' && (capability.evidence_examples || []).length > 0
-          ? (capability.evidence_examples as string[]).join(', ')
-          : capability.name,
-        entry_points: this.behaviorSurfaceEntryCount(capability),
-        entities: (capability.related_entities || []).length,
-        entity_names: (capability.related_entities || []).map(id => catalogEntityNameById.get(id) || id),
-        terminality: candidateTerminality.get(capability.id)?.terminal ? 'terminal'
-          : candidateTerminality.get(capability.id)?.proximal_terminal ? 'proximal-terminal'
-            : 'upstream',
-        distance_to_terminal: candidateTerminality.get(capability.id)?.distance_to_terminal,
-      }));
+      .map(capability => {
+        const promptEvidence = projectCapabilityCatalogPromptEvidence(capability);
+        return {
+          candidate_id: capability.id,
+          family: capability.name,
+          operations: promptEvidence.operations,
+          name: promptEvidence.name,
+          entry_points: this.behaviorSurfaceEntryCount(capability),
+          entities: (capability.related_entities || []).length,
+          entity_names: (capability.related_entities || []).map(id => catalogEntityNameById.get(id) || id),
+          terminality: candidateTerminality.get(capability.id)?.terminal ? 'terminal'
+            : candidateTerminality.get(capability.id)?.proximal_terminal ? 'proximal-terminal'
+              : 'upstream',
+          distance_to_terminal: candidateTerminality.get(capability.id)?.distance_to_terminal,
+        };
+      });
     const services = (input.externalServices || []).slice(0, 12);
     const promptFamilyCount = this.catalogDistinctFamilyCount(candidatePoolForRanking);
     const catalogCountMax = Math.max(1, Math.min(20, Math.max(promptFamilyCount, behaviorCandidateAreas.length)));
@@ -10931,12 +10933,10 @@ export class AnalyzerOrchestrator {
       if (elementValidation.ok && candidate) acceptedElements.set(target.id, candidate);
       else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
     }
-
     if (!validation.ok || rejectedElements.size > 0) {
       const elementReasons = [...new Set(rejectedElements.values())].sort().join(',') || 'none';
       writeAnalyzerStatus(`[Klauro] structured comprehension rejected: system=${validation.ok ? 'none' : validation.reason || 'unknown'} elements=${rejectedElements.size} element_reasons=${elementReasons}`);
     }
-
     for (let repairAttempt = 0; repairAttempt < 1; repairAttempt++) {
       if (validation.ok && rejectedElements.size === 0) break;
       let repairTimeoutHandle: NodeJS.Timeout | undefined;
