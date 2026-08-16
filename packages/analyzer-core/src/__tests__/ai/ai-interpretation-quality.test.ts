@@ -521,7 +521,7 @@ describe('AI interpretation budgets for hosted providers', () => {
   });
 });
 
-describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
+describe('AI repair re-prompt budget and graceful degradation', () => {
   const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
   let saved: Record<string, string | undefined>;
 
@@ -566,7 +566,7 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
     descriptions: [],
   });
 
-  it('accepts a description produced on the SECOND repair re-prompt (previously only one repair pass existed)', async () => {
+  it('accepts a description produced by the focused repair after the broad repair fails', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription')
       .mockResolvedValueOnce(badAnswer)
       .mockResolvedValueOnce(badAnswer)
@@ -575,7 +575,6 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
 
     await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], emptyFlowGraph(), []);
 
-    // 1 initial + 2 repair re-prompts.
     expect(spy).toHaveBeenCalledTimes(3);
     expect(purpose.description_generation.status).toBe('ai_applied');
     expect(purpose.inferred_description).toMatch(/CAS relationship graphs/);
@@ -597,7 +596,7 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
 
     await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], emptyFlowGraph(), []);
 
-    expect(spy).toHaveBeenCalledTimes(5);
+    expect(spy).toHaveBeenCalledTimes(3);
     expect(purpose.description_generation.status).toBe('ai_rejected');
     // Never overwritten with a fabricated substitute — the pre-existing value
     // on the purpose object is left exactly as it was.

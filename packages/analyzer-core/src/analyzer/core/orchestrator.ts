@@ -9272,7 +9272,7 @@ export class AnalyzerOrchestrator {
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
         : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Every subject noun in a capability name and description must come from a cited candidate's entity_names or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
-    const catalogNarrativeContract = 'The system_description must be exactly 4 concise, grammatical sentences for a non-technical reader: what the product or operational system is, what users or operators can do, one concrete action and result, and another evidenced behavior or operating property. Use concrete nouns from supplied evidence. Do not mention source files, routes, handlers, frameworks, libraries, tools, programming languages, prompt keys, graph evidence, or unsupported value claims. domain must be a lowercase kebab-case label of 2 to 4 evidence-backed product nouns.';
+    const catalogNarrativeContract = 'The system_description must be exactly 4 concise, grammatical sentences for a non-technical reader: what the product or operational system is, what users or operators can do, one concrete action and result, and another evidenced behavior or operating property. Use concrete nouns from supplied evidence. Do not mention source files, routes, handlers, frameworks, libraries, tools, programming languages, prompt keys, or graph evidence. Never use marketing or generalized value claims such as seamless, robust, comprehensive, various, efficient, productivity, performance, compliant, compliance, advanced, modern, streamline, insights, metrics, decision-making, collaboration, scalable, user experience, business value, or best practices. domain must be a lowercase kebab-case label of 2 to 4 evidence-backed product nouns.';
     const catalogTask = `${catalogTaskBase} DESCRIPTION CONTRACT: ${catalogDescriptionContract} SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract}`;
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
@@ -10161,9 +10161,12 @@ export class AnalyzerOrchestrator {
     );
   }
   private capabilityHasObservedMutation(operations: SystemCapability['operations']): boolean {
+    const methods = operations
+      .map(operation => String(operation.trigger?.method || '').toUpperCase())
+      .filter(Boolean);
+    if (methods.length > 0) return methods.some(method => /^(?:POST|PUT|PATCH|DELETE)$/.test(method));
     return operations.some(operation =>
-      /^(?:manage|create|update|delete|write|modify|submit|configure|mutate|set|save|persist)$/i.test(operation.action || '') ||
-      /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')
+      /^(?:manage|create|update|delete|write|modify|submit|configure|mutate|set|save|persist)$/i.test(operation.action || '')
     );
   }
   private isPublishableCapability(capability: SystemCapability): boolean {
@@ -10929,7 +10932,7 @@ export class AnalyzerOrchestrator {
       else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
     }
 
-    for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
+    for (let repairAttempt = 0; repairAttempt < 1; repairAttempt++) {
       if (validation.ok && rejectedElements.size === 0) break;
       let repairTimeoutHandle: NodeJS.Timeout | undefined;
       try {
@@ -10949,6 +10952,7 @@ export class AnalyzerOrchestrator {
               descriptionContract: descriptionPromptContract,
               rejected_system_description: validation.ok ? undefined : cleaned,
               system_description_rejection_reason: validation.ok ? undefined : validation.reason,
+              rejectionInstruction: validation.ok ? undefined : 'The rejection reason names a forbidden word, claim class, or structure. Omit it entirely instead of paraphrasing it, and do not introduce any other marketing or generalized value claim.',
               rejected_items: capabilityTargets
                 .filter(target => rejectedElements.has(target.id))
                 .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
@@ -10990,7 +10994,7 @@ export class AnalyzerOrchestrator {
         if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
       }
     }
-    for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 2; focusedAttempt++) {
+    for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 1; focusedAttempt++) {
       try {
         const focusedRepairRaw = await awaitAiOperation(aiService.generateComponentDescription({
           additionalContext: {
@@ -10998,6 +11002,7 @@ export class AnalyzerOrchestrator {
             model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
             task: `${systemNarrativeTask} Regenerate from scratch and do not copy the rejected paragraph. Translate identifiers into ordinary domain language. Do not include item descriptions. If rejection_reason is implementation-stack-filler, omit every tool, package, library, framework, programming-language, and data-format name. If rejection_reason is generic-implementation-mechanic-filler, replace generic server, database, backend, frontend, or storage mechanics with an additional evidenced product behavior.`,
             rejection_reason: validation.reason,
+            rejectionInstruction: 'Omit every word or claim class named by rejection_reason. Do not paraphrase the rejected claim.',
             retry_attempt: focusedAttempt + 1,
             primaryDomain: narrativePrimaryDomain,
             coreConcepts: narrativeCoreConcepts,

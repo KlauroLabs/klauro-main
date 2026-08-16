@@ -10772,7 +10772,7 @@ describe('enterprise AI semantic guards', () => {
       category: 'core',
       related_entities: ['entity_order'],
       related_domains: [],
-      operations: [{ entry_point_id: 'get-order', entry_point_type: 'http', action: 'View', trigger: { method: 'GET', path: '/orders/:id' } }],
+      operations: [{ entry_point_id: 'get-order', entry_point_type: 'http', action: 'Create', trigger: { method: 'GET', path: '/orders/:id' } }],
     }];
     const entities = [{ id: 'entity_order', name: 'EnterpriseOrder', kind: 'persisted-entity' }];
     expect(orch.reconcileCatalogedCapabilities(cataloged, [], entities)).toEqual([]);
