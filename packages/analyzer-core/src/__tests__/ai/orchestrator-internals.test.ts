@@ -2690,7 +2690,7 @@ describe('architecture and capability inference', () => {
     })).toBe('auth');
   });
 
-  it('orders cross-cutting concerns after the product outcome, without burying them', async () => {
+  it('uses structural evidence rather than capability vocabulary for product priority', async () => {
     // REWRITTEN when the ~65-phrase tuning table was replaced by evidence. The
     // previous version asserted Token Balance Discovery < Portfolio < Checkout <
     // User on four capabilities that ALL had operations: [] and related_entities:
@@ -2699,22 +2699,15 @@ describe('architecture and capability inference', () => {
     // so it asserted the vocabulary's output rather than any property of the
     // capabilities. Portfolio-before-Checkout in particular had nothing behind it.
     //
-    // What is defensible with no evidence to go on: category still separates them,
-    // and a cross-cutting concern sorts after a product outcome — but by a
-    // half-step inside its tier, so a real capability is never buried four ranks
-    // for naming a user.
     const productCore = { name: 'Token Balance Discovery', category: 'core', criticality: 'medium', operations: [], related_domains: ['token-balance'], related_entities: [] };
     const productSupporting = { name: 'Checkout Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['checkout'], related_entities: [] };
-    const crossCutting = { name: 'User Management', category: 'supporting', criticality: 'high', operations: [], related_domains: ['user'], related_entities: [] };
+    const identitySupporting = { name: 'User Management', category: 'supporting', criticality: 'high', operations: [], related_domains: ['user'], related_entities: [] };
 
     expect(orch.systemCapabilityProductPriority(productCore))
       .toBeLessThan(orch.systemCapabilityProductPriority(productSupporting));
     expect(orch.systemCapabilityProductPriority(productSupporting))
-      .toBeLessThan(orch.systemCapabilityProductPriority(crossCutting));
+      .toBe(orch.systemCapabilityProductPriority(identitySupporting));
 
-    // And the demotion is a half-step, not a cliff: a GROUNDED cross-cutting
-    // capability still outranks an ungrounded product one, because it has more for
-    // the reader to actually go and look at.
     const groundedAuth = { name: 'User Management', category: 'core', criticality: 'high', operations: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], related_domains: ['user'], related_entities: ['User'] };
     expect(orch.systemCapabilityProductPriority(groundedAuth))
       .toBeLessThan(orch.systemCapabilityProductPriority(productCore));
@@ -6369,21 +6362,32 @@ describe('rollupSystemCapabilityDependencies (#119: real capability-dependency g
     relationships: Array<{ capability_id: string; role: string }>,
   ): any => ({ flow_id, capability_id, capability_relationships: relationships.map(r => ({ ...r, rationale: 'x' })) });
 
-  const cap = (id: string, name: string, related_entities: string[] = []): any => ({
-    id, name, description: 'x'.repeat(30), category: 'core', operations: [],
+  const cap = (id: string, name: string, related_entities: string[] = [], operationNodeIds: string[] = []): any => ({
+    id, name, description: 'x'.repeat(30), category: 'core',
+    operations: operationNodeIds.map(entry_point_id => ({ entry_point_id: `node:${entry_point_id}` })),
     related_entities, related_domains: [], criticality: 'medium', criticality_factors: [],
   });
 
-  it('aggregates a single supporting flow into a (P depends_on C) edge and the inverse depended_by', () => {
-    const capabilities = [cap('P', 'Manage RSS Feeds', ['Feed']), cap('C', 'Manage User Accounts', ['User'])];
+  const entity = (id: string, writers: string[], readers: string[]): any => ({
+    id,
+    lifecycle: { created_by: writers, updated_by: [], deleted_by: [], read_by: readers },
+  });
+
+  it('uses an explicit prerequisite relationship as dependency evidence', () => {
+    const capabilities = [cap('P', 'Publish Catalog'), cap('C', 'Index Products')];
     const flows = [
-      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
+      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'prerequisite' }]),
     ];
     orch.rollupSystemCapabilityDependencies(flows, capabilities);
     const p = capabilities.find((c: any) => c.id === 'P');
     const c = capabilities.find((c: any) => c.id === 'C');
     expect(p.depends_on).toHaveLength(1);
-    expect(p.depends_on[0]).toMatchObject({ from_capability: 'P', to_capability: 'C', strength: 'optional' });
+    expect(p.depends_on[0]).toMatchObject({
+      from_capability: 'P',
+      to_capability: 'C',
+      dependency_type: 'requires',
+      strength: 'required',
+    });
     expect(c.depended_by).toEqual(['P']);
     // The dependency edge is never written onto C's own depends_on (C does
     // not depend on P just because P depends on it).
@@ -6391,18 +6395,68 @@ describe('rollupSystemCapabilityDependencies (#119: real capability-dependency g
     expect(p.depended_by).toBeUndefined();
   });
 
-  it('rolls multiple overlapping flows between the same pair into ONE edge with call_count and upgrades strength past the threshold', () => {
-    const capabilities = [cap('P', 'Manage RSS Feeds'), cap('C', 'Manage User Accounts')];
+  it('rolls multiple explicit prerequisites between the same pair into one edge', () => {
+    const capabilities = [cap('P', 'Publish Catalog'), cap('C', 'Index Products')];
     const flows = [
-      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
-      flow('f2', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
-      flow('f3', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
+      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'prerequisite' }]),
+      flow('f2', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'prerequisite' }]),
+      flow('f3', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'prerequisite' }]),
     ];
     orch.rollupSystemCapabilityDependencies(flows, capabilities);
     const p = capabilities.find((c: any) => c.id === 'P');
     expect(p.depends_on).toHaveLength(1);
     expect(p.depends_on[0].evidence.call_count).toBe(3);
-    expect(p.depends_on[0].strength).toBe('common'); // count > 2
+    expect(p.depends_on[0].strength).toBe('required');
+  });
+
+  it('omits direction when capabilities only overlap on a supporting flow', () => {
+    const capabilities = [cap('P', 'Publish Catalog'), cap('C', 'Index Products')];
+    const flows = [
+      flow('f1', 'P', [{ capability_id: 'P', role: 'primary' }, { capability_id: 'C', role: 'supporting' }]),
+    ];
+    orch.rollupSystemCapabilityDependencies(flows, capabilities);
+    expect(capabilities.every((capability: any) => capability.depends_on === undefined)).toBe(true);
+    expect(capabilities.every((capability: any) => capability.depended_by === undefined)).toBe(true);
+  });
+
+  it('directs a shared-entity dependency from consumer to producer', () => {
+    const capabilities = [
+      cap('checkout', 'Complete Checkout', ['inventory'], ['checkout-handler']),
+      cap('catalog', 'Maintain Product Availability', ['inventory'], ['catalog-writer']),
+    ];
+    const flows = [
+      flow('f1', 'checkout', [
+        { capability_id: 'checkout', role: 'primary' },
+        { capability_id: 'catalog', role: 'supporting' },
+      ]),
+    ];
+    orch.rollupSystemCapabilityDependencies(
+      flows,
+      capabilities,
+      [entity('inventory', ['catalog-writer'], ['checkout-handler'])],
+    );
+    expect(capabilities.find((capability: any) => capability.id === 'checkout').depends_on[0])
+      .toMatchObject({ from_capability: 'checkout', to_capability: 'catalog' });
+  });
+
+  it('reverses a shared-entity dependency when the primary capability is the producer', () => {
+    const capabilities = [
+      cap('catalog', 'Maintain Product Availability', ['inventory'], ['catalog-writer']),
+      cap('checkout', 'Complete Checkout', ['inventory'], ['checkout-handler']),
+    ];
+    const flows = [
+      flow('f1', 'catalog', [
+        { capability_id: 'catalog', role: 'primary' },
+        { capability_id: 'checkout', role: 'supporting' },
+      ]),
+    ];
+    orch.rollupSystemCapabilityDependencies(
+      flows,
+      capabilities,
+      [entity('inventory', ['catalog-writer'], ['checkout-handler'])],
+    );
+    expect(capabilities.find((capability: any) => capability.id === 'checkout').depends_on[0])
+      .toMatchObject({ from_capability: 'checkout', to_capability: 'catalog' });
   });
 
   it('never fabricates an edge to a capability id that is not in the real capabilities list (dangling/pruned relationship)', () => {
@@ -6447,7 +6501,7 @@ describe('rollupSystemCapabilityDependencies (#119: real capability-dependency g
       for (let i = 0; i < count; i++) {
         flows.push(flow(`f${n++}`, ownerId, [
           { capability_id: ownerId, role: 'primary' },
-          ...supportsOf.map(target => ({ capability_id: target, role: 'supporting' })),
+          ...supportsOf.map(target => ({ capability_id: target, role: 'prerequisite' })),
         ]));
       }
     };

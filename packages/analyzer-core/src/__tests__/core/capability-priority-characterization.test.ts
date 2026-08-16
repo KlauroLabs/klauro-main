@@ -12,8 +12,7 @@ const corpus: Array<{ repo: string; capabilities: any[] }> =
 // never seen, ranking collapsed to a constant.
 //
 // It now ranks by the capability's own evidence — operations and entities are the
-// two things a customer can click through to — with cross-cutting concerns taking a
-// half-step inside their tier rather than a four-rank fall.
+// two things a customer can click through to.
 //
 // The fixture stores evidence as COUNTS (ops, ents), so a capability must be
 // materialized into the shape production passes before its priority means anything.
@@ -47,7 +46,7 @@ const BASELINE: Record<string, Record<string, number>> = {
   "OpenClaw Node (Android) (internal)": {
     "Capture and Display Images": 2,
     "Manage Gateway Connections": 0,
-    "Manage Session and Device Data": 2.5,
+    "Manage Session and Device Data": 2,
     "Manage Tool Calls": 2,
     "Secure Chat Sessions": 0,
     "Validate and Verify Connections": 2
@@ -69,7 +68,6 @@ const BASELINE: Record<string, Record<string, number>> = {
     "Manage Hint": 2,
     "Manage Pair": 2,
     "Manage Poll": 2,
-    "Manage Session": 3.5,
     "Manage Sessions": 2,
     "Manage Snapshot": 2,
     "Manage Wizard": 2
@@ -114,7 +112,7 @@ const BASELINE: Record<string, Record<string, number>> = {
     "Create and manage orders": 0,
     "Manage and track inventory and warehouse": 2,
     "Manage and track location and address information": 2,
-    "Manage customer and user information": 2.5,
+    "Manage customer and user information": 2,
     "Manage products and pricing": 2,
     "Mutation Surface": 0,
     "Process invoices and payments": 0,
@@ -161,9 +159,8 @@ const BASELINE: Record<string, Record<string, number>> = {
   "soon": {
     "Analyzes and optimizes trading strategies": 0,
     "Manages market data and trade execution": 0,
-    "Manages user identity and access": 2.5,
-    "Manages user portfolios and holdings": 0.5,
-    "Manages user settings and preferences": 3.5,
+    "Manages user identity and access": 2,
+    "Manages user portfolios and holdings": 0,
     "Provides backtesting and stress testing": 0,
     "Provides market intelligence and insights": 1,
     "Provides risk analysis and hedging": 0,
@@ -187,9 +184,9 @@ const BASELINE: Record<string, Record<string, number>> = {
     "Manages exchange and market data": 2,
     "Manages market data and trade execution": 0,
     "Manages risk and security": 0,
-    "Manages user portfolios and holdings": 2.5,
-    "Manages user settings and preferences": 2.5,
-    "Manages user subscriptions and payments": 2.5,
+    "Manages user portfolios and holdings": 2,
+    "Manages user settings and preferences": 2,
+    "Manages user subscriptions and payments": 2,
     "Provides analysis and insights": 2,
     "Provides portfolio performance and analysis": 0,
     "Provides technical indicators and analysis": 2,
@@ -197,29 +194,24 @@ const BASELINE: Record<string, Record<string, number>> = {
   },
   "soon-link": {
     "Manages Solana trading and portfolio automation": 0,
-    "Manages user automation and adapters": 2.5,
-    "Manages user credentials and consent": 0.5,
-    "Manages user deposits and withdrawals": 0.5,
-    "Manages user positions and balances": 0.5,
-    "Manages user transactions and orders": 0.5,
+    "Manages user automation and adapters": 2,
+    "Manages user credentials and consent": 0,
+    "Manages user deposits and withdrawals": 0,
+    "Manages user positions and balances": 0,
+    "Manages user transactions and orders": 0,
     "Tracks market data and trade execution": 0
   },
   "soon-sync": {
     "Executes trades": 0,
-    "Manages user accounts": 3.5,
-    "Manages user activity": 2.5,
-    "Manages user connections": 2.5,
-    "Manages user portfolios": 3.5,
-    "Manages user subscriptions": 3.5,
+    "Manages user activity": 2,
+    "Manages user connections": 2,
     "Provides market metrics": 2
   },
   "soon-ui": {
     "Automate portfolio management": 0,
     "Manage portfolio": 0,
-    "Manage user profile": 3.5,
     "Monitor portfolio performance": 0,
     "Set up automation rules": 0,
-    "Verify user identity": 3.5,
     "View decision log": 2,
     "View market data": 2
   },
@@ -239,16 +231,16 @@ const BASELINE: Record<string, Record<string, number>> = {
     "Manage drive and vehicle data": 2,
     "Manage inspections and inspection configurations": 0,
     "Manage reporting profiles and configurations": 2,
-    "Manage user profiles and authentication": 2.5
+    "Manage user profiles and authentication": 2
   },
   "v2": {
     "Manage API keys": 2,
     "Manage categories": 2,
     "Manage feed creation": 0,
     "Manage job scheduling": 2,
-    "Manage user accounts": 0.5,
+    "Manage user accounts": 0,
     "Manage web sessions": 2,
-    "Secure user authentication": 0.5,
+    "Secure user authentication": 0,
     "Track and manage feed counters": 2
   }
 };
@@ -279,14 +271,10 @@ describe('capability priority characterization', () => {
         distribution[priority] = (distribution[priority] || 0) + 1;
       }
     }
-    expect(distribution).toEqual({ 0: 72, 0.5: 7, 1: 8, 2: 67, 2.5: 10, 3: 39, 3.5: 7, 4: 5 });
+    expect(distribution).toEqual({ 0: 79, 1: 8, 2: 77, 3: 46, 4: 5 });
   });
 
   it('never demotes a capability for naming its user', () => {
-    // Was it.failing while isCrossCuttingCapabilityName returned 6 of 6 for any
-    // name containing `user`: "Manages user accounts", "Manages user portfolios"
-    // and "Manages user subscriptions" were ranked second-worst for naming the
-    // person they serve. Computed live, so it asserts the behaviour and not a copy.
     const demoted: string[] = [];
     for (const repo of corpus) {
       for (const capability of repo.capabilities) {

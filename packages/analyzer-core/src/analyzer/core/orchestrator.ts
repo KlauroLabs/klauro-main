@@ -50,7 +50,6 @@ import {
   CASDomainConcept,
   EnhancedSystemPurpose,
   CASFlowGraph,
-  CASCapabilityDependency,
   CASTestSuite,
   CASTestCase,
   CASMock,
@@ -140,6 +139,7 @@ import {
 import { buildUserJourneys, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
+import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
@@ -1092,112 +1092,7 @@ export class AnalyzerOrchestrator {
     capabilities: SystemCapability[],
     dataEntities: CASDataEntity[] = [],
   ): void {
-    for (const capability of capabilities) {
-      delete capability.depends_on;
-      delete capability.depended_by;
-    }
-    const depPairs = new Map<string, { from: string; to: string; count: number }>();
-    for (const flow of flows) {
-      const relationships = flow.capability_relationships || [];
-      const primary = relationships.find(r => r.role === 'primary')?.capability_id || flow.capability_id;
-      if (!primary) continue;
-      for (const rel of relationships) {
-        if (rel.role === 'primary' || rel.capability_id === primary) continue;
-        const key = `${primary}|${rel.capability_id}`;
-        const entry = depPairs.get(key);
-        if (entry) entry.count += 1;
-        else depPairs.set(key, { from: primary, to: rel.capability_id, count: 1 });
-      }
-    }
-    if (depPairs.size === 0) return;
-
-    const capById = new Map<string, SystemCapability>();
-    for (const cap of capabilities) capById.set(cap.id, cap);
-
-    const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
-    const capNodeIds = new Map<string, Set<string>>();
-    for (const cap of capabilities) {
-      const ids = new Set<string>();
-      for (const op of cap.operations || []) {
-        if (op.entry_point_id?.startsWith('node:')) ids.add(op.entry_point_id.slice('node:'.length));
-      }
-      capNodeIds.set(cap.id, ids);
-    }
-    const capWritesEntity = (capId: string, entity: CASDataEntity): boolean => {
-      const nodeIds = capNodeIds.get(capId);
-      if (!nodeIds || nodeIds.size === 0) return false;
-      const writers = [
-        ...(entity.lifecycle?.created_by || []),
-        ...(entity.lifecycle?.updated_by || []),
-        ...(entity.lifecycle?.deleted_by || []),
-      ];
-      return writers.some(id => nodeIds.has(id));
-    };
-    const capReadsOnlyEntity = (capId: string, entity: CASDataEntity): boolean => {
-      const nodeIds = capNodeIds.get(capId);
-      if (!nodeIds || nodeIds.size === 0) return false;
-      if (capWritesEntity(capId, entity)) return false;
-      return (entity.lifecycle?.read_by || []).some(id => nodeIds.has(id));
-    };
-
-    const dependsOnById = new Map<string, CASCapabilityDependency[]>();
-    const dependedByById = new Map<string, Set<string>>();
-    for (const { from, to, count } of depPairs.values()) {
-      const fromCap = capById.get(from);
-      const toCap = capById.get(to);
-      if (!fromCap || !toCap) continue;
-      const sharedEntities = (fromCap.related_entities || [])
-        .filter(e => (toCap.related_entities || []).includes(e));
-
-      let directedFrom = from;
-      let directedTo = to;
-      let directedFromCap = fromCap;
-      let directedToCap = toCap;
-      if (sharedEntities.length > 0) {
-        const toReadsFromWrites = sharedEntities.some(entityId => {
-          const entity = entityById.get(entityId);
-          if (!entity) return false;
-          return capWritesEntity(from, entity) && capReadsOnlyEntity(to, entity);
-        });
-        const fromReadsToWrites = !toReadsFromWrites && sharedEntities.some(entityId => {
-          const entity = entityById.get(entityId);
-          if (!entity) return false;
-          return capWritesEntity(to, entity) && capReadsOnlyEntity(from, entity);
-        });
-        if (fromReadsToWrites) {
-        } else if (toReadsFromWrites) {
-          directedFrom = to;
-          directedTo = from;
-          directedFromCap = toCap;
-          directedToCap = fromCap;
-        }
-      }
-
-      const dep: CASCapabilityDependency = {
-        from_capability: directedFrom,
-        to_capability: directedTo,
-        dependency_type: sharedEntities.length > 0 ? 'shares-data' : 'uses',
-        strength: count > 2 ? 'common' : 'optional',
-        evidence: {
-          shared_services: [],
-          shared_entities: sharedEntities.length > 0 ? sharedEntities : undefined,
-          shared_nodes: [],
-          call_count: count,
-        },
-        description: `${count} shared flow${count > 1 ? 's' : ''} between "${directedFromCap.name}" and "${directedToCap.name}"`,
-      };
-      if (!dependsOnById.has(directedFrom)) dependsOnById.set(directedFrom, []);
-      dependsOnById.get(directedFrom)!.push(dep);
-      if (!dependedByById.has(directedTo)) dependedByById.set(directedTo, new Set());
-      dependedByById.get(directedTo)!.add(directedFrom);
-    }
-
-    for (const cap of capabilities) {
-      const outgoing = dependsOnById.get(cap.id);
-      if (outgoing && outgoing.length > 0) cap.depends_on = outgoing;
-      const incoming = dependedByById.get(cap.id);
-      if (incoming && incoming.size > 0) cap.depended_by = Array.from(incoming);
-    }
+    rollupSystemCapabilityDependencies(flows, capabilities, dataEntities);
   }
 
   private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
@@ -14987,10 +14882,6 @@ export class AnalyzerOrchestrator {
       .filter(token => token.length >= 3 && !/^(app|apps|web|ui|ux|api|client|server|frontend|backend|service|services)$/.test(token));
   }
 
-  private isCrossCuttingCapabilityName(name: string): boolean {
-    return /\b(auth|authenticate|authentication|authorization|login|logout|session|token|jwt|oauth|permission|role|superuser|admin|user|users)\b/i.test(name);
-  }
-
   private isGenericCapabilityDisplayName(name: string): boolean {
     if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
     if (/^(help management|jobs? workflow)$/i.test(name)) return true;
@@ -18726,14 +18617,12 @@ export class AnalyzerOrchestrator {
     const grounded = operationCount > 0 && entityCount > 0;
     const isCore = capability.category === 'core';
 
-    const crossCutting = this.isCrossCuttingCapabilityName(capability.name) ? 0.5 : 0;
+    if (isCore && grounded && operationCount >= CAPABILITY_SUBSTANTIAL_OPERATIONS) return 0;
+    if (isCore && grounded) return 1;
+    if (grounded) return 2;
 
-    if (isCore && grounded && operationCount >= CAPABILITY_SUBSTANTIAL_OPERATIONS) return 0 + crossCutting;
-    if (isCore && grounded) return 1 + crossCutting;
-    if (grounded) return 2 + crossCutting;
-
-    if (operationCount === 0 && entityCount === 0) return (isCore ? 4 : 5) + crossCutting;
-    return 3 + crossCutting;
+    if (operationCount === 0 && entityCount === 0) return isCore ? 4 : 5;
+    return 3;
   }
 
   private isRedundantCoveredCapability(capability: SystemCapability, allCapabilities: SystemCapability[]): boolean {
