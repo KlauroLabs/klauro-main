@@ -69,8 +69,9 @@ Supported hosted provider environment variables:
 ```bash
 # DeepInfra (recommended hosted open-weight provider)
 DEEPINFRA_API_KEY=...
-DEEPINFRA_MODEL=meta-llama/Meta-Llama-3.3-70B-Instruct
-DEEPINFRA_STRUCTURED_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+DEEPINFRA_MODEL=mistralai/Mistral-Small-3.2-24B-Instruct-2506
+DEEPINFRA_NARRATIVE_MODEL=mistralai/Mistral-Small-3.2-24B-Instruct-2506
+DEEPINFRA_STRUCTURED_MODEL=Qwen/Qwen3-Next-80B-A3B-Instruct
 
 # OpenAI-compatible hosted providers
 OPENAI_BASE_URL=https://your-hosted-openai-compatible-provider/v1

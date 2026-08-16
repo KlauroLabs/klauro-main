@@ -149,6 +149,7 @@ import {
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
+import { resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -9303,7 +9304,7 @@ export class AnalyzerOrchestrator {
     const CATALOG_MAX_BOUNDED_ATTEMPTS = 3;
     const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
       const additionalContextWithoutFacts = {
-        model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
+        ...toAIContextRoute(resolveCapabilityCatalogRoute(process.env, this.narrativeModel())),
         responseFormat: 'json',
         maxTokens: Math.min(2200, Math.max(600, 180 + catalogCountMax * 110)),
         requestTimeoutMs: 65000,
@@ -10897,9 +10898,9 @@ export class AnalyzerOrchestrator {
       firstDomainCandidate === enhancedSystemPurpose.primary_domain) {
       enhancedSystemPurpose.primary_domain = '';
     }
-
     const acceptedElements = new Map<string, string>();
     const rejectedElements = new Map<string, string>();
+    const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
     for (const target of capabilityTargets) {
       const existingCatalogDescription = systemCapabilities.find(capability => capability.id === target.id)?.description || '';
       const existingCatalogValidation = this.validateElementDescription(existingCatalogDescription, target);
@@ -10910,7 +10911,7 @@ export class AnalyzerOrchestrator {
           reason: existingCatalogValidation.reason,
         });
       }
-      const originalCandidate = existingCatalogValidation.ok
+      const originalCandidate = existingCatalogValidation.ok && !reauthorCatalogDescriptions
         ? existingCatalogDescription
         : combined.elements.get(target.id) || '';
       const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);
@@ -10982,7 +10983,6 @@ export class AnalyzerOrchestrator {
         if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
       }
     }
-
     for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 2; focusedAttempt++) {
       try {
         const focusedRepairRaw = await aiService.generateComponentDescription({
@@ -11020,7 +11020,6 @@ export class AnalyzerOrchestrator {
         console.error(`[Klauro] focused AI system-description repair failed (${repairMessage})`);
       }
     }
-
     if (!validation.ok) {
       const systemDescriptionReason = validation.reason || 'generated-description-failed-quality-gate';
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_rejected', true, systemDescriptionReason, budgetMs);
@@ -11692,6 +11691,7 @@ export class AnalyzerOrchestrator {
         const raw = await this.awaitAiWithoutCutoff(
           aiService.generateComponentDescription({
             additionalContext: {
+              ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
             task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. For each CAPABILITY answer in plain product language: what can the product\'s users or operators DO, and what does that action MEAN in THIS product? For each ENTITY answer what real-world concept it represents to the product. Lead with the product meaning, grounded in the related entities (relatedEntities), fields, and product domain (system.domain, system.concepts). When item.readOnly is true, describe only retrieval, presentation, comparison, or review of the supplied records/fields; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources: never infer that infrastructure handles, processes, or manages a business concept from a resource name, and never mention scripts, commands, files, handlers, or other source mechanics. Do NOT describe CRUD mechanisms, lifecycle, routes, or files. Use currentDescription ONLY for facts, never as a template to rephrase.',
               style: 'No markdown. Write like a product engineer explaining the feature to a new teammate or PM. Never call the item a "capability", "feature", "module", "component", or "functionality" in the description; describe the concrete product behavior directly. Every description must say WHAT concrete records, decisions, workflows, or declared resources the item owns and WHY that matters — a scaffold that only restates the name is rejected: never a bare "Lets users <verb> <noun>" whose verb/noun repeat the item name, and never "The X capability owns the Y lifecycle". Prefer verbs that convey user/product value: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and avoid unsupported value claims (metrics, decision-making, collaboration, seamless, robust, efficient, business value, streamline, insights, productivity, compliant) unless those exact concepts appear in the supplied evidence. Do not mention scripts, commands, files, routes, operation counts, or "lifecycle". Name the concrete product concept or operational responsibility the evidence represents. Stay grounded; do not invent behavior beyond the supplied entities, domain, resources, and evidence.',
               descriptionContract: this.buildAIElementDescriptionPromptContract(context.systemName, context.enhancedSystemPurpose, context.projectTextSignal),
@@ -11729,6 +11729,7 @@ export class AnalyzerOrchestrator {
             const repairRaw = await this.awaitAiWithoutCutoff(
               aiService.generateComponentDescription({
                 additionalContext: {
+                  ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
                   task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item in plain PRODUCT language, grounded in item.relatedEntities, item.fields, and the product domain. When item.readOnly is true, describe only what users can retrieve, see, compare, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. Name the concrete user-facing concept and add supported information beyond the item name. Do not describe CRUD mechanisms, lifecycle, routes, files, or implementation symbols.',
                   style: 'No markdown. Write like a product engineer explaining the behavior to a teammate. Never call the item a "capability", "feature", "module", "component", or "functionality"; describe the concrete product behavior directly. Say WHAT concrete records, decisions, or workflows the item owns and WHY that matters — never a bare "Lets users <verb> <noun>" that restates the name, and never "The X capability owns the Y lifecycle". Prefer value verbs: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces, decides. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and unsupported value claims (metrics, decision-making, collaboration, functionality, module, component, various, robust, efficient, business value, compliant, insights, streamline) unless grounded in the supplied evidence. Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept implied by the item name, domain, and entities; do not invent behavior beyond the evidence.',
                   system: {
@@ -11773,6 +11774,7 @@ export class AnalyzerOrchestrator {
             const individualRaw = await this.awaitAiWithoutCutoff(
               aiService.generateComponentDescription({
                 additionalContext: {
+                  ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
                   task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite this one rejected item as one grounded product sentence. Use its related entities, fields, domains, and observed semantics to explain what users or operators can know or accomplish. When item.readOnly is true, describe only retrieval, presentation, comparison, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources: never infer that infrastructure handles, processes, or manages a business concept from a resource name, and never mention scripts, commands, files, handlers, or other source mechanics. Do not list operations, source files, routes, command verbs, or implementation mechanics.',
                   style: 'No markdown. Describe the concrete product behavior directly; never prefix or label the item as a "capability", "feature", "module", "component", or "functionality". Prefer concrete product verbs consistent with the evidence. Do not use "capability", "lifecycle", "supports", "coordinates", "handles", "spans", "paths", "operations", "functionality", or marketing language. Use only the supplied facts.',
                   system: {

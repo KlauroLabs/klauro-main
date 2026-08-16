@@ -8,11 +8,69 @@ import * as path from 'path';
 import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 import { validateElementDescription } from '../../ai/element-description-validator';
 import { previousDescriptionNeedsCurrentValidation } from '../../analyzer/core/previous-description-validation';
+import {
+  resolveCapabilityCatalogRoute,
+  resolveCapabilityDescriptionRoute,
+  shouldReauthorCatalogDescriptions,
+} from '../../analyzer/core/ai-task-model-routing';
 
 // These exercise internal heuristics of the orchestrator. They are private by
 // design (not part of the public CAS contract) so the tests reach them via a
 // typed `any` handle rather than widening the class surface.
 const orch = new AnalyzerOrchestrator() as any;
+
+describe('AI task model routing', () => {
+  const keys = [
+    'DEEPINFRA_MODEL',
+    'DEEPINFRA_NARRATIVE_MODEL',
+    'DEEPINFRA_STRUCTURED_MODEL',
+    'KLAURO_CAPABILITY_CATALOG_MODEL',
+    'KLAURO_CAPABILITY_CATALOG_PROVIDER',
+    'KLAURO_CAPABILITY_DESCRIPTION_MODEL',
+    'KLAURO_CAPABILITY_DESCRIPTION_PROVIDER',
+    'KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS',
+  ];
+
+  it('routes catalog structure and published prose to independent configured models', () => {
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    try {
+      process.env.DEEPINFRA_MODEL = 'primary';
+      process.env.DEEPINFRA_NARRATIVE_MODEL = 'narrative';
+      process.env.DEEPINFRA_STRUCTURED_MODEL = 'structured';
+      const catalog = resolveCapabilityCatalogRoute(process.env, 'narrative');
+      const description = resolveCapabilityDescriptionRoute(process.env, 'narrative');
+      expect(catalog).toEqual({ model: 'structured', provider: 'deepinfra' });
+      expect(description).toEqual({ model: 'narrative', provider: 'deepinfra' });
+      expect(shouldReauthorCatalogDescriptions(process.env, catalog, description)).toBe(true);
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+
+  it('allows explicit routing and reauthoring overrides', () => {
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    try {
+      process.env.KLAURO_CAPABILITY_CATALOG_MODEL = 'catalog';
+      process.env.KLAURO_CAPABILITY_CATALOG_PROVIDER = 'catalog-provider';
+      process.env.KLAURO_CAPABILITY_DESCRIPTION_MODEL = 'prose';
+      process.env.KLAURO_CAPABILITY_DESCRIPTION_PROVIDER = 'prose-provider';
+      process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'false';
+      const catalog = resolveCapabilityCatalogRoute(process.env, 'narrative');
+      const description = resolveCapabilityDescriptionRoute(process.env, 'narrative');
+      expect(catalog).toEqual({ model: 'catalog', provider: 'catalog-provider' });
+      expect(description).toEqual({ model: 'prose', provider: 'prose-provider' });
+      expect(shouldReauthorCatalogDescriptions(process.env, catalog, description)).toBe(false);
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+});
 
 function exitPoint(partial: Partial<CASExitPoint>): CASExitPoint {
   return {

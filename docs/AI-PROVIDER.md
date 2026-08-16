@@ -23,14 +23,15 @@ open-weight provider. DeepInfra is the current default recommendation for alpha.
 # Keep this secret out of the repo. Export it in the shell/service env that
 # launches the hosted analyzer.
 export DEEPINFRA_API_KEY="..."
-export DEEPINFRA_MODEL="meta-llama/Meta-Llama-3.3-70B-Instruct"
+export DEEPINFRA_MODEL="mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+export DEEPINFRA_NARRATIVE_MODEL="$DEEPINFRA_MODEL"
 
 # Optional but RECOMMENDED for reliability: a faster, cheaper model for the
 # structured-extraction calls (capability catalog + workspace merge). These are
-# dedup/classify/format-to-JSON tasks an 8B model handles well, and a fast model
-# avoids the timeouts that variable shared-70B latency causes on those calls.
-# Prose descriptions/narrative still use DEEPINFRA_MODEL.
-export DEEPINFRA_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"
+# dedup/classify/format-to-JSON tasks. Capability titles and groupings come from
+# this model; published prose is reauthored and validated with the narrative
+# model whenever the two models differ.
+export DEEPINFRA_STRUCTURED_MODEL="Qwen/Qwen3-Next-80B-A3B-Instruct"
 
 # Optional compatibility form, useful for other OpenAI-compatible providers:
 # export OPENAI_BASE_URL="https://api.deepinfra.com/v1/openai"
@@ -63,8 +64,9 @@ Comprehension is **ON by default**. To produce comprehension you must point it a
 
 ```bash
 export DEEPINFRA_API_KEY="..."
-export DEEPINFRA_MODEL="meta-llama/Meta-Llama-3.3-70B-Instruct"
-export DEEPINFRA_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"
+export DEEPINFRA_MODEL="mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+export DEEPINFRA_NARRATIVE_MODEL="$DEEPINFRA_MODEL"
+export DEEPINFRA_STRUCTURED_MODEL="Qwen/Qwen3-Next-80B-A3B-Instruct"
 # Give the interpretation pass enough wall-clock for a hosted model:
 export KLAURO_AI_INTERPRETATION_BUDGET_MS=120000
 ```
@@ -80,6 +82,19 @@ Behavior:
 
 The same hosted provider cascade and AI cache (above) apply, so re-analysis of
 unchanged code reuses cached AI output.
+
+Task routing can be overridden without coupling the analyzer to a provider:
+
+```bash
+KLAURO_CAPABILITY_CATALOG_MODEL=provider/catalog-model
+KLAURO_CAPABILITY_CATALOG_PROVIDER=provider-chain-name
+KLAURO_CAPABILITY_DESCRIPTION_MODEL=provider/prose-model
+KLAURO_CAPABILITY_DESCRIPTION_PROVIDER=provider-chain-name
+```
+
+When the catalog and description models differ, Klauro reauthors catalog prose
+with the description model. Set `KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS=true` to
+force that behavior or `false` to retain validated catalog prose.
 
 ## Proving the hosted provider was used
 
