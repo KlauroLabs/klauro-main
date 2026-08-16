@@ -99,7 +99,7 @@ async function startProductServer(): Promise<string> {
   }
   const port = await availableLoopbackPort();
   if (process.env.KLAURO_ANALYSIS_IN_PROCESS === '1' || process.env.KLAURO_ANALYSIS_IN_PROCESS === 'true') {
-    const serviceModule = await import('../remote-analyzer-service');
+    const serviceModule = await import('../remote-analyzer-service.js');
     const service = (serviceModule as any).default || serviceModule;
     const server = service.createRemoteAnalyzerHttpServer({ dataDir });
     await new Promise<void>((resolve, reject) => {

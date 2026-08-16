@@ -3137,7 +3137,7 @@ export async function runLayeredAnalysis(
     if (options.forceAiRefresh) process.env.KLAURO_FORCE_AI_REFRESH = '1';
     else delete process.env.KLAURO_FORCE_AI_REFRESH;
     try {
-      const { withAnalysisFocus } = await import('./analysis-focus');
+      const { withAnalysisFocus } = await import('./analysis-focus.js');
       return await withAnalysisFocus(options.analysisFocus, async () => {
       const layered = await analyzeProjectLayered(projectPath, options.displayName, undefined, options.forceFullRebuild);
       try {
@@ -3149,7 +3149,7 @@ export async function runLayeredAnalysis(
       let deferred: DeferredAnalysisResult;
       try {
         deferred = await layered.rest;
-        const { applyLayeredAnalysisMetadata } = await import('./layered-analysis-metadata');
+        const { applyLayeredAnalysisMetadata } = await import('./layered-analysis-metadata.js');
         applyLayeredAnalysisMetadata(deferred.output, options);
         options.onPhase?.({ phase: 'rest', status: 'succeeded' });
       } catch (error) {

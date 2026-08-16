@@ -1,6 +1,8 @@
 import { createRemoteAnalyzerHttpServer } from '../../mcp-server/src/remote-analyzer-service.js';
+import { prewarmAnalysisWorker } from '../../mcp-server/src/analyzer.js';
 
 const port = Number(process.env.PORT || process.env.KLAURO_API_PORT || process.env.KLAURO_ANALYZER_PORT || 8787);
+prewarmAnalysisWorker();
 const server = createRemoteAnalyzerHttpServer();
 
 server.listen(port, () => {
