@@ -16,7 +16,7 @@ import { copyIncrementalBenchmarkRepo, runIncrementalValueBenchmark } from './in
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
 import { type AnalysisFocus } from './analysis-focus';
-import { analyzeWithInstalledKlauro, getInstalledKlauroVersion, initializeInstalledKlauroProject } from './installed-klauro';
+import { analyzeCasWithInstalledKlauro, getInstalledKlauroVersion, initializeInstalledKlauroProject } from './installed-klauro';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { graphEquivalenceRate } from './incremental-graph-equivalence';
 
@@ -238,7 +238,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
         await initializeInstalledKlauroProject(analysisPath, { serverUrl: options.analyzerServerUrl, env: { KLAURO_STORAGE_PATH: klauroProductStoragePath }, timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000 });
       }
       const cas = options.analysisPath === 'klauro-product'
-        ? (await analyzeWithInstalledKlauro(analysisPath, {
+        ? (await analyzeCasWithInstalledKlauro(analysisPath, {
           analysisFocus, serverUrl: options.analyzerServerUrl,
           env: { KLAURO_STORAGE_PATH: klauroProductStoragePath },
           timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000,

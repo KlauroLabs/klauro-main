@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'child_process';
 import type { AnalysisFocus } from './analysis-focus';
 import type { IncrementalAnalysisResult } from './analyzer';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 export interface InstalledKlauroCommand {
   command: string;
@@ -12,6 +13,14 @@ export interface InstalledKlauroRunOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   serverUrl?: string;
+}
+
+export interface InstalledKlauroAnalysisResult {
+  output: CASOutput;
+  state?: IncrementalAnalysisResult['state'];
+  changeReport?: IncrementalAnalysisResult['changeReport'];
+  wasFullRebuild: boolean;
+  fullRebuildReason?: string;
 }
 
 export function resolveInstalledKlauroCommand(): InstalledKlauroCommand {
@@ -58,10 +67,10 @@ export async function initializeInstalledKlauroProject(
   return runJsonCommand(installed.command, args, options);
 }
 
-export async function analyzeWithInstalledKlauro(
+export async function analyzeCasWithInstalledKlauro(
   projectPath: string,
   options: InstalledKlauroRunOptions & { forceFull?: boolean; analysisFocus?: AnalysisFocus } = {},
-): Promise<IncrementalAnalysisResult> {
+): Promise<InstalledKlauroAnalysisResult> {
   const installed = resolveInstalledKlauroCommand();
   const args = [
     ...installed.args,
@@ -74,23 +83,69 @@ export async function analyzeWithInstalledKlauro(
   if (options.forceFull) args.push('--force');
   if (options.analysisFocus) args.push('--analysis-focus', options.analysisFocus);
 
-  const result = await runJsonCommand(installed.command, args, options);
+  return parseInstalledAnalysis(await runJsonCommand(installed.command, args, options), projectPath, 'analyze');
+}
 
-
-
-  const output = result?.output ?? result?.cas;
-  const changeReport = result?.changeReport ?? result?.change_report ?? null;
-  if (!output?.nodes) {
-    throw new Error(`Installed Klauro CLI returned an unexpected analyze payload for ${projectPath}`);
+export async function syncWithInstalledKlauro(
+  projectPath: string,
+  options: InstalledKlauroRunOptions = {},
+): Promise<IncrementalAnalysisResult> {
+  const installed = resolveInstalledKlauroCommand();
+  const args = [...installed.args, 'sync', projectPath, '--json', '--wait'];
+  if (options.serverUrl) args.push('--server-url', options.serverUrl);
+  const result = parseInstalledAnalysis(
+    await runJsonCommand(installed.command, args, options),
+    projectPath,
+    'sync',
+  );
+  if (!result.changeReport?.summary || !result.changeReport?.impact) {
+    throw new Error(`Installed Klauro CLI returned a sync payload without an incremental change report for ${projectPath}`);
   }
-  if (!changeReport?.summary || !changeReport?.impact) {
-    throw new Error(`Installed Klauro CLI returned an analyze payload without an incremental change report for ${projectPath}`);
+  return {
+    output: result.output,
+    state: result.state as IncrementalAnalysisResult['state'],
+    changeReport: result.changeReport,
+    wasFullRebuild: result.wasFullRebuild,
+    fullRebuildReason: result.fullRebuildReason,
+  };
+}
+
+export async function prepareInstalledKlauroIncrementalBaseline(
+  projectPath: string,
+  options: InstalledKlauroRunOptions & { analysisFocus?: AnalysisFocus } = {},
+): Promise<{ result: IncrementalAnalysisResult; durationMs: number }> {
+  const startedAt = Date.now();
+  const analyzed = await analyzeCasWithInstalledKlauro(projectPath, { ...options, forceFull: true });
+  const synchronized = await syncWithInstalledKlauro(projectPath, options);
+  return {
+    result: {
+      ...synchronized,
+      output: analyzed.output,
+      wasFullRebuild: true,
+      fullRebuildReason: analyzed.fullRebuildReason,
+    },
+    durationMs: Math.max(1, Date.now() - startedAt),
+  };
+}
+
+function parseInstalledAnalysis(
+  result: any,
+  projectPath: string,
+  operation: 'analyze' | 'sync',
+): InstalledKlauroAnalysisResult {
+  const output = result?.output ?? result?.cas;
+  if (!output?.nodes) {
+    throw new Error(`Installed Klauro CLI returned an unexpected ${operation} payload for ${projectPath}`);
   }
   return {
     output,
     state: result.state,
-    changeReport,
-    wasFullRebuild: Boolean(result.wasFullRebuild ?? result.was_full_rebuild ?? result.analysis_type === 'full'),
+    changeReport: result?.changeReport ?? result?.change_report,
+    wasFullRebuild: Boolean(
+      result.wasFullRebuild
+      ?? result.was_full_rebuild
+      ?? (result.analysis_type === 'full' || result.analysis_type === 'forced')
+    ),
     fullRebuildReason: result.fullRebuildReason ?? result.full_rebuild_reason,
   };
 }

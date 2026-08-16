@@ -30,13 +30,16 @@ export async function captureInitialIncrementalRun(
   analyze: () => Promise<IncrementalAnalysisResult>,
   selectEdit: (output: IncrementalAnalysisResult['output']) => Promise<string | null>,
   workspace: string,
+  durationOverrideMs?: number,
 ): Promise<{ evidence: IncrementalRunEvidence; editFile: string; editSelectionMs: number }> {
   const measured = await timed(analyze);
   const editSelectionStartedAt = Date.now();
   const editFile = await selectEdit(measured.value.output);
   const editSelectionMs = Math.max(1, Date.now() - editSelectionStartedAt);
   if (!editFile) throw new Error(`No editable source file found in copied repo: ${workspace}`);
-  return { evidence: incrementalRunEvidence(measured), editFile, editSelectionMs };
+  const evidence = incrementalRunEvidence(measured);
+  if (durationOverrideMs !== undefined) evidence.durationMs = Math.max(1, durationOverrideMs);
+  return { evidence, editFile, editSelectionMs };
 }
 
 export async function captureEditedIncrementalRun<TContext, TTokenProof>(

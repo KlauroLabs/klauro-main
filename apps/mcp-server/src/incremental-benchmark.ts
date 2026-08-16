@@ -9,7 +9,7 @@ import { getAgentContext } from './agent-adoption';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import { getFileCacheSize, loadIncrementalState, saveAgenticBenchmarkReport, waitForPendingSegmentedWrites } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
-import { analyzeWithInstalledKlauro, initializeInstalledKlauroProject } from './installed-klauro';
+import { analyzeCasWithInstalledKlauro, initializeInstalledKlauroProject, prepareInstalledKlauroIncrementalBaseline, syncWithInstalledKlauro } from './installed-klauro';
 import { appendSemanticSourceProbe, supportsSemanticSourceProbe } from './semantic-source-probe';
 import { graphEquivalenceRate, type CasGraphEquivalence } from './incremental-graph-equivalence';
 import { provesIncrementalLocality } from './incremental-locality-proof';
@@ -462,17 +462,27 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       const analysisPath = options.analysisPath || 'in-process-harness';
       const analysisFocus = 'agent-fast';
       const installedEnv = { KLAURO_STORAGE_PATH: storagePath };
+      let initialProduct: { result: IncrementalAnalysisResult; durationMs: number } | undefined;
       if (analysisPath === 'klauro-product') {
         await initializeInstalledKlauroProject(workspace, { env: installedEnv, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 });
+        const baseline = await prepareInstalledKlauroIncrementalBaseline(workspace, {
+          env: installedEnv,
+          analysisFocus,
+          serverUrl: options.analyzerServerUrl,
+          timeoutMs: 8 * 60 * 1000,
+        });
+        initialProduct = baseline;
       }
+      let initialProductPending = Boolean(initialProduct);
       const analyzeIncremental = () => analysisPath === 'klauro-product'
-        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 })
+        ? initialProductPending
+          ? (initialProductPending = false, Promise.resolve(initialProduct!.result))
+          : syncWithInstalledKlauro(workspace, { env: installedEnv, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 })
         : analyzeProjectIncremental(workspace);
       const analyzeFull = () => analysisPath === 'klauro-product'
-        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, forceFull: true, timeoutMs: 8 * 60 * 1000 }).then(result => result.output)
+        ? analyzeCasWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, forceFull: true, timeoutMs: 8 * 60 * 1000 }).then(result => result.output)
         : analyzeProject(workspace, undefined, { reuseStoredContext: false, persist: false });
-
-      const initial = await captureInitialIncrementalRun(analyzeIncremental, output => chooseEditFile(output, workspace), workspace);
+      const initial = await captureInitialIncrementalRun(analyzeIncremental, output => chooseEditFile(output, workspace), workspace, initialProduct?.durationMs);
       const noChange = await captureIncrementalRun(analyzeIncremental);
       const editFile = initial.editFile;
       const editLoopStartedAt = Date.now();

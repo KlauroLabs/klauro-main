@@ -388,11 +388,12 @@ export async function writeDefaultKlauroConfig(projectPath: string, options: {
 
 
 export async function writeProjectBindingIntoConfig(projectPath: string, binding: {
-  projectId: string;
+  projectId?: string;
   workspaceId?: string;
   organizationId?: string;
   projectName?: string;
   kind?: 'project' | 'workspace';
+  serverUrl?: string;
 }): Promise<{ configPath: string }> {
   const root = path.resolve(projectPath);
   const configPath = await findFirstExisting(root, CONFIG_FILES);
@@ -403,13 +404,20 @@ export async function writeProjectBindingIntoConfig(projectPath: string, binding
   const project = raw.project && typeof raw.project === 'object' && !Array.isArray(raw.project)
     ? (raw.project as Record<string, unknown>)
     : {};
-  project.id = binding.projectId;
+  if (binding.projectId) project.id = binding.projectId;
   if (binding.workspaceId) project.workspaceId = binding.workspaceId;
   if (binding.organizationId) project.organizationId = binding.organizationId;
 
   if (binding.projectName && !project.name) project.name = binding.projectName;
   raw.project = project;
   if (binding.kind && !raw.kind) raw.kind = binding.kind;
+  if (binding.serverUrl) {
+    const analyzer = raw.analyzer && typeof raw.analyzer === 'object' && !Array.isArray(raw.analyzer)
+      ? (raw.analyzer as Record<string, unknown>)
+      : {};
+    analyzer.serverUrl = binding.serverUrl;
+    raw.analyzer = analyzer;
+  }
   await fs.writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
   return { configPath };
 }

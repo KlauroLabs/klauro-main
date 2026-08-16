@@ -8,7 +8,7 @@ import { buildUploadManifest } from './remote-source';
 import { summarizeUploadManifest } from './upload-manifest-summary';
 import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
-import { writeDefaultKlauroConfig } from './klauro-config';
+import { isUnboundHostedProjectId, loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig } from './klauro-config';
 import { formatBuildIdentity, getBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
 import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
 import { renderStatusReport } from './status-report';
@@ -375,35 +375,62 @@ async function main() {
     return output(json ? result : formatSupportBundleResult(result), json);
   }
   if (command === 'init') {
-    const serverUrl = normalizeServerUrl(value('--server-url'));
+    const existing = await loadKlauroConfig(target);
+    const force = process.argv.includes('--force');
+    const serverUrl = normalizeServerUrl(value('--server-url') || existing.config.analyzer.serverUrl);
     let projectId = value('--project-id');
-    let workspaceId = value('--organization-id');
-    let projectName: string | undefined;
+    let workspaceId = value('--organization-id') || (!force ? existing.config.project.workspaceId : undefined);
+    let projectName = !force ? existing.config.project.name : undefined;
+    if (!projectId && !force) projectId = existing.config.project.id;
     const token = connectorToken(undefined, serverUrl);
-
-
-
-
     if (token) warnIfSessionExpiringSoon(serverUrl, loadStoredConnectorAuth().accounts[serverUrl]);
-    if (token && !projectId) {
+    const requestedWorkspace = value('--workspace');
+    const hostedProject = token && projectId && !isUnboundHostedProjectId(projectId)
+      ? await getHostedProject(serverUrl, token, projectId)
+      : undefined;
+    if (token && (!projectId || isUnboundHostedProjectId(projectId) || force || requestedWorkspace || !hostedProject)) {
       const placement = await ensureHostedPlacement(target, serverUrl, token, value('--workspace'));
       projectId = placement.project.id;
       workspaceId = placement.workspace.id;
       projectName = placement.project.name;
+    } else if (hostedProject) {
+      workspaceId = hostedProject.workspace_id;
+      projectName = hostedProject.name;
     }
-    const config = await writeDefaultKlauroConfig(target, {
-      serverUrl,
-      projectId,
-      workspaceId,
-      organizationId: workspaceId,
-      projectName,
-      kind: 'project',
-      force: process.argv.includes('--force'),
-    });
-    const initResult = { status: 'ready' as const, path: target, config_file: config.configPath, project_id: projectId, workspace_id: workspaceId, next: `klauro analyze ${target}` };
+    let configPath: string;
+    if (existing.configPath && !force) {
+      const bindingChanged = Boolean(projectId && (
+        projectId !== existing.config.project.id
+        || workspaceId !== existing.config.project.workspaceId
+        || projectName !== existing.config.project.name
+      ));
+      const serverChanged = serverUrl !== normalizeServerUrl(existing.config.analyzer.serverUrl);
+      if (bindingChanged || serverChanged) {
+        await writeProjectBindingIntoConfig(target, {
+          projectId,
+          workspaceId,
+          organizationId: workspaceId,
+          projectName,
+          kind: 'project',
+          serverUrl,
+        });
+      }
+      configPath = existing.configPath;
+    } else {
+      configPath = (await writeDefaultKlauroConfig(target, {
+        serverUrl,
+        projectId,
+        workspaceId,
+        organizationId: workspaceId,
+        projectName,
+        kind: 'project',
+        force,
+      })).configPath;
+    }
+    const initResult = { status: 'ready' as const, path: target, config_file: configPath, project_id: projectId, workspace_id: workspaceId, idempotent: Boolean(existing.configPath && !force), next: `klauro analyze ${target}` };
     return output(json ? initResult : [
       `Ready: ${target}`,
-      `Config written to ${config.configPath}`,
+      `${existing.configPath && !force ? 'Config verified at' : 'Config written to'} ${configPath}`,
       projectId ? `Bound to hosted project ${projectId}${workspaceId ? ` (workspace ${workspaceId})` : ''}.` : 'Not signed in — no hosted project was bound. Run `klauro login` then `klauro init` again to bind one, or `klauro analyze` will fail with a sign-in prompt.',
       `Next: klauro analyze ${target}`,
     ].join('\n'), json);
@@ -635,6 +662,7 @@ async function main() {
 }
 
 interface HostedChoice { id: string; name: string; repo_url?: string; local_path?: string }
+interface HostedProjectChoice extends HostedChoice { workspace_id: string }
 
 function removeMcpRegistrations(): Array<{ client: string; status: number | null; detail: string }> {
   const commands: Array<{ client: string; executable: string; args: string[] }> = [
@@ -672,6 +700,16 @@ async function ensureHostedPlacement(projectPath: string, serverUrl: string, tok
   let project = (projects.projects || []).find(item => item.local_path === projectPath || (remoteUrl && item.repo_url === remoteUrl));
   if (!project) project = (await request<{ project: HostedChoice }>(`/api/workspaces/${encodeURIComponent(workspace.id)}/projects`, { name: projectName, local_path: projectPath, ...(remoteUrl ? { repo_url: remoteUrl } : {}) })).project;
   return { workspace, project };
+}
+
+async function getHostedProject(serverUrl: string, token: string, projectId: string): Promise<HostedProjectChoice | undefined> {
+  const response = await fetch(`${serverUrl}/api/projects/${encodeURIComponent(projectId)}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const payload = await response.json().catch(() => ({})) as { project?: HostedProjectChoice; error?: string };
+  if (response.ok) return payload.project;
+  if (response.status === 404) return undefined;
+  throw new Error(payload.error || `Klauro project verification failed with HTTP ${response.status}`);
 }
 
 function output(value: unknown, json: boolean) {

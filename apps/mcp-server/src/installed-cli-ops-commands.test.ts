@@ -502,6 +502,35 @@ test('`.klaurorc` is never written to cwd when an explicit path is given — the
   }
 });
 
+test('installed init verifies an existing config without overwriting repository policy', async () => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-idempotent-cwd-'));
+  const target = mkdtempSync(path.join(os.tmpdir(), 'klauro-init-idempotent-target-'));
+  try {
+    const first = await runInstalledCliIsolated(['init', target, '--json'], cwd);
+    assert.equal(first.status, 0, first.stderr);
+    const configPath = path.join(target, '.klaurorc');
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    config.conventions = { service_globs: ['domain/**/*.service.ts'] };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const second = await runInstalledCliIsolated(['init', target, '--json'], cwd);
+    assert.equal(second.status, 0, second.stderr);
+    const payload = JSON.parse(second.stdout) as { idempotent: boolean; config_file: string };
+    assert.equal(payload.idempotent, true);
+    assert.equal(path.resolve(payload.config_file), configPath);
+    assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')).conventions, config.conventions);
+
+    const rebound = await runInstalledCliIsolated(['init', target, '--json', '--server-url', 'http://127.0.0.1:18787'], cwd);
+    assert.equal(rebound.status, 0, rebound.stderr);
+    const updated = JSON.parse(readFileSync(configPath, 'utf8'));
+    assert.equal(updated.analyzer.serverUrl, 'http://127.0.0.1:18787');
+    assert.deepEqual(updated.conventions, config.conventions);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(target, { recursive: true, force: true });
+  }
+});
+
 test('a value-taking flag before the positional path does not swallow the path as its value', async () => {
   // `--project-id p_123 /some/path` must resolve path=/some/path, not
   // path=p_123 — the case a naive "first non-flag arg is the path" fix gets
