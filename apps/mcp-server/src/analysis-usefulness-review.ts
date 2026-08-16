@@ -1443,9 +1443,8 @@ export function findWeakDescriptionReasons(cas: CASOutput, profile: AnalysisProf
     !descriptionTermIsGrounded(cas, unsupportedClaim)) {
     reasons.push(`description claims unsupported ${unsupportedClaim} behavior`);
   }
-  if (unexplainedShortTitleCaseTerms(text, term => descriptionTermIsGrounded(cas, term)).length > 0) {
-    reasons.push('description includes unexplained short proper-noun claims');
-  }
+  const unexplainedTerms = unexplainedShortTitleCaseTerms(text, term => descriptionTermIsGrounded(cas, term));
+  if (unexplainedTerms.length > 0) reasons.push(`description includes unexplained short proper-noun claims: ${unexplainedTerms.join(', ')}`);
   if (profile.kind !== 'infrastructure' && lower.includes('evidence:') && distinctiveConcepts.length < 2) {
     reasons.push('evidence-backed summary lacks distinctive product concepts');
   }

@@ -241,6 +241,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
       const cas = options.analysisPath === 'klauro-product'
         ? (await analyzeCasWithInstalledKlauro(analysisPath, {
           analysisFocus, serverUrl: options.analyzerServerUrl,
+          forceFull: process.env.KLAURO_BENCH_FORCE_ANALYSIS === '1',
           env: { KLAURO_STORAGE_PATH: klauroProductStoragePath },
           timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000,
         })).output
@@ -933,9 +934,8 @@ function findWeakMachineDescriptionReasons(cas: any, description: string, repoSi
     !descriptionTermIsGroundedInMachineCas(cas, unsupportedClaim)) {
     reasons.push(`system description claims unsupported ${unsupportedClaim} behavior`);
   }
-  if (unexplainedShortTitleCaseTerms(text, term => descriptionTermIsGroundedInMachineCas(cas, term)).length > 0) {
-    reasons.push('system description includes unexplained short proper-noun claims');
-  }
+  const unexplainedTerms = unexplainedShortTitleCaseTerms(text, term => descriptionTermIsGroundedInMachineCas(cas, term));
+  if (unexplainedTerms.length > 0) reasons.push(`system description includes unexplained short proper-noun claims: ${unexplainedTerms.join(', ')}`);
   return Array.from(new Set(reasons));
 }
 
