@@ -1,9 +1,10 @@
-import type { SystemCapability } from '../../types/cas.types';
+import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 import {
   capabilityAudienceRepairFeedback,
   capabilityCatalogProductTerms,
   evaluateCapabilityCatalogAudience,
 } from '../../analyzer/core/capability-catalog-audience';
+import { testCapabilityDescriptionAgainstAudience } from '../../analyzer/core/capability-audience-test';
 
 function capability(name: string, description = ''): SystemCapability {
   return {
@@ -72,5 +73,36 @@ describe('capability catalog audience evaluation', () => {
       concepts: ['Catalog'],
       productDocTitle: 'Product Guide',
     })).toEqual(['commerce', 'Product Guide', 'Catalog']);
+  });
+
+  it('trusts canonical domain shapes as product nouns', () => {
+    const subject = capability(
+      'Review accounts',
+      'Company records connect each account to its current billing location and delivery terms.',
+    );
+    subject.related_entities = ['entity_company'];
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject],
+      [{ id: 'entity_company', name: 'Company', kind: 'domain-shape' } satisfies CASDataEntity],
+      ['company-client'],
+      ['accounts', 'billing location', 'delivery terms'],
+    );
+
+    expect(evaluation.accepted).toHaveLength(1);
+    expect(evaluation.rejections).toHaveLength(0);
+  });
+
+  it('continues to reject transport shape identifiers', () => {
+    const verdict = testCapabilityDescriptionAgainstAudience(
+      'Review accounts',
+      'CreateCompanyRequest carries the submitted account details into the review.',
+      [],
+      [{ name: 'CreateCompanyRequest', kind: 'request-dto' }],
+      ['accounts'],
+    );
+
+    expect(verdict.failsAudienceTest).toBe(true);
+    expect(verdict.reasons).toContain('identifier-vocabulary');
+    expect(verdict.flaggedTokens).toContain('CreateCompanyRequest');
   });
 });

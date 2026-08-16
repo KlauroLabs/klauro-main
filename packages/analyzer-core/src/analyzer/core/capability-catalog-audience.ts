@@ -54,6 +54,7 @@ export function evaluateCapabilityCatalogAudience(
   productTerms: string[],
 ): CapabilityAudienceEvaluation {
   const libraries = libraryNames.map(name => ({ name }));
+  const entityNamesById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
   const accepted: SystemCapability[] = [];
   const descriptionRepairCandidates: SystemCapability[] = [];
   const rejections: CapabilityAudienceRejection[] = [];
@@ -65,7 +66,10 @@ export function evaluateCapabilityCatalogAudience(
       operation.entry_point_id,
       operation.trigger?.path,
     ]).filter((value): value is string => Boolean(value));
-    const capabilityProductTerms = [...productTerms, ...operationTerms];
+    const relatedEntityTerms = (capability.related_entities || [])
+      .map(entityId => entityNamesById.get(entityId))
+      .filter((value): value is string => Boolean(value));
+    const capabilityProductTerms = [...productTerms, ...operationTerms, ...relatedEntityTerms];
 
     if (libraries.length > 0) {
       const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(
