@@ -284,6 +284,48 @@ test('requireConnectorEntitlement: an unreachable server-url reports "Could not 
   }
 });
 
+test('requireConnectorEntitlement retries transient timeouts during active analysis', async () => {
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts += 1;
+    if (attempts < 3) throw Object.assign(new Error('analysis temporarily occupied the API'), { name: 'TimeoutError' });
+    return new Response(JSON.stringify({
+      user: { id: 'user-1', email: 'beta@example.com' },
+      entitlement: { status: 'active', plan: 'beta' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  const identity = await requireConnectorEntitlement({
+    serverUrl: 'https://mcp.klauro.com',
+    token: 'test-token',
+    fetchImpl: fetchImpl as typeof fetch,
+    timeoutMs: 10,
+    retryDelaysMs: [0, 0],
+  });
+
+  assert.equal(attempts, 3);
+  assert.equal(identity.entitlement.status, 'active');
+});
+
+test('requireConnectorEntitlement never retries an HTTP authentication rejection', async () => {
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts += 1;
+    return new Response(JSON.stringify({ error: 'session expired' }), { status: 401 });
+  };
+
+  await assert.rejects(
+    () => requireConnectorEntitlement({
+      serverUrl: 'https://mcp.klauro.com',
+      token: 'expired-token',
+      fetchImpl: fetchImpl as typeof fetch,
+      retryDelaysMs: [0, 0],
+    }),
+    /session expired/,
+  );
+  assert.equal(attempts, 1);
+});
+
 // ---------------------------------------------------------------------------
 // P0: install.sh — self-contained binary is the PRIMARY install path, no
 // machine Node/npm required at all; npm is only an EMERGENCY fallback for a

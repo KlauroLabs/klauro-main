@@ -281,6 +281,9 @@ export function connectorToken(explicitToken?: string, serverUrl?: string): stri
 export async function requireConnectorEntitlement(input: {
   serverUrl?: string;
   token?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  retryDelaysMs?: number[];
 } = {}): Promise<ConnectorIdentity> {
   if (process.env.KLAURO_CONNECTOR_AUTH_DISABLED === 'true' || process.env.KLAURO_CONNECTOR_AUTH_DISABLED === '1') {
     return {
@@ -293,6 +296,9 @@ export async function requireConnectorEntitlement(input: {
   }
 
   const serverUrl = normalizeServerUrl(input.serverUrl);
+  const fetchImpl = input.fetchImpl || fetch;
+  const timeoutMs = input.timeoutMs ?? 5000;
+  const retryDelaysMs = input.retryDelaysMs ?? [100, 300];
 
 
 
@@ -307,7 +313,7 @@ export async function requireConnectorEntitlement(input: {
 
 
     try {
-      await fetch(`${serverUrl}/api/me`, { signal: AbortSignal.timeout(5000) });
+      await fetchConnectorIdentity(fetchImpl, serverUrl, undefined, timeoutMs, retryDelaysMs);
     } catch (error) {
       if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
 
@@ -318,15 +324,7 @@ export async function requireConnectorEntitlement(input: {
 
   let response: Response;
   try {
-    response = await fetch(`${serverUrl}/api/me`, {
-      headers: {
-        authorization: `Bearer ${token}`,
-      },
-
-
-
-      signal: AbortSignal.timeout(8000),
-    });
+    response = await fetchConnectorIdentity(fetchImpl, serverUrl, token, timeoutMs, retryDelaysMs);
   } catch (error) {
     if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
     throw error;
@@ -348,6 +346,29 @@ export async function requireConnectorEntitlement(input: {
     user: payload?.user,
     entitlement,
   };
+}
+
+async function fetchConnectorIdentity(
+  fetchImpl: typeof fetch,
+  serverUrl: string,
+  token: string | undefined,
+  timeoutMs: number,
+  retryDelaysMs: number[],
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    try {
+      return await fetchImpl(`${serverUrl}/api/me`, {
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isNetworkUnreachableError(error) || attempt === retryDelaysMs.length) throw error;
+      await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
+    }
+  }
+  throw lastError;
 }
 
 export function authConfigPath(): string {
