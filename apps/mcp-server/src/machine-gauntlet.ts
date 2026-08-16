@@ -19,6 +19,7 @@ import { type AnalysisFocus } from './analysis-focus';
 import { analyzeCasWithInstalledKlauro, getInstalledKlauroVersion, initializeInstalledKlauroProject } from './installed-klauro';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { graphEquivalenceRate } from './incremental-graph-equivalence';
+import { unexplainedShortTitleCaseTerms } from './description-proper-noun-grounding';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -932,10 +933,7 @@ function findWeakMachineDescriptionReasons(cas: any, description: string, repoSi
     !descriptionTermIsGroundedInMachineCas(cas, unsupportedClaim)) {
     reasons.push(`system description claims unsupported ${unsupportedClaim} behavior`);
   }
-  if ([...text.matchAll(/\b[A-Z][a-z]{1,3}\b/g)].some(match =>
-    !descriptionTermIsGroundedInMachineCas(cas, match[0]) &&
-    !/^(A|An|The|This|It|Its|Key|Data|Entry|REST|API|UI|SQL|AWS|GPO)$/.test(match[0])
-  )) {
+  if (unexplainedShortTitleCaseTerms(text, term => descriptionTermIsGroundedInMachineCas(cas, term)).length > 0) {
     reasons.push('system description includes unexplained short proper-noun claims');
   }
   return Array.from(new Set(reasons));

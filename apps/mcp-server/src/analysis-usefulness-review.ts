@@ -10,6 +10,7 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { isCommandShapedLabel, isHostnameLikeServiceName } from '../../../packages/analyzer-core/src/ai/external-service-plausibility';
 import { computeFlowConcepts } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { unexplainedShortTitleCaseTerms } from './description-proper-noun-grounding';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -1442,8 +1443,7 @@ export function findWeakDescriptionReasons(cas: CASOutput, profile: AnalysisProf
     !descriptionTermIsGrounded(cas, unsupportedClaim)) {
     reasons.push(`description claims unsupported ${unsupportedClaim} behavior`);
   }
-  if (/\b[A-Z][a-z]{1,3}\b/.test(text) &&
-    [...text.matchAll(/\b[A-Z][a-z]{1,3}\b/g)].some(match => !descriptionTermIsGrounded(cas, match[0]) && !/^(A|An|The|This|It|Its|Key|Data|Entry|REST|API|UI|SQL|AWS|GPO)$/.test(match[0]))) {
+  if (unexplainedShortTitleCaseTerms(text, term => descriptionTermIsGrounded(cas, term)).length > 0) {
     reasons.push('description includes unexplained short proper-noun claims');
   }
   if (profile.kind !== 'infrastructure' && lower.includes('evidence:') && distinctiveConcepts.length < 2) {
