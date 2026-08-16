@@ -9881,7 +9881,7 @@ export class AnalyzerOrchestrator {
       if (rejection.target === 'name') {
         console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${rejection.name}" post-generation (${rejection.flaggedTokens.join(', ')}) — candidate generation should have excluded this before it ever reached the AI catalog.`);
       } else {
-        console.error(`[Klauro] audience test rejected the DESCRIPTION of "${rejection.name}" (${rejection.reasons.join(',')}) — see §0.7.1's audience test.`);
+        console.error(`[Klauro] audience test rejected the DESCRIPTION of "${rejection.name}" (${rejection.reasons.join(',')}; tokens=${rejection.flaggedTokens.join(',') || 'none'}) — see §0.7.1's audience test.`);
       }
     }
 

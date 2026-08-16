@@ -163,6 +163,11 @@ function tokenAppearsAsIdentifier(token: string, vocab: IdentifierVocabulary): b
   return vocab.flatNames.some(flat => flat.includes(token) || (flat.length >= 4 && token.includes(flat)));
 }
 
+function tokenAppearsInImplementationContext(token: string, description: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b(?:using|via|through|with|on|by)\\s+(?:the\\s+)?${escaped}\\b`, 'i').test(description);
+}
+
 
 
 
@@ -330,7 +335,8 @@ export function testCapabilityDescriptionAgainstAudience(
   );
   for (const token of descriptionCandidateTokens(trimmed)) {
     const normalized = normalizeToken(token);
-    const appearsAsIdentifier = tokenAppearsAsIdentifier(normalized, identifierVocab);
+    const appearsAsIdentifier = tokenAppearsAsIdentifier(normalized, identifierVocab) &&
+      (token !== token.toLowerCase() || tokenAppearsInImplementationContext(token, trimmed));
     const appearsAsDomainEntity = domainVocab.has(normalized);
     const structuralEntityWords = structuralEntityWordsByName.get(normalized);
     const namesStructuralType = Boolean(structuralEntityWords);

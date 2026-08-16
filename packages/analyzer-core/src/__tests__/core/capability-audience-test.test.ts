@@ -111,6 +111,31 @@ describe('capability description audience test', () => {
     expect(result.failsAudienceTest).toBe(false);
   });
 
+  it('does not confuse an ordinary lowercase noun with a package name', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Download invoice PDFs',
+      'Authorized users can download invoices attached to their account requests.',
+      [{ name: 'requests' }],
+      [],
+      ['invoices', 'account'],
+    );
+
+    expect(result.failsAudienceTest).toBe(false);
+  });
+
+  it('still rejects a lowercase package used as an implementation mechanism', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Download invoice PDFs',
+      'The system downloads invoice files by using requests for remote retrieval.',
+      [{ name: 'requests' }],
+      [],
+      ['invoices'],
+    );
+
+    expect(result.reasons).toContain('identifier-vocabulary');
+    expect(result.flaggedTokens).toContain('requests');
+  });
+
   it('rejects implementation-led descriptions even when their nouns appear in structural evidence', () => {
     const result = testCapabilityDescriptionAgainstAudience(
       'Manage intent solvers',
