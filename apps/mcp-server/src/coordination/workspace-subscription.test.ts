@@ -78,16 +78,17 @@ test('local workspace subscription returns snapshots and wakes for claim and in-
 });
 
 test('remote workspace subscription wakes when the hosted Fabric board changes', async () => {
+  const token = 'workspace-subscription-test-token';
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-subscribe-remote-'));
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = path.join(root, 'remote-data');
   process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
-  const server = createRemoteAnalyzerHttpServer({ dataDir: process.env.KLAURO_REMOTE_ANALYZER_DATA });
+  const server = createRemoteAnalyzerHttpServer({ dataDir: process.env.KLAURO_REMOTE_ANALYZER_DATA, token });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const config = { baseUrl: `http://127.0.0.1:${address.port}` };
+  const config = { baseUrl: `http://127.0.0.1:${address.port}`, token };
   const workspace = 'remote-subscription';
 
   try {

@@ -16,6 +16,7 @@ import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
  * Confirms the route is wired, persists reports, and returns conflicts.
  */
 test('POST /v1/coordination/conceptual-conflicts persists reports and returns conflicts to later callers', async () => {
+  const token = 'conceptual-conflict-test-token';
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-conceptual-http-'));
   const remoteData = path.join(root, 'remote-data');
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
@@ -23,7 +24,7 @@ test('POST /v1/coordination/conceptual-conflicts persists reports and returns co
   process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
   process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
 
-  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
+  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData, token });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
@@ -38,7 +39,7 @@ test('POST /v1/coordination/conceptual-conflicts persists reports and returns co
           port,
           path: '/v1/coordination/conceptual-conflicts',
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) },
+          headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data), authorization: `Bearer ${token}` },
         },
         (res) => {
           let raw = '';
