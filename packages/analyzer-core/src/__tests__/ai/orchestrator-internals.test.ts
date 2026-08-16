@@ -9,6 +9,7 @@ import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 import { validateElementDescription } from '../../ai/element-description-validator';
 import { previousDescriptionNeedsCurrentValidation } from '../../analyzer/core/previous-description-validation';
 import {
+  capabilityDescriptionBatchSize,
   resolveCapabilityCatalogRoute,
   resolveCapabilityDescriptionRoute,
   shouldReauthorCatalogDescriptions,
@@ -69,6 +70,12 @@ describe('AI task model routing', () => {
         else process.env[key] = previous[key];
       }
     }
+  });
+
+  it('fills one provider-concurrency wave with description batches by default', () => {
+    expect(capabilityDescriptionBatchSize(7, 4)).toBe(2);
+    expect(capabilityDescriptionBatchSize(24, 4)).toBe(6);
+    expect(capabilityDescriptionBatchSize(7, 4, 4)).toBe(4);
   });
 });
 

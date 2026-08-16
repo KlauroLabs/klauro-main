@@ -149,7 +149,7 @@ import {
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
-import { resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
+import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { scheduleCapabilityCatalog } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
@@ -11621,10 +11621,7 @@ export class AnalyzerOrchestrator {
 
     const concurrency = aiConcurrencyLimit();
     const configuredBatchSize = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '');
-    const defaultBatchSize = Math.max(4, Math.min(12, Math.ceil(targets.length / Math.max(1, concurrency * 3))));
-    const batchSize = Math.max(1, Math.min(12, Number.isFinite(configuredBatchSize) && configuredBatchSize > 0
-      ? configuredBatchSize
-      : defaultBatchSize));
+    const batchSize = capabilityDescriptionBatchSize(targets.length, concurrency, configuredBatchSize);
     const estimatedRounds = Math.max(1, Math.ceil(targets.length / Math.max(1, batchSize * concurrency)));
     const ROUND_LATENCY_MS = 10000;
     const MAX_SCALED_BUDGET_MS = 75000;

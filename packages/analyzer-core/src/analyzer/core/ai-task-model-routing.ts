@@ -52,3 +52,14 @@ export function shouldReauthorCapabilityDescriptions(env: NodeJS.ProcessEnv, nar
     resolveCapabilityDescriptionRoute(env, narrativeModel),
   );
 }
+
+export function capabilityDescriptionBatchSize(
+  targetCount: number,
+  concurrency: number,
+  configuredBatchSize?: number,
+): number {
+  if (configuredBatchSize !== undefined && Number.isFinite(configuredBatchSize) && configuredBatchSize > 0) {
+    return Math.max(1, Math.min(12, Math.floor(configuredBatchSize)));
+  }
+  return Math.max(1, Math.min(12, Math.ceil(targetCount / Math.max(1, concurrency))));
+}

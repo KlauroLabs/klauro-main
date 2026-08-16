@@ -13,6 +13,7 @@ import {
   __analysisWorkerRunningForTests,
   analysisWorkerExecArgv,
   analysisRunsInProcess,
+  prewarmAnalysisWorker,
   runAnalysis,
   shutdownAnalysisWorker,
 } from './analyzer';
@@ -119,6 +120,12 @@ test('analysisRunsInProcess respects the fallback flag', () => {
   assert.strictEqual(analysisRunsInProcess({ KLAURO_ANALYSIS_IN_PROCESS: '1' }), true);
   assert.strictEqual(analysisRunsInProcess({ KLAURO_ANALYSIS_IN_PROCESS: 'true' }), true);
   assert.strictEqual(analysisRunsInProcess({ KLAURO_ANALYSIS_IN_PROCESS: '0' }), false);
+});
+
+test('prewarmAnalysisWorker starts the isolated worker before the first analysis', () => {
+  shutdownAnalysisWorker();
+  prewarmAnalysisWorker();
+  assert.strictEqual(__analysisWorkerRunningForTests(), true);
 });
 
 test('analysis worker removes parent eval payloads while preserving runtime loaders', () => {

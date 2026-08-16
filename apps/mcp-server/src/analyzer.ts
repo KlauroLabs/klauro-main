@@ -2897,6 +2897,10 @@ function ensureAnalysisWorker(): WorkerHandle {
   return workerHandle;
 }
 
+export function prewarmAnalysisWorker(): void {
+  if (!analysisRunsInProcess()) ensureAnalysisWorker();
+}
+
 export function shutdownAnalysisWorker(): void {
   if (!workerHandle) return;
   const handle = workerHandle;

@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, runAnalysis, runLayeredAnalysis } from './analyzer';
+import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, RepoFacts, SourceManifest } from './remote-source';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -4430,9 +4430,9 @@ function buildChangeManifest(workspace: string, changes: RemoteFileChange[]): So
     excluded_directories: [],
   };
 }
-
 if (isDirectCliInvocation('remote-analyzer-service')) {
   const port = Number(process.env.PORT || process.env.KLAURO_ANALYZER_PORT || DEFAULT_PORT);
+  prewarmAnalysisWorker();
   const server = createRemoteAnalyzerHttpServer();
   server.listen(port, () => {
     process.stdout.write(`Klauro remote analyzer listening on http://0.0.0.0:${port}\n`);
