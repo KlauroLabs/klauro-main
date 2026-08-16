@@ -17,6 +17,7 @@ import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/
 import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
+import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import {
@@ -140,6 +141,7 @@ function entityKindNodeNames(nodes: CASOutput['nodes']): string[] {
 }
 
 export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'; excludeSeams?: boolean } = {}) {
+  const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
   const detail = opts.detail || 'compact';
   const nodesByType: Record<string, number> = {};
   for (const n of cas.nodes) {
@@ -269,16 +271,6 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     edges: cas.edges.length,
     entry_points: cas.entry_points?.length || 0,
     entry_points_by_type: entryPointsByType,
-
-
-
-
-
-
-
-
-
-
     database_entities: (cas.entities?.length
       ? cas.entities.map(e => e.name)
       : cas.database_schema?.entities?.length
@@ -323,9 +315,9 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
       })),
     } : {}),
     analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
-    errors: cas.analysis_errors?.length || 0,
-
-
+    errors: diagnostics.errors.length,
+    warnings: diagnostics.warnings.length,
+    information: diagnostics.information.length,
     ...(seamSummary ? { communication_seams: { headline: seamSummary.headline, counts: seamSummary.counts, level: seamSummary.level } } : {}),
 
 
@@ -386,6 +378,7 @@ export interface SystemOverviewFilter {
 }
 
 export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {}) {
+  const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
   const techs = cas.system?.technologies;
   const productTech = productTechSignals(cas);
 
@@ -483,11 +476,18 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
       nodes: c.nodes_contributed || c.nodes_created || 0,
       edges: c.edges_contributed || c.edges_created || 0,
     })) || [],
-    errors: cas.analysis_errors?.length || 0,
-    error_summary: cas.analysis_errors?.slice(0, 5).map(e => ({
+    errors: diagnostics.errors.length,
+    warnings: diagnostics.warnings.length,
+    information: diagnostics.information.length,
+    error_summary: diagnostics.errors.slice(0, 5).map(e => ({
       severity: e.severity,
       message: e.message,
     })) || [],
+    warning_summary: diagnostics.warnings.slice(0, 5).map(warning => ({
+      severity: warning.severity,
+      code: warning.code,
+      message: warning.message,
+    })),
     ...(systemFit ? { system_fit: systemFit } : {}),
   };
 }

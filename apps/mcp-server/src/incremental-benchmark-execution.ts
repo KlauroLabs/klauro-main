@@ -1,4 +1,5 @@
 import type { IncrementalAnalysisResult } from './analyzer';
+import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import {
   captureCasGraphFingerprint,
   compareCasGraphFingerprint,
@@ -17,6 +18,8 @@ export interface IncrementalRunEvidence {
     entryPoints: number;
     exitPoints: number;
     analysisErrors: number;
+    analysisWarnings: number;
+    analysisInformation: number;
   };
 }
 
@@ -93,6 +96,7 @@ export async function verifyFullGraph(
 
 function incrementalRunEvidence(measured: Timed<IncrementalAnalysisResult>): IncrementalRunEvidence {
   const output = measured.value.output;
+  const diagnostics = partitionAnalysisDiagnostics(output.analysis_errors);
   return {
     durationMs: measured.durationMs,
     wasFullRebuild: measured.value.wasFullRebuild,
@@ -103,7 +107,9 @@ function incrementalRunEvidence(measured: Timed<IncrementalAnalysisResult>): Inc
       edges: output.edges.length,
       entryPoints: output.entry_points?.length || 0,
       exitPoints: output.exit_points?.length || 0,
-      analysisErrors: output.analysis_errors?.length || 0,
+      analysisErrors: diagnostics.errors.length,
+      analysisWarnings: diagnostics.warnings.length,
+      analysisInformation: diagnostics.information.length,
     },
   };
 }

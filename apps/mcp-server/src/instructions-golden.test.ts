@@ -87,7 +87,7 @@ function renderMinimalBootstrapPrompt(): string {
   const start: any = {
     default_rule: 'default rule',
     system: { type: 'service', description: 'd', languages: [], frameworks: [], top_capabilities: [] },
-    scale: { nodes: 0, edges: 0, entry_points: 0, analysis_errors: 0 },
+    scale: { nodes: 0, edges: 0, entry_points: 0, analysis_errors: 0, analysis_warnings: 0, analysis_information: 0 },
     answer_pack: { gaps: [] },
     when_to_read_files: [],
   };

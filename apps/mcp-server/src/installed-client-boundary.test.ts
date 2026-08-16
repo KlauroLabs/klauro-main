@@ -47,6 +47,7 @@ test('installed bundle graph excludes hosted analyzer implementation', () => {
   // getBuildIdentity (see build-bundle.mjs's installedBoundary plugin) — no
   // analyzer/parsing code, just log-file path resolution.
   assert.deepEqual([...new Set(analyzerCoreInputs)].sort(), [
+    '../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics.ts',
     '../../packages/analyzer-core/src/analyzer/core/language-registry.ts',
     '../../packages/analyzer-core/src/analyzer/core/run-log.ts',
   ]);

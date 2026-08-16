@@ -1,6 +1,7 @@
 import { AnalyzerOrchestrator, type AnalysisProgressEvent } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { linkStructuralOwnership } from '../../../packages/analyzer-core/src/analyzer/core/structural-ownership';
 import { assignNodeRoles } from '../../../packages/analyzer-core/src/analyzer/core/node-roles';
+import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
@@ -402,14 +403,6 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       analyzer: new CloudFormationAnalyzer(),
     },
     {
-
-
-
-
-
-
-
-
       id: 'sql-schema',
       name: 'SQL Schema Analyzer',
       type: 'language',
@@ -2435,6 +2428,8 @@ export interface AnalysisRunSummary {
   entryPoints: number;
   analyzersRun: number;
   errors: number;
+  warnings: number;
+  information: number;
   phases: unknown[];
   casVersion?: string;
   previousCasVersion?: string;
@@ -2443,15 +2438,17 @@ export interface AnalysisRunSummary {
   changeSummary?: AnalysisChangeSummary;
   changeReport?: ChangeReport;
 }
-
 function summarizeOutput(projectPath: string, output: CASOutput): Omit<AnalysisRunSummary, 'analysisType' | 'wasFullRebuild'> {
+  const diagnostics = partitionAnalysisDiagnostics(output.analysis_errors);
   return {
     name: output.system?.name || projectPath.split('/').pop() || projectPath,
     nodes: output.nodes?.length || 0,
     edges: output.edges?.length || 0,
     entryPoints: output.entry_points?.length || 0,
     analyzersRun: output.analyzer_contributions?.length || 0,
-    errors: output.analysis_errors?.length || 0,
+    errors: diagnostics.errors.length,
+    warnings: diagnostics.warnings.length,
+    information: diagnostics.information.length,
     phases: output.analysis_phases || [],
     casVersion: output.cas_version,
   };

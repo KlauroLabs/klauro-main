@@ -69,7 +69,7 @@ export function buildAgentBootstrapPrompt(
 
   sections.push('');
   sections.push('## Scale');
-  sections.push(`Nodes: ${start.scale.nodes}, Edges: ${start.scale.edges}, Entry points: ${start.scale.entry_points}, Analysis errors: ${start.scale.analysis_errors}`);
+  sections.push(`Nodes: ${start.scale.nodes}, Edges: ${start.scale.edges}, Entry points: ${start.scale.entry_points}, Analysis errors: ${start.scale.analysis_errors}, warnings: ${start.scale.analysis_warnings ?? 0}`);
 
   if (start.answer_pack.gaps.length > 0) {
     sections.push('');

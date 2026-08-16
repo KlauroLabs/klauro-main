@@ -95,6 +95,8 @@ export interface AgentReadinessReport {
     codebase_idioms: number;
     tests: number;
     analysis_errors: number;
+    analysis_warnings: number;
+    analysis_information: number;
     behavioral_invariants?: {
       total: number;
       gaps: number;
@@ -204,6 +206,8 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       database_entities: summary.database_entities,
       capabilities: summary.capabilities,
       analysis_errors: summary.errors,
+      analysis_warnings: summary.warnings,
+      analysis_information: summary.information,
     },
     starting_points: {
       entry_points: entryPoints.entry_points.map(entry => ({
@@ -5706,6 +5710,8 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
       codebase_idioms: idioms,
       tests: tests.total_suites,
       analysis_errors: analysisErrors,
+      analysis_warnings: analysisWarningCount,
+      analysis_information: analysisErrorEntries.filter(entry => entry.severity === 'info').length,
       behavioral_invariants: cas.behavioral_invariant_summary ? {
         total: cas.behavioral_invariant_summary.total,
         gaps: cas.behavioral_invariant_summary.gaps.length,

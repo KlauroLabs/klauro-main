@@ -126,7 +126,8 @@ test('support bundle includes diagnostics and excludes source text and secret va
     const metadata = await fs.readJson(path.join(bundleRoot, 'analysis-metadata.json'));
     assert.equal(metadata.counts.nodes, 1);
     assert.equal(metadata.counts.edges, 1);
-    assert.equal(metadata.counts.analysis_errors, 1);
+    assert.equal(metadata.counts.analysis_errors, 0);
+    assert.equal(metadata.counts.analysis_warnings, 1);
     assert.equal(metadata.analysis_errors[0].code, 'PARTIAL_ANALYSIS');
     assert.equal(metadata.nodes, undefined);
     assert.equal(metadata.edges, undefined);

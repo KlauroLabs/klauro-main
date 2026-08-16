@@ -4,6 +4,7 @@ import { CAS_VERSION, type CASDataEntity, type CASEdge, type CASEntryPoint, type
 import { composeCas, type CASCompositionRelation, type CASComprehension } from '../../../packages/analyzer-core/src/analyzer/core/cas-composition';
 import { namespaceCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
+import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type {
   CommunicationSeam,
   CommunicationSeamsResult,
@@ -18,7 +19,6 @@ import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './dep
 import { estimatedJsonTokens } from './json-size';
 import { isRuntimeEndpointSemanticName } from './semantic-roles';
 import { buildPassiveDataLinks, passiveDataLifecycleRole, passiveDataOperationRole } from './workspace-passive-data';
-
 export { estimatedJsonTokens } from './json-size';
 
 export type SystemInterfaceKind =
@@ -6206,15 +6206,16 @@ function classifyWorkspaceComposition(
     reasons: reasons.length ? reasons : ['No strong runtime or package composition links were found in the workspace-level CAS input facts.'],
   };
 }
-
 function analysisTrust(cas: CASOutput): WorkspaceAnalysisTrust {
   const reasons = [];
+  const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
   if (!cas.analysis_id) reasons.push('CAS analysis id is missing.');
   if (!cas.analysis_timestamp) reasons.push('CAS analysis timestamp is missing.');
   if (!cas.cas_version) reasons.push('CAS version is missing.');
   if (!cas.nodes?.length) reasons.push('CAS has no nodes.');
   if (!cas.entry_points?.length && !cas.exit_points?.length) reasons.push('CAS has no entry or exit points.');
-  if (cas.analysis_errors?.length) reasons.push(`${cas.analysis_errors.length} analyzer error(s) were reported.`);
+  if (diagnostics.errors.length > 0) reasons.push(`${diagnostics.errors.length} analyzer error(s) were reported.`);
+  if (diagnostics.warnings.length > 0) reasons.push(`${diagnostics.warnings.length} analyzer warning(s) were reported.`);
   const hasTimestamp = Boolean(cas.analysis_timestamp);
   return {
     status: reasons.some(reason => /no nodes|missing/i.test(reason)) ? 'missing-required-facts' : reasons.length ? 'warn' : 'ready',
@@ -6223,7 +6224,6 @@ function analysisTrust(cas: CASOutput): WorkspaceAnalysisTrust {
     reasons: reasons.length ? reasons : ['CAS input has required identity, timestamp, graph, and interface facts.'],
   };
 }
-
 function unknownOwnership(): WorkspaceOwnership {
   return {
     owner_source: 'unknown',

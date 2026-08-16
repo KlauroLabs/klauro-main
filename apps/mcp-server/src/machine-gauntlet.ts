@@ -21,6 +21,7 @@ import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { graphEquivalenceRate } from './incremental-graph-equivalence';
 import { descriptionTermIsGroundedInCas, unexplainedShortTitleCaseTerms } from './description-proper-noun-grounding';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -252,10 +253,11 @@ export async function runMachineAgentProof(options: ParsedArgs) {
       analyzedCasByPath.set(repo.path, cas);
       const analysisQuality = assessAnalysisQuality(cas, repo.path);
       const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name, analysisFocus);
+      const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
       logMachineProgress(`analyzed ${repo.name} in ${Date.now() - startedAt}ms`);
       return {
         ...repo,
-        proof_status: (cas.analysis_errors || []).some(entry => (entry.severity ?? 'error') === 'error') ? 'fail' : readiness.agent_context_ready && analysisQuality.status === 'pass' && usefulnessReview.status === 'pass' ? 'pass' : 'fail',
+        proof_status: diagnostics.errors.length > 0 ? 'fail' : readiness.agent_context_ready && analysisQuality.status === 'pass' && usefulnessReview.status === 'pass' ? 'pass' : 'fail',
         analysis_ms: Date.now() - startedAt,
         cas: {
           nodes: cas.nodes.length,
@@ -270,7 +272,9 @@ export async function runMachineAgentProof(options: ParsedArgs) {
           description_generation: cas.enhanced_system_purpose?.description_generation || null,
           architectural_patterns: cas.architecture_summary?.architectural_patterns?.length || 0,
           pattern_balance: cas.architecture_summary?.pattern_balance?.status || null,
-          analysis_errors: cas.analysis_errors?.length || 0,
+          analysis_errors: diagnostics.errors.length,
+          analysis_warnings: diagnostics.warnings.length,
+          analysis_information: diagnostics.information.length,
         },
         analysis_focus: analysisFocus,
         analysis_path: options.analysisPath,
@@ -1268,6 +1272,8 @@ function failedIsolatedIncrementalReport(repo: RealRepoTarget, detail: string, d
       entry_points: 0,
       exit_points: 0,
       analysis_errors: 1,
+      analysis_warnings: 0,
+      analysis_information: 0,
       tracked_files: 0,
       file_cache_entries: 0,
       file_cache_bytes: 0,

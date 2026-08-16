@@ -11,6 +11,7 @@ import {
   SystemCapability,
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
+import { partitionAnalysisDiagnostics } from './analysis-diagnostics';
 
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const RISK_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -370,10 +371,9 @@ function buildCoverageCaveats(
     );
   }
 
-  const errorCount = (cas.analysis_errors || []).length;
-  if (errorCount > 0) {
-    caveats.push(`${errorCount} analysis error${errorCount === 1 ? '' : 's'} recorded during analysis`);
-  }
+  const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
+  if (diagnostics.errors.length > 0) caveats.push(`${diagnostics.errors.length} analysis error${diagnostics.errors.length === 1 ? '' : 's'} recorded during analysis`);
+  if (diagnostics.warnings.length > 0) caveats.push(`${diagnostics.warnings.length} analysis warning${diagnostics.warnings.length === 1 ? '' : 's'} recorded during analysis`);
 
   const capabilityGaps = cas.enhanced_system_purpose?.description_capability_gaps || [];
   const reinjected = capabilityGaps.filter(gap => gap.disposition === 'reinjected-from-candidate');

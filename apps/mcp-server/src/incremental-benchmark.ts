@@ -41,7 +41,6 @@ interface IncrementalBenchmarkOptions {
   analyzerServerUrl?: string;
   progress?: (event: { target: string; path: string; stage: 'start' | 'complete' | 'failed'; duration_ms?: number; error?: string }) => void;
 }
-
 interface IncrementalTargetReport {
   name: string;
   original_path: string;
@@ -104,6 +103,8 @@ interface IncrementalTargetReport {
     entry_points: number;
     exit_points: number;
     analysis_errors: number;
+    analysis_warnings: number;
+    analysis_information: number;
     tracked_files: number;
     file_cache_entries: number;
     file_cache_bytes: number;
@@ -124,7 +125,6 @@ interface IncrementalTargetReport {
   };
   full_verify_parity?: CasGraphEquivalence;
 }
-
 function parseArgs(argv: string[]) {
   const repos: IncrementalTargetInput[] = [];
   let includeRealRepos = false;
@@ -181,13 +181,11 @@ function parseArgs(argv: string[]) {
 
   return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull, useGitBaseline, concurrency, analysisPath };
 }
-
 function parseAnalysisPath(value: string): IncrementalBenchmarkOptions['analysisPath'] {
   if (value === 'klauro-product') return 'klauro-product';
   if (value === 'in-process-harness') return 'in-process-harness';
   throw new Error(`Invalid incremental benchmark analysis path "${value}". Expected klauro-product or in-process-harness.`);
 }
-
 function printHelp(): void {
   console.log([
     'Usage: npm run incremental-benchmark -- [options]',
@@ -209,7 +207,6 @@ function printHelp(): void {
     '  --markdown /path/report.md   Write Markdown report.',
   ].join('\n'));
 }
-
 export async function runIncrementalValueBenchmark(options: IncrementalBenchmarkOptions) {
   const selectedTargets = await selectTargets(options);
   if (selectedTargets.length === 0) throw new Error('No incremental benchmark targets configured');
@@ -348,6 +345,8 @@ function failedIncrementalTargetReport(
       entry_points: 0,
       exit_points: 0,
       analysis_errors: 1,
+      analysis_warnings: 0,
+      analysis_information: 0,
       tracked_files: 0,
       file_cache_entries: 0,
       file_cache_bytes: 0,
@@ -367,7 +366,6 @@ function failedIncrementalTargetReport(
     },
   };
 }
-
 async function selectTargets(options: IncrementalBenchmarkOptions): Promise<IncrementalTargetInput[]> {
   const realRepos: RepoTarget[] = options.includeRealRepos
     || options.repos.length === 0
@@ -550,6 +548,8 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
           entry_points: edited.evidence.output.entryPoints,
           exit_points: edited.evidence.output.exitPoints,
           analysis_errors: edited.evidence.output.analysisErrors,
+          analysis_warnings: edited.evidence.output.analysisWarnings,
+          analysis_information: edited.evidence.output.analysisInformation,
           tracked_files: Object.keys(state?.files || {}).length,
           file_cache_entries: cacheSize.files,
           file_cache_bytes: cacheSize.bytes,

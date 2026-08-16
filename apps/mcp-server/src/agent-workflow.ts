@@ -4,6 +4,7 @@ import { buildCapabilityMemoryForAgent, getAgentStartContext, getAgentContext, t
 import { assessBehavioralInvariantImpact, validateBehavioralInvariants } from './invariant-validation';
 import { buildIdiomContextForAgent, validateCodebaseIdioms } from './idiom-query';
 import { assessChangeRisk, buildSummary, findTests, getSystemOverview } from './query';
+import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -673,7 +674,9 @@ function buildSignalQuality(cas: CASOutput) {
   const capabilities = Array.isArray(cas.capabilities) ? cas.capabilities.length : 0;
   const idioms = Array.isArray(cas.codebase_idioms) ? cas.codebase_idioms.length : 0;
   const invariants = Array.isArray(cas.behavioral_invariants) ? cas.behavioral_invariants.length : 0;
-  const errors = Array.isArray(cas.analysis_errors) ? cas.analysis_errors.length : 0;
+  const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
+  const errors = diagnostics.errors.length;
+  const analysisWarnings = diagnostics.warnings.length;
   const systemType = String(anyCas.architecture_summary?.system_type || anyCas.system?.type || '');
   const purposeConfidence = typeof anyCas.system_purpose?.confidence === 'number'
     ? anyCas.system_purpose.confidence
@@ -687,6 +690,7 @@ function buildSignalQuality(cas: CASOutput) {
     idioms === 0 ? 'CAS detected no repo-local idioms; style and placement guidance needs direct source confirmation.' : '',
     invariants === 0 ? 'CAS detected no behavioral invariants; auth, tenant, data, and boundary assumptions need source confirmation.' : '',
     errors > 0 ? `${errors} analyzer error(s) were reported; omitted areas may be missing from this context.` : '',
+    analysisWarnings > 0 ? `${analysisWarnings} analyzer warning(s) were reported; inspect their tier or coverage caveats before relying on omitted areas.` : '',
     purposeConfidence !== null && purposeConfidence < 0.45 ? `System purpose confidence is low (${purposeConfidence.toFixed(2)}); treat summaries as orientation, not truth.` : '',
     isTestingSystemType(systemType) ? `Architecture system_type "${systemType}" looks like a test framework; treat architecture identity as suspect until re-analysis.` : '',
   ]);
@@ -704,6 +708,8 @@ function buildSignalQuality(cas: CASOutput) {
       idioms,
       invariants,
       analysis_errors: errors,
+      analysis_warnings: analysisWarnings,
+      analysis_information: diagnostics.information.length,
     },
     purpose_confidence: purposeConfidence,
     warnings,
@@ -714,7 +720,9 @@ function buildConfidenceNotes(cas: CASOutput): string[] {
   const notes = [];
   const lowConfidenceInvariants = (cas.behavioral_invariants || []).filter(invariant => invariant.confidence === 'low').length;
   if (lowConfidenceInvariants > 0) notes.push(`${lowConfidenceInvariants} invariant(s) are low confidence and should be treated as source-confirmation leads.`);
-  if ((cas.analysis_errors || []).length > 0) notes.push(`${cas.analysis_errors?.length} analyzer error(s) were reported; inspect analysis_errors before relying on omitted areas.`);
+  const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
+  if (diagnostics.errors.length > 0) notes.push(`${diagnostics.errors.length} analyzer error(s) were reported; inspect analysis_errors before relying on omitted areas.`);
+  if (diagnostics.warnings.length > 0) notes.push(`${diagnostics.warnings.length} analyzer warning(s) were reported; inspect analysis_errors for tier and coverage caveats.`);
   if (!(cas.codebase_idioms || []).length) notes.push('No repo-local idioms were detected; agents should fall back to direct local examples.');
   if (!(cas.test_suites || []).length) notes.push('No test suites were mapped by CAS; this is missing signal, not evidence of no tests.');
   if (!(cas.patterns || []).length) notes.push('No reusable patterns were mapped by CAS; inspect local examples before claiming style or architecture fit.');

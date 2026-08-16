@@ -11,6 +11,7 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { getAnalysisEntry, loadAnalysis, MINIMUM_COMPATIBLE_CAS_VERSION } from './storage';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 
 const execFileAsync = promisify(execFile);
 
@@ -98,6 +99,7 @@ function snapshotEnvironment(): EnvironmentSnapshot {
 }
 
 function buildAnalysisMetadata(projectPath: string, cas: CASOutput): Record<string, unknown> {
+  const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
   return {
     project_path: projectPath,
     analysis_id: cas.analysis_id,
@@ -120,7 +122,9 @@ function buildAnalysisMetadata(projectPath: string, cas: CASOutput): Record<stri
       test_suites: cas.test_suites?.length || 0,
       call_chains: cas.call_chains?.length || 0,
       journeys: cas.user_journeys?.length || 0,
-      analysis_errors: cas.analysis_errors?.length || 0,
+      analysis_errors: diagnostics.errors.length,
+      analysis_warnings: diagnostics.warnings.length,
+      analysis_information: diagnostics.information.length,
     },
     analysis_phases: cas.analysis_phases,
     analyzer_contributions: cas.analyzer_contributions,

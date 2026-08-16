@@ -66,6 +66,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'flow-graph-builder.ts': 3,
   'flow-concepts.ts': 3,
   'journey-builder.ts': 3,
+  'analysis-diagnostics.ts': 1,
   'analyzer-bootstrap.ts': 1,
   'analyzer-contribution-cache.ts': 1,
   'analyzer-detection-cache.ts': 1,
