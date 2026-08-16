@@ -39,6 +39,13 @@ test('remote analyzer exposes account workspace and project APIs', async () => {
     assert.equal(project.statusCode, 201);
     assert.equal(project.json.project.name, 'Main API');
 
+    const anonymousCoordination = await requestJson(
+      address.port,
+      'GET',
+      `/v1/coordination/active?workspace=${project.json.project.id}`,
+    );
+    assert.equal(anonymousCoordination.statusCode, 401);
+
     const projects = await requestJson(address.port, 'GET', `/api/workspaces/${workspaceId}/projects`, undefined, token);
     assert.equal(projects.statusCode, 200);
     assert.equal(projects.json.projects.length, 1);
@@ -205,6 +212,79 @@ test('cross-tenant HTTP isolation: account B cannot read account A workspace/pro
     assert.equal(workspace2Projects.statusCode, 200);
     assert.equal(workspace2Projects.json.projects.length, 1);
     assert.equal(workspace2Projects.json.projects[0].name, 'Tenant A Second Workspace Project');
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('coordination routes restrict personal sessions to member workspaces and projects', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-coordination-isolation-'));
+  const server = createRemoteAnalyzerHttpServer({ dataDir: root });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+
+  try {
+    const owner = await requestJson(address.port, 'POST', '/api/auth/register', {
+      email: 'fabric-owner@example.com',
+      password: 'password-1234',
+      workspace_name: 'Fabric Owner Workspace',
+    });
+    const outsider = await requestJson(address.port, 'POST', '/api/auth/register', {
+      email: 'fabric-outsider@example.com',
+      password: 'password-1234',
+      workspace_name: 'Fabric Outsider Workspace',
+    });
+    const ownerToken = owner.json.token as string;
+    const outsiderToken = outsider.json.token as string;
+    const ownerWorkspaces = await requestJson(address.port, 'GET', '/api/workspaces', undefined, ownerToken);
+    const workspaceId = ownerWorkspaces.json.workspaces[0].id as string;
+    const project = await requestJson(address.port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
+      name: 'Fabric Project',
+    }, ownerToken);
+    const projectId = project.json.project.id as string;
+
+    const ownerClaim = await requestJson(address.port, 'POST', '/v1/coordination/claim', {
+      mode: 'advisory',
+      workspace: projectId,
+      agent_id: 'owner-agent',
+      intent: 'Change the project',
+    }, ownerToken);
+    assert.equal(ownerClaim.statusCode, 200);
+
+    const deniedRequests: Array<[string, string, unknown?]> = [
+      ['GET', `/v1/coordination/active?workspace=${projectId}`],
+      ['GET', `/v1/coordination/metrics?workspace=${projectId}`],
+      ['GET', `/v1/coordination/state?workspace=${projectId}`],
+      ['GET', `/v1/coordination/stream?workspace=${projectId}`],
+      ['GET', `/v1/coordination/active?workspace=${workspaceId}`],
+      ['POST', '/v1/coordination/claim', { mode: 'advisory', workspace: projectId, agent_id: 'outsider', intent: 'Read work' }],
+      ['POST', '/v1/coordination/release', { workspace: projectId, agent_id: 'owner-agent' }],
+      ['POST', '/v1/coordination/heartbeat', { workspace: projectId, claim_id: ownerClaim.json.claim_id }],
+      ['POST', '/v1/coordination/check', { workspace: projectId, agent_id: 'outsider', paths: [] }],
+      ['POST', '/v1/coordination/extend', { workspace: projectId, claim_id: ownerClaim.json.claim_id, add_paths: [] }],
+      ['POST', '/v1/coordination/conceptual-conflicts', { workspace: projectId, agent_id: 'outsider', intent: 'Read work', changes: [] }],
+      ['POST', '/v1/coordination/intent-merge', { workspace: projectId, agent_id: 'outsider', states: [] }],
+      ['POST', '/v1/coordination/in-flight', { workspace: projectId, agent_id: 'outsider', diff_context: '{}', changes: [] }],
+      ['POST', '/v1/coordination/plan-parallel-work', { path: projectId, tasks: [{ id: 'task', intent: 'Read work' }] }],
+    ];
+
+    for (const [method, route, body] of deniedRequests) {
+      const result = await requestJson(address.port, method, route, body, outsiderToken);
+      assert.equal(result.statusCode, 404, `${method} ${route}`);
+      assert.match(result.json.error, /not found|not a member/);
+    }
+
+    const ownerActive = await requestJson(
+      address.port,
+      'GET',
+      `/v1/coordination/active?workspace=${projectId}`,
+      undefined,
+      ownerToken,
+    );
+    assert.equal(ownerActive.statusCode, 200);
+    assert.equal(ownerActive.json.count, 1);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     fs.rmSync(root, { recursive: true, force: true });

@@ -17,7 +17,7 @@ import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis'
 import { getClaimStreams, heartbeatClaimStream, publishClaimStream, releaseClaimStream, type AgentKind, type ConceptualCoordinate, type DeclaredContract } from './coordination';
 import { appendClaim, checkEditLock, describeCursorGap, extendClaim, getActiveClaims, getBoardInfo, getPresence, readClaimLog, releaseAgentWithReason, releaseClaimById, warnIfEphemeralCoordDir, type ClaimLogEntry } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
-import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
+import { appendSecurityAudit, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
 import {
@@ -116,12 +116,6 @@ interface RemoteAnalyzerServiceOptions {
   rateLimitPerMinute?: number;
   fabricRateLimitPerMinute?: number;
 
-
-
-
-
-
-
   deferAiEnrichment?: boolean;
 }
 
@@ -131,15 +125,6 @@ interface RateLimitBucket {
 }
 
 let legacyCwdDataDirSweepDone = false;
-
-
-
-
-
-
-
-
-
 
 function removeLegacyCwdDataDir(resolvedDataDir: string): void {
   if (legacyCwdDataDirSweepDone) return;
@@ -158,14 +143,6 @@ function removeLegacyCwdDataDir(resolvedDataDir: string): void {
 
 export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOptions = {}): http.Server {
 
-
-
-
-
-
-
-
-
   const dataDir = path.resolve(
     options.dataDir
       || process.env.KLAURO_REMOTE_ANALYZER_DATA
@@ -179,29 +156,14 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const fabricRateLimitPerMinute = options.fabricRateLimitPerMinute ?? Number(process.env.KLAURO_FABRIC_RATE_LIMIT_PER_MINUTE || 12_000);
   const fabricBuckets = new Map<string, RateLimitBucket>();
 
-
-
-
   const authBuckets = new Map<string, RateLimitBucket>();
   const authRateLimitPerMinute = Number(process.env.KLAURO_AUTH_RATE_LIMIT_PER_MINUTE || 20);
   const activeCommittedSnapshots = new Map<string, string>();
 
-
-
-
-
   warnIfEphemeralCoordDir({ dataRoot: dataDir });
-
-
-
-
-
 
   void reapStaleAttemptRecordsOnStartup(dataDir);
   const accounts = new AccountStore(dataDir);
-
-
-
 
   const workspaceAnalyses = new AccountWorkspaceAnalysisScheduler(dataDir, accounts);
   const notifyProjectAnalysisLandedForAnalysisId = async (analysisId: string | undefined): Promise<void> => {
@@ -212,12 +174,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       for (const workspaceId of workspaceIds) workspaceAnalyses.notifyProjectAnalysisLanded(workspaceId);
     } catch (error) {
 
-
       console.error(`[Klauro] failed to schedule workspace analysis rebuild for analysis ${analysisId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
-
-
 
   initSelfTelemetry();
 
@@ -233,17 +192,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'GET' && route === '/health') {
 
-
-
-
         const buildIdentity = getBuildIdentity();
         writeJson(response, 200, {
           status: 'ok',
           service: 'klauro-remote-analyzer',
           version: SERVICE_VERSION,
-
-
-
 
           required_protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
           build: {
@@ -257,25 +210,20 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
       if (request.method === 'GET' && (route === '/install' || route === '/install.sh')) {
         await serveInstallScript(response);
         return;
       }
-
 
       if (request.method === 'GET' && route === '/install.ps1') {
         await serveInstallPowershell(response);
         return;
       }
 
-
       if (request.method === 'GET' && route === '/dist/latest.json') {
         await serveLatestManifest(request, response);
         return;
       }
-
 
       if (request.method === 'GET' && (route === '/dist/klauro-latest.tgz' || route.startsWith('/dist/'))) {
         const requested = route === '/dist/klauro-latest.tgz'
@@ -311,15 +259,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
-
-
-
       if (request.method === 'POST' && (route === '/api/auth/login' || route === '/api/auth/reset-password/redeem')) {
         const ip = request.socket.remoteAddress || 'unknown';
         if (!withinRateLimit(authBuckets, `authip:${ip}`, authRateLimitPerMinute)) {
@@ -336,11 +275,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
       if (request.method === 'POST' && route === '/api/auth/reset-password/redeem') {
         const body = await readJsonBody<{ token: string; new_password: string }>(request, maxBodyBytes);
         if (!body.token || !body.new_password) {
@@ -351,21 +285,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         writeJson(response, 200, { status: 'success', user_id: result.userId, email: result.email });
         return;
       }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
       if (request.method === 'POST' && route.startsWith('/api/telemetry/runtime-events/')) {
         const reconAuth = await authorizeAnalyzerRequest(accounts, request, token);
@@ -381,7 +300,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         }
         const body = await readJsonBody<{ events?: CasRuntimeEvent[] }>(request, maxBodyBytes);
         const events = Array.isArray(body.events) ? body.events : [];
-
 
         const result = await ingestTelemetryBatch(null, projectId, events.map(mapSdkEvent), { persist: true });
         await appendAuditLog(dataDir, {
@@ -417,7 +335,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           stream.pipe(response);
         } else if (accountResult.serializedBody !== undefined) {
 
-
           writeText(response, accountResult.statusCode, 'application/json', accountResult.serializedBody);
         } else {
           writeJson(response, accountResult.statusCode, accountResult.body);
@@ -436,6 +353,21 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       }
 
       const clientId = authorization.clientId || request.socket.remoteAddress || 'unknown';
+      const requireCoordinationWorkspace = async (workspace: string): Promise<boolean> => {
+        if (clientId !== 'shared-token' && !clientId.startsWith('user:')) {
+          writeJson(response, 401, {
+            status: 'error',
+            error: 'Remote coordination requires a signed-in account or configured analyzer token.',
+          });
+          return false;
+        }
+        if (await canAccessCoordinationWorkspace(accounts, clientId, workspace)) return true;
+        writeJson(response, 404, {
+          status: 'error',
+          error: 'Coordination workspace not found, or your account is not a member of its workspace.',
+        });
+        return false;
+      };
       const mutation = requestConsumesMutationRateLimit(request.method);
       const fabricMutation = mutation && route.startsWith('/v1/coordination/');
       const rateLimitAccepted = !mutation || withinRateLimit(
@@ -481,11 +413,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
         {
 
-
-
-
-
-
           if (!body.snapshot?.files?.length) {
             writeJson(response, 400, { status: 'error', error: 'Remote analyze requires a source snapshot with files' });
             return;
@@ -517,23 +444,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const analysisAlreadyRunning = Boolean(snapshotIdentity && activeIdentity === snapshotIdentity);
           const snapshotUnchanged = Boolean(reusableRevision && storedAnalysisExists);
 
-
-
-
-
-
-
           const identityDecision = snapshotUnchanged && !analysisAlreadyRunning
             ? await analyzerIdentityReuseDecisionFor(acceptedWorkspace)
             : null;
-
-
-
-
-
-
-
-
 
           const reuseStoredAnalysis = analysisAlreadyRunning
             || (!body.force && snapshotUnchanged && identityDecision?.reusable === true);
@@ -567,7 +480,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               reused: true,
               analysis_type: 'unchanged',
 
-
               reuse_decision: {
                 reused: true,
                 reason: reuseReason,
@@ -578,8 +490,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             });
             return;
           }
-
-
 
           const analyzerUpgradeReanalysis = snapshotUnchanged && identityDecision?.reusable === false;
           if (analyzerUpgradeReanalysis && identityDecision) {
@@ -654,24 +564,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             try {
               const displayName = backgroundAnalysis.displayName;
 
-
-
-
-
-
-
-
               const doomed = await checkDoomedVersionRebuild(acceptedWorkspace);
               if (doomed) throw new Error(doomed);
-
-
-
-
-
-
-
-
-
 
               let l0Attach: Promise<void> | null = null;
               const summary = await runLayeredAnalysis(acceptedWorkspace, {
@@ -680,26 +574,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 repoFacts: backgroundAnalysis.repoFacts,
                 repoFactsUnavailable: !backgroundAnalysis.repoFacts,
 
-
-
                 forceAiRefresh: backgroundAnalysis.force,
-
-
-
-
-
 
                 forceFullRebuild: backgroundAnalysis.force,
                 onPhase: (event) => {
-
-
-
-
-
-
-
-
-
 
                   if (event.phase === 'l0' && event.status === 'succeeded' && !l0Attach) {
                     l0Attach = (async () => {
@@ -729,8 +607,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 analysis_focus: backgroundAnalysis.analysisFocus || 'full',
               }, 'local_commit_submission');
 
-
-
               if (!attachedEarly) {
                 await linkAnalysisToAccountProject(accounts, backgroundClientId, backgroundAnalysis.projectId, acceptedAnalysisId, backgroundAnalysis.gitRemote, backgroundAnalysis.repoFacts);
               }
@@ -757,7 +633,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               const detail = error instanceof Error ? error.message : String(error);
               const diagnostic = error instanceof Error ? error.stack || detail : detail;
               console.error(`[Klauro] async analyze failed for ${acceptedAnalysisId}: ${diagnostic}`);
-
 
               await markBackgroundAnalysisFailed(acceptedWorkspace, detail);
               const attemptFinishedAt = new Date().toISOString();
@@ -800,9 +675,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const workspace = workspacePath(dataDir, analysisId);
         const attemptRecordPath = projectAttemptRecordPath(workspace);
 
-
-
-
         await reapAbandonedAttempt(workspace, attemptRecordPath);
         const entry = await getAnalysisEntry(workspace);
         const lastAttempt = await readAttemptRecord(attemptRecordPath);
@@ -814,14 +686,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           && lastAttempt?.state !== 'in-progress'
           && !activeCommittedSnapshots.has(analysisId),
         );
-
-
-
-
-
-
-
-
 
         const latestAnalyzeFailed = lastAttempt?.state === 'failed' && lastAttempt.trigger === 'analyze';
         const abandonedWithNoCas = !complete && failedLayers.length === 0 && lastAttempt?.state === 'failed';
@@ -998,10 +862,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       const revisionsMatch = route.match(/^\/v1\/projects\/([^/]+)\/revisions$/);
       if (request.method === 'GET' && revisionsMatch) {
 
-
-
-
-
         const requestedAnalysisId = decodeURIComponent(revisionsMatch[1]);
         const analysisId = resolveStorageAnalysisId(requestedAnalysisId, accountSaltFor(authorization.clientId));
         const result = await readProjectRevisions(dataDir, analysisId);
@@ -1022,9 +882,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
-
-
-
 
         if (!(await authorizeProjectWrite(accounts, authorization.clientId, body.analysis_id))) {
           writeJson(response, 404, { status: 'error', error: PROJECT_WRITE_DENIED_MESSAGE });
@@ -1056,9 +913,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               started_at: startedAt,
             };
             await writeAttemptRecord(attemptRecordPath, { ...syncAttemptSnapshot, heartbeat_at: startedAt });
-
-
-
 
             const stopHeartbeat = startAttemptHeartbeat(attemptRecordPath, syncAttemptSnapshot);
             try {
@@ -1107,19 +961,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           analysis_id: clientVisibleAnalysisId(body.analysis_id, result.analysis_id, authorization.clientId),
         });
 
-
-
-
-
-
-
-
-
         void notifyProjectAnalysisLandedForAnalysisId(result.analysis_id);
-
-
-
-
 
         return;
       }
@@ -1159,56 +1001,29 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
-
       if (request.method === 'POST' && route === '/v1/coordination/claim') {
-
-
-
-
 
         const body = await readJsonBody<{
           workspace: string; agent_id: string; intent: string; agent_kind?: AgentKind;
           paths?: string[]; symbols?: string[]; capability?: string; ttl_ms?: number;
           base_commit?: string; branch?: string; claim_id?: string;
 
-
-
           mode?: 'advisory' | 'grant';
-
-
-
-
-
 
           status?: 'active' | 'released';
           version?: number;
           kind?: ClaimLogEntry['kind'];
-
-
-
 
           produces?: DeclaredContract[];
           consumes?: string[];
           concept?: ConceptualCoordinate;
         }>(request, maxBodyBytes);
 
-
-
-
-
-
-
-
-
-
-
-
+        if (!body.workspace || !body.agent_id || !body.intent) {
+          writeJson(response, 400, { status: 'error', error: 'workspace, agent_id, and intent are required' });
+          return;
+        }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
 
         if (body.mode === 'advisory') {
           const workspace = body.workspace;
@@ -1233,9 +1048,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             agent_kind: body.agent_kind || 'other',
             scope: { repo: workspace, paths: claimPaths, symbols: body.symbols || [], capability: body.capability, concept: body.concept },
             intent: body.intent,
-
-
-
 
             status: body.status === 'released' ? 'released' : 'active',
             version: typeof body.version === 'number' ? body.version : undefined,
@@ -1307,13 +1119,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'agent_id is required to release a grant', claim_id: body.claim_id });
           return;
         }
-
-
-
+        if (!body.workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace is required to release a grant', claim_id: body.claim_id });
+          return;
+        }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
 
         if (!body.claim_id) {
-
-
 
           const outcome = await releaseAgentWithReason(body.workspace, body.agent_id);
           const released = outcome.released;
@@ -1334,10 +1146,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
-
-
-
-
 
         const advisoryReleased = await releaseClaimById(body.workspace, body.agent_id, body.claim_id);
         if (advisoryReleased) {
@@ -1362,9 +1170,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
 
-
-
-
         writeJson(response, 200, {
           status: 'not_found',
           claim_id: body.claim_id,
@@ -1380,6 +1185,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'POST' && route === '/v1/coordination/heartbeat') {
         const body = await readJsonBody<{ workspace: string; claim_id: string }>(request, maxBodyBytes);
+        if (!body.workspace || !body.claim_id) {
+          writeJson(response, 400, { status: 'error', error: 'workspace and claim_id are required' });
+          return;
+        }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
         const result = await heartbeatClaimStream(body.workspace, body.claim_id);
         if (!result.ok) {
           writeJson(response, 200, { status: 'not_found', claim_id: body.claim_id });
@@ -1393,18 +1203,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
       if (request.method === 'POST' && route === '/v1/coordination/check') {
         const body = await readJsonBody<{ workspace: string; agent_id?: string; paths?: string[] }>(request, maxBodyBytes);
         if (!body.workspace) {
           writeJson(response, 400, { status: 'error', error: 'workspace is required' });
           return;
         }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
         const conflicts = await checkEditLock(body.workspace, body.paths || [], body.agent_id);
         writeJson(response, 200, {
           workspace: body.workspace,
@@ -1430,6 +1235,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace and claim_id are required' });
           return;
         }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
         const outcome = await extendClaim(
           body.workspace,
           body.claim_id,
@@ -1463,16 +1269,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
       if (request.method === 'GET' && route === '/v1/coordination/active') {
         const workspace = requestUrl.searchParams.get('workspace') || '';
         if (!workspace) {
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
+        if (!(await requireCoordinationWorkspace(workspace))) return;
         const log = await readClaimLog(workspace);
         const active = await getActiveClaims(workspace);
         const inFlight = await readParticipantInFlightSnapshots(workspace);
@@ -1510,6 +1313,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
+        if (!(await requireCoordinationWorkspace(workspace))) return;
         writeJson(response, 200, await getMergelessMetrics(workspace));
         return;
       }
@@ -1522,10 +1326,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
-
-
-
-
+        if (!(await requireCoordinationWorkspace(workspace))) return;
 
         const log = await readClaimLog(workspace);
         const claims = await getActiveClaims(workspace);
@@ -1535,9 +1336,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const board = await getBoardInfo(workspace);
         const holderCtx = await describeGrantHolders(workspace, grants.active.map((g) => g.agent_id));
         const maxSeq = log.reduce((max, entry) => Math.max(max, entry.seq), 0);
-
-
-
 
         const gap = Number.isFinite(since) ? describeCursorGap(since as number, board) : undefined;
         writeJson(response, 200, {
@@ -1555,20 +1353,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
-
-
       if (request.method === 'GET' && route === '/v1/coordination/stream') {
         const workspace = requestUrl.searchParams.get('workspace') || '';
         if (!workspace) {
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
+        if (!(await requireCoordinationWorkspace(workspace))) return;
         response.writeHead(200, corsHeaders({
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache, no-transform',
@@ -1618,13 +1409,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
-
       if (request.method === 'POST' && route === '/v1/coordination/conceptual-conflicts') {
         const body = await readJsonBody<{
           workspace: string; agent_id: string; agent_kind?: AgentKind;
@@ -1634,6 +1418,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
           return;
         }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
         const requesterChanges: SymbolChange[] = Array.isArray(body.changes) ? body.changes : [];
         await reportConceptualChangesHttp(body.workspace, body.agent_id, body.agent_kind || 'other', body.intent || '', requesterChanges);
 
@@ -1641,9 +1426,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const cas = await conceptualConflictCasForWorkspaceHttp(body.workspace);
         const requesterState: AgentInFlightState = { agent_id: body.agent_id, intent: body.intent || '', changes: requesterChanges };
         const gitBasedConflicts = detectConceptualConflicts([requesterState, ...others], cas);
-
-
-
 
         let substrateConflicts: ConceptualConflict[] = [];
         let substrateInfo: { participants: number; unattributed: number } | undefined;
@@ -1680,12 +1462,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
       if (request.method === 'POST' && route === '/v1/coordination/plan-parallel-work') {
         const body = await readJsonBody<{
           tasks: PartitionTask[]; path?: string; include_blast_radius?: boolean;
@@ -1694,14 +1470,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'tasks (non-empty array) is required' });
           return;
         }
-
-
-
-
-
-
-
-
+        if (body.path && !(await requireCoordinationWorkspace(body.path))) return;
 
         const shapeErrors: string[] = [];
         (body.tasks as unknown[]).forEach((t, i) => {
@@ -1750,18 +1519,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
-
-
-
-
-
-
       if (request.method === 'POST' && route === '/v1/coordination/intent-merge') {
         const body = await readJsonBody<{
           workspace: string; agent_id: string; states?: AgentInFlightState[];
@@ -1770,6 +1527,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
           return;
         }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
         const explicitStates = Array.isArray(body.states) && body.states.length > 0;
         const cas = await conceptualConflictCasForWorkspaceHttp(body.workspace);
         const planStates: AgentInFlightState[] = explicitStates
@@ -1795,26 +1553,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       if (request.method === 'POST' && route === '/v1/coordination/in-flight') {
         const body = await readJsonBody<{
           workspace: string; agent_id: string; org_id?: string;
@@ -1826,24 +1564,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
           return;
         }
-
-
-
-
-
-
-
-
-        const requesterIdentity = { org_id: body.org_id, workspace_id: body.workspace };
-        try {
-          assertSameTenant({ org_id: body.org_id, workspace_id: body.workspace }, requesterIdentity);
-        } catch (err) {
-          if (err instanceof TenantMismatchError) {
-            writeJson(response, 403, { status: 'error', error: err.message });
-            return;
-          }
-          throw err;
-        }
+        if (!(await requireCoordinationWorkspace(body.workspace))) return;
 
         let redactedChanges: SymbolChange[] | undefined;
         let droppedChangeCount = 0;
@@ -1923,19 +1644,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
       if (request.method === 'GET' && route === '/v1/telemetry/observations') {
         const workspace = requestUrl.searchParams.get('workspace') || '';
         if (!workspace) {
@@ -1952,9 +1660,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         });
         let set = await loadObservations();
 
-
-
-
         try {
           const hasUnmatched = (set.observations || []).some(
             (observation: any) => observation?.correlation?.status === 'unmatched');
@@ -1969,10 +1674,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
         }
 
-
-
         const fused = await loadPersistedRuntimeFacts(dataDir, workspace).catch(() => null);
-
 
         const routeMetrics = summarizeRouteMetrics(set.observations || []);
         writeJson(response, 200, {
@@ -1986,9 +1688,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         });
         return;
       }
-
-
-
 
       if (request.method === 'GET' && route === '/v1/orient') {
         const workspace = requestUrl.searchParams.get('workspace') || '';
@@ -2087,10 +1786,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
 
-
-
-
-
         try {
           const hasUnmatched = (set.observations || []).some(
             (observation: any) => observation?.correlation?.status === 'unmatched');
@@ -2124,19 +1819,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
     }
   };
 
-
-
-
   return http.createServer(instrumentHttpHandler(requestHandler));
 }
-
-
-
-
-
-
-
-
 
 const CONCEPTUAL_CLAIM_TTL_MS_HTTP = 30 * 60 * 1000;
 
@@ -2221,8 +1905,6 @@ async function conceptualConflictCasForWorkspaceHttp(workspace: string): Promise
   }
 }
 
-
-
 async function partitionCasForPathHttp(path: string): Promise<PartitionCas> {
   try {
     const cas = await getAnalysis(path);
@@ -2242,20 +1924,6 @@ async function partitionCasForPathHttp(path: string): Promise<PartitionCas> {
     return { nodes: [], edges: [] };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 interface GrantHolderContext {
   agent_id: string;
@@ -2299,13 +1967,9 @@ async function describeGrantHolders(
   return out;
 }
 
-
 function accountSaltFor(clientId: string | undefined): string | undefined {
   return clientId && clientId.startsWith('user:') ? clientId : undefined;
 }
-
-
-
 
 function clientVisibleAnalysisId(requestedId: string, storageId: string, clientId: string | undefined): string {
   return clientId?.startsWith('user:') && storageId.startsWith('acct_')
@@ -2334,7 +1998,6 @@ async function resolveAuthorizedAnalysisReadId(
   return resolveStorageAnalysisId(requestedId, clientId);
 }
 
-
 export type AuthRejectReason = 'no_token' | 'not_recognized';
 
 export function authRejectMessage(reason: AuthRejectReason, surface: 'coordination' | 'api'): string {
@@ -2349,13 +2012,31 @@ async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.In
   const token = bearerToken(request);
   if (sharedToken && token && token === sharedToken) return { authorized: true, clientId: 'shared-token' };
 
-
   if (token) {
     const user = await accounts.authenticate(token);
     if (user) return { authorized: true, clientId: `user:${user.id}` };
   }
   if (!sharedToken) return { authorized: true, clientId: request.socket.remoteAddress || 'anonymous' };
   return { authorized: false, reason: token ? 'not_recognized' : 'no_token' };
+}
+
+async function canAccessCoordinationWorkspace(
+  accounts: AccountStore,
+  clientId: string,
+  workspace: string,
+): Promise<boolean> {
+  if (clientId === 'shared-token') return true;
+  if (!clientId.startsWith('user:')) return false;
+  const userId = clientId.slice('user:'.length);
+  if (workspace.startsWith('prj_')) {
+    try {
+      return Boolean(await accounts.getProjectForUser(userId, workspace));
+    } catch {
+      return false;
+    }
+  }
+  const workspaces = await accounts.listWorkspaces(userId);
+  return workspaces.some(candidate => candidate.id === workspace);
 }
 
 async function authorizeAccountApiRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; userId: string; sharedToken?: boolean; reason?: AuthRejectReason }> {
@@ -2368,46 +2049,8 @@ async function authorizeAccountApiRequest(accounts: AccountStore, request: http.
   return { authorized: false, userId: '', reason: token ? 'not_recognized' : 'no_token' };
 }
 
-
-
-
-
 const PROJECT_WRITE_DENIED_MESSAGE =
   'Project not found, or your account is not a member of its workspace. Verify the project_id and that you are signed in to the account that owns it.';
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async function authorizeProjectWrite(accounts: AccountStore, clientId: string | undefined, projectId: string | undefined): Promise<boolean> {
   if (!projectId || !/^prj_/.test(projectId)) return true;
@@ -2421,35 +2064,6 @@ async function authorizeProjectWrite(accounts: AccountStore, clientId: string | 
   }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 async function linkAnalysisToAccountProject(
   accounts: AccountStore,
   clientId: string | undefined,
@@ -2461,7 +2075,6 @@ async function linkAnalysisToAccountProject(
   if (!analysisId) return;
   if (!clientId || !clientId.startsWith('user:')) {
 
-
     console.error(`[Klauro] skip analysis attach: push was not from an authenticated user (clientId=${clientId ?? 'none'})`);
     return;
   }
@@ -2471,21 +2084,14 @@ async function linkAnalysisToAccountProject(
     try {
       await accounts.setProjectAnalysisId(userId, projectId, analysisId);
 
-
-
-
       await accounts.setProjectRepoFacts(projectId, repoFacts);
     } catch (error) {
-
 
       const detail = error instanceof AccountHttpError ? error.message : (error instanceof Error ? error.message : String(error));
       console.error(`[Klauro] skip analysis attach for project ${projectId} (user ${userId}): ${detail}`);
     }
     return;
   }
-
-
-
 
   if (!gitRemote) return;
   try {
@@ -2504,55 +2110,10 @@ async function linkAnalysisToAccountProject(
   }
 }
 
-
-
-
-
-
-
-
 const casReadResponseCache = new ResponseCache(8);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 const CONCEPTUAL_DEFAULT_MAX_FLOWS = 25;
 const CONCEPTUAL_MAX_FLOWS_CEILING = 100;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 const CONCEPTUAL_DESCRIPTION_EXCERPT_CHARS = 280;
 
@@ -2569,17 +2130,9 @@ function conceptualDescriptionFields(item: { description?: string; description_s
   };
 }
 
-
-
 export function getCasReadResponseCacheStats(): { hits: number; misses: number; size: number } {
   return casReadResponseCache.stats;
 }
-
-
-
-
-
-
 
 async function storedAnalysisVersion(workspace: string): Promise<string | null> {
   const analysisFingerprint = await getAnalysisFileFingerprint(workspace);
@@ -2589,7 +2142,6 @@ async function storedAnalysisVersion(workspace: string): Promise<string | null> 
     const stat = await fs.stat(descriptionStorePath(workspace));
     descriptions = `${stat.mtimeMs}:${stat.size}`;
   } catch {
-
 
   }
   return `${analysisFingerprint}|${descriptions}`;
@@ -2641,16 +2193,6 @@ async function handleAccountApi(
       },
     };
   }
-
-
-
-
-
-
-
-
-
-
 
   if (request.method === 'POST' && route === '/api/auth/change-password') {
     if (sharedToken) throw new AccountHttpError(400, 'Password change is not available for shared-token requests');
@@ -2710,11 +2252,6 @@ async function handleAccountApi(
     }
     if (request.method === 'POST') {
 
-
-
-
-
-
       const body = await readJsonBody<{
         name?: string;
         repo_url?: string;
@@ -2724,11 +2261,6 @@ async function handleAccountApi(
       }>(request, maxBodyBytes);
       if (body.project_id) {
         const result = await accounts.attachProjectToWorkspace(userId, workspaceId, body.project_id);
-
-
-
-
-
 
         if (!result.already_attached) {
           scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
@@ -2759,9 +2291,6 @@ async function handleAccountApi(
         storedBody as { name: string; repo_url?: string; local_path?: string; analysis_id?: string },
       );
 
-
-
-
       if (project.analysis_id) scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
       return {
         statusCode: 201,
@@ -2769,23 +2298,11 @@ async function handleAccountApi(
       };
     }
 
-
-
-
-
-
-
-
-
-
-
   }
 
   const workspaceAnalysisMatch = route.match(/^\/api\/workspaces\/([^/]+)\/analysis$/);
   if (workspaceAnalysisMatch && request.method === 'GET') {
     const workspaceId = decodeURIComponent(workspaceAnalysisMatch[1]);
-
-
 
     await accounts.listProjects(userId, workspaceId);
     if (!workspaceAnalyses) {
@@ -2793,8 +2310,6 @@ async function handleAccountApi(
     }
     const record = await workspaceAnalyses.load(workspaceId);
     const pending = workspaceAnalyses.isPending(workspaceId);
-
-
 
     const workspaceLastAttempt = dataDir
       ? await readAttemptRecord(workspaceAttemptRecordPath(dataDir, workspaceId))
@@ -2819,19 +2334,12 @@ async function handleAccountApi(
         member_project_ids: record.member_project_ids,
         member_project_names: record.member_project_names,
 
-
-
         enrichment: record.enrichment,
         analysis: record.graph,
         ...(workspaceLastAttempt ? { last_attempt: workspaceLastAttempt } : {}),
       },
     };
   }
-
-
-
-
-
 
   const workspaceActivityMatch = route.match(/^\/api\/workspaces\/([^/]+)\/activity$/);
   if (workspaceActivityMatch && request.method === 'GET') {
@@ -2849,19 +2357,9 @@ async function handleAccountApi(
     return { statusCode: 200, body: { workspace_id: workspaceId, events: events.slice(0, limit), next_cursor: null } };
   }
 
-
-
-
-
-
-
-
-
   const workspaceReanalyzeMatch = route.match(/^\/api\/workspaces\/([^/]+)\/reanalyze$/);
   if (workspaceReanalyzeMatch && request.method === 'POST') {
     const workspaceId = decodeURIComponent(workspaceReanalyzeMatch[1]);
-
-
 
     await accounts.listProjects(userId, workspaceId);
     scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
@@ -2870,11 +2368,6 @@ async function handleAccountApi(
       body: { status: 'accepted', workspace_id: workspaceId },
     };
   }
-
-
-
-
-
 
   if (request.method === 'GET' && route === '/api/projects/by-remote') {
     if (sharedToken) return { statusCode: 200, body: { match: null } };
@@ -2947,45 +2440,13 @@ async function handleAccountApi(
     }
     const analysisWorkspace = workspacePath(dataDir, project.analysis_id);
 
-
-
-
-
     await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
     const entry = await getAnalysisEntry(analysisWorkspace);
     const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     if (lastAttempt?.state === 'in-progress') {
       const structural = structuralReadinessDuringAttempt(entry, lastAttempt);
       if (structural) {
-
-
-
-
-
-
-
-
-
-
 
         return {
           statusCode: 200,
@@ -3022,7 +2483,6 @@ async function handleAccountApi(
     const layers = entry.layers_ready?.layers || [];
     const structuralErrors = layers.filter(layer => layer.layer !== 'L5' && layer.status === 'error');
     const pending = layers.some(layer => layer.status === 'pending');
-
 
     const l5Errored = layers.some(layer => layer.layer === 'L5' && layer.status === 'error');
     const status = structuralErrors.length > 0
@@ -3063,31 +2523,10 @@ async function handleAccountApi(
     }
     const analysisWorkspace = workspacePath(dataDir, project.analysis_id);
 
-
-
-
-
     await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
-
-
-
-
-
-
-
 
     const earlyLastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
     if (earlyLastAttempt?.state === 'in-progress') {
-
-
-
-
-
-
-
-
-
-
 
       const earlyEntry = await getAnalysisEntry(analysisWorkspace).catch(() => null);
       const structural = structuralReadinessDuringAttempt(earlyEntry, earlyLastAttempt);
@@ -3112,79 +2551,25 @@ async function handleAccountApi(
       const cas = await getAnalysis(analysisWorkspace);
       const summary = buildSummary(cas, { detail: 'compact' });
 
-
-
-
-
-
-
-
-
-
-
-
       const das = getCachedDeployableAnalyses(cas);
       (summary as Record<string, unknown>).sub_cas_nodes = das.sub_cas_nodes;
       const productMap = getProductMap(cas);
-
-
-
-
-
-
-
-
-
-
-
-
-
 
       const ladderLayers = cas.layers_ready?.layers || [];
       const hasPendingLayer = ladderLayers.some(layer => layer.status === 'pending');
       const erroredLayers = ladderLayers.filter(layer => layer.status === 'error');
 
-
-
-
-
-
-
-
       const structuralErrors = erroredLayers.filter(layer => layer.layer !== 'L5');
       const aiDegraded = cas.ai_enrichment === 'error'
         || (erroredLayers.some(layer => layer.layer === 'L5') && !hasPendingLayer);
-
-
-
-
-
-
 
       const naming = cas.enhanced_system_purpose?.capability_naming_coverage;
       const nameDegradations = cas.enhanced_system_purpose?.capability_name_degradations || [];
       const descriptionDegradations = cas.enhanced_system_purpose?.capability_description_degradations || [];
 
-
-
       const comprehensionAttempted = cas.ai_enrichment === 'ready'
         || cas.ai_enrichment === 'synchronous'
         || cas.ai_enrichment === 'error';
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
       const { comprehensionFailed, comprehensionPartial } = classifyComprehensionOutcome({
         aiDegraded,
@@ -3195,16 +2580,6 @@ async function handleAccountApi(
         descriptionDegradationCount: descriptionDegradations.length,
       });
       const comprehensionDegraded = comprehensionFailed || comprehensionPartial;
-
-
-
-
-
-
-
-
-
-
 
       const isEnriched = (source: string | undefined): boolean =>
         source === 'ai' || source === 'manual' || source === 'reused';
@@ -3227,13 +2602,6 @@ async function handleAccountApi(
           : comprehensionFailed
             ? 'degraded'
             : 'ready';
-
-
-
-
-
-
-
 
       const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
       return {
@@ -3262,27 +2630,11 @@ async function handleAccountApi(
             ? {
                 comprehension: {
 
-
-
-
-
-
-
-
-
-
-
-
                   degraded: comprehensionFailed,
                   partial: comprehensionPartial,
                   ...(naming ? { capability_naming_coverage: naming } : {}),
                   capability_name_degradations: nameDegradations.length,
                   capability_description_degradations: descriptionDegradations.length,
-
-
-
-
-
 
                   ...(unenrichedCapabilityDetails.length > 0
                     ? { unenriched_capabilities: unenrichedCapabilityDetails }
@@ -3348,14 +2700,6 @@ async function handleAccountApi(
     const workspace = workspacePath(dataDir, project.analysis_id);
     const sectionsSubCasNodeId = url.searchParams.get('sub_cas_node_id') || undefined;
 
-
-
-
-
-
-
-
-
     if (sectionsSubCasNodeId) {
       const version = await storedAnalysisVersion(workspace);
       const cacheKey = version === null ? null : responseCacheKey({
@@ -3381,7 +2725,6 @@ async function handleAccountApi(
       if (!fullEnough) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
       let scopedCas;
       try {
-
 
         scopedCas = scopeCasToSubCasNode(fullEnough as CASOutput, { sub_cas_node_id: sectionsSubCasNodeId });
       } catch (error) {
@@ -3443,19 +2786,6 @@ async function handleAccountApi(
     };
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
   const projectCasMatch = route.match(/^\/api\/projects\/([^/]+)\/cas$/);
   if (projectCasMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -3498,12 +2828,6 @@ async function handleAccountApi(
         };
       }
 
-
-
-
-
-
-
       let scopedCas;
       try {
         scopedCas = scopeCasToSubCasNode(cas, { sub_cas_node_id: subCasNodeId });
@@ -3536,12 +2860,6 @@ async function handleAccountApi(
       },
     };
   }
-
-
-
-
-
-
 
   const projectDasMatch = route.match(/^\/api\/projects\/([^/]+)\/das$/);
   if (projectDasMatch && request.method === 'GET') {
@@ -3591,10 +2909,6 @@ async function handleAccountApi(
     }
   }
 
-
-
-
-
   const projectCoverageMatch = route.match(/^\/api\/projects\/([^/]+)\/semantic-coverage$/);
   if (projectCoverageMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -3605,7 +2919,6 @@ async function handleAccountApi(
     }
     try {
       const workspace = workspacePath(dataDir, project.analysis_id);
-
 
       const version = await storedAnalysisVersion(workspace);
       const cacheKey = version === null ? null : responseCacheKey({
@@ -3643,15 +2956,6 @@ async function handleAccountApi(
     }
   }
 
-
-
-
-
-
-
-
-
-
   const projectEntitiesMatch = route.match(/^\/api\/projects\/([^/]+)\/entities$/);
   if (projectEntitiesMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -3668,10 +2972,6 @@ async function handleAccountApi(
       const limitParamRaw = url.searchParams.get('limit');
       const limitParam = limitParamRaw !== null ? Number(limitParamRaw) : undefined;
 
-
-
-
-
       const limit = limitParam !== undefined && Number.isFinite(limitParam) && limitParam > 0
         ? Math.min(Math.floor(limitParam), 100)
         : 25;
@@ -3680,8 +2980,6 @@ async function handleAccountApi(
       const offset = offsetParam !== undefined && Number.isFinite(offsetParam) && offsetParam >= 0
         ? Math.floor(offsetParam)
         : 0;
-
-
 
       const version = await storedAnalysisVersion(workspace);
       const cacheKey = version === null ? null : responseCacheKey({
@@ -3735,19 +3033,6 @@ async function handleAccountApi(
       const target = url.searchParams.get('target') || undefined;
       const include = url.searchParams.get('include') || undefined;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
       const maxFlowsParamRaw = url.searchParams.get('max_flows');
       const maxFlowsParam = maxFlowsParamRaw !== null ? Number(maxFlowsParamRaw) : undefined;
       const maxFlows = maxFlowsParam !== undefined && Number.isFinite(maxFlowsParam) && maxFlowsParam > 0
@@ -3759,21 +3044,12 @@ async function handleAccountApi(
         ? Math.floor(offsetParam)
         : 0;
 
-
-
-
-
-
       const version = await storedAnalysisVersion(workspace);
       const cacheKey = version === null ? null : responseCacheKey({
         endpoint: 'conceptual',
         projectId: project.id,
         analysisId: project.analysis_id,
         version,
-
-
-
-
 
         params: { target, include, maxFlows: String(maxFlows), offset: String(offset) },
       });
@@ -3784,23 +3060,6 @@ async function handleAccountApi(
         }
       }
       const cas = await getAnalysis(workspace);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
       const runtimeMetrics = await (async () => {
         try {
@@ -3817,10 +3076,6 @@ async function handleAccountApi(
         }
       })();
       const flowConcepts = getFlowConcepts(cas, { target, maxFlows, offset, surface: 'http', detail: include === 'full' ? 'full' : 'compact', runtimeMetrics });
-
-
-
-
 
       if (url.searchParams.get('include') !== 'full' && Array.isArray((flowConcepts as { flows?: unknown[] }).flows)) {
         const stripContract = (contract: Record<string, unknown> | undefined) => {
@@ -3844,12 +3099,6 @@ async function handleAccountApi(
       const paradigms = getParadigmConformance(cas);
       const perspectives = getPerspectives(cas);
 
-
-
-
-
-
-
       const flowEdgesByCapability = new Map<string, Array<{ flow_id: string; role: string; rationale: string }>>();
       for (const flow of (flowConcepts.flows || []) as Array<{
         flow_id: string;
@@ -3862,18 +3111,6 @@ async function handleAccountApi(
         }
       }
 
-
-
-
-
-
-
-
-
-
-
-
-
       const capabilities = (cas.capabilities || []).map(capability => ({
         id: capability.id,
         name: capability.name,
@@ -3885,20 +3122,6 @@ async function handleAccountApi(
           : (flowEdgesByCapability.get(capability.id) || []),
       }));
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       const behaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
         id: surface.id,
         name: surface.structural_label || surface.name,
@@ -3906,7 +3129,6 @@ async function handleAccountApi(
         category: surface.category,
         evidence_kind: surface.evidence_kind,
         entry_points: surface.operations?.length || 0,
-
 
         related_flows: (!target && surface.related_flows && surface.related_flows.length > 0)
           ? surface.related_flows
@@ -3947,12 +3169,6 @@ async function handleAccountApi(
     const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectReanalyzeMatch[1]));
     if (!project) throw new AccountHttpError(404, 'Project not found');
 
-
-
-
-
-
-
     if (!project.analysis_id) {
       return {
         statusCode: 409,
@@ -3981,16 +3197,11 @@ async function handleAccountApi(
     const dataDirForBackground = dataDir;
     const workspaceIdForBackground = project.workspace_id;
 
-
-
-
     let manifestForResponse: SourceManifest;
     let baseCommitForResponse: string | undefined;
     if (sourceRoot === workspace) {
       manifestForResponse = await buildWorkspaceManifest(workspace);
     } else {
-
-
 
       const snapshot = await buildSourceSnapshot(sourceRoot);
       await fs.remove(workspace);
@@ -4001,9 +3212,6 @@ async function handleAccountApi(
     }
 
     const attemptRecordPath = projectAttemptRecordPath(workspace);
-
-
-
 
     const attemptQueuedAt = new Date().toISOString();
     const attemptQueuePosition = inFlightReanalyzeCount;
@@ -4016,14 +3224,6 @@ async function handleAccountApi(
     });
     setImmediate(async () => {
       const attemptStartedAt = new Date().toISOString();
-
-
-
-
-
-
-
-
 
       const doomedReason = await checkDoomedVersionRebuild(workspace).catch(() => null);
       if (doomedReason) {
@@ -4060,33 +3260,7 @@ async function handleAccountApi(
       };
       await writeAttemptRecord(attemptRecordPath, { ...reanalyzeAttemptSnapshot, heartbeat_at: attemptStartedAt });
 
-
-
-
-
-
-
       const stopReanalyzeHeartbeat = startAttemptHeartbeat(attemptRecordPath, reanalyzeAttemptSnapshot);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
       const attemptSidecarName = path.basename(attemptRecordPath);
       const workspaceEntries = await fs.readdir(workspace).catch(() => [] as string[]);
@@ -4120,19 +3294,11 @@ async function handleAccountApi(
 
       try {
 
-
-
-
-
-
-
         const summary = await runLayeredAnalysis(workspace, {
           displayName,
           repoFacts: project.repo_facts,
           repoFactsUnavailable: !project.repo_facts,
           onPhase: (event) => {
-
-
 
             void writeAttemptRecord(attemptRecordPath, {
               state: event.status === 'succeeded' ? 'in-progress' : 'failed',
@@ -4184,17 +3350,7 @@ async function handleAccountApi(
         const detail = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] async reanalyze failed for ${analysisId}: ${detail}`);
 
-
-
-
-
-
-
         await markBackgroundAnalysisFailed(workspace, detail);
-
-
-
-
 
         const existingAttempt = await readAttemptRecord(attemptRecordPath);
         const attemptFinishedAt = new Date().toISOString();
@@ -4292,7 +3448,6 @@ export function requestConsumesMutationRateLimit(method: string | undefined): bo
   return normalized !== 'GET' && normalized !== 'HEAD' && normalized !== 'OPTIONS';
 }
 
-
 async function appendAuditLog(dataDir: string, event: Record<string, unknown>): Promise<void> {
   const auditDir = path.join(dataDir, 'audit');
   await fs.ensureDir(auditDir);
@@ -4305,11 +3460,6 @@ async function appendAuditLog(dataDir: string, event: Record<string, unknown>): 
 function anonymizeClient(clientId: string): string {
   return crypto.createHash('sha256').update(clientId).digest('hex').slice(0, 16);
 }
-
-
-
-
-
 
 async function runIncrementalAnalysisIsolated(
   workspace: string,
@@ -4325,7 +3475,6 @@ async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequ
   if (!diff?.files?.length) throw new Error('Remote analyze-diff requires a diff_context with changed source files');
   const rawAnalysisId = request.project_id || makeAnalysisId(request.project_path || diff.target_branch);
   const analysisId = resolveStorageAnalysisId(rawAnalysisId, accountSalt);
-
 
   const workspace = workspacePath(dataDir, `${analysisId}-branch-${diff.target_branch}`);
   const displayName = resolveDisplayName(undefined, request.project_path);
@@ -4343,7 +3492,6 @@ async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequ
     changeReport = result.changeReport;
     analysisType = result.wasFullRebuild ? 'full' : 'incremental';
   } catch (error) {
-
 
     const message = error instanceof Error ? error.message : String(error);
     if (!/comprehension/i.test(message)) throw error;
@@ -4392,7 +3540,6 @@ function committedSnapshotIdentity(manifest: SourceManifest, baseCommit?: string
   ].join(':');
 }
 
-
 export function currentAnalyzerIdentity(): AnalyzerIdentity {
   const fingerprints = getStageFingerprints();
   return {
@@ -4401,11 +3548,6 @@ export function currentAnalyzerIdentity(): AnalyzerIdentity {
     derived_fingerprint: fingerprints.derived_fingerprint,
   };
 }
-
-
-
-
-
 
 export async function analyzerIdentityReuseDecisionFor(workspace: string): Promise<AnalyzerIdentityDecision> {
   let stored: AnalyzerIdentity | null = null;
@@ -4509,27 +3651,7 @@ function clampActivityLimit(raw: string | null): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 200) : 50;
 }
 
-
-
-
-
-
-
-
 const ACTIVITY_DURATION_MATCH_WINDOW_MS = 5 * 60 * 1000;
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async function collectProjectActivityEvents(dataDir: string, project: AccountProject, workspaceId: string): Promise<AccountActivityEvent[]> {
   const events: AccountActivityEvent[] = [];
@@ -4579,24 +3701,12 @@ async function collectProjectActivityEvents(dataDir: string, project: AccountPro
     });
   } else if (lastAttempt?.state === 'succeeded' && lastAttempt.finished_at && lastAttempt.duration_ms !== undefined) {
 
-
-
     const finishedAtMs = Date.parse(lastAttempt.finished_at);
     const match = completedEvents.find(event => Math.abs(Date.parse(event.at) - finishedAtMs) < ACTIVITY_DURATION_MATCH_WINDOW_MS);
     if (match) match.duration_ms = lastAttempt.duration_ms;
   }
   return events;
 }
-
-
-
-
-
-
-
-
-
-
 
 async function collectWorkspaceActivityEvents(
   workspaceAnalyses: AccountWorkspaceAnalysisScheduler | undefined,
@@ -4651,11 +3761,6 @@ interface PreparedSync {
 async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<PreparedSync> {
   if (!request.analysis_id) throw new Error('Remote sync requires analysis_id');
 
-
-
-
-
-
   const analysisId = resolveStorageAnalysisId(request.analysis_id, accountSalt);
   const workspace = workspacePath(dataDir, analysisId);
   if (!(await fs.pathExists(workspace))) {
@@ -4709,58 +3814,16 @@ async function recordCompletedSync(
     edges: result.cas.edges.length,
   });
 
-
-
-
-
-
-
   if (request.project_id && /^prj_/.test(request.project_id) && (await authorizeProjectWrite(accounts, clientId, request.project_id))) {
     await accounts.setProjectRepoFacts(request.project_id, result.manifest.repo_facts).catch(() => {});
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 export async function stampRepoFacts(workspace: string, cas: CASOutput, manifest: SourceManifest | undefined): Promise<void> {
   if (!manifest?.repo_facts) return;
   cas.system.repo_facts = manifest.repo_facts;
   await saveAnalysis(workspace, cas);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 export async function stampRepoFactsFromLastKnownOrMarkAbsent(
   workspace: string,
@@ -4834,8 +3897,6 @@ function publicBaseUrl(request: http.IncomingMessage): string {
 
 function resolveInstallScriptPath(filename: string): string {
 
-
-
   const candidates = [
     path.resolve(__dirname, '..', 'scripts', filename),
     path.resolve(__dirname, 'scripts', filename),
@@ -4877,10 +3938,6 @@ async function serveTarball(response: http.ServerResponse, requested: string): P
     return;
   }
 
-
-
-
-
   const allowed = requested === 'klauro-latest.tgz'
     || /^klauro-[\w.\-]+\.tgz$/.test(requested)
     || /^klauro-(macos|linux|win)-(arm64|x64)(\.exe)?(\.sha256)?$/.test(requested);
@@ -4917,7 +3974,6 @@ async function serveTarball(response: http.ServerResponse, requested: string): P
     'content-length': String(stat.size),
     'content-disposition': `attachment; filename="${requested}"`,
 
-
     'cache-control': 'no-cache, must-revalidate',
   }));
   const stream = fs.createReadStream(resolvedFile);
@@ -4926,9 +3982,6 @@ async function serveTarball(response: http.ServerResponse, requested: string): P
   });
   stream.pipe(response);
 }
-
-
-
 
 async function serveLatestManifest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   const downloadsDir = process.env.KLAURO_DOWNLOADS_DIR || '/opt/klauro/downloads';
@@ -4942,14 +3995,6 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
   const base = publicBaseUrl(request);
   const { minNode, maxNode } = resolveHostedReleaseNodeRange(manifest);
 
-
-
-
-
-
-
-
-
   const binaries = (manifest.binaries as Record<string, { path: string; sha256: string }>) || {};
   const flatBinaryFields: Record<string, string> = {};
   for (const [key, value] of Object.entries(manifest)) {
@@ -4961,29 +4006,14 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
     tarball_path: '/dist/klauro-latest.tgz',
     min_node: minNode,
 
-
-
-
-
-
-
-
-
-
-
-
     max_node: maxNode,
     supported_node_range: maxNode === null ? `${minNode}+` : `${minNode}-${maxNode}`,
     published_at: (manifest.published_at as string) || null,
     binaries,
     ...flatBinaryFields,
 
-
-
     git_sha: (manifest.git_sha as string) || null,
     update_command: 'klauro update',
-
-
 
     update_command_min_version: (manifest.update_command_min_version as string) || '1.0.128',
     install_command: (manifest.install_command as string) || `curl -fsSL ${base}/install.sh | sh`,
@@ -4991,14 +4021,6 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
   response.writeHead(200, corsHeaders({ 'content-type': 'application/json', 'cache-control': 'no-cache' }));
   response.end(JSON.stringify(body));
 }
-
-
-
-
-
-
-
-
 
 export function resolveHostedReleaseNodeRange(manifest: Record<string, unknown>): { minNode: number; maxNode: number | null } {
   const manifestMin = Number(manifest.min_node);
@@ -5044,35 +4066,6 @@ function workspacePath(dataDir: string, analysisId: string): string {
   return path.join(dataDir, 'workspaces', safeName(analysisId));
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 async function buildQueryableSummary(
   analysisWorkspace: string,
   entry: { name: string; analyzed_at: string; node_count: number; edge_count: number; cas_version?: string; layers_ready?: unknown },
@@ -5093,14 +4086,6 @@ async function buildQueryableSummary(
   }
 }
 
-
-
-
-
-
-
-
-
 export function classifyComprehensionOutcome(input: {
   aiDegraded: boolean;
   comprehensionAttempted: boolean;
@@ -5110,12 +4095,6 @@ export function classifyComprehensionOutcome(input: {
   descriptionDegradationCount: number;
 }): { comprehensionFailed: boolean; comprehensionPartial: boolean } {
   const comprehensionFailed = input.aiDegraded;
-
-
-
-
-
-
 
   const comprehensionPartial = !input.aiDegraded && (
     input.descriptionDegradationCount > 0
@@ -5150,41 +4129,18 @@ function makeAnalysisId(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 type ReanalyzeAttemptState = 'in-progress' | 'succeeded' | 'failed';
 
 interface ReanalyzeAttemptRecord {
   state: ReanalyzeAttemptState;
 
-
-
   trigger: 'reanalyze' | 'sync' | 'analyze';
 
   analysis_revision?: number;
 
-
   queued_at?: string;
 
-
-
-
-
   queue_position?: number;
-
-
-
 
   started_at?: string;
   finished_at?: string;
@@ -5192,73 +4148,14 @@ interface ReanalyzeAttemptRecord {
   duration_ms?: number;
   reason?: string;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   heartbeat_at?: string;
-
-
-
-
-
-
-
-
-
-
 
   stored_version?: string;
   current_version?: string;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 const ATTEMPT_HEARTBEAT_INTERVAL_MS = 20_000;
 const ATTEMPT_STALE_THRESHOLD_MS = 90_000;
-
-
-
-
-
-
-
-
-
 
 function startAttemptHeartbeat(filePath: string, snapshot: ReanalyzeAttemptRecord): () => void {
   const timer = setInterval(() => {
@@ -5267,19 +4164,6 @@ function startAttemptHeartbeat(filePath: string, snapshot: ReanalyzeAttemptRecor
   if (typeof timer.unref === 'function') timer.unref();
   return () => clearInterval(timer);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async function reapAbandonedAttempt(workspace: string, attemptRecordPath: string): Promise<void> {
   try {
@@ -5296,8 +4180,6 @@ async function reapAbandonedAttempt(workspace: string, attemptRecordPath: string
     const finishedAt = new Date().toISOString();
     if (landed) {
 
-
-
       await writeAttemptRecord(attemptRecordPath, {
         ...record,
         state: 'succeeded',
@@ -5307,9 +4189,6 @@ async function reapAbandonedAttempt(workspace: string, attemptRecordPath: string
       return;
     }
     const detail = `Analysis attempt was interrupted by a server restart (no heartbeat since ${heartbeatIso}).`;
-
-
-
 
     await markBackgroundAnalysisFailed(workspace, detail);
     await writeAttemptRecord(attemptRecordPath, {
@@ -5323,18 +4202,6 @@ async function reapAbandonedAttempt(workspace: string, attemptRecordPath: string
 
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 async function reapStaleAttemptRecordsOnStartup(dataDir: string): Promise<void> {
   try {
@@ -5360,14 +4227,6 @@ async function reapStaleAttemptRecordsOnStartup(dataDir: string): Promise<void> 
   }
 }
 
-
-
-
-
-
-
-
-
 let inFlightReanalyzeCount = 0;
 
 async function writeAttemptRecord(filePath: string, record: ReanalyzeAttemptRecord): Promise<void> {
@@ -5387,31 +4246,13 @@ async function readAttemptRecord(filePath: string): Promise<ReanalyzeAttemptReco
   }
 }
 
-
-
-
 function projectAttemptRecordPath(workspace: string): string {
   return path.join(workspace, '.reanalyze-attempt.json');
 }
 
-
-
-
 function workspaceAttemptRecordPath(dataDir: string, workspaceId: string): string {
   return path.join(dataDir, 'workspace-attempts', `${safeName(workspaceId)}.json`);
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 function scheduleWorkspaceReanalyze(
   workspaceAnalyses: AccountWorkspaceAnalysisScheduler | undefined,
@@ -5422,10 +4263,6 @@ function scheduleWorkspaceReanalyze(
   if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
   const dataDirForBackground = dataDir;
   const workspaceAttemptPath = workspaceAttemptRecordPath(dataDirForBackground, workspaceId);
-
-
-
-
 
   const workspaceQueuedAt = new Date().toISOString();
   const workspaceQueuePosition = inFlightReanalyzeCount;
@@ -5480,25 +4317,12 @@ function scheduleWorkspaceReanalyze(
   });
 }
 
-
-
-
-
-
-
-
-
-
-
 function resolveStorageAnalysisId(rawId: string, accountSalt: string | undefined): string {
   if (/^prj_/.test(rawId) || /^acct_/.test(rawId)) return rawId;
   return accountSalt ? `acct_${makeAnalysisId(accountSalt + '::' + rawId)}` : rawId;
 }
 
 const DEFAULT_MAX_ANALYSES_PER_ACCOUNT = 50;
-
-
-
 
 function maxAnalysesPerAccount(): number {
   const raw = Number(process.env.KLAURO_MAX_ANALYSES_PER_ACCOUNT);
@@ -5507,33 +4331,9 @@ function maxAnalysesPerAccount(): number {
 
 function accountAnalysisQuotaPath(dataDir: string, userId: string): string {
 
-
   const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_');
   return path.join(dataDir, 'account-quota', `${safeUserId}.json`);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async function admitAccountAnalysisWorkspace(
   dataDir: string,
@@ -5562,16 +4362,6 @@ async function admitAccountAnalysisWorkspace(
   return { admitted: true, count: known.length, limit };
 }
 
-
-
-
-
-
-
-
-
-
-
 async function markBackgroundAnalysisFailed(workspacePath: string, detail: string): Promise<void> {
   try {
     const cas = await loadAnalysis(workspacePath, { preferCache: false }).catch(() => null);
@@ -5596,19 +4386,6 @@ async function markBackgroundAnalysisFailed(workspacePath: string, detail: strin
 
 function resolveDisplayName(projectName?: string, projectPath?: string): string | undefined {
 
-
-
-
-
-
-
-
-
-
-
-
-
-
   const name = (projectName || '').trim();
   if (name) return name;
   const pp = (projectPath || '').trim();
@@ -5618,11 +4395,6 @@ function resolveDisplayName(projectName?: string, projectPath?: string): string 
 function safeName(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 120);
 }
-
-
-
-
-
 
 async function buildWorkspaceManifest(workspace: string): Promise<SourceManifest> {
   let fileCount = 0;
