@@ -34,8 +34,14 @@ describe('capability catalog audience evaluation', () => {
     ], [], [], ['industry reports', 'products', 'user account']);
 
     expect(evaluation.accepted.map(item => item.name)).toEqual(['View industry reports']);
+    expect(evaluation.descriptionRepairCandidates.map(item => item.name)).toEqual([
+      'Browse products',
+      'Access user account',
+    ]);
+    expect(evaluation.descriptionRepairCandidates.every(item =>
+      item.description === '' && item.description_generation?.status === 'ai_rejected')).toBe(true);
     expect(evaluation.rejections).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'Browse products', reasons: ['marketing-language'] }),
+      expect.objectContaining({ name: 'Browse products', reasons: expect.arrayContaining(['marketing-language']) }),
       expect.objectContaining({ name: 'Access user account', reasons: ['missing'] }),
     ]));
   });
@@ -52,6 +58,7 @@ describe('capability catalog audience evaluation', () => {
     expect(feedback).toContain('Browse products');
     expect(feedback).toContain('marketing-language');
     expect(feedback).toContain('concrete user outcome');
+    expect(feedback).toContain('Remove every flagged token');
     expect(feedback).toContain('only cited evidence');
   });
 

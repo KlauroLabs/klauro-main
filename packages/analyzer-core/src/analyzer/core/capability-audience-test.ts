@@ -288,6 +288,7 @@ export function testCapabilityDescriptionAgainstAudience(
     return { failsAudienceTest: true, reasons: ['missing'], flaggedTokens: [] };
   }
   const reasons: string[] = [];
+  const flaggedTokens: string[] = [];
   if (SOURCE_FILE_PATH_PATTERN.test(trimmed)) reasons.push('source-file-path');
   if (IMPLEMENTATION_PROSE_PATTERN.test(trimmed)) reasons.push('implementation-language');
   if (descriptionRestatesName(name, trimmed)) reasons.push('restates-name');
@@ -295,6 +296,7 @@ export function testCapabilityDescriptionAgainstAudience(
   const normalizedProductText = productTerms.join(' ').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
   if (marketingMatch && !normalizedProductText.includes(marketingMatch.toLowerCase().replace(/[^a-z0-9]+/g, ' '))) {
     reasons.push('marketing-language');
+    flaggedTokens.push(marketingMatch);
   }
 
   const identifierVocab = buildIdentifierVocabulary(libraries);
@@ -311,7 +313,6 @@ export function testCapabilityDescriptionAgainstAudience(
       .map(entity => normalizeToken(String(entity.name || '').replace(/[^A-Za-z0-9]/g, '')))
       .filter(token => token.length >= 5),
   );
-  const flaggedTokens: string[] = [];
   for (const token of descriptionCandidateTokens(trimmed)) {
     const normalized = normalizeToken(token);
     const appearsAsIdentifier = tokenAppearsAsIdentifier(normalized, identifierVocab);

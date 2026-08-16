@@ -6249,13 +6249,23 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(out.map((capability: any) => capability.name)).toEqual(['Execute arbitrage trades']);
   });
 
-  it('never restores a catalog when every capability fails the purpose or audience gates', () => {
+  it('retains an anchored capability for focused repair when only its description fails the audience gate', () => {
     const cataloged = [
       cap({ name: 'Monitor and manage shell scripts' }),
       cap({ name: 'Manage intent solvers', description: 'Executes the main CLI entry point for intent solver commands.' }),
     ];
 
-    expect(orch.reconcileCatalogedCapabilities(cataloged, [], [])).toEqual([]);
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], []);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      name: 'Manage intent solvers',
+      description: '',
+      description_generation: {
+        status: 'ai_rejected',
+        reason: 'catalog-audience:implementation-language',
+      },
+    });
   });
 
   // DESCRIPTION-VS-CAPABILITY CROSS-CHECK (measured live: a C# repo whose

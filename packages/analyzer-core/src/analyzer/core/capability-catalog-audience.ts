@@ -26,6 +26,7 @@ export interface CapabilityAudienceRejection {
 
 export interface CapabilityAudienceEvaluation {
   accepted: SystemCapability[];
+  descriptionRepairCandidates: SystemCapability[];
   rejections: CapabilityAudienceRejection[];
 }
 
@@ -54,6 +55,7 @@ export function evaluateCapabilityCatalogAudience(
 ): CapabilityAudienceEvaluation {
   const libraries = libraryNames.map(name => ({ name }));
   const accepted: SystemCapability[] = [];
+  const descriptionRepairCandidates: SystemCapability[] = [];
   const rejections: CapabilityAudienceRejection[] = [];
 
   for (const capability of capabilities) {
@@ -92,6 +94,7 @@ export function evaluateCapabilityCatalogAudience(
       [...capabilityProductTerms, capability.name],
     );
     if (descriptionVerdict.failsAudienceTest) {
+      const reason = `catalog-audience:${descriptionVerdict.reasons.join(',')}`;
       rejections.push({
         name: capability.name,
         description: capability.description,
@@ -99,13 +102,28 @@ export function evaluateCapabilityCatalogAudience(
         reasons: descriptionVerdict.reasons,
         flaggedTokens: descriptionVerdict.flaggedTokens,
       });
+      descriptionRepairCandidates.push({
+        ...capability,
+        description: '',
+        description_source: undefined,
+        description_generation: {
+          status: 'ai_rejected',
+          attempted: true,
+          reason,
+          generated_at: new Date().toISOString(),
+        },
+        criticality_factors: Array.from(new Set([
+          ...(capability.criticality_factors || []),
+          'catalog-description-rejected',
+        ])),
+      });
       continue;
     }
 
     accepted.push(capability);
   }
 
-  return { accepted, rejections };
+  return { accepted, descriptionRepairCandidates, rejections };
 }
 
 export function capabilityAudienceRepairFeedback(rejections: CapabilityAudienceRejection[]): string | undefined {
@@ -117,5 +135,5 @@ export function capabilityAudienceRepairFeedback(rejections: CapabilityAudienceR
     reasons: rejection.reasons,
     flagged_tokens: rejection.flaggedTokens.slice(0, 8),
   }));
-  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary, replace code-shaped terms with exact product nouns present in the evidence. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
+  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary, replace code-shaped terms with exact product nouns present in the evidence. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
 }

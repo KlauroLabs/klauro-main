@@ -9888,7 +9888,10 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    const deduped = this.dedupeSystemCapabilitiesByName(audienceEvaluation.accepted);
+    const deduped = this.dedupeSystemCapabilitiesByName([
+      ...audienceEvaluation.accepted,
+      ...audienceEvaluation.descriptionRepairCandidates,
+    ]);
 
     return this.reinjectDescriptionAnchoredCapabilities(deduped, candidates, dataEntities, purpose);
   }
@@ -10233,6 +10236,7 @@ export class AnalyzerOrchestrator {
       return `unauthored capability names survived reconciliation: ${unauthored.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
     }
     const weakDescriptions = reconciled.filter(capability => {
+      if (capability.description_generation?.status === 'ai_rejected') return false;
       const wordCount = String(capability.description || '').trim().split(/\s+/).filter(Boolean).length;
       return wordCount < 6 || wordCount > 32;
     });

@@ -169,6 +169,24 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     expect(orch.catalogQualityFailure(six, 20)).toBeUndefined();
   });
 
+  it('accepts grounded capability identities whose descriptions are queued for focused AI repair', () => {
+    const repairing = ['View industry reports', 'Browse products', 'Access user account']
+      .map(name => cap({
+        id: name,
+        name,
+        description: '',
+        operations: anchorOp(name),
+        description_source: undefined,
+        description_generation: {
+          status: 'ai_rejected',
+          attempted: true,
+          reason: 'catalog-audience:marketing-language',
+        },
+      }));
+
+    expect(orch.catalogQualityFailure(repairing, 6)).toBeUndefined();
+  });
+
   it('requires every selected behavior family to be cited even when the capability count passes', () => {
     const capabilities = [
       purposeful('Analyze codebases'),
@@ -329,6 +347,28 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('marketing-language');
     expect(calls[1].qualityNudge).toContain('Browse products');
     expect(calls[1].qualityNudge).toContain('missing');
+  });
+
+  it('publishes grounded capability identities for focused description repair without repeating the catalog call', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const extracted = [
+      cap({ id: 'reports', name: 'View industry reports', description: 'Provides seamless insights into industry reports.', operations: anchorOp('reports') }),
+      cap({ id: 'products', name: 'Browse products', description: '', operations: anchorOp('products') }),
+      cap({ id: 'account', name: 'Access user account', description: 'Executes the main CLI entry point for account commands.', operations: anchorOp('account') }),
+      cap({ id: 'company', name: 'View company information', description: 'View company information.', operations: anchorOp('company') }),
+    ];
+    let calls = 0;
+    localOrch.aiExtractCapabilityCatalog = async () => {
+      calls++;
+      return extracted;
+    };
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
+
+    expect(calls).toBe(1);
+    expect(out).toHaveLength(4);
+    expect(out.every((capability: SystemCapability) =>
+      capability.description === '' && capability.description_generation?.status === 'ai_rejected')).toBe(true);
   });
 
   it('rejects a catalog that remains below the quality bar after 3 cycles', async () => {

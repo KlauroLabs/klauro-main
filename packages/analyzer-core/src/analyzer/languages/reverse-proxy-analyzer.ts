@@ -308,6 +308,7 @@ export class NginxAnalyzer extends ReverseProxyAnalyzer {
       '**/sites-available/*',
       '**/sites-enabled/*',
       '**/conf.d/*.conf',
+      '**/nginx/**/*.conf.template',
     ]);
   }
 
@@ -568,10 +569,10 @@ function parseNginx(content: string): ProxyConfig {
   const routes: ProxyRoute[] = [];
   const upstreams: ProxyUpstream[] = [];
 
-  interface ServerScope { hosts: string[]; ports: string[]; }
+  interface ServerScope { hosts: string[]; ports: string[]; startLine: number; routeCount: number; }
   const serverStack: ServerScope[] = [];
   let currentUpstream: ProxyUpstream | null = null;
-  const locationStack: Array<{ path?: string; startLine: number }> = [];
+  const locationStack: Array<{ path?: string; startLine: number; routeCount: number }> = [];
   const blockKindStack: Array<'server' | 'location' | 'upstream' | 'other'> = [];
 
   lines.forEach((raw, index) => {
@@ -587,13 +588,13 @@ function parseNginx(content: string): ProxyConfig {
       return;
     }
     if (/^server\s*\{/.test(line)) {
-      serverStack.push({ hosts: [], ports: [] });
+      serverStack.push({ hosts: [], ports: [], startLine: lineNo, routeCount: 0 });
       blockKindStack.push('server');
       return;
     }
     const locationOpen = line.match(/^location\s+(.+?)\s*\{/);
     if (locationOpen) {
-      locationStack.push({ path: normalizeNginxLocation(locationOpen[1]), startLine: lineNo });
+      locationStack.push({ path: normalizeNginxLocation(locationOpen[1]), startLine: lineNo, routeCount: 0 });
       blockKindStack.push('location');
       return;
     }
@@ -607,9 +608,29 @@ function parseNginx(content: string): ProxyConfig {
         upstreams.push(currentUpstream);
         currentUpstream = null;
       } else if (kind === 'location') {
-        locationStack.pop();
+        const closedLocation = locationStack.pop();
+        const server = serverStack[serverStack.length - 1];
+        if (closedLocation && closedLocation.routeCount === 0) {
+          routes.push({
+            host: server?.hosts[0],
+            matchPath: closedLocation.path,
+            listenPorts: server ? dedupe(server.ports) : [],
+            directive: 'serve_static',
+            line: closedLocation.startLine,
+          });
+          if (server) server.routeCount++;
+        }
       } else if (kind === 'server') {
-        serverStack.pop();
+        const closedServer = serverStack.pop();
+        if (closedServer && closedServer.routeCount === 0) {
+          routes.push({
+            host: closedServer.hosts[0],
+            matchPath: '/',
+            listenPorts: dedupe(closedServer.ports),
+            directive: 'serve_static',
+            line: closedServer.startLine,
+          });
+        }
       }
       return;
     }
@@ -649,6 +670,8 @@ function parseNginx(content: string): ProxyConfig {
         directive: 'proxy_pass',
         line: lineNo,
       });
+      if (scope) scope.routeCount++;
+      if (location) location.routeCount++;
       return;
     }
   });

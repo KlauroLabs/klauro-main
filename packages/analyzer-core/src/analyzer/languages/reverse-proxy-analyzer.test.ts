@@ -131,6 +131,33 @@ test('NginxAnalyzer resolves proxy_pass to declared upstream pools', async () =>
   }
 });
 
+test('NginxAnalyzer represents static server blocks without upstream proxies', async () => {
+  const dir = tempDir('nginx-static-test');
+  try {
+    fs.writeFileSync(path.join(dir, 'nginx.conf'), [
+      'server {',
+      '    listen 8080;',
+      '    server_name static.example.local;',
+      '    root /usr/share/nginx/html;',
+      '    location / {',
+      '        try_files $uri $uri/ /index.html;',
+      '    }',
+      '}',
+    ].join('\n'));
+
+    const result = await new NginxAnalyzer().analyze({ projectPath: dir } as any);
+    const route = result.nodes.find(node => node.type === 'proxy_route');
+
+    assert.ok(route);
+    assert.equal(route.metadata?.directive, 'serve_static');
+    assert.equal(route.metadata?.public_host, 'static.example.local');
+    assert.deepEqual(route.metadata?.listen_ports, ['8080']);
+    assert.equal(result.exit_points?.length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('ApacheAnalyzer extracts ProxyPass from VirtualHost blocks', async () => {
   const dir = tempDir('apache-test');
   try {
