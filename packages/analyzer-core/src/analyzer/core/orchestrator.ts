@@ -150,6 +150,7 @@ import {
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
+import { scheduleCapabilityCatalog } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10727,7 +10728,6 @@ export class AnalyzerOrchestrator {
       entity.id,
       (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`),
     ]));
-    let capabilityTargets: DescriptionTarget[] = [];
 
     const semanticEvidenceDigest = {
       systemName,
@@ -10764,6 +10764,25 @@ export class AnalyzerOrchestrator {
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
         : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and either another evidenced product behavior or a distinctive evidenced operating/deployment property. Use concrete product nouns. Do not use generic servers, databases, backends, frontends, or storage mechanics as filler. Do not mention frameworks, libraries, tools, packages, programming languages, data formats, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns selected only from domainVocabulary when that list is present.${readOnlyNarrativeRule}`;
+    const catalogAppliedPromise = scheduleCapabilityCatalog({
+      outcome: capabilityCatalogOutcome,
+      capabilities: systemCapabilities,
+      elementsEnabled,
+      elementLimit,
+      reauthorDescriptions: shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel()),
+      toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById),
+      authorDescriptions: capabilities => this.applyAIElementDescriptions(capabilities, [], {
+        systemName,
+        enhancedSystemPurpose,
+        projectTextSignal,
+        frameworks,
+        includeEntities: false,
+        nodes,
+        edges,
+        allCapabilitiesForEvidence: capabilities,
+        userJourneys,
+      }),
+    });
     try {
       timeoutHandle = setTimeout(() => {
         console.warn(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
@@ -10802,30 +10821,11 @@ export class AnalyzerOrchestrator {
         : `Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
-
-    const catalogOutcome = await capabilityCatalogOutcome;
-    if (catalogOutcome.status === 'rejected') throw catalogOutcome.reason;
-    const reconciled = catalogOutcome.value;
-    systemCapabilities.splice(
-      0,
-      systemCapabilities.length,
-      ...(reconciled.length > 0
-        ? reconciled
-        : systemCapabilities.filter(capability =>
-          capability.name_source === 'ai' ||
-          capability.name_source === 'manual' ||
-          capability.name_source === 'reused')),
-    );
-    const authoredCapabilityFacts = systemCapabilities.map(capability => ({
-      name: capability.name,
-      description: capability.description,
-      category: capability.category,
-    }));
-    systemNarrativeFacts.capabilities = authoredCapabilityFacts;
-    narrativeRepairFacts.capabilities = authoredCapabilityFacts;
-    capabilityTargets = elementsEnabled
-      ? systemCapabilities.slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById))
-      : [];
+    const catalogApplication = await catalogAppliedPromise;
+    systemCapabilities.splice(0, systemCapabilities.length, ...catalogApplication.capabilities);
+    const capabilityTargets = catalogApplication.targets;
+    systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
+    narrativeRepairFacts.capabilities = catalogApplication.authoredFacts;
     semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
     semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
 
@@ -10900,7 +10900,7 @@ export class AnalyzerOrchestrator {
     }
     const acceptedElements = new Map<string, string>();
     const rejectedElements = new Map<string, string>();
-    const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
+    await catalogApplication.descriptionPromise;
     for (const target of capabilityTargets) {
       const existingCatalogDescription = systemCapabilities.find(capability => capability.id === target.id)?.description || '';
       const existingCatalogValidation = this.validateElementDescription(existingCatalogDescription, target);
@@ -10911,7 +10911,7 @@ export class AnalyzerOrchestrator {
           reason: existingCatalogValidation.reason,
         });
       }
-      const originalCandidate = existingCatalogValidation.ok && !reauthorCatalogDescriptions
+      const originalCandidate = existingCatalogValidation.ok
         ? existingCatalogDescription
         : combined.elements.get(target.id) || '';
       const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);

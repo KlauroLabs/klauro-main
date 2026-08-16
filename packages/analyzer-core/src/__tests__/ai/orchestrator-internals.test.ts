@@ -9077,6 +9077,89 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('starts capability prose as soon as catalog curation completes', async () => {
+    const envKeys = [
+      'OPENAI_API_KEY',
+      'KLAURO_AI_INTERPRETATION',
+      'KLAURO_AI_INTERPRETATION_FORCE',
+      'KLAURO_AI_ELEMENT_DESCRIPTIONS',
+      'KLAURO_CAPABILITY_CATALOG_MODEL',
+      'KLAURO_CAPABILITY_DESCRIPTION_MODEL',
+      'KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS',
+    ];
+    const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'true';
+    process.env.KLAURO_CAPABILITY_CATALOG_MODEL = 'catalog-model';
+    process.env.KLAURO_CAPABILITY_DESCRIPTION_MODEL = 'prose-model';
+    process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'true';
+
+    let releaseDescriptionStarted!: () => void;
+    const descriptionStarted = new Promise<void>(resolve => { releaseDescriptionStarted = resolve; });
+    let narrativeWaitingForDescription = false;
+    let capabilityProseStarted = false;
+    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockResolvedValue([{
+      id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
+      description: 'Builds relationship graphs that explain code behavior to engineering agents.',
+      description_source: 'ai', category: 'core', operations: [], related_entities: [],
+      related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
+    }]);
+    const generationSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (args: any) => {
+      const task = String(args.additionalContext?.task || '');
+      if (task.includes('{"descriptions"')) {
+        capabilityProseStarted = true;
+        releaseDescriptionStarted();
+        return JSON.stringify({
+          descriptions: [{
+            id: 'cap_analyze',
+            description: 'Analyze codebases turns repository structure into a CAS relationship graph so agents can inspect behavior, tests, risks, and dependencies before editing.',
+          }],
+        });
+      }
+      narrativeWaitingForDescription = true;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('capability prose did not start concurrently')), 1000);
+        void descriptionStarted.then(() => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+      return JSON.stringify({
+        system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It gives engineering agents product capabilities, flows, and change boundaries before they edit. Source analysis connects code facts into navigable context and returns grounded codebase intelligence. The resulting analysis is available through MCP for development work.',
+        domain: 'codebase-intelligence',
+      });
+    });
+
+    try {
+      const purpose: any = {
+        primary_type: 'developer-tool', confidence: 0.9, evidence: [],
+        primary_domain: 'codebase-intelligence', core_concepts: ['codebase', 'analysis'],
+        inferred_description: 'A codebase intelligence service.', supporting_workflow_ids: [],
+      };
+      const capabilities: any[] = [{
+        id: 'candidate_analyze', name: 'Analyze codebases', description: 'Analyze repositories.',
+        category: 'core', operations: [], related_entities: [], related_domains: ['code-analysis'],
+        criticality: 'high', criticality_factors: [],
+      }];
+      await orch.applyAIInterpretation(
+        purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [], capabilities,
+        [], [], [], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
+        [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
+      );
+      expect(narrativeWaitingForDescription).toBe(true);
+      expect(capabilityProseStarted).toBe(true);
+    } finally {
+      catalogSpy.mockRestore();
+      generationSpy.mockRestore();
+      for (const key of envKeys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+
   it('bare-noun capability names: repairs a grounded single-noun label, drops an ungrounded noun phrase, and keeps verb-headed labels untouched', async () => {
     // Reproduces the live defect measured on a real analyzed Swift macOS repo
     // (v1.0.116): 24 of the capabilities entries were single/two-word
