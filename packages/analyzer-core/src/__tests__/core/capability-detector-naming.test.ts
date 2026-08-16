@@ -97,6 +97,10 @@ describe('CapabilityDetector producer naming (evidence-grounded, no bare-noun gr
     expect(isBareNounCapabilityLabel(caps[0].name)).toBe(false);
   });
 
+  it('recognizes browse as a product-purpose verb', () => {
+    expect(isBareNounCapabilityLabel('Browse products')).toBe(false);
+  });
+
   it('never emits the "<pattern> operation via <type>" single-op template', () => {
     const caps = detect([
       entryPoint({

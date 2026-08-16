@@ -9421,7 +9421,7 @@ export class AnalyzerOrchestrator {
       'enterprise',
     ]);
     const capabilityActionTokens = new Set([
-      'access', 'add', 'analyze', 'authorize', 'build', 'calculate', 'collect',
+      'access', 'add', 'analyze', 'authorize', 'browse', 'build', 'calculate', 'collect',
       'create', 'delete', 'deploy', 'display', 'execute', 'generate', 'get',
       'list', 'manage', 'monitor', 'navigate', 'process', 'provide', 'read',
       'remove', 'retrieve', 'run', 'show', 'store', 'sync', 'track', 'update', 'offer',
@@ -9607,7 +9607,7 @@ export class AnalyzerOrchestrator {
         tokenMatches(token, citedEvidenceTokens)
       );
       const itemEntityEvidenceVocabulary = new Set(itemEntityEvidenceTokens);
-      const allPurposeNounsGrounded = purposeNouns.every(token =>
+      const hasGroundedPurposeNoun = purposeNouns.some(token =>
         tokenMatches(token, citedEvidenceTokens) ||
         tokenMatches(token, firstPartyEvidenceVocabulary) ||
         tokenMatches(token, itemEntityEvidenceVocabulary)
@@ -9635,12 +9635,8 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'purpose-noun-missing-cited-evidence');
         continue;
       }
-      if (candidateIds.length > 0 && purposeNouns.length > 0 && !allPurposeNounsGrounded) {
-        debugCatalogRejection(name, `ungrounded-purpose-nouns:${purposeNouns.filter(token =>
-          !tokenMatches(token, citedEvidenceTokens) &&
-          !tokenMatches(token, firstPartyEvidenceVocabulary) &&
-          !tokenMatches(token, itemEntityEvidenceVocabulary)
-        ).join(',')}`);
+      if (candidateIds.length > 0 && purposeNouns.length > 0 && !hasGroundedPurposeNoun) {
+        debugCatalogRejection(name, 'purpose-nouns-not-grounded');
         continue;
       }
       if (seen.has(key)) {
