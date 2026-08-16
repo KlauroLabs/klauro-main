@@ -9833,7 +9833,6 @@ export class AnalyzerOrchestrator {
     input.onResponse?.(raw);
     return out.slice(0, Math.max(16, catalogCountMax));
   }
-
   private reconcileCatalogedCapabilities(
     cataloged: SystemCapability[],
     candidates: SystemCapability[],
@@ -9843,6 +9842,7 @@ export class AnalyzerOrchestrator {
     purpose?: EnhancedSystemPurpose,
     libraryNames: string[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
+    externalServices: string[] = [],
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
 
@@ -9875,7 +9875,7 @@ export class AnalyzerOrchestrator {
       gated,
       dataEntities,
       libraryNames,
-      capabilityCatalogProductTerms(purpose, projectTextSignal),
+      [...capabilityCatalogProductTerms(purpose, projectTextSignal), ...externalServices],
     );
     for (const rejection of audienceEvaluation.rejections) {
       if (rejection.target === 'name') {
@@ -10413,11 +10413,11 @@ export class AnalyzerOrchestrator {
           extracted,
           args.dataEntities,
           args.libraryNames || [],
-          capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal),
+          [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices],
         ).rejections,
       );
       const reconciledCandidates = extracted.length > 0
-        ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal)
+        ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices)
         : [];
       const publishabilityFailures = new Map<string, number>();
       const cycleReconciled = reconciledCandidates.filter(capability => {

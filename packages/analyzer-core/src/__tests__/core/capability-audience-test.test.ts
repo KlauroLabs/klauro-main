@@ -148,6 +148,30 @@ describe('capability description audience test', () => {
     expect(result.failsAudienceTest).toBe(false);
   });
 
+  it('does not reject ordinary lowercase product nouns that share a structural type name', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Create payment invoices',
+      'Creates invoices for each customer after payment terms are confirmed.',
+      [],
+      [{ name: 'Customer', kind: 'domain-shape' }],
+      ['payments', 'invoices'],
+    );
+
+    expect(result.failsAudienceTest).toBe(false);
+  });
+
+  it('trusts an evidenced integration name as product vocabulary', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Send scheduled invoices',
+      'Sends confirmed invoices to NetSuite on the configured billing schedule.',
+      [{ name: 'netsuite-sdk' }],
+      [],
+      ['invoices', 'billing schedule', 'NetSuite'],
+    );
+
+    expect(result.failsAudienceTest).toBe(false);
+  });
+
   it('rejects implementation-led descriptions even when their nouns appear in structural evidence', () => {
     const result = testCapabilityDescriptionAgainstAudience(
       'Manage intent solvers',

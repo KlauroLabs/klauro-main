@@ -343,7 +343,7 @@ export function testCapabilityDescriptionAgainstAudience(
       (tokenUsesIdentifierCasing(token) || tokenAppearsInImplementationContext(token, trimmed));
     const appearsAsDomainEntity = domainVocab.has(normalized);
     const structuralEntityWords = structuralEntityWordsByName.get(normalized);
-    const namesStructuralType = Boolean(structuralEntityWords);
+    const namesStructuralType = Boolean(structuralEntityWords) && tokenUsesIdentifierCasing(token);
     const namesGroundedStructuralType = structuralEntityWords?.some(word =>
       productVocab.has(word) || domainVocab.has(word) || trustedNameSubjects.has(word)
     );
