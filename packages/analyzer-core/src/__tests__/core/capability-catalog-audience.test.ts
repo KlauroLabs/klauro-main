@@ -26,6 +26,15 @@ function capability(name: string, description = ''): SystemCapability {
   };
 }
 
+function dataEntity(id: string, name: string, kind: CASDataEntity['kind']): CASDataEntity {
+  return {
+    id,
+    name,
+    kind,
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+  };
+}
+
 describe('capability catalog audience evaluation', () => {
   it('returns accepted capabilities and structured rejection evidence', () => {
     const evaluation = evaluateCapabilityCatalogAudience([
@@ -83,9 +92,27 @@ describe('capability catalog audience evaluation', () => {
     subject.related_entities = ['entity_company'];
     const evaluation = evaluateCapabilityCatalogAudience(
       [subject],
-      [{ id: 'entity_company', name: 'Company', kind: 'domain-shape' } satisfies CASDataEntity],
+      [dataEntity('entity_company', 'Company', 'domain-shape')],
       ['company-client'],
       ['accounts', 'billing location', 'delivery terms'],
+    );
+
+    expect(evaluation.accepted).toHaveLength(1);
+    expect(evaluation.rejections).toHaveLength(0);
+  });
+
+  it('trusts compound spellings of linked product entities', () => {
+    const subject = capability(
+      'Apply account credit',
+      'CreditMemo records adjust the balance for the selected account.',
+    );
+    subject.related_entities = ['entity_credit_memo'];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject],
+      [dataEntity('entity_credit_memo', 'Credit Memo', 'domain-shape')],
+      [],
+      ['account'],
     );
 
     expect(evaluation.accepted).toHaveLength(1);

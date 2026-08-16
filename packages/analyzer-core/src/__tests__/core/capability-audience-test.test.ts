@@ -83,6 +83,34 @@ describe('capability description audience test', () => {
     expect(result.flaggedTokens).toEqual(expect.arrayContaining(['ErdLayouts', 'RawResults']));
   });
 
+  it('trusts lifecycle-backed domain shapes as observed product nouns', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Download invoice PDFs',
+      'Authorized users can download an invoice using its associated Company identifier.',
+      [],
+      [{
+        name: 'Company',
+        kind: 'domain-shape',
+        lifecycle: { created_by: [], read_by: ['read_company'], updated_by: [], deleted_by: [] },
+      }],
+      ['invoice'],
+    );
+
+    expect(result.failsAudienceTest).toBe(false);
+  });
+
+  it('trusts compound domain shapes grounded by the capability subject', () => {
+    const result = testCapabilityDescriptionAgainstAudience(
+      'Sync orders',
+      'SalesOrder records are reconciled with existing orders.',
+      [],
+      [{ name: 'SalesOrder', kind: 'domain-shape' }],
+      ['orders'],
+    );
+
+    expect(result.failsAudienceTest).toBe(false);
+  });
+
   it('rejects implementation-led descriptions even when their nouns appear in structural evidence', () => {
     const result = testCapabilityDescriptionAgainstAudience(
       'Manage intent solvers',
