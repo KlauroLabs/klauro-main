@@ -4079,7 +4079,7 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
     evidence_families: number;
     published_capabilities: number;
     minimum_published_capabilities: number;
-    status: 'accepted' | 'rejected' | 'unavailable';
+    status: 'accepted' | 'partial' | 'rejected' | 'unavailable';
     reason?: string;
   };
 

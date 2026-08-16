@@ -624,7 +624,7 @@ function buildGates(
     gate('semantic-source-edit-applied', edit.kind === 'semantic-probe', `${edit.kind}: ${edit.detail}`),
     gate('edit-detected', editDetected, `${changedFiles} files changed, ${casDelta} CAS nodes changed`),
     softGate('edit-produced-cas-delta', casDelta > 0 || changedFiles > 0, `${casDelta} CAS nodes changed, ${changedFiles} files changed`),
-    gate('edit-stayed-incremental', !edited.wasFullRebuild, `wasFullRebuild=${edited.wasFullRebuild}`),
+    gate('edit-stayed-incremental', !edited.wasFullRebuild, [`wasFullRebuild=${edited.wasFullRebuild}`, edited.fullRebuildReason ? `reason=${edited.fullRebuildReason}` : ''].filter(Boolean).join('; ')),
     gate(
       'edit-locality-proven',
       provesIncrementalLocality(editLocality),

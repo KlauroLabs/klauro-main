@@ -91,6 +91,7 @@ export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'stat
   status: 'success' | 'accepted';
   analysis_revision?: number;
   analysis_type?: 'full' | 'incremental' | 'unchanged' | 'analyzer_upgrade' | 'forced';
+  full_rebuild_reason?: string;
   reused?: boolean;
 
 

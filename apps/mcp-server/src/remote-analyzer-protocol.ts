@@ -120,6 +120,7 @@ export interface RemoteAnalyzeResponse {
   analysis_id: string;
   analysis_revision: number;
   analysis_type: 'full' | 'incremental';
+  full_rebuild_reason?: string;
   base_commit?: string;
   manifest: SourceManifest;
   cas: CASOutput;

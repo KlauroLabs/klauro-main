@@ -349,7 +349,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out).toEqual(covered);
   });
 
-  it('publishes grounded authored capabilities with rejected coverage when retries omit a behavior family', async () => {
+  it('publishes grounded authored capabilities with partial coverage when retries omit a behavior family', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.behaviorSurfaces = [{
@@ -371,7 +371,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(out).toEqual(grounded);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      status: 'rejected',
+      status: 'partial',
       published_capabilities: grounded.length,
     });
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('catalog omitted');
@@ -453,6 +453,28 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
     expect(calls).toBe(3);
     expect(out).toHaveLength(0);
+  });
+
+  it('publishes the best grounded partial catalog when retries cannot cover every evidence family', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const grounded = cap({
+      id: 'analyze-codebases',
+      name: 'Analyze codebases',
+      description: 'Explains observed code behavior and relationships for engineering teams.',
+      operations: anchorOp('analyze-codebases'),
+    });
+    localOrch.aiExtractCapabilityCatalog = async () => [grounded];
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+    const args: any = gateArgs(localOrch);
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out).toEqual([grounded]);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
+      status: 'partial',
+      published_capabilities: 1,
+    });
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('catalog collapse');
   });
 
   it('accepts a smaller passing retry instead of retaining a larger rejected catalog', async () => {

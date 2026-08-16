@@ -10045,7 +10045,6 @@ export class AnalyzerOrchestrator {
       description_generation: undefined,
     };
   }
-
   private capabilityContradictsObservedOperations(
     capability: Pick<SystemCapability, 'name' | 'description' | 'operations'>,
   ): boolean {
@@ -10065,7 +10064,6 @@ export class AnalyzerOrchestrator {
     const anchors = (capability.related_entities || [])
       .map(id => entityById.get(id))
       .filter((entity): entity is CASDataEntity => Boolean(entity));
-
     const operationNodeTypes = nodeTypeByEntryPointId
       ? (capability.operations || [])
           .map(op => nodeTypeByEntryPointId.get(op.entry_point_id))
@@ -10075,24 +10073,19 @@ export class AnalyzerOrchestrator {
     const hasRealOperationAnchor = operationNodeTypes.some(type => !isDistributionOrCiNodeType(type));
     const operationsAllDistributionOrCi = operationNodeTypes.length > 0
       && operationNodeTypes.every(isDistributionOrCiNodeType);
-
     if (anchors.length === 0) {
       if (operationNodeTypes.length === 0) {
         return this.isInfrastructureMachineryName(capability.name);
       }
       return true;
     }
-
     if (hasRealOperationAnchor) return false;
-
     const entityAnchorsAllInfra = anchors.every(entity => {
       if (entity.kind === 'persisted-entity' || entity.kind === 'api-response') return false;
       return this.isInfrastructureShapedEntityName(entity.name);
     });
-
     return entityAnchorsAllInfra || operationsAllDistributionOrCi;
   }
-
   private isInfrastructureMachineryName(name: string, scriptsAndPipelinesOnly = false): boolean {
     const trimmed = String(name || '').trim();
     if (!trimmed) return false;
@@ -10101,21 +10094,17 @@ export class AnalyzerOrchestrator {
     const subject = scriptsAndPipelinesOnly ? `(?:${scriptSubjects})` : `(?:${scriptSubjects}|binari(?:es|y)|installers?|docker\\s+images?|container\\s+images?)`;
     return new RegExp(`^${verb}\\b(?:\\s+and\\s+${verb}\\b)?.{0,20}\\b${subject}\\b`, 'i').test(trimmed);
   }
-
   private isInfrastructureShapedEntityName(name: string): boolean {
     const INFRA_SEGMENT = /^(Sentinel|Sentinels|Runtime|Runtimes|Daemon|Daemons|Spawn|Spawns|Restart|Restarts|Heartbeat|Heartbeats|Watchdog|Supervisor|Bootstrap|Lifecycle|Presence|Invoke|Invokes|Invocation|Runner|Runners|Worker|Workers|Scheduler|Reaper|Janitor|Usage|Uptime|Liveness|Readiness|Hook|Hooks)$/;
     const segments = String(name || '').trim().replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/);
     return segments.some(segment => INFRA_SEGMENT.test(segment));
   }
-
   private isBareNounCapabilityLabel(name: string): boolean {
     return sharedIsBareNounCapabilityLabel(name);
   }
-
   private isStructuralPlaceholderCapabilityDescription(description: string): boolean {
     return sharedIsStructuralPlaceholderCapabilityDescription(description);
   }
-
   private rebuildCapabilityDescriptionFromOperations(
     operations: Array<{ name?: string; action?: string; entry_point_type?: string; trigger?: { type?: string; method?: string; path?: string } }>
   ): string | undefined {
@@ -10195,7 +10184,6 @@ export class AnalyzerOrchestrator {
       return [];
     }
   }
-
   private capabilityHasObservedRead(operations: SystemCapability['operations']): boolean {
     return operations.some(operation =>
       /^(?:view|read|list|get|show|access|retrieve|review|analyze|compare|present|render)$/i.test(operation.action || '') ||
@@ -10203,18 +10191,24 @@ export class AnalyzerOrchestrator {
       operation.entry_point_type === 'page'
     );
   }
-
   private capabilityHasObservedMutation(operations: SystemCapability['operations']): boolean {
     return operations.some(operation =>
       /^(?:manage|create|update|delete|write|modify|submit|configure|mutate|set|save|persist)$/i.test(operation.action || '') ||
       /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')
     );
   }
-
   private isPublishableCapability(capability: SystemCapability): boolean {
+    return this.capabilityPublishabilityFailure(capability) === undefined;
+  }
+  private capabilityPublishabilityFailure(capability: SystemCapability): string | undefined {
     const authored = capability.name_source === 'ai' ||
       capability.name_source === 'manual' ||
       capability.name_source === 'reused';
+    if (!authored) return 'name-is-not-authored';
+    if ((capability.related_entities || []).length === 0 && (capability.operations || []).length === 0) {
+      return 'missing-structural-anchor';
+    }
+    if (this.isBareNounCapabilityLabel(String(capability.name || ''))) return 'bare-noun-name';
     const description = String(capability.description || '').trim();
     const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
     const recordedDescriptionDegradation = capability.description_generation?.status === 'ai_rejected';
@@ -10224,13 +10218,13 @@ export class AnalyzerOrchestrator {
       descriptionWordCount >= 6 &&
       descriptionWordCount <= 32
     );
-    const anchored = (capability.related_entities || []).length > 0 || (capability.operations || []).length > 0;
-    return authored &&
-      anchored &&
-      !this.isBareNounCapabilityLabel(String(capability.name || '')) &&
-      descriptionIsPublishable;
+    if (!descriptionIsPublishable) {
+      if (!description) return 'missing-description';
+      if (this.isStructuralPlaceholderCapabilityDescription(description)) return 'structural-placeholder-description';
+      return descriptionWordCount < 6 ? 'description-too-short' : 'description-too-long';
+    }
+    return undefined;
   }
-
   private catalogQualityFailure(
     reconciled: SystemCapability[],
     distinctFamilyCount: number,
@@ -10437,14 +10431,20 @@ export class AnalyzerOrchestrator {
       const reconciledCandidates = extracted.length > 0
         ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal)
         : [];
-      const cycleReconciled = reconciledCandidates.filter(capability => this.isPublishableCapability(capability));
+      const publishabilityFailures = new Map<string, number>();
+      const cycleReconciled = reconciledCandidates.filter(capability => {
+        const failure = this.capabilityPublishabilityFailure(capability);
+        if (!failure) return true;
+        publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
+        return false;
+      });
       const cycleQualityFailure = this.catalogQualityFailure(
         cycleReconciled,
         distinctFamilyCount,
         requiredBehaviorCandidateIds,
       );
       writeAnalyzerStatus(
-        `[Klauro] capability catalog cycle ${cycle}/3: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${cycleReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s)` : ''}`,
+        `[Klauro] capability catalog cycle ${cycle}/3: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${cycleReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
       );
       if (!cycleQualityFailure) {
         reconciled = cycleReconciled;
@@ -10467,7 +10467,7 @@ export class AnalyzerOrchestrator {
     const gateReason = deadlineExceeded
       ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
-    const publishGroundedPartial = reconciled.length > 0 && Boolean(qualityFailure?.startsWith('catalog omitted '));
+    const publishGroundedPartial = reconciled.length > 0 && Boolean(qualityFailure);
     writeAnalyzerStatus(
       `[Klauro] capability catalog path: ${catalogPath} (cycles=${cyclesRun}, capabilities=${reconciled.length}, families=${distinctFamilyCount}${gateReason ? `, last_failure=${gateReason}` : ''})`
     );
@@ -10491,7 +10491,7 @@ export class AnalyzerOrchestrator {
       evidence_families: distinctFamilyCount,
       published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? reconciled.length : 0,
       minimum_published_capabilities: Math.ceil(Math.log2(distinctFamilyCount + 1)),
-      status: publishGroundedPartial ? 'rejected' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
+      status: publishGroundedPartial ? 'partial' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
       ...(gateReason ? { reason: gateReason } : {}),
     };
     return publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? reconciled : [];

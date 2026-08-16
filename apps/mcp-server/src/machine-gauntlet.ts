@@ -804,7 +804,6 @@ async function runDescriptionGenerationProbe(
       detail: 'No passing repository was available for the AI description probe.',
     };
   }
-
   const previous = {
     interpretation: process.env.KLAURO_AI_INTERPRETATION,
     interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
@@ -814,8 +813,8 @@ async function runDescriptionGenerationProbe(
     elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
     elementLimit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
     freshOrchestrator: process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS,
+    benchForceAnalysis: process.env.KLAURO_BENCH_FORCE_ANALYSIS,
   };
-
   const startedAt = Date.now();
   try {
     process.env.KLAURO_AI_INTERPRETATION = 'true';
@@ -826,7 +825,7 @@ async function runDescriptionGenerationProbe(
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '30000';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = '0';
     process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '1';
-
+    process.env.KLAURO_BENCH_FORCE_ANALYSIS = '1';
     logMachineProgress(`description probe ${repo.name} (${repo.path})`);
     const cas = await analyzeForBench(repo.path);
     const generation = cas.enhanced_system_purpose?.description_generation;
@@ -871,6 +870,7 @@ async function runDescriptionGenerationProbe(
     restoreMachineEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
     restoreMachineEnv('KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT', previous.elementLimit);
     restoreMachineEnv('KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS', previous.freshOrchestrator);
+    restoreMachineEnv('KLAURO_BENCH_FORCE_ANALYSIS', previous.benchForceAnalysis);
   }
 }
 

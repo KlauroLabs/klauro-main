@@ -3464,10 +3464,10 @@ function anonymizeClient(clientId: string): string {
 async function runIncrementalAnalysisIsolated(
   workspace: string,
   displayName: string | undefined,
-): Promise<{ output: Awaited<ReturnType<typeof analyzeProjectIncremental>>['output']; changeReport: RemoteAnalyzeResponse['change_report']; wasFullRebuild: boolean }> {
+): Promise<{ output: Awaited<ReturnType<typeof analyzeProjectIncremental>>['output']; changeReport: RemoteAnalyzeResponse['change_report']; wasFullRebuild: boolean; fullRebuildReason?: string }> {
   const summary = await runAnalysis(workspace, { displayName });
   const output = await getAnalysis(workspace);
-  return { output, changeReport: summary.changeReport, wasFullRebuild: summary.wasFullRebuild };
+  return { output, changeReport: summary.changeReport, wasFullRebuild: summary.wasFullRebuild, fullRebuildReason: summary.fullRebuildReason };
 }
 
 async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
@@ -3760,7 +3760,6 @@ interface PreparedSync {
 
 async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<PreparedSync> {
   if (!request.analysis_id) throw new Error('Remote sync requires analysis_id');
-
   const analysisId = resolveStorageAnalysisId(request.analysis_id, accountSalt);
   const workspace = workspacePath(dataDir, analysisId);
   if (!(await fs.pathExists(workspace))) {
@@ -3782,6 +3781,7 @@ async function completeSync(prepared: PreparedSync, request: RemoteSyncRequest):
     analysis_id: analysisId,
     analysis_revision: Date.now(),
     analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+    full_rebuild_reason: result.fullRebuildReason,
     base_commit: request.changes.base_commit,
     manifest,
     cas: result.output,
