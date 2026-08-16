@@ -20,6 +20,7 @@ import { analyzeCasWithInstalledKlauro, getInstalledKlauroVersion, initializeIns
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { graphEquivalenceRate } from './incremental-graph-equivalence';
 import { descriptionTermIsGroundedInCas, unexplainedShortTitleCaseTerms } from './description-proper-noun-grounding';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -225,6 +226,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
   const selectedPaths = new Set(selectedEligible.map(repo => repo.path));
   const unselectedEligible = eligible.filter(repo => !selectedPaths.has(repo.path));
   const limit = pLimit(Math.max(1, options.analysisConcurrency || 3));
+  const analyzedCasByPath = new Map<string, CASOutput>();
   const repoResults = await Promise.all(selectedEligible.map(repo => limit(() => analyzeRepoForMachineProof(repo))));
 
   async function analyzeRepoForMachineProof(repo: RealRepoTarget) {
@@ -247,6 +249,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
         })).output
         : await analyzeForBench(repo.path);
       const readiness = evaluateAgentReadiness(cas, analysisPath);
+      analyzedCasByPath.set(repo.path, cas);
       const analysisQuality = assessAnalysisQuality(cas, repo.path);
       const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name, analysisFocus);
       logMachineProgress(`analyzed ${repo.name} in ${Date.now() - startedAt}ms`);
@@ -373,6 +376,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
 
   const capabilityMemoryBenchmark = await runAgentCapabilityMemoryBenchmark({
     repos: selectedEligible.map(repo => ({ name: repo.name, path: repo.path })),
+    analysesByPath: analyzedCasByPath,
     maxTargets: Math.min(selectedEligible.length, 12),
     maxTasksPerRepo: 3,
     outputPath: path.join(workRoot, 'capability-memory', 'report.json'),
@@ -392,6 +396,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     },
     repositories: [],
   }));
+  analyzedCasByPath.clear();
 
   const fromZeroBuildContextProof = await runFromZeroBuildContextProof({
     outputRoot: path.join(workRoot, 'from-zero-build-context-proof'),

@@ -79,6 +79,7 @@ function printHelp(): void {
 
 export async function runAgentCapabilityMemoryBenchmark(options: {
   repos?: TargetInput[];
+  analysesByPath?: ReadonlyMap<string, CASOutput>;
   includeRealRepos?: boolean;
   devRoot?: string;
   maxTargets?: number;
@@ -92,40 +93,8 @@ export async function runAgentCapabilityMemoryBenchmark(options: {
 
   for (const target of targets) {
     if (!options.quiet) console.log(`Analyzing capability memory: ${target.name}`);
-    const cas = await analyzeForBench(target.path);
-    const trials = [];
-    for (const capability of selectCapabilities(cas).slice(0, options.maxTasksPerRepo || 4)) {
-      const task = taskForCapability(capability);
-      const memory = buildCapabilityMemoryForAgent(cas, {
-        target: capability.name,
-        instructions: task.instructions,
-        success_criteria: task.success_criteria,
-        files: capability.operations.map(operation => operation.path_or_command || '').filter(Boolean),
-        limit: 8,
-      });
-      const context = await getAgentContext(cas, target.path, task);
-      const withScore = scoreWithCapabilityMemory(memory, capability, context);
-      const withoutScore = scoreWithoutCapabilityMemory(capability);
-      const delta = withScore.score - withoutScore.score;
-      trials.push({
-        capability_id: capability.id,
-        capability_name: capability.name,
-        task,
-        status: delta > 0 && withScore.score >= 80 ? 'pass' : delta > 0 ? 'warn' : 'fail',
-        with_klauro: withScore,
-        without_klauro: withoutScore,
-        delta,
-      });
-    }
-    repoResults.push({
-      repo: target.name,
-      path: target.path,
-      status: aggregateStatus(trials.map(trial => trial.status as GateStatus)),
-      capability_count: cas.capabilities?.length || 0,
-      trial_count: trials.length,
-      average_delta: Math.round(average(trials.map(trial => trial.delta))),
-      trials,
-    });
+    const cas = options.analysesByPath?.get(target.path) || await analyzeForBench(target.path);
+    repoResults.push(await evaluateCapabilityMemoryTarget(target, cas, options.maxTasksPerRepo || 4));
   }
 
   const allTrials = repoResults.flatMap(result => result.trials);
@@ -157,6 +126,46 @@ export async function runAgentCapabilityMemoryBenchmark(options: {
   }
   await saveAgenticBenchmarkReport(report);
   return report;
+}
+
+export async function evaluateCapabilityMemoryTarget(
+  target: TargetInput,
+  cas: CASOutput,
+  maxTasks: number,
+) {
+  const trials = [];
+  for (const capability of selectCapabilities(cas).slice(0, maxTasks)) {
+    const task = taskForCapability(capability);
+    const memory = buildCapabilityMemoryForAgent(cas, {
+      target: capability.name,
+      instructions: task.instructions,
+      success_criteria: task.success_criteria,
+      files: capability.operations.map(operation => operation.path_or_command || '').filter(Boolean),
+      limit: 8,
+    });
+    const context = await getAgentContext(cas, target.path, task);
+    const withScore = scoreWithCapabilityMemory(memory, capability, context);
+    const withoutScore = scoreWithoutCapabilityMemory(capability);
+    const delta = withScore.score - withoutScore.score;
+    trials.push({
+      capability_id: capability.id,
+      capability_name: capability.name,
+      task,
+      status: delta > 0 && withScore.score >= 80 ? 'pass' : delta > 0 ? 'warn' : 'fail',
+      with_klauro: withScore,
+      without_klauro: withoutScore,
+      delta,
+    });
+  }
+  return {
+    repo: target.name,
+    path: target.path,
+    status: aggregateStatus(trials.map(trial => trial.status as GateStatus)),
+    capability_count: cas.capabilities?.length || 0,
+    trial_count: trials.length,
+    average_delta: Math.round(average(trials.map(trial => trial.delta))),
+    trials,
+  };
 }
 
 async function resolveTargets(options: { repos?: TargetInput[]; includeRealRepos?: boolean; devRoot?: string }): Promise<TargetInput[]> {
