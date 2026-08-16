@@ -290,6 +290,47 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('quality check');
   });
 
+  it('tells the next AI cycle exactly which audience failures require repair', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const rejected = [
+      cap({
+        id: 'reports',
+        name: 'View industry reports',
+        description: 'Provides seamless insights into available industry reports.',
+        operations: anchorOp('reports'),
+      }),
+      cap({
+        id: 'products',
+        name: 'Browse products',
+        description: undefined,
+        operations: anchorOp('products'),
+      }),
+    ];
+    const repaired = ['View industry reports', 'Browse products', 'Access user account', 'Generate invoices']
+      .map(name => cap({
+        id: name,
+        name,
+        description: `Lets users complete ${name.toLowerCase()} using the observed product information.`,
+        operations: anchorOp(name),
+      }));
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      return calls.length === 1 ? rejected : repaired;
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) =>
+      extracted.filter(capability => capability.description && !capability.description.includes('seamless'));
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
+
+    expect(out).toEqual(repaired);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].qualityNudge).toContain('View industry reports');
+    expect(calls[1].qualityNudge).toContain('marketing-language');
+    expect(calls[1].qualityNudge).toContain('Browse products');
+    expect(calls[1].qualityNudge).toContain('missing');
+  });
+
   it('rejects a catalog that remains below the quality bar after 3 cycles', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const collapsed = ['View entry points', 'View functions'].map(name => cap({ id: name, name, description: `Surfaces the ${name.toLowerCase()} page for users of the product.` }));

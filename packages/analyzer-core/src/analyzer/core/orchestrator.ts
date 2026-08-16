@@ -150,7 +150,12 @@ import {
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
-import { capabilitySubjectTokens, testCapabilityNameAgainstIdentifierVocabulary, testCapabilityDescriptionAgainstAudience } from './capability-audience-test';
+import { capabilitySubjectTokens } from './capability-audience-test';
+import {
+  capabilityAudienceRepairFeedback,
+  capabilityCatalogProductTerms,
+  evaluateCapabilityCatalogAudience,
+} from './capability-catalog-audience';
 import {
   attachFlowContract,
   attachCapability,
@@ -9869,53 +9874,21 @@ export class AnalyzerOrchestrator {
     });
     const gated = purposeGated;
 
-    const productTerms = [
-      purpose?.primary_domain,
-      ...(purpose?.description_source && purpose.description_source !== 'ai'
-        ? [purpose.inferred_description, ...(purpose?.core_concepts || [])]
-        : []),
-      projectTextSignal.productDocTitle,
-      projectTextSignal.productDocSummary,
-      projectTextSignal.manifestDescription,
-      projectTextSignal.summary,
-      ...(projectTextSignal.concepts || []),
-    ].filter((value): value is string => Boolean(value));
-    const vocabularyGated = gated.filter(capability => {
-      const operationTerms = (capability.operations || []).flatMap(operation => [
-        operation.action,
-        operation.path_or_command,
-        operation.entry_point_id,
-        operation.trigger?.path,
-      ]).filter((value): value is string => Boolean(value));
-      const capabilityProductTerms = [...productTerms, ...operationTerms];
-      if (libraryNames.length > 0) {
-        const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(
-          capability.name,
-          libraryNames.map(name => ({ name })),
-          dataEntities,
-          capabilityProductTerms,
-        );
-        if (nameVerdict.failsIdentifierTest) {
-          console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${capability.name}" post-generation (${nameVerdict.flaggedTokens.join(', ')}) — candidate generation should have excluded this before it ever reached the AI catalog.`);
-          return false;
-        }
+    const audienceEvaluation = evaluateCapabilityCatalogAudience(
+      gated,
+      dataEntities,
+      libraryNames,
+      capabilityCatalogProductTerms(purpose, projectTextSignal),
+    );
+    for (const rejection of audienceEvaluation.rejections) {
+      if (rejection.target === 'name') {
+        console.error(`[Klauro] TASK #119 REGRESSION SIGNAL: audience test rejected "${rejection.name}" post-generation (${rejection.flaggedTokens.join(', ')}) — candidate generation should have excluded this before it ever reached the AI catalog.`);
+      } else {
+        console.error(`[Klauro] audience test rejected the DESCRIPTION of "${rejection.name}" (${rejection.reasons.join(',')}) — see §0.7.1's audience test.`);
       }
-      const descVerdict = testCapabilityDescriptionAgainstAudience(
-        capability.name,
-        capability.description,
-        libraryNames.map(name => ({ name })),
-        dataEntities,
-        [...capabilityProductTerms, capability.name],
-      );
-      if (descVerdict.failsAudienceTest) {
-        console.error(`[Klauro] audience test rejected the DESCRIPTION of "${capability.name}" (${descVerdict.reasons.join(',')}) — see §0.7.1's audience test.`);
-        return false;
-      }
-      return true;
-    });
-    const audienceGated = vocabularyGated;
+    }
 
-    const deduped = this.dedupeSystemCapabilitiesByName(audienceGated);
+    const deduped = this.dedupeSystemCapabilitiesByName(audienceEvaluation.accepted);
 
     return this.reinjectDescriptionAnchoredCapabilities(deduped, candidates, dataEntities, purpose);
   }
@@ -10390,6 +10363,7 @@ export class AnalyzerOrchestrator {
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let retainedQualityFailure: string | undefined;
+    let audienceRepairFeedback: string | undefined;
     let cyclesRun = 0;
     let deadlineExceeded = false;
     for (let cycle = 1; cycle <= 3; cycle++) {
@@ -10400,7 +10374,7 @@ export class AnalyzerOrchestrator {
       }
       cyclesRun = cycle;
       const cycleNudge = cycle === 1 ? undefined
-        : `Previous catalog failed a quality check (${qualityFailure}). Return a FULL catalog of purposeful capabilities covering these distinct evidence families: ${[...evidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface'), ...evidenceCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface')].slice(0, 24).map(candidate => `${candidate.id}=${(candidate.evidence_examples || []).slice(0, 8).join(', ') || candidate.name}; allowed_subject_nouns=${(candidate.related_entities || []).map(id => catalogEntityNameById.get(id) || id).join(', ')}`).join('; ')}. Cite candidate_ids exactly. Merge only families that express the same user outcome. Name each result as a purpose a PM would write (verb-headed, never a bare noun or a page/view label). Use the exact allowed_subject_nouns or exact nouns from the cited operations, journeys, or top-down product text; never replace them with plausible synonyms. State why the ability exists without naming code types, interfaces, UI widgets, or implementation structures.`;
+        : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} Return a FULL catalog of purposeful capabilities covering these distinct evidence families: ${[...evidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface'), ...evidenceCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface')].slice(0, 24).map(candidate => `${candidate.id}=${(candidate.evidence_examples || []).slice(0, 8).join(', ') || candidate.name}; allowed_subject_nouns=${(candidate.related_entities || []).map(id => catalogEntityNameById.get(id) || id).join(', ')}`).join('; ')}. Cite candidate_ids exactly. Merge only families that express the same user outcome. Name each result as a purpose a PM would write (verb-headed, never a bare noun or a page/view label). Use the exact allowed_subject_nouns or exact nouns from the cited operations, journeys, or top-down product text; never replace them with plausible synonyms. State why the ability exists without naming code types, interfaces, UI widgets, or implementation structures.`;
       let extracted: SystemCapability[];
       try {
         extracted = await this.aiExtractCapabilityCatalog({
@@ -10426,6 +10400,14 @@ export class AnalyzerOrchestrator {
         }
         throw error;
       }
+      audienceRepairFeedback = capabilityAudienceRepairFeedback(
+        evaluateCapabilityCatalogAudience(
+          extracted,
+          args.dataEntities,
+          args.libraryNames || [],
+          capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal),
+        ).rejections,
+      );
       const reconciledCandidates = extracted.length > 0
         ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal)
         : [];

@@ -1,0 +1,121 @@
+import type {
+  CASDataEntity,
+  EnhancedSystemPurpose,
+  SystemCapability,
+} from '../../types/cas.types';
+import {
+  testCapabilityDescriptionAgainstAudience,
+  testCapabilityNameAgainstIdentifierVocabulary,
+} from './capability-audience-test';
+
+export interface CapabilityCatalogProductText {
+  concepts?: string[];
+  manifestDescription?: string;
+  productDocSummary?: string;
+  productDocTitle?: string;
+  summary?: string;
+}
+
+export interface CapabilityAudienceRejection {
+  description?: string;
+  flaggedTokens: string[];
+  name: string;
+  reasons: string[];
+  target: 'description' | 'name';
+}
+
+export interface CapabilityAudienceEvaluation {
+  accepted: SystemCapability[];
+  rejections: CapabilityAudienceRejection[];
+}
+
+export function capabilityCatalogProductTerms(
+  purpose: EnhancedSystemPurpose | undefined,
+  productText: CapabilityCatalogProductText,
+): string[] {
+  return [
+    purpose?.primary_domain,
+    ...(purpose?.description_source && purpose.description_source !== 'ai'
+      ? [purpose.inferred_description, ...(purpose.core_concepts || [])]
+      : []),
+    productText.productDocTitle,
+    productText.productDocSummary,
+    productText.manifestDescription,
+    productText.summary,
+    ...(productText.concepts || []),
+  ].filter((value): value is string => Boolean(value));
+}
+
+export function evaluateCapabilityCatalogAudience(
+  capabilities: SystemCapability[],
+  dataEntities: CASDataEntity[],
+  libraryNames: string[],
+  productTerms: string[],
+): CapabilityAudienceEvaluation {
+  const libraries = libraryNames.map(name => ({ name }));
+  const accepted: SystemCapability[] = [];
+  const rejections: CapabilityAudienceRejection[] = [];
+
+  for (const capability of capabilities) {
+    const operationTerms = (capability.operations || []).flatMap(operation => [
+      operation.action,
+      operation.path_or_command,
+      operation.entry_point_id,
+      operation.trigger?.path,
+    ]).filter((value): value is string => Boolean(value));
+    const capabilityProductTerms = [...productTerms, ...operationTerms];
+
+    if (libraries.length > 0) {
+      const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(
+        capability.name,
+        libraries,
+        dataEntities,
+        capabilityProductTerms,
+      );
+      if (nameVerdict.failsIdentifierTest) {
+        rejections.push({
+          name: capability.name,
+          description: capability.description,
+          target: 'name',
+          reasons: ['identifier-vocabulary'],
+          flaggedTokens: nameVerdict.flaggedTokens,
+        });
+        continue;
+      }
+    }
+
+    const descriptionVerdict = testCapabilityDescriptionAgainstAudience(
+      capability.name,
+      capability.description,
+      libraries,
+      dataEntities,
+      [...capabilityProductTerms, capability.name],
+    );
+    if (descriptionVerdict.failsAudienceTest) {
+      rejections.push({
+        name: capability.name,
+        description: capability.description,
+        target: 'description',
+        reasons: descriptionVerdict.reasons,
+        flaggedTokens: descriptionVerdict.flaggedTokens,
+      });
+      continue;
+    }
+
+    accepted.push(capability);
+  }
+
+  return { accepted, rejections };
+}
+
+export function capabilityAudienceRepairFeedback(rejections: CapabilityAudienceRejection[]): string | undefined {
+  if (rejections.length === 0) return undefined;
+  const rejectedItems = rejections.slice(0, 12).map(rejection => ({
+    name: rejection.name,
+    description: String(rejection.description || '').slice(0, 180),
+    target: rejection.target,
+    reasons: rejection.reasons,
+    flagged_tokens: rejection.flaggedTokens.slice(0, 8),
+  }));
+  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary, replace code-shaped terms with exact product nouns present in the evidence. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
+}
