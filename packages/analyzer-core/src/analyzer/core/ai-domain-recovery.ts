@@ -30,7 +30,6 @@ export function buildGroundedDomainVocabulary(input: {
     .filter(token => firstPartyTokens.has(token) || !implementationTokens.has(token))
     .filter(token => firstPartyTokens.has(token) || !protocolTokens.has(token))
     .filter(token => firstPartyTokens.has(token) || !supportingMechanismTokens.has(token))
-    .filter(token => !/^(?:and|for|the|this|that|with|from|into|around|parts?|remain|product|critical|future|legacy)$/.test(token))
     .filter(token => !input.isGenericToken(token))))
     .slice(0, 32);
 }

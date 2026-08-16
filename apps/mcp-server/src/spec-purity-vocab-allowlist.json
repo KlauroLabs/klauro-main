@@ -77,6 +77,12 @@
       "name": "reads",
       "category": "closed-operation-taxonomy",
       "reason": "Data query verbs interpret source-derived operation names only to establish listener direction."
+    },
+    {
+      "file": "apps/mcp-server/src/semantic-source-probe.ts",
+      "name": "SEMANTIC_SOURCE_EXTENSIONS",
+      "category": "closed-technical-taxonomy",
+      "reason": "Supported source file extensions select a syntax-valid benchmark probe and never infer product purpose or capability meaning."
     }
   ]
 }

@@ -18,6 +18,20 @@ describe('AI product domain recovery', () => {
     expect(vocabulary).not.toEqual(expect.arrayContaining(['post', 'nestjs', 'react', 'auth', 'guard', 'manage']));
   });
 
+  it('does not discard an evidence-backed product noun because it resembles generic prose', () => {
+    const vocabulary = buildGroundedDomainVocabulary({
+      systemName: 'Migration Suite',
+      projectText: [],
+      entityNames: ['Legacy'],
+      capabilityNames: ['Review legacy'],
+      coreConcepts: [],
+      implementationNames: [],
+      isGenericToken: () => false,
+    });
+
+    expect(vocabulary).toEqual(expect.arrayContaining(['legacy']));
+  });
+
   it('retries rejected labels and returns a validated AI-authored domain', async () => {
     const generate = jest.spyOn(aiService, 'generateComponentDescription')
       .mockResolvedValueOnce('{"domain":"user-post"}')

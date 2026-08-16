@@ -10828,10 +10828,10 @@ describe('enterprise AI semantic guards', () => {
       .toEqual(['internal-sweep', 'orders']);
   });
 
-  it('keeps legacy UI interaction mechanics out of application product evidence', () => {
+  it('keeps entity-free presentation mechanics out of application product evidence without relying on their names', () => {
     const candidates = [{
       id: 'auth-change',
-      name: 'Authentication Change Event Surface',
+      name: 'Customer Preference Surface',
       related_entities: [],
       operations: [
         { entry_point_id: 'login-page', entry_point_type: 'page', action: 'View' },

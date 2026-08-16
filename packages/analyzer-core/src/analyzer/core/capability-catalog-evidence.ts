@@ -64,9 +64,10 @@ export function catalogEvidenceCandidates(
     : candidates.filter(candidate => {
         const operations = candidate.operations || [];
         const hasProductEntity = (candidate.related_entities || []).some(entityId => productEntityIds.has(entityId));
-        const interactionOnly = operations.length > 0 && operations.every(operation => /^(?:page|route|event)$/i.test(operation.entry_point_type || '')) &&
-          /\b(?:page|route|dialog|button|click|change|submit|mouse|hover|focus|input)\b/i.test(candidate.name || '');
-        if (interactionOnly && !hasProductEntity) return false;
+        const presentationOnly = operations.length > 0 &&
+          operations.some(operation => /^(?:page|route)$/i.test(operation.entry_point_type || '')) &&
+          operations.every(operation => /^(?:page|route|event)$/i.test(operation.entry_point_type || ''));
+        if (presentationOnly && !hasProductEntity) return false;
         const userFacingOperation = operations.some(operation =>
           USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as never) ||
           /^(?:message|event|schedule|queue)$/i.test(operation.entry_point_type || ''));

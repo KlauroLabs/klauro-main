@@ -110,6 +110,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'structural-importance.ts': 1,
   'structural-ownership.ts': 1,
   'syntax-degradation.ts': 1,
+  'system-capability-dependencies.ts': 1,
   'text-vocabulary.ts': 1,
   'tree-sitter-parser.ts': 1,
   'tree-sitter-ts-extraction-cache.ts': 1,
