@@ -445,12 +445,11 @@ fleet size the hot narrative per scope stays constant-size.
 ## 5. Upgrade 3 — Claim-scoped event delivery: the claim IS the subscription
 
 ### Verified current state
-Three delivery mechanisms exist, none general: `subscribe_workspace` is an honest stub
-(arms an fs-watch for 250ms, tells the caller to poll — MCP stdio has no server push);
-surprises are ADDRESSED events but delivered only when the agent happens to call
-`fab_list_active_work(agent_id)`; remote SSE (`/v1/coordination/stream`) pushes ALL
-workspace deltas, unfiltered. The pieces of an event system exist — an append-only log with
-a monotonic cursor, addressed entries — but no systematic drain.
+`subscribe_workspace` now provides cursor-based long polling over local and hosted Fabric
+state. It returns an immediate snapshot without a cursor, wakes on claim or in-flight
+changes, distinguishes timeout and retention-gap outcomes, and uses the hosted coordination
+stream for remote workspaces. Claims, semantic participant streams, addressed surprises,
+and overlapping concepts remain available through the same canonical Fabric state.
 
 ### What v1.1 replaced, and why
 v1.0 specified a registration step (`kind:'subscription'` entries), a five-variant interest
@@ -459,8 +458,8 @@ filtered SSE → Appendix B): a registration step is a second check-in tax on to
 claim the agent already made, and the interest taxonomy re-describes information the claim
 already carries — its footprint. **The claim IS the subscription.** No new entry kind, no
 new lifecycle, nothing to renew (claim TTL is the subscription TTL), nothing for a lazy
-agent to forget. `subscribe_workspace` is NOT repurposed; it keeps its current honest-stub
-behavior and its name stays unburned.
+agent to forget. That claim-as-subscription model remains useful for targeted attribution;
+`subscribe_workspace` is now the general realtime state-notification surface around it.
 
 ### Design
 **Implicit subscription.** Every active claim auto-subscribes its owner to exactly two
@@ -776,7 +775,7 @@ New in v1.1 (cold-review outcomes):
 ## 10. Anti-goals (standing, restating v3 doctrine for this engine)
 
 - **Never locks.** No upgrade introduces, strengthens, or defaults to exclusivity. The
-  enforced grant surface stays what it is: opt-in, rare, never the model.
+  compatibility claim surfaces preserve the same non-blocking stream semantics.
 - **Never permission-gates.** No fabric call may return "denied" for awareness or for work
   a participant needs. Event delivery filters what you're TOLD, never what you may SEE —
   subject only to §11's tenancy boundary, which is about WHO you are, not what you may do.

@@ -1913,11 +1913,11 @@ Replay stored runtime observations for a trace ID.
 
 ## Multi-Agent Coordination
 
-See [`../SPEC-COORDINATION-FABRIC-V2.md`](../SPEC-COORDINATION-FABRIC-V2.md) §1.7 for the current, authoritative model: **concurrent work + awareness + semantic reconciliation is the default; `claim_work`'s grant/lease mechanism is an opt-in exclusive-access tool for the rare genuine-exclusive case, not a gate on every write.** (The original design doc, [`../SPEC-COORDINATION-FABRIC.md`](../SPEC-COORDINATION-FABRIC.md), and [`../COORDINATION-FABRIC.md`](../COORDINATION-FABRIC.md) describe the v1 advisory-only build; v2 layers a real grant/lease system — `apps/mcp-server/src/coordination/grant-manager.ts` — on top, while keeping awareness ungated.) These tools let multiple agents (same machine or across machines) sharing a workspace announce intent, see each other's active work, and get a preflight collision check before editing overlapping paths/symbols/capabilities. The local tier is a same-machine, file-backed claim/grant log (`apps/mcp-server/src/coordination/local-store.ts`) with sub-second fs-event awareness; cross-machine sync goes over HTTP (`POST/GET /v1/coordination/*` on the remote analyzer service). MCP has no server-push transport, so cross-tool awareness is poll-based: call `get_active_agents` / `get_in_flight_changes` / `check_collision` again to see deltas.
+See [`../SPEC-COORDINATION-FABRIC-V3.md`](../SPEC-COORDINATION-FABRIC-V3.md) for the authoritative model. Fabric enables realtime collaboration over any semantic unit, including the same file, function, flow, capability, entity, or intent. Every participant retains an attributed stream and can continue immediately. Duplicate, overlap, contract-divergence, and conceptual-coherence findings are shared context, never permission decisions or scheduling gates. Local state uses the file-backed claim stream store; cross-machine state, semantic snapshots, and continuous updates use the authenticated HTTP and SSE surfaces.
 
 ### `claim_work`
 
-Request a symbol/path-level GRANT before starting non-trivial changes — the opt-in exclusive-access tool (§1.6/§1.7 of the v2 spec): at most one active grant per overlapping symbol/path in a workspace at a time, but this governs simultaneous *blind writes*, not an agent's right to reach work it needs. Disjoint work is never queued (block-time is 0 for non-overlapping scope); overlapping work is resolved by awareness + negotiation, never a hard lockout.
+Publish an attributed Fabric stream before starting non-trivial work. Claims over the same path, symbol, flow, step, capability, entity, or intent all succeed immediately and remain independently visible.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1928,22 +1928,22 @@ Request a symbol/path-level GRANT before starting non-trivial changes — the op
 | `paths` | string[] | no | File/dir paths this work will touch |
 | `symbols` | string[] | no | Symbol/node ids this work will touch |
 | `capability` | string | no | Capability or feature name this work implements |
-| `ttl_ms` | number | no | Grant TTL in ms before considered stale (default 5 minutes) |
+| `ttl_ms` | number | no | Freshness TTL in ms (default 5 minutes) |
 | `base_commit` | string | no | Base commit for the claim |
 | `branch` | string | no | Branch for the claim |
-| `claim_id` | string | no | Deprecated/unused by the enforced grant path; kept for backward-compat request shape |
+| `claim_id` | string | no | Deprecated compatibility input; the server assigns stream identity |
 
-**Returns:** `claim_id`/`grant_id` (same value, `grant_id` is the current name), `verdict` — `granted` (proceed; `heartbeat_work` to keep it alive, `release_work` when done), `queued` (another agent holds a conflicting grant — you get the holder's `agent_id` + stated `intent` + `lease_status` [`active`/`near_expiry`/`expired`], `queue_position`, and an `options` array such as `wait_and_heartbeat_poll`, `take_over_stale_lease` (only if the lease has lapsed/is lapsing), `proceed_with_awareness_if_compatible`, `redirect_to_free_scope` (only when free scope actually exists), plus `redirect_hint`/`free_scope_hint`), or `duplicate` (you already hold an identical grant). `lease_expires_at` is set on `granted`.
+**Returns:** `claim_id`, compatibility `grant_id`, `verdict: granted`, freshness expiry, literal overlap context when present, derived conceptual coordinates, and conceptual awareness of related active streams. Overlap never changes the verdict.
 
 ### `release_work`
 
-Release a held grant (completed or handing off). Frees its paths/symbols for other agents and immediately advances the FIFO queue: the next non-conflicting queued request (if any) is promoted to `granted`.
+Mark one attributed stream complete or handed off. Other overlapping streams remain active.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `workspace` | string | yes | Workspace or project id/path |
-| `claim_id` | string | yes | Grant id to release (`grant_id`/`claim_id` from `claim_work`) |
-| `agent_id` | string | no | Agent id that holds the grant — required to actually release; falls back to a claim_id-embedded agent for back-compat callers |
+| `claim_id` | string | yes | Stream id from `claim_work` |
+| `agent_id` | string | no | Participant id that owns the stream |
 
 **Returns:** `status` (`released` or an error if `agent_id` is missing), `claim_id`.
 
@@ -1960,18 +1960,18 @@ Refresh a claim's heartbeat so it stays active (does not expire) while work is i
 
 ### `get_active_agents`
 
-Live grant state for a workspace — the awareness surface (§1.6 of the v2 spec): which agents currently hold active (non-expired) grants (scope, stated intent, `lease_expires_at`, `lease_status`), plus the FIFO queue of agents waiting on a conflicting scope. Use this before starting work to see who else is here, what they intend, blast-radius overlap risk, and free scope you could pick instead of queuing.
+Live Fabric state for a workspace: participants, active attributed streams, intent, freshness, scope, and overlap context. No participant waits in a queue.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 
 | `workspace` | string | yes | Workspace or project id/path |
 
-**Returns:** Presence info plus `grants` (active grants enriched with holder `intent`/`lease_status`) and `queued` (the FIFO wait list).
+**Returns:** Presence info plus `streams`, enriched with participant intent and freshness status.
 
 ### `check_collision`
 
-Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as `claim_work` plus the live grant holders/queue, but takes no grant. Overlapping holders are always returned with awareness context (intent + lease_status), never a bare yes/no.
+Read-only preflight over literal and conceptual scope. It returns related attributed streams, duplicate intent, blast-radius intersections, and semantic divergence without publishing a stream or gating work.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1980,7 +1980,7 @@ Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capa
 | `symbols` | string[] | no | Proposed symbols |
 | `capability` | string | no | Proposed capability |
 
-**Returns:** `verdict`, `kind`, `evidence`, `with_claim` (the colliding claim, if any), `edit_lock_conflicts` (soft edit-lock hits on the proposed paths), `collisions` (full `CollisionReport`: duplicates, overlaps, drifts, blast-radius intersections), `active_grants`/`queued_grants`, `overlapping_grant_holders` (with intent + lease status), and `free_scope_hint` (paths/symbols not currently held). Use this to decide whether to call `claim_work` at all.
+**Returns:** literal and conceptual relationship findings, active attributed streams, evidence, participant intent, and semantic conflict detail. Use it to begin collaboration with relevant participants before or during overlapping work.
 
 ### `check_conceptual_conflicts`
 

@@ -8,7 +8,7 @@ Codebases were already hard to see. AI-built code makes that gap bigger.
 
 ## The Product
 
-Klauro is the visibility layer for AI-built software. It turns a codebase into a complete relationship graph that both humans and AI agents can inspect.
+Klauro is the understanding and visibility layer for any software system. It turns a codebase into a complete relationship graph that both humans and AI agents can inspect. AI-built software may benefit disproportionately, but it does not define the product boundary.
 
 The CAS is the source of truth. It captures the system as code elements and relationships: entry points, exits, controllers, services, repositories, components, hooks, tests, data entities, security boundaries, external services, call chains, and change risk.
 
@@ -20,11 +20,13 @@ Two product surfaces sit on top of that same truth:
 Runtime telemetry later closes the loop by showing whether the system behaves in production the way static analysis says it should.
 
 Klauro also introduces a collaboration state that Git does not cover: analyzed
-in-flight work. Durable commits remain the accepted project truth, but humans
-and agents should also be able to see provisional branch, session, and working
-tree changes before they land. That lets teams avoid duplicate work, spot likely
-merge conflicts, and coordinate multi-agent or multi-human development while the
-work is still happening.
+in-flight work. Fabric enables real-time collaboration on any part of the system,
+including overlapping work on the same file, function, flow, capability, or
+concept. Durable commits remain the accepted project truth, while live CAS
+analysis keeps provisional branch, session, and working-tree changes attributed
+and visible. Overlap is expected and can be productive; Fabric helps participants
+share knowledge, avoid duplicate effort, and remain coherent without serializing
+or denying work. Its north star is the free flow of work, not collision avoidance.
 
 ## Core Principles
 
@@ -68,9 +70,11 @@ AI agents should start from the architecture and then inspect code with intent. 
 Klauro should understand active work before Git does. A developer's uncommitted
 changes, an agent's sandboxed edits, a teammate's feature branch, and incoming
 analyzed commits are all part of the product context. They are not durable truth
-until accepted, but they are valuable provisional facts. MCP and the UI should
-surface them with provenance so agents can deduplicate work, preserve local
-architecture, and avoid conflicts before commit, push, or merge.
+until accepted, but they are valuable provisional facts. Fabric surfaces them
+with provenance and continuously relates them to files, functions, flows,
+capabilities, and concepts. Participants can work in parallel even when their
+intent overlaps because they can see each other, share discoveries, coordinate
+semantic effects, and keep the combined system coherent as the work happens.
 
 ## What Users Should Be Able To See
 

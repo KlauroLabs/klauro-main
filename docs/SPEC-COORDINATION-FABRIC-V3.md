@@ -1,6 +1,6 @@
 # SPEC — Coordination Fabric v3 (The Free Flow of Work)
 
-> **Status:** DRAFT for review. Supersedes SPEC-COORDINATION-FABRIC-V2.md.
+> **Status:** Active and authoritative. Supersedes SPEC-COORDINATION-FABRIC-V2.md.
 > v2 is not wrong in its mechanics — it is wrong in its **axis**. Read §1 first;
 > it is the whole point of this revision.
 >
@@ -83,8 +83,10 @@ happens to sit next to an analyzer. It is a **consumer of a live, continuously-u
 - The unit of the delta is **semantic** (this symbol's contract changed; this flow gained a
   step; this capability's behavior moved), not textual (these lines differ).
 
-The seed exists: analyses already carry a **`track: 'in-flight'` (dirty working tree)**
-alongside `main` / `other-branch`. **The fabric does not consume it.** Wiring that is W0.
+The fabric consumes two explicitly distinguished sources. Participant-owned worktrees and
+participant write events publish fresh semantic streams with exact authorship. A repository-wide
+`track: 'in-flight'` remains an honest fallback for shared-tree awareness, where overlapping
+authorship cannot be inferred. The fallback never overwrites or impersonates participant streams.
 
 ### 3.2 Why git cannot be the substrate (proven, not asserted)
 
@@ -228,9 +230,9 @@ that behavior.
 Git remains the *storage/transport* of text; it is never the source of truth for *who
 changed what concept*.
 
-**Enforcement/grants** remain available as an **opt-in** tool for the rare genuinely-exclusive
-case. They are not the model, not the default, and must always degrade to
-"coordinate-with-full-context," never "denied."
+No Fabric operation grants exclusive ownership, queues a participant, or denies work. Systems
+that require application-level exclusivity must implement that domain invariant themselves;
+Fabric observes and explains those constraints without becoming an authorization layer.
 
 ---
 
@@ -238,19 +240,20 @@ case. They are not the model, not the default, and must always degrade to
 
 | ID | Workstream | Status | Note |
 |---|---|---|---|
-| **W0** | **In-flight reanalysis substrate** — live CAS incl. uncommitted work, attributed per participant, continuous | **NOT BUILT — P0** | `track:'in-flight'` exists; **the fabric does not consume it.** Everything below depends on this. Was v2's P4. |
+| **W0** | **In-flight reanalysis substrate** — live CAS incl. uncommitted work, attributed per participant, continuous | **SHIPPED; live horizontal proof open** | Fresh participant-owned semantic streams are persisted with provenance and consumed before the shared-workspace fallback. Same-symbol overlap retains both streams. Shared-tree observations remain explicitly unattributed. A 100-participant loopback fleet retains every semantic stream. |
 | W1 | Awareness surface | **LIVE** | `get_in_flight_changes`, `fab_list_active_work`, `check_collision`. Works. Keep ungated. |
 | W2 | Partitioner / scheduler | **SHIPPED** (v2 said "not built" — stale) | `plan_parallel_work`, blast-radius-aware. Remaining: live **redirect routing** (hand fungible work sideways, never park) + **throughput bench**. |
-| W3 | Conceptual-conflict detection | **SHIPPED but UNSOUND at scale** | Built on git ambient capture → attribution collapses (§3.2). **Must be re-based on W0.** The detectors themselves are good. |
-| W4 | **Mergeless** | **NOT BUILT** | `plan_intent_merge` is v2-era merge-as-art. Re-base on W0, then push from "reconcile at the end" to "never diverge." Metric: merge-decisions → 0. |
-| W5 | Write-hook (auto-announce real edits) | **NOT BUILT** | v2 P2. Kills the self-reporting drift class. Includes fixing release/complete semantics (`released_count:0`). |
-| W6 | Scoped primitives | **NOT BUILT** | "diff/isolate **only my claimed paths**" so participants never reach for `git stash`; warn on tree-global git ops while peers hold claims. Direct answer to §6.3. |
-| W7 | Claim extension mid-task | **NOT BUILT** | "I also need to touch X — safe?" Small; removes a real friction (§6.3). |
-| W8 | Blast-radius reservations + contract-freeze | **NOT BUILT** | v2 P3. **Reframed:** these are *awareness amplifiers*, not fences. A reservation that blocks needed work is a lock in disguise. |
-| W9 | Cross-machine | **NOT BUILT** | v2 P5. Required for the scale target (§1 #6): hundreds of participants are not one machine. |
+| W3 | Conceptual-conflict detection | **SHIPPED on participant streams** | Contract, structural, behavioral, duplicate, invariant, flow, step, capability, and entity overlap consume attributed state. Cross-file shared-entity overlap is covered over HTTP. |
+| W4 | **Mergeless** | **SHIPPED; iterative validation continues** | Reconciliation defaults to semantic streams. Workspace history records normalized merge-decision and surprise rates. Five reconciliation rounds over 100 mixed participants and 500 participant-observations remain at zero decisions and zero surprises. |
+| W5 | Write-hook (auto-announce real edits) | **SHIPPED with honest ambiguity** | A uniquely covered save is attributed. A save under overlapping claims becomes an `ambiguous-edit` observation and is never credited to every claimant. Participant-owned worktrees provide exact attribution. |
+| W6 | Scoped primitives | **SHIPPED** | Scoped diff/stash planning and tree-global operation warnings are implemented and tested. |
+| W7 | Claim extension mid-task | **SHIPPED** | Local and remote extensions atomically preserve identity and merge paths, symbols, contracts, consumers, and conceptual coordinates. |
+| W8 | Blast-radius reservations + contract-freeze | **PARTIAL** | CAS blast-radius awareness and declared/observed contract drift are live and non-blocking. Sustained reservation and contract-change fleet proof remains. |
+| W9 | Cross-machine | **SHIPPED and deployed** | Authenticated HTTP state, claims, extensions, in-flight semantic snapshots, conceptual awareness, metrics, and SSE updates work across machines. Fabric mutations use a separately bounded fleet-sized budget; 100 concurrent participants pass locally, and five deployed two-machine process runs retained every remote claim and extension. |
 
-**Ordering:** W0 first and alone if necessary. W3/W4 are *blocked* on it — re-basing them is
-what converts the crown jewel from "right by luck" to "right by construction."
+W0, W3, and W4 now share one participant-attributed semantic path. Local hundred-participant
+scale passes. Remaining work is deployed fanout, endurance, latency, and durability proof rather
+than a second attribution model.
 
 ---
 
@@ -289,5 +292,4 @@ by *whom*, *while it is happening*. That is exactly and only what Klauro's analy
 The fabric is not a coordination feature bolted onto an analyzer. **The analyzer is what makes
 the fabric possible, and the fabric is what makes the analyzer indispensable at scale.**
 
-Related: [[SPEC-COORDINATION-FABRIC-V2]] (superseded framing; mechanics still valid),
-[[SPEC-CONCEPTUAL-LAYER]], [[SEMANTIC-MODEL]].
+Related: [[SPEC-CONCEPTUAL-LAYER]], [[SEMANTIC-MODEL]].

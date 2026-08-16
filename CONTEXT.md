@@ -2,9 +2,9 @@
 
 ## The Thesis
 
-Klauro is the visibility layer for AI-built software.
+Klauro is the understanding and visibility layer for any software system.
 
-AI can now produce large codebases quickly, but humans still need to understand what was actually built. A working demo only proves the visible input/output path. It does not prove the internal behavior: dependencies, security assumptions, data movement, duplicate logic, untested paths, or change risk.
+Codebases have always been difficult to understand, and AI-generated volume makes that gap more acute. A working demo only proves the visible input/output path. It does not prove the internal behavior: dependencies, security assumptions, data movement, duplicate logic, untested paths, or change risk.
 
 Klauro solves that by turning codebases into a complete, queryable relationship graph.
 
@@ -45,6 +45,10 @@ The MCP server gives AI coding tools complete architectural context without read
 ### Runtime Surface: Telemetry
 
 Telemetry should eventually connect production behavior back to the same graph. Static CAS explains what the code says. Runtime data explains what actually happened.
+
+### Collaboration Surface: Fabric
+
+Fabric enables people and AI agents to collaborate in real time on any part of a software system, including the same file, function, flow, capability, or concept. Overlap is normal and can be productive. Fabric uses the live CAS and attributed in-flight analysis to keep participants aware, share knowledge, prevent duplicated effort, and preserve coherent work without serializing or denying access. Its north star is the free flow of work, not collision avoidance.
 
 ## What Good Looks Like
 

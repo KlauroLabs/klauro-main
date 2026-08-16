@@ -93,11 +93,14 @@ transports.
 
 | Route | Semantics |
 | --- | --- |
-| `POST /v1/coordination/claim` with `{"mode":"advisory", workspace, agent_id, intent, paths[], symbols[], ttl_ms?, claim_id?}` | Advisory awareness claim: **always succeeds**, returns server-assigned `seq` (authoritative cross-machine ordering), `server_time`, and inline `conflicts` + `warning` when the paths overlap another active claim. Without `mode:'advisory'` the route is the pre-existing ENFORCED grant path (unchanged). |
+| `POST /v1/coordination/claim` with `{workspace, agent_id, intent, paths[], symbols[], concept?, produces?, consumes?, ttl_ms?, claim_id?}` | Publishes an attributed stream and always succeeds, including overlapping work. Returns relationship context; contracts and conceptual coordinates persist on the shared board. `mode:'advisory'` remains a compatibility input with the same non-blocking semantics. |
+| `POST /v1/coordination/extend` | Atomically extend an active advisory claim with paths, symbols, contracts, consumers, or a conceptual coordinate while preserving claim identity. Overlap is returned as awareness and never blocks. |
+| `POST /v1/coordination/in-flight` | Publish a redacted semantic snapshot with explicit attribution provenance. Participant-owned streams remain distinct even when agents change the same symbol. Shared-tree observations are stored but never treated as exact authorship. |
 | `POST /v1/coordination/check` `{workspace, agent_id?, paths[]}` | Read-only overlap preflight against the shared log. Never a gate. |
-| `GET /v1/coordination/active?workspace=` | Every active (non-expired) advisory claim — the shared awareness surface. |
+| `GET /v1/coordination/active?workspace=` | Active claims, contract/concept boards, and fresh redacted in-flight semantic streams. |
 | `POST /v1/coordination/release` `{workspace, agent_id}` (no `claim_id`) | Release **all** of the agent's active claims (fab `release` parity). With `claim_id` it remains the enforced-grant release. |
-| `GET /v1/coordination/state` / `GET /v1/coordination/stream` | Pre-existing full state + SSE delta stream; unchanged, useful for dashboards. |
+| `GET /v1/coordination/metrics?workspace=` | Cumulative merge-decision, surprise, and unattributed-change counts and normalized rates. |
+| `GET /v1/coordination/state` / `GET /v1/coordination/stream` | Full state plus live claim and redacted semantic-delta SSE events. |
 
 ## TTL / heartbeat model
 
@@ -143,14 +146,21 @@ fast (10s timeout) rather than hanging an agent.
 - **Single service process.** The SSE fanout and the per-workspace lockfile
   assume one analyzer-service process owning the store dir (the deployed
   shape today).
-- **Shared-token tenancy.** Anyone with the analyzer token can read/write any
-  workspace's claims. Fine for one team; per-workspace scoping is future work.
+- **Shared working trees cannot reveal authorship from filesystem events alone.** Run
+  `fab watch <agent> --participant-worktree` only when that checkout/worktree belongs to that
+  participant. Without the flag, observations are labeled `workspace-tree` and remain visible but
+  unattributed. Participant-owned worktrees or editor/agent write events are required for exact
+  same-symbol attribution.
+- **Operator-token scope.** Personal account sessions can read and mutate Fabric state only for
+  projects and workspaces where that account is a member. The deployment-wide analyzer token is an
+  operator credential with cross-workspace access and must not be distributed as a customer token.
 
 ## Verified by
 
 - `apps/mcp-server/src/remote-coordination-routes.test.ts` — route + transport
-  contract (auth gate, two-machine conflict flow, heartbeat/LWW, TTL expiry,
-  20-way concurrency, typed transport errors).
+  contract (auth gate, two-machine conflict flow, same-symbol participant streams,
+  cross-file conceptual overlap, contract/claim extension, mergeless metrics,
+  heartbeat/LWW, TTL expiry, 20-way concurrency, typed transport errors).
 - `apps/mcp-server/scripts/fab-remote-e2e.ts` — the analyzer service plus two
   real fab.ts OS processes with isolated local stores, configured PURELY via
   one `klauro init` per machine (every FAB_/KLAURO_ env var scrubbed from

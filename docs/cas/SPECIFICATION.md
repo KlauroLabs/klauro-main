@@ -38,7 +38,7 @@ There is one structure — the CAS — and it nests. A CAS is a unit of code ana
 
 ## Version History
 
-This document specifies version 2.0.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 2.2.0 of the Code Analysis Specification. The evolution of CAS includes:
 
 - **[Version 1.0.0](./v1.0.0.md)** - Initial release with core nodes, edges, and basic metadata
 - **[Version 1.1.0](./v1.1.0.md)** - Added progressive levels, entry/exit points, and extended metadata
@@ -101,8 +101,7 @@ interface CAS {
 
   // Composition (only meaningful when has_children — §0.3)
   children?: CAS[];             // this CAS's full sub-CAS-node objects. Absent, not
-                                 // empty-array, at a leaf. NOT YET BUILT beyond the
-                                 // single-repo (deployable) level — see the note below.
+                                 // empty-array, at a leaf.
   seams?: CASSeamInventory;     // inter-sub-CAS-node communication seams — §0.8. Absent
                                  // when this CAS has fewer than two sub-CAS nodes.
   composition_mode?: 'derived' | 'composed';  // §0.6 — required on every non-leaf CAS
@@ -118,7 +117,7 @@ interface CAS {
 
 `CAS` MUST NOT carry a `scope_type`, `analysis_kind`, or any similarly-named field holding a closed enumeration of node levels (`organization | domain | project | deployable` or any similar list). A producer or consumer MUST NOT branch behavior on `label`. §0.3 states every property that formerly depended on such a type as a derived property instead, and every one of those derivations is already computed by the codebase this specification describes.
 
-**`children` above is the full recursive envelope — not yet built beyond one level of the recursion.** Today, only the single-repo, deployable-level case is implemented: a promoted CAS exposes `sub_cas_nodes` (§0.4), a lightweight rollup/index (`SubCasNodeIndex` — `promoted`, `units: SubCasNodeIndexEntry[]`, coverage/orphan counts, `reason`) rather than full nested `CAS` objects for each child. `sub_cas_nodes` is the field this specification renames from `das_index`; `children` is the aspirational full-object shape a future cross-repo/organization-level implementation would populate. A reader MUST NOT assume `children` is populated today — check `sub_cas_nodes` for the shipped deployable-level case, and treat multi-repo/organization-level recursion as specified but not yet implemented (§0.12).
+**`children` is the implemented recursive truth envelope.** Promoted repository analyses materialize child CAS objects, workspace analyses compose repository CAS objects, and those children may themselves contain children to arbitrary depth. `validateCasTree` enforces identity, parent linkage, acyclicity, leaf shape, graph presence, and `composition_mode` without a depth maximum. `sub_cas_nodes` (§0.4) is a bounded discovery and coverage projection for promoted repositories; it is not a second CAS tree and never substitutes for `children`.
 
 Rationale: a closed vocabulary requires a schema change, a migration, and a naming decision every time a user's organization introduces a level the enumeration did not anticipate (a subdomain, a squad, a bounded context, a tenant, a region). Two users may use different words for structurally identical levels, and both are correct; since no field switches on the word, neither the producer nor the consumer needs to reconcile the vocabulary.
 
@@ -128,7 +127,7 @@ None of the following properties are stored. Each is computed at read time from 
 
 | property | derivation | what it drives |
 |---|---|---|
-| `has_children` | true iff `sub_cas_nodes` is non-empty | whether a system map is renderable for this CAS |
+| `has_children` | true iff `children` is present and non-empty | whether a system map is renderable for this CAS |
 | is a leaf | `has_children === false` | whether an architecture map is renderable for this CAS |
 | source-backed | this CAS has its own file set (`tier1.nodes` etc. computed from source, not composed) | whether Tier 1-3 are computed from source (§0.6) or composed from children |
 | ship-backed | `tier2.deployable_evidence` (Field Catalog §4.16) contains at least one tier-qualified row for this CAS, per the promotion predicate in `docs/SPEC-DEPLOYABLE-DETECTION.md` | whether this leaf is presented as "ships as a unit" |
@@ -152,13 +151,13 @@ shouldPromote(cas) := tierQualifiedShipUnits(cas.tier2.deployable_evidence).leng
 
 A build-target row that declares the SAME binary through two conventions at once MUST be deduplicated to one surviving row before the threshold check, so a single shipped artifact is never counted twice. A repo that resolves to exactly one ship unit — the overwhelming common case — MUST NOT promote, regardless of its size, folder count, or internal module boundaries. Promotion is a gate driven by ship evidence, not a preference driven by repo size, and it applies identically at every level of the recursion: an organization "promotes" child repos into sub-CAS nodes the same way a repo promotes deployables, driven by the same kind of evidence (a connected git repo, a declared workspace member) rather than folder layout.
 
-### `sub_cas_nodes` — the schema name, and why
+### `sub_cas_nodes` — discovery projection, not recursive truth
 
-The rollup a promoted CAS exposes is `sub_cas_nodes`: the array of this CAS's child `CAS` nodes, at whatever granularity promotion resolved (deployables within a repo; member repos within a workspace; anything else the recursion admits). This is a rename of the field formerly called `das_index` — **no alias, no dual-read, no `das_index` fallback.** A stored analysis carrying the old field name is not read through a compatibility shim; it is re-analyzed under 2.0.0, exactly as any other `cas_version` major-line change already forces (Field Catalog `docs/cas/VERSIONING.md`).
+The full child objects live only in `CAS.children`. Repository summary and scoped-query surfaces additionally expose `sub_cas_nodes`, a projection containing child identifiers, labels, promotion evidence, graph coverage, shared/orphan counts, and pagination metadata. It lets a caller discover available child scopes without loading every child graph. It is a rename of the former `das_index` projection — **no alias, no dual-read, no `das_index` fallback.** A stored analysis carrying the old field name is re-analyzed under the current major CAS version.
 
 `sub_cas_nodes` was chosen over `child_cas_nodes` for one reason: "sub-CAS node" is the exact term this specification uses in prose throughout §0 for a child, so the field name reads as the same word a reader already has, not a synonym for it. `child_cas_nodes` is not wrong, but it introduces a second term for the same concept the moment a reader has to hold both "sub-CAS node" (prose) and "child" (field) in mind at once.
 
-**`sub_cas_nodes` itself is always attached, promoted or not — this is a deliberate exception to the absent-not-zero-filled rule (§0.9), stated explicitly so the two are not confused.** A CAS with fewer than 2 qualified units MUST return `sub_cas_nodes: { promoted: false, units: [] }` with every count field zeroed — never omitted, and never a synthesized one-entry unit list — with `reason` distinguishing "0 qualified" from "1 qualified, below threshold". The reason this differs from §0.9's rule for `seams` (absent, not zero-filled, when there are fewer than two sub-CAS nodes) is that `sub_cas_nodes.reason` answers a question a caller actually asked ("did this promote, and why or why not") with real evidence behind the answer, whereas a zero-filled seam count asserts a coupling fact (no interaction exists) that is only meaningful once there is more than one node to interact. Non-promotion is itself a fact worth reporting; the absence of inter-node interaction between fewer than two nodes is not a fact, it is a category error.
+**The `sub_cas_nodes` projection is always returned by the repository discovery surface, promoted or not.** Fewer than two qualified units returns `{ promoted: false, units: [] }` with evidence counts and a reason distinguishing zero qualified units from one unit below threshold. This does not put an empty `children` array on a leaf CAS. The discovery projection answers whether promotion occurred; recursive truth continues to follow the absent-at-leaf rule.
 
 ## 0.5 Tiers 1-5 overview
 
@@ -172,7 +171,7 @@ Every CAS, at every depth, carries the same four tiers of analytical content (a 
 | **4 — Realtime Telemetry** | observed runtime behavior attached to Tier 3 (which flows execute, real latency/error rates, dormant vs. hot capabilities) | Tiers 1-3 | optional; absent, never zero-filled, when no telemetry exists |
 | **5 — Action / Fabric** *(out of scope)* | proposals, work claims, conflict/collision detection, multi-agent coordination | Tiers 1-3 (materially better with 4) | overlay, stored separately, not part of the CAS structure |
 
-A tier may consume any tier below it and MUST NOT consume, or be synthesized from, a tier above it. This is enforced only at the derivation layer today (documented-only at the mechanical-check level; see the Field Catalog's semantic-rules section for the proven-defect citation this rule exists to prevent — a Tier 3 code path once read a raw Tier 1 label directly and misclassified every framework-less HTTP server as a library).
+A tier may consume any tier below it and MUST NOT consume, or be synthesized from, a tier above it. An exhaustive production-module registry and import boundary gate enforce this dependency direction for analyzer-core, with separate MCP telemetry and Fabric boundary gates.
 
 ### 0.5.1 Journeys and workflows collapse into flows
 
@@ -182,7 +181,7 @@ There is no fifth comprehension member, and no sixth. `workflows` and `user_jour
 
 ### 0.5.2 ICELOT and comprehension, restated
 
-**ICELOT** = **I**nput, **C**onstraints, **E**ffects, **L**ogic, **O**utput, **T**elemetry — the six-facet contract every unit in a CAS carries, at node/step/flow/capability granularity. It is a derivable projection over Tier 1 facts, not a stored per-node field. ICELOT's `T` is *declared* telemetry capacity (log sites, metric registrations, span creation) read off static facts — it is not Tier 4. Tier 4 is *observed* runtime behavior, joined at query time. A conforming implementation MUST NOT populate ICELOT's `T` from static capacity alone and MUST NOT describe declared capacity as an observation.
+**ICELOT** = **I**nput, **C**onstraints, **E**ffects, **L**ogic, **O**utput, **T**elemetry — the six-facet behavioral contract below capability, at code-unit, step, and flow granularity. Capabilities state product purpose and do not carry ICELOT. ICELOT is a derivable projection over Tier 1 facts, not a competing comprehension model. Its `T` records statically declared telemetry capacity such as log sites, metric registrations, and span creation; Tier 4 separately records observed runtime behavior. Static declarations MUST NOT be described as runtime observations.
 
 **Comprehension** = **Capabilities, Flows, Steps, Entities** — exactly four members: not three, not five, not six. This bar is closed, not open-ended: `journeys`, `workflows`, and any future named path/grouping view (a "scenario", a "use case", a "process") are all the same shape of thing — a derived, presentation-only projection over `flows` — and MUST be implemented that way rather than as a new tier-3 member, no matter how naturally it seems to want its own stored builder. Full field-level definitions (structural anchoring rules, the M:N capability-flow relationship, step/code mapping, persisted-entity evidence gating) live in the Field Catalog, Part 1 §4.15 onward, unchanged in shape from pre-2.0.0.
 
@@ -273,7 +272,7 @@ Every seam carries a `modality` — exactly one of three:
 
 A seam that cannot cite one of these evidence classes MUST NOT be emitted — an asserted seam with no evidence is the fabrication class this product has spent real effort purging elsewhere, and communication seams are not exempt.
 
-Two additional `kind` values exist in the type (`cross_repo_contract`, `device_io`) alongside `exit_point`/`messaging`/`passive_state`; `device_io` is implemented (hardware boundaries, classified `sync`/`async` per above). **`cross_repo_contract` is declared but not implemented** — see §0.8.4.
+Additional implemented kinds include `cross_repo_contract`, `shared_dependency`, and `device_io`. Workspace composition emits cross-repository seams from resolved application links; shared runtime dependencies form passive seams; hardware boundaries are classified `sync` or `async` from evidence.
 
 ### 0.8.2 Seams between sub-CAS nodes specifically
 
@@ -285,7 +284,7 @@ This matters for what a reader should expect: two sub-CAS nodes that genuinely c
 
 Passive seams (§0.8.1) already cover the shared-entity case: the same entity written by one component and read by another is reported as a `passive` seam with `shared_resource` naming the entity, and this is explicitly called out in the implementation's own comments as "the subtle one nobody models." **The same entity modelled independently in three sub-CAS nodes is reported separately** — as `tier3.entities` deduplication-by-identity surfacing the duplication (§0.7), not as a communication seam — the two mechanisms are complementary: entity duplication says "these three components think they own the same concept"; a passive seam says "these two components actually read/write the same live data."
 
-**Shared-dependency seams — using the same third-party library — are not currently modelled as a seam at all.** Two sub-CAS nodes both depending on the same library appear in each one's own `tier2.dependency_manifest`; nothing in `communication-seams.ts` correlates that overlap into a seam or a finding. This is a gap (§0.8.4), not an implemented surface.
+**Shared-dependency seams are implemented at workspace composition.** `buildSharedDependencySeams` correlates exact `(ecosystem, name)` identities from each child's runtime-scoped dependency declarations. These seams are passive and undirected because co-declaration proves shared structural coupling, not producer/consumer direction.
 
 ### 0.8.4 Direction, cardinality, and honest gaps
 
@@ -300,7 +299,7 @@ A seam is not symmetric. `sync` and `async` seams are directed (`source` initiat
 | Shared-dependency seams | **Implemented** (§0.8.3). `buildSharedDependencySeams` correlates each repo's own `dependency_manifest.dependencies` by exact `(ecosystem, name)` match, filtered to `runtime`-scoped declarations (a structural field on the dependency record, never a name list). Always `passive` and undirected — co-declaration carries no producer/consumer evidence — `kind: 'shared_dependency'`, confidence 0.55 (the weakest evidence band this mechanism emits: a real structural coupling, not an observed interaction). |
 | A cap on seam count / truncation behavior | **Not observed in the classifier.** `classifyCommunicationSeams` and `buildSeamInventory` do not truncate; if a response-size budget elsewhere in the MCP layer truncates the served list, that is a serialization-layer concern, not a property of the seam data itself, and MUST be stated explicitly to the caller when it happens (§0.9) rather than silently shortening the list. |
 
-**Both extremes, restated for seams specifically.** A CAS with one sub-CAS node, or none, has no inter-node seams and MUST report **no seam surface at all** (`seams` absent) rather than a zero-filled `{ sync: 0, async: 0, passive: 0 }` inventory — absent structure is not a gap (§0.9). The current implementation already gets the leaf case right (no `deployable_inventory` when `deployable_evidence` is empty) but has one known deviation: `deployable_inventory` presence today is gated on the raw count of `deployable_evidence` rows, not on the count of rows that actually qualify as ship boundaries (`isShipBoundary`) — so a CAS with only non-qualifying `server-entry` rows can still emit a `deployable_inventory` whose components are module-root fallbacks, not real deployable names, mislabeled `level: 'deployable'`. This is a precision bug against the both-extremes rule, not a design choice, and is tracked in §0.12.
+**Both extremes, restated for seams specifically.** A CAS with one sub-CAS node, or none, has no inter-node seams and MUST report **no seam surface at all** (`seams` absent) rather than a zero-filled `{ sync: 0, async: 0, passive: 0 }` inventory — absent structure is not a gap (§0.9). `deployable_inventory` requires at least two distinct `isShipBoundary` roots. Non-qualifying `server-entry` rows neither name deployable components nor cause a deployable inventory to appear.
 
 ### 0.8.5 How seams compose upward
 
@@ -308,7 +307,7 @@ Per the derivation gradient (§0.6) and the composition rule (§0.7): a repo-lev
 
 ## 0.9 Both extremes are first-class
 
-A CAS with no children is **complete**, not deficient. It MUST NOT carry an empty parent-level surface (a zero-filled `sub_cas_nodes`, a manufactured single-entry rollup, a `seams` object reporting `0/0/0`) to look like a smaller version of a workspace — those fields are simply absent. A CAS with hundreds of children MUST NOT silently truncate what it reports; if a response-size budget requires bounding a list (seams, sub-CAS nodes, entities), the bound and the true total MUST both be stated, never a quietly shortened list presented as complete. No metric anywhere in this specification is permitted to read as failure at either end of the size spectrum: a single-repository company and a thousand-repository enterprise are both fully served by the same structure, and neither is a degraded case of the other.
+A CAS with no children is **complete**, not deficient. It omits `children` and parent-level `seams`; it never manufactures a single-entry recursive tree or a zero-filled seam inventory. A separate repository discovery response may return an empty `sub_cas_nodes.units` projection with the evidence-backed reason promotion did not occur (§0.4). A CAS with hundreds of children MUST NOT silently truncate what it reports; bounded responses state the bound and true total.
 
 ## 0.10 Semantic rules and invariants (recursion-level)
 
@@ -324,7 +323,7 @@ A CAS with no children is **complete**, not deficient. It MUST NOT carry an empt
 
 This is a greenfield change, stated as policy rather than left implicit:
 
-- **No alias, no dual-read.** `sub_cas_nodes` is the only name for the field formerly called `das_index`. Code MUST NOT accept both names, MUST NOT emit both, and MUST NOT carry a `@deprecated` marker pointing from one to the other.
+- **No alias, no dual-read.** `sub_cas_nodes` is the only name for the discovery projection formerly called `das_index`; `children` is the only recursive child-object field. Code MUST NOT accept or emit `das_index`.
 - **No migration code.** A stored pre-2.0.0 analysis is not read through a compatibility mapping. `cas_version` moving from `1.11.0` to `2.0.0` is a MAJOR bump under the existing, unrelated CAS versioning policy (`docs/cas/VERSIONING.md`) — which already treats a different-major stored analysis as `unsupported`/`newer-major` and returns a re-analysis instruction. That existing mechanism is sufficient; nothing new was built to "handle" old analyses, because the correct handling is re-analysis, not a read path.
 - **Stored analyses do not constrain this specification.** Existing on-disk analyses are development artifacts, not customer commitments to preserve. If a 2.0.0 server cannot read a 1.x analysis, that is correct behavior, not a gap to patch.
 - **Delete rather than deprecate.** A function, type, field, or file that existed only to support the three-separate-structure model is removed, not marked legacy and left in place. §0.12 and the accompanying report state exactly what this pass removed versus what remains as follow-on work, so nothing is silently left half-migrated.
@@ -334,13 +333,13 @@ This is a greenfield change, stated as policy rather than left implicit:
 
 Recursion-level gaps, stated here so a consumer does not assume more coverage than exists. Field Catalog-level gaps (framework version/purpose, node-role taxonomy beyond route-handler/persisted-entity, dependency role classification, entity↔capability linkage asymmetry) are unchanged in shape from before 2.0.0 — see the Field Catalog's own gap material for those.
 
-1. ~~Workspace-level (cross-repo) communication seams are not implemented~~ **Resolved.** `SeamLevel: 'workspace'` and `kind: 'cross_repo_contract'` are set by `buildWorkspaceCommunicationSeams` (§0.8.4). Two related mechanisms remain genuinely separate, not yet unified: `buildCrossRepoContractDrift` (`apps/mcp-server/src/product.ts`) is field-level contract-shape drift detection, a different question from seam presence/modality, and there is still no reachable customer entry point that *builds* the parent CAS in the first place (see item 7).
+1. ~~Workspace-level (cross-repo) communication seams are not implemented~~ **Resolved.** `buildWorkspaceCommunicationSeams` emits `SeamLevel: 'workspace'` and `kind: 'cross_repo_contract'`. Contract-shape drift remains a distinct analysis because it answers a different question from seam presence and modality.
 2. ~~Shared-dependency seams are not implemented~~ **Resolved.** `buildSharedDependencySeams` correlates `dependency_manifest.dependencies` by exact `(ecosystem, name)` match across sub-CAS nodes, `runtime`-scoped only (§0.8.3).
-3. **Cross-sub-CAS-node name correlation is evidence-thin** (§0.8.2). A seam is only recognized when both sides name the same target string or the same shared entity; inconsistent naming between a caller's declared target and a callee's own identity produces no seam, with no resolution mechanism today. This is unchanged by item 1's resolution: `buildWorkspaceCommunicationSeams` re-expresses whatever the underlying `application_links` matching already found (route/topic/import evidence for direction; name-correlated `shared-data` links, themselves sourced from `detectSharedEntityLinks`, for the undirected case) — it does not add a new resolution step for inconsistent naming. Entity-anchoring direction is a further, distinct gap: task #128 found that anchoring records a type's CONSUMED occurrences but never its PRODUCED/emitted ones, so a service that only emits a shared contract type (e.g. `UserLoggedInMessage`) never anchors it at all — until that lands, this specification's seam mechanisms deliberately do not assert a producer/consumer direction for shared-type evidence, reporting it `passive`/undirected rather than guessing which side emits.
-4. **`deployable_inventory` presence is gated on the wrong count** (§0.8.4). It should require at least one ship-boundary-qualified (`isShipBoundary`) deployable, not merely a non-empty `deployable_evidence` array, to honor the both-extremes rule (§0.9) precisely.
-5. **`composition_mode` and cycle detection are documented-only.** No enforcement exists because the recursive structure beyond the single-repo (deployable) level is not yet built.
+3. **Cross-sub-CAS-node name correlation remains evidence-thin** (§0.8.2). A seam is recognized when route, topic, package, topology, or shared-resource evidence resolves both sides. Inconsistent naming between a caller's declared target and a callee's identity can still leave a seam unresolved. Shared-data direction is no longer guessed or forced to be undirected: writer-only entity lifecycle and mutating database operations produce `publisher` interfaces, reader-only lifecycle and query operations produce `listener` interfaces, and a resource-indexed join emits writer-to-reader links; mixed or unknown access remains `shared`. Emitted contract-type anchoring remains a separate gap: CAS does not yet anchor every produced type occurrence independently of topic/resource evidence, so a service that only emits a shared contract type under an unrelated name may remain unresolved rather than receiving a fabricated direction.
+4. ~~`deployable_inventory` presence is gated on the wrong count~~ **Resolved.** The classifier filters through `isShipBoundary` and emits a deployable inventory only for at least two distinct qualified roots. A server-entry-only regression fixture proves the inventory remains absent.
+5. ~~`composition_mode` and cycle detection are documented-only~~ **Resolved.** `composeCas` materializes parent graphs and calls `assertValidCasTree`; repository promotion and workspace composition use the same validator. Depth-four, cycle, duplicate-id, parent-link, leaf-shape, and serialization fixtures enforce the contract.
 6. **Composition Option A vs. B is chosen per pre-2.0.0 precedent (`composed`), not freshly re-litigated at every level.** A future implementation MAY choose `derived` at some level for a specific reason; this specification does not forbid it, only requires the choice be declared (§0.7).
-7. **No reachable customer path builds a parent CAS.** `buildCrossCodebaseSystemGraph`/`buildWorkspaceCommunicationSeams` exist and are exercised by `workspace-analysis`/`cross-codebase-analysis` in `apps/mcp-server/src/cli.ts`, and the shipped client (1.0.134) includes those subcommands, but there is no guided onboarding path (analogous to the single-repo `analyze_codebase` MCP flow) that walks a customer from "I have several repos" to a stored, queryable parent analysis. This is a distribution/onboarding gap, not a computation gap — the mechanism this section describes runs correctly once invoked.
+7. ~~No reachable customer path builds a parent CAS~~ **Resolved.** The installed MCP exposes `run_workspace_analysis` and `get_workspace_analysis`, describes the former as the multi-repository analogue of `analyze_codebase`, and returns follow-up calls for polling and evidence retrieval. The CLI exposes the equivalent `workspace-analysis` flow.
 
 ---
 

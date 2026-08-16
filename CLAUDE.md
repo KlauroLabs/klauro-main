@@ -1,8 +1,8 @@
-# Klauro - Visibility Layer for AI-Built Software
+# Klauro - Software Understanding Platform
 
 ## What This Project Is
 
-Klauro helps humans and AI agents understand what a codebase actually does. The core product is a trustworthy Code Analysis Specification (CAS) graph that captures code elements, relationships, entry points, exit points, tests, risks, and framework semantics.
+Klauro helps humans and AI agents understand what any software system actually does. The core product is a trustworthy Code Analysis Specification (CAS) graph that captures code elements, relationships, entry points, exit points, tests, risks, and framework semantics. Software produced heavily with AI may experience the need more acutely, but it is not a separate product category and does not define Klauro's scope.
 
 The product has two first-class surfaces over the same CAS truth layer:
 
@@ -13,9 +13,9 @@ Runtime telemetry completes the loop later by comparing static structure against
 
 ## Product Framing
 
-AI-built software is often judged by inputs and outputs: prompt in, app out, demo works. That is not enough. Humans still need behavior-level visibility into the internals: which paths exist, which components depend on each other, what data crosses boundaries, what security assumptions exist, what tests cover the behavior, and what breaks when something changes.
+Software is often judged by inputs and outputs: requirements in, application out, visible paths work. That is not enough. Humans and agents still need behavior-level visibility into the internals: which paths exist, which components depend on each other, what data crosses boundaries, what security assumptions exist, what tests cover the behavior, and what breaks when something changes. AI-generated volume increases the urgency of this old problem; it does not narrow the market.
 
-Klauro is the visibility layer for that world.
+Klauro is the understanding and visibility layer for software.
 
 ## Using Klauro MCP By Default
 

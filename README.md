@@ -1,7 +1,8 @@
-# Klauro Proof Of Concept
+# Klauro
 
-This repository is now organized around the parts of Klauro that remain product-critical:
-CAS analysis, agent-facing MCP context, hosted analyzers, proposal previews, incremental analysis, idiom intelligence, and future SDK/local install surfaces.
+Klauro is the software-understanding platform for any codebase. It builds a trustworthy CAS relationship graph, turns that graph into behavior-level comprehension for people and AI agents, enables real-time collaboration through Fabric even when participants work on overlapping concepts, and correlates static understanding with runtime evidence.
+
+Software produced heavily with AI may benefit disproportionately from that visibility, but it is not a separate product category and does not define Klauro's scope.
 
 ## Layout
 
@@ -12,7 +13,7 @@ CAS analysis, agent-facing MCP context, hosted analyzers, proposal previews, inc
 - `docs/` - CAS, MCP, customer onboarding, and architecture documentation.
 - `infrastructure/` - deployment and hosted analyzer infrastructure when present at the repository parent.
 
-See [docs/mcp/ANALYZER-COVERAGE.md](/Users/michaelshattuck/dev/unravl/proof-of-concept/docs/mcp/ANALYZER-COVERAGE.md) for the current language, framework, and architecture-defining library coverage.
+See [docs/mcp/ANALYZER-COVERAGE.md](docs/mcp/ANALYZER-COVERAGE.md) for the current language, framework, and architecture-defining library coverage.
 
 ## Current Product Center
 

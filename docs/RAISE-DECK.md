@@ -223,12 +223,12 @@ file) and is flagged honestly below as in-progress, not shipped.
   (`docs/SPEC-DEPLOYABLE-DETECTION.md` §5a). Verified on a real messy repo: a folder-name
   over-count of 18 "deployables" corrected to the true 4, with the remaining unshipped
   test/demo binaries correctly excluded.
-- **The full coordination fabric is reachable**: the awareness substrate (`get_active_agents`,
-  `check_collision`, `get_in_flight_changes`) is live and returns holder identity, intent, and
-  lease status without gating; the opt-in exclusive-grant tool (`claim_work`/`grant-manager.ts`)
-  is tested end-to-end (8/8 assertions: same-symbol collision queued not granted, FIFO queue
-  advancement, stale-lease takeover, heartbeats, disjoint-symbol work running free, redirect
-  hints returned).
+- **The full coordination fabric is reachable**: `claim_work`, `get_active_agents`,
+  `check_collision`, and `get_in_flight_changes` retain attributed streams and share literal,
+  conceptual, contract, and intent relationships in realtime. Overlapping work remains active;
+  no Fabric path grants permission, queues participants, or serializes execution. The current
+  proof retains 100 mixed human/agent streams through five reconciliation rounds with zero merge
+  decisions or surprises, plus five deployed two-machine runs with every claim and extension retained.
 
 ---
 

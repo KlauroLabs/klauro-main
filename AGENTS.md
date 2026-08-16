@@ -1,8 +1,8 @@
-# Klauro - Visibility Layer for AI-Built Software
+# Klauro - Software Understanding Platform
 
 ## What This Project Is
 
-Klauro helps humans and AI agents understand what a codebase actually does. The core product is a trustworthy Code Analysis Specification (CAS) graph that captures code elements, relationships, entry points, exit points, tests, risks, and framework semantics.
+Klauro helps humans and AI agents understand what any software system actually does. The core product is a trustworthy Code Analysis Specification (CAS) graph that captures code elements, relationships, entry points, exit points, tests, risks, and framework semantics. Software produced heavily with AI may experience the need more acutely, but it is not a separate product category and does not define Klauro's scope.
 
 The product has two first-class surfaces over the same CAS truth layer:
 
@@ -13,9 +13,9 @@ Runtime telemetry completes the loop later by comparing static structure against
 
 ## Product Framing
 
-AI-built software is often judged by inputs and outputs: prompt in, app out, demo works. That is not enough. Humans still need behavior-level visibility into the internals: which paths exist, which components depend on each other, what data crosses boundaries, what security assumptions exist, what tests cover the behavior, and what breaks when something changes.
+Software is often judged by inputs and outputs: requirements in, application out, visible paths work. That is not enough. Humans and agents still need behavior-level visibility into the internals: which paths exist, which components depend on each other, what data crosses boundaries, what security assumptions exist, what tests cover the behavior, and what breaks when something changes. AI-generated volume increases the urgency of this old problem; it does not narrow the market.
 
-Klauro is the visibility layer for that world.
+Klauro is the understanding and visibility layer for software.
 
 ## Using Klauro MCP By Default
 
@@ -65,14 +65,14 @@ Use `evaluate_agent_readiness` to decide whether a repository is ready for agent
 ### Active Monorepo Layout
 
 - `apps/mcp-server/`: the agent-facing MCP server, CLI, hosted analyzer service entrypoint, proof gauntlets, proposal previews, and remote sync.
-- `packages/analyzer-core/`: the CAS analyzer engine, CAS types, idiom/invariant extraction, incremental analysis, embeddings, and SDK source. Some legacy Nest API files remain here only because analyzer tests and dependency wiring still share the old package boundary.
+- `packages/analyzer-core/`: the CAS analyzer engine, CAS types, idiom/invariant extraction, incremental analysis, embeddings, and AI configuration. It contains no duplicate customer API or analyzer-registration shell.
 - `legacy/web/`: old Next.js prototype surface. Treat as reference until the new designed UI is rebuilt.
 - `legacy/database/`: old SQL/database reference material. Do not treat as current production schema unless a current migration explicitly points at it.
 - `docs/`: CAS, MCP, customer, and architecture documentation.
 
 ### CAS Analyzer (`packages/analyzer-core/src/analyzer/`)
 
-- TypeScript/NestJS analyzer engine.
+- TypeScript analyzer engine.
 - Multi-language analysis for TypeScript/JavaScript, Python, Java, C#, Dart, Go, Rust, and PHP.
 - Framework analyzers for NestJS, React, Express, Django, Flask, FastAPI, Laravel, Spring Boot, ASP.NET Core, Flutter/Dart mobile apps, .NET worker services, and others.
 - Library analyzers for package-specific semantics such as ORMs, routing, state, realtime, and data fetching.
@@ -100,9 +100,8 @@ Use `evaluate_agent_readiness` to decide whether a repository is ready for agent
 There is no top-level all-in-one command. Run commands from the relevant package.
 
 ```bash
-# Analyzer core package (legacy API shell retained for compatibility)
+# Analyzer core package
 cd packages/analyzer-core
-npm run dev
 npm run build
 npm run test
 
@@ -117,11 +116,6 @@ cd apps/mcp-server
 npm run start
 npm run typecheck
 
-# Database migrations
-cd packages/analyzer-core
-npm run migrate
-npm run migrate:up
-npm run migrate:down
 ```
 
 ## Working Priorities

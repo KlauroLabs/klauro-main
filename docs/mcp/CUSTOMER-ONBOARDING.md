@@ -9,33 +9,36 @@ result should be one coherent CAS-backed experience (repo- and workspace-level) 
 
 ## First Ten Minutes
 
-Current private distribution path:
+macOS and Linux:
 
 ```bash
-node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /absolute/path/to/repo --first-value --claude-md /absolute/path/to/repo
+curl -fsSL https://mcp.klauro.com/install.sh | sh
+klauro login --email you@example.com
+cd /absolute/path/to/repo
+klauro init
+klauro analyze
+klauro doctor
 ```
 
-The installer verifies Node/npm, installs dependencies if needed, builds deterministic `dist/` artifacts, registers the MCP server when Claude Code is available, writes or prints agent operating-loop instructions, runs MCP startup checks, and with `--first-value` returns a first agent work-context summary.
+Windows PowerShell:
 
-After install, the direct CLI path is:
-
-```bash
-cd apps/mcp-server
-node dist/cli.cjs init /absolute/path/to/repo
-node dist/cli.cjs upload-manifest /absolute/path/to/repo
-node dist/cli.cjs analyze /absolute/path/to/repo --analysis-focus agent-fast
-node dist/cli.cjs doctor /absolute/path/to/repo
-node dist/cli.cjs install-agent /absolute/path/to/repo
+```powershell
+irm https://mcp.klauro.com/install.ps1 | iex
+klauro login --email you@example.com
+Set-Location C:\absolute\path\to\repo
+klauro init
+klauro analyze
+klauro doctor
 ```
 
-The future public-package equivalent is `klauro ...` once packaging and licensing are switched on. Do not tell customers to use `npx @klauro/cli` until that package is actually published.
+The installer downloads the checksum-verified platform executable, smoke-tests it, and installs `klauro`. If no executable is available for the platform, it explicitly offers the dependency-free npm-package fallback. `klauro init` binds the repository, writes the local policy files, configures supported agent clients, and enables Fabric when the account and workspace permit it. `klauro analyze` submits the filtered committed-source context to the hosted analyzer and waits for a queryable CAS.
 
 Expected customer-visible outputs:
 
 - `.klaurorc` with analyzer mode, analyzer URL, project identity, upload policy, and source rules.
 - `.klauroignore` with repo-specific privacy exclusions.
 - Upload manifest showing exactly which files would be sent.
-- CAS stored locally in the MCP cache.
+- Hosted CAS identity and bounded response cache stored locally for MCP access.
 - Agent defaults installed under `.klauro/`, including the K15/K5 capsule-only
   loop for token-minimal agent context.
 - A portable skill written to `.klauro/skills/klauro/SKILL.md` so Claude,
@@ -118,7 +121,6 @@ image runs inside the customer's network.
 
 | Option | Who runs analyzers | Analyzer IP exposure | Best for | Status |
 | --- | --- | --- | --- | --- |
-| Local analyzer | Customer machine | Highest; analyzer code is local | Internal development and early demos | Implemented and tested |
 | Connected-repo hosted analyzer | Klauro infrastructure | Lowest; Klauro pulls connected Git repos on the VPS/cloud | Automatic selected-branch analysis on push | Provider detection/planning implemented; Git app import service pending |
 | Local committed-source analyzer | Klauro infrastructure | Medium; filtered/compressed source contexts leave the laptop | Local-only repos, pre-push commit analysis, and teams without connected providers | Implemented and tested |
 | Self-hosted analyzer | Customer infrastructure | Medium; analyzer image is shipped, not source | Enterprise/security-sensitive customers | Docker path implemented |

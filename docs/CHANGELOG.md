@@ -1,5 +1,9 @@
 # Changelog
 
+Historical entries describe the product behavior that existed at their recorded time. Fabric’s former
+exclusive grant and queue model is superseded by Coordination Fabric v3: all overlapping attributed
+streams remain active, and relationship findings are advisory collaboration context.
+
 All notable changes to Klauro are recorded here. Entries are grounded in commits, test runs, or
 agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted without a source.
 Where an item was still in flight at the time this entry was written, it is marked **pending

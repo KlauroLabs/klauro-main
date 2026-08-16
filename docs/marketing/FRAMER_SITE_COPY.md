@@ -4,7 +4,7 @@ This is the current Framer-ready marketing site source of truth. It should repla
 
 ## Positioning
 
-Klauro is the codebase intelligence layer for AI-built software. It analyzes the real domains, flows, architecture, risks, tests, idioms, invariants, and change impact once, then turns that understanding into visualization for humans and compact MCP context for AI agents.
+Klauro is the codebase intelligence layer for any software system. It analyzes the real domains, flows, architecture, risks, tests, idioms, invariants, and change impact once, then turns that understanding into visualization for humans and compact MCP context for AI agents. AI-built software may benefit disproportionately, but it is not the product boundary.
 
 The core claim is not only "less context." It is better context: the right files, architecture, idioms, invariants, tests, and risks delivered before an agent starts rediscovering the repository.
 

@@ -1,143 +1,77 @@
-# The Coordination Fabric
+# Fabric Collaboration
 
-Klauro's coordination fabric lets multiple agents (and humans) — same machine or across
-machines — work the same codebase at the same time without silently colliding. It is the
-first layer of Klauro's category thesis: Klauro as the coordination fabric / architectural
-conscience for **fleets** of AI agents, not just a codebase-search tool for one agent at a
-time. See [`SPEC-COORDINATION-FABRIC.md`](SPEC-COORDINATION-FABRIC.md) for the full builder
-spec (architecture layers L1-L5, workstreams, sequencing); this document is the user/product-
-facing summary of what exists today.
+Fabric enables humans and agents to collaborate in realtime on any part of a software system, including the same file, function, contract, entity, flow, capability, or overlapping concept. Its organizing principle is shared semantic awareness and continuous reconciliation, not locks, collision avoidance, or serialized ownership.
 
-## The problem
+The authoritative model is `docs/SPEC-COORDINATION-FABRIC-V3.md`.
 
-Two or more agents (Claude Code, Cursor, Codex, a human, any mix) working the same repo hit
-three hazards nothing in the filesystem or Git prevents:
+## Why CAS is the collaboration substrate
 
-1. **Duplicate work** — two agents independently build the same capability.
-2. **Silent clobber** — two agents edit the same file; last write wins with no warning.
-3. **Stale contracts** — agent A changes a DTO/route/entity shape mid-flight; agent B keeps
-   building against the old shape because it never sees A's uncommitted diff.
+Filesystem and Git state show changed text. They do not explain intent, conceptual overlap, downstream behavior, recreated concepts, or a contract another participant is changing but has not committed. Fabric represents each participant's in-flight work as an attributed semantic stream linked to CAS.
 
-Git and the filesystem carry no intent, no reasoning, no "peer is mid-edit," and no
-arbitration. The coordination fabric adds that layer on top of Klauro's existing structural
-understanding (CAS) and cross-repo understanding (the workspace-level CAS, composed via sub-CAS nodes).
+That makes overlap interpretable:
 
-## Two tiers, composed
+- Two participants may edit the same function for compatible reasons.
+- Two participants may edit different files while recreating the same capability.
+- A producer and consumer may change separate files while their shared contract diverges.
+- A new implementation may duplicate knowledge or behavior that already exists in another in-flight stream.
 
-- **Local tier (same-machine).** All agents on one host share a local, file-backed
-  append-only claim/presence log at `~/.klauro/coordination/<workspace_id>/`, watched via
-  filesystem events for sub-second local awareness with zero network round-trip. This is the
-  common near-term case: one developer running Claude Code + Cursor + Codex, or several
-  sessions, against one working tree. It is authoritative for same-machine peers.
-- **Remote tier (cross-machine).** The hosted analyzer service exposes the same coordination
-  primitives over HTTP so agents on different machines see each other's claims and presence.
-  A claim writes to both tiers; reads merge the local active-set with the remote active-set.
+Textual overlap is one signal among many. It is neither required for a conceptual conflict nor sufficient reason to stop work.
 
-MCP itself has no server-push transport (stdio has no way for the server to initiate a
-message), so cross-tool awareness over MCP is poll-based: call `get_active_agents` /
-`get_in_flight_changes` / `check_collision` again to see deltas. The HTTP layer additionally
-offers a real push transport (`GET /v1/coordination/stream`, Server-Sent Events) for clients
-that can hold a long-lived connection.
+## Continuous participant-attributed CAS
 
-## The MCP tools
+Each in-flight stream records participant identity, intent, conceptual coordinates, affected paths and symbols, semantic deltas, contracts, provenance, sequence, and freshness. Local and remote stores preserve distinct participant streams even when they touch the same source object.
 
-All registered in `apps/mcp-server/src/server.ts` under the "Multi-agent coordination" tool
-group; full parameter/response reference in
-[`mcp/TOOLS.md`](mcp/TOOLS.md#multi-agent-coordination).
+Reconciliation continuously compares baseline CAS, each participant's stream, and newly published deltas. Consumers can retrieve a current snapshot or subscribe to updates. The result is an always-updating shared understanding of what exists, what is changing, why it is changing, and where independently reasonable work is beginning to diverge.
 
-| Tool | Purpose |
-| --- | --- |
-| `claim_work` | Announce intent to work on paths/symbols/a capability. Arbitrated against every other active claim: `granted` (disjoint, proceed), `duplicate` (another claim already covers this — adopt or defer), or `conflict` (path/symbol/blast-radius overlap — coordinate or rebase). |
-| `check_collision` | Read-only preflight version of `claim_work` — same detectors, no claim taken. Use before deciding whether to claim at all. |
-| `heartbeat_work` | Refresh a claim so it doesn't expire while work is in progress. |
-| `release_work` | Mark a claim released (done or handed off), freeing its scope for others. |
-| `get_active_agents` | Presence roster: who is currently active in the workspace and what they've claimed. |
-| `get_in_flight_changes` | "Who is touching this path right now, and why" — attribution by claim/edit-lock, keyed off a specific file or directory. |
-| `subscribe_workspace` | Arm local fs-event awareness for a workspace (same-machine only; MCP has no push, so this is poll-then-confirm, not a held subscription). |
+## Claims are awareness, never locks
 
-The server's own onboarding instructions (`SERVER_INSTRUCTIONS` in `server.ts`) teach agents
-to treat this as mandatory in shared workspaces: *before starting non-trivial work, call
-`check_collision` or `claim_work`; on `duplicate`, adopt or defer instead of redoing the work;
-on `conflict`, coordinate or rebase instead of silently overwriting; heartbeat while working;
-release on completion or handoff.* Prevention only works if agents actually check in — a
-write-side tool that nobody calls degrades to a nicer conflict reporter.
+Claims announce intended work so peers can find relevant activity. They do not reserve a path, symbol, or concept and never block another participant from proceeding. A duplicate or overlap verdict is information: adopt shared knowledge, coordinate intent, or intentionally continue with both streams visible.
 
-## Same-machine hazards this specifically addresses
+Heartbeats extend freshness. Release marks a stream complete or handed off. Neither operation grants exclusive ownership. APIs and clients must not turn a claim verdict into an authorization decision.
 
-Even though same-machine agents share a filesystem, the working tree alone tells them
-nothing about intent:
+## What Fabric surfaces
 
-- **Silent clobber is worse same-machine** (cross-machine agents are usually isolated on
-  branches/clones; a shared working tree has no such isolation) — `claim_work` acts as a
-  soft edit-lock other agents can see via `check_collision` before writing.
-- **No change attribution in a shared tree** — the working tree doesn't record *who* made an
-  uncommitted change or *why*; `get_in_flight_changes` answers that by mapping
-  `agent_id ↔ touched_paths ↔ intent` from the local claim log.
+Fabric reports:
 
-## What runs the arbitration
+- same-concept work in different files;
+- different-concept work in the same file;
+- recreated capabilities, flows, entities, contracts, and implementations;
+- incompatible contract or invariant changes;
+- relevant discoveries one participant has made that another is about to rediscover;
+- semantic and behavioral divergence before completion;
+- missing attribution or stale participant state;
+- the reconciliation evidence needed to make integration mechanical.
 
-`apps/mcp-server/src/coordination/arbiter.ts` computes overlap between a new claim and every
-active claim: path-prefix intersection, symbol-set intersection, capability-name match against
-the workspace-level CAS's `workspace_capabilities`, and blast-radius intersection via CAS call-graph edges. It
-returns `granted`, `conflict` (with the colliding claim and evidence), or `duplicate` (with the
-existing claim that already covers the same capability). `collision.ts` composes the same
-signals into a full `CollisionReport` (duplicates, overlaps, in-flight contract drifts, and
-cross-agent blast-radius intersections) for `check_collision`'s read-only preflight.
+The objective is not zero overlap. The objective is zero surprise, zero lost work, minimal duplicated effort, and steadily fewer discretionary merge decisions.
 
-## Cross-machine HTTP surface
+## Local and remote operation
 
-For agents on different machines (or any client that prefers HTTP over MCP), the hosted
-analyzer service (`apps/mcp-server/src/remote-analyzer-service.ts`) exposes the same
-coordination primitives:
+The local store provides low-latency awareness between processes on one machine. The remote store publishes the same semantic model across machines with tenant and workspace authorization. Server-Sent Events provide continuous remote updates; polling remains available for clients whose transport cannot receive push messages.
 
-| Route | Purpose |
-| --- | --- |
-| `POST /v1/coordination/claim` | Same semantics as `claim_work`. |
-| `POST /v1/coordination/release` | Same semantics as `release_work`. |
-| `POST /v1/coordination/heartbeat` | Same semantics as `heartbeat_work`. |
-| `GET /v1/coordination/state?workspace=&since=` | Poll fallback: active claims (optionally since a sequence number) plus presence. |
-| `GET /v1/coordination/stream?workspace=` | Server-Sent Events: an initial `state` snapshot, then live `claim`/`release`/`heartbeat`/`in-flight` deltas as they happen, with a periodic keep-alive comment. |
-| `POST /v1/coordination/in-flight` | Publish an agent's latest uncommitted working-tree diff summary for the workspace so peers can see incoming, not-yet-committed work — tenant-gated and audited. |
-| `POST /v1/telemetry/ingest` | Batch runtime telemetry ingestion (OTEL-compatible spans), correlated onto CAS and fused into operational-priority ranking. Not part of coordination proper, but lives on the same service and feeds the same "shared world model" thesis — see `docs/mcp/TELEMETRY-INGESTION.md`. |
+Remote state includes redacted semantic deltas rather than unrestricted source transfer. Source policy, tenancy, retention, and audit boundaries apply before publication.
 
-Cross-machine in-flight publishing (`/v1/coordination/in-flight`) is gated by tenancy checks
-(`assertSameTenant`) and an audit log, because it moves a summary of someone's unpushed code
-off their machine — see `docs/SPEC-COORDINATION-FABRIC.md` §WS-F for the full security/privacy
-posture (scope control via `.klauroignore`, tenancy/authz, at-rest and in-transit protection,
-short TTL + purge on release).
+## Product surfaces
 
-## Current state (grounded against source, 2026-07-02)
+The MCP and HTTP surfaces expose operations for publishing and extending claims, heartbeats, releases, participant state, in-flight semantic streams, overlap and divergence reports, and workspace subscriptions. Tool names preserve compatibility where required, but their semantics follow the V3 model: advisory awareness and reconciliation, never collision enforcement.
 
-- **Built:** the pure arbitration/collision core (`arbiter.ts`, `collision.ts`), the
-  local file-backed claim/presence store with fs-watch (`local-store.ts`), the remote HTTP
-  store (`remote-store.ts`), the security/tenancy gate (`security.ts`), all 7 MCP tools, and
-  the full `/v1/coordination/*` + `/v1/telemetry/ingest` HTTP surface including the SSE
-  stream. Test coverage: `coordination.test.ts`, `in-flight-sync.test.ts`,
-  `local-store.test.ts`, `remote-store.test.ts`, `security.test.ts`,
-  `coordination-sse.test.ts`.
-- **Partial:** continuous in-flight working-tree publishing from a running agent session
-  (`in-flight-sync.ts` exists; wiring it to fire automatically on every working-tree change
-  from a live agent session, versus being invoked explicitly, is still maturing).
-- **Not yet built:** telemetry fully fused into the live, always-on CAS stream (telemetry
-  ingestion and correlation work today; continuous fusion into a stored, always-current graph
-  is the remaining L3 gap — see `SPEC-COORDINATION-FABRIC.md` WS-A), and the recorded
-  multi-agent no-collision demo (WS-DEMO).
+The installed client participates in Fabric after `klauro init` binds a workspace. Re-running initialization is idempotent. If remote authorization is unavailable, local collaboration remains explicit and the client reports that remote awareness is unavailable rather than pretending the workspace is synchronized.
 
-## How a fleet uses it, end to end
+## Metrics
 
-1. Every agent in the workspace installs Klauro (see `docs/mcp/GETTING-STARTED.md`) and picks
-   a stable `agent_id`.
-2. Before starting non-trivial work, an agent calls `check_collision` (or goes straight to
-   `claim_work` if it's confident it wants to commit to the work).
-3. On `granted`, the agent proceeds and calls `heartbeat_work` periodically during long tasks.
-4. On `duplicate`, it adopts the existing agent's work or defers instead of rebuilding it.
-5. On `conflict`, it coordinates directly with the other agent (via `get_in_flight_changes` to
-   see their intent and touched paths) or rebases its own plan before proceeding.
-6. On completion or handoff, it calls `release_work` so the claim stops blocking others.
-7. Any agent can call `get_active_agents` at any point to see the current presence roster for
-   the workspace.
+Fabric records cumulative metrics that reflect collaboration quality:
 
-This is deliberately advisory-by-default: `claim_work` returns a verdict and the calling agent
-decides what to do with it. The value only materializes if every agent in the fleet actually
-calls in — that adoption is taught explicitly in the MCP server's own onboarding instructions,
-not left implicit.
+- participant and stream attribution coverage;
+- reconciliation latency and rounds;
+- duplicate and recreation detections;
+- contract divergence detections;
+- merge-decision count;
+- surprise count and rate;
+- lost or unattributed changes.
+
+A run with no blocked work is not automatically successful. A run is successful when participants retain their distinct work, relevant knowledge arrives before rediscovery, disagreements are visible early, and final integration requires no surprising human judgment.
+
+## Verification
+
+Focused tests prove same-symbol overlap retains both attributed streams, same-concept/different-file and same-file/different-concept cases remain distinct, remote claim extension works, SSE carries continuous semantic updates, and cumulative metrics survive reconciliation rounds. Fleet proofs exercise mixed human and agent participants under concurrent mutation budgets.
+
+External beta still requires sustained multi-process and cross-machine VPS endurance with no lost work, no attribution gaps, explicit latency budgets, and a complete metric report. `docs/PRODUCT-READINESS.md` owns that acceptance requirement.

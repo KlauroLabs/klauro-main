@@ -7,11 +7,14 @@ an automated test, not just a doctrine.
 ## What it is
 
 `packages/analyzer-core/src/__tests__/architecture/tier-boundary.test.ts`
-maintains a hand-registered map of extracted files to their tier (1-4) and
-asserts, for each registered file, that none of its own relative imports
-resolve to a registered file in a higher tier. It reads source text off
-disk directly (no bundler) and is part of the normal `analyzer:test` run —
-no separate command, no separate CI step to remember.
+classifies every analyzer-core production module and rejects an unregistered
+module, a missing module, or a lower-tier import of a higher tier. It reads
+source imports directly and runs in the normal analyzer test suite.
+
+`apps/mcp-server/src/mcp-tier-boundary.test.ts` enforces the package-level
+continuation of the same rule. Analysis modules cannot consume telemetry or
+Fabric, and telemetry cannot consume Fabric. Every production module under the
+coordination directory is discovered automatically.
 
 Why a test instead of `dependency-cruiser` or an ESLint
 `no-restricted-imports` rule: neither was already wired into this package
@@ -27,19 +30,10 @@ later adopts `dependency-cruiser` project-wide, `TIER_REGISTRY` in the test
 file translates directly into its `from`/`to` rules — this is not a dead
 end, just the lowest-friction version of the same rule today.
 
-## Why hand-registered, not glob-based
-
-`orchestrator.ts` itself still holds tier-1/2/3 logic undifferentiated —
-that is the entire premise of task #121. A glob over
-`packages/analyzer-core/src/analyzer/core/*.ts` would have to either tier
-`orchestrator.ts` as something (wrong on every axis — it is currently all
-four tiers at once) or hard-code an exclusion for it, which is more fragile
-than an explicit allowlist. The registry is deliberately opt-in: a file
-extracted along a tier boundary gets added to `TIER_REGISTRY` in the SAME
-commit as its extraction. Until a file is registered, the gate has no
-opinion about it — this is intentional; it means the gate's coverage grows
-exactly as fast as the decomposition itself, and never gives a false sense
-of completeness.
+The analyzer-core registry is exhaustive rather than opt-in. A new production
+module must be assigned a tier in the same change that creates it. The MCP gate
+uses explicit boundary-entry modules plus automatic discovery for Fabric's
+coordination package.
 
 ## Proof it fails on a real violation
 
@@ -65,16 +59,5 @@ committed — see the task report for the exact commands.
    do not run the full `analyzer:test`/`mcp:test` suite on this machine per
    the repo's local-load constraint).
 
-## Known gap
-
-Tier 4 (telemetry attachment) lives in `apps/mcp-server`
-(`telemetry-fusion.ts`, `telemetry-ingestion.ts`, `self-telemetry.ts`), a
-separate npm package from `analyzer-core`. Cross-package import direction is
-already structurally one-way (`apps/mcp-server` depends on `analyzer-core`,
-never the reverse), so `analyzer-core`'s tiers 1-3 cannot import
-`apps/mcp-server`'s tier-4 files even by accident — the risky direction this
-gate exists to catch cannot occur across that particular package boundary.
-An equivalent registry-based test scoped to `apps/mcp-server/src` (checking
-that files feeding tier 1-3 CAS assembly there don't reach into telemetry
-attachment code) has not been built yet; see the task #121 report for the
-remaining decomposition plan.
+The boundary gate checks dependency direction. Semantic purity, completeness,
+and performance remain separate readiness gates.

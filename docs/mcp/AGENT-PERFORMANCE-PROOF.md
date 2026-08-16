@@ -356,6 +356,7 @@ Run deterministic suites from `apps/mcp-server/`:
 npm run agentic-benchmark-suite
 npm run agent-quality-benchmark
 npm run incremental-benchmark -- --output .klauro-incremental-benchmark/latest-report.json --markdown .klauro-incremental-benchmark/latest-report.md
+npm run incremental-locality-benchmark
 npm run agent-gauntlet
 npm run vision-gauntlet
 npm run analysis-gauntlet

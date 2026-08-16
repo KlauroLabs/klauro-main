@@ -2,16 +2,14 @@
 
 > **Status: IMPLEMENTED (v1)** (local tier + MCP tools + routes live as of e1780f62, 2026-07-02). SSE/retry/security shipped; cross-machine sync + fleet scale are follow-ons.
 >
-> **Superseded by [[SPEC-COORDINATION-FABRIC-V2]] for the coordination MODEL**
-> (itself superseded by [[SPEC-COORDINATION-FABRIC-V3]]); the build-ready upgrade set on
+> **Superseded by [[SPEC-COORDINATION-FABRIC-V3]] for the coordination model**; the build-ready upgrade set on
 > top of v3 is [SPEC-COORDINATION-ENGINE.md](./SPEC-COORDINATION-ENGINE.md).
-> This v1 doc's advisory `checkEditLock`/collision-detection framing, and its
-> "enforced arbitration" framing in later planning, are both superseded by v2
-> §1.7: the core model is **concurrent work + awareness + semantic
-> reconciliation**, with locking/enforcement demoted to an OPT-IN tool for the
-> rare genuine-exclusive case, not the default coordination mechanism. Kept
+> This v1 doc's advisory `checkEditLock`/collision-detection framing and later
+> enforced-arbitration framing are both superseded. The current model is concurrent
+> work, continuous shared understanding, and semantic reconciliation. Fabric never
+> grants exclusive ownership or serializes participants. Kept
 > here as the historical build record for WS-C through WS-K (still an accurate
-> description of what was actually built at the time); read v2 for the current
+> description of what was actually built at the time); read v3 for the current
 > architecture and rationale.
 
 > **Audience:** builder agents. This is the authoritative spec. Each Workstream (WS) is
