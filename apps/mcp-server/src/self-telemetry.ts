@@ -30,6 +30,7 @@ import * as klauroTelemetry from '../../../packages/klauro-sdk-js/src/index';
 import { klauroHttp } from '../../../packages/klauro-sdk-js/src/middleware/http';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { ingestTelemetryBatch, type TelemetryEvent } from './telemetry-ingestion';
+import { waitForForegroundAnalysisIdle } from './foreground-analysis';
 
 const SERVICE_NAME = 'klauro-mcp-server';
 const SELF_LOOP_NAME = 'klauro-self';
@@ -149,6 +150,8 @@ export async function mirrorToCanonicalBucket(
 }
 
 let installed = false;
+let localIngestPromise: Promise<void> | undefined;
+const pendingLocalEvents: Array<{ projectPath: string; event: TelemetryEvent }> = [];
 
 
 
@@ -215,10 +218,59 @@ export function instrumentHttpHandler(
 export async function shutdownSelfTelemetry(): Promise<void> {
   try {
     await klauroTelemetry.shutdown();
+    await waitForSelfTelemetryIngest();
   } catch {
 
   }
   installed = false;
+}
+
+export async function waitForSelfTelemetryIngest(): Promise<void> {
+  while (localIngestPromise) await localIngestPromise;
+}
+
+export function enqueueSelfTelemetryEvents(projectPath: string, events: TelemetryEvent[]): void {
+  if (events.length === 0) return;
+  pendingLocalEvents.push(...events.map(event => ({ projectPath, event })));
+  scheduleLocalIngest();
+}
+
+function scheduleLocalIngest(): void {
+  if (localIngestPromise) return;
+  localIngestPromise = flushSelfTelemetryEvents()
+    .catch(err => {
+      process.stderr.write(
+        `Klauro self-telemetry local ingest failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    })
+    .finally(() => {
+      localIngestPromise = undefined;
+      if (pendingLocalEvents.length > 0) scheduleLocalIngest();
+    });
+}
+
+async function flushSelfTelemetryEvents(): Promise<void> {
+  while (pendingLocalEvents.length > 0) {
+    await waitForForegroundAnalysisIdle();
+    const queued = pendingLocalEvents.splice(0, pendingLocalEvents.length);
+    const batches = new Map<string, TelemetryEvent[]>();
+    for (const item of queued) {
+      const events = batches.get(item.projectPath) ?? [];
+      events.push(item.event);
+      batches.set(item.projectPath, events);
+    }
+    for (const [projectPath, events] of batches) {
+      const ingestStartedAt = Date.now();
+      await ingestTelemetryBatch(null, projectPath, events, { persist: true });
+      const ingestElapsedMs = Date.now() - ingestStartedAt;
+      if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
+        process.stdout.write(
+          `Klauro self-telemetry: local ingest of ${events.length} event(s) for ${projectPath} took ${ingestElapsedMs}ms.\n`,
+        );
+      }
+      await mirrorToCanonicalBucket(projectPath, events);
+    }
+  }
 }
 
 
@@ -231,23 +283,8 @@ function localIngestFetch(projectPath: string): typeof fetch {
     try {
       const events = parseSdkBatch(init?.body);
       if (events.length > 0) {
-
-
-
-
-        const ingestStartedAt = Date.now();
         const mapped = events.map(mapSdkEvent);
-        await ingestTelemetryBatch(null, projectPath, mapped, { persist: true });
-        const ingestElapsedMs = Date.now() - ingestStartedAt;
-        if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
-          process.stdout.write(
-            `Klauro self-telemetry: local ingest of ${mapped.length} event(s) for ${projectPath} took ${ingestElapsedMs}ms.\n`,
-          );
-        }
-
-
-
-        void mirrorToCanonicalBucket(projectPath, mapped);
+        enqueueSelfTelemetryEvents(projectPath, mapped);
       }
     } catch (err) {
       process.stderr.write(

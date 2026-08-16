@@ -6,6 +6,7 @@ import * as nodePath from 'node:path';
 import * as fs from 'node:fs';
 import * as fsExtra from 'fs-extra';
 import { getAnalysis } from './analyzer';
+import { beginForegroundAnalysis } from './foreground-analysis';
 import { loadTelemetryObservations, type TelemetryEvent } from './telemetry-ingestion';
 
 const REQUIRE = () => import('./self-telemetry');
@@ -220,6 +221,32 @@ test('mirrorToCanonicalBucket: NEVER bootstrap-analyzes the canonical path', asy
     const canonicalObservations = await loadTelemetryObservations(canonical);
     assert.equal(canonicalObservations.observations.length, 1);
     assert.equal(canonicalObservations.observations[0].correlation.status, 'unmatched');
+  });
+});
+
+test('self telemetry waits for foreground analysis before persisting', async () => {
+  await withTempStorage(async () => {
+    const { enqueueSelfTelemetryEvents, waitForSelfTelemetryIngest } = await REQUIRE();
+    const project = nodePath.join(os.tmpdir(), `klauro-self-deferred-${Date.now()}`);
+    const endAnalysis = beginForegroundAnalysis();
+    enqueueSelfTelemetryEvents(project, [{
+      kind: 'request',
+      method: 'POST',
+      route: '/v1/analyze',
+      status: 202,
+      duration_ms: 20,
+    }]);
+
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal((await loadTelemetryObservations(project)).observations.length, 0);
+    } finally {
+      endAnalysis();
+    }
+    await waitForSelfTelemetryIngest();
+    const observations = await loadTelemetryObservations(project);
+    assert.equal(observations.observations.length, 1);
+    assert.equal(observations.observations[0].event.route, '/v1/analyze');
   });
 });
 

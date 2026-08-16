@@ -5,6 +5,7 @@ import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/sr
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
+import { beginForegroundAnalysis } from './foreground-analysis';
 import { TypeScriptJavaScriptAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/python-analyzer';
 import { JavaAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/java-analyzer';
@@ -3089,10 +3090,9 @@ function queueWorkerJob<T>(
 ): Promise<T> {
   const queuedAt = Date.now();
   const run = workerJobChain.then(() => {
-
-
     const queueWaitMs = Date.now() - queuedAt;
     const dispatchedAt = Date.now();
+    const endForegroundAnalysis = beginForegroundAnalysis();
     const report = (outcome: string): void => {
       console.error(
         `[Klauro] analysis pipeline (${label}, ${outcome}): queue_wait=${queueWaitMs}ms ` +
@@ -3104,7 +3104,7 @@ function queueWorkerJob<T>(
 
 
       error => { report('FAILED'); throw error; },
-    );
+    ).finally(endForegroundAnalysis);
   });
   workerJobChain = run.catch(() => undefined);
   return run;
