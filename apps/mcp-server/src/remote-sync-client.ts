@@ -27,6 +27,7 @@ import { CAS_SECTION_NAMES, hydrateCasSections, type CasSectionManifest, type Ca
 
 export interface RemoteSyncOptions {
   projectPath: string;
+  requestId?: string;
   serverUrl?: string;
   token?: string;
   analysisId?: string;
@@ -482,7 +483,9 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
   await assertUploadTargetIsReachable(loaded, serverUrl, options);
   const changes = await buildStreamingWorkingTreeChanges(projectPath);
   const analysisId = resolveAnalysisId(loaded, defaultAnalysisId(projectPath), options.analysisId);
+  const requestId = options.requestId || crypto.randomUUID();
   const response = await postRemote(options, '/v1/sync', createIncrementalUploadRequest({
+    request_id: requestId,
     analysis_id: analysisId,
     project_id: analysisId,
     organization_id: loaded.config.project.organizationId,

@@ -93,6 +93,7 @@ export interface RemoteAnalyzeAcceptedResponse {
 
 export interface RemoteSyncRequest {
   protocol_version: typeof REMOTE_ANALYSIS_PROTOCOL_VERSION;
+  request_id?: string;
   analysis_id: string;
   project_id?: string;
   organization_id?: string;

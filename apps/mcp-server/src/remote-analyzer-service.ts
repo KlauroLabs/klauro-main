@@ -67,6 +67,7 @@ import {
 } from './analyzer-identity-reuse';
 import { z } from 'zod';
 import { analysisJobMetadata } from './analysis-job-metadata';
+import { IdempotentRequestStore, IdempotentSyncStore } from './idempotent-sync-store';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -142,7 +143,6 @@ function removeLegacyCwdDataDir(resolvedDataDir: string): void {
 }
 
 export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOptions = {}): http.Server {
-
   const dataDir = path.resolve(
     options.dataDir
       || process.env.KLAURO_REMOTE_ANALYZER_DATA
@@ -155,11 +155,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const buckets = new Map<string, RateLimitBucket>();
   const fabricRateLimitPerMinute = options.fabricRateLimitPerMinute ?? Number(process.env.KLAURO_FABRIC_RATE_LIMIT_PER_MINUTE || 12_000);
   const fabricBuckets = new Map<string, RateLimitBucket>();
-
   const authBuckets = new Map<string, RateLimitBucket>();
   const authRateLimitPerMinute = Number(process.env.KLAURO_AUTH_RATE_LIMIT_PER_MINUTE || 20);
   const activeCommittedSnapshots = new Map<string, string>();
-
+  const completedSyncRequests = new IdempotentSyncStore<RemoteAnalyzeResponse, CASOutput>();
+  const acceptedSyncRequests = new IdempotentRequestStore<PreparedSync>();
   warnIfEphemeralCoordDir({ dataRoot: dataDir });
 
   void reapStaleAttemptRecordsOnStartup(dataDir);
@@ -861,7 +861,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       const revisionsMatch = route.match(/^\/v1\/projects\/([^/]+)\/revisions$/);
       if (request.method === 'GET' && revisionsMatch) {
-
         const requestedAnalysisId = decodeURIComponent(revisionsMatch[1]);
         const analysisId = resolveStorageAnalysisId(requestedAnalysisId, accountSaltFor(authorization.clientId));
         const result = await readProjectRevisions(dataDir, analysisId);
@@ -888,21 +887,25 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         if (body.async === true) {
-          const prepared = await prepareSync(dataDir, body, accountSaltFor(authorization.clientId));
+          const accountSalt = accountSaltFor(authorization.clientId);
+          const analysisId = resolveStorageAnalysisId(body.analysis_id, accountSalt);
+          const { value: prepared, replayed } = await acceptedSyncRequests.run(
+            analysisId, body.request_id, () => prepareSync(dataDir, body, accountSalt));
           const attemptRecordPath = projectAttemptRecordPath(prepared.workspace);
           const queuedAt = new Date().toISOString();
-          await writeAttemptRecord(attemptRecordPath, {
-            state: 'in-progress',
-            trigger: 'sync',
-            queued_at: queuedAt,
-            started_at: queuedAt,
-          });
           writeJson(response, 202, {
             status: 'accepted',
             protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
             analysis_id: clientVisibleAnalysisId(body.analysis_id, prepared.analysisId, authorization.clientId),
             base_commit: body.changes.base_commit,
             manifest: prepared.manifest,
+          });
+          if (replayed) return;
+          await writeAttemptRecord(attemptRecordPath, {
+            state: 'in-progress',
+            trigger: 'sync',
+            queued_at: queuedAt,
+            started_at: queuedAt,
           });
           setImmediate(async () => {
             const startedAt = new Date().toISOString();
@@ -954,8 +957,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
-        const result = await handleSync(dataDir, body, accountSaltFor(authorization.clientId));
-        await recordCompletedSync(dataDir, accounts, body, result, authorization.clientId);
+        const { value: result, replayed } = await handleSync(dataDir, body, completedSyncRequests, accountSaltFor(authorization.clientId));
+        if (!replayed) await recordCompletedSync(dataDir, accounts, body, result, authorization.clientId);
         writeJson(response, 200, {
           ...result,
           analysis_id: clientVisibleAnalysisId(body.analysis_id, result.analysis_id, authorization.clientId),
@@ -3750,14 +3753,12 @@ async function collectWorkspaceActivityEvents(
   }
   return events;
 }
-
 interface PreparedSync {
   analysisId: string;
   workspace: string;
   displayName?: string;
   manifest: SourceManifest;
 }
-
 async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<PreparedSync> {
   if (!request.analysis_id) throw new Error('Remote sync requires analysis_id');
   const analysisId = resolveStorageAnalysisId(request.analysis_id, accountSalt);
@@ -3765,13 +3766,11 @@ async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountS
   if (!(await fs.pathExists(workspace))) {
     throw new Error(`No remote workspace found for analysis_id=${request.analysis_id}; run remote analyze first`);
   }
-
   await applyChanges(workspace, request.changes.changed_files || []);
   const displayName = resolveDisplayName(request.changes.project_name, request.project_path);
   const manifest = request.changes.manifest || buildChangeManifest(workspace, request.changes.changed_files || []);
   return { analysisId, workspace, displayName, manifest };
 }
-
 async function completeSync(prepared: PreparedSync, request: RemoteSyncRequest): Promise<RemoteAnalyzeResponse> {
   const result = await runIncrementalAnalysisIsolated(prepared.workspace, prepared.displayName);
   const { analysisId, workspace, manifest } = prepared;
@@ -3788,11 +3787,12 @@ async function completeSync(prepared: PreparedSync, request: RemoteSyncRequest):
     change_report: result.changeReport,
   };
 }
-
-async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
-  return completeSync(await prepareSync(dataDir, request, accountSalt), request);
+async function handleSync(dataDir: string, request: RemoteSyncRequest, requests: IdempotentSyncStore<RemoteAnalyzeResponse, CASOutput>, accountSalt?: string): Promise<{ value: RemoteAnalyzeResponse; replayed: boolean }> {
+  const analysisId = resolveStorageAnalysisId(request.analysis_id, accountSalt);
+  return requests.run(analysisId, request.request_id,
+    () => prepareSync(dataDir, request, accountSalt).then(prepared => completeSync(prepared, request)),
+    () => getAnalysis(workspacePath(dataDir, analysisId)));
 }
-
 async function recordCompletedSync(
   dataDir: string,
   accounts: AccountStore,

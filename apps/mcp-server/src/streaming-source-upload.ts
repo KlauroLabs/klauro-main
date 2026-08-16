@@ -31,6 +31,7 @@ export function createAnalyzeUploadRequest(input: {
 }
 
 export function createIncrementalUploadRequest(input: {
+  request_id?: string;
   analysis_id: string;
   project_id: string;
   organization_id?: string;
@@ -103,6 +104,7 @@ async function* analyzeJson(input: Parameters<typeof createAnalyzeUploadRequest>
 async function* incrementalJson(input: Parameters<typeof createIncrementalUploadRequest>[0]): AsyncGenerator<string> {
   yield '{';
   yield field('protocol_version', REMOTE_ANALYSIS_PROTOCOL_VERSION);
+  if (input.request_id !== undefined) yield `,${field('request_id', input.request_id)}`;
   yield `,${field('analysis_id', input.analysis_id)}`;
   yield `,${field('project_id', input.project_id)}`;
   if (input.organization_id !== undefined) yield `,${field('organization_id', input.organization_id)}`;

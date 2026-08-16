@@ -1,6 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import * as crypto from 'node:crypto';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -70,12 +71,16 @@ test('remote analyzer supports full source upload and dirty-tree incremental syn
 
     const appFile = path.join(repo, 'app', 'main.py');
     fs.appendFileSync(appFile, '\n\n@app.get("/healthz")\ndef healthz():\n    return {"ok": True}\n');
-    const incremental = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, analysisId: full.analysis_id, token, wait: true });
+    const requestId = crypto.randomUUID();
+    const incremental = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, analysisId: full.analysis_id, token, wait: true, requestId });
 
     assert.equal(incremental.status, 'success');
     assert.equal(incremental.analysis_type, 'incremental');
     assert.ok(incremental.change_report);
     assert.ok((incremental.change_report?.summary.filesAdded || 0) + (incremental.change_report?.summary.filesModified || 0) > 0);
+    const replay = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, analysisId: full.analysis_id, token, wait: true, requestId });
+    assert.equal(replay.analysis_revision, incremental.analysis_revision);
+    assert.deepEqual(replay.change_report, incremental.change_report);
     const cached = await getAnalysis(repo);
     assert.ok((cached.entry_points || []).some(entry => JSON.stringify(entry).includes('healthz')));
     const auditLog = path.join(remoteData, 'audit', 'events.jsonl');

@@ -44,8 +44,9 @@ test('incremental stream preserves added, modified, deleted, diff, hashes, and m
     fs.unlinkSync(path.join(root, 'README.md'));
     const legacy = await buildWorkingTreeChangeContext(root);
     const plan = await buildStreamingWorkingTreeChanges(root);
-    const parsed = await decode(createIncrementalUploadRequest({ analysis_id: 'a', project_id: 'p', project_path: root, changes: plan, async: true }));
+    const parsed = await decode(createIncrementalUploadRequest({ request_id: 'request-1', analysis_id: 'a', project_id: 'p', project_path: root, changes: plan, async: true }));
     assert.equal(parsed.protocol_version, REMOTE_ANALYSIS_PROTOCOL_VERSION);
+    assert.equal(parsed.request_id, 'request-1');
     assert.deepEqual(parsed.changes.changed_files, legacy.changed_files);
     assert.equal(parsed.changes.git_diff, legacy.git_diff);
     assert.deepEqual(withoutTime(parsed.changes.manifest), withoutTime(legacy.manifest));
