@@ -10932,6 +10932,11 @@ export class AnalyzerOrchestrator {
       else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
     }
 
+    if (!validation.ok || rejectedElements.size > 0) {
+      const elementReasons = [...new Set(rejectedElements.values())].sort().join(',') || 'none';
+      writeAnalyzerStatus(`[Klauro] structured comprehension rejected: system=${validation.ok ? 'none' : validation.reason || 'unknown'} elements=${rejectedElements.size} element_reasons=${elementReasons}`);
+    }
+
     for (let repairAttempt = 0; repairAttempt < 1; repairAttempt++) {
       if (validation.ok && rejectedElements.size === 0) break;
       let repairTimeoutHandle: NodeJS.Timeout | undefined;

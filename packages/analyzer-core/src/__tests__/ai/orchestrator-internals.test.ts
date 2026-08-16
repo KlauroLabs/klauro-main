@@ -11553,6 +11553,14 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
     } as any;
     expect(previousDescriptionNeedsCurrentValidation(corroboratedClaim)).toBe(false);
 
+    const genericBusinessClassification = {
+      enhanced_system_purpose: {
+        inferred_description: 'Atlas is a business system that manages pharmaceutical orders and product pricing for companies.',
+        primary_domain: 'pharmaceutical-order-management',
+      },
+    } as any;
+    expect(previousDescriptionNeedsCurrentValidation(genericBusinessClassification)).toBe(false);
+
     // No classification populated at all is a different, already-handled
     // case (missing-previous-description / domain-source gates) — not
     // staleness by this predicate, and must not false-positive on ordinary

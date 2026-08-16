@@ -52,6 +52,7 @@ export function previousDescriptionNeedsCurrentValidation(previousOutput: CASOut
     'a', 'an', 'the', 'this', 'that', 'and', 'or', 'for', 'with', 'its',
     'their', 'our', 'main', 'core', 'general', 'basic', 'internal',
     'primary', 'central', 'various', 'multiple', 'other', 'more', 'built',
+    'business',
     'used', 'using', 'full', 'stack', 'based',
   ]);
   const typeClaimPattern = /\b((?:[a-z][a-z-]{2,}(?:[- ][a-z][a-z-]{2,}){0,2}))\s+(?:tool|system|service|platform|application|app|api|engine|framework|library|server|gateway|pipeline|dashboard|suite|toolkit|sdk)s?\b/gi;
