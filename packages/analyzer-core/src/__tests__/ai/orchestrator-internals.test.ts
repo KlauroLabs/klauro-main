@@ -11011,6 +11011,52 @@ describe('enterprise AI semantic guards', () => {
     )).toEqual({ refresh: false, reason: 'semantic-fingerprint-unchanged' });
   });
 
+  it('trusts a description already accepted by the current AI generation path', () => {
+    const candidates = [
+      { id: 'candidate-orders', name: 'Process Enterprise Orders', category: 'core', related_domains: [], related_entities: ['entity_order'], operations: [] },
+    ];
+    const facts = orch.buildAIInterpretationRefreshFingerprint(
+      'order-service', ['Express'], [{ type: 'http', count: 1 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], candidates,
+    );
+    const previous = {
+      enhanced_system_purpose: {
+        inferred_description: 'The order service retrieves EnterpriseOrder records for operators.',
+        ai_input_fingerprint: orch.hashAIInterpretationRefreshFingerprint(facts),
+      },
+      capabilities: [{
+        id: 'view-orders', name: 'View Enterprise Orders', category: 'core',
+        description: 'Previously accepted product wording.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        related_domains: [], related_entities: ['entity_order'], operations: [],
+      }],
+    };
+
+    expect(orch.getAIInterpretationRefreshDecision(
+      previous, 'order-service', ['Express'], [{ type: 'http', count: 1 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], candidates,
+    )).toEqual({ refresh: false, reason: 'semantic-fingerprint-unchanged' });
+  });
+
+  it('refreshes when persisted capability generation records a rejected description', () => {
+    const previous = {
+      enhanced_system_purpose: { inferred_description: 'The order service retrieves EnterpriseOrder records for operators.' },
+      capabilities: [{
+        id: 'view-orders', name: 'View Enterprise Orders', category: 'core',
+        description: 'EnterpriseOrder details are available to operators reviewing selected orders.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_rejected', attempted: true },
+        related_domains: [], related_entities: ['entity_order'], operations: [],
+      }],
+    };
+
+    expect(orch.getAIInterpretationRefreshDecision(
+      previous, 'order-service', ['Express'], [{ type: 'http', count: 1 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], [],
+    )).toEqual({ refresh: true, reason: 'previous-capability-description-failed-current-validation' });
+  });
+
   it('reports why comprehension must refresh when product semantics change', () => {
     const deterministicCandidates = [
       { id: 'candidate-orders', name: 'View Enterprise Orders', category: 'core', related_domains: [], related_entities: ['order'], operations: [] },

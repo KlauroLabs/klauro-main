@@ -9367,13 +9367,13 @@ export class AnalyzerOrchestrator {
     const allDistinctFamilies = Array.from(new Set(
       rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
     ));
-    const nudgeCeiling = Math.max(3, Math.floor(allDistinctFamilies.length / 3));
+    const nudgeCeiling = Math.max(3, Math.floor(promptFamilyCount / 3));
     if (!input.qualityNudge && effectiveCatalogSize >= 1 && effectiveCatalogSize <= nudgeCeiling) {
       const distinctFamilies = allDistinctFamilies.slice(0, 10);
       const familyThreshold = effectiveCatalogSize === 1 ? 2 : effectiveCatalogSize * 3;
-      if (allDistinctFamilies.length >= familyThreshold) {
+      if (promptFamilyCount >= familyThreshold) {
         try {
-          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence names ${allDistinctFamilies.length} DISTINCT candidate route-area families${allDistinctFamilies.length > distinctFamilies.length ? ` (top ${distinctFamilies.length} listed)` : ''}: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — a purpose (e.g. "Manage shift scheduling"), never a per-route CRUD verb ("Create X", "Update X") — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
+          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence resolves to ${promptFamilyCount} DISTINCT candidate route-area families${allDistinctFamilies.length > distinctFamilies.length ? ` (top ${distinctFamilies.length} listed)` : ''}: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — a purpose (e.g. "Manage shift scheduling"), never a per-route CRUD verb ("Create X", "Update X") — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
           const nudgeRaw = await requestCatalog(3, nudgeHint);
           const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
           if (effectiveSize(nudgeParsed) > effectiveCatalogSize) {
@@ -10922,7 +10922,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
-      if (validation.ok && rejectedElements.size === 0) break;
+      if (validation.ok) break;
       let repairTimeoutHandle: NodeJS.Timeout | undefined;
       try {
         const remainingMs = budgetMs;
@@ -13508,10 +13508,7 @@ export class AnalyzerOrchestrator {
       return { refresh: true, reason: 'previous-description-failed-current-validation' };
     }
     if ((previousOutput.capabilities || []).slice(0, 8).some(capability =>
-      !capability.description || !this.validateElementDescription(
-        capability.description,
-        this.capabilityDescriptionTarget(capability),
-      ).ok
+      this.previousCapabilityDescriptionNeedsRefresh(capability)
     )) {
       return { refresh: true, reason: 'previous-capability-description-failed-current-validation' };
     }
@@ -13547,6 +13544,19 @@ export class AnalyzerOrchestrator {
     return JSON.stringify(previousFacts) !== JSON.stringify(nextFacts)
       ? { refresh: true, reason: 'legacy-semantic-facts-changed' }
       : { refresh: false, reason: 'legacy-semantic-facts-unchanged' };
+  }
+
+  private previousCapabilityDescriptionNeedsRefresh(capability: SystemCapability): boolean {
+    if (!capability.description) return true;
+    if (capability.description_source === 'manual') return false;
+    const generation = capability.description_generation;
+    if (generation?.status === 'ai_applied') return false;
+    if (generation?.status === 'reused_previous' && generation.origin_source === 'ai') return false;
+    if (generation?.status === 'ai_rejected' || generation?.status === 'ai_failed') return true;
+    return !this.validateElementDescription(
+      capability.description,
+      this.capabilityDescriptionTarget(capability),
+    ).ok;
   }
 
   private hashAIInterpretationRefreshFingerprint(facts: Record<string, unknown>): string {
