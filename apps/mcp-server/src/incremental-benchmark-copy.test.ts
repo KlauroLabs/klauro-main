@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isBenchmarkCopyExcludedPath } from './incremental-benchmark';
+import { requiresIncrementalGitBaseline } from './incremental-benchmark-execution';
 import { provesIncrementalLocality } from './incremental-locality-proof';
+
+test('product incremental proofs always establish a Git baseline', () => {
+  assert.equal(requiresIncrementalGitBaseline(false, 'klauro-product'), true);
+  assert.equal(requiresIncrementalGitBaseline(undefined, 'klauro-product'), true);
+  assert.equal(requiresIncrementalGitBaseline(true, 'in-process-harness'), true);
+  assert.equal(requiresIncrementalGitBaseline(false, 'in-process-harness'), false);
+});
 
 test('incremental benchmark repo copies exclude binary package artifacts', () => {
   assert.equal(

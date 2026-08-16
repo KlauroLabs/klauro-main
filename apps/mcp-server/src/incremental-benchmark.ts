@@ -17,6 +17,7 @@ import {
   captureEditedIncrementalRun,
   captureIncrementalRun,
   captureInitialIncrementalRun,
+  requiresIncrementalGitBaseline,
   verifyFullGraph,
   type IncrementalRunEvidence,
 } from './incremental-benchmark-execution';
@@ -438,7 +439,6 @@ async function isAggregateIncrementalBenchmarkTarget(repoPath: string): Promise<
 export function defaultIncrementalBenchmarkWorkRoot(): string {
   return path.join(os.tmpdir(), 'klauro-incremental-benchmark-workspaces');
 }
-
 async function benchmarkTarget(target: IncrementalTargetInput, options: IncrementalBenchmarkOptions): Promise<IncrementalTargetReport> {
   const targetStartedAt = Date.now();
   const trialRoot = path.join(path.resolve(options.workRoot || defaultIncrementalBenchmarkWorkRoot()), `${slugify(target.name || path.basename(target.path))}-${Date.now()}`);
@@ -450,7 +450,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
     await copyIncrementalBenchmarkRepo(target.path, workspace);
     const copyRepoMs = Math.max(1, Date.now() - copyStartedAt);
     let gitBaselineMs = 0;
-    if (options.useGitBaseline) {
+    if (requiresIncrementalGitBaseline(options.useGitBaseline, options.analysisPath)) {
       const gitBaselineStartedAt = Date.now();
       initializeBenchmarkGitBaseline(workspace);
       gitBaselineMs = Math.max(1, Date.now() - gitBaselineStartedAt);

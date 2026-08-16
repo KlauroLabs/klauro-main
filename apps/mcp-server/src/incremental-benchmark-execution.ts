@@ -20,6 +20,13 @@ export interface IncrementalRunEvidence {
   };
 }
 
+export function requiresIncrementalGitBaseline(
+  useGitBaseline: boolean | undefined,
+  analysisPath: 'in-process-harness' | 'klauro-product' | undefined,
+): boolean {
+  return Boolean(useGitBaseline || analysisPath === 'klauro-product');
+}
+
 export async function captureIncrementalRun(
   analyze: () => Promise<IncrementalAnalysisResult>,
 ): Promise<IncrementalRunEvidence> {
