@@ -368,6 +368,59 @@ test('segmented CAS retrieval retries a section that is still being published', 
   assert.equal(sectionRequests, 2);
 });
 
+test('segmented CAS retrieval uses bounded parallel section reads', async (t) => {
+  const analysisId = 'segmented-parallel-read';
+  const sections = ['identity', 'tree', 'graph', 'calls', 'facts'] as const;
+  let activeRequests = 0;
+  let peakRequests = 0;
+  const server = http.createServer(async (req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        manifest_version: 1,
+        cas_version: '3.0.0',
+        analysis_id: analysisId,
+        analysis_timestamp: new Date().toISOString(),
+        sections: sections.map(name => ({ name, fields: name === 'identity' ? ['system'] : [] })),
+        logical_fields: ['system'],
+      }));
+      return;
+    }
+    const section = sections.find(name => req.url === `/v1/analyses/${analysisId}/cas/sections/${name}`);
+    if (section) {
+      activeRequests += 1;
+      peakRequests = Math.max(peakRequests, activeRequests);
+      await new Promise(resolve => setTimeout(resolve, 40));
+      activeRequests -= 1;
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify(section === 'identity' ? { system: { name: 'parallel-segmented-read' } } : {}));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+
+  const cas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    sections,
+  );
+
+  assert.equal(cas.system.name, 'parallel-segmented-read');
+  assert.equal(peakRequests, 4);
+});
+
 test('wait mode follows a structural response until pending comprehension completes', async (t) => {
   disableConnectorAuth(t);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-resilience-test-'));

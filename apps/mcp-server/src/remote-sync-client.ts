@@ -3,6 +3,7 @@ import { constants as bufferConstants } from 'node:buffer';
 import * as path from 'node:path';
 import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
+import pLimit from 'p-limit';
 import { saveAnalysis } from './storage';
 import type { RemoteAnalyzeResponse, RemoteAnalyzerResponse, RemoteProjectRevisionsResponse } from './remote-analyzer-protocol';
 import { buildBranchDiffContext, buildStreamingSourceSnapshot, buildStreamingWorkingTreeChanges } from './remote-source';
@@ -390,10 +391,10 @@ async function fetchSegmentedRemoteCas(
   });
   if (!manifest) return undefined;
   const available = new Set(manifest.sections.map(section => section.name));
-  const parts: Array<Partial<RemoteAnalyzeResponse['cas']>> = [];
-  for (const section of requestedSections) {
-    if (!available.has(section)) continue;
-    parts.push(await withRemoteReadRetry(async () => {
+  const readSection = pLimit(4);
+  const parts = await Promise.all(requestedSections
+    .filter(section => available.has(section))
+    .map(section => readSection(() => withRemoteReadRetry(async () => {
       const response = await fetchWithTimeout(
         `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/sections/${section}`,
         { headers },
@@ -405,8 +406,7 @@ async function fetchSegmentedRemoteCas(
       if (response.status >= 500) throw new RetriableRemoteError(`Remote CAS section ${section} returned ${response.status}`);
       if (!response.ok) throw new Error(`Remote CAS section ${section} returned ${response.status}`);
       return parseRemoteCasSection(response);
-    }));
-  }
+    }))));
   return hydrateCasSections(parts) as RemoteAnalyzeResponse['cas'];
 }
 
