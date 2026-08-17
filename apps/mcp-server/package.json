@@ -38,7 +38,7 @@
     "dev": "tsx watch src/index.ts",
     "init": "tsx src/cli.ts init",
     "setup": "node scripts/install.mjs",
-    "pack:tarball": "npm run build && node -e \"require('fs').mkdirSync('./.pack',{recursive:true})\" && npm pack ./.customer-package --pack-destination ./.pack && node -e \"const fs=require('fs'),p=require('path');const d='./.pack';const ver=require('./package.json').version;const f='klauro-mcp-server-'+ver+'.tgz';if(!fs.existsSync(p.join(d,f)))throw new Error('pack:tarball: expected '+f+' from npm pack');fs.copyFileSync(p.join(d,f),p.join(d,'klauro-latest.tgz'))\" && node scripts/write-release-manifest.mjs",
+    "pack:tarball": "npm run build && node -e \"require('fs').mkdirSync('./.pack',{recursive:true})\" && npm pack ./.customer-package --pack-destination ./.pack && node scripts/write-release-manifest.mjs",
     "analyze": "tsx src/cli.ts analyze",
     "upload-manifest": "tsx src/cli.ts upload-manifest",
     "install-agent": "tsx src/cli.ts install-agent",

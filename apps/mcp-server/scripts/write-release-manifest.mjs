@@ -15,7 +15,7 @@
 
 
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import buildSourceIdentity from './build-source-identity.cjs';
@@ -95,5 +95,20 @@ const manifest = {
 
 const dir = path.join(packageRoot, '.pack');
 mkdirSync(dir, { recursive: true });
-writeFileSync(path.join(dir, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+const versionedTarballPath = path.join(dir, `klauro-mcp-server-${version}.tgz`);
+if (!existsSync(versionedTarballPath)) {
+  throw new Error(`write-release-manifest.mjs: ${versionedTarballPath} is missing — run "npm pack" first.`);
+}
+writeAtomically(path.join(dir, 'klauro-latest.tgz'), readFileSync(versionedTarballPath));
+writeAtomically(path.join(dir, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 process.stdout.write(`latest.json: version ${manifest.version} sha ${manifest.git_sha} published_at ${manifest.published_at}, ${Object.keys(binaries).length} platform binaries\n`);
+
+function writeAtomically(destination, contents) {
+  const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporary, contents);
+    renameSync(temporary, destination);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
