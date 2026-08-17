@@ -177,6 +177,7 @@ import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { computeModuleHealth } from './module-health';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
+import { buildRequiredServices } from './configuration-required-services';
 import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
 import { buildProductMap } from './product-map';
 import { buildReachabilityIndexFromCas } from './reachability-index';
@@ -25128,7 +25129,7 @@ export class AnalyzerOrchestrator {
     const configFilePatterns = ['.env', 'config', 'tsconfig', 'package.json', 'settings', 'appsettings', 'application.properties', 'application.yml', 'docker-compose', 'dockerfile', 'cargo.toml', 'go.mod', 'composer.json', 'pom.xml', 'build.gradle'];
     const envVars: CASConfiguration['environment_variables'] = [];
     const configFiles: CASConfiguration['config_files'] = [];
-    const requiredServices: CASConfiguration['required_services'] = [];
+    const requiredServices = buildRequiredServices(exitPoints, externalServices);
 
     for (const node of nodes) {
       if (node.type !== 'file' && node.type !== 'config') continue;
@@ -25158,36 +25159,6 @@ export class AnalyzerOrchestrator {
             });
           }
         }
-      }
-    }
-
-    for (const ep of exitPoints) {
-      const serviceName = ep.target?.service_id || ep.target?.endpoint || ep.name;
-      if (ep.type === 'database') {
-        requiredServices.push({
-          service: serviceName || 'database',
-          optional: false
-        });
-      } else if (ep.type === 'api' || ep.type === 'sdk' || ep.type === 'webhook') {
-        requiredServices.push({
-          service: serviceName || ep.name,
-          optional: ep.metadata?.optional === true
-        });
-      } else if (ep.type === 'message') {
-        requiredServices.push({
-          service: serviceName || 'message_queue',
-          optional: false
-        });
-      }
-    }
-
-    for (const svc of externalServices) {
-      const existing = requiredServices.find(r => r.service === svc.name);
-      if (!existing) {
-        requiredServices.push({
-          service: svc.name,
-          optional: false
-        });
       }
     }
 

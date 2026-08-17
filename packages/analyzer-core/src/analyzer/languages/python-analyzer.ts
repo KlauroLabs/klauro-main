@@ -1348,11 +1348,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
                              'max', 'min', 'sum', 'sorted', 'reversed', 'enumerate', 'zip', 'map',
                              'filter', 'reduce', 'next', 'iter', 'super', '__import__'];
 
-    const knownLibraryModules = ['os', 'sys', 'json', 'math', 'datetime', 'random', 're', 'urllib',
-                                 'requests', 'pandas', 'numpy', 'matplotlib', 'sqlite3', 'asyncio',
-                                 'threading', 'multiprocessing', 'subprocess', 'logging', 'functools',
-                                 'itertools', 'collections', 'pathlib', 'shutil', 'tempfile', 'io'];
-
     for (const cls of classes) {
       const classId = `class_${fileId}_${this.sanitizeId(cls.name)}_${cls.lineStart}`;
       const classNode = callIndex.nodesById.get(classId);
@@ -1364,7 +1359,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         if (!methodNode) continue;
 
         const methodLines = lines.slice(method.lineStart - 1, method.lineEnd);
-        this.extractCallsFromBlock(methodLines, method.lineStart, methodNode, edges, exitPoints, builtinFunctions, knownLibraryModules, callIndex);
+        this.extractCallsFromBlock(methodLines, method.lineStart, methodNode, edges, exitPoints, builtinFunctions, callIndex);
       }
     }
 
@@ -1374,7 +1369,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       if (!functionNode) continue;
 
       const funcLines = lines.slice(func.lineStart - 1, func.lineEnd);
-      this.extractCallsFromBlock(funcLines, func.lineStart, functionNode, edges, exitPoints, builtinFunctions, knownLibraryModules, callIndex);
+      this.extractCallsFromBlock(funcLines, func.lineStart, functionNode, edges, exitPoints, builtinFunctions, callIndex);
     }
   }
 
@@ -1385,7 +1380,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     exitPoints: CASExitPoint[],
     builtinFunctions: string[],
-    knownLibraryModules: string[],
     callIndex: PythonCallIndex,
   ): void {
     const callPatterns = [
@@ -1444,73 +1438,30 @@ export class PythonAnalyzer extends BaseAnalyzer {
             targetObject = match[1];
             targetMethod = match[2];
 
-            if (knownLibraryModules.includes(targetObject)) {
-              const exitPointId = `exit_${callerNode.id}_to_${targetObject}_${targetMethod}`;
-              if (!callIndex.exitPointIds.has(exitPointId)) {
-                exitPoints.push({
-                  id: exitPointId,
-                  source_node: callerNode.id,
-                  type: 'sdk',
-                  name: `Call to ${targetObject}.${targetMethod}`,
-                  target: {
-                    sdk: targetObject,
-                    endpoint: targetMethod
-                  },
-                  operation: {
-                    action: targetMethod,
-                    async: isAsync
-                  },
-                  metadata: {
-                    line: lineNumber
-                  }
-                } as CASExitPoint);
-                callIndex.exitPointIds.add(exitPointId);
+            const resolution = selectPythonCallTarget(callIndex, targetMethod, callerNode.source?.file || '');
+            const possibleTargets = callIndex.callablesByName.get(targetMethod) || [];
 
-                const edgeId = `${callerNode.id}_calls_external_${targetObject}_${targetMethod}`;
+            if (possibleTargets.length > 0) {
+              const targetNode = resolution.target;
+
+              if (targetNode && targetNode.id !== callerNode.id) {
+                const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
                 if (!callIndex.edgeIds.has(edgeId)) {
                   edges.push(this.createEdge(
                     edgeId,
                     callerNode.id,
-                    exitPointId,
+                    targetNode.id,
                     'calls',
                     'behavior',
                     {
-                      call_type: 'library_call',
-                      library: targetObject,
-                      method: targetMethod,
+                      call_type: 'method_call',
+                      target_object: targetObject,
                       is_async: isAsync,
-                      line: lineNumber
+                      line: lineNumber,
+                      ambiguous: resolution.candidates > 1
                     }
                   ));
                   callIndex.edgeIds.add(edgeId);
-                }
-              }
-            } else {
-              const resolution = selectPythonCallTarget(callIndex, targetMethod, callerNode.source?.file || '');
-              const possibleTargets = callIndex.callablesByName.get(targetMethod) || [];
-
-              if (possibleTargets.length > 0) {
-                const targetNode = resolution.target;
-
-                if (targetNode && targetNode.id !== callerNode.id) {
-                  const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
-                  if (!callIndex.edgeIds.has(edgeId)) {
-                    edges.push(this.createEdge(
-                      edgeId,
-                      callerNode.id,
-                      targetNode.id,
-                      'calls',
-                      'behavior',
-                      {
-                        call_type: 'method_call',
-                        target_object: targetObject,
-                        is_async: isAsync,
-                        line: lineNumber,
-                        ambiguous: resolution.candidates > 1
-                      }
-                    ));
-                    callIndex.edgeIds.add(edgeId);
-                  }
                 }
               }
             }

@@ -93,6 +93,12 @@ interface SoapConsumer {
   evidence: string;
 }
 
+interface PythonSoapClient {
+  receiver: string;
+  endpoint?: string;
+  service?: string;
+}
+
 
 
 
@@ -949,16 +955,79 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
 
   private extractPythonConsumers(relativePath: string, fullPath: string, content: string): SoapConsumer[] {
     const consumers: SoapConsumer[] = [];
-    const clientRegex = /\b(?:Client|zeep\.Client)\s*\(\s*['"]([^'"]+)['"]/g;
+    const clients = new Map<string, PythonSoapClient>();
+    const assignmentRegex = /\b((?:self\.)?[A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(?:zeep\.)?Client\s*\(([^)\n]*)\)/g;
     let match: RegExpExecArray | null;
+    while ((match = assignmentRegex.exec(content)) !== null) {
+      const binding = this.pythonSoapClient(match[1], match[2]);
+      clients.set(binding.receiver, binding);
+      consumers.push(this.consumer(
+        relativePath,
+        fullPath,
+        content,
+        match.index,
+        'zeep/suds',
+        undefined,
+        binding.endpoint,
+        `${binding.receiver} Client`,
+        binding.service,
+      ));
+    }
+    const clientRegex = /\b(?:Client|zeep\.Client)\s*\(\s*['"]([^'"]+)['"]/g;
     while ((match = clientRegex.exec(content)) !== null) {
+      if ([...clients.values()].some(client => client.endpoint === match![1])) continue;
       consumers.push(this.consumer(relativePath, fullPath, content, match.index, 'zeep/suds', undefined, match[1], 'Client'));
     }
-    const operationRegex = /\bclient\.service\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+    const operationRegex = /\b((?:self\.)?[A-Za-z_][A-Za-z0-9_.]*)\.service\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
     while ((match = operationRegex.exec(content)) !== null) {
-      consumers.push(this.consumer(relativePath, fullPath, content, match.index, 'zeep/suds', match[1], undefined, 'client.service operation call'));
+      const binding = clients.get(match[1]);
+      consumers.push(this.consumer(
+        relativePath,
+        fullPath,
+        content,
+        match.index,
+        'zeep/suds',
+        match[2],
+        binding?.endpoint,
+        `${match[1]}.service operation call`,
+        binding?.service,
+      ));
     }
     return consumers;
+  }
+
+  private pythonSoapClient(receiver: string, argumentsText: string): PythonSoapClient {
+    const argument = argumentsText.match(/\bwsdl\s*=\s*([^,]+)/)?.[1] || argumentsText.split(',')[0];
+    const expression = argument?.trim();
+    const literal = expression?.match(/^(['"])(.*?)\1$/)?.[2];
+    return {
+      receiver,
+      endpoint: literal,
+      service: literal ? this.serviceNameFromEndpoint(literal) : this.serviceNameFromConfigurationExpression(expression),
+    };
+  }
+
+  private serviceNameFromEndpoint(endpoint: string): string | undefined {
+    try {
+      return new URL(endpoint).hostname || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private serviceNameFromConfigurationExpression(expression: string | undefined): string | undefined {
+    const identifier = expression?.match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/)?.[1];
+    if (!identifier) return undefined;
+    const words = identifier
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .split(/[_\s]+/)
+      .filter(Boolean);
+    const technicalSuffixes = new Set(['wsdl', 'url', 'uri', 'endpoint', 'address', 'host', 'config', 'setting']);
+    while (words.length > 0 && technicalSuffixes.has(words[words.length - 1].toLowerCase())) words.pop();
+    if (words.length === 0) return undefined;
+    return words
+      .map(word => `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`)
+      .join(' ');
   }
 
   private extractJavaConsumers(relativePath: string, fullPath: string, content: string): SoapConsumer[] {
@@ -1065,7 +1134,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
       consumer.operation ? `Outbound SOAP operation call through ${consumer.library}` : `Outbound SOAP client configured through ${consumer.library}`,
       {
         service_id: consumer.service || 'soap_service',
-        endpoint: consumer.operation || consumer.endpoint,
+        endpoint: consumer.endpoint || consumer.operation,
         sdk: providerName,
         resource: providerName,
       },
