@@ -126,7 +126,7 @@ export function scoreCapabilityModelTrial(
   return {
     model,
     trial,
-    status: capabilities.length > 0 ? 'pass' : 'fail',
+    status: capabilities.length > 0 && duration === 1 ? 'pass' : 'fail',
     elapsed_ms: result.elapsed_ms,
     score,
     score_components: Object.fromEntries(Object.entries(components).map(([key, value]) => [key, rounded(value)])),
@@ -179,6 +179,7 @@ function modelSummary(model: string, trials: CapabilityModelTrial[]): ModelSumma
 
 function runWorker(projectPath: string, model: ModelSpec, trial: number, maxDurationMs: number): Promise<CapabilityModelTrial> {
   return new Promise(resolve => {
+    const startedAt = Date.now();
     const child = spawn(process.execPath, ['--import', 'tsx', __filename, '--worker', '--project', projectPath], {
       cwd: process.cwd(),
       env: {
@@ -201,31 +202,47 @@ function runWorker(projectPath: string, model: ModelSpec, trial: number, maxDura
       stdio: ['ignore', 'pipe', 'inherit'],
     });
     let stdout = '';
+    let settled = false;
+    const finish = (result: CapabilityModelTrial): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      resolve(result);
+    };
+    const deadline = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(failedTrial(
+        model.name,
+        trial,
+        `worker exceeded ${maxDurationMs}ms benchmark deadline`,
+        Date.now() - startedAt,
+      ));
+    }, maxDurationMs);
     child.stdout.on('data', chunk => {
       stdout = `${stdout}${String(chunk)}`.slice(-2_000_000);
     });
-    child.on('error', error => resolve(failedTrial(model.name, trial, error.message)));
+    child.on('error', error => finish(failedTrial(model.name, trial, error.message, Date.now() - startedAt)));
     child.on('close', code => {
       const marker = stdout.split('\n').find(line => line.startsWith('KLAURO_CAPABILITY_MODEL_RESULT='));
       if (code !== 0 || !marker) {
-        resolve(failedTrial(model.name, trial, `worker exited ${code ?? 'without status'}`));
+        finish(failedTrial(model.name, trial, `worker exited ${code ?? 'without status'}`, Date.now() - startedAt));
         return;
       }
       try {
-        resolve(scoreCapabilityModelTrial(JSON.parse(marker.slice('KLAURO_CAPABILITY_MODEL_RESULT='.length)), model.name, trial, maxDurationMs));
+        finish(scoreCapabilityModelTrial(JSON.parse(marker.slice('KLAURO_CAPABILITY_MODEL_RESULT='.length)), model.name, trial, maxDurationMs));
       } catch (error) {
-        resolve(failedTrial(model.name, trial, error instanceof Error ? error.message : String(error)));
+        finish(failedTrial(model.name, trial, error instanceof Error ? error.message : String(error), Date.now() - startedAt));
       }
     });
   });
 }
 
-function failedTrial(model: string, trial: number, error: string): CapabilityModelTrial {
+function failedTrial(model: string, trial: number, error: string, elapsedMs = 0): CapabilityModelTrial {
   return {
     model,
     trial,
     status: 'fail',
-    elapsed_ms: 0,
+    elapsed_ms: elapsedMs,
     score: 0,
     score_components: {},
     primary_domain: '',

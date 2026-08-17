@@ -215,6 +215,36 @@ describe('OpenAIProvider compatible endpoint support', () => {
     }
   });
 
+  it('surfaces native Ollama completion diagnostics when the response is empty', async () => {
+    const server = http.createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        message: { role: 'assistant', content: '' },
+        done: true,
+        done_reason: 'length',
+        prompt_eval_count: 16384,
+        eval_count: 0,
+      }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
+      process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${address.port}`;
+      const config = getAIConfig();
+      config.openai.apiKey = 'local';
+      config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
+      config.openai.model = 'local-model';
+      config.openai.maxRetries = 0;
+      await expect(new OpenAIProvider(config).generateDescription({
+        additionalContext: { requestRetries: 0 },
+      })).rejects.toThrow('Ollama returned no content (done_reason=length, prompt_tokens=16384, completion_tokens=0)');
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it('times out native Ollama requests instead of hanging analysis', async () => {
     const server = http.createServer((req, _res) => {
       req.resume();

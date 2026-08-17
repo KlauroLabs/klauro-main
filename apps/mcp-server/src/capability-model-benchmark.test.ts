@@ -37,6 +37,25 @@ test('scores grounded product language above implementation-shaped output', () =
   assert.equal(implementation.score_components.duration, 0);
 });
 
+test('fails an otherwise valid trial that exceeds the latency budget', () => {
+  const result = scoreCapabilityModelTrial({
+    elapsed_ms: 180001,
+    primary_domain: 'access-governance',
+    system_description: 'Teams request and approve access to protected resources.',
+    description_status: 'ai_applied',
+    capabilities: [{
+      name: 'Manage Access Requests',
+      description: 'Gives administrators a clear way to approve or reject resource access requests.',
+      category: 'core',
+      operations: 4,
+      entities: 2,
+    }],
+  }, 'slow-model', 1, 180000);
+
+  assert.equal(result.status, 'fail');
+  assert.equal(result.score_components.duration, 0);
+});
+
 test('parses arbitrary model names without repository-specific defaults', () => {
   const parsed = parseCapabilityModelBenchmarkArgs([
     '--project', '.',

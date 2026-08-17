@@ -360,6 +360,14 @@ export class OpenAIProvider implements AIProvider {
         }
 
         const content = typeof body.message?.content === 'string' ? body.message.content : '';
+        if (!content.trim()) {
+          const diagnostics = [
+            body.done_reason ? `done_reason=${String(body.done_reason)}` : undefined,
+            Number.isFinite(body.prompt_eval_count) ? `prompt_tokens=${body.prompt_eval_count}` : undefined,
+            Number.isFinite(body.eval_count) ? `completion_tokens=${body.eval_count}` : undefined,
+          ].filter(Boolean).join(', ');
+          throw new Error(`Ollama returned no content${diagnostics ? ` (${diagnostics})` : ''}`);
+        }
         const duration = Date.now() - start;
         this.logger.debug(`Ollama request completed in ${duration}ms`);
 
