@@ -102,6 +102,33 @@ describe('OutboundHttpClientAnalyzer', () => {
     ]));
   });
 
+  it('grounds Python formatted URL hosts in configuration constants', async () => {
+    const contribution = await analyze({
+      'requirements.txt': 'requests==2.32.0',
+      'src/client.py': [
+        'import requests',
+        'from configuration import env',
+        'requests.post(f"https://{env.FLEET_PORTAL}/api/v1/orders", json={})',
+      ].join('\n'),
+    });
+
+    expect(exits(contribution)).toHaveLength(1);
+    expect(exits(contribution)[0].target?.endpoint).toBe('https://{param}/api/v1/orders');
+    expect(exits(contribution)[0].target?.service_id).toBe('Fleet Portal');
+  });
+
+  it('does not infer a service from an arbitrary Python formatted host', async () => {
+    const contribution = await analyze({
+      'requirements.txt': 'requests==2.32.0',
+      'src/client.py': [
+        'import requests',
+        'requests.get(f"https://{invoice.pdf_url}/download")',
+      ].join('\n'),
+    });
+
+    expect(exits(contribution)).toHaveLength(0);
+  });
+
   it('extracts Java RestTemplate, WebClient, OkHttp, and Feign outbound API calls', async () => {
     const contribution = await analyze({
       'pom.xml': [

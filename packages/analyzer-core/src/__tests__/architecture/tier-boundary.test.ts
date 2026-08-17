@@ -83,6 +83,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'co-change-index.ts': 1,
   'communication-seams.ts': 1,
   'configuration-required-services.ts': 1,
+  'service-identity.ts': 1,
   'community-detection.ts': 1,
   'errors.ts': 1,
   'estree-parse-cache.ts': 1,

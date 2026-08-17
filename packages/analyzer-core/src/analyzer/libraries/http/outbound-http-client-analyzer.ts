@@ -3,6 +3,7 @@ import { CASContribution, CASExitPoint, CASNode } from '../../../types/cas.types
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { isConfigurationConstantExpression, serviceNameFromConfigurationExpression } from '../../core/service-identity';
 
 interface HttpClientCall {
   library: string;
@@ -269,10 +270,24 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
 
   private extractPythonCalls(content: string, fileContext: FileHttpContext): HttpClientCall[] {
     const calls: HttpClientCall[] = [];
-    const direct = /\b(requests|httpx)\s*\.\s*(get|post|put|patch|delete|head)\s*\(\s*['"]([^'"]+)['"]/g;
+    const direct = /\b(requests|httpx)\s*\.\s*(get|post|put|patch|delete|head)\s*\(\s*(?:url\s*=\s*)?([fFrR]{0,2})(['"])([^'"\n]+)\4/g;
     let match: RegExpExecArray | null;
     while ((match = direct.exec(content)) !== null) {
-      this.addCall(calls, match[1], match[2], match[3], content, match.index);
+      const formatted = /f/i.test(match[3]);
+      const expressions = formatted ? [...match[5].matchAll(/\{([^{}]+)\}/g)].map(value => value[1].trim()) : [];
+      const serviceExpression = expressions.find(isConfigurationConstantExpression);
+      const endpoint = formatted ? match[5].replace(/\{[^{}]+\}/g, '{param}') : match[5];
+      if (/^https?:\/\/\{param\}/.test(endpoint) && !serviceExpression) continue;
+      this.addCall(
+        calls,
+        match[1],
+        match[2],
+        endpoint,
+        content,
+        match.index,
+        undefined,
+        serviceNameFromConfigurationExpression(serviceExpression),
+      );
     }
 
     const sessionCall = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(get|post|put|patch|delete|head)\s*\(\s*['"]([^'"]+)['"]/g;
@@ -426,7 +441,8 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
     endpoint: string,
     content: string,
     index: number,
-    declaration?: string
+    declaration?: string,
+    serviceAlias?: string,
   ): void {
     const normalized = normalizeEndpoint(endpoint);
     if (!normalized) return;
@@ -435,7 +451,7 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       method: method.toUpperCase(),
       endpoint: normalized,
       line: this.sourceLineForIndex(content, index),
-      serviceAlias: serviceAliasFromEndpoint(normalized),
+      serviceAlias: serviceAlias || serviceAliasFromEndpoint(normalized),
       declaration,
     });
   }

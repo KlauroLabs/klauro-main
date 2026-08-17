@@ -18,13 +18,14 @@ describe('Python SOAP consumers', () => {
     await fs.remove(projectPath);
   });
 
-  async function analyze(source: string) {
-    const filePath = path.join(projectPath, 'gateway.py');
+  async function analyze(source: string, relativePath = 'gateway.py') {
+    const filePath = path.join(projectPath, relativePath);
+    await fs.ensureDir(path.dirname(filePath));
     await fs.writeFile(filePath, source, 'utf8');
     return new SoapWsdlAnalyzer().analyzeFileSingle({
       projectPath,
       filePath,
-      relativePath: 'gateway.py',
+      relativePath,
     });
   }
 
@@ -47,6 +48,20 @@ describe('Python SOAP consumers', () => {
     expect(operation?.target?.service_id).toBe('Payment Processor');
     expect(operation?.target?.sdk).toBe('Payment Processor');
     expect(operation?.metadata?.library).toBe('zeep/suds');
+  });
+
+  it('uses matching module-path words to separate compressed configuration names', async () => {
+    const result = await analyze([
+      'import zeep',
+      'from configuration import env',
+      '',
+      'client = zeep.Client(wsdl=env.PAYMENTVISION_WSDL_URL)',
+      'client.service.Authorize()',
+      '',
+    ].join('\n'), 'modules/integrations/payment_vision/controller.py');
+
+    const operation = result.exitPoints.find(exitPoint => exitPoint.operation?.action === 'Authorize');
+    expect(operation?.target?.service_id).toBe('Payment Vision');
   });
 
   it('preserves literal WSDL endpoints', async () => {
