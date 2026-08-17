@@ -443,15 +443,15 @@ function answerTests(cas: CASOutput) {
 function answerExternalBoundaries(cas: CASOutput) {
   const exits = getExitPoints(cas, { limit: 20 });
   const externalServices = getExternalServices(cas);
+  const hasExternalBoundaries = exits.total > 0 || externalServices.length > 0;
   return answer('external-boundaries', {
     exit_points: exits,
     external_services: externalServices,
   }, [
-    summaryEvidence('external-boundary-summary', exits.total > 0 ? 'CAS exit points found' : 'CAS reports no exit points'),
+    summaryEvidence('external-boundary-summary', hasExternalBoundaries ? 'CAS external boundaries found' : 'CAS reports no external boundaries'),
     ...exitPointEvidence(exits.exit_points),
-  ], confidence(exits.total > 0 || externalServices.length > 0));
+  ], hasExternalBoundaries ? 0.95 : 0.85);
 }
-
 function answerSecurity(cas: CASOutput) {
   const security = getSecurityOverview(cas);
   const authNodes = searchNodes(cas, 'auth', { limit: 15 });

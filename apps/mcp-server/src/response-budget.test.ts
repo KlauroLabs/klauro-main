@@ -147,6 +147,32 @@ test('runAnswerPack lists available packs and their sections when the pack is un
   assert.ok(describeAnswerPackCatalog().includes("'mastery' (sections: overview, entry-points, representative-flow, change-impact, data, tests, external-boundaries, security, runtime-readiness)"));
 });
 
+test('runAnswerPack treats a complete absence of external boundaries as a confident finding', () => {
+  const result = runAnswerPack({
+    cas_version: '1.10.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'analysis-local-app',
+    system: {
+      id: 'local-app',
+      name: 'Local App',
+      type: 'application',
+      root_path: '/tmp/local-app',
+      technologies: { languages: [{ name: 'Dart' }], frameworks: [], databases: [], external_services: [] },
+    },
+    nodes: [{ id: 'local-screen', name: 'LocalScreen', type: 'class', source: { file: 'lib/main.dart', line: 1 } }],
+    edges: [],
+    analyzer_contributions: [],
+    entry_points: [],
+    exit_points: [],
+    external_services: [],
+  } as any, '/tmp/local-app');
+
+  const externalBoundaries = result.answers.find(answer => answer.id === 'external-boundaries');
+  assert.equal(externalBoundaries?.confidence, 0.85);
+  assert.ok(!result.gaps.some(gap => gap.startsWith('external-boundaries:')));
+  assert.equal(externalBoundaries?.evidence[0]?.label, 'CAS reports no external boundaries');
+});
+
 test('getTestSummary aggregates gap statistics server-side and pages the highest-severity gaps', () => {
   const cas = {
     test_summary: { total_tests: 5 },
