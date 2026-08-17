@@ -96,6 +96,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'incremental-locality.ts': 1,
   'incremental-scope.ts': 1,
   'incremental-state-refresh.ts': 1,
+  'language-analyzer-execution.ts': 1,
   'language-builtins.ts': 1,
   'language-registry.ts': 1,
   'language-spec.ts': 1,

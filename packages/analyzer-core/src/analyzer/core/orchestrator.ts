@@ -85,6 +85,7 @@ import {
   CASArtifactType
 } from '../../types/cas.types';
 import { classifyArtifactType, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS } from './artifact-type';
+import { executeLanguageAnalyzers, type AnalysisAccumulators as LanguageAnalysisAccumulators } from './language-analyzer-execution';
 import { buildFirstPartyProductEvidence } from './first-party-product-evidence';
 import { collectDeployableEvidence } from './deployable-evidence';
 import { attachDeployable } from './entry-point-deployable';
@@ -305,6 +306,7 @@ export interface AnalyzerRegistration {
   };
   requires?: string[];
   enhances?: string[];
+  consumesExistingAnalysis?: boolean;
   analyzer: BaseAnalyzer;
 }
 
@@ -322,6 +324,8 @@ interface AnalysisMergeIndexes {
   entryPointsByCanonicalKey: Map<string, any>;
   exitPointsById: Map<string, any>;
 }
+
+type AnalysisAccumulators = LanguageAnalysisAccumulators<AnalysisMergeIndexes>;
 
 export interface AnalysisProgressEvent {
   sequence: number;
@@ -1182,7 +1186,7 @@ export class AnalyzerOrchestrator {
       allExitPoints,
     });
 
-    const accumulators = {
+    const accumulators: AnalysisAccumulators = {
       allNodes, allEdges, allEntryPoints, allExitPoints,
       allBehaviors, allPatterns, allTags, allPerspectives,
       allLibraries, categories, contributions, analysisErrors, mergeIndexes
@@ -1196,24 +1200,20 @@ export class AnalyzerOrchestrator {
 
     await withAnalyzerFileReadCache(async () => {
     phaseStart = startPhase();
-    for (const registration of languageAnalyzers) {
-      try {
-        const langStart = Date.now();
-        await this.runAnalyzer(registration, context, projectPath, accumulators);
-        logTiming(`language_${registration.id}`, langStart);
-        await yieldToEventLoop();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Error running analyzer ${registration.id}:`, error);
-        analysisErrors.push({
-          severity: 'error',
-          code: 'ANALYZER_FAILURE',
-          message: `${registration.name} failed: ${message}`,
-          analyzer: registration.id,
-          recoverable: true
-        });
-      }
-    }
+    await executeLanguageAnalyzers({
+      registrations: languageAnalyzers,
+      context,
+      projectPath,
+      accumulators,
+      createMergeIndexes: target => this.createAnalysisMergeIndexes(target),
+      runAnalyzer: (registration, analyzerContext, rootPath, target) =>
+        this.runAnalyzer(registration, analyzerContext, rootPath, target),
+      mergeContribution: (target, contribution, analyzerId, errors, indexes) =>
+        this.mergeAnalysisResult(target, contribution, { analyzerId, analysisErrors: errors, mergeIndexes: indexes }),
+      mergeCategories: (target, source) => this.mergeCategories(target, source),
+      logTiming,
+      yieldAfterAnalyzer: yieldToEventLoop,
+    });
     logTiming('languageAnalyzers', phaseStart);
     await yieldToEventLoop();
 
@@ -5188,21 +5188,7 @@ export class AnalyzerOrchestrator {
     registration: AnalyzerRegistration,
     context: AnalysisContext,
     projectPath: string,
-    accumulators: {
-      allNodes: CASNode[];
-      allEdges: CASEdge[];
-      allEntryPoints: any[];
-      allExitPoints: any[];
-      allBehaviors: CASBehavior[];
-      allPatterns: CASPattern[];
-      allTags: CASTag[];
-      allPerspectives: CASPerspective[];
-      allLibraries: any[];
-      categories: CASCategories;
-      contributions: any[];
-      analysisErrors: CASAnalysisError[];
-      mergeIndexes: AnalysisMergeIndexes;
-    }
+    accumulators: AnalysisAccumulators
   ): Promise<void> {
     const analyzerStartTime = Date.now();
 

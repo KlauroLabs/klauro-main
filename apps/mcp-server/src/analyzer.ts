@@ -291,7 +291,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: [],
         content: [/\.(sh|bash|zsh|ksh)$/],
       },
-      analyzer: new ShellAnalyzer(),
+      consumesExistingAnalysis: false, analyzer: new ShellAnalyzer(),
     },
     {
       id: 'solidity',
@@ -368,7 +368,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: [],
         content: [/\.wsdl$/i, /\.xsd$/i, /from\s+['"](?:soap|strong-soap)['"]/, /import\s+(?:zeep|suds)\b/, /@(WebServiceClient|WebService)\b/, /System\.ServiceModel/, /Savon\.client\b/],
       },
-      analyzer: new SoapWsdlAnalyzer(),
+      consumesExistingAnalysis: false, analyzer: new SoapWsdlAnalyzer(),
     },
     {
       id: 'dart',
@@ -434,7 +434,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['Dockerfile', 'Dockerfile.*', '*.Dockerfile'],
         content: [/^FROM\s+/m],
       },
-      analyzer: new DockerfileAnalyzer(),
+      consumesExistingAnalysis: false, analyzer: new DockerfileAnalyzer(),
     },
     {
       id: 'docker-compose',
@@ -445,7 +445,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['compose.yml', 'compose.yaml', 'docker-compose.yml', 'docker-compose.yaml', 'docker-compose.*.yml', 'docker-compose.*.yaml'],
         content: [/^services:\s*$/m],
       },
-      analyzer: new DockerComposeAnalyzer(),
+      consumesExistingAnalysis: false, analyzer: new DockerComposeAnalyzer(),
     },
     {
       id: 'kubernetes-manifest',
@@ -456,7 +456,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['k8s/**/*.yaml', 'k8s/**/*.yml', 'kubernetes/**/*.yaml', 'kubernetes/**/*.yml', 'deploy/**/*.yaml', 'deploy/**/*.yml'],
         content: [/^apiVersion:\s+/m, /^kind:\s+(Deployment|Service|Ingress|StatefulSet|Job|CronJob|ConfigMap|Secret)/m],
       },
-      analyzer: new KubernetesManifestAnalyzer(),
+      consumesExistingAnalysis: false, analyzer: new KubernetesManifestAnalyzer(),
     },
     {
       id: 'ansible',
@@ -574,7 +574,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
           /class\s+\w+\s*<\s*Thor\b/,
         ],
       },
-      analyzer: new CliAnalyzer(),
+      consumesExistingAnalysis: false, analyzer: new CliAnalyzer(),
     },
     {
 
@@ -587,7 +587,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       detectPatterns: {
         content: [/\.(zig|hs|lua|ml|erl|ex|exs|clj|jl|nim|f90|ada|d|cr|nix)$/i],
       },
-      analyzer: new GenericTreeSitterLanguageAnalyzer(),
+      consumesExistingAnalysis: false, analyzer: new GenericTreeSitterLanguageAnalyzer(),
     },
   ];
 
