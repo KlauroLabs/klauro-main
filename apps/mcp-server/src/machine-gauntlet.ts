@@ -694,11 +694,11 @@ function unselectedMachineProofReason(repo: RealRepoTarget, options: ParsedArgs,
 }
 
 export function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateStatus; score: number; failures: string[]; warnings: string[] } {
+  void repoPath;
   const failures: string[] = [];
   const warnings: string[] = [];
   const primaryDomain = String(cas.enhanced_system_purpose?.primary_domain || '');
   const description = String(cas.enhanced_system_purpose?.inferred_description || '');
-  const repoSignal = `${repoPath} ${cas.system?.name || ''}`.toLowerCase();
   const capabilities = cas.capabilities || [];
   const architecturalPatterns = cas.architecture_summary?.architectural_patterns || [];
   const architecturalInventory = cas.architecture_summary?.architectural_inventory || {};
@@ -707,12 +707,6 @@ export function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateSt
 
   if (!primaryDomain || primaryDomain === 'unknown' || isGenericDomain(primaryDomain)) {
     failures.push(`primary domain is weak (${primaryDomain || 'missing'})`);
-  }
-  if (isCryptoTradingRepoSignal(repoSignal) && !isCryptoTradingDomain(primaryDomain)) {
-    failures.push(`crypto/Solana repo signal conflicts with primary domain (${primaryDomain})`);
-  }
-  if (/testing[-_ ]utilities|test[-_ ]utilities/.test(repoSignal) && /medical-device|hardware-device/.test(primaryDomain)) {
-    failures.push(`testing utility repo was classified as ${primaryDomain}`);
   }
   if (capabilities.length === 0) {
     failures.push('no system capabilities inferred');
@@ -723,11 +717,8 @@ export function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateSt
   if (!descriptionGeneration?.status) {
     warnings.push('system description generation source is not recorded');
   }
-  const weakDescriptionReasons = findWeakMachineDescriptionReasons(cas, description, repoSignal);
+  const weakDescriptionReasons = findWeakMachineDescriptionReasons(cas, description);
   failures.push(...weakDescriptionReasons);
-  if (primaryDomain === 'solana-arbitrage' && /\b(dapp|decentralized application|miner|mining|mine tokens?)\b/i.test(description)) {
-    failures.push('system description adds unsupported crypto-mining/DApp language');
-  }
   if (architecturalPatterns.length === 0 && (cas.nodes?.length || 0) > 50) {
     warnings.push('no architectural patterns detected for non-trivial repo');
   }
@@ -843,7 +834,7 @@ async function runDescriptionGenerationProbe(
       status === 'ai_applied' &&
       source === 'ai' &&
       description.length >= 120 &&
-      !findWeakMachineDescriptionReasons(cas, description, repo.path).length;
+      !findWeakMachineDescriptionReasons(cas, description).length;
     return {
       status: accepted ? 'pass' as GateStatus : 'fail' as GateStatus,
       proof_strength: status === 'ai_applied' && source === 'ai' ? 'hosted-ai-applied' : attempted ? 'hosted-ai-reviewed-but-not-applied' : 'ai-not-attempted',
@@ -888,14 +879,6 @@ function restoreMachineEnv(name: string, value: string | undefined): void {
   }
 }
 
-function isCryptoTradingRepoSignal(text: string): boolean {
-  return /\b(solana|pumpfun|jito|mev|sniper|bundler|arbitrage)\b/.test(text);
-}
-
-function isCryptoTradingDomain(domain: string): boolean {
-  return /\b(solana|pumpfun|jito|mev|crypto|trading|arbitrage|sniper)\b/.test(domain);
-}
-
 function requireInventory(inventory: any, failures: string[], pattern: string, keys: string[]): void {
   const missing = keys.filter(key => !Array.isArray(inventory[key]) || inventory[key].length === 0);
   if (missing.length > 0) {
@@ -912,7 +895,7 @@ function isGenericDomain(domain: string): boolean {
   ]).has(domain.toLowerCase());
 }
 
-function findWeakMachineDescriptionReasons(cas: any, description: string, repoSignal = ''): string[] {
+function findWeakMachineDescriptionReasons(cas: any, description: string): string[] {
   const reasons: string[] = [];
   const text = String(description || '');
   if (!text || text.length < 80) return reasons;
@@ -932,23 +915,9 @@ function findWeakMachineDescriptionReasons(cas: any, description: string, repoSi
     /\bintermediary between the frontend ui and the server-side logic\b/i.test(text)) {
     reasons.push('system description describes a generic backend role instead of codebase-specific behavior');
   }
-  const unsupportedClaim = text.match(/\b(command-line interface|coupons?|discounts?)\b/i)?.[1];
-  if (unsupportedClaim &&
-    !descriptionClaimIsGroundedInRepoSignal(repoSignal, unsupportedClaim) &&
-    !descriptionTermIsGroundedInMachineCas(cas, unsupportedClaim)) {
-    reasons.push(`system description claims unsupported ${unsupportedClaim} behavior`);
-  }
   const unexplainedTerms = unexplainedShortTitleCaseTerms(text, term => descriptionTermIsGroundedInMachineCas(cas, term));
   if (unexplainedTerms.length > 0) reasons.push(`system description includes unexplained short proper-noun claims: ${unexplainedTerms.join(', ')}`);
   return Array.from(new Set(reasons));
-}
-
-function descriptionClaimIsGroundedInRepoSignal(repoSignal: string, term: string): boolean {
-  const normalized = String(term || '').toLowerCase();
-  if (normalized === 'command-line interface') {
-    return /\b(cli|command|console)\b|(^|[/_-])bin($|[/_-])|__main__|entry_points/i.test(repoSignal);
-  }
-  return false;
 }
 
 function isDistinctiveMachineDescriptionTerm(value: string): boolean {

@@ -163,6 +163,28 @@ test('machine analysis quality grounds product identity from first-party CAS evi
   assert.doesNotMatch(quality.failures.join('\n'), /unexplained short proper-noun/);
 });
 
+test('machine analysis quality is invariant to repository path labels', () => {
+  const cas = {
+    system: { name: 'service', technologies: { languages: [], frameworks: [] } },
+    enhanced_system_purpose: {
+      primary_domain: 'workflow-automation',
+      core_concepts: ['workflow', 'approval', 'task'],
+      inferred_description: 'Coordinates workflow approvals and task execution through evidence-backed entry points, services, and persisted state transitions for operational teams.',
+      description_generation: { status: 'ai_applied' },
+    },
+    domain_concepts: [{ name: 'workflow' }, { name: 'approval' }, { name: 'task' }],
+    capabilities: [{ name: 'Workflow Approval' }],
+    nodes: [{ name: 'WorkflowApprovalService', type: 'service', source: { file: 'src/workflow.ts' } }],
+    entry_points: [{ name: 'approveWorkflow', type: 'http' }],
+    architecture_summary: { architectural_patterns: [], architectural_inventory: {} },
+  };
+
+  assert.deepEqual(
+    assessAnalysisQuality(cas, '/repositories/financial-trading-system'),
+    assessAnalysisQuality(cas, '/repositories/medical-testing-utilities'),
+  );
+});
+
 test('machine analysis quality accepts rich architectures when pattern balance names primary patterns', () => {
   const patterns = [
     'MVC',
