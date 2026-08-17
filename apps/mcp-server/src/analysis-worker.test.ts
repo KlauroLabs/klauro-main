@@ -14,6 +14,7 @@ import {
   analysisWorkerExecArgv,
   analysisRunsInProcess,
   prewarmAnalysisWorker,
+  resolveAnalysisWorkerIdleMs,
   runAnalysis,
   shutdownAnalysisWorker,
 } from './analyzer';
@@ -128,6 +129,13 @@ test('prewarmAnalysisWorker starts the isolated worker before the first analysis
   assert.strictEqual(__analysisWorkerRunningForTests(), true);
 });
 
+test('analysis worker idle policy supports bounded reuse and persistent hosted residency', () => {
+  assert.strictEqual(resolveAnalysisWorkerIdleMs({}), 60_000);
+  assert.strictEqual(resolveAnalysisWorkerIdleMs({ KLAURO_ANALYSIS_WORKER_IDLE_MS: '2500' }), 2500);
+  assert.strictEqual(resolveAnalysisWorkerIdleMs({ KLAURO_ANALYSIS_WORKER_IDLE_MS: '-1' }), null);
+  assert.strictEqual(resolveAnalysisWorkerIdleMs({ KLAURO_ANALYSIS_WORKER_IDLE_MS: 'invalid' }), 60_000);
+});
+
 test('analysis worker removes parent eval payloads while preserving runtime loaders', () => {
   assert.deepStrictEqual(
     analysisWorkerExecArgv(['--require', 'tsx/preflight.cjs', '-e', 'runBenchmark()', '--max-old-space-size=1024', '--trace-warnings']),
@@ -165,6 +173,18 @@ test('idle hosted worker exits after its warm reuse window', async () => {
     assert.strictEqual(__analysisWorkerRunningForTests(), false);
   } finally {
     delete process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
+  }
+});
+
+test('persistent hosted worker remains available after a completed analysis', async () => {
+  process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS = '-1';
+  try {
+    await runAnalysis(fixtureProject);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.strictEqual(__analysisWorkerRunningForTests(), true);
+  } finally {
+    delete process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
+    shutdownAnalysisWorker();
   }
 });
 

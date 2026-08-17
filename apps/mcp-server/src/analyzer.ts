@@ -2650,9 +2650,10 @@ let workerJobChain: Promise<unknown> = Promise.resolve();
 
 const DEFAULT_ANALYSIS_WORKER_IDLE_MS = 60_000;
 
-function getAnalysisWorkerIdleMs(): number {
-  const raw = process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
+export function resolveAnalysisWorkerIdleMs(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
   const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
+  if (parsed === -1) return null;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_ANALYSIS_WORKER_IDLE_MS;
 }
 
@@ -2665,7 +2666,8 @@ function clearWorkerIdleTimer(handle: WorkerHandle): void {
 function scheduleWorkerIdleShutdown(handle: WorkerHandle): void {
   clearWorkerIdleTimer(handle);
   if (handle.pending.size > 0 || workerHandle !== handle) return;
-  const idleMs = getAnalysisWorkerIdleMs();
+  const idleMs = resolveAnalysisWorkerIdleMs();
+  if (idleMs === null) return;
   handle.idleTimer = setTimeout(() => {
     handle.idleTimer = undefined;
     if (workerHandle !== handle || handle.pending.size > 0) return;
