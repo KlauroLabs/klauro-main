@@ -75,7 +75,7 @@ source_fingerprint() {
     cd "$root"
     {
       find apps packages infrastructure docs -type f \
-        ! -path '*/node_modules/*' ! -path '*/dist/*' ! -path '*/build/*' \
+        ! -path '*/node_modules/*' ! -path '*/dist/*' ! -path '*/dist-*/*' ! -path '*/build/*' \
         ! -path '*/target/*' ! -path '*/coverage/*' ! -path '*/.cache/*' \
         ! -path '*/.tmp/*' ! -path '*/.pack/*' ! -path '*/.customer-package/*' \
         ! -path '*/.klauro-*' \
