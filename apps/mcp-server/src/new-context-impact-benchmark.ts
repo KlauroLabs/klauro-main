@@ -500,7 +500,7 @@ if (require.main === module) {
     if (a.startsWith('--')) { if (flagsWithValue.has(a)) i++; continue; }
     repoArgs.push(a);
   }
-  const repos = repoArgs.length ? repoArgs : ['/Users/michaelshattuck/dev/zerac/zerac-api'];
+  const repos = repoArgs.length ? repoArgs : [path.resolve(__dirname, '../../..')];
   runNewContextImpactBenchmark(repos)
     .then(report => {
       const table = renderTable(report);

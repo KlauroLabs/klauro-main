@@ -175,6 +175,16 @@ for variable in \
   fi
 done
 
+DOCKER_MOUNT_ARGS=()
+if [ -n "${KLAURO_GATE_INPUT_DIR:-}" ]; then
+  if [ ! -d "$KLAURO_GATE_INPUT_DIR" ]; then
+    echo "ERROR: KLAURO_GATE_INPUT_DIR is not a directory: $KLAURO_GATE_INPUT_DIR" >&2
+    exit 2
+  fi
+  GATE_INPUT_DIR="$(realpath "$KLAURO_GATE_INPUT_DIR")"
+  DOCKER_MOUNT_ARGS+=(-v "$GATE_INPUT_DIR:/gate-input:ro")
+fi
+
 RUN_STARTED_AT="$(date +%s)"
 set +e
 timeout --signal=TERM --kill-after=10s "${GATE_TIMEOUT_S}s" \
@@ -191,6 +201,7 @@ timeout --signal=TERM --kill-after=10s "${GATE_TIMEOUT_S}s" \
   -v "$DEVGATE_DIR:/gate" \
   -v "$NATIVE_PARSER_CACHE:/gate/packages/analyzer-core/native/klauro-parse/target/release/klauro-parse:ro" \
   -v "$BENCH_CAS_CACHE:/tmp/klauro-gate-bench-cas" \
+  "${DOCKER_MOUNT_ARGS[@]}" \
   -w "/gate/$WORKSPACE" \
   "$GATE_IMAGE" \
   sh -c "$CMD"

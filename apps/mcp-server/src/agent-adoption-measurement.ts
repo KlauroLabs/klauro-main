@@ -69,7 +69,7 @@ function repoRoot(): string {
 }
 
 function parseArgs(argv: string[]): { targetRepo: string; outputDir: string; conditions: Set<string>; repetitions: number; toolProfile: 'core' | 'full' } {
-  let targetRepo = '/Users/michaelshattuck/dev/clients/outcode/truckspy/truckspyui';
+  let targetRepo = process.env.KLAURO_BENCH_TARGET_REPO || '';
   let outputDir = '/tmp/klauro-adoption-measurement';
   let repetitions = REPETITIONS;
   let toolProfile: 'core' | 'full' = 'full';
@@ -86,7 +86,8 @@ function parseArgs(argv: string[]): { targetRepo: string; outputDir: string; con
     }
   }
 
-  return { targetRepo, outputDir, conditions, repetitions, toolProfile };
+  if (!targetRepo) throw new Error('--target-repo or KLAURO_BENCH_TARGET_REPO is required');
+  return { targetRepo: path.resolve(targetRepo), outputDir, conditions, repetitions, toolProfile };
 }
 
 function writeMcpConfig(outputDir: string, klauroLogPath: string, toolProfile: 'core' | 'full'): string {

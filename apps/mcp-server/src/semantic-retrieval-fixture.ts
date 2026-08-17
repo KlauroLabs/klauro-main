@@ -1,11 +1,15 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 export interface RetrievalFixtureEntry {
   repoPath: string;
   query: string;
   expectedNodeIds: string[];
 }
 
-const CLIENT_UI = '/Users/michaelshattuck/dev/zerac/client-ui';
-const ADMIN_PORTAL_UI = '/Users/michaelshattuck/dev/clients/yisda/admin-portal-ui';
+const benchmarkDevRoot = path.resolve(process.env.KLAURO_BENCH_DEV_ROOT || path.join(os.homedir(), 'dev'));
+const CLIENT_UI = path.join(benchmarkDevRoot, 'zerac', 'client-ui');
+const ADMIN_PORTAL_UI = path.join(benchmarkDevRoot, 'clients', 'yisda', 'admin-portal-ui');
 
 export const RETRIEVAL_FIXTURE: RetrievalFixtureEntry[] = [
   {

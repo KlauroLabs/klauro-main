@@ -2,8 +2,8 @@
 
 import { analyzeForBench } from './gauntlet/product-analysis';
 import * as q from './query';
+import * as path from 'node:path';
 
-const TARGET = '/Users/michaelshattuck/dev/unravl/proof-of-concept/packages/analyzer-core';
 
 const NA_ON_LIBRARY = new Set(['getRouteTable', 'getWorkflows', 'getComponentParents', 'getComponentChildren', 'getComponentMetrics', 'getSharedComponents', 'getPerspectives']);
 const NEEDS_GIT_HISTORY = new Set(['getHotSpots', 'getStability']);
@@ -48,9 +48,10 @@ async function run(label: string, fn: () => any): Promise<void> {
 }
 
 async function main() {
+  const target = path.resolve(process.argv[2] || process.env.KLAURO_BENCH_TARGET_REPO || path.resolve(__dirname, '../../../packages/analyzer-core'));
   process.env.KLAURO_AI_INTERPRETATION ||= 'false';
   process.env.KLAURO_AI_INTERPRETATION_ENABLED ||= 'false';
-  const cas: any = await analyzeForBench(TARGET);
+  const cas: any = await analyzeForBench(target);
 
   const firstHit = (query: string, type?: string) => {
     const res = q.searchNodes(cas, query, { limit: 8 } as any) as any;
@@ -130,7 +131,7 @@ async function main() {
   await run('getDependencies', () => q.getDependencies(cas));
   await run('getLibraries', () => q.getLibraries(cas, { limit: 10 }));
   await run('getConfiguration', () => q.getConfiguration(cas));
-  await run('getHotSpots', () => q.getHotSpots(cas, TARGET, { metric: 'change-count' } as any));
+  await run('getHotSpots', () => q.getHotSpots(cas, target, { metric: 'change-count' } as any));
   await run('getProductMap', () => q.getProductMap(cas, {} as any));
   await run('getAnalysisFacts', () => q.getAnalysisFacts(cas));
 }

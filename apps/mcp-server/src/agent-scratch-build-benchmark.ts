@@ -7,6 +7,7 @@ import { buildGreenfieldBuildContext } from './greenfield-build-session';
 import { getPreviewAnalysis, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { evaluateLivePairDeterministically, runLiveAgentPair, runLiveAgentPairFromWorkspaces, type LiveAgentCommandConfig, type LiveAgentPairResult, type WithoutArmPromptOverrides } from './agent-live-trial';
 import { isDirectCliInvocation } from './cli-invocation';
+import { defaultBenchmarkReferencePaths } from './benchmark-reference-paths';
 
 interface ScratchBuildReport {
   generated_at: string;
@@ -1964,13 +1965,7 @@ async function loadReferences(paths: string[]): Promise<GreenfieldReferenceAnaly
 }
 
 function defaultReferencePaths(): string[] {
-  return [
-    '/Users/michaelshattuck/dev/unravl/proof-of-concept',
-    '/Users/michaelshattuck/dev/zerac/zerac-api',
-    '/Users/michaelshattuck/dev/soon/soon-ui',
-    '/Users/michaelshattuck/dev/money',
-    '/Users/michaelshattuck/dev/kadra',
-  ];
+  return defaultBenchmarkReferencePaths(__dirname);
 }
 
 async function filesFromWorkspace(workspace: string): Promise<ProposedFileInput[]> {

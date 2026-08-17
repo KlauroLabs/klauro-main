@@ -8,6 +8,7 @@ import { runLiveAgentPair, type LiveAgentCommandConfig, type LiveAgentPairResult
 import { previewGreenfieldCodebase, getPreviewAnalysis, type ProposedFileInput } from './proposal-preview';
 import { saveAgenticBenchmarkReport } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
+import { defaultBenchmarkReferencePaths } from './benchmark-reference-paths';
 
 interface Scenario {
   id: string;
@@ -1135,13 +1136,7 @@ function emptyReferenceCas(root: string, error: unknown): any {
 }
 
 function defaultReferencePaths(): string[] {
-  return [
-    '/Users/michaelshattuck/dev/unravl/proof-of-concept',
-    '/Users/michaelshattuck/dev/zerac/zerac-api',
-    '/Users/michaelshattuck/dev/soon/soon-ui',
-    '/Users/michaelshattuck/dev/kadra',
-    '/Users/michaelshattuck/dev/SoundSyft',
-  ];
+  return defaultBenchmarkReferencePaths(__dirname);
 }
 
 function isSourcePath(filePath: string): boolean {

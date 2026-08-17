@@ -9,6 +9,7 @@ import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis }
 import { getPreviewAnalysis, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { renderProposalPreviewHtml } from './proposal-preview-html';
 import { isDirectCliInvocation } from './cli-invocation';
+import { defaultBenchmarkReferencePaths } from './benchmark-reference-paths';
 
 const execFileAsync = promisify(execFile);
 
@@ -933,13 +934,7 @@ async function runCommand(command: string, cwd: string): Promise<{ exitCode: num
 }
 
 function defaultReferencePaths(): string[] {
-  return [
-    '/Users/michaelshattuck/dev/unravl/proof-of-concept',
-    '/Users/michaelshattuck/dev/soon/soon-ui',
-    '/Users/michaelshattuck/dev/zerac/zerac-api',
-    '/Users/michaelshattuck/dev/kadra',
-    '/Users/michaelshattuck/dev/SoundSyft',
-  ];
+  return defaultBenchmarkReferencePaths(__dirname);
 }
 
 function formatReportMarkdown(report: DogfoodReport): string {

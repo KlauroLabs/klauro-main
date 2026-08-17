@@ -800,14 +800,9 @@ async function runDescriptionGenerationProbe(
   const passing = new Set(repoResults
     .filter(result => result.proof_status === 'pass')
     .map(result => result.path));
-  const preferredNames = ['treecity', 'dexter', 'elevate-skincare', 'soon-decrypter', 'proof-of-concept'];
-  const preferred = preferredNames
-    .map(name => selectedEligible.find(repo => repo.name === name && passing.has(repo.path)))
-    .find(Boolean);
-  const fallback = [...selectedEligible]
+  const repo = [...selectedEligible]
     .filter(repo => passing.has(repo.path))
-    .sort((left, right) => Number(left.source_files || 0) - Number(right.source_files || 0))[0];
-  const repo = preferred || fallback;
+    .sort((left, right) => Number(left.source_files || 0) - Number(right.source_files || 0) || left.path.localeCompare(right.path))[0];
   if (!repo) {
     return {
       status: 'fail' as GateStatus,
