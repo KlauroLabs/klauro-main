@@ -10762,6 +10762,7 @@ export class AnalyzerOrchestrator {
       edges,
       allCapabilitiesForEvidence: systemCapabilities,
       userJourneys,
+      preferredBatchSize: capabilities.length,
     });
     const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
     const catalogApplication = await scheduleCapabilityCatalog({
@@ -11595,6 +11596,7 @@ export class AnalyzerOrchestrator {
       edges?: CASEdge[];
       allCapabilitiesForEvidence?: SystemCapability[];
       userJourneys?: CASUserJourney[];
+      preferredBatchSize?: number;
     }
   ): Promise<void> {
     this.elementDescriptionArtifactType = context.enhancedSystemPurpose?.artifact_type || this.elementDescriptionArtifactType;
@@ -11631,7 +11633,7 @@ export class AnalyzerOrchestrator {
       : allTargets;
 
     const concurrency = aiConcurrencyLimit();
-    const configuredBatchSize = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '');
+    const configuredBatchSize = context.preferredBatchSize || Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '');
     const batchSize = capabilityDescriptionBatchSize(targets.length, concurrency, configuredBatchSize);
     const estimatedRounds = Math.max(1, Math.ceil(targets.length / Math.max(1, batchSize * concurrency)));
     const ROUND_LATENCY_MS = 10000;
