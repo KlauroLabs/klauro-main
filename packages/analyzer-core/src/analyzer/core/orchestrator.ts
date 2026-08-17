@@ -93,7 +93,7 @@ import { determineSystemType as determineSystemTypeImpl } from './system-type';
 import * as CapabilityText from './capability-description';
 import { isIdentifierShapedRepoBasename } from './deployable-evidence/util';
 import { buildDependencyManifest } from './dependency-manifest';
-import { buildChangeExecutionLocality, localizedNodeFingerprint } from './incremental-locality';
+import { buildChangeExecutionLocality, isolateLocalizedStructuralImportanceNodes, localizedNodeFingerprint, mergeLocalizedIncrementalNode, selectLocalizedIncrementalEnrichmentNodes } from './incremental-locality';
 import { classifyCodebaseTypes } from './codebase-type';
 import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
 import { linkInfraTopology } from './infra-topology-linker';
@@ -3658,12 +3658,20 @@ export class AnalyzerOrchestrator {
     if (
       changeSet.added.length > 0 ||
       changeSet.deleted.length > 0 ||
-      changeSet.modified.length === 0 ||
-      (changeSet.affectedFiles || []).length > 0
+      changeSet.modified.length === 0
     ) {
       return null;
     }
-
+    const directlyModifiedFiles = new Set(changeSet.modified);
+    const affectedFileResultsAreReused = [...fileResults].every(([filePath, result]) =>
+      directlyModifiedFiles.has(filePath) || (
+        result.nodes.length === 0 &&
+        result.edges.length === 0 &&
+        result.entryPoints.length === 0 &&
+        result.exitPoints.length === 0
+      )
+    );
+    if (!affectedFileResultsAreReused) return null;
     const localizedEligibility = this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults);
     if (!localizedEligibility.allowed) {
       this.debugLocalizedIncremental('skipped', localizedEligibility.reason, changeSet, fileResults);
@@ -3687,14 +3695,16 @@ export class AnalyzerOrchestrator {
     for (const filePath of changeSet.modified) {
       const record = previousState.files[filePath];
       if (!record) continue;
-      for (const edgeId of record.edgeIds) edgeById.delete(edgeId);
       for (const entryPointId of record.entryPointIds) entryPointById.delete(entryPointId);
       for (const exitPointId of record.exitPointIds) exitPointById.delete(exitPointId);
     }
     debugPhase('remove-modified-file-facts');
 
     for (const result of fileResults.values()) {
-      for (const node of result.nodes) if (!nodeById.has(node.id)) nodeById.set(node.id, node);
+      for (const node of result.nodes) {
+        const existing = nodeById.get(node.id);
+        nodeById.set(node.id, existing ? mergeLocalizedIncrementalNode(existing, node) : node);
+      }
       for (const edge of result.edges) edgeById.set(edge.id, edge);
       for (const entryPoint of result.entryPoints) entryPointById.set(entryPoint.id, entryPoint);
       for (const exitPoint of result.exitPoints) exitPointById.set(exitPoint.id, exitPoint);
@@ -3705,21 +3715,20 @@ export class AnalyzerOrchestrator {
     const edges = [...edgeById.values()];
     const entryPoints = [...entryPointById.values()];
     const exitPoints = [...exitPointById.values()];
+    const enrichmentNodes = selectLocalizedIncrementalEnrichmentNodes(previousOutput.nodes, nodes, directlyModifiedFiles);
     this.removeTestEntryPoints(nodes, edges, entryPoints);
+    this.normalizeNodeMetrics(enrichmentNodes);
+    this.deriveParentFromContainsEdges(enrichmentNodes, edges);
+    this.enrichNodePerspectives(enrichmentNodes, previousOutput.perspectives || [], nodes);
+    const structuralImportance = this.computeAndStampStructuralImportance(isolateLocalizedStructuralImportanceNodes(nodes, enrichmentNodes), edges, entryPoints);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     debugPhase('materialize-arrays');
     const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
     debugPhase('build-index');
     const progressiveLevels = this.buildProgressiveLevels(nodes, previousOutput.categories || {});
     debugPhase('build-progressive-levels');
-    const validation = this.buildValidation(
-      nodes,
-      edges,
-      entryPoints,
-      exitPoints,
-      previousOutput.runtime_static_links || [],
-      previousOutput.analysis_facts || []
-    );
+    const validation = this.buildValidation(nodes, edges, entryPoints, exitPoints,
+      previousOutput.runtime_static_links || [], previousOutput.analysis_facts || []);
     debugPhase('build-validation');
     if (process.env.KLAURO_DEBUG_LOCALIZED_INCREMENTAL === '1') {
       writeAnalyzerStatus(`[Klauro] localized incremental timing total: ${Date.now() - localizedStartedAt}ms`);
@@ -3735,6 +3744,7 @@ export class AnalyzerOrchestrator {
       exit_points: exitPoints,
       progressive_levels: progressiveLevels,
       index,
+      structural_importance_meta: structuralImportance.meta,
       validation
     };
   }
@@ -3773,11 +3783,17 @@ export class AnalyzerOrchestrator {
       const retainedCurrentNodes = result.nodes.filter(node => previousNodeIds.has(node.id));
       if (!this.sameFingerprint(retainedPreviousNodes, retainedCurrentNodes, localizedNodeFingerprint)) return { allowed: false, reason: `node fingerprint changed for ${filePath}` };
       const missingPreviousNodes = previousNodes.filter(node => !currentNodeIds.has(node.id));
-      if (missingPreviousNodes.some(node => this.isBehavioralIncrementalNode(node))) {
-        return { allowed: false, reason: `behavioral nodes disappeared for ${filePath}: ${missingPreviousNodes.slice(0, 5).map(node => `${node.type}:${node.name}`).join(', ')}` };
+      if (missingPreviousNodes.length > 0) {
+        return { allowed: false, reason: `nodes disappeared for ${filePath}: ${missingPreviousNodes.slice(0, 5).map(node => `${node.type}:${node.name}`).join(', ')}` };
       }
 
       const addedNodes = result.nodes.filter(node => !previousNodeIds.has(node.id));
+      const disconnectedImplementationNodes = addedNodes.filter(node => this.isBehavioralIncrementalNode(node));
+      if (disconnectedImplementationNodes.some(node =>
+        !['function', 'method'].includes(node.type) || node.metadata?.is_exported === true
+      )) {
+        return { allowed: false, reason: `connected or externally visible behavior added for ${filePath}` };
+      }
       const addedBehavioralNodeNames = new Set(addedNodes
         .filter(node => this.isBehavioralIncrementalNode(node))
         .map(node => node.name));
@@ -3806,8 +3822,13 @@ export class AnalyzerOrchestrator {
         .filter((edge): edge is CASEdge => Boolean(edge))
         .filter(edge => this.isBehavioralIncrementalEdge(edge));
       const currentBehavioralEdges = result.edges.filter(edge => this.isBehavioralIncrementalEdge(edge));
-      if (!this.sameFingerprint(previousBehavioralEdges, currentBehavioralEdges, edge => this.edgeFingerprint(edge))) {
-        return { allowed: false, reason: `behavioral edge fingerprint changed for ${filePath}` };
+      const novelBehavioralEdges = this.novelFingerprintIds(
+        previousBehavioralEdges,
+        currentBehavioralEdges,
+        edge => this.edgeFingerprint(edge)
+      );
+      if (novelBehavioralEdges.length > 0) {
+        return { allowed: false, reason: `behavioral edge fingerprint changed for ${filePath}: ${novelBehavioralEdges.slice(0, 5).join(', ')}` };
       }
     }
 
@@ -3935,6 +3956,17 @@ export class AnalyzerOrchestrator {
       .sort();
 
     return previous.every((value, index) => value === current[index]);
+  }
+
+  private novelFingerprintIds<T extends { id: string }>(
+    previousItems: T[],
+    currentItems: T[],
+    fingerprint: (item: T) => unknown
+  ): string[] {
+    const previous = new Set(previousItems.map(item => JSON.stringify(fingerprint(item))));
+    return currentItems
+      .filter(item => !previous.has(JSON.stringify(fingerprint(item))))
+      .map(item => item.id);
   }
 
   private nodeFingerprint(node: CASNode): unknown {
@@ -25237,7 +25269,7 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private enrichNodePerspectives(nodes: CASNode[], perspectives: CASPerspective[]): void {
+  private enrichNodePerspectives(nodes: CASNode[], perspectives: CASPerspective[], matchingPopulation: CASNode[] = nodes): void {
     const trivialTypes = new Set(['import', 'using']);
 
     if (perspectives.length > 0) {
@@ -25246,7 +25278,7 @@ export class AnalyzerOrchestrator {
 
         let matchedCount = 0;
         if (visibleTypes && visibleTypes.length > 0) {
-          matchedCount = nodes.filter(n => visibleTypes.includes(n.type)).length;
+          matchedCount = matchingPopulation.filter(n => visibleTypes.includes(n.type)).length;
         }
 
         const useStrictFilter = visibleTypes && visibleTypes.length > 0 && matchedCount > 0;

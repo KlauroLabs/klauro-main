@@ -146,6 +146,25 @@ describe('TypeScript cross-file reference and call classification (2026-07-04 im
     expect(calls.length).toBeGreaterThan(0);
   });
 
+  it('prefers a same-file function when another file declares the same callable name', async () => {
+    const contribution = await analyzeProject({
+      'src/a-local.ts': [
+        'function normalize(value: number) { return value + 1; }',
+        'export function run(value: number) { return normalize(value); }',
+      ].join('\n'),
+      'src/b-other.ts': 'export function normalize(value: number) { return value - 1; }',
+    });
+
+    const caller = (contribution.nodes || []).find(node => node.name === 'run');
+    const local = (contribution.nodes || []).find(node => node.name === 'normalize' && node.source?.file === 'src/a-local.ts');
+    const other = (contribution.nodes || []).find(node => node.name === 'normalize' && node.source?.file === 'src/b-other.ts');
+    expect(caller).toBeDefined();
+    expect(local).toBeDefined();
+    expect(other).toBeDefined();
+    expect((contribution.edges || []).some(edge => edge.type === 'calls' && edge.source === caller!.id && edge.target === local!.id)).toBe(true);
+    expect((contribution.edges || []).some(edge => edge.type === 'calls' && edge.source === caller!.id && edge.target === other!.id)).toBe(false);
+  });
+
   it('still classifies a call through a genuine third-party package import as external (no regression)', async () => {
     const contribution = await analyzeProject({
       'src/uses-axios.ts': [

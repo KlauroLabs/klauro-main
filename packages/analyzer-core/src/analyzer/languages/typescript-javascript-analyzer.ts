@@ -1181,10 +1181,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     targetName: string,
     sourceFile?: string
   ): CASNode {
-
     if (candidates.length === 1) return candidates[0];
 
     if (sourceFile) {
+      const inSourceFile = candidates.filter(node => node.source?.file === sourceFile).sort(this.compareNodesStable);
+      if (inSourceFile.length > 0) return inSourceFile[0];
       const resolvedModule = this.importsByConsumerFile.get(sourceFile)?.get(targetName);
       if (resolvedModule) {
         const inModule = candidates

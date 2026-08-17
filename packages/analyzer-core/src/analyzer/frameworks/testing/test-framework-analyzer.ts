@@ -108,15 +108,26 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
+    let phaseStartedAt = Date.now();
+    const recordPhase = (phase: string) => {
+      if (process.env.KLAURO_DEBUG_TEST_ANALYZER_PHASES === '1') {
+        process.stderr.write(`[Klauro] test analyzer ${phase}: ${Date.now() - phaseStartedAt}ms\n`);
+      }
+      phaseStartedAt = Date.now();
+    };
 
     try {
       const ignorePatterns = this.getTestIgnorePatterns(context);
       const suites = await this.discoverSuites(context.projectPath, ignorePatterns);
+      recordPhase('discover-suites');
       const coverageTargets = this.buildCoverageTargetIndex(context.existingAnalysis, context.projectPath);
+      recordPhase('build-coverage-index');
+      const edgeIds = new Set<string>();
 
       for (const suite of suites) {
-        this.emitSuite(suite, nodes, edges, coverageTargets);
+        this.emitSuite(suite, nodes, edges, edgeIds, coverageTargets);
       }
+      recordPhase('emit-suites');
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         frameworks: [...new Set(suites.map(s => s.framework))],
@@ -192,6 +203,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     suite: DiscoveredSuite,
     nodes: CASNode[],
     edges: CASEdge[],
+    edgeIds: Set<string>,
     coverageTargets: TestCoverageTargetIndex,
   ): void {
     const suiteId = this.suiteNodeId(suite);
@@ -234,7 +246,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       nodes.push(testNode);
       caseNodes.push({ discovered: testCase, node: testNode });
 
-      edges.push(this.createEdge(
+      this.pushUniqueEdge(edges, edgeIds, this.createEdge(
         this.generateEdgeId(suiteId, testId, 'contains'),
         suiteId,
         testId,
@@ -244,13 +256,12 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
 
     });
 
-    this.attachDetailedTestGraph(suite, suiteNode, caseNodes, edges, coverageTargets);
-
+    this.attachDetailedTestGraph(suite, suiteNode, caseNodes, edges, edgeIds, coverageTargets);
 
     for (const importPath of suite.imports) {
       const targetId = this.resolveImportToNodeId(importPath, suite.file, coverageTargets);
       if (targetId) {
-        edges.push(this.createEdge(
+        this.pushUniqueEdge(edges, edgeIds, this.createEdge(
           this.generateEdgeId(suiteId, targetId, 'covers'),
           suiteId,
           targetId,
@@ -464,12 +475,11 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     suiteNode: CASNode,
     cases: Array<{ discovered: DiscoveredCase; node: CASNode }>,
     edges: CASEdge[],
+    edgeIds: Set<string>,
     index: TestCoverageTargetIndex,
   ): void {
     const fileGraphNodes = this.graphNodesForSuite(suite, index)
       .filter(node => node.id !== suiteNode.id && this.isTestOwnedNode(node));
-    const edgeIds = new Set(edges.map(edge => edge.id));
-
     for (const node of fileGraphNodes) {
       const relationship = node.type === 'mock' || node.type === 'test_double' ? 'mocks' : 'contains';
       this.pushUniqueEdge(edges, edgeIds, this.createEdge(

@@ -3,7 +3,6 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as zlib from 'zlib';
-import { execFile, spawnSync } from 'child_process';
 import { promisify } from 'util';
 import { getHeapStatistics } from 'v8';
 import pLimit from 'p-limit';
@@ -30,13 +29,19 @@ import { materializeDeployableCasTree } from './deployable-analysis';
 import { readZstdJson } from './zstd-json';
 import { describeAnalysisVersion, type AnalysisVersionInfo } from './analysis-version';
 import { resolveSegmentedAnalysis, segmentedAnalysisRoot, writeSegmentedAnalysis } from './segmented-analysis-storage';
+import {
+  compressLegacyJsonArtifact,
+  compressedJsonExtension,
+  compressionCodecForPath,
+  writeCompressedJsonAtomic,
+  writeJsonAtomic,
+  type JsonStorageCodec,
+} from './json-storage-writer';
+export { writeJsonAtomic } from './json-storage-writer';
 export { MINIMUM_COMPATIBLE_CAS_VERSION, parseCasVersion, compareCasVersions, describeAnalysisVersion } from './analysis-version';
 export type { AnalysisVersionInfo, AnalysisVersionStatus } from './analysis-version';
 
-const execFileAsync = promisify(execFile);
-const brotliCompressAsync = promisify(zlib.brotliCompress);
 const brotliDecompressAsync = promisify(zlib.brotliDecompress);
-type JsonStorageCodec = 'none' | 'brotli' | 'zstd';
 
 const DEFAULT_STORAGE_PATH = path.join(
   process.env.HOME || process.env.USERPROFILE || '~',
@@ -463,66 +468,6 @@ async function saveIndex(index: AnalysisIndex): Promise<void> {
   });
 }
 
-function atomicTempPath(filePath: string, suffix: string): string {
-  return `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(8).toString('hex')}.${suffix}`;
-}
-
-export async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 2 }): Promise<void> {
-  await fs.ensureDir(path.dirname(filePath));
-  const tmpPath = atomicTempPath(filePath, 'tmp');
-  try {
-    try {
-      if (shouldStreamJson(value, options.spaces)) {
-        await writeJsonStreamed(tmpPath, value);
-      } else {
-        await fs.writeJson(tmpPath, value, options);
-      }
-    } catch (error) {
-      if (!isJsonStringTooLargeError(error)) throw error;
-      await writeJsonStreamed(tmpPath, value);
-    }
-    await fs.move(tmpPath, filePath, { overwrite: true });
-  } catch (error) {
-    await fs.remove(tmpPath).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function writeCompressedJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 0 }): Promise<void> {
-  const codec = compressionCodecForPath(filePath);
-  if (codec === 'none') {
-    await writeJsonAtomic(filePath, value, options);
-    return;
-  }
-
-  await fs.ensureDir(path.dirname(filePath));
-  const jsonTmpPath = atomicTempPath(filePath, 'json.tmp');
-  const compressedTmpPath = atomicTempPath(filePath, 'compressed.tmp');
-  try {
-    await writeJsonAtomic(jsonTmpPath, value, options);
-    await compressJsonFile(jsonTmpPath, compressedTmpPath, codec);
-    await fs.move(compressedTmpPath, filePath, { overwrite: true });
-  } finally {
-    await fs.remove(jsonTmpPath).catch(() => undefined);
-    await fs.remove(compressedTmpPath).catch(() => undefined);
-  }
-}
-
-async function compressLegacyJsonArtifact(basePath: string): Promise<void> {
-  const extension = compressedJsonExtension();
-  if (!extension || !(await fs.pathExists(basePath))) return;
-  const targetPath = `${basePath}${extension}`;
-  if (await fs.pathExists(targetPath)) return;
-  const tmpPath = atomicTempPath(targetPath, 'tmp');
-  try {
-    await compressJsonFile(basePath, tmpPath, compressionCodecForPath(targetPath));
-    await fs.move(tmpPath, targetPath, { overwrite: false });
-    await fs.remove(basePath);
-  } finally {
-    await fs.remove(tmpPath).catch(() => undefined);
-  }
-}
-
 async function readJsonMaybeCompressed(
   filePath: string,
   options: { maxBufferedZstdBytes?: number } = {},
@@ -559,163 +504,6 @@ function jsonStoragePathCandidates(filePath: string): string[] {
   if (filePath.endsWith('.json.zst')) return [filePath.replace(/\.zst$/, ''), filePath.replace(/\.zst$/, '.br')];
   if (filePath.endsWith('.json.br')) return [filePath.replace(/\.br$/, ''), filePath.replace(/\.br$/, '.zst')];
   return [];
-}
-
-function compressedJsonExtension(): '' | '.zst' | '.br' {
-  const codec = selectedAnalysisCompressionCodec();
-  if (codec === 'zstd') return '.zst';
-  if (codec === 'brotli') return '.br';
-  return '';
-}
-
-function compressionCodecForPath(filePath: string): JsonStorageCodec {
-  if (filePath.endsWith('.json.zst')) return 'zstd';
-  if (filePath.endsWith('.json.br')) return 'brotli';
-  return 'none';
-}
-
-function selectedAnalysisCompressionCodec(): JsonStorageCodec {
-  const requested = String(process.env.KLAURO_ANALYSIS_COMPRESSION || 'auto').toLowerCase();
-  if (requested === 'none' || requested === 'off' || requested === 'false') return 'none';
-  if (requested === 'brotli' || requested === 'br') return 'brotli';
-  if (requested === 'zstd' || requested === 'zst') return hasZstdCommand() ? 'zstd' : 'brotli';
-  return hasZstdCommand() ? 'zstd' : 'brotli';
-}
-
-let zstdCommandAvailable: boolean | undefined;
-
-function hasZstdCommand(): boolean {
-  if (zstdCommandAvailable !== undefined) return zstdCommandAvailable;
-  const result = spawnSync('zstd', ['--version'], { stdio: 'ignore' });
-  zstdCommandAvailable = result.status === 0;
-  return zstdCommandAvailable;
-}
-
-async function compressJsonFile(sourcePath: string, targetPath: string, codec: JsonStorageCodec): Promise<void> {
-  if (codec === 'zstd') {
-    await execFileAsync('zstd', ['-q', '-3', '-T1', '-f', sourcePath, '-o', targetPath], {
-      maxBuffer: 1024 * 1024,
-    });
-    return;
-  }
-
-  if (codec === 'brotli') {
-    const json = await fs.readFile(sourcePath);
-    const compressed = await brotliCompressAsync(json, {
-      params: {
-        [zlib.constants.BROTLI_PARAM_QUALITY]: 6,
-      },
-    });
-    await fs.writeFile(targetPath, compressed);
-    return;
-  }
-
-  await fs.copy(sourcePath, targetPath, { overwrite: true });
-}
-
-function shouldStreamJson(value: unknown, spaces?: number): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as {
-    nodes?: unknown[];
-    edges?: unknown[];
-    domain_concepts?: unknown[];
-    method_calls?: unknown[];
-    analysis_facts?: unknown[];
-    test_gaps?: unknown[];
-    fileCache?: unknown;
-  };
-  const graphItems =
-    (candidate.nodes?.length || 0) +
-    (candidate.edges?.length || 0) +
-    (candidate.domain_concepts?.length || 0) +
-    (candidate.method_calls?.length || 0) +
-    (candidate.analysis_facts?.length || 0) +
-    (candidate.test_gaps?.length || 0);
-
-  const threshold = spaces === 0 ? 10_000 : 100_000;
-  return graphItems > threshold;
-}
-
-function isJsonStringTooLargeError(error: unknown): boolean {
-  return error instanceof RangeError && /invalid string length/i.test(error.message);
-}
-
-async function writeJsonStreamed(filePath: string, value: unknown): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const stream = fs.createWriteStream(filePath, { encoding: 'utf8' });
-    stream.on('error', reject);
-    stream.on('finish', resolve);
-
-    const write = (chunk: string) => {
-      if (!stream.write(chunk)) {
-        return new Promise<void>(resume => stream.once('drain', resume));
-      }
-      return undefined;
-    };
-
-    const writeValue = async (current: unknown, inArray = false): Promise<void> => {
-      if (current === undefined || typeof current === 'function' || typeof current === 'symbol') {
-        await write(inArray ? 'null' : 'null');
-        return;
-      }
-      if (current === null || typeof current !== 'object') {
-        await write(JSON.stringify(current));
-        return;
-      }
-      const jsonValue = typeof (current as { toJSON?: unknown }).toJSON === 'function'
-        ? (current as { toJSON: () => unknown }).toJSON()
-        : current;
-      if (jsonValue !== current) {
-        await writeValue(jsonValue, inArray);
-        return;
-      }
-      if (Array.isArray(current)) {
-        await write('[');
-        for (let index = 0; index < current.length; index++) {
-          if (index > 0) await write(',');
-          if (canStringifyStreamArrayItem(current[index])) {
-            await write(JSON.stringify(current[index]));
-          } else {
-            await writeValue(current[index], true);
-          }
-        }
-        await write(']');
-        return;
-      }
-      await write('{');
-      let first = true;
-      for (const [key, child] of Object.entries(current as Record<string, unknown>)) {
-        if (child === undefined || typeof child === 'function' || typeof child === 'symbol') continue;
-        if (!first) await write(',');
-        first = false;
-        await write(JSON.stringify(key));
-        await write(':');
-        await writeValue(child);
-      }
-      await write('}');
-    };
-
-    writeValue(value)
-      .then(() => {
-        stream.write('\n');
-        stream.end();
-      })
-      .catch(error => {
-        stream.destroy();
-        reject(error);
-      });
-  });
-}
-
-function canStringifyStreamArrayItem(value: unknown): boolean {
-  if (value === null) return true;
-  if (typeof value !== 'object') return true;
-  if (Array.isArray(value)) return false;
-  return !hasCustomJsonShape(value);
-}
-
-function hasCustomJsonShape(value: object): boolean {
-  return typeof (value as { toJSON?: unknown }).toJSON === 'function';
 }
 
 interface LoadedAnalysisCacheEntry {

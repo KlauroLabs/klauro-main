@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 export interface CASOutput {
   id?: string;
   parent_id?: string | null;
@@ -2201,9 +2203,7 @@ export function generateNodeId(type: string, filePath: string, name: string): st
     .replace(/[^a-zA-Z0-9_]/g, '_')
     .substring(0, 50);
 
-  const crypto = require('crypto');
-  const hash = crypto
-    .createHash('sha256')
+  const hash = createHash('sha256')
     .update(filePath + name)
     .digest('hex')
     .substring(0, 8);
@@ -2212,9 +2212,7 @@ export function generateNodeId(type: string, filePath: string, name: string): st
 }
 
 export function generateEdgeId(source: string, target: string, type: string): string {
-  const crypto = require('crypto');
-  const hash = crypto
-    .createHash('sha256')
+  const hash = createHash('sha256')
     .update(source + target + type)
     .digest('hex')
     .substring(0, 8);

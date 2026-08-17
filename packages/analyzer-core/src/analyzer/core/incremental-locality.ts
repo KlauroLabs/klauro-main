@@ -83,6 +83,7 @@ function normalizePath(value: string): string {
 }
 
 export function localizedNodeFingerprint(node: CASNode): unknown {
+  const rangeAffectsIdentity = node.type !== 'file';
   const sourceAttributes = { ...(node.metadata?.attributes || {}) };
   for (const key of ['incoming_calls', 'outgoing_calls', 'is_leaf', 'is_entry', 'declared_role']) {
     delete sourceAttributes[key];
@@ -105,8 +106,8 @@ export function localizedNodeFingerprint(node: CASNode): unknown {
       file: node.source.file,
       line: node.source.line,
       column: node.source.column,
-      end_line: node.source.end_line,
-      end_column: node.source.end_column,
+      end_line: rangeAffectsIdentity ? node.source.end_line : undefined,
+      end_column: rangeAffectsIdentity ? node.source.end_column : undefined,
       raw: node.source.raw
     } : undefined,
     metadata: sourceMetadata,
@@ -114,4 +115,49 @@ export function localizedNodeFingerprint(node: CASNode): unknown {
     implementation: node.implementation,
     description: node.description
   };
+}
+
+export function mergeLocalizedIncrementalNode(previous: CASNode, current: CASNode): CASNode {
+  if (current.type !== 'file') return previous;
+  const source = current.source ? { ...previous.source, ...current.source } : previous.source;
+  const lineCount = typeof source?.line === 'number' && typeof source.end_line === 'number' && source.end_line >= source.line
+    ? source.end_line - source.line + 1
+    : undefined;
+  return {
+    ...previous,
+    source,
+    metadata: {
+      ...(previous.metadata || {}),
+      ...((current.metadata?.metrics || lineCount !== undefined) ? {
+        metrics: {
+          ...(previous.metadata?.metrics || {}),
+          ...(current.metadata?.metrics || {}),
+          ...(lineCount !== undefined ? { lines_of_code: lineCount } : {}),
+        },
+      } : {}),
+    },
+  };
+}
+
+export function selectLocalizedIncrementalEnrichmentNodes(
+  previousNodes: CASNode[],
+  currentNodes: CASNode[],
+  modifiedFiles: ReadonlySet<string>,
+): CASNode[] {
+  const previousNodeIds = new Set(previousNodes.map(node => node.id));
+  return currentNodes.filter(node =>
+    !previousNodeIds.has(node.id) || (
+      node.type === 'file' &&
+      typeof node.source?.file === 'string' &&
+      modifiedFiles.has(node.source.file)
+    )
+  );
+}
+
+export function isolateLocalizedStructuralImportanceNodes(
+  nodes: CASNode[],
+  enrichmentNodes: CASNode[],
+): CASNode[] {
+  const enrichmentNodeIds = new Set(enrichmentNodes.map(node => node.id));
+  return nodes.map(node => enrichmentNodeIds.has(node.id) ? node : { ...node });
 }
