@@ -44,6 +44,12 @@ import { loadTelemetryObservations } from './telemetry-ingestion';
 import { resolveSectionFilter, type ContextRuntimeMode } from './context-filter';
 import { getAgentNodeIdsForFiles, getAgentNodeIndex, getAgentSourceFiles } from './agent-cas-index';
 import { getQueryTraversalIndex } from './query-traversal-index';
+import {
+  compactSmallRepoExecutionBrief,
+  compactSmallRepoReadiness,
+  compactSmallRepoTargetResolution,
+  compactSmallRepoValidationPlan,
+} from './agent-small-context';
 
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -1194,9 +1200,13 @@ function buildAgentContextFreshness(
     }
   }
 
-  const base = fs.existsSync(nodePath.join(projectPath, '.git'))
-    ? summarizeAnalysisFreshness(projectPath, analyzedAt)
-    : citationScopedFreshness(analyzedAt, analyzedAtMs, changedCited, deletedCited);
+  const base = citationScopedFreshness(
+    analyzedAt,
+    analyzedAtMs,
+    changedCited,
+    deletedCited,
+    fs.existsSync(nodePath.join(projectPath, '.git')) ? 'git' : 'walk',
+  );
   if (!base) return null;
 
   const invalidCitations = changedCited.length > 0 || deletedCited.length > 0;
@@ -1227,6 +1237,7 @@ function citationScopedFreshness(
   analyzedAtMs: number,
   changed: string[],
   deleted: string[],
+  method: 'git' | 'walk',
 ): AnalysisFreshnessSummary {
   const ageMinutes = Math.max(0, Math.floor((Date.now() - analyzedAtMs) / 60_000));
   const days = Math.floor(ageMinutes / 1440);
@@ -1244,10 +1255,10 @@ function citationScopedFreshness(
       ? 'Cited files are current; CAS file and line citations are trustworthy.'
       : 'One or more cited files changed after analysis; re-run incremental analysis before trusting those citations.',
     scan: {
-      method: 'walk',
+      method,
       bounded: true,
       duration_ms: 0,
-      note: 'Non-git checkout checked only files cited by this agent context.',
+      note: 'Targeted agent context checked only files cited by this response.',
     },
   };
 }
@@ -2319,6 +2330,8 @@ function compactSmallRepoMinimalAgentContext<T extends Record<string, any>>(cont
     context_profile: 'small-repo-minimal',
     ...(context.sensitive_data_exposure ? { sensitive_data_exposure: context.sensitive_data_exposure } : {}),
     ...(context.analysis_freshness ? { analysis_freshness: compactTinyFreshness(context.analysis_freshness) } : {}),
+    readiness: compactSmallRepoReadiness(context.readiness),
+    target_resolution: compactSmallRepoTargetResolution(context.target_resolution),
     selected_node: compactTinyTarget(context.selected_node),
     work_context: {
       coding_context: compactTinyCodingContext(workContext.coding_context),
@@ -2335,8 +2348,8 @@ function compactSmallRepoMinimalAgentContext<T extends Record<string, any>>(cont
       ...compactPillarWorkContext(workContext, { journeys: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: compactTinyFileReadPlan(context.file_read_plan, task),
-    execution_brief: context.execution_brief,
-    validation_plan: compactMinimalValidationPlan(context.validation_plan),
+    execution_brief: compactSmallRepoExecutionBrief(context.execution_brief),
+    validation_plan: compactSmallRepoValidationPlan(context.validation_plan),
     next_mcp_calls: compactMinimalToolPlan(context.next_mcp_calls, task).slice(0, 2),
     source_reading_rule: 'Small repo: read the listed files first, preserve idioms, avoid duplicate capability work, then validate.',
     gaps: Array.isArray(context.gaps) ? context.gaps.slice(0, 2) : context.gaps,
@@ -2421,6 +2434,8 @@ function compactTinyRiskContext(context: any) {
   return {
     status: context.status,
     target_risk: context.target_risk ? compactRiskContextItem(context.target_risk, 1) : null,
+    top_risks: Array.isArray(context.top_risks) ? context.top_risks.slice(0, 2).map((item: any) => compactRiskContextItem(item, 1)) : [],
+    repo_top_risks: Array.isArray(context.repo_top_risks) ? context.repo_top_risks.slice(0, 2).map((item: any) => compactRiskContextItem(item, 1)) : [],
     scope: context.scope,
     summary: context.summary ? {
       total_high_risk_nodes: context.summary.total_high_risk_nodes,
@@ -2573,7 +2588,7 @@ function compactArchitectureUseWhen(value: any): string {
 function compactTinyArchitectureRules(rules: any): string[] {
   if (!Array.isArray(rules) || rules.length === 0) return [];
   const preferred = rules.find((rule: any) => /pattern|architecture|owner|boundary|style/i.test(String(rule || '')));
-  return preferred ? ['Preserve existing architecture owner and boundary style.'] : [String(rules[0]).slice(0, 120)];
+  return preferred ? ['Preserve the existing architectural style, pattern owner, and boundary.'] : [String(rules[0]).slice(0, 120)];
 }
 
 function compactTinyFileReadPlan(plan: any, task: any) {
@@ -2620,7 +2635,8 @@ function compactTinyFileReadPlanRank(item: any, taskText: string): number {
   const reason = String(item?.reason || '').toLowerCase();
   const isTaskHint = reason.includes('task hint related file');
   const isTest = isTestPath(file);
-  if (reason.includes('selected target')) return 0;
+  if (reason.includes('explicit related path')) return -1;
+  if (reason.includes('selected target') || reason.includes('explicit file path target')) return 0;
   if (/\b(policy|auth|guard|scope|role|authorization|tenant|workspace|mfa|oidc|session)\b/.test(taskText) && /policy|auth|guard|scope|role|session|mfa|oidc/.test(file)) {
     return isTest ? 4 : 1;
   }
@@ -2700,9 +2716,10 @@ function agentContextScaleProfile(cas: CASOutput, context?: Record<string, any>)
   ].filter(Boolean).join(' ');
   const explicitTarget = Boolean(context?.task?.target || /inspect\s+\S+\.\w+|preserve connected behavior/i.test(targetText));
   const narrowTarget = Boolean(explicitTarget && ['file', 'module', 'function', 'method', 'variable', 'class', 'handler', 'route', 'api_route'].includes(selectedType));
-  if (sourceTokens > 0 && sourceTokens <= 10000) return 'tiny';
+  if (sourceTokens > 0 && sourceTokens <= 10000) return 'small-repo-minimal';
   if (sourceTokens > 0 && sourceTokens <= 40000) return 'small-repo-minimal';
   if (sourceTokens > 0 && narrowTarget && productNodes.length <= 220) return 'small-repo-minimal';
+  if (sourceTokens === 0 && (sourceFiles.length <= 18 || productNodes.length <= 160)) return 'small-repo-minimal';
   if (narrowTarget || (sourceTokens > 0 && sourceTokens <= 60000)) return 'token-minimal';
   if (sourceFiles.length <= 18 || productNodes.length <= 160) return 'micro';
   return 'token-minimal';
@@ -2861,18 +2878,18 @@ function compactSmallRepoCapabilityMemory(memory: any) {
   if (!memory || typeof memory !== 'object') return memory || null;
   return {
     status: memory.status,
-    matched: Array.isArray(memory.matched_capabilities) ? memory.matched_capabilities.slice(0, 1).map((capability: any) => ({
+    matched_capabilities: Array.isArray(memory.matched_capabilities) ? memory.matched_capabilities.slice(0, 1).map((capability: any) => ({
       name: capability.name,
       paths: Array.isArray(capability.operation_paths) ? capability.operation_paths.slice(0, 1) : [],
     })) : [],
-    decision: Array.isArray(memory.reuse_decisions_required) && memory.reuse_decisions_required[0]
-      ? {
+    reuse_decisions_required: Array.isArray(memory.reuse_decisions_required) && memory.reuse_decisions_required[0]
+      ? [{
           existing_capability: memory.reuse_decisions_required[0].existing_capability,
           decision_required: Array.isArray(memory.reuse_decisions_required[0].decision_required)
             ? memory.reuse_decisions_required[0].decision_required.slice(0, 1)
             : memory.reuse_decisions_required[0].decision_required,
-        }
-      : null,
+        }]
+      : [],
   };
 }
 
