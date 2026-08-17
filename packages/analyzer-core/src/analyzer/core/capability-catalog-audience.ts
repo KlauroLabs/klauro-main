@@ -47,6 +47,21 @@ export function capabilityCatalogProductTerms(
   ].filter((value): value is string => Boolean(value));
 }
 
+export function capabilityCatalogIntegrationTerms(libraryNames: string[]): string[] {
+  const terms = new Set<string>();
+  for (const libraryName of libraryNames) {
+    const packageSegments = String(libraryName || '').split('/').filter(Boolean);
+    const packageName = packageSegments[packageSegments.length - 1] || '';
+    const normalized = packageName.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const suffixed = normalized.match(/^(.{3,}?)(?:sdk|connector|integration)$/)?.[1];
+    const prefixed = normalized.match(/^(?:sdk|connector|integration)(.{3,})$/)?.[1];
+    const base = suffixed || prefixed;
+    if (!base) continue;
+    terms.add(base);
+  }
+  return [...terms].sort();
+}
+
 export function evaluateCapabilityCatalogAudience(
   capabilities: SystemCapability[],
   dataEntities: CASDataEntity[],
@@ -54,6 +69,7 @@ export function evaluateCapabilityCatalogAudience(
   productTerms: string[],
 ): CapabilityAudienceEvaluation {
   const libraries = libraryNames.map(name => ({ name }));
+  const integrationTerms = capabilityCatalogIntegrationTerms(libraryNames);
   const entityNamesById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
   const accepted: SystemCapability[] = [];
   const descriptionRepairCandidates: SystemCapability[] = [];
@@ -69,7 +85,7 @@ export function evaluateCapabilityCatalogAudience(
     const relatedEntityTerms = (capability.related_entities || [])
       .map(entityId => entityNamesById.get(entityId))
       .filter((value): value is string => Boolean(value));
-    const capabilityProductTerms = [...productTerms, ...operationTerms, ...relatedEntityTerms];
+    const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
 
     if (libraries.length > 0) {
       const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(

@@ -1,6 +1,7 @@
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 import {
   capabilityAudienceRepairFeedback,
+  capabilityCatalogIntegrationTerms,
   capabilityCatalogProductTerms,
   evaluateCapabilityCatalogAudience,
 } from '../../analyzer/core/capability-catalog-audience';
@@ -114,6 +115,27 @@ describe('capability catalog audience evaluation', () => {
       [],
       ['account'],
     );
+
+    expect(evaluation.accepted).toHaveLength(1);
+    expect(evaluation.rejections).toHaveLength(0);
+  });
+
+  it('derives integration vocabulary from declared SDK and connector package shapes', () => {
+    expect(capabilityCatalogIntegrationTerms([
+      'AcmeCloudSDK',
+      '@vendor/WarehouseConnector',
+      'sdk-payment-network',
+      'billing-api',
+      'http-client',
+      'openapi',
+    ])).toEqual(['acmecloud', 'paymentnetwork', 'warehouse']);
+
+    const evaluation = evaluateCapabilityCatalogAudience([
+      capability(
+        'Send scheduled invoices',
+        'AcmeCloud receives each scheduled invoice for customer billing and payment processing.',
+      ),
+    ], [], ['AcmeCloudSDK'], ['scheduled invoices', 'customer billing']);
 
     expect(evaluation.accepted).toHaveLength(1);
     expect(evaluation.rejections).toHaveLength(0);
