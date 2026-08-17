@@ -537,5 +537,38 @@ export const routes: Routes = [
       const guardNames = nodes.filter(node => node.type === 'angular_guard').map(node => node.name);
       expect(guardNames).toEqual(expect.arrayContaining(['authGuard', 'guestGuard', 'accessRightsGuard']));
     });
+
+    it('connects template events from their emitted entry points', async () => {
+      write('src/app/action.component.ts', `
+import { Component } from '@angular/core';
+
+@Component({ selector: 'app-action', template: '<button (click)="doAction()"></button><button (click)="doAction()"></button>' })
+export class ActionComponent {
+  doAction(): void {}
+}
+`);
+      const { nodes, edges, entryPoints } = await runAnalyzer();
+      const entryPoint = entryPoints.find(item => item.name === 'ActionComponent click');
+      const method = nodes.find(node => node.type === 'method' && node.name === 'doAction');
+
+      expect(entryPoint).toBeDefined();
+      expect(method).toBeDefined();
+      const triggers = edges.filter(edge => edge.type === 'triggers' && edge.source === entryPoint!.id && edge.target === method!.id);
+      expect(triggers).toHaveLength(1);
+    });
+
+    it('does not emit route edges to components absent from the analyzed source', async () => {
+      write('src/app/app.routes.ts', `
+import { Routes } from '@angular/router';
+import { MissingComponent } from './missing.component';
+
+export const routes: Routes = [{ path: 'missing', component: MissingComponent }];
+`);
+      const { nodes, edges } = await runAnalyzer();
+      const route = nodes.find(node => node.type === 'angular_route' && node.name === '/missing');
+
+      expect(route).toBeDefined();
+      expect(edges.some(edge => edge.source === route!.id && ['renders', 'routes_to'].includes(edge.type))).toBe(false);
+    });
   });
 });

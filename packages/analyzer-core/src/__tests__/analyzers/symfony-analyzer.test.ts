@@ -31,6 +31,22 @@ describe('SymfonyAnalyzer', () => {
   const httpEntries = (contribution: any) =>
     contribution.entry_points.filter((e: any) => e.type === 'http');
 
+  it('anchors framework-wide exits to a Symfony application node', async () => {
+    await writeFile('src/Entity/Order.php', [
+      '<?php',
+      'namespace App\\Entity;',
+      'use Doctrine\\ORM\\Mapping as ORM;',
+      '#[ORM\\Entity]',
+      'class Order {}',
+    ].join('\n'));
+
+    const contribution = await analyze();
+    const app = contribution.nodes?.find((node: any) => node.id === 'symfony_app');
+
+    expect(app).toBeDefined();
+    expect(contribution.exit_points?.filter((exitPoint: any) => exitPoint.source_node === 'symfony_app').length).toBeGreaterThan(0);
+  });
+
   describe('attribute routes', () => {
     it('composes class-level prefix with method-level paths and methods option', async () => {
       await writeFile('src/Controller/OrderController.php', [

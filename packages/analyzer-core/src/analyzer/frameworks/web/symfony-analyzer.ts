@@ -195,6 +195,16 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     const exitPoints: CASExitPoint[] = [];
 
     try {
+      nodes.push(this.createNode(
+        'symfony_app',
+        'Symfony application',
+        'framework_application',
+        2,
+        'composer.json',
+        1,
+        1,
+        { framework: 'symfony', subcategories: ['framework-root', 'application'] }
+      ));
       const phpFiles = await time('glob_php', () => glob(['**/*.php'], {
         cwd: context.projectPath,
         ignore: [...this.getIgnorePatterns(context), '**/var/**', '**/tests/**', '**/test/**'],

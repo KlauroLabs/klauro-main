@@ -378,6 +378,7 @@ export class KubernetesManifestAnalyzer extends ContainerTopologyAnalyzer {
       const batch = candidates.slice(offset, offset + 32);
       const matches = await Promise.all(batch.map(async relativeFile => {
         try {
+          if (isHelmTemplatePath(relativeFile)) return undefined;
           const content = await fs.readFile(path.join(projectPath, relativeFile), 'utf8');
           if (!/^\s*apiVersion\s*:/m.test(content) || !/^\s*kind\s*:/m.test(content)) return undefined;
           return parseKubernetesDocuments(content).length > 0 ? relativeFile : undefined;

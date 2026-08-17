@@ -2160,6 +2160,14 @@ export class AnalyzerOrchestrator {
     output.entry_points = attachDeployable(output.entry_points || [], output.deployable_evidence, output.nodes);
     linkStructuralOwnership(output.nodes, output.edges);
     assignNodeRoles({ nodes: output.nodes, edges: output.edges, entry_points: output.entry_points, exit_points: output.exit_points, resetDerivedRoles: true });
+    output.validation = this.buildValidation(
+      output.nodes,
+      output.edges,
+      output.entry_points || [],
+      output.exit_points || [],
+      output.runtime_static_links || [],
+      output.analysis_facts || []
+    );
     output.terminality = buildCasTerminality(output);
 
     const sourceFiles = new Set<string>();
@@ -3377,6 +3385,14 @@ export class AnalyzerOrchestrator {
     );
     linkStructuralOwnership(rebuiltOutput.nodes, rebuiltOutput.edges);
     assignNodeRoles({ nodes: rebuiltOutput.nodes, edges: rebuiltOutput.edges, entry_points: rebuiltOutput.entry_points, exit_points: rebuiltOutput.exit_points, resetDerivedRoles: true });
+    rebuiltOutput.validation = this.buildValidation(
+      rebuiltOutput.nodes,
+      rebuiltOutput.edges,
+      rebuiltOutput.entry_points || [],
+      rebuiltOutput.exit_points || [],
+      rebuiltOutput.runtime_static_links || [],
+      rebuiltOutput.analysis_facts || []
+    );
     rebuiltOutput.terminality = buildCasTerminality(rebuiltOutput);
     return rebuiltOutput;
   }

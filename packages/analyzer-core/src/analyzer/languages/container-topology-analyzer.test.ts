@@ -76,6 +76,7 @@ test('KubernetesManifestAnalyzer extracts raw manifests and routes ingress to se
     ].join('\n'));
 
     const analyzer = new KubernetesManifestAnalyzer();
+    assert.deepEqual(await analyzer.getRelevantFiles(dir), ['deploy/orders.yaml']);
     const cas = await analyzer.analyze({ projectPath: dir });
 
     const deployment = cas.nodes.find(node => node.type === 'kubernetes_deployment' && node.name === 'Deployment: orders');

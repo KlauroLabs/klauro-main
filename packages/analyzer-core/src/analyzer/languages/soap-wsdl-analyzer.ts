@@ -167,7 +167,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
       this.emitWsdlFile(info, nodes, edges, entryPoints);
     } else {
       for (const consumer of this.extractConsumers(context.relativePath, context.filePath, content)) {
-        this.emitConsumerExitPoint(consumer, exitPoints);
+        this.emitConsumerExitPoint(consumer, nodes, exitPoints);
       }
     }
 
@@ -233,7 +233,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
         const content = await this.readText(fullPath);
         if (content === null) continue;
         for (const consumer of this.extractConsumers(relativePath, fullPath, content)) {
-          this.emitConsumerExitPoint(consumer, exitPoints);
+          this.emitConsumerExitPoint(consumer, nodes, exitPoints);
         }
       }
 
@@ -246,7 +246,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
 
       const phpConsumers = await this.analyzePhpSoapConsumers(context.projectPath, context, wsdlByFullPath);
       for (const consumer of phpConsumers) {
-        this.emitConsumerExitPoint(consumer, exitPoints);
+        this.emitConsumerExitPoint(consumer, nodes, exitPoints);
       }
 
       const warnings = this.collectAnalysisWarnings();
@@ -1039,14 +1039,27 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
     };
   }
 
-  private emitConsumerExitPoint(consumer: SoapConsumer, exitPoints: CASExitPoint[]): void {
+  private emitConsumerExitPoint(consumer: SoapConsumer, nodes: CASNode[], exitPoints: CASExitPoint[]): void {
     const sourceId = this.consumerSourceId(consumer.relativePath, consumer.line, consumer.operation || consumer.endpoint || consumer.library);
-
-
-
-
-
-
+    if (!nodes.some(node => node.id === sourceId)) {
+      nodes.push(this.createNode(
+        sourceId,
+        consumer.operation ? `${consumer.library}: ${consumer.operation}` : `${consumer.library} SOAP client`,
+        'soap_consumer',
+        4,
+        consumer.relativePath,
+        consumer.line,
+        consumer.line,
+        {
+          library: consumer.library,
+          operation: consumer.operation,
+          service: consumer.service,
+          endpoint: consumer.endpoint,
+          evidence: consumer.evidence,
+          subcategories: ['soap', 'outbound-consumer'],
+        }
+      ));
+    }
     const providerName = consumer.service || consumer.library;
     exitPoints.push(this.createExitPoint(
       `exit_${sourceId}`,

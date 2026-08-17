@@ -471,6 +471,13 @@ function parseCaddyfile(content: string): ProxyConfig {
       depth++;
       return;
     }
+    const unbracedAddress = depth === 0 ? parseUnbracedCaddyAddress(line) : undefined;
+    if (unbracedAddress) {
+      currentHost = unbracedAddress.host;
+      currentPort = unbracedAddress.port;
+      currentHandlePath = undefined;
+      return;
+    }
     if (/^reverse_proxy\s*\{$/.test(line) && (currentHost !== undefined || currentPort)) {
       depth++;
       pendingReverseProxy = {
@@ -551,6 +558,12 @@ function parseCaddyAddress(addr: string): { host?: string; port?: string } {
   const portMatch = first.match(/^(.+?):(\d+)$/);
   if (portMatch) return { host: portMatch[1], port: portMatch[2] };
   return { host: first || undefined };
+}
+
+function parseUnbracedCaddyAddress(line: string): { host?: string; port?: string } | undefined {
+  const address = '(?:https?://)?(?:\\*\\.)?[A-Za-z0-9_.-]+(?::\\d+)?|:\\d+';
+  if (!new RegExp(`^(?:${address})(?:\\s*,\\s*(?:${address}))*$`).test(line)) return undefined;
+  return parseCaddyAddress(line);
 }
 
 function stripCaddyComment(line: string): string {
@@ -849,6 +862,9 @@ function parseTraefik(content: string): ProxyConfig {
     return { routes, upstreams };
   }
   if (!doc || typeof doc !== 'object') return { routes, upstreams };
+  if (doc.services && typeof doc.services === 'object') {
+    return parseTraefikCompose(doc.services, lineLookup);
+  }
 
   const entryPointPorts = collectTraefikEntryPointPorts(doc.entryPoints);
   const http = (doc.http && typeof doc.http === 'object') ? doc.http : doc;
@@ -892,6 +908,92 @@ function parseTraefik(content: string): ProxyConfig {
   }
 
   return { routes, upstreams };
+}
+
+function parseTraefikCompose(services: Record<string, any>, lines: string[]): ProxyConfig {
+  const routes: ProxyRoute[] = [];
+  const upstreams: ProxyUpstream[] = [];
+  const entryPointPorts = new Map<string, string>();
+
+  for (const service of Object.values<any>(services)) {
+    for (const command of toStringArray(service?.command)) {
+      const match = command.match(/^--entrypoints\.([^.]+)\.address=.*:(\d+)$/i);
+      if (match) entryPointPorts.set(match[1], match[2]);
+    }
+  }
+
+  for (const [serviceName, service] of Object.entries<any>(services)) {
+    const labels = normalizeTraefikLabels(service?.labels);
+    const routers = new Map<string, Record<string, string>>();
+    const declaredServicePorts = new Map<string, string>();
+
+    for (const [key, value] of labels) {
+      const router = key.match(/^traefik\.http\.routers\.([^.]+)\.(.+)$/i);
+      if (router) {
+        const fields = routers.get(router[1]) || {};
+        fields[router[2].toLowerCase()] = value;
+        routers.set(router[1], fields);
+      }
+      const servicePort = key.match(/^traefik\.http\.services\.([^.]+)\.loadbalancer\.server\.port$/i);
+      if (servicePort) declaredServicePorts.set(servicePort[1], value);
+    }
+
+    for (const [routerName, fields] of routers) {
+      const rule = fields.rule;
+      const targetName = fields.service || serviceName;
+      const targetService = services[targetName] || service;
+      const targetPort = declaredServicePorts.get(targetName) || firstComposeServicePort(targetService);
+      const upstream = targetPort ? `http://${targetName}:${targetPort}` : `http://${targetName}`;
+      const entryPoints = (fields.entrypoints || '').split(',').map(value => value.trim()).filter(Boolean);
+      const route: ProxyRoute = {
+        host: rule ? extractTraefikRuleValue(rule, 'Host') : undefined,
+        matchPath: rule ? extractTraefikRuleValue(rule, 'PathPrefix') || extractTraefikRuleValue(rule, 'Path') : undefined,
+        listenPorts: dedupe(entryPoints.map(name => entryPointPorts.get(name)).filter(Boolean) as string[]),
+        upstream,
+        directive: 'traefik-docker-router',
+        line: findTraefikLabelLine(lines, routerName),
+      };
+      routes.push(route);
+      upstreams.push({ name: targetName, servers: [upstream], line: route.line });
+    }
+  }
+
+  return { routes, upstreams: dedupeProxyUpstreams(upstreams) };
+}
+
+function normalizeTraefikLabels(value: unknown): Array<[string, string]> {
+  if (Array.isArray(value)) {
+    return value.flatMap(item => {
+      if (typeof item !== 'string') return [];
+      const separator = item.indexOf('=');
+      return separator === -1 ? [] : [[item.slice(0, separator), item.slice(separator + 1)]];
+    });
+  }
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value as Record<string, unknown>)
+    .filter((entry): entry is [string, string | number | boolean] => ['string', 'number', 'boolean'].includes(typeof entry[1]))
+    .map(([key, item]) => [key, String(item)]);
+}
+
+function firstComposeServicePort(service: any): string | undefined {
+  const candidates = [...toStringArray(service?.expose), ...toStringArray(service?.ports)];
+  for (const candidate of candidates) {
+    const normalized = candidate.replace(/\/(?:tcp|udp)$/i, '').split(':').pop()?.trim();
+    if (/^\d+$/.test(normalized || '')) return normalized;
+  }
+  return undefined;
+}
+
+function findTraefikLabelLine(lines: string[], routerName: string): number {
+  const needle = `traefik.http.routers.${routerName}.`;
+  const index = lines.findIndex(line => line.includes(needle));
+  return index === -1 ? 1 : index + 1;
+}
+
+function dedupeProxyUpstreams(upstreams: ProxyUpstream[]): ProxyUpstream[] {
+  const byName = new Map<string, ProxyUpstream>();
+  for (const upstream of upstreams) byName.set(upstream.name, upstream);
+  return [...byName.values()];
 }
 
 function collectTraefikEntryPointPorts(entryPoints: unknown): Map<string, string> {

@@ -58,7 +58,7 @@ export class ZustandAnalyzer extends BaseAnalyzer {
 
       if (!this.hasZustandUsage(content)) continue;
 
-      const fileNodeId = this.findFileNodeId(relativePath, context.existingAnalysis);
+      const fileNodeId = this.fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
       this.extractStores(content, relativePath, sanitizedPath, fileNodeId, nodes, edges, exitPoints, seenNodeIds);
@@ -222,16 +222,6 @@ export class ZustandAnalyzer extends BaseAnalyzer {
       storage_type: storageType,
       name: nameMatch?.[1]
     };
-  }
-
-  private findFileNodeId(relativePath: string, existingAnalysis?: CASContribution[]): string | undefined {
-    const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    if (!existingAnalysis) return undefined;
-    for (const contribution of existingAnalysis) {
-      const found = contribution.nodes?.find(n => n.id === fileId);
-      if (found) return found.id;
-    }
-    return undefined;
   }
 
   protected getCapabilities(): string[] {

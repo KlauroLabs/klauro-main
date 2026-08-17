@@ -370,10 +370,15 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
 
             const emittedHandlerMethods = new Set<string>();
+            const emittedEventBindings = new Set<string>();
             component.eventHandlers.forEach((handler, index) => {
-              const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${index}`);
+              const bindingKey = `${handler.event}:${handler.handlerName || ''}`;
+              if (emittedEventBindings.has(bindingKey)) return;
+              emittedEventBindings.add(bindingKey);
+              const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${handler.handlerName || index}`);
+              const eventEntryPointId = `entry_${eventNodeId}`;
               entryPoints.push(this.createEntryPoint(
-                `entry_${eventNodeId}`,
+                eventEntryPointId,
                 componentId,
                 'event',
                 `${component.name} ${handler.event}`,
@@ -401,8 +406,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
                     );
                   }
                   edges.push(this.createEdge(
-                    this.generateEdgeId(eventNodeId, methodId, 'triggers'),
-                    eventNodeId,
+                    this.generateEdgeId(eventEntryPointId, methodId, 'triggers'),
+                    eventEntryPointId,
                     methodId,
                     'triggers',
                     'behavioral',
@@ -825,24 +830,24 @@ export class AngularAnalyzer extends BaseAnalyzer {
         const matched = route.componentFile
           ? candidates.find(candidate => candidate.filePath === route.componentFile) || candidates[0]
           : candidates[0];
-        const componentId = matched?.id
-          || this.generateId('component', route.componentFile || '', route.component);
-        edges.push(this.createEdge(
-          this.generateEdgeId(routeId, componentId, 'renders'),
-          routeId,
-          componentId,
-          'renders',
-          'structural',
-          { route_path: displayPath }
-        ));
-        edges.push(this.createEdge(
-          this.generateEdgeId(routeId, componentId, 'routes_to'),
-          routeId,
-          componentId,
-          'routes_to',
-          'dependency',
-          { route_path: displayPath }
-        ));
+        if (matched) {
+          edges.push(this.createEdge(
+            this.generateEdgeId(routeId, matched.id, 'renders'),
+            routeId,
+            matched.id,
+            'renders',
+            'structural',
+            { route_path: displayPath }
+          ));
+          edges.push(this.createEdge(
+            this.generateEdgeId(routeId, matched.id, 'routes_to'),
+            routeId,
+            matched.id,
+            'routes_to',
+            'dependency',
+            { route_path: displayPath }
+          ));
+        }
       }
 
       for (const guardName of allGuards) {

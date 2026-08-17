@@ -82,6 +82,26 @@ test('CaddyAnalyzer resolves dynamic DNS upstream blocks', async () => {
   }
 });
 
+test('CaddyAnalyzer extracts routes from brace-less site blocks', async () => {
+  const dir = tempDir('caddy-unbraced-test');
+  try {
+    fs.writeFileSync(path.join(dir, 'Caddyfile'), [
+      'miniflux.example.org',
+      'reverse_proxy miniflux:8080',
+    ].join('\n'));
+
+    const result = await new CaddyAnalyzer().analyze({ projectPath: dir } as any);
+    const route = result.nodes.find(node => node.type === 'proxy_route');
+
+    assert.ok(route);
+    assert.equal(route.metadata?.public_host, 'miniflux.example.org');
+    assert.equal(route.metadata?.proxied_service, 'miniflux');
+    assert.deepEqual(route.metadata?.ports, ['8080']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('NginxAnalyzer resolves proxy_pass to declared upstream pools', async () => {
   const dir = tempDir('nginx-test');
   try {
@@ -265,6 +285,36 @@ test('TraefikAnalyzer extracts routers, rules, and loadBalancer services', async
     assert.deepEqual((route.metadata as any).listen_ports, ['443']);
     assert.equal((route.metadata as any).proxied_service, 'api');
     assert.deepEqual((route.metadata as any).ports, ['8000']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('TraefikAnalyzer extracts Docker provider routes from Compose labels', async () => {
+  const dir = tempDir('traefik-compose-test');
+  try {
+    fs.writeFileSync(path.join(dir, 'traefik.yml'), [
+      'services:',
+      '  traefik:',
+      '    command:',
+      '      - "--entrypoints.websecure.address=:443"',
+      '  miniflux:',
+      '    expose:',
+      '      - "8080"',
+      '    labels:',
+      '      - "traefik.enable=true"',
+      '      - "traefik.http.routers.miniflux.rule=Host(`miniflux.example.org`)"',
+      '      - "traefik.http.routers.miniflux.entrypoints=websecure"',
+    ].join('\n'));
+
+    const result = await new TraefikAnalyzer().analyze({ projectPath: dir } as any);
+    const route = result.nodes.find(node => node.type === 'proxy_route');
+
+    assert.ok(route);
+    assert.equal(route.metadata?.public_host, 'miniflux.example.org');
+    assert.equal(route.metadata?.proxied_service, 'miniflux');
+    assert.deepEqual(route.metadata?.listen_ports, ['443']);
+    assert.deepEqual(route.metadata?.ports, ['8080']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

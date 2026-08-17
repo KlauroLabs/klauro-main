@@ -137,6 +137,8 @@ test('SoapWsdlAnalyzer.analyze extracts services, operations, messages, schema t
     assert.equal(cas.exit_points.length, 2);
     assert.ok(cas.exit_points.some(ep => ep.type === 'api' && ep.metadata?.endpoint === 'https://billing.example.test/billing.wsdl'));
     assert.ok(cas.exit_points.some(ep => ep.type === 'api' && ep.metadata?.operation === 'GetInvoice'));
+    const nodeIds = new Set(cas.nodes.map(node => node.id));
+    assert.ok(cas.exit_points.every(exitPoint => nodeIds.has(exitPoint.source_node)));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

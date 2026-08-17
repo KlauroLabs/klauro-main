@@ -59,7 +59,7 @@ export class ReduxAnalyzer extends BaseAnalyzer {
 
       if (!this.hasReduxUsage(content)) continue;
 
-      const fileNodeId = this.findFileNodeId(relativePath, context.existingAnalysis);
+      const fileNodeId = this.fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
       this.extractStoreConfiguration(content, relativePath, sanitizedPath, fileNodeId, nodes, edges, seenNodeIds);
@@ -294,16 +294,6 @@ export class ReduxAnalyzer extends BaseAnalyzer {
         ));
       }
     }
-  }
-
-  private findFileNodeId(relativePath: string, existingAnalysis?: CASContribution[]): string | undefined {
-    const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    if (!existingAnalysis) return undefined;
-    for (const contribution of existingAnalysis) {
-      const found = contribution.nodes?.find(n => n.id === fileId);
-      if (found) return found.id;
-    }
-    return undefined;
   }
 
   protected getCapabilities(): string[] {

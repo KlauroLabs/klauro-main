@@ -120,7 +120,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
         throw error;
       }
 
-      const fileNodeId = this.findFileNodeId(relativePath, context.existingAnalysis);
+      const fileNodeId = this.fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
       if (MOBX_IMPORT.test(content)) {
@@ -704,16 +704,6 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
-  }
-
-  private findFileNodeId(relativePath: string, existingAnalysis?: CASContribution[]): string | undefined {
-    const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    if (!existingAnalysis) return undefined;
-    for (const contribution of existingAnalysis) {
-      const found = contribution.nodes?.find(n => n.id === fileId);
-      if (found) return found.id;
-    }
-    return undefined;
   }
 
   protected getCapabilities(): string[] {
