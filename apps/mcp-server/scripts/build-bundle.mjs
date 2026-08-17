@@ -122,10 +122,12 @@ const output = path.join(packageRoot, 'dist');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
 
-const serverResult = await build({ ...shared, entryPoints: ['src/index.ts'], outfile: 'dist/server.cjs', plugins: [installedBoundary], metafile: true });
-const cliResult = await build({ ...shared, entryPoints: ['src/installed-cli.ts'], outfile: 'dist/cli.cjs', banner: { js: '#!/usr/bin/env node' }, plugins: [installedBoundary], metafile: true });
+const minimumClientNodeMajor = 20;
+const runtimeGuard = `if (Number(process.versions.node.split('.')[0]) < ${minimumClientNodeMajor}) { console.error('Klauro requires Node.js ${minimumClientNodeMajor} or newer.'); process.exit(1); }`;
+const serverResult = await build({ ...shared, entryPoints: ['src/index.ts'], outfile: 'dist/server.cjs', banner: { js: runtimeGuard }, plugins: [installedBoundary], metafile: true });
+const cliResult = await build({ ...shared, entryPoints: ['src/installed-cli.ts'], outfile: 'dist/cli.cjs', banner: { js: `#!/usr/bin/env node\n${runtimeGuard}` }, plugins: [installedBoundary], metafile: true });
 chmodSync(path.join(output, 'cli.cjs'), 0o755);
-await build({ ...shared, entryPoints: ['src/bootstrap.ts'], outfile: 'dist/index.cjs', external: ['./server.cjs'] });
+await build({ ...shared, entryPoints: ['src/bootstrap.ts'], outfile: 'dist/index.cjs', banner: { js: runtimeGuard }, external: ['./server.cjs'] });
 
 
 
@@ -135,7 +137,7 @@ await build({ ...shared, entryPoints: ['src/bootstrap.ts'], outfile: 'dist/index
 
 
 
-const seaEntryResult = await build({ ...shared, entryPoints: ['src/installed-sea-entry.ts'], outfile: 'dist-sea/klauro-sea-entry.cjs', plugins: [installedBoundary], metafile: true });
+const seaEntryResult = await build({ ...shared, entryPoints: ['src/installed-sea-entry.ts'], outfile: 'dist-sea/klauro-sea-entry.cjs', banner: { js: runtimeGuard }, plugins: [installedBoundary], metafile: true });
 
 
 
@@ -289,6 +291,6 @@ writeFileSync(path.join(customerRoot, 'package.json'), JSON.stringify({
   name: '@klauro/mcp-server', version: packageVersion, private: false,
   description: 'Lightweight Klauro MCP and CLI client', main: 'dist/index.cjs',
   bin: { klauro: 'dist/cli.cjs' }, files: ['dist/'], dependencies: {},
-  engines: { node: '>=18' }, license: 'UNLICENSED',
+  engines: { node: `>=${minimumClientNodeMajor}` }, license: 'UNLICENSED',
 }, null, 2));
 console.log(`Built installed client: ${(totalBytes / 1048576).toFixed(2)} MiB, ${inputs.length} bundled inputs, 0 forbidden analyzer modules.`);

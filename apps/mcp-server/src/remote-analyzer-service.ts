@@ -210,22 +210,22 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-      if (request.method === 'GET' && (route === '/install' || route === '/install.sh')) {
+      if ((request.method === 'GET' || request.method === 'HEAD') && (route === '/install' || route === '/install.sh')) {
         await serveInstallScript(response);
         return;
       }
 
-      if (request.method === 'GET' && route === '/install.ps1') {
+      if ((request.method === 'GET' || request.method === 'HEAD') && route === '/install.ps1') {
         await serveInstallPowershell(response);
         return;
       }
 
-      if (request.method === 'GET' && route === '/dist/latest.json') {
+      if ((request.method === 'GET' || request.method === 'HEAD') && route === '/dist/latest.json') {
         await serveLatestManifest(request, response);
         return;
       }
 
-      if (request.method === 'GET' && (route === '/dist/klauro-latest.tgz' || route.startsWith('/dist/'))) {
+      if ((request.method === 'GET' || request.method === 'HEAD') && (route === '/dist/klauro-latest.tgz' || route.startsWith('/dist/'))) {
         const requested = route === '/dist/klauro-latest.tgz'
           ? 'klauro-latest.tgz'
           : route.slice('/dist/'.length);
@@ -3932,7 +3932,6 @@ async function serveInstallPowershell(response: http.ServerResponse): Promise<vo
 }
 
 async function serveTarball(response: http.ServerResponse, requested: string): Promise<void> {
-
   if (requested.includes('/') || requested.includes('..')) {
     writeText(response, 404, 'text/plain; charset=utf-8', 'not found');
     return;
@@ -3976,6 +3975,7 @@ async function serveTarball(response: http.ServerResponse, requested: string): P
 
     'cache-control': 'no-cache, must-revalidate',
   }));
+  if (response.req?.method === 'HEAD') return void response.end();
   const stream = fs.createReadStream(resolvedFile);
   stream.on('error', () => {
     response.destroy();

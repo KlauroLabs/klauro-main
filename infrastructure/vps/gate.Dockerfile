@@ -28,7 +28,7 @@ FROM ${BASE_IMAGE}
 #   inside the container (sync happens from the dev machine, see gate.sh),
 #   and adding it would be gold-plating with no probe backing it.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl git procps \
+  && apt-get install -y --no-install-recommends ca-certificates curl git procps \
   && rm -rf /var/lib/apt/lists/*
 
 # Non-root user so permission-bit assertions in the suite (e.g.

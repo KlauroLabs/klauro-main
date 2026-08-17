@@ -20,6 +20,7 @@ import { analyzeCasWithInstalledKlauro, getInstalledKlauroVersion, initializeIns
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { graphEquivalenceRate } from './incremental-graph-equivalence';
 import { descriptionTermIsGroundedInCas, unexplainedShortTitleCaseTerms } from './description-proper-noun-grounding';
+import { clearLoadedAnalysisCache } from './storage';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 
@@ -228,6 +229,8 @@ export async function runMachineAgentProof(options: ParsedArgs) {
   const unselectedEligible = eligible.filter(repo => !selectedPaths.has(repo.path));
   const limit = pLimit(Math.max(1, options.analysisConcurrency || 3));
   const analyzedCasByPath = new Map<string, CASOutput>();
+  const capabilityMemoryTargets = selectedEligible.slice(0, Math.min(selectedEligible.length, 12));
+  const capabilityMemoryPaths = new Set(capabilityMemoryTargets.map(repo => repo.path));
   const repoResults = await Promise.all(selectedEligible.map(repo => limit(() => analyzeRepoForMachineProof(repo))));
 
   async function analyzeRepoForMachineProof(repo: RealRepoTarget) {
@@ -250,7 +253,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
         })).output
         : await analyzeForBench(repo.path);
       const readiness = evaluateAgentReadiness(cas, analysisPath);
-      analyzedCasByPath.set(repo.path, cas);
+      if (capabilityMemoryPaths.has(repo.path)) analyzedCasByPath.set(repo.path, cas);
       const analysisQuality = assessAnalysisQuality(cas, repo.path);
       const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name, analysisFocus);
       const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
@@ -299,6 +302,31 @@ export async function runMachineAgentProof(options: ParsedArgs) {
       if (options.analysisPath === 'klauro-product' && options.discardWorkspaces) await fs.remove(analysisPath).catch(() => undefined);
     }
   }
+
+  const capabilityMemoryBenchmark = await runAgentCapabilityMemoryBenchmark({
+    repos: capabilityMemoryTargets.map(repo => ({ name: repo.name, path: repo.path })),
+    analysesByPath: analyzedCasByPath,
+    maxTargets: capabilityMemoryTargets.length,
+    maxTasksPerRepo: 3,
+    outputPath: path.join(workRoot, 'capability-memory', 'report.json'),
+    markdownPath: path.join(workRoot, 'capability-memory', 'report.md'),
+    quiet: true,
+  }).catch(error => ({
+    generated_at: new Date().toISOString(),
+    benchmark_type: 'agent-capability-memory',
+    status: 'fail',
+    score: 0,
+    summary: {
+      target_count: 0,
+      task_count: 0,
+      memory_hit_rate: 0,
+      average_duplicate_avoidance_delta: 0,
+      error: error instanceof Error ? error.message : String(error),
+    },
+    repositories: [],
+  }));
+  analyzedCasByPath.clear();
+  clearLoadedAnalysisCache();
 
   const incremental = selectedEligible.length > 0
     ? options.inFlightPath === 'in-process-harness'
@@ -377,30 +405,6 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     },
     results: [],
   }));
-
-  const capabilityMemoryBenchmark = await runAgentCapabilityMemoryBenchmark({
-    repos: selectedEligible.map(repo => ({ name: repo.name, path: repo.path })),
-    analysesByPath: analyzedCasByPath,
-    maxTargets: Math.min(selectedEligible.length, 12),
-    maxTasksPerRepo: 3,
-    outputPath: path.join(workRoot, 'capability-memory', 'report.json'),
-    markdownPath: path.join(workRoot, 'capability-memory', 'report.md'),
-    quiet: true,
-  }).catch(error => ({
-    generated_at: new Date().toISOString(),
-    benchmark_type: 'agent-capability-memory',
-    status: 'fail',
-    score: 0,
-    summary: {
-      target_count: 0,
-      task_count: 0,
-      memory_hit_rate: 0,
-      average_duplicate_avoidance_delta: 0,
-      error: error instanceof Error ? error.message : String(error),
-    },
-    repositories: [],
-  }));
-  analyzedCasByPath.clear();
 
   const fromZeroBuildContextProof = await runFromZeroBuildContextProof({
     outputRoot: path.join(workRoot, 'from-zero-build-context-proof'),

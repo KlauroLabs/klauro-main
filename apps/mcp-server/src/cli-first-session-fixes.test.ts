@@ -596,11 +596,18 @@ test('install.sh: npm fallback with no Node at all fails loudly with an actionab
   assert.match(run.output, /can't be installed on .* without Node\.js/);
 });
 
-test('install.sh: npm fallback below the declared Node floor WARNS but still proceeds (no refusal)', async () => {
+test('install.sh: npm fallback refuses a runtime below the declared Node floor', async () => {
   const run = await runInstallSh({ fakeNode: { version: 'v16.20.0' } });
-  assert.equal(run.status, 0, run.output);
-  assert.match(run.output, /Warning:.*older than klauro's declared minimum/);
-  assert.equal(run.npmCalled, true, 'a below-floor Node must still be allowed to try — this is a warning, not a gate');
+  assert.notEqual(run.status, 0);
+  assert.match(run.output, /Error:.*older than this Klauro release's minimum \(20\)/);
+  assert.equal(run.npmCalled, false, 'an incompatible runtime must be rejected before npm installs a broken CLI');
+});
+
+test('install.sh: the release manifest can raise the Node floor', async () => {
+  const run = await runInstallSh({ manifest: { version: '9.9.9', min_node: 22 }, fakeNode: { version: 'v20.10.0' } });
+  assert.notEqual(run.status, 0);
+  assert.match(run.output, /minimum \(22\)/);
+  assert.equal(run.npmCalled, false);
 });
 
 test('install.sh: KLAURO_SKIP_NODE_CHECK is gone — setting it does nothing (no upper bound left to skip)', async () => {

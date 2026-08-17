@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $env:KLAURO_URL) { $KlauroUrl = 'https://mcp.klauro.com' } else { $KlauroUrl = $env:KLAURO_URL }
 $InstallDir = if ($env:KLAURO_INSTALL_DIR) { $env:KLAURO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Klauro\bin' }
+$MinNode = 20
 
 Write-Host ''
 Write-Host '  Klauro installer'
@@ -28,9 +29,10 @@ function Install-NpmFallback {
   $nodeVersion = (& node -v).Trim()
   if ($nodeVersion -match '^v(\d+)') {
     $nodeMajor = [int]$Matches[1]
-    if ($nodeMajor -lt 18) {
-      Write-Host "Warning: Node.js $nodeVersion is older than klauro's declared minimum (18)."
-      Write-Host 'This has not been verified to fail -- continuing anyway.'
+    if ($nodeMajor -lt $MinNode) {
+      Write-Host "Error: Node.js $nodeVersion is older than this Klauro release's minimum ($MinNode)."
+      Write-Host 'Upgrade Node.js, then re-run this installer.'
+      exit 1
     }
   }
   Write-Host "  Using Node.js $nodeVersion"
@@ -46,6 +48,7 @@ function Install-NpmFallback {
 $installedVia = $null
 try {
   $manifestJson = Invoke-RestMethod -Uri "$KlauroUrl/dist/latest.json" -TimeoutSec 10 -ErrorAction Stop
+  if ($manifestJson.min_node -as [int]) { $MinNode = [int]$manifestJson.min_node }
   $binaryPath = $manifestJson.'bin_win_x64_path'
   $binarySha256 = $manifestJson.'bin_win_x64_sha256'
 } catch {

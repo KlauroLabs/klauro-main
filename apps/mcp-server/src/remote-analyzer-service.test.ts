@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { classifyComprehensionOutcome, requestConsumesMutationRateLimit, resolveHostedReleaseNodeRange, revisionMatchesSnapshot, stampRepoFacts, stampRepoFactsFromLastKnownOrMarkAbsent } from './remote-analyzer-service';
+import { classifyComprehensionOutcome, createRemoteAnalyzerHttpServer, requestConsumesMutationRateLimit, resolveHostedReleaseNodeRange, revisionMatchesSnapshot, stampRepoFacts, stampRepoFactsFromLastKnownOrMarkAbsent } from './remote-analyzer-service';
 import { analysisJobMetadata } from './analysis-job-metadata';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION, type RemoteAnalyzeRequest, type RemoteProjectRevision } from './remote-analyzer-protocol';
 import { getAnalysis } from './analyzer';
@@ -74,6 +74,37 @@ test('status polling and other reads do not consume the hosted mutation rate lim
   assert.equal(requestConsumesMutationRateLimit('POST'), true);
   assert.equal(requestConsumesMutationRateLimit('PATCH'), true);
   assert.equal(requestConsumesMutationRateLimit('DELETE'), true);
+});
+
+test('public release artifacts answer HEAD without authentication or a response body', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-public-artifact-'));
+  const downloads = path.join(root, 'downloads');
+  fs.mkdirSync(downloads);
+  fs.writeFileSync(path.join(downloads, 'klauro-latest.tgz'), 'artifact');
+  const previousDownloads = process.env.KLAURO_DOWNLOADS_DIR;
+  const previousCoordination = process.env.KLAURO_COORD_DIR;
+  process.env.KLAURO_DOWNLOADS_DIR = downloads;
+  process.env.KLAURO_COORD_DIR = path.join(root, 'data', 'coordination');
+  const server = createRemoteAnalyzerHttpServer({ dataDir: path.join(root, 'data') });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.equal(typeof address, 'object');
+    const response = await fetch(`http://127.0.0.1:${address && typeof address === 'object' ? address.port : 0}/dist/klauro-latest.tgz`, { method: 'HEAD' });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-length'), '8');
+    assert.equal(await response.text(), '');
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousDownloads === undefined) delete process.env.KLAURO_DOWNLOADS_DIR;
+    else process.env.KLAURO_DOWNLOADS_DIR = previousDownloads;
+    if (previousCoordination === undefined) delete process.env.KLAURO_COORD_DIR;
+    else process.env.KLAURO_COORD_DIR = previousCoordination;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('background analysis metadata does not retain uploaded source files', () => {

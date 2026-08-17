@@ -37,6 +37,15 @@ manifest_str_field() {
   echo "${COMPACT_MANIFEST}" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" | head -n1
 }
 
+manifest_number_field() {
+  echo "${COMPACT_MANIFEST}" | sed -n "s/.*\"$1\":\([0-9][0-9]*\).*/\1/p" | head -n1
+}
+
+MIN_NODE="$(manifest_number_field min_node)"
+case "${MIN_NODE}" in
+  ''|*[!0-9]*) MIN_NODE=20 ;;
+esac
+
 BINARY_PATH=""
 BINARY_SHA256=""
 if [ -n "${PLATFORM_KEY}" ]; then
@@ -110,9 +119,10 @@ install_via_npm_fallback() {
       echo "Warning: could not determine the Node.js version (got '${NODE_VERSION}'). Continuing anyway."
       ;;
     *)
-      if [ "${NODE_MAJOR}" -lt 18 ]; then
-        echo "Warning: Node.js ${NODE_VERSION} is older than klauro's declared minimum (18)."
-        echo "This has not been verified to fail — continuing anyway. If install fails, upgrade Node and retry."
+      if [ "${NODE_MAJOR}" -lt "${MIN_NODE}" ]; then
+        echo "Error: Node.js ${NODE_VERSION} is older than this Klauro release's minimum (${MIN_NODE})."
+        echo "Upgrade Node.js, then re-run this installer."
+        exit 1
       fi
       ;;
   esac
