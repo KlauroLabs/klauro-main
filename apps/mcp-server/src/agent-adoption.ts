@@ -4404,6 +4404,7 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
     score += Math.round((matchedTokens.length / Math.max(1, targetTokens.length)) * 45);
   }
   const nodeNameTokens = meaningfulTokens(node.name);
+  score += orderedNameTokenAlignmentScore(targetTokens, nodeNameTokens);
   if (nodeNameTokens.length > 1 && nodeNameTokens.every(token => targetTokens.includes(token))) {
     score += 60;
   }
@@ -4486,36 +4487,6 @@ function targetHasRouteIntent(target: string, targetTokens: string[]): boolean {
   ].includes(token));
 }
 
-const MEANINGFUL_TOKEN_STOPWORDS = new Set([
-  'the',
-  'a',
-  'an',
-  'and',
-  'or',
-  'to',
-  'for',
-  'of',
-  'in',
-  'on',
-  'by',
-  'with',
-  'when',
-  'from',
-  'into',
-  'must',
-  'should',
-  'only',
-  'same',
-  'different',
-  'uniqueness',
-  'unique',
-  'manage',
-  'managed',
-  'manager',
-  'managers',
-  'management',
-]);
-
 function meaningfulTokens(value: string): string[] {
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -4523,7 +4494,29 @@ function meaningfulTokens(value: string): string[] {
     .replace(/[^a-zA-Z0-9]+/g, ' ')
     .toLowerCase()
     .split(/\s+/)
-    .filter(token => token.length >= 2 && !MEANINGFUL_TOKEN_STOPWORDS.has(token));
+    .filter(token => token.length >= 2);
+}
+
+function orderedNameTokenAlignmentScore(queryTokens: string[], nameTokens: string[]): number {
+  let score = 0;
+  let previousNameIndex = -1;
+  for (let queryIndex = 0; queryIndex < queryTokens.length; queryIndex += 1) {
+    const queryToken = queryTokens[queryIndex];
+    const nameIndex = nameTokens.findIndex((nameToken, index) =>
+      index > previousNameIndex && tokensLexicallyMatch(queryToken, nameToken)
+    );
+    if (nameIndex < 0) continue;
+    const positionalWeight = (queryTokens.length - queryIndex) * 36 + Math.max(0, 18 - nameIndex * 6);
+    const specificityWeight = Math.min(12, queryToken.length);
+    score += positionalWeight + specificityWeight;
+    previousNameIndex = nameIndex;
+  }
+  return score;
+}
+
+function tokensLexicallyMatch(left: string, right: string): boolean {
+  if (left === right) return true;
+  return left.length >= 5 && right.length >= 5 && (left.includes(right) || right.includes(left));
 }
 
 function normalizeIdentifier(value: string): string {
