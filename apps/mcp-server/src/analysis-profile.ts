@@ -43,7 +43,7 @@ export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): An
   const nodeTypes = new Set(productNodes.map(node => node.type));
   const systemFrameworks = (cas.system?.technologies?.frameworks || []).map(framework => framework.name.toLowerCase());
   const productFrameworks = productNodes.map(node => String(node.metadata?.framework || '').toLowerCase()).filter(Boolean);
-  const manifests = readManifestHints(projectPath);
+  const manifests = readManifestHints(projectPath, cas);
   const evidence: string[] = [];
 
   const hasProductHttpFramework = hasFramework(productFrameworks, ['nestjs', 'express', 'fastapi', 'django', 'flask', 'asp.net', 'aspnet', 'spring', 'laravel', 'symfony']);
@@ -260,11 +260,13 @@ function hasFramework(frameworks: string[], needles: string[]): boolean {
   return frameworks.some(framework => needles.some(needle => framework.includes(needle)));
 }
 
-function readManifestHints(projectPath: string) {
+function readManifestHints(projectPath: string, cas: CASOutput) {
   const packageJson = readJson(path.join(projectPath, 'package.json'));
   const packageText = packageJson ? JSON.stringify(packageJson).toLowerCase() : '';
   const pubspec = readText(path.join(projectPath, 'pubspec.yaml')).toLowerCase();
-  const terraform = hasTerraformSurface(projectPath);
+  const casInfrastructure = (cas.system?.technologies?.languages || []).some(language => /terraform|hcl/i.test(language.name)) ||
+    cas.nodes.some(node => /\.(tf|tfvars|hcl)$/i.test(node.source?.file || '') || node.type === 'infrastructure_resource');
+  const terraform = casInfrastructure || (cas.nodes.length === 0 && hasTerraformSurface(projectPath));
   return {
     hasFrontend: /\b(react|next|vue|angular|vite|svelte)\b/.test(packageText),
     hasDesktop: /\b(electron|electron-vite|electron-builder|tauri|@tauri-apps\/api)\b/.test(packageText) ||

@@ -484,14 +484,16 @@ function architecturePatternBenchmarkGates(report: JsonObject): Gate[] {
   ];
 }
 
-function capabilityInferenceBenchmarkGates(report: JsonObject): Gate[] {
+export function capabilityInferenceBenchmarkGates(report: JsonObject): Gate[] {
   const summary = report.summary || {};
   const capabilities = array(report.capabilities);
   const names = capabilities.map(capability => String(capability.name || ''));
-  const failed = array(report.gates).filter(item => item.status !== 'pass');
+  const localGates = array(report.gates);
+  const failed = localGates.filter(item => item.status !== 'pass');
+  const domainProvenance = localGates.find(item => item.id === 'capability-inference:primary-domain-provenance');
   return [
     gate('capability-inference:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
-    gate('capability-inference:domain', summary.primary_domain === 'fleet-management', `primary domain ${summary.primary_domain || 'missing'}`),
+    gate('capability-inference:domain', domainProvenance?.status === 'pass', String(domainProvenance?.detail || 'primary-domain provenance gate missing')),
     gate('capability-inference:no-generic-capabilities', Number(summary.generic_capability_count || 0) === 0, `${summary.generic_capability_count || 0} generic capabilities`),
     gate('capability-inference:domain-capabilities',
       [
@@ -500,7 +502,7 @@ function capabilityInferenceBenchmarkGates(report: JsonObject): Gate[] {
         /Invoice/i,
       ].every(pattern => names.some(name => pattern.test(name))),
       names.join(', ') || 'missing'),
-    gate('capability-inference:all-local-gates-pass', failed.length === 0 && array(report.gates).length >= 6, `${failed.length} failing capability gates`),
+    gate('capability-inference:all-local-gates-pass', failed.length === 0 && localGates.length >= 6, `${failed.length} failing capability gates`),
   ];
 }
 

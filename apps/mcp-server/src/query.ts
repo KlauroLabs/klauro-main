@@ -20,6 +20,7 @@ import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../.
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
+import { getQueryTraversalIndex } from './query-traversal-index';
 import {
   buildDomainConceptIndex,
   buildEntityRelationIndex,
@@ -1048,18 +1049,7 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
   const pushed = new Set<string>();
   const callers: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
-  const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
-  const incomingEdges = new Map<string, typeof cas.edges>();
-  for (const edge of cas.edges) {
-    if (!incomingEdges.has(edge.target)) incomingEdges.set(edge.target, []);
-    incomingEdges.get(edge.target)!.push(edge);
-  }
-  const incomingMethodCalls = new Map<string, NonNullable<CASOutput['method_calls']>>();
-  for (const methodCall of cas.method_calls || []) {
-    if (!methodCall.target_node) continue;
-    if (!incomingMethodCalls.has(methodCall.target_node)) incomingMethodCalls.set(methodCall.target_node, []);
-    incomingMethodCalls.get(methodCall.target_node)!.push(methodCall);
-  }
+  const { nodesById, incomingEdges, incomingMethodCalls } = getQueryTraversalIndex(cas);
 
   function traverse(currentId: string, depth: number) {
     if (depth > maxDepth || visited.has(currentId) || callers.length >= limit) return;
@@ -1112,18 +1102,7 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
   const pushed = new Set<string>();
   const callees: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
-  const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
-  const outgoingEdges = new Map<string, typeof cas.edges>();
-  for (const edge of cas.edges) {
-    if (!outgoingEdges.has(edge.source)) outgoingEdges.set(edge.source, []);
-    outgoingEdges.get(edge.source)!.push(edge);
-  }
-  const outgoingMethodCalls = new Map<string, NonNullable<CASOutput['method_calls']>>();
-  for (const methodCall of cas.method_calls || []) {
-    if (!methodCall.caller_node) continue;
-    if (!outgoingMethodCalls.has(methodCall.caller_node)) outgoingMethodCalls.set(methodCall.caller_node, []);
-    outgoingMethodCalls.get(methodCall.caller_node)!.push(methodCall);
-  }
+  const { nodesById, outgoingEdges, outgoingMethodCalls } = getQueryTraversalIndex(cas);
 
   function traverse(currentId: string, depth: number) {
     if (depth > maxDepth || visited.has(currentId) || callees.length >= limit) return;
@@ -1443,6 +1422,8 @@ export function getStability(cas: CASOutput, nodeId?: string) {
 
 
 
+const reachabilityIndexes = new WeakMap<CASOutput, ReachabilityIndex>();
+
 export function getAffectedSet(
   cas: CASOutput,
   nodeIds: string[],
@@ -1452,7 +1433,11 @@ export function getAffectedSet(
   const maxNodes = opts.maxNodes ?? Infinity;
 
   if (cas.reachability_index?.includes_invokes_edges) {
-    const idx = ReachabilityIndex.from(cas.reachability_index);
+    let idx = reachabilityIndexes.get(cas);
+    if (!idx) {
+      idx = ReachabilityIndex.from(cas.reachability_index);
+      reachabilityIndexes.set(cas, idx);
+    }
     const result = idx.affectedSet(nodeIds, { direction, maxNodes });
     return { ...result, method: 'reachability_index' };
   }

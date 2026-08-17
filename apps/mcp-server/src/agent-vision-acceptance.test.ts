@@ -1,6 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { competitorBaselineBenchmarkGates, machineProofGates, newUserE2EGates } from './agent-vision-acceptance';
+import { capabilityInferenceBenchmarkGates, competitorBaselineBenchmarkGates, machineProofGates, newUserE2EGates } from './agent-vision-acceptance';
+
+test('capability vision acceptance requires proven domain provenance instead of a fixture label', () => {
+  const report = {
+    status: 'pass',
+    score: 100,
+    summary: { primary_domain: '', generic_capability_count: 0 },
+    capabilities: [
+      { name: 'Vehicle Operations' },
+      { name: 'Fuel Purchases' },
+      { name: 'Invoice Settlement' },
+    ],
+    gates: [
+      { id: 'capability-inference:primary-domain-provenance', status: 'pass', detail: 'primary domain absent because AI enrichment was disabled' },
+      { id: 'capability-inference:capability-1', status: 'pass' },
+      { id: 'capability-inference:capability-2', status: 'pass' },
+      { id: 'capability-inference:capability-3', status: 'pass' },
+      { id: 'capability-inference:capability-4', status: 'pass' },
+      { id: 'capability-inference:capability-5', status: 'pass' },
+    ],
+  };
+
+  const gates = capabilityInferenceBenchmarkGates(report);
+
+  assert.equal(gates.find(gate => gate.id === 'capability-inference:domain')?.status, 'pass');
+  report.gates[0].status = 'fail';
+  assert.equal(capabilityInferenceBenchmarkGates(report).find(gate => gate.id === 'capability-inference:domain')?.status, 'fail');
+});
 
 test('machine vision acceptance requires full-mode analysis of every eligible repo', () => {
   const fastSample = machineReport({

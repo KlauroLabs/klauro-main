@@ -1,5 +1,4 @@
 import * as fs from 'fs-extra';
-import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { glob } from 'glob';
@@ -21,6 +20,8 @@ import {
   verifyFullGraph,
   type IncrementalRunEvidence,
 } from './incremental-benchmark-execution';
+import { defaultIncrementalBenchmarkWorkRoot, parseIncrementalBenchmarkCli } from './incremental-benchmark-cli';
+export { defaultIncrementalBenchmarkWorkRoot } from './incremental-benchmark-cli';
 type GateStatus = 'pass' | 'warn' | 'fail';
 interface IncrementalTargetInput {
   name?: string;
@@ -124,88 +125,6 @@ interface IncrementalTargetReport {
     agent_context_ready?: boolean;
   };
   full_verify_parity?: CasGraphEquivalence;
-}
-function parseArgs(argv: string[]) {
-  const repos: IncrementalTargetInput[] = [];
-  let includeRealRepos = false;
-  let devRoot = path.join(process.env.HOME || '', 'dev');
-  let maxTargets = 6;
-  let workRoot = defaultIncrementalBenchmarkWorkRoot();
-  let outputPath = path.join(process.cwd(), '.klauro-incremental-benchmark', 'latest-report.json');
-  let markdownPath = path.join(process.cwd(), '.klauro-incremental-benchmark', 'latest-report.md');
-  let keepWorkspaces = false;
-  let verifyFull = true;
-  let useGitBaseline = false;
-  let concurrency = 1;
-  let analysisPath: IncrementalBenchmarkOptions['analysisPath'] = 'in-process-harness';
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === '--repo') {
-      const value = argv[++i];
-      if (!value) throw new Error('--repo requires a path or name=path value');
-      const [namePart, repoPathPart] = value.includes('=') ? value.split('=') : [undefined, value];
-      const repoPath = path.resolve(repoPathPart);
-      repos.push({ name: namePart || path.basename(repoPath), path: repoPath });
-    } else if (arg === '--real-repos') {
-      includeRealRepos = true;
-    } else if (arg === '--dev-root') {
-      devRoot = path.resolve(argv[++i]);
-    } else if (arg === '--max-targets') {
-      maxTargets = Number(argv[++i]);
-    } else if (arg === '--work-root') {
-      workRoot = path.resolve(argv[++i]);
-    } else if (arg === '--output') {
-      outputPath = path.resolve(argv[++i]);
-    } else if (arg === '--markdown') {
-      markdownPath = path.resolve(argv[++i]);
-    } else if (arg === '--discard-workspaces') {
-      keepWorkspaces = false;
-    } else if (arg === '--keep-workspaces') {
-      keepWorkspaces = true;
-    } else if (arg === '--verify-full') {
-      verifyFull = true;
-    } else if (arg === '--no-verify-full') {
-      verifyFull = false;
-    } else if (arg === '--git-baseline') {
-      useGitBaseline = true;
-    } else if (arg === '--concurrency') {
-      concurrency = Number(argv[++i]);
-    } else if (arg === '--analysis-path') {
-      analysisPath = parseAnalysisPath(argv[++i]);
-    } else if (arg === '--help' || arg === '-h') {
-      printHelp();
-      process.exit(0);
-    }
-  }
-
-  return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull, useGitBaseline, concurrency, analysisPath };
-}
-function parseAnalysisPath(value: string): IncrementalBenchmarkOptions['analysisPath'] {
-  if (value === 'klauro-product') return 'klauro-product';
-  if (value === 'in-process-harness') return 'in-process-harness';
-  throw new Error(`Invalid incremental benchmark analysis path "${value}". Expected klauro-product or in-process-harness.`);
-}
-function printHelp(): void {
-  console.log([
-    'Usage: npm run incremental-benchmark -- [options]',
-    '',
-    'Options:',
-    '  --repo name=/path/to/repo     Benchmark a specific repo. May be repeated.',
-    '  --real-repos                 Include discovered repos under --dev-root.',
-    '  --dev-root /path             Root used for real repo discovery.',
-    '  --max-targets n              Limit total targets.',
-    '  --work-root /path            Directory for copied repo workspaces and isolated storage.',
-    '  --verify-full                Run a fresh full analysis after the edit and compare parity.',
-    '  --no-verify-full             Skip the fresh full analysis parity check.',
-    '  --git-baseline               Initialize and commit a git baseline in copied repos. Off by default to measure agent-facing incremental value without benchmark-only git overhead.',
-    '  --concurrency n             Number of repos to benchmark concurrently. Default 1. Values above 1 are capped because storage isolation is process-scoped.',
-    '  --analysis-path path         Analysis path: klauro-product or in-process-harness. Default in-process-harness.',
-    '  --discard-workspaces         Remove copied repos after writing the report. This is the default.',
-    '  --keep-workspaces            Keep copied repos for debugging.',
-    '  --output /path/report.json   Write JSON report.',
-    '  --markdown /path/report.md   Write Markdown report.',
-  ].join('\n'));
 }
 export async function runIncrementalValueBenchmark(options: IncrementalBenchmarkOptions) {
   const selectedTargets = await selectTargets(options);
@@ -434,9 +353,6 @@ async function isAggregateIncrementalBenchmarkTarget(repoPath: string): Promise<
   return sourceFiles.length > 1000;
 }
 
-export function defaultIncrementalBenchmarkWorkRoot(): string {
-  return path.join(os.tmpdir(), 'klauro-incremental-benchmark-workspaces');
-}
 async function benchmarkTarget(target: IncrementalTargetInput, options: IncrementalBenchmarkOptions): Promise<IncrementalTargetReport> {
   const targetStartedAt = Date.now();
   const trialRoot = path.join(path.resolve(options.workRoot || defaultIncrementalBenchmarkWorkRoot()), `${slugify(target.name || path.basename(target.path))}-${Date.now()}`);
@@ -1458,7 +1374,7 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseIncrementalBenchmarkCli(process.argv.slice(2));
   const report = await runIncrementalValueBenchmark({
     repos: args.repos,
     includeRealRepos: args.includeRealRepos,
@@ -1470,6 +1386,7 @@ async function main(): Promise<void> {
     useGitBaseline: args.useGitBaseline,
     concurrency: args.concurrency,
     analysisPath: args.analysisPath,
+    analyzerServerUrl: args.analyzerServerUrl,
   });
 
   await fs.ensureDir(path.dirname(args.outputPath));

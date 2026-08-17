@@ -13,7 +13,6 @@ import {
   getEntryPoints,
   getErrorContracts,
   getExitPoints,
-  getFlowCoverage,
   getRuntimeStaticLinks,
   getSecurityOverview,
   searchNodes,
@@ -43,6 +42,8 @@ import {
 import { formatAgentContextCapsule } from './agent-context-codec';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { resolveSectionFilter, type ContextRuntimeMode } from './context-filter';
+import { getAgentNodeIdsForFiles, getAgentNodeIndex, getAgentSourceFiles } from './agent-cas-index';
+import { getQueryTraversalIndex } from './query-traversal-index';
 
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -1169,9 +1170,9 @@ function buildAgentContextFreshness(
   selectedNode: CASNode | undefined,
   fileReadPlan: FileReadPlanItem[],
 ): AgentContextFreshness | null {
-  const base = summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
-  if (!base) return null;
-  const analyzedAtMs = Date.parse(base.analyzed_at);
+  const analyzedAt = cas.analysis_timestamp;
+  const analyzedAtMs = Date.parse(analyzedAt || '');
+  if (!analyzedAt || !Number.isFinite(analyzedAtMs)) return null;
   const rootPath = cas.system?.root_path;
   const targetFile = selectedNode?.source?.file
     ? normalizeSourceFile(selectedNode.source.file, rootPath)
@@ -1193,6 +1194,11 @@ function buildAgentContextFreshness(
     }
   }
 
+  const base = fs.existsSync(nodePath.join(projectPath, '.git'))
+    ? summarizeAnalysisFreshness(projectPath, analyzedAt)
+    : citationScopedFreshness(analyzedAt, analyzedAtMs, changedCited, deletedCited);
+  if (!base) return null;
+
   const invalidCitations = changedCited.length > 0 || deletedCited.length > 0;
   if (!invalidCitations) return { summary: base, invalid_citations: false };
 
@@ -1213,6 +1219,36 @@ function buildAgentContextFreshness(
     },
     invalid_citations: true,
     target_file_note: targetFileNote,
+  };
+}
+
+function citationScopedFreshness(
+  analyzedAt: string,
+  analyzedAtMs: number,
+  changed: string[],
+  deleted: string[],
+): AnalysisFreshnessSummary {
+  const ageMinutes = Math.max(0, Math.floor((Date.now() - analyzedAtMs) / 60_000));
+  const days = Math.floor(ageMinutes / 1440);
+  const hours = Math.floor((ageMinutes % 1440) / 60);
+  const minutes = ageMinutes % 60;
+  const age = days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  const staleness = deleted.length > 0 ? 'stale' : changed.length > 0 ? 'aging' : 'fresh';
+  return {
+    analyzed_at: analyzedAt,
+    age,
+    files_changed_since_analysis: { count: changed.length, examples: changed.slice(0, 5) },
+    files_deleted_since_analysis: { count: deleted.length, examples: deleted.slice(0, 5) },
+    staleness,
+    recommendation: staleness === 'fresh'
+      ? 'Cited files are current; CAS file and line citations are trustworthy.'
+      : 'One or more cited files changed after analysis; re-run incremental analysis before trusting those citations.',
+    scan: {
+      method: 'walk',
+      bounded: true,
+      duration_ms: 0,
+      note: 'Non-git checkout checked only files cited by this agent context.',
+    },
   };
 }
 
@@ -1249,10 +1285,7 @@ export function buildJourneyContextForAgent(
   const journeys = cas.user_journeys || [];
   if (journeys.length === 0 || (!opts.nodeId && !opts.file && !opts.entityName)) return null;
   const rootPath = cas.system?.root_path;
-  const nodeFiles = new Map<string, string>();
-  for (const node of cas.nodes || []) {
-    if (node.source?.file) nodeFiles.set(node.id, normalizeSourceFile(node.source.file, rootPath));
-  }
+  const nodeIndex = getAgentNodeIndex(cas);
   const targetFile = opts.file ? normalizeSourceFile(opts.file, rootPath) : '';
   const matching = journeys.filter(journey => {
     const journeyNodeIds = [
@@ -1268,7 +1301,8 @@ export function buildJourneyContextForAgent(
     }
     if (!targetFile) return false;
     return journeyNodeIds.some(id => {
-      const file = nodeFiles.get(id);
+      const sourceFile = nodeIndex.get(id)?.source?.file;
+      const file = sourceFile ? normalizeSourceFile(sourceFile, rootPath) : undefined;
       return Boolean(file && projectPathsMatch(file, targetFile));
     });
   }).sort((a, b) => (CRITICALITY_RANK[a.criticality] ?? 4) - (CRITICALITY_RANK[b.criticality] ?? 4));
@@ -1471,14 +1505,14 @@ export function buildArchitectureContextForAgent(
   const inventory = summary?.architectural_inventory;
   const patterns = summary?.architectural_patterns || [];
   const limit = opts.limit || 6;
-  const nodeById = new Map((cas.nodes || []).map(node => [node.id, node]));
+  const nodeById = getAgentNodeIndex(cas);
   const target = String(opts.target || '').toLowerCase();
   const targetTokens = architectureTargetTokens(target);
   const files = uniqueStrings((opts.files || []).map(file => normalizeSourceFile(file, cas.system?.root_path)));
   const fileSet = new Set(files.map((file: string) => file.toLowerCase()));
 
   const targetRelevantNodeIds = new Set<string>();
-  if (target) {
+  if (target && fileSet.size === 0) {
     for (const node of cas.nodes || []) {
       const haystack = [
         node.id,
@@ -1492,28 +1526,19 @@ export function buildArchitectureContextForAgent(
       }
     }
   }
-  const fileRelevantNodeIds = new Set<string>();
-  if (fileSet.size > 0) {
-    for (const node of cas.nodes || []) {
-      const file = normalizeSourceFile(node.source?.file || '', cas.system?.root_path).toLowerCase();
-      if (!file) continue;
-      if ([...fileSet].some((item: string) => projectPathsMatch(file, item))) fileRelevantNodeIds.add(node.id);
-    }
-  }
+  const fileRelevantNodeIds = getAgentNodeIdsForFiles(cas, files);
   const directRelevantNodeIds = new Set([...targetRelevantNodeIds, ...fileRelevantNodeIds]);
   const relevantNodeIds = new Set(directRelevantNodeIds);
   expandRelevantArchitectureNodeIds(relevantNodeIds, cas);
 
   const hasSpecificContext = Boolean(target || fileSet.size > 0 || relevantNodeIds.size > 0);
   const fileScopedDirectNodeIds = fileRelevantNodeIds.size > 0 ? fileRelevantNodeIds : directRelevantNodeIds;
-  const fileScopedExpandedNodeIds = new Set(fileScopedDirectNodeIds);
-  expandRelevantArchitectureNodeIds(fileScopedExpandedNodeIds, cas);
-  const patternScopeNodeIds = fileSet.size > 0
+  const fileScopedExpandedNodeIds = fileSet.size > 0 ? relevantNodeIds : new Set(fileScopedDirectNodeIds);
+  const fileScopeNodeIds = fileSet.size > 0
     ? architectureFileScopedNodeIds(fileScopedDirectNodeIds, fileScopedExpandedNodeIds, nodeById, files, cas.system?.root_path)
     : relevantNodeIds;
-  const inventoryScopeNodeIds = fileSet.size > 0
-    ? architectureFileScopedNodeIds(fileScopedDirectNodeIds, fileScopedExpandedNodeIds, nodeById, files, cas.system?.root_path)
-    : relevantNodeIds;
+  const patternScopeNodeIds = fileScopeNodeIds;
+  const inventoryScopeNodeIds = fileScopeNodeIds;
   const scopedFallbackPatterns = fileSet.size > 0
     ? synthesizeScopedArchitecturePatterns(inventory, inventoryScopeNodeIds, nodeById)
     : [];
@@ -1938,9 +1963,11 @@ function sameTrailingArchitecturePath(left: string[], right: string[]): boolean 
 
 function expandRelevantArchitectureNodeIds(relevantNodeIds: Set<string>, cas: CASOutput): void {
   if (relevantNodeIds.size === 0) return;
-  for (const edge of cas.edges || []) {
-    if (relevantNodeIds.has(edge.source)) relevantNodeIds.add(edge.target);
-    if (relevantNodeIds.has(edge.target)) relevantNodeIds.add(edge.source);
+  const seeds = [...relevantNodeIds];
+  const { incomingEdges, outgoingEdges } = getQueryTraversalIndex(cas);
+  for (const nodeId of seeds) {
+    for (const edge of incomingEdges.get(nodeId) || []) relevantNodeIds.add(edge.source);
+    for (const edge of outgoingEdges.get(nodeId) || []) relevantNodeIds.add(edge.target);
   }
 }
 
@@ -2102,7 +2129,12 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
 
 function compactFirstTurnFileReadPlan(plan: any): string[] {
   if (!Array.isArray(plan)) return [];
-  return uniqueByFile(plan)
+  const unique = uniqueByFile(plan);
+  const explicit = unique.filter((item: any) => /explicit related path/i.test(String(item.reason || '')));
+  const selected = unique.find((item: any) => /selected target/i.test(String(item.reason || '')));
+  const callBoundary = unique.find((item: any) => /(?:caller|callee) via (?:calls|method_call)|edge:calls/i.test(String(item.reason || '')));
+  const test = unique.find((item: any) => isTestPath(String(item.file || '')));
+  return uniqueByFile([...explicit, selected, callBoundary, test, ...unique].filter(Boolean))
     .slice(0, 8)
     .map((item: any) => String(item.file || '').trim())
     .filter(Boolean);
@@ -2658,11 +2690,9 @@ function agentContextScaleProfile(cas: CASOutput, context?: Record<string, any>)
   if (forcedProfile === 'standard' || forcedProfile === 'micro' || forcedProfile === 'tiny' || forcedProfile === 'token-minimal' || forcedProfile === 'small-repo-minimal') {
     return forcedProfile;
   }
-  const sourceFiles = uniqueStrings((cas.nodes || [])
-    .map(node => node.source?.file || '')
-    .filter(file => Boolean(file) && !isNonProductSourceText(file)));
+  const sourceFiles = getAgentSourceFiles(cas).filter(file => !isNonProductSourceText(file));
   const productNodes = (cas.nodes || []).filter(node => !node.metadata?.is_test && !node.metadata?.is_generated && !isNonProductAgentTarget(node));
-  const sourceTokens = estimateCasSourceTokens(cas, sourceFiles);
+  const sourceTokens = estimateCasSourceTokens(cas);
   const selectedType = String(context?.selected_node?.type || '').toLowerCase();
   const targetText = [
     context?.task?.target,
@@ -2672,7 +2702,7 @@ function agentContextScaleProfile(cas: CASOutput, context?: Record<string, any>)
   const narrowTarget = Boolean(explicitTarget && ['file', 'module', 'function', 'method', 'variable', 'class', 'handler', 'route', 'api_route'].includes(selectedType));
   if (sourceTokens > 0 && sourceTokens <= 10000) return 'tiny';
   if (sourceTokens > 0 && sourceTokens <= 40000) return 'small-repo-minimal';
-  if (narrowTarget && productNodes.length <= 220) return 'small-repo-minimal';
+  if (sourceTokens > 0 && narrowTarget && productNodes.length <= 220) return 'small-repo-minimal';
   if (narrowTarget || (sourceTokens > 0 && sourceTokens <= 60000)) return 'token-minimal';
   if (sourceFiles.length <= 18 || productNodes.length <= 160) return 'micro';
   return 'token-minimal';
@@ -2848,7 +2878,12 @@ function compactSmallRepoCapabilityMemory(memory: any) {
 
 function compactMinimalFileReadPlan(plan: any) {
   if (!Array.isArray(plan)) return [];
-  return plan.slice(0, 5).map((item: any) => {
+  const unique = uniqueByFile(plan);
+  const selected = unique.find((item: any) => /selected target/i.test(String(item.reason || '')));
+  const connected = unique.find((item: any) => /caller|callee|edge:uses|edge:calls/i.test(String(item.reason || '')));
+  const test = unique.find((item: any) => /test coverage|focused regression|likely focused/i.test(String(item.reason || '')));
+  const prioritized = uniqueByFile([selected, connected, test, ...unique].filter(Boolean)).slice(0, 3);
+  return prioritized.map((item: any) => {
     const lineWindow = compactLineWindow(item.line_window, item.line);
     return {
       file: item.file,
@@ -2932,23 +2967,10 @@ function compactManualChecks(checks: any, limit: number): string[] {
   return uniqueStrings(compacted);
 }
 
-function estimateCasSourceTokens(cas: CASOutput, sourceFiles: string[]): number {
-  const rootPath = cas.system?.root_path;
-  if (!rootPath) return 0;
-  let bytes = 0;
-  for (const file of sourceFiles.slice(0, 2000)) {
-    const absolute = nodePath.isAbsolute(file) ? file : nodePath.join(rootPath, file);
-    try {
-      if (!fs.existsSync(absolute)) continue;
-      const stat = fs.statSync(absolute);
-      if (!stat.isFile() || stat.size > 1_000_000) continue;
-      bytes += stat.size;
-      if (bytes > 1_200_000) break;
-    } catch {
-      continue;
-    }
-  }
-  return Math.ceil(bytes / 4);
+function estimateCasSourceTokens(cas: CASOutput): number {
+  const totalLines = Number(cas.architecture_summary?.total_lines || 0);
+  if (totalLines > 0) return totalLines * 8;
+  return 0;
 }
 
 function compactMicroWorkContext(context: any) {
@@ -3508,11 +3530,13 @@ function capabilityRank(capability: SystemCapability): number {
 
 export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: AgentTask }) {
   const task = normalizeTask(input.task || {});
-  const representativeNodeId = representativeTarget(cas)?.id;
-  const target = task.target || inferTargetQueryFromTask(task) || representativeNodeId || 'target-query';
+  const inferredTarget = task.target || inferTargetQueryFromTask(task);
+  const representativeNodeId = inferredTarget ? undefined : representativeTarget(cas)?.id;
+  const target = inferredTarget || representativeNodeId || 'target-query';
   const nodeId = representativeNodeId || '<node_id from search_nodes>';
-  const entryPoint = representativeEntryPoint(cas);
-  const chain = (cas.call_chains || [])[0];
+  const needsFlowTarget = task.task_type !== 'modify' && task.task_type !== 'review';
+  const entryPoint = needsFlowTarget ? representativeEntryPoint(cas) : undefined;
+  const chain = needsFlowTarget ? (cas.call_chains || [])[0] : undefined;
   const steps = stepsForTask(input.path, task, target, nodeId, entryPoint?.id, chain?.id);
 
   return {
@@ -3537,13 +3561,18 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
   let selectedNode: CASNode | undefined;
 
   if (target) {
+    const exactNode = getAgentNodeIndex(cas).get(target);
+    if (exactNode) {
+      return {
+        query: target,
+        selected_node_id: exactNode.id,
+        selected_node: exactNode,
+        candidates: [{ ...summarizeNodeForAgent(exactNode), score: 200 }],
+        gaps,
+      };
+    }
     const targetFile = normalizeTargetFileForAgent(projectPath, cas.system?.root_path, target);
     const pathLikeTarget = Boolean(targetFile);
-    const exactNode = cas.nodes.find(node => node.id === target);
-    if (exactNode) {
-      selectedNode = exactNode;
-      candidateNodes.set(exactNode.id, exactNode);
-    }
 
     const fileMatches = targetFile
       ? cas.nodes.filter(node => nodeMatchesTargetFile(node, targetFile, cas.system?.root_path)).slice(0, 25)
@@ -3611,10 +3640,14 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
         return { node, score: scoreNodeForTarget(node, target) + semanticBonus + fileBonus + pathPenalty };
       })
       .sort((left, right) => right.score - left.score);
+    const targetTokens = meaningfulTokens(target);
+    const preferredBehaviorNode = hasBehaviorExecutionIntent(targetTokens) && !targetTokens.some(token => ['entity', 'model', 'schema', 'record', 'table'].includes(token))
+      ? scoredCandidates.find(candidate => ['service', 'repository', 'handler', 'function', 'method', 'controller', 'gateway', 'resolver'].includes(candidate.node.type))?.node
+      : undefined;
     if (!selectedNode || (pathLikeTarget && targetFile && !nodeMatchesTargetFile(selectedNode, targetFile, cas.system?.root_path))) {
       selectedNode = pathLikeTarget && targetFile
         ? chooseBestFileTargetNode(scoredCandidates.map(candidate => candidate.node))
-        : scoredCandidates[0]?.node;
+        : preferredBehaviorNode || scoredCandidates[0]?.node;
     }
 
     if (!selectedNode) gaps.push(`target: no CAS node resolved for "${target}"`);
@@ -4360,6 +4393,7 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
 
   const preferredTypes = ['controller', 'service', 'guard', 'middleware', 'gateway', 'resolver', 'handler', 'route', 'api_route', 'react_page', 'custom_hook', 'class', 'function', 'method'];
   if (preferredTypes.includes(node.type)) score += 20;
+  if (hasBehaviorExecutionIntent(targetTokens) && ['service', 'repository', 'handler', 'function', 'method', 'controller', 'gateway', 'resolver'].includes(node.type)) score += 50;
   if (isSyntheticCallsiteNode(node)) score -= 45;
   if (node.type === 'file' || node.type === 'import') score -= 100;
   if (node.type === 'mock') score -= 90;
@@ -4387,6 +4421,10 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
 
 function hasAnalyzerMaintenanceIntent(tokens: string[]): boolean {
   return tokens.some(token => ['analyzer', 'analysis', 'cas', 'capability', 'capabilities', 'summary', 'summaries', 'idiom', 'idioms', 'mcp', 'usefulness', 'review'].includes(token));
+}
+
+function hasBehaviorExecutionIntent(tokens: string[]): boolean {
+  return tokens.some(token => ['performance', 'regression', 'latency', 'slow', 'timeout', 'failure', 'error', 'debug', 'optimize', 'optimise'].includes(token));
 }
 
 function isNonProductAgentTarget(node: CASNode): boolean {
@@ -4431,43 +4469,44 @@ function targetHasRouteIntent(target: string, targetTokens: string[]): boolean {
   ].includes(token));
 }
 
+const MEANINGFUL_TOKEN_STOPWORDS = new Set([
+  'the',
+  'a',
+  'an',
+  'and',
+  'or',
+  'to',
+  'for',
+  'of',
+  'in',
+  'on',
+  'by',
+  'with',
+  'when',
+  'from',
+  'into',
+  'must',
+  'should',
+  'only',
+  'same',
+  'different',
+  'uniqueness',
+  'unique',
+  'manage',
+  'managed',
+  'manager',
+  'managers',
+  'management',
+]);
+
 function meaningfulTokens(value: string): string[] {
-  const stopwords = new Set([
-    'the',
-    'a',
-    'an',
-    'and',
-    'or',
-    'to',
-    'for',
-    'of',
-    'in',
-    'on',
-    'by',
-    'with',
-    'when',
-    'from',
-    'into',
-    'must',
-    'should',
-    'only',
-    'same',
-    'different',
-    'uniqueness',
-    'unique',
-    'manage',
-    'managed',
-    'manager',
-    'managers',
-    'management',
-  ]);
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .replace(/[^a-zA-Z0-9]+/g, ' ')
     .toLowerCase()
     .split(/\s+/)
-    .filter(token => token.length >= 2 && !stopwords.has(token));
+    .filter(token => token.length >= 2 && !MEANINGFUL_TOKEN_STOPWORDS.has(token));
 }
 
 function normalizeIdentifier(value: string): string {
@@ -4611,13 +4650,14 @@ function buildFileReadPlan(
   };
 
   addNode(selectedNode, 'selected target');
+  const nodeIndex = getAgentNodeIndex(cas);
 
   for (const caller of (callers?.callers || []).filter(caller => isBehavioralReadPlanLink(caller.via)).slice(0, 5)) {
-    addNode(cas.nodes.find(node => node.id === caller.node_id), `caller via ${caller.via}`);
+    addNode(nodeIndex.get(caller.node_id), `caller via ${caller.via}`);
   }
 
   for (const callee of (callees?.callees || []).filter(callee => isBehavioralReadPlanLink(callee.via)).slice(0, 5)) {
-    addNode(cas.nodes.find(node => node.id === callee.node_id), `callee via ${callee.via}`);
+    addNode(nodeIndex.get(callee.node_id), `callee via ${callee.via}`);
   }
 
   const testSuites = uniqueTestSuites([
@@ -4714,14 +4754,15 @@ function augmentFileReadPlanWithTaskHints(
   if (tokens.size === 0) return plan;
 
   const rootPath = cas.system?.root_path || projectPath;
+  const includeDiskCandidates = targetLooksLikeDocumentationFirstWork(taskText);
   const existing = new Set(plan.map(item => item.file));
-  const explicitSymbolItems = inferExplicitTaskSymbolPlanItems(cas, rootPath, taskText, existing);
+  const explicitSymbolItems = inferExplicitTaskSymbolPlanItems(cas, rootPath, taskText, existing, includeDiskCandidates);
   for (const item of explicitSymbolItems) existing.add(item.file);
   const likelyFocusedTests = shouldSuggestFocusedRegressionTest(tokens)
     ? inferLikelyNewTestPlanItems(plan, existing)
     : [];
   for (const item of likelyFocusedTests) existing.add(item.file);
-  const candidates = collectTaskHintCandidateFiles(cas, rootPath)
+  const candidates = collectTaskHintCandidateFiles(cas, rootPath, includeDiskCandidates)
     .filter(file => !existing.has(file) && shouldIncludeTaskHintCandidate(file, tokens))
     .map(file => ({
       file,
@@ -4749,8 +4790,9 @@ function augmentFileReadPlanWithTaskHints(
       lexicalOverlap: taskHintFileLexicalOverlap(item.file, tokens),
       symptomOverlap: taskHintFileLexicalOverlap(item.file, symptomTokens),
     }))
-    .filter(candidate => candidate.score >= 26 && candidate.lexicalOverlap >= 2)
+    .filter(candidate => String(candidate.item.reason).includes('selected target') || (candidate.score >= 26 && candidate.lexicalOverlap >= 2))
     .sort((left, right) =>
+      Number(!String(left.item.reason).includes('selected target')) - Number(!String(right.item.reason).includes('selected target')) ||
       Number(isTestPath(left.item.file)) - Number(isTestPath(right.item.file)) ||
       right.symptomOverlap - left.symptomOverlap ||
       right.score - left.score ||
@@ -4806,13 +4848,14 @@ function inferExplicitTaskSymbolPlanItems(
   rootPath: string | undefined,
   taskText: string,
   existing: Set<string>,
+  includeDiskCandidates: boolean,
 ): FileReadPlanItem[] {
   const symbols = uniqueStrings((taskText.match(/\b[A-Z][A-Za-z0-9_]*(?:Service|Controller|Repository|Guard|Handler|Resolver|Component|Store|Module|Provider|Middleware|Entity|Model|Client|Policy)\b/g) || [])
     .map(symbol => symbol.trim()))
     .slice(0, 8);
   if (symbols.length === 0) return [];
 
-  const candidates = collectTaskHintCandidateFiles(cas, rootPath);
+  const candidates = collectTaskHintCandidateFiles(cas, rootPath, includeDiskCandidates);
   const taskTokens = tokenizeTaskHint(taskText);
   const items: FileReadPlanItem[] = [];
   for (const symbol of symbols) {
@@ -4883,12 +4926,9 @@ function focusedTestPathCandidates(sourceFile: string): string[] {
   ]);
 }
 
-function collectTaskHintCandidateFiles(cas: CASOutput, rootPath?: string): string[] {
-  const fromCas = uniqueStrings((cas.nodes || [])
-    .map(node => node.source?.file)
-    .filter((file): file is string => Boolean(file))
-    .map(file => normalizeSourceFile(file, rootPath)));
-  const fromDisk = rootPath ? scanTaskHintFiles(rootPath) : [];
+function collectTaskHintCandidateFiles(cas: CASOutput, rootPath?: string, includeDisk = false): string[] {
+  const fromCas = getAgentSourceFiles(cas).map(file => normalizeSourceFile(file, rootPath));
+  const fromDisk = includeDisk && rootPath ? scanTaskHintFiles(rootPath) : [];
   return uniqueStrings([...fromCas, ...fromDisk]);
 }
 
@@ -5074,7 +5114,10 @@ function handlerLineWindow(line?: number): FileReadPlanItem['line_window'] | und
 }
 
 function suiteLineWindow(cas: CASOutput, file: string): FileReadPlanItem['line_window'] | undefined {
-  const testNode = cas.nodes.find(node => node.source?.file && projectPathsMatch(node.source.file, file) && node.source.line);
+  const nodeIndex = getAgentNodeIndex(cas);
+  const testNode = [...getAgentNodeIdsForFiles(cas, [file])]
+    .map(nodeId => nodeIndex.get(nodeId))
+    .find(node => node?.source?.line);
   return testNode ? buildLineWindow(testNode) : undefined;
 }
 
@@ -5101,13 +5144,17 @@ function buildValidationPlan(
   risk: ReturnType<typeof assessChangeRisk> | null,
   behavioralInvariants: ReturnType<typeof getBehavioralInvariants>
 ): AgentValidationPlan {
-  const testFiles = uniqueStrings([
+  const knownTestFiles = uniqueStrings([
     ...(tests.suites || []).map((suite: AgentTestSuiteRef) => suite.file_path).filter((file): file is string => Boolean(file)),
     ...fileReadPlan
       .filter(item => isTestPath(item.file))
       .map(item => item.file),
-    ...inferLikelyFocusedTestFiles(projectPath, selectedNode, fileReadPlan),
-  ].map(file => normalizeValidationFile(projectPath, file))).slice(0, 8);
+  ]);
+  const inferredTestFiles = knownTestFiles.length === 0
+    ? inferLikelyFocusedTestFiles(cas, projectPath, selectedNode, fileReadPlan)
+    : [];
+  const testFiles = uniqueStrings([...knownTestFiles, ...inferredTestFiles]
+    .map(file => normalizeValidationFile(projectPath, file))).slice(0, 8);
   const commands: AgentValidationCommand[] = [];
   const scriptContexts = buildScriptContexts(projectPath, fileReadPlan, testFiles);
   for (const context of scriptContexts) {
@@ -5195,7 +5242,7 @@ function buildValidationPlan(
   };
 }
 
-function inferLikelyFocusedTestFiles(projectPath: string, selectedNode: CASNode | undefined, fileReadPlan: FileReadPlanItem[]): string[] {
+function inferLikelyFocusedTestFiles(cas: CASOutput, projectPath: string, selectedNode: CASNode | undefined, fileReadPlan: FileReadPlanItem[]): string[] {
   const sourceFiles = uniqueStrings([
     selectedNode?.source?.file,
     ...fileReadPlan.map(item => item.file),
@@ -5203,15 +5250,14 @@ function inferLikelyFocusedTestFiles(projectPath: string, selectedNode: CASNode 
   if (sourceFiles.length === 0) return [];
 
   const projectRoot = nodePath.resolve(projectPath);
-  const roots = uniqueStrings(sourceFiles
-    .map(file => findNearestPackageRoot(projectPath, file) || projectRoot)
-    .filter(Boolean));
   const sourceProfiles = sourceFiles.map(file => sourceTestProfile(projectRoot, file, selectedNode?.name));
-  const candidates = roots.flatMap(root => collectTestFileCandidates(root, projectRoot));
+  const candidates = getAgentSourceFiles(cas)
+    .map(file => normalizeSourceFile(file, cas.system?.root_path))
+    .filter(isTestPath);
   const ranked = candidates
     .map(file => ({
       file,
-      score: Math.max(...sourceProfiles.map(profile => scoreTestCandidate(projectRoot, file, profile))),
+      score: Math.max(...sourceProfiles.map(profile => scoreTestCandidate(file, profile))),
     }))
     .filter(item => item.score >= 5)
     .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
@@ -5219,12 +5265,10 @@ function inferLikelyFocusedTestFiles(projectPath: string, selectedNode: CASNode 
 }
 
 interface SourceTestProfile {
-  absolute: string;
   relative: string;
   stem: string;
   directory: string;
   symbols: string[];
-  importNeedles: string[];
 }
 
 function sourceTestProfile(projectRoot: string, file: string, symbol?: string): SourceTestProfile {
@@ -5232,23 +5276,15 @@ function sourceTestProfile(projectRoot: string, file: string, symbol?: string): 
   const relative = nodePath.relative(projectRoot, absolute).replace(/\\/g, '/');
   const stem = nodePath.basename(relative).replace(/\.(spec|test)\.[^.]+$/i, '').replace(/\.[^.]+$/i, '');
   const directory = nodePath.dirname(relative).replace(/\\/g, '/');
-  const withoutExtension = relative.replace(/\.[^.]+$/i, '');
   return {
-    absolute,
     relative,
     stem: stem.toLowerCase(),
     directory,
     symbols: uniqueStrings([symbol, pascalCaseFromStem(stem)].filter(Boolean) as string[]),
-    importNeedles: uniqueStrings([
-      withoutExtension,
-      `/${withoutExtension}`,
-      stem,
-    ]),
   };
 }
 
-function scoreTestCandidate(projectRoot: string, testFile: string, source: SourceTestProfile): number {
-  const absoluteTest = nodePath.resolve(projectRoot, testFile);
+function scoreTestCandidate(testFile: string, source: SourceTestProfile): number {
   const normalizedTest = testFile.replace(/\\/g, '/');
   const testDir = nodePath.dirname(normalizedTest).replace(/\\/g, '/');
   const testBase = nodePath.basename(normalizedTest).toLowerCase();
@@ -5256,75 +5292,14 @@ function scoreTestCandidate(projectRoot: string, testFile: string, source: Sourc
   if (testDir === source.directory && testBase.includes(source.stem)) score += 8;
   if (testBase.includes(source.stem)) score += 4;
   if (normalizedTest.toLowerCase().includes(`/${source.stem}.`)) score += 2;
-
-  const content = readSmallTextFile(absoluteTest);
-  if (content) {
-    const lower = content.toLowerCase();
-    if (lower.includes(source.stem)) score += 3;
-    for (const symbol of source.symbols) {
-      if (symbol && content.includes(symbol)) score += 6;
-    }
-    const relativeImport = nodePath.relative(nodePath.dirname(absoluteTest), source.absolute)
-      .replace(/\\/g, '/')
-      .replace(/\.[^.]+$/i, '');
-    const importNeedles = uniqueStrings([
-      relativeImport.startsWith('.') ? relativeImport : `./${relativeImport}`,
-      ...source.importNeedles,
-    ]);
-    if (importNeedles.some(needle => needle && lower.includes(needle.toLowerCase()))) score += 7;
-  }
+  const normalizedSymbols = source.symbols.map(normalizeSymbolFileKey).filter(Boolean);
+  const testKey = normalizeSymbolFileKey(testBase);
+  if (normalizedSymbols.some(symbol => testKey.includes(symbol))) score += 6;
+  const sourceSegments = source.directory.split('/').filter(Boolean);
+  const testSegments = testDir.split('/').filter(Boolean);
+  const sharedSegments = sourceSegments.filter(segment => testSegments.includes(segment)).length;
+  score += Math.min(3, sharedSegments);
   return score;
-}
-
-function collectTestFileCandidates(root: string, projectRoot: string): string[] {
-  const candidates: string[] = [];
-  const stack = [root];
-  const maxCandidates = 800;
-  while (stack.length > 0 && candidates.length < maxCandidates) {
-    const current = stack.pop()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const absolute = nodePath.join(current, entry.name);
-      if (entry.isDirectory()) {
-        if (isValidationSearchIgnoredDirectory(entry.name)) continue;
-        stack.push(absolute);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const relative = nodePath.relative(projectRoot, absolute).replace(/\\/g, '/');
-      if (isTestPath(relative)) candidates.push(relative);
-    }
-  }
-  return candidates;
-}
-
-function isValidationSearchIgnoredDirectory(name: string): boolean {
-  return [
-    '.git',
-    '.klauro',
-    '.next',
-    '.turbo',
-    'build',
-    'coverage',
-    'dist',
-    'node_modules',
-    'target',
-  ].includes(name);
-}
-
-function readSmallTextFile(file: string): string {
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > 200_000) return '';
-    return fs.readFileSync(file, 'utf8');
-  } catch {
-    return '';
-  }
 }
 
 function pascalCaseFromStem(stem: string): string {
@@ -5581,11 +5556,11 @@ function agentContextTaskType(taskType?: AgentTaskType): 'add' | 'modify' | 'del
 export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { testEvidence?: TestDiscoveryEvidence } = {}): AgentReadinessReport {
   const summary = buildSummary(cas);
   const profile = classifyAnalysisProfile(cas, path);
-  const answerPack = runAnswerPack(cas, path);
+  const answerPackGaps = masteryReadinessGaps(cas, profile, summary);
   const methodCalls = cas.method_calls?.length || cas.nodes.reduce((total, node) => total + (node.call_graph?.calls?.length || 0), 0);
   const tests = findTests(cas, { limit: 1 });
   const security = getSecurityOverview(cas);
-  const flowCoverage = getFlowCoverage(cas) as Record<string, unknown>;
+  const flowCoverage = storedFlowCoverageSummary(cas);
   const graphIntegrity = cas.validation?.graph_integrity;
   const runtimeLinks = cas.runtime_static_links?.length || 0;
   const facts = cas.analysis_facts?.length || 0;
@@ -5609,7 +5584,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     coverageGate('entry-points', cas.entry_points?.length || 0, minimumEntryPointCount(cas, profile)),
     coverageGate('call-chains', cas.call_chains?.length || 0, minimumCallChainCount(cas, profile)),
     relationshipDetailGate(cas, methodCalls, profile),
-    gate('answer-pack', answerPack.gaps.length === 0 ? 'pass' : 'warn', answerPack.gaps.length === 0 ? 100 : 75, answerPack.gaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPack.gaps.join('; ')),
+    gate('answer-pack', answerPackGaps.length === 0 ? 'pass' : 'warn', answerPackGaps.length === 0 ? 100 : 75, answerPackGaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPackGaps.join('; ')),
     gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts`),
     gate('codebase-idioms', idioms > 0 ? 'pass' : 'warn', idioms > 0 ? 100 : 72, `${idioms} repo-local idioms`),
     gate(
@@ -5739,6 +5714,36 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     ],
     test_discovery: opts.testEvidence,
   };
+}
+
+function storedFlowCoverageSummary(cas: CASOutput): Record<string, unknown> {
+  const byStatus: Record<string, number> = {};
+  for (const coverage of cas.flow_coverage || []) {
+    byStatus[coverage.coverage_status] = (byStatus[coverage.coverage_status] || 0) + 1;
+  }
+  return {
+    total_call_chains: cas.call_chains?.length || 0,
+    measured_call_chains: cas.flow_coverage?.length || 0,
+    user_journeys: cas.user_journeys?.length || 0,
+    critical_flows: cas.flow_summary?.total_critical_flows || 0,
+    by_coverage_status: byStatus,
+  };
+}
+
+function masteryReadinessGaps(cas: CASOutput, profile: AnalysisProfile, summary: ReturnType<typeof buildSummary>): string[] {
+  const gaps: string[] = [];
+  const overviewSignals = [summary.nodes > 0, summary.edges > 0, summary.languages.length > 0].filter(Boolean).length;
+  if (overviewSignals < 3) gaps.push(`overview: low confidence (${Math.max(0.6, overviewSignals / 3)})`);
+  if ((cas.entry_points?.length || 0) === 0 && profile.expectations.entry_points === 'required') {
+    gaps.push('entry-points: low confidence (0.6)');
+  }
+  if ((cas.entry_points?.length || 0) > 0 && (cas.call_chains?.length || 0) === 0 && profile.expectations.call_chains === 'required') {
+    gaps.push('representative-flow: low confidence (0.6)');
+  }
+  if ((cas.runtime_static_links?.length || 0) === 0 && profile.expectations.runtime_correlation === 'required') {
+    gaps.push('runtime-readiness: low confidence (0.6)');
+  }
+  return gaps;
 }
 
 function testReadinessGate(totalSuites: number, evidence?: TestDiscoveryEvidence): AgentReadinessGate {
@@ -5985,9 +5990,10 @@ function representativeEntryPoint(cas: CASOutput): CASEntryPoint | undefined {
 function isNonProductEntryPoint(cas: CASOutput, entry: CASEntryPoint): boolean {
   if (entry.type === 'test') return true;
   if (isNonProductSourceText([entry.id, entry.name, entry.handler?.file].filter(Boolean).join('/'))) return true;
-  const sourceNode = cas.nodes.find(node => node.id === entry.source_node);
+  const nodeIndex = getAgentNodeIndex(cas);
+  const sourceNode = nodeIndex.get(entry.source_node);
   const handlerNode = entry.handler?.node_id
-    ? cas.nodes.find(node => node.id === entry.handler?.node_id)
+    ? nodeIndex.get(entry.handler.node_id)
     : undefined;
   return Boolean(sourceNode && isNonProductAgentTarget(sourceNode)) ||
     Boolean(handlerNode && isNonProductAgentTarget(handlerNode));
