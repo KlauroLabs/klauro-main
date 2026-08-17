@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { capabilityInferenceBenchmarkGates, competitorBaselineBenchmarkGates, machineProofGates, newUserE2EGates } from './agent-vision-acceptance';
+import { capabilityInferenceBenchmarkGates, competitorBaselineBenchmarkGates, freshnessGates, machineProofGates, newUserE2EGates } from './agent-vision-acceptance';
+
+test('acceptance freshness follows live execution time instead of rescore time', () => {
+  const now = new Date();
+  const staleExecution = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const gates = freshnessGates(168, {
+    'live-proof': {
+      generated_at: now.toISOString(),
+      rescored_at: now.toISOString(),
+      execution_generated_at: staleExecution,
+    },
+  });
+
+  assert.equal(gates[0].status, 'fail');
+  assert.equal(freshnessGates(168, {
+    'live-proof': {
+      generated_at: staleExecution,
+      execution_generated_at: now.toISOString(),
+    },
+  })[0].status, 'pass');
+});
 
 test('capability vision acceptance requires proven domain provenance instead of a fixture label', () => {
   const report = {

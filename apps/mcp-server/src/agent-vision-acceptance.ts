@@ -187,7 +187,7 @@ async function readReport(relativePath: string): Promise<JsonObject> {
   return fs.readJson(filePath);
 }
 
-function freshnessGates(maxAgeHours: number | null, reports: Record<string, JsonObject>): Gate[] {
+export function freshnessGates(maxAgeHours: number | null, reports: Record<string, JsonObject>): Gate[] {
   if (!maxAgeHours) return [];
   const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
   return Object.entries(reports).map(([id, report]) => {
@@ -834,7 +834,7 @@ function gate(id: string, condition: boolean, detail: string): Gate {
 }
 
 function timestamp(report: JsonObject): Date | null {
-  const raw = report.generated_at || report.generatedAt || report.saved_at;
+  const raw = report.execution_generated_at || report.generated_at || report.generatedAt || report.saved_at;
   const parsed = Date.parse(String(raw || ''));
   return Number.isFinite(parsed) ? new Date(parsed) : null;
 }

@@ -11,6 +11,8 @@ import { defaultBenchmarkReferencePaths } from './benchmark-reference-paths';
 
 interface ScratchBuildReport {
   generated_at: string;
+  execution_generated_at?: string;
+  rescored_at?: string;
   status: 'pass' | 'warn' | 'fail';
   score: number;
   task: {
@@ -1509,9 +1511,12 @@ async function rescoreExistingScratchBuildReport(args: Args): Promise<ScratchBui
     ? 'warn'
     : baseStatus;
 
+  const rescoredAt = new Date().toISOString();
   const report: ScratchBuildReport = {
     ...previous,
-    generated_at: new Date().toISOString(),
+    generated_at: rescoredAt,
+    execution_generated_at: previous.execution_generated_at || previous.generated_at,
+    rescored_at: rescoredAt,
     status,
     score: Math.min(100, Math.max(0, score)),
     without_arm_uncoached: previous.without_arm_uncoached ?? false,
