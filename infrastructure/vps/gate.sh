@@ -78,6 +78,7 @@ source_fingerprint() {
         ! -path '*/node_modules/*' ! -path '*/dist/*' ! -path '*/build/*' \
         ! -path '*/target/*' ! -path '*/coverage/*' ! -path '*/.cache/*' \
         ! -path '*/.tmp/*' ! -path '*/.pack/*' ! -path '*/.customer-package/*' \
+        ! -path '*/.klauro-*' \
         ! -name '.klauro-build-stamp.json' -print0 2>/dev/null
       for file in package.json package-lock.json tsconfig.json; do
         if [ -f "$file" ]; then printf '%s\0' "$file"; fi
