@@ -99,6 +99,15 @@ if [ "$ALLOW_SOURCE_MISMATCH" != "1" ] && [ -d /opt/klauro/source ]; then
   fi
 fi
 
+DEPLOYED_BUILD_STAMP="/opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json"
+if [ -z "${KLAURO_GIT_SHA:-}" ] && [ -f "$DEPLOYED_BUILD_STAMP" ]; then
+  KLAURO_GIT_SHA="$(sed -n 's/.*"git_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DEPLOYED_BUILD_STAMP")"
+fi
+if [ -z "${KLAURO_BUILD_TIME:-}" ] && [ -f "$DEPLOYED_BUILD_STAMP" ]; then
+  KLAURO_BUILD_TIME="$(sed -n 's/.*"build_time"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DEPLOYED_BUILD_STAMP")"
+fi
+export KLAURO_GIT_SHA KLAURO_BUILD_TIME
+
 if [ "$REBUILD" = "1" ] || ! docker image inspect "$GATE_IMAGE" >/dev/null 2>&1; then
   echo "==> building $GATE_IMAGE from $BASE_IMAGE" >&2
   docker build \
