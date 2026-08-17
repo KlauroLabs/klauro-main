@@ -178,6 +178,7 @@ import { computeModuleHealth } from './module-health';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { buildRequiredServices } from './configuration-required-services';
+import { externalServiceIdentityForExitPoint } from './external-service-identity';
 import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
 import { buildProductMap } from './product-map';
 import { buildReachabilityIndexFromCas } from './reachability-index';
@@ -7898,9 +7899,9 @@ export class AnalyzerOrchestrator {
         }
         svc.exit_points?.push(ep.id);
       } else if (ep.type === 'api' || ep.type === 'sdk') {
-        const sdkName = ep.target?.sdk || ep.name || 'External API';
+        const sdkName = externalServiceIdentityForExitPoint(ep);
 
-        if (isLanguageBuiltinName(sdkName) || isLanguageBuiltinExitPoint(ep) || !this.isMeaningfulExternalServiceName(sdkName)) {
+        if (!sdkName || isLanguageBuiltinName(sdkName) || isLanguageBuiltinExitPoint(ep) || !this.isMeaningfulExternalServiceName(sdkName)) {
           return;
         }
 

@@ -2740,6 +2740,30 @@ describe('architecture and capability inference', () => {
     expect(services.map((service: any) => service.name)).toEqual(['Stripe']);
   });
 
+  it('keeps source-backed configured service names in comprehension evidence', async () => {
+    expect(orch.plausiblePromptExternalServices('Order Console', [
+      'Fleet Portal',
+      'Payment Vision',
+      'CartService.upsert',
+    ])).toEqual(['Fleet Portal', 'Payment Vision']);
+  });
+
+  it('rolls source-backed configured API identities into external services', async () => {
+    const services = orch.buildExternalServices([], [
+      exitPoint({
+        id: 'configured-api',
+        type: 'api',
+        name: 'POST https://{param}/api/v1/orders',
+        target: {
+          service_id: 'Fleet Portal',
+          endpoint: 'https://{param}/api/v1/orders',
+        },
+      }),
+    ], []);
+
+    expect(services.map((service: any) => service.name)).toEqual(['Fleet Portal']);
+  });
+
   it('uses React feature page folders before hook/library vocabulary for page capability keys', async () => {
     // The full folder-name phrase is preserved rather than truncated to its
     // first word — "portfolio-analysis" is a more specific, correct key than

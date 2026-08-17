@@ -134,8 +134,15 @@ export function isPlausibleExternalServiceName(name: string, selfNames: string[]
   if (/^(?:@\/|~\/|\.{1,2}\/|\/)/.test(trimmed)) return false;
   if (/^@[^/]+\/.+\/.+/.test(trimmed)) return false;
   if (/^@?[\w.-]+\/[\w./-]+$/.test(trimmed) && !/:\/\//.test(trimmed)) return false;
-  if (/\.|:\/\//.test(trimmed)) return true;
+  if (isHostnameLikeServiceName(trimmed)) return true;
   if (/^[A-Z][A-Za-z0-9]*(?:Service|Client|Sdk|SDK|Api|API)$/.test(trimmed) && !CODE_TYPE_TOKENS.has(norm)) return true;
+  const titleWords = trimmed.split(/\s+/);
+  if (
+    titleWords.length >= 2
+    && titleWords.length <= 4
+    && titleWords.every(word => /^[A-Z][A-Za-z0-9-]*$/.test(word))
+    && titleWords.every(word => !CODE_TYPE_TOKENS.has(normalizeServiceName(word)))
+  ) return true;
   if (PASCAL_CASE_MULTIWORD_PATTERN.test(trimmed)) return false;
   if (CODE_TYPE_TOKENS.has(norm)) return false;
   return false;
