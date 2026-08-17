@@ -11,6 +11,25 @@ export interface ScheduledCapabilityCatalog<TTarget> {
   descriptionPromise?: Promise<void>;
 }
 
+export type CapabilityDescriptionRepairOutcome =
+  | { status: 'fulfilled'; value: SystemCapability[] }
+  | { status: 'rejected'; reason: unknown };
+
+export function scheduleRejectedCapabilityDescriptions(args: {
+  capabilities: SystemCapability[];
+  rejectedIds: ReadonlySet<string>;
+  authorDescriptions: (capabilities: SystemCapability[]) => Promise<void>;
+}): Promise<CapabilityDescriptionRepairOutcome> | undefined {
+  const repairCapabilities = args.capabilities
+    .filter(capability => args.rejectedIds.has(capability.id))
+    .map(capability => structuredClone(capability));
+  if (repairCapabilities.length === 0) return undefined;
+  return args.authorDescriptions(repairCapabilities).then(
+    () => ({ status: 'fulfilled' as const, value: repairCapabilities }),
+    reason => ({ status: 'rejected' as const, reason }),
+  );
+}
+
 export function scheduleCapabilityCatalog<TTarget>(args: {
   outcome: Promise<CapabilityCatalogOutcome>;
   capabilities: SystemCapability[];

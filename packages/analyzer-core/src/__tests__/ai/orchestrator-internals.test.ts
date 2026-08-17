@@ -10756,10 +10756,10 @@ describe('enterprise AI semantic guards', () => {
 
   it('uses a positive read-only repair grammar that does not prime mutation vocabulary', () => {
     const source = fs.readFileSync(path.join(__dirname, '../../analyzer/core/orchestrator.ts'), 'utf8');
-    const start = source.indexOf("const semanticRepairTask = artifactType");
-    const end = source.indexOf("const systemNarrativeTask", start);
+    const start = source.indexOf("const readOnlyNarrativeRule = observedReadOnly");
+    const end = source.indexOf("const noInternalVocabularyRule", start);
     const readOnlyBranch = source.slice(start, end);
-    expect(readOnlyBranch).toContain('retrieves, presents, returns, views, reviews, compares, analyzes');
+    expect(readOnlyBranch).toContain('retrieves, presents, returns, views, reviews, compares, or analyzes');
     expect(readOnlyBranch).not.toMatch(/remove every create|never claim create/i);
   });
 

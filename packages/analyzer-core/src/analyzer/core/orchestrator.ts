@@ -153,7 +153,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { scheduleCapabilityCatalog } from './capability-catalog-scheduling';
+import { scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10747,16 +10747,22 @@ export class AnalyzerOrchestrator {
       : '';
 
     const noInternalVocabularyRule = ' Never use the words intent, journey, entity, deployable, component, components, artifact, or record type as a label in the prose, and never put an internal name (a journey name, an entity name, a capability name) inside quotation marks — describe what the system does and what a user gets in your own plain words instead of naming or quoting the internal label for it. Never introduce a list of entity/record names with phrasing like "integrates various components like" or "operates as a deployable unit that integrates" — if multiple record types are relevant, name at most one as an ordinary noun inside a real sentence about what happens to it, never as an enumerated list. Never write the generic phrases "external services" or "event emitter operations"; name one exact evidenced integration in a concrete relationship or omit integrations entirely.';
-    const semanticRepairTask = artifactType === 'infrastructure'
-      ? 'Regenerate the rejected infrastructure description from scratch. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write exactly 4 factual sentences. Use infrastructureDeclarations to name the exact declared resource types, runtime units, providers, replicas, and ports. Explain their declared topology without inferring application behavior from names. Do not hedge, market, discuss source artifacts, or describe scripts and commands. The domain must be a lowercase kebab-case infrastructure/deployment/platform label.'
-      : observedReadOnly
-        ? 'Regenerate the rejected parts from the supplied evidence. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write only affirmative product statements. Describe the system as a retrieval and review product. Every product action must use one of these verbs: retrieves, presents, returns, views, reviews, compares, analyzes. Write one paragraph of 4 to 6 full sentences (at least 240 characters) answering what the system is, what information users receive, how one product action produces one concrete result, and the evidenced operating shape. Use exact nouns from distinctiveEntities, terminalOutputs, and recordsRead as ordinary words in sentences, never as internal labels. Choose a domain made from those product nouns plus information, reference, query, or review when appropriate. Do not discuss limitations, absent behavior, implementation surfaces, source artifacts, prompt fields, or framework internals.' + noInternalVocabularyRule
-      : 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does, how it works, and how it is built. The supplied capabilities are the accepted product outcomes; the paragraph must explain at least one core capability in ordinary product language. Replace generic mechanism phrases with one explicit relationship from productBehaviorPaths: describe, in your own plain words, one concrete thing a user does and the record or message that results — never by naming or quoting the productBehaviorPaths.intent label itself. Explain a transformation or decision only when businessTransformations contains one. The prompt intentionally withholds route and implementation names; never invent or name a request path, handler, function, method, source file, or framework internal. Use the exact domain nouns supplied by distinctiveEntities, terminalOutputs, recordsRead, recordsWritten, or messagesEmitted as ordinary words in sentences. Never say data lookup behavior, resource checks, lifecycle operations, manages data, or coordinates workflows. Do not list tools, packages, libraries, frameworks, programming languages, or data formats. If the rejected paragraph contained a tool inventory, omit the entire inventory rather than paraphrasing it. Architecture shapes require corroborating deployable/topology facts. Do not translate entry-point categories into prose. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; libraries are supporting evidence only. Mention integrations only by exact names listed in externalServices.' + noInternalVocabularyRule;
     const systemNarrativeTask = artifactType === 'infrastructure'
       ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence. Name the exact resource types and runtime units in infrastructureDeclarations; explain what is provisioned, how the declarations compose the runtime, and the evidenced replica/port/provider shape. State only declared facts: never hedge with likely/possibly, infer business behavior from a resource label, or call representations of one runtime separate applications. Do not mention scripts, source files, functions, variables, prompt keys, or graph evidence. Avoid marketing language. domain must be a lowercase kebab-case label of 2 to 4 nouns and must include infrastructure, deployment, provisioning, or platform.'
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
         : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and either another evidenced product behavior or a distinctive evidenced operating/deployment property. Use concrete product nouns. Do not use generic servers, databases, backends, frontends, or storage mechanics as filler. Do not mention frameworks, libraries, tools, packages, programming languages, data formats, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns selected only from domainVocabulary when that list is present.${readOnlyNarrativeRule}`;
+    const authorCapabilityDescriptions = (capabilities: SystemCapability[]) => this.applyAIElementDescriptions(capabilities, [], {
+      systemName,
+      enhancedSystemPurpose,
+      projectTextSignal,
+      frameworks,
+      includeEntities: false,
+      nodes,
+      edges,
+      allCapabilitiesForEvidence: systemCapabilities,
+      userJourneys,
+    });
     const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
     const catalogApplication = await scheduleCapabilityCatalog({
       outcome: capabilityCatalogOutcome,
@@ -10765,17 +10771,7 @@ export class AnalyzerOrchestrator {
       elementLimit,
       reauthorDescriptions: false,
       toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById),
-      authorDescriptions: capabilities => this.applyAIElementDescriptions(capabilities, [], {
-        systemName,
-        enhancedSystemPurpose,
-        projectTextSignal,
-        frameworks,
-        includeEntities: false,
-        nodes,
-        edges,
-        allCapabilitiesForEvidence: capabilities,
-        userJourneys,
-      }),
+      authorDescriptions: authorCapabilityDescriptions,
     });
     const capabilityTargets = catalogApplication.targets;
     systemNarrativeFacts.capabilities = catalogApplication.authoredFacts;
@@ -10923,14 +10919,17 @@ export class AnalyzerOrchestrator {
       const elementReasons = [...new Set(rejectedElements.values())].sort().join(',') || 'none';
       writeAnalyzerStatus(`[Klauro] structured comprehension rejected: system=${validation.ok ? 'none' : validation.reason || 'unknown'} elements=${rejectedElements.size} element_reasons=${elementReasons}`);
     }
+    const targetedElementRepairPromise = scheduleRejectedCapabilityDescriptions({
+      capabilities: systemCapabilities,
+      rejectedIds: new Set(rejectedElements.keys()),
+      authorDescriptions: authorCapabilityDescriptions,
+    });
     for (let repairAttempt = 0; repairAttempt < 1; repairAttempt++) {
-      if (validation.ok && rejectedElements.size === 0) break;
+      if (validation.ok) break;
       let repairTimeoutHandle: NodeJS.Timeout | undefined;
       try {
         const remainingMs = budgetMs;
-        const repairRoute = validation.ok && rejectedElements.size > 0
-          ? resolveCapabilityCatalogRoute(process.env, this.narrativeModel())
-          : resolveCapabilityDescriptionRoute(process.env, this.narrativeModel());
+        const repairRoute = resolveCapabilityDescriptionRoute(process.env, this.narrativeModel());
         repairTimeoutHandle = setTimeout(() => {
           console.warn(`[Klauro] AI interpretation repair is still running after ${remainingMs}ms; continuing until the provider completes`);
         }, remainingMs);
@@ -10938,15 +10937,14 @@ export class AnalyzerOrchestrator {
         const repairRaw = await awaitAiOperation(aiService.generateComponentDescription({
             additionalContext: {
               ...toAIContextRoute(repairRoute),
-              task: semanticRepairTask,
+              responseFormat: 'json',
+              maxTokens: 650,
+              task: `${systemNarrativeTask} Regenerate the rejected system description from scratch. Omit every claim class named by system_description_rejection_reason instead of paraphrasing it.`,
               style: 'Use descriptionContract as the acceptance test. No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, user-experience claims, or integrations beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               descriptionContract: descriptionPromptContract,
-              rejected_system_description: validation.ok ? undefined : cleaned,
-              system_description_rejection_reason: validation.ok ? undefined : validation.reason,
-              rejectionInstruction: validation.ok ? undefined : 'The rejection reason names a forbidden word, claim class, or structure. Omit it entirely instead of paraphrasing it, and do not introduce any other marketing or generalized value claim.',
-              rejected_items: capabilityTargets
-                .filter(target => rejectedElements.has(target.id))
-                .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
+              rejected_system_description: cleaned,
+              system_description_rejection_reason: validation.reason,
+              rejectionInstruction: 'The rejection reason names a forbidden word, claim class, or structure. Omit it entirely instead of paraphrasing it, and do not introduce any other marketing or generalized value claim.',
               primaryDomain: narrativePrimaryDomain,
               coreConcepts: narrativeCoreConcepts,
               ...(artifactType === 'infrastructure' ? systemNarrativeFacts : narrativeRepairFacts),
@@ -10970,19 +10968,29 @@ export class AnalyzerOrchestrator {
             }
           }
         }
-        for (const target of capabilityTargets) {
-          if (acceptedElements.has(target.id)) continue;
-          const candidate = this.sanitizeElementDescriptionCandidate(repaired.elements.get(target.id) || '', target);
-          if (candidate && this.validateElementDescription(candidate, target).ok) {
-            acceptedElements.set(target.id, candidate);
-            rejectedElements.delete(target.id);
-          }
-        }
       } catch (repairError) {
         const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
         console.warn(`[Klauro] AI interpretation repair skipped (${repairMessage}); using first-pass results`);
       } finally {
         if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
+      }
+    }
+    if (targetedElementRepairPromise) {
+      const repairOutcome = await targetedElementRepairPromise;
+      if (repairOutcome.status === 'fulfilled') {
+        const repairCapabilities = repairOutcome.value;
+        for (const target of capabilityTargets) {
+          if (acceptedElements.has(target.id)) continue;
+          const repairedCapability = repairCapabilities.find(capability => capability.id === target.id);
+          const candidate = this.sanitizeElementDescriptionCandidate(repairedCapability?.description || '', target);
+          if (candidate && this.validateElementDescription(candidate, target).ok) {
+            acceptedElements.set(target.id, candidate);
+            rejectedElements.delete(target.id);
+          }
+        }
+      } else {
+        const error = repairOutcome.reason;
+        console.warn(`[Klauro] targeted capability description repair skipped (${error instanceof Error ? error.message : String(error)})`);
       }
     }
     for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 1; focusedAttempt++) {
