@@ -3,6 +3,7 @@ import { CASNode, CASEdge, CASContribution, CASExitPoint } from '../../../types/
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { fileNodeIdFromExistingAnalysis } from '../../core/file-node-resolution';
 
 const ZUSTAND_IMPORT = /import\s+.*\bfrom\s+['"]zustand['"]/;
 const ZUSTAND_CREATE = /(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*create\s*[<(]/g;
@@ -58,7 +59,7 @@ export class ZustandAnalyzer extends BaseAnalyzer {
 
       if (!this.hasZustandUsage(content)) continue;
 
-      const fileNodeId = this.fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
+      const fileNodeId = fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
       this.extractStores(content, relativePath, sanitizedPath, fileNodeId, nodes, edges, exitPoints, seenNodeIds);

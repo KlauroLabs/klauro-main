@@ -94,11 +94,6 @@ interface SoapConsumer {
   evidence: string;
 }
 
-
-
-
-
-
 const PHP_SOAP_CLASS_DEFINITION = /\bclass\s+(\w+)\s+extends\s+\\?SoapClient\b/;
 
 function escapeRegExp(value: string): string {
@@ -160,9 +155,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
       this.emitXsdFile(info, nodes, edges);
     } else if (lower.endsWith('.wsdl') || this.looksLikeWsdlDocument(content)) {
 
-
-
-
       const info = this.parseWsdlFile(context.relativePath, context.filePath, content);
       this.emitWsdlFile(info, nodes, edges, entryPoints);
     } else {
@@ -200,9 +192,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
       const wsdlFiles: WsdlFileInfo[] = [];
       const xsdFiles: XsdFileInfo[] = [];
 
-
-
-
       const wsdlByFullPath = new Map<string, WsdlFileInfo>();
       for (const relativePath of contractFiles) {
         const fullPath = path.join(context.projectPath, relativePath);
@@ -236,13 +225,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
           this.emitConsumerExitPoint(consumer, nodes, exitPoints);
         }
       }
-
-
-
-
-
-
-
 
       const phpConsumers = await this.analyzePhpSoapConsumers(context.projectPath, context, wsdlByFullPath);
       for (const consumer of phpConsumers) {
@@ -284,11 +266,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
     });
     if (stopEarly && files.length > 0) return files.slice(0, 1);
 
-
-
-
-
-
     const xmlCandidates = this.capAndPrioritizeSourceFiles(
       await glob(['**/*.xml'], {
         cwd: projectPath,
@@ -309,7 +286,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
     if (stopEarly) return [...files, ...wsdlShapedXml].slice(0, 1);
     return [...files, ...wsdlShapedXml];
   }
-
 
   private looksLikeWsdlDocument(content: string): boolean {
     return /<(?:[\w-]+:)?definitions[\s>]/i.test(content) && /schemas\.xmlsoap\.org\/wsdl/i.test(content);
@@ -768,29 +744,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
     return [];
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   private async hasPhpSoapClientDefinition(projectPath: string, context: AnalysisContext): Promise<boolean> {
     const phpFiles = await glob(['**/*.php'], {
       cwd: projectPath,
@@ -819,13 +772,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
     );
     if (phpFiles.length === 0) return [];
 
-
-
-
-
-
-
-
     const registry = new Map<string, { file: string; serviceName: string; endpoint?: string }>();
     const definitionFiles = new Set<string>();
     for (const relativePath of phpFiles) {
@@ -844,7 +790,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
         let info = wsdlByFullPath.get(wsdlPath);
         if (!info) {
 
-
           const wsdlContent = await this.readText(wsdlPath);
           if (wsdlContent && this.looksLikeWsdlDocument(wsdlContent)) {
             try {
@@ -862,12 +807,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
       registry.set(className, { file: relativePath, serviceName, endpoint });
     }
     if (registry.size === 0) return [];
-
-
-
-
-
-
 
     const classNames = [...registry.keys()];
     const consumers: SoapConsumer[] = [];
@@ -1074,8 +1013,6 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
         resource: providerName,
       },
       {
-
-
 
         action: consumer.operation || 'connect',
         method: 'POST',

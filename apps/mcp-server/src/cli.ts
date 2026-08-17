@@ -18,6 +18,7 @@ import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-
 import { formatRemoteResult } from './remote-result-format';
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
+import { restrictProcessFileCreation } from './hosted-storage-security';
 import { AccountStore } from './account-store';
 import { buildUploadManifest } from './remote-source';
 import { summarizeUploadManifest } from './upload-manifest-summary';
@@ -167,10 +168,6 @@ async function main(): Promise<void> {
     const report = await runEnvironmentDoctor({ projectPath: process.cwd() });
     const connection = await buildConnectionReport(process.cwd());
 
-
-
-
-
     const client = await runClientDoctor({ projectPath: process.cwd(), serverUrl: args.serverUrl });
     if (args.json) {
       process.stdout.write(`${JSON.stringify({ ...report, connection, client }, null, 2)}\n`);
@@ -239,12 +236,6 @@ async function main(): Promise<void> {
 
   if (args.command === 'auth-status') {
 
-
-
-
-
-
-
     const status = await resolveAuthStatus({ serverUrl: args.serverUrl });
     process.stdout.write(args.json
       ? `${JSON.stringify({ ...status, signed_in: status.state === 'signed-in' }, null, 2)}\n`
@@ -263,8 +254,6 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'whoami') {
-
-
 
     const status = await resolveAuthStatus({ serverUrl: args.serverUrl });
     if (args.json) {
@@ -323,14 +312,6 @@ async function main(): Promise<void> {
   ].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
   }
-
-
-
-
-
-
-
-
 
   const pathWasExplicit = Boolean(args.path);
   if (!args.path && ['init', 'index', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan', 'agent-tracks', 'account-workspace-attach'].includes(args.command)) {
@@ -392,8 +373,6 @@ async function main(): Promise<void> {
 
   if (args.command === 'analyze') {
 
-
-
     const scope = await resolveUploadScopeConfirmation(projectPath, args.yes);
     if (!scope.proceed) { process.exitCode = 1; return; }
     const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
@@ -402,10 +381,6 @@ async function main(): Promise<void> {
       analysisId: args.analysisId,
       analysisFocus: args.analysisFocus,
       requireBoundProject: true,
-
-
-
-
 
       force: args.force,
       confirmScope: scope.confirmScope,
@@ -573,14 +548,6 @@ async function main(): Promise<void> {
     return;
   }
 
-
-
-
-
-
-
-
-
   if (args.command === 'account-workspaces') {
     const auth = loadStoredConnectorAuth();
     const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl);
@@ -622,8 +589,6 @@ async function main(): Promise<void> {
     }
     process.stdout.write([
       `Attached project "${result.project.name}" to workspace "${targetWorkspace.name}".`,
-
-
 
       'This is a move, not an additional membership: a project belongs to exactly one workspace at a time.',
       `Workspace analysis for "${targetWorkspace.name}" is rebuilding in the background now that its membership changed (was_rebuild: ${result.was_rebuild}).`,
@@ -669,9 +634,6 @@ async function main(): Promise<void> {
     process.stdout.write(args.json ? `${JSON.stringify(output, null, 2)}\n` : `Saved CAS golden snapshot: ${saved.file}\n`);
     return;
   }
-
-
-
 
   if (args.command === 'orient') {
     const capsule = query.buildOrientCapsule(cas);
@@ -773,25 +735,11 @@ async function confirmDestructiveAction(description: string, preApproved: boolea
   return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
 }
 
-
-
-
-
-
-
-
 async function resolveUploadScopeConfirmation(target: string, yes: boolean): Promise<{ proceed: boolean; confirmScope: boolean }> {
   process.stderr.write(`Resolved project root: ${target}\n`);
   const assessment = await assessUploadScope(target);
   return confirmUploadScope(assessment, { yes });
 }
-
-
-
-
-
-
-
 
 export {
   DEFAULT_MIN_NODE,
@@ -819,13 +767,7 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   });
 }
 
-
-
-
-
-
 async function runStatusCommand(args: ParsedArgs): Promise<void> {
-
 
   const repoPath = path.resolve(args.path || '.');
   const { report, lines } = await renderStatusReport({ repoPath, serverUrl: args.serverUrl });
@@ -844,16 +786,7 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
   }
   const email = args.email || await promptLine('Email: ');
 
-
-
-
-
   if (args.password && !args.passwordStdin) {
-
-
-
-
-
 
     process.stderr.write(
       'Warning: --password on the command line is visible in your shell history and to other processes on this machine (via `ps`). Prefer the interactive prompt (omit --password) or --password-stdin for scripts.\n',
@@ -902,19 +835,6 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
     : `Signed in to ${stored.serverUrl} as ${identity.user?.email || email} (${identity.entitlement.status}).\nAuth stored at ${stored.file}\n`);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 async function runResetPasswordCommand(args: ParsedArgs): Promise<void> {
   const serverUrl = normalizeServerUrl(args.serverUrl);
   if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
@@ -950,15 +870,6 @@ async function runResetPasswordCommand(args: ParsedArgs): Promise<void> {
     ? `${JSON.stringify(result, null, 2)}\n`
     : `Password reset. Every previous session for ${payload.email || 'this account'} has been signed out.\nRun \`klauro login --email ${payload.email || '<email>'}\` to sign in with the new password.\n`);
 }
-
-
-
-
-
-
-
-
-
 
 async function runChangePasswordCommand(args: ParsedArgs): Promise<void> {
   const serverUrl = normalizeServerUrl(args.serverUrl);
@@ -1001,24 +912,6 @@ async function runChangePasswordCommand(args: ParsedArgs): Promise<void> {
     : `Password changed for ${payload.user?.email || 'your account'}. Every other session was signed out; this session's token was rotated and saved to ${stored.file}.\n`);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 async function runAdminMintResetTokenCommand(args: ParsedArgs): Promise<void> {
   if (!args.email) throw new Error('admin-mint-reset-token requires --email <account-email>');
   const dataDir = path.resolve(
@@ -1051,20 +944,6 @@ async function runAdminMintResetTokenCommand(args: ParsedArgs): Promise<void> {
       `Redeeming invalidates every existing session for the account.`,
     ].join('\n') + '\n');
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async function runFabricCommand(argv: string[]): Promise<void> {
   let action: string | undefined;
@@ -1145,7 +1024,6 @@ async function runFabricCommand(argv: string[]): Promise<void> {
     return;
   }
 
-
   if (!found) {
     throw new Error(
       `No .klaurorc found at or above ${startDir}. Run \`klauro init\` in the repo first, then \`klauro fabric on\`.`,
@@ -1164,8 +1042,6 @@ async function runFabricCommand(argv: string[]): Promise<void> {
     ? { workspace: workspaceFlag.trim(), source: 'explicit' as const }
     : detectWorkspaceIdentity(found.root, loaded.config.project.id);
   const { configPath } = writeFabricSection(found.root, { enabled: true, endpoint, workspace: identity.workspace });
-
-
 
   let activeCount: number | null = null;
   let probeError: string | undefined;
@@ -1203,19 +1079,6 @@ function args_json_write(json: boolean, payload: unknown): boolean {
   return true;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 interface InitStep {
   step: 'auth' | 'project' | 'analysis' | 'in-flight' | 'mcp' | 'fabric';
   status: 'ok' | 'warn' | 'skip';
@@ -1235,23 +1098,12 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     }
   };
 
-
-
-
-
-
-
-
-
-
   if (!args.json) {
     process.stdout.write(`Connecting ${projectPath} to Klauro\n`);
     if (!options.pathWasExplicit) {
       process.stdout.write(`WARN  no --path given — using current directory (${projectPath}). Pass --path explicitly if this is not the repo you intend to connect.\n`);
     }
   }
-
-
 
   let loaded = await loadKlauroConfig(projectPath);
   const hadConfig = Boolean(loaded.configPath);
@@ -1266,16 +1118,6 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
   } else {
     record('auth', 'warn', `not signed in to ${serverUrl} — hosted steps are skipped (run: klauro login --email you@example.com, then re-run klauro init)`);
   }
-
-
-
-
-
-
-
-
-
-
 
   let projectStatus: InitStep['status'] = 'ok';
   let projectNote = hadConfig && !args.force ? ' · existing .klaurorc kept' : '';
@@ -1310,21 +1152,9 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     }
   } else if (token && args.workspace && args.workspace.trim()) {
 
-
-
-
-
-
-
-
     const staleId = String(loaded.config.project.id);
     const probe = await probeHostedProjectBinding(serverUrl, token, staleId);
     if (probe === 'not_found') {
-
-
-
-
-
 
       const activeEmail = listStoredAccounts(serverUrl).find(account => account.active)?.email;
       const owner = await findStoredAccountOwningProject(serverUrl, staleId, activeEmail, probeHostedProjectBinding);
@@ -1352,15 +1182,10 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
   record('project', projectStatus,
     `${loaded.config.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath))}${loaded.config.project.id ? ` (hosted project ${loaded.config.project.id})` : ''} · identity ${identity.workspace} (${identity.source})${projectNote}`);
 
-
-
   const boundProjectId = loaded.config.project.id;
   if (!token) {
     record('analysis', 'skip', 'requires sign-in — run `klauro analyze .` after `klauro login`');
   } else if (isUnboundHostedProjectId(boundProjectId)) {
-
-
-
 
     const workspaceName = (args.workspace && args.workspace.trim()) || path.basename(projectPath);
     record('analysis', 'warn', `project not bound — analysis would upload as an orphaned slug and will not appear in workspace ${workspaceName}; re-run with --workspace or check auth`);
@@ -1380,13 +1205,8 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     }
   }
 
-
-
-
   const dirtyFiles = listDirtyFiles(projectPath);
   const dirty = dirtyFiles?.length;
-
-
 
   const klauroConfigDirty = (dirtyFiles || []).filter(file => /(^|\/)\.klauro(rc|ignore)$/.test(file)).length;
   record('in-flight', 'ok', dirty === undefined
@@ -1395,16 +1215,10 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
       ? 'automatic — working tree clean; uncommitted work is tracked on demand'
       : `automatic — ${dirty} uncommitted file(s) currently in flight${klauroConfigDirty > 0 ? ' (includes the Klauro config init just wrote — commit these)' : ''}`);
 
-
-
   const mcp = detectClaudeMcpRegistration();
   if (mcp === true) record('mcp', 'ok', 'klauro MCP server registered with Claude Code');
   else if (mcp === false) record('mcp', 'warn', 'not registered with Claude Code — run: klauro install   (wires the MCP server + agent defaults for this machine)');
   else record('mcp', 'skip', 'claude CLI not found — run `klauro install` to wire agent MCP access when a client is present');
-
-
-
-
 
   const priorFabric = loaded.config.fabric;
   if (priorFabric && priorFabric.enabled === false) {
@@ -1452,8 +1266,6 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     return;
   }
 
-
-
   const displayName = payload.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath));
   const banner = warnSteps.length > 0
     ? `Klauro connected with ${warnSteps.length} warning${warnSteps.length === 1 ? '' : 's'}: ${displayName}  (${warnSteps.map(step => labels[step.step]).join(', ')} above need attention)`
@@ -1469,21 +1281,6 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
   ].join('\n'));
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 export { isUnboundHostedProjectId, probeHostedProjectBinding };
 
 async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{
@@ -1495,10 +1292,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   kind?: 'project' | 'workspace';
 }> {
   if (args.json || !process.stdin.isTTY || args.projectId || args.organizationId) {
-
-
-
-
 
     const serverUrl = normalizeServerUrl(args.serverUrl);
     const token = args.projectId || args.organizationId ? undefined : connectorToken(undefined, serverUrl);
@@ -1535,9 +1328,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     process.stdout.write(`Detected remote: ${remote}\n`);
   }
 
-
-
-
   const defaultProjectName = resolveManifestProjectName(projectPath, path.basename(projectPath));
 
   if (!token) {
@@ -1550,8 +1340,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     const name = await promptLine(`Name [${defaultProjectName}]: `) || defaultProjectName;
     return { serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
   }
-
-
 
   const recognized = remoteUrl ? await findConnectedRemote(serverUrl, token, remoteUrl) : null;
   const flow = decideInitFlow(recognized);
@@ -1570,8 +1358,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     }
     process.stdout.write('OK — setting this repo up fresh instead.\n');
   }
-
-
 
   if (manifest.workspace_recommendation?.recommended) {
     process.stdout.write(`Detected child projects: ${manifest.workspace_recommendation.candidates.map(candidate => candidate.path).join(', ')}\n`);
@@ -1596,7 +1382,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   const workspace = await selectOrCreateWorkspace(serverUrl, token, undefined);
   const projects = await listRemoteProjects(serverUrl, token, workspace.id);
   let project: RemoteProjectChoice | undefined;
-
 
   const matched = remoteUrl ? projects.find(candidate => normalizeRepoUrl(candidate.repo_url) === normalizeRepoUrl(remoteUrl)) : undefined;
   if (matched) {
@@ -1631,7 +1416,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   };
 }
 
-
 async function findConnectedRemote(serverUrl: string, token: string, repoUrl: string): Promise<RecognizedRemote | null> {
   try {
     const payload = await remoteJson<{ match?: RecognizedRemote | null }>(
@@ -1643,13 +1427,6 @@ async function findConnectedRemote(serverUrl: string, token: string, repoUrl: st
     return null;
   }
 }
-
-
-
-
-
-
-
 
 async function placeHostedProjectHeadless(
   projectPath: string,
@@ -1665,11 +1442,6 @@ async function placeHostedProjectHeadless(
   const workspaces = await listRemoteWorkspaces(serverUrl, token);
   const existing = workspaces.find(candidate => candidate.name === workspaceName);
   const workspace = existing ?? await createRemoteWorkspace(serverUrl, token, workspaceName);
-
-
-
-
-
 
   const projects = await listRemoteProjects(serverUrl, token, workspace.id);
   const reused = projects.find(candidate =>
@@ -1734,11 +1506,6 @@ async function selectRemoteProject(projects: RemoteProjectChoice[]): Promise<Rem
   return selectByName('project', projects);
 }
 
-
-
-
-
-
 async function selectByName<T extends { id: string; name: string }>(label: string, choices: readonly T[]): Promise<T> {
   if (!choices.length) throw new Error(`No ${label}s available`);
   for (;;) {
@@ -1791,18 +1558,9 @@ interface AttachProjectResult {
   was_rebuild: string;
 }
 
-
 async function attachRemoteProject(serverUrl: string, token: string, workspaceId: string, projectId: string): Promise<AttachProjectResult> {
   return remoteJson<AttachProjectResult>(serverUrl, token, `/api/workspaces/${encodeURIComponent(workspaceId)}/projects`, { project_id: projectId });
 }
-
-
-
-
-
-
-
-
 
 export function resolveWorkspaceTarget(workspaces: RemoteWorkspaceChoice[], target: string): RemoteWorkspaceChoice {
   const byId = workspaces.find(workspace => workspace.id === target);
@@ -1814,8 +1572,6 @@ export function resolveWorkspaceTarget(workspaces: RemoteWorkspaceChoice[], targ
   }
   throw new Error(`No workspace found matching "${target}". Run \`klauro account-workspaces\` to list them.`);
 }
-
-
 
 function normalizeRepoUrl(value?: string): string | undefined {
   if (!value) return undefined;
@@ -2020,9 +1776,6 @@ export function parseArgs(argv: string[]): ParsedArgs {
       parsed.task.response_profile = argv[++i] as AgentTask['response_profile'];
     } else if (arg.startsWith('-')) {
 
-
-
-
       throw new Error(`Unknown option: ${arg} (run \`klauro help\` for the supported flags)`);
     } else if (!parsed.path) {
       parsed.path = arg;
@@ -2148,6 +1901,7 @@ function printHelp(): void {
 }
 
 async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
+  restrictProcessFileCreation();
   const port = args.port || Number(process.env.PORT || process.env.KLAURO_ANALYZER_PORT || 8787);
   if (!Number.isFinite(port) || port <= 0) throw new Error(`Invalid analyzer server port: ${args.port}`);
   const host = args.host || process.env.KLAURO_ANALYZER_HOST || '0.0.0.0';
@@ -2162,7 +1916,6 @@ async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
         status: 'ready',
         service: 'klauro-remote-analyzer',
         url,
-
 
         data_dir: args.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`),
         auth: process.env.KLAURO_ANALYZER_TOKEN ? 'bearer-token-required' : 'none',
@@ -2242,13 +1995,6 @@ function formatAgentRevisionTracks(result: Awaited<ReturnType<typeof getAgentRev
     '',
   ].join('\n');
 }
-
-
-
-
-
-
-
 
 function formatGithubImportPlan(plan: ReturnType<typeof buildGithubImportPlan>): string {
   return [
@@ -2519,8 +2265,6 @@ function summarizeRiskForCli(risk: any) {
     reasons: selectedRisk.reasons || selectedRisk.factors || selectedRisk.risk_factors || selectedRisk.details || [],
     recommendations: selectedRisk.recommendations || [],
 
-
-
     summary: risk.change_risk_context || null,
   };
 }
@@ -2645,10 +2389,6 @@ main().catch(async error => {
     process.stderr.write(`Analysis run log: ${runLogPath}\n`);
   }
   process.stderr.write('For diagnostics, run: klauro support-bundle <project-path> and send the bundle to support.\n');
-
-
-
-
 
   try {
     const hint = await getStaleClientUpdateHint({

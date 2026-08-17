@@ -338,28 +338,6 @@ export abstract class BaseAnalyzer {
     return [...files].sort();
   }
 
-  protected fileNodeIdFromExistingAnalysis(
-    relativePath: string,
-    existingAnalysis?: CASContribution[]
-  ): string | undefined {
-    if (!existingAnalysis) return undefined;
-    const normalizedRelativePath = relativePath.replace(/\\/g, '/');
-    const exactId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    for (const contribution of existingAnalysis) {
-      const exact = contribution.nodes?.find(node => node.id === exactId);
-      if (exact) return exact.id;
-    }
-    for (const contribution of existingAnalysis) {
-      const byPath = contribution.nodes?.find(node => {
-        if (node.type !== 'file' || !node.source?.file) return false;
-        const sourceFile = node.source.file.replace(/\\/g, '/');
-        return sourceFile === normalizedRelativePath || sourceFile.endsWith(`/${normalizedRelativePath}`);
-      });
-      if (byPath) return byPath.id;
-    }
-    return undefined;
-  }
-
   protected capAndPrioritizeSourceFiles(files: string[], purpose = 'source files'): string[] {
     const configuredLimit = Number(process.env.KLAURO_MAX_FILES_PER_ANALYZER || '');
     if (!Number.isFinite(configuredLimit) || configuredLimit <= 0 || files.length <= configuredLimit) {

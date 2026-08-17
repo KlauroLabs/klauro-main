@@ -1,5 +1,6 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
-import { CASAnalysisError } from '../../types/cas.types';
+import { buildGraphValidation } from '../../analyzer/core/graph-validation';
+import { CASAnalysisError, CASEntryPoint } from '../../types/cas.types';
 
 function emptyTarget() {
   return { allNodes: [] as any[], allEdges: [] as any[], allEntryPoints: [] as any[], allExitPoints: [] as any[] };
@@ -23,7 +24,7 @@ function contribution(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-function cliEntry(overrides: Record<string, unknown> = {}) {
+function cliEntry(overrides: Partial<CASEntryPoint> = {}): CASEntryPoint {
   return {
     id: 'entry:main:bin/agent/build.rs',
     source_node: 'function:bin/agent/build.rs:main',
@@ -261,16 +262,15 @@ describe('contribution merge duplicate-id semantics', () => {
 
 describe('graph integrity duplicate-id validation', () => {
   it('counts duplicate ids per section and records validation warnings', () => {
-    const orchestrator = new AnalyzerOrchestrator() as any;
     const node = (id: string) => ({ id, name: id, type: 'function', source: { file: 'a.ts', line: 1 } });
-    const validation = orchestrator.buildValidation(
+    const validation = buildGraphValidation(
       [node('n1'), node('n1'), node('n2')],
-      [{ id: 'e1', source: 'n1', target: 'n2' }, { id: 'e1', source: 'n1', target: 'n2' }],
+      [{ id: 'e1', source: 'n1', target: 'n2', type: 'calls' }, { id: 'e1', source: 'n1', target: 'n2', type: 'calls' }],
       [cliEntry(), cliEntry()],
       []
     );
 
-    expect(validation.graph_integrity.duplicate_ids).toEqual({
+    expect(validation.graph_integrity!.duplicate_ids).toEqual({
       nodes: 1,
       edges: 1,
       entry_points: 1,
@@ -283,14 +283,13 @@ describe('graph integrity duplicate-id validation', () => {
   });
 
   it('reports zero duplicates for a clean graph', () => {
-    const orchestrator = new AnalyzerOrchestrator() as any;
-    const validation = orchestrator.buildValidation(
+    const validation = buildGraphValidation(
       [{ id: 'n1', name: 'n1', type: 'function', source: { file: 'a.ts', line: 1 } }],
       [],
       [],
       []
     );
-    expect(validation.graph_integrity.duplicate_ids).toEqual({
+    expect(validation.graph_integrity!.duplicate_ids).toEqual({
       nodes: 0,
       edges: 0,
       entry_points: 0,

@@ -3,6 +3,7 @@ import { CASNode, CASEdge, CASContribution, CASExitPoint } from '../../../types/
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { fileNodeIdFromExistingAnalysis } from '../../core/file-node-resolution';
 
 
 
@@ -120,7 +121,7 @@ export class FrontendStateAnalyzer extends BaseAnalyzer {
         throw error;
       }
 
-      const fileNodeId = this.fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
+      const fileNodeId = fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
       if (MOBX_IMPORT.test(content)) {

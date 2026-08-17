@@ -5,11 +5,11 @@ import { createReadStream } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
+import { ensurePrivateDataRoot, restrictProcessFileCreation } from './hosted-storage-security';
+import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, getAnalysis, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest } from './remote-analyzer-protocol';
-import type { BranchDiffContext, RemoteFileChange, RepoFacts, SourceManifest } from './remote-source';
+import { buildSourceSnapshot, type BranchDiffContext, type RemoteFileChange, type RepoFacts, type SourceManifest } from './remote-source';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildSourceSnapshot } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
@@ -33,7 +33,6 @@ import { planIntentMerge, planIntentMergeFromSubstrate, type MergePlan } from '.
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
-import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
 import {
@@ -50,8 +49,7 @@ import {
 } from './storage';
 import { parseCasSectionNames, selectCasSections, type CasSectionName } from './cas-sections';
 import { clearFreshnessSummaryCache } from './freshness';
-import { descriptionStorePath } from './description-enrichment';
-import { generateElementDescription } from './description-enrichment';
+import { descriptionStorePath, generateElementDescription } from './description-enrichment';
 import { isAnalysisFocus, withAnalysisFocus } from './analysis-focus';
 import { ResponseCache, responseCacheKey } from './response-cache';
 import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
@@ -148,6 +146,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       || process.env.KLAURO_REMOTE_ANALYZER_DATA
       || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`)
   );
+  ensurePrivateDataRoot(dataDir);
   removeLegacyCwdDataDir(dataDir);
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
@@ -4431,6 +4430,7 @@ function buildChangeManifest(workspace: string, changes: RemoteFileChange[]): So
   };
 }
 if (isDirectCliInvocation('remote-analyzer-service')) {
+  restrictProcessFileCreation();
   const port = Number(process.env.PORT || process.env.KLAURO_ANALYZER_PORT || DEFAULT_PORT);
   prewarmAnalysisWorker();
   const server = createRemoteAnalyzerHttpServer();

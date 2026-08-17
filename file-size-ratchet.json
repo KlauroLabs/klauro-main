@@ -227,7 +227,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/container-topology-analyzer.ts",
-      "ceiling": 1231
+      "ceiling": 1095
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/testing/jest-analyzer.ts",

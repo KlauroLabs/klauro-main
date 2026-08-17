@@ -3,6 +3,7 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { fileNodeIdFromExistingAnalysis } from '../../core/file-node-resolution';
 
 const CONFIGURE_STORE = /configureStore\s*\(\s*\{/g;
 const CREATE_SLICE = /createSlice\s*\(\s*\{[\s\S]*?name:\s*['"](\w+)['"]/g;
@@ -59,7 +60,7 @@ export class ReduxAnalyzer extends BaseAnalyzer {
 
       if (!this.hasReduxUsage(content)) continue;
 
-      const fileNodeId = this.fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
+      const fileNodeId = fileNodeIdFromExistingAnalysis(relativePath, context.existingAnalysis);
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
       this.extractStoreConfiguration(content, relativePath, sanitizedPath, fileNodeId, nodes, edges, seenNodeIds);

@@ -196,13 +196,8 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     try {
       nodes.push(this.createNode(
-        'symfony_app',
-        'Symfony application',
-        'framework_application',
-        2,
-        'composer.json',
-        1,
-        1,
+        'symfony_app', 'Symfony application', 'framework_application', 2,
+        'composer.json', 1, 1,
         { framework: 'symfony', subcategories: ['framework-root', 'application'] }
       ));
       const phpFiles = await time('glob_php', () => glob(['**/*.php'], {
@@ -1645,11 +1640,6 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     const isClassLevel = (index: number) => classDeclIndex >= 0 && index < classDeclIndex;
     const hasFosRest = content.includes('FOS\\RestBundle');
 
-
-
-
-
-
     const attributeNamePattern = /(?:#\[|,)\s*((?:[A-Za-z_]\w*\\)*)(Route|Get|Post|Put|Patch|Delete|Head|Options|Link|Unlink)\s*(?=[(,\]])/gi;
     let match: RegExpExecArray | null;
     while ((match = attributeNamePattern.exec(content)) !== null) {
@@ -2725,8 +2715,6 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
   private extractTwigComments(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
     const twigCommentPattern = /\{#\s*([\s\S]*?)\s*#\}/g;
-
-
 
     let commentSeq = 0;
     let match;

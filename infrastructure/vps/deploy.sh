@@ -187,6 +187,7 @@ STAMP
 fi
 
 echo "==> Rebuilding + restarting containers on $VPS_HOST"
+$SSH "$DEST" "install -d -m 700 /opt/klauro/data /opt/klauro/redis-data && chmod -R go-rwx /opt/klauro/data /opt/klauro/redis-data"
 $SSH "$DEST" "cd /opt/klauro && KLAURO_GIT_SHA='$GIT_SHA' KLAURO_BUILD_TIME='$BUILD_TIME' docker compose up -d --build --remove-orphans"
 $SSH "$DEST" "docker image rm klauro-gate >/dev/null 2>&1 || true"
 

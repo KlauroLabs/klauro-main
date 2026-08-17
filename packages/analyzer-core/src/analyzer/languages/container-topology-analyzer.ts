@@ -11,9 +11,6 @@ interface ComposeService {
   image?: string;
   build?: string;
 
-
-
-
   dockerfile?: string;
   ports: Array<{ host?: string; container: string }>;
   dependsOn: string[];
@@ -37,11 +34,7 @@ interface KubernetesDocument {
   env: Record<string, string>;
   ingressBackends: Array<{ host?: string; path?: string; service: string; port?: string }>;
 
-
-
   schedule?: string;
-
-
 
   command?: string;
 }
@@ -158,9 +151,6 @@ export class DockerfileAnalyzer extends ContainerTopologyAnalyzer {
       }),
     ];
 
-
-
-
     const entryPoints: CASEntryPoint[] = [];
     return { nodes, entryPoints };
   }
@@ -232,14 +222,6 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
 
-
-
-
-
-
-
-
-
     const allServiceNames = new Set(services.map(s => s.name));
 
     for (const service of services) {
@@ -258,14 +240,6 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
         networks: service.networks,
         subcategories: ['container-topology', 'docker-compose', 'runtime-service'],
       }));
-
-
-
-
-
-
-
-
 
       const isOwnBuiltService = Boolean(service.build);
       if (!isOwnBuiltService) {
@@ -303,9 +277,6 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
           { topology_surface: 'docker-compose', dependency_kind: 'compose-service' }
         ));
 
-
-
-
         if (!allServiceNames.has(dependency)) {
           exitPoints.push(this.createExitPoint(
             `exit_compose_dep_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}_${this.sanitizeId(dependency)}`,
@@ -327,8 +298,6 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
       for (const [key, value] of Object.entries(service.environment)) {
         const targetService = inferServiceReference(key, value);
         if (!targetService) continue;
-
-
 
         if (allServiceNames.has(targetService)) continue;
         exitPoints.push(this.createExitPoint(
@@ -678,23 +647,11 @@ function parseComposeServicesFromYaml(content: string): ComposeService[] {
 function composeBuildContext(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
 
-
-
-
-
-
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return stringValue((value as any).context) || '.';
   }
   return undefined;
 }
-
-
-
-
-
-
-
 
 function composeBuildDockerfile(value: unknown): string | undefined {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -772,8 +729,6 @@ function parseKubernetesDocuments(content: string): KubernetesDocument[] {
       ingressBackends: [],
       schedule: kind === 'CronJob' ? firstMatch(lines, /^\s*schedule:\s*["']?([^"'#\n]+?)["']?\s*(?:#.*)?$/) : undefined,
 
-
-
       command: undefined,
     });
     offset += lines.length;
@@ -823,10 +778,6 @@ function parseKubernetesDocumentsFromYaml(content: string): KubernetesDocument[]
   }
   return resources;
 }
-
-
-
-
 
 function extractContainerCommand(containers: Record<string, any>[]): string | undefined {
   const parts: string[] = [];
@@ -1049,42 +1000,9 @@ function escapeRegExp(value: string): string {
 
 function inferServiceName(projectPath: string, relativeFile: string, command?: string): string {
 
-
-
-
-
-
   const projectBase = path.basename(projectPath);
   const dockerfileDir = path.basename(path.dirname(relativeFile));
   let base: string;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   const declared = serviceNameFromCommand(command);
   const declaredIdentifies = declared && !isConventionalEntryStem(declared);
@@ -1096,42 +1014,13 @@ function inferServiceName(projectPath: string, relativeFile: string, command?: s
     base = projectBase;
   } else if (declared) {
 
-
-
     base = declared;
   } else {
-
-
-
-
 
     base = UNNAMED_SERVICE_PLACEHOLDER;
   }
   return base.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 function isConventionalEntryStem(token: string): boolean {
   const CONVENTIONAL_ENTRY_STEMS = new Set([
@@ -1141,16 +1030,6 @@ function isConventionalEntryStem(token: string): boolean {
   ]);
   return CONVENTIONAL_ENTRY_STEMS.has(token.trim().toLowerCase());
 }
-
-
-
-
-
-
-
-
-
-
 
 function inferServiceAliases(projectPath: string, relativeFile: string, command?: string): string[] {
   const normalize = (value: string): string => value.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
@@ -1174,27 +1053,11 @@ function serviceNameFromCommand(command?: string): string | undefined {
     .filter(Boolean)
     .filter(token => !token.startsWith('-'));
 
-
-
-
-
-
-
-
-
   const TASK_RUNNERS = new Set([
     'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx', 'deno',
     'make', 'rake', 'mix', 'poetry', 'uv', 'pipenv', 'hatch', 'tox',
     'gradle', 'gradlew', 'mvn', 'sbt', 'cargo', 'composer', 'bundle', 'go',
   ]);
-
-
-
-
-
-
-
-
 
   const GENERIC_RUNTIMES = new Set([
     'sh', 'bash', 'zsh', 'ash', 'dash', 'env', 'exec',

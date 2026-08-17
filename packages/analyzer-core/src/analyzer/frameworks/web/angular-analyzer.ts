@@ -126,7 +126,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const packageJson = await fs.readJson(packageJsonPath);
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
-
       const isNestJS = Object.keys(deps).some(dep =>
         dep === '@nestjs/core' ||
         dep === '@nestjs/common' ||
@@ -137,15 +136,12 @@ export class AngularAnalyzer extends BaseAnalyzer {
         return false;
       }
 
-
       if (Object.keys(deps).some(dep => dep.startsWith('@angular/') || dep === 'angular')) {
         return true;
       }
 
-
       const angularConfigExists = await fs.pathExists(path.join(projectPath, 'angular.json'));
       if (angularConfigExists) return true;
-
 
       const tsFiles = await glob(['**/*.ts'], {
         cwd: projectPath,
@@ -364,11 +360,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
               .build();
             nodes.push(componentNode);
 
-
-
-
-
-
             const emittedHandlerMethods = new Set<string>();
             const emittedEventBindings = new Set<string>();
             component.eventHandlers.forEach((handler, index) => {
@@ -423,8 +414,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
       }
     }
 
-
-
     for (const component of components) {
       const parentId = componentIdByName.get(component.name);
       if (!parentId) continue;
@@ -443,12 +432,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
     return components;
   }
-
-
-
-
-
-
 
   private buildInjectionEdges(
     components: AngularComponent[],
@@ -863,25 +846,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ));
       }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       const rendersSomething = Boolean(route.component || route.loadChildrenFile);
       if (rendersSomething && route.pathResolved && route.segment !== '**') {
         const isLazyModuleRoute = !route.component && Boolean(route.loadChildrenFile);
@@ -1065,13 +1029,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     };
   }
 
-
-
-
-
-
-
-
   private extractTemplateEventHandlers(content: string): Array<{ event: string; handlerName?: string }> {
     const tplMatch = content.match(/template:\s*([`'"])([\s\S]*?)\1/);
     if (!tplMatch) return [];
@@ -1087,12 +1044,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     }
     return handlers;
   }
-
-
-
-
-
-
 
   private extractChildSelectors(content: string): string[] {
     const tplMatch = content.match(/template:\s*([`'"])([\s\S]*?)\1/);
@@ -1862,15 +1813,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
   }
 
-
-
-
-
-
-
-
-
-
   private identifyAPIConnections(
     services: AngularService[],
     components: AngularComponent[],
@@ -1910,27 +1852,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     }
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   private async extractPerCallApiExits(
     projectPath: string,
     services: AngularService[],
@@ -1959,9 +1880,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ownerName: service.name,
         methodIdFor,
 
-
-
-
         createMissingMethodNode: false,
         nodes,
         edges
@@ -1988,10 +1906,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ownerName: component.name,
         methodIdFor,
 
-
-
-
-
         createMissingMethodNode: true,
         nodes,
         edges
@@ -2002,15 +1916,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
     return found;
   }
-
-
-
-
-
-
-
-
-
 
   private extractHttpCallsForOwner(args: {
     content: string;
@@ -2028,12 +1933,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
     const classFields = this.extractClassFieldLiterals(content);
     const methodBodies = this.extractMethodBodies(content);
 
-
-
-
-
     const seenPerNode = new Map<string, Set<string>>();
-
 
     const lazyMethodNodeIds = new Map<string, string>();
 
@@ -2055,9 +1955,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
       let urlArg: string | undefined;
       if (verbToken === 'request') {
 
-
-
-
         const verbLiteral = this.classifyStringLiteral(args_[0]);
         httpMethod = verbLiteral !== undefined ? verbLiteral.toUpperCase() : 'REQUEST';
         urlArg = args_[1];
@@ -2069,9 +1966,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const resolved = urlArg !== undefined
         ? this.classifyUrlArg(urlArg, classFields)
         : { unresolved: true as const };
-
-
-
 
       const enclosing = methodBodies.find(m => match!.index >= m.start && match!.index < m.end);
       const methodName = enclosing?.name;
@@ -2161,18 +2055,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return exits;
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
   private isHttpClientReceiver(receiver: string, verbToken: string, firstArgRaw: string | undefined): boolean {
     const httpClientPatterns = ['axios', 'api', 'http', 'apiclient', 'httpclient', 'request'];
     const caller = receiver.toLowerCase();
@@ -2185,32 +2067,11 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return verbToken === 'request';
   }
 
-
   private classifyStringLiteral(arg: string | undefined): string | undefined {
     if (!arg) return undefined;
     const m = arg.trim().match(/^(['"])((?:[^\\]|\\.)*)\1$/);
     return m ? m[2] : undefined;
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   private classifyUrlArg(
     arg: string,
@@ -2239,16 +2100,12 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
       if (segments[0].expr === undefined) {
 
-
         let endpoint = '';
         for (const seg of segments) {
           endpoint += seg.text !== undefined ? seg.text : `:${this.paramNameFromExpr(seg.expr!)}`;
         }
         return { unresolved: false, endpoint };
       }
-
-
-
 
       const baseIdent = segments[0].expr.replace(/^this\.\s*/, '').trim();
       let tail = '';
@@ -2274,13 +2131,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     return /^[A-Za-z_$][\w$]*$/.test(cleaned) ? cleaned : 'param';
   }
 
-
-
-
-
-
-
-
   private extractClassFieldLiterals(content: string): Map<string, string> {
     const fields = new Map<string, string>();
     const fieldPattern = /(?:private|protected|public)?\s*(?:static\s+)?(?:readonly\s+)?(\w+)\s*(?::\s*[\w<>[\],\s]+)?\s*=\s*(['"`])([^'"`]*)\2\s*;/g;
@@ -2292,15 +2142,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     }
     return fields;
   }
-
-
-
-
-
-
-
-
-
 
   private extractMethodBodies(content: string): Array<{ name: string; start: number; end: number }> {
     const results: Array<{ name: string; start: number; end: number }> = [];
@@ -2317,12 +2158,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     }
     return results;
   }
-
-
-
-
-
-
 
   private findMatchingClose(content: string, openIndex: number, openCh: string, closeCh: string): number {
     let depth = 0;
@@ -2343,12 +2178,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
     }
     return -1;
   }
-
-
-
-
-
-
 
   private splitTopLevelArgs(argsRaw: string): string[] {
     const args: string[] = [];
@@ -2559,11 +2388,5 @@ export class AngularAnalyzer extends BaseAnalyzer {
       };
     });
   }
-
-
-
-
-
-
 
 }
