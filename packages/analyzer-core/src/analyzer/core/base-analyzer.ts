@@ -130,7 +130,14 @@ function evidenceIndexFor(contribution: CASContribution, analysisRoot: string): 
     if (sourceFile) sourceFilesByNode.set(node.id, sourceFile);
     if (node.type !== 'import' || !sourceFile) continue;
     const metadata = node.metadata as Record<string, unknown> | undefined;
-    const importSource = String(metadata?.source || '');
+    const importSource = String(
+      metadata?.source
+      || metadata?.module
+      || metadata?.imported
+      || metadata?.importPath
+      || node.name
+      || ''
+    );
     if (!importSource) continue;
     const absoluteFile = path.normalize(path.isAbsolute(sourceFile)
       ? sourceFile

@@ -6,6 +6,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { OutboundHttpClientAnalyzer } from '../../analyzer/libraries/http/outbound-http-client-analyzer';
+import { PythonAnalyzer } from '../../analyzer/languages/python-analyzer';
 import { CASContribution } from '../../types/cas.types';
 
 describe('OutboundHttpClientAnalyzer', () => {
@@ -114,6 +115,31 @@ describe('OutboundHttpClientAnalyzer', () => {
 
     expect(exits(contribution)).toHaveLength(1);
     expect(exits(contribution)[0].target?.endpoint).toBe('https://{param}/api/v1/orders');
+    expect(exits(contribution)[0].target?.service_id).toBe('Fleet Portal');
+  });
+
+  it('preserves Python import evidence when narrowing from language analysis', async () => {
+    const files = {
+      'requirements.txt': 'requests==2.32.0',
+      'src/client.py': [
+        'import requests',
+        'from configuration import env',
+        'requests.post(f"https://{env.FLEET_PORTAL}/api/v1/orders", json={})',
+      ].join('\n'),
+    };
+    for (const [relativePath, content] of Object.entries(files)) {
+      const fullPath = path.join(tempDir, relativePath);
+      await fs.ensureDir(path.dirname(fullPath));
+      await fs.writeFile(fullPath, content);
+    }
+    const language = await new PythonAnalyzer().analyze({ projectPath: tempDir } as any);
+    const contribution = await new OutboundHttpClientAnalyzer().analyze({
+      projectPath: tempDir,
+      analysisRootPath: tempDir,
+      existingAnalysis: [language],
+    } as any);
+
+    expect(exits(contribution)).toHaveLength(1);
     expect(exits(contribution)[0].target?.service_id).toBe('Fleet Portal');
   });
 
