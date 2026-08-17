@@ -298,7 +298,7 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
 
 
 
-      model: 'onnx-all-MiniLM-L6-v2',
+      model: 'klauro-local-hash-v1',
       apiKeyEnv: 'KLAURO_EMBEDDING_API_KEY',
       dimensions: 384,
       maxDocumentChars: 8000,

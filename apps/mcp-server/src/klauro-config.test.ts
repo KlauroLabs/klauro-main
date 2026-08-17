@@ -581,6 +581,12 @@ test('defaultKlauroConfig falls back to the directory basename when no manifest 
   }
 });
 
+test('defaultKlauroConfig uses the dependency-free local embedding provider', () => {
+  const config = defaultKlauroConfig('/tmp/example-project');
+  assert.equal(config.embedding.provider, 'local');
+  assert.equal(config.embedding.model, 'klauro-local-hash-v1');
+});
+
 test('analyzer is one product (hosted) — no local/remote mode field at all', () => {
   // One product: analysis goes to the hosted service (heavy work + AI on the VPS),
   // production by default. There is no analyzer.mode. See docs/KLAURO-PRODUCT-MODEL.md.
