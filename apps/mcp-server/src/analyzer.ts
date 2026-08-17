@@ -1113,11 +1113,6 @@ export interface DeferredAnalysisResult {
   output: CASOutput;
   enrichment: Promise<void>;
 }
-
-
-
-
-
 export async function analyzeProjectDeferred(
   projectPath: string,
   displayName?: string,
@@ -1126,6 +1121,7 @@ export async function analyzeProjectDeferred(
     reuseStoredContext?: boolean;
     prepareStructuralCheckpoint?: (output: CASOutput) => void;
     persistEnrichmentResult?: boolean;
+    deferStructuralSegments?: boolean;
   } = {},
 ): Promise<DeferredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
@@ -1148,7 +1144,7 @@ export async function analyzeProjectDeferred(
     ));
 
     options.prepareStructuralCheckpoint?.(result);
-    await saveAnalysis(projectPath, result);
+    await saveAnalysis(projectPath, result, 'main', { deferSegmentedWrite: options.deferStructuralSegments });
     await saveIncrementalState(projectPath, dedicatedOrch.createIncrementalBaseline(projectPath, result));
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, result);
@@ -1351,6 +1347,7 @@ export async function analyzeProjectLayered(
         deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress, {
           prepareStructuralCheckpoint,
           persistEnrichmentResult: false,
+          deferStructuralSegments: true,
         });
       }
     } else {
@@ -1358,6 +1355,7 @@ export async function analyzeProjectLayered(
         reuseStoredContext: !forceFullRebuild,
         prepareStructuralCheckpoint,
         persistEnrichmentResult: false,
+        deferStructuralSegments: true,
       });
     }
     if (!structuralCheckpointPrepared) {
