@@ -141,6 +141,7 @@ find "$DEVGATE_DIR/$WORKSPACE" -maxdepth 1 -type d -name '.klauro-*' -exec chmod
 mkdir -p "$DEVGATE_DIR/packages/analyzer-core/dist"
 chmod -R a+rwX "$DEVGATE_DIR/packages/analyzer-core/dist" 2>/dev/null || true
 chmod a+rwX "$DEVGATE_DIR/packages/analyzer-core" 2>/dev/null || true
+chmod a+rX "$DEVGATE_DIR" 2>/dev/null || true
 
 CIDFILE="$(mktemp -u)"
 rm -f "$CIDFILE"

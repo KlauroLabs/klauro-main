@@ -155,6 +155,7 @@ fi
 
 DEPLOY_SHA="$(git -C "$APP_DIR" rev-parse HEAD)"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/klauro-deploy-stage.XXXXXX")"
+chmod 755 "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
 echo "==> Exporting $(git -C "$APP_DIR" rev-parse --short=12 HEAD) to a staging dir (not the live tree)"
 git -C "$APP_DIR" archive --format=tar "$DEPLOY_SHA" | tar -x -C "$STAGE"
