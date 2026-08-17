@@ -32,7 +32,7 @@ import { getStageFingerprints } from '../../../../packages/analyzer-core/src/ana
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from '../remote-analyzer-protocol';
 import { waitForRemoteAnalysis } from '../remote-sync-client';
 import { CAS_SECTION_NAMES } from '../cas-sections';
-import { readStreamingGzipJson, writeStreamingGzipJson } from '../streaming-gzip-json';
+import { benchCasCacheRuntimeFingerprint, readBenchCasCache, writeBenchCasCache } from './bench-cas-cache';
 
 let localServerUrl: string | null = null;
 let localServerProcess: ChildProcess | null = null;
@@ -373,21 +373,19 @@ function benchCacheLocation(dir: string, snapshotDigest: string | undefined): { 
     .update(stageFingerprints.parser_fingerprint)
     .update('\0')
     .update(stageFingerprints.derived_fingerprint)
+    .update('\0')
+    .update(benchCasCacheRuntimeFingerprint())
     .digest('hex');
-  const file = path.join(root, `${key}.cas.json.gz`);
+  const file = path.join(root, `${key}.cas.v8`);
   return { file, lock: `${file}.lock` };
 }
 
 async function readBenchCache(file: string): Promise<CASOutput | undefined> {
-  try {
-    return await readStreamingGzipJson<CASOutput>(file);
-  } catch {
-    return undefined;
-  }
+  return readBenchCasCache(file);
 }
 
 async function writeBenchCache(file: string, cas: CASOutput): Promise<void> {
-  await writeStreamingGzipJson(file, cas);
+  await writeBenchCasCache(file, cas);
 }
 
 async function acquireBenchCacheLock(lock: string, cacheFile: string): Promise<string | undefined> {

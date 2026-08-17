@@ -69,6 +69,7 @@ export interface SemanticSearchResponse {
 const RRF_K = 60;
 
 const queryEmbeddingCache = new EmbeddingCache();
+const searchIndexCache = new WeakMap<CASOutput, SearchIndexes>();
 
 export async function semanticSearch(
   projectPath: string,
@@ -190,8 +191,7 @@ function lexicalFallback(
     level: options.level,
     limit: limit * 3,
   });
-  const nodesById = nodeIndex(cas);
-  const graph = buildGraphSignals(cas);
+  const { nodesById, graph } = searchIndexes(cas);
   const ranked: Array<{ node: CASNode; lexical: number; final: number }> = [];
   for (let i = 0; i < lexicalHits.length; i++) {
     const node = nodesById.get(lexicalHits[i].id);
@@ -218,8 +218,7 @@ export function fuseAndRank(
   limit: number,
   rerank: { alpha: number; beta: number },
 ): SemanticSearchResult[] {
-  const nodesById = nodeIndex(cas);
-  const graph = buildGraphSignals(cas);
+  const { nodesById, graph } = searchIndexes(cas);
 
   const vectorRank = new Map<string, number>();
   const semanticScore = new Map<string, number>();
@@ -434,6 +433,19 @@ interface GraphSignals {
   neighbors(nodeId: string): Set<string>;
   structuralScore(nodeId: string, candidates: Set<string>): number;
   maxConnectivity: number;
+}
+
+interface SearchIndexes {
+  nodesById: Map<string, CASNode>;
+  graph: GraphSignals;
+}
+
+function searchIndexes(cas: CASOutput): SearchIndexes {
+  const cached = searchIndexCache.get(cas);
+  if (cached) return cached;
+  const indexes = { nodesById: nodeIndex(cas), graph: buildGraphSignals(cas) };
+  searchIndexCache.set(cas, indexes);
+  return indexes;
 }
 
 function buildGraphSignals(cas: CASOutput): GraphSignals {
