@@ -328,7 +328,7 @@ export function parseCapabilityModelBenchmarkArgs(argv: string[], env: NodeJS.Pr
     if (arg === '--worker') worker = true;
     else if (arg === '--project') projectPath = path.resolve(argv[++index]);
     else if (arg === '--base-url') baseUrl = argv[++index];
-    else if (arg === '--api-key') apiKey = argv[++index];
+    else if (arg === '--api-key') throw new Error('API keys must be supplied through LOCAL_LLM_API_KEY, never command-line arguments');
     else if (arg === '--model') modelNames.push(argv[++index]);
     else if (arg === '--trials') trials = Number(argv[++index]);
     else if (arg === '--context-tokens') contextTokens = Number(argv[++index]);

@@ -68,3 +68,15 @@ test('parses arbitrary model names without repository-specific defaults', () => 
   assert.equal(parsed.trials, 3);
   assert.equal(parsed.models[0].baseUrl, 'http://model-host/v1');
 });
+
+test('rejects API keys supplied through process arguments', () => {
+  assert.throws(
+    () => parseCapabilityModelBenchmarkArgs([
+      '--project', '.',
+      '--base-url', 'http://model-host/v1',
+      '--api-key', 'secret',
+      '--model', 'first-model',
+    ], {}),
+    /API keys must be supplied through LOCAL_LLM_API_KEY/,
+  );
+});
