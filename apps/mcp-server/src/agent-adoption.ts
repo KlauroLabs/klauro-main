@@ -5900,6 +5900,10 @@ function relationshipDetailGate(cas: CASOutput, methodCalls: number, profile: An
   const minimumMethodCalls = expectedMethodCallCount(profile, cas);
   if (minimumMethodCalls === 0) return gate('relationship-detail', 'pass', 100, 'Not applicable for this project kind');
   if (methodCalls >= minimumMethodCalls) return gate('relationship-detail', 'pass', 100, `${methodCalls} method calls`);
+  const minimumCallChains = expectedCallChainCount(profile, cas);
+  if (minimumCallChains > 0 && callChains >= minimumCallChains && edges > 0) {
+    return gate('relationship-detail', 'pass', 100, `${methodCalls} method calls, ${callChains} complete call chains, ${edges} edges`);
+  }
   if ((profile.kind === 'library-package' || profile.kind === 'test-package' || profile.kind === 'cli-tool') && edges > 0) {
     return gate('relationship-detail', 'warn', 92, `${methodCalls} method calls, ${callChains} call chains, ${edges} structural edges`);
   }
@@ -5938,7 +5942,7 @@ function applyProfileExpectation(result: AgentReadinessGate, profile: AnalysisPr
     return gate(result.id, 'pass', 100, `Not applicable for ${profile.kind}; observed ${result.detail}`);
   }
   if (expectation === 'optional' && result.status !== 'pass') {
-    return gate(result.id, 'pass', Math.max(90, result.score), `Optional for ${profile.kind}; observed ${result.detail}`);
+    return gate(result.id, 'pass', 100, `Optional for ${profile.kind}; observed ${result.detail}`);
   }
   return result;
 }

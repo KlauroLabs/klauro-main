@@ -1269,6 +1269,46 @@ test('readiness has no language coverage gate when no unanalyzed language domina
   });
 });
 
+test('readiness accepts complete call chains as relationship detail when method-call rows are unavailable', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.method_calls = [];
+    cas.call_chains = [{
+      id: 'chain-create-user',
+      chain_type: 'entry-to-exit',
+      entry_point: {
+        entry_point_id: 'entry-users-create',
+        node_id: 'users-controller',
+        method_name: 'create',
+      },
+      call_path: [{ call_id: 'controller-service', node_id: 'users-service', method_name: 'create', depth: 1 }],
+      characteristics: {},
+      risk_analysis: {},
+    } as any];
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    const relationshipGate = readiness.gates.find(item => item.id === 'relationship-detail');
+    assert.equal(relationshipGate?.status, 'pass');
+    assert.equal(relationshipGate?.score, 100);
+    assert.match(relationshipGate?.detail || '', /1 complete call chains/);
+  });
+});
+
+test('readiness does not reduce the score for an explicitly optional dimension', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.nodes = cas.nodes.map(item => ({ ...item, source: { ...item.source, file: 'lib/main.dart' } }));
+    cas.security_boundaries = [];
+    cas.security_contexts = [];
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    const securityGate = readiness.gates.find(item => item.id === 'security');
+    assert.equal(readiness.profile.kind, 'mobile-app');
+    assert.equal(securityGate?.status, 'pass');
+    assert.equal(securityGate?.score, 100);
+  });
+});
+
 test('readiness rejects completed comprehension with no published product capabilities', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
