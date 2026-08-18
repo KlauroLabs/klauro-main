@@ -35,8 +35,6 @@ interface SpringEndpoint {
   consumes: string[];
   authenticated: boolean;
 
-
-
   line: number;
 }
 
@@ -91,19 +89,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       'framework'
     );
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
     return this.getPackageDirSafeIgnorePatterns(context as AnalysisContext);
@@ -168,9 +153,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const configurations = await this.analyzeConfigurations(javaFiles, context.projectPath, nodes, edges);
       const entities = await this.analyzeEntities(javaFiles, context.projectPath, nodes, edges, exitPoints);
       const security = await this.analyzeSecurity(javaFiles, context.projectPath, nodes, edges);
-
-
-
 
       await this.analyzeMessagingTriggers(javaFiles, context.projectPath, nodes, entryPoints);
 
@@ -303,11 +285,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           endpoints.forEach((endpoint, index) => {
             const endpointId = `endpoint_${controllerId}_${endpoint.handlerName}_${index}`;
 
-
-
-
-
-
             const routePath = `${requestMapping}${endpoint.path}`.replace('//', '/');
 
             const endpointNode = this.createNodeBuilder(endpointId, `${endpoint.method.toUpperCase()} ${routePath}`, 'route')
@@ -336,10 +313,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
               endpointId,
               'exposes'
             ));
-
-
-
-
 
             const canonicalPath = routePath.replace(/\{([^}]+)\}/g, ':$1');
             entryPoints.push(this.createEntryPoint(
@@ -575,13 +548,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
                 table,
                 relationships: relationships.length,
 
-
-
-
-
-
-
-
                 fields
               }
             })
@@ -654,17 +620,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     }
     return null;
   }
-
-
-
-
-
-
-
-
-
-
-
 
   private async analyzeMessagingTriggers(
     files: string[],
@@ -793,15 +748,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     }
   }
 
-
-
-
-
-
-
-
-
-
   private emitAnnotatedTriggers(
     content: string,
     className: string,
@@ -861,10 +807,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     }
   }
 
-
-
-
-
   private extractNamedListLiteral(rawArgs: string | undefined, keyPattern: string): string[] {
     if (!rawArgs) return [];
     const keyMatch = rawArgs.match(new RegExp(`${keyPattern}\\s*=\\s*(\\{[^}]*\\}|["'][^"']*["'])`));
@@ -878,28 +820,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return literals;
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
   private extractClassName(content: string): string | null {
     const classMatch = content.match(/(?:\b(?:public|protected|private|abstract|final|static)\s+)*class\s+(\w+)/);
     return classMatch ? classMatch[1] : null;
   }
-
-
-
-
-
-
 
   private extractAnnotationPathLiteral(rawArgs: string | undefined): string {
     if (!rawArgs) return '';
@@ -909,8 +833,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
   private extractRequestMapping(content: string): string {
 
-
-
     const classDeclIdx = content.search(/\bclass\s+\w/);
     const header = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : content;
     const mappingMatch = header.match(/@RequestMapping\s*\(([^)]*)\)/);
@@ -919,16 +841,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
   private extractEndpoints(content: string): SpringEndpoint[] {
 
-
-
-
-
-
-
-
     const methodPattern = /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?[\w.]+(?:<[^;{}]*>)?(?:\[\])*\s+(\w+)\s*\([^)]*\)/g;
-
-
 
     const classDeclIdx = content.search(/\bclass\s+\w/);
     const classHeader = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : '';
@@ -947,13 +860,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         handlerName: match[3]
       });
     }
-
-
-
-
-
-
-
 
     const bareRequestMappingPattern = /@RequestMapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?[\w.]+(?:<[^;{}]*>)?(?:\[\])*\s+(\w+)\s*\([^)]*\)/g;
     while ((match = bareRequestMappingPattern.exec(content)) !== null) {
@@ -974,10 +880,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     rawMappings.forEach((rm, i) => {
       const path = this.extractAnnotationPathLiteral(rm.rawArgs);
       const line = this.getLineNumber(content, rm.index);
-
-
-
-
 
       const windowStart = i === 0
         ? Math.max(0, content.lastIndexOf('}', rm.index) + 1, prevEnd)
@@ -1004,10 +906,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return endpoints;
   }
 
-
-
-
-
   private extractRequestMappingVerbs(rawArgs: string | undefined): string[] {
     if (!rawArgs) return ['all'];
     const verbs: string[] = [];
@@ -1019,7 +917,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return verbs.length > 0 ? verbs : ['all'];
   }
 
-
   private getLineNumber(content: string, index: number): number {
     return content.slice(0, index).split('\n').length;
   }
@@ -1027,14 +924,11 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   private extractFieldDependencies(content: string): string[] {
     const dependencies = new Set<string>();
 
-
     const fieldPattern = /@Autowired[\s\S]*?private\s+(\w+)\s+\w+;/g;
     let match;
     while ((match = fieldPattern.exec(content)) !== null) {
       dependencies.add(match[1]);
     }
-
-
 
     const className = this.extractClassName(content);
     if (className) {
@@ -1229,11 +1123,40 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
+    const resolveNodeId = (name: string, fallbackType: string): string => {
+      const normalizedName = name.replace(/<.*>$/, '').split(/[.$]/).filter(Boolean).pop() || name;
+      const candidates = nodes.filter(node => {
+        const nodeName = node.name.replace(/<.*>$/, '').split(/[.$]/).filter(Boolean).pop() || node.name;
+        return nodeName === normalizedName && (node.level === undefined || node.level <= 3);
+      });
+      const candidateIds = [...new Set(candidates.map(node => node.id))];
+      if (candidateIds.length === 1) return candidateIds[0];
+
+      const nodeId = `${fallbackType}_${this.sanitizeId(name)}`;
+      if (!nodes.some(node => node.id === nodeId)) {
+        nodes.push(this.createNode(
+          nodeId,
+          name,
+          fallbackType,
+          3,
+          undefined,
+          undefined,
+          undefined,
+          {
+            framework: 'spring-boot',
+            resolution: candidateIds.length === 0 ? 'unresolved' : 'ambiguous',
+            candidate_node_ids: candidateIds,
+          }
+        ));
+      }
+      return nodeId;
+    };
+
     controllers.forEach(controller => {
       const controllerId = `controller_${this.sanitizeId(controller.name)}`;
 
       controller.dependencies.forEach(depName => {
-        const serviceId = `service_${this.sanitizeId(depName)}`;
+        const serviceId = resolveNodeId(depName, 'injected_dependency');
         edges.push(this.createEdge(
           `${controllerId}_depends_on_${serviceId}`,
           controllerId,
@@ -1249,7 +1172,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const serviceId = `service_${this.sanitizeId(service.name)}`;
 
       service.dependencies.forEach(depName => {
-        const depServiceId = `service_${this.sanitizeId(depName)}`;
+        const depServiceId = resolveNodeId(depName, 'injected_dependency');
         edges.push(this.createEdge(
           `${serviceId}_depends_on_${depServiceId}`,
           serviceId,
@@ -1265,7 +1188,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const entityId = `entity_${this.sanitizeId(entity.name)}`;
 
       entity.relationships.forEach(relationship => {
-        const targetEntityId = `entity_${this.sanitizeId(relationship.target)}`;
+        const targetEntityId = resolveNodeId(relationship.target, 'entity_reference');
         edges.push(this.createEdge(
           `${entityId}_${relationship.type}_${targetEntityId}`,
           entityId,
@@ -1318,15 +1241,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     ];
   }
 
-
-
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
-
-
-
 
     const apiOperationMatches = content.matchAll(/@ApiOperation\s*\(\s*value\s*=\s*['"]([^'"]+)['"]/g);
     const apiOperations = [];
@@ -1334,20 +1252,17 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       apiOperations.push(match[1]);
     }
 
-
     const javadocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\//g);
     const javadocs = [];
     for (const match of javadocMatches) {
       javadocs.push(match[1].trim());
     }
 
-
     const entityDocMatches = content.matchAll(/@Entity[^\n]*\n[^\n]*\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/\s*(?:public\s+)?class/g);
     const entityDocs = [];
     for (const match of entityDocMatches) {
       entityDocs.push(match[1].trim());
     }
-
 
     const configPropMatches = content.matchAll(/@ConfigurationProperties\s*\([^)]*\)[^\n]*\n[^\n]*\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\//g);
     const configDocs = [];
@@ -1388,7 +1303,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-
       if (trimmedLine.startsWith('//')) {
         const commentText = trimmedLine.substring(2).trim();
         if (commentText.length > 0) {
@@ -1413,7 +1327,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           comments.push(comment);
         }
       }
-
 
       if (trimmedLine.includes('/*') && !trimmedLine.includes('/**')) {
         let commentText = '';

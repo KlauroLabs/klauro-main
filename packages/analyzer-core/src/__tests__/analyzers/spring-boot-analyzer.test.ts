@@ -121,6 +121,25 @@ describe('SpringBootAnalyzer', () => {
       expect((contribution.nodes || []).filter(n => n.type === 'controller')).toHaveLength(0);
       expect(contribution.entry_points || []).toHaveLength(0);
     });
+
+    it('materializes unresolved injected dependencies and keeps every relationship endpoint navigable', async () => {
+      await writeJava(
+        'src/main/java/com/example/web/OwnerResource.java',
+        [
+          'import org.springframework.web.bind.annotation.RestController;',
+          '@RestController',
+          'class OwnerResource {',
+          '    private final OwnerRepository repository;',
+          '    OwnerResource(OwnerRepository repository) { this.repository = repository; }',
+          '}',
+        ].join('\n')
+      );
+
+      const contribution = await new SpringBootAnalyzer().analyze({ projectPath: tmpDir });
+      const nodeIds = new Set((contribution.nodes || []).map(node => node.id));
+      expect((contribution.edges || []).every(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target))).toBe(true);
+      expect((contribution.nodes || []).some(node => node.name === 'OwnerRepository' && node.type === 'injected_dependency')).toBe(true);
+    });
   });
 
   describe('JPA entity extraction', () => {

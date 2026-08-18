@@ -4531,6 +4531,26 @@ describe('linkRouteHandlers: handlerCallCandidates fallback for inline registrat
     expect(edges.length).toBe(0);
   });
 
+  it('canonicalizes a missing framework route source to its resolved language handler', async () => {
+    const nodes: CASNode[] = [
+      functionNode('function:crate/src/routes.rs:status', 'status', 'crate/src/routes.rs'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_status',
+      name: 'GET /status',
+      type: 'http',
+      source_node: 'function:src/routes.rs:status',
+      handler: { node_id: 'function:src/routes.rs:status', method_name: 'status', file: 'src/routes.rs' },
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    expect(entryPoints[0].source_node).toBe(nodes[0].id);
+    expect(entryPoints[0].handler.node_id).toBe(nodes[0].id);
+    expect(edges).toHaveLength(0);
+  });
+
   it('does not add an edge when handlerCallCandidates is absent (no fabrication without evidence)', async () => {
     const nodes: CASNode[] = [
       { id: 'entry_mcp_tool_unresolvable', name: 'unresolvable', type: 'mcp_tool', source: { file: 'src/server.ts', line: 30, end_line: 30 } } as unknown as CASNode,

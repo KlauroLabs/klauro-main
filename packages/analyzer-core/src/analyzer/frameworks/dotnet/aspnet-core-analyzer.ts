@@ -16,8 +16,6 @@ interface AspNetController {
   dependencies: string[];
   isApiController: boolean;
 
-
-
   nodeId?: string;
 }
 
@@ -50,12 +48,12 @@ interface AspNetService {
 }
 
 interface AspNetDbContext {
+  nodeId: string;
   name: string;
   filePath: string;
   dbSets: Array<{ name: string; entityType: string }>;
   connectionString?: string;
 
-  nodeId?: string;
 }
 
 interface AspNetHub {
@@ -141,7 +139,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     const exitPoints: CASExitPoint[] = [];
     const perspectives: CASPerspective[] = [];
 
-    const existingNodes = context.existingAnalysis?.[0]?.nodes || [];
+    const existingNodes = context.existingAnalysis?.flatMap(contribution => contribution.nodes || []) || [];
 
     try {
       const ignorePatterns = [
@@ -228,7 +226,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           const filters = this.extractFilters(content);
           const dependencies = this.extractConstructorDependencies(content, controllerName);
 
-
           const controllerAttributes = this.extractClassAttributes(content, controllerName);
 
           const controllerInfo: AspNetController = {
@@ -288,8 +285,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
               .build();
             newNodes.push(node);
           }
-
-
 
           controllerInfo.nodeId = controllerNodeId;
 
@@ -565,7 +560,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
-
           serviceInfo.nodeId = existingNode ? existingNode.id : serviceId;
         }
       } catch {}
@@ -607,19 +601,18 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             });
           }
 
-          const dbContextInfo: AspNetDbContext = {
-            name: contextName,
-            filePath: file,
-            dbSets
-          };
-
-          dbContexts.push(dbContextInfo);
-
           const contextId = this.generateId('dbcontext', file, contextName);
 
           const existingNode = existingNodes.find(n =>
             n.name === contextName && n.type === 'class'
           );
+          const dbContextInfo: AspNetDbContext = {
+            nodeId: existingNode?.id || contextId,
+            name: contextName,
+            filePath: file,
+            dbSets
+          };
+          dbContexts.push(dbContextInfo);
 
           if (existingNode) {
             existingNode.type = 'database_context';
@@ -653,13 +646,10 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
-
-          dbContextInfo.nodeId = existingNode ? existingNode.id : contextId;
-
           for (const dbSet of dbSets) {
             exitPoints.push(this.createExitPoint(
               this.generateId('exit', file, `${contextName}_${dbSet.name}`),
-              contextId,
+              dbContextInfo.nodeId,
               'database',
               `${contextName}.${dbSet.name}`,
               `Entity Framework DbSet<${dbSet.entityType}>`,
@@ -674,26 +664,50 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             ));
           }
 
+          const entityNodeIds = new Map<string, string>();
+          const entityFiles = new Map<string, string>();
           for (const dbSet of dbSets) {
             const entityFile = csFiles.find(f => {
               const baseName = path.basename(f, '.cs');
               return baseName === dbSet.entityType || baseName === `${dbSet.entityType}Entity` || baseName === `${dbSet.entityType}Model`;
             });
-
+            if (entityFile) entityFiles.set(dbSet.entityType, entityFile);
+            const existingEntity = existingNodes.find(node =>
+              node.name === dbSet.entityType && (node.level === undefined || node.level <= 3)
+            );
+            const entityNodeId = existingEntity?.id || this.generateId('entity', entityFile || file, dbSet.entityType);
+            entityNodeIds.set(dbSet.entityType, entityNodeId);
+            if (!existingEntity && !newNodes.some(node => node.id === entityNodeId)) {
+              newNodes.push(this.createNodeBuilder(entityNodeId, dbSet.entityType, 'database_entity')
+                .withLevel(3, this.getLevelName(3))
+                .withSource({ file: entityFile || file })
+                .withMetadata({
+                  framework: 'aspnet-core',
+                  attributes: { orm: 'entity-framework-core', db_set: dbSet.name, context: contextName }
+                })
+                .withAnalyzers([this.analyzerId], this.analyzerId)
+                .build());
+            }
+            const ownershipEdgeId = this.generateEdgeId(dbContextInfo.nodeId, entityNodeId, 'has-entity');
+            if (!edges.some(edge => edge.id === ownershipEdgeId)) {
+              edges.push(this.createEdgeBuilder(ownershipEdgeId, dbContextInfo.nodeId, entityNodeId, 'has-entity').build());
+            }
+          }
+          for (const dbSet of dbSets) {
+            const entityFile = entityFiles.get(dbSet.entityType);
             if (entityFile) {
               const entityFullPath = path.join(projectPath, entityFile);
               try {
                 const entityContent = await fs.readFile(entityFullPath, 'utf-8');
                 const relationships = this.extractEntityRelationships(entityContent, dbSet.entityType, dbSets);
-
                 for (const rel of relationships) {
-                  const sourceEntityId = this.generateId('entity', file, `${contextName}_${dbSet.name}`);
                   const targetDbSet = dbSets.find(d => d.entityType === rel.targetEntity);
                   if (targetDbSet) {
-                    const targetEntityId = this.generateId('entity', file, `${contextName}_${targetDbSet.name}`);
+                    const sourceEntityId = entityNodeIds.get(dbSet.entityType)!;
+                    const targetEntityId = entityNodeIds.get(targetDbSet.entityType)!;
                     edges.push(this.createEdgeBuilder(
                       this.generateEdgeId(sourceEntityId, targetEntityId, `fk-${rel.propertyName}`),
-                      contextId, contextId, 'entity-relationship'
+                      sourceEntityId, targetEntityId, 'entity-relationship'
                     ).withMetadata({
                       attributes: {
                         relationship_type: rel.type,
@@ -815,12 +829,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     dbContexts: AspNetDbContext[],
     edges: CASEdge[]
   ): void {
-
-
-
-
-
-
 
     for (const controller of controllers) {
       const controllerId = controller.nodeId ?? this.generateId('controller', controller.filePath, controller.name);
@@ -1010,7 +1018,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
         ? `${basePath}/${routeTemplate}`.replace(/\/+/g, '/')
         : basePath;
 
-
       if (!fullPath.startsWith('/')) fullPath = `/${fullPath}`;
 
       const parameters = this.extractRouteParameters(params);
@@ -1055,7 +1062,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     return parameters;
   }
 
-
   private extractClassAttributes(content: string, controllerName: string): string[] {
     const attributes: string[] = [];
     const re = new RegExp(`((?:\\[[^\\]]*\\]\\s*)+)(?:public\\s+)?class\\s+${controllerName}\\b`);
@@ -1068,11 +1074,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     }
     return attributes;
   }
-
-
-
-
-
 
   private aspnetSecurity(
     actionAttributes: string[] = [],
@@ -1246,7 +1247,6 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
 
     return relationships;
   }
-
 
   private classifyServiceType(name: string): string {
     const lower = name.toLowerCase();

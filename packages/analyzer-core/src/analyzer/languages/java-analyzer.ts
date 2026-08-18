@@ -72,7 +72,6 @@ interface JavaImport {
   lineNumber: number;
 }
 
-
 export class JavaAnalyzer extends BaseAnalyzer {
   private springFrameworkDetected = false;
   private mavenProject = false;
@@ -111,22 +110,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-
-
-
-
-
-
-
   private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
     return this.getPackageDirSafeIgnorePatterns(context as AnalysisContext);
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-
-
-
-
 
     const files = await glob(['**/*.java'], {
       cwd: projectPath,
@@ -182,8 +170,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
     try {
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
-
-
 
       const javaFiles = await glob(['**/*.java'], {
         cwd: context.projectPath,
@@ -818,18 +804,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return classes;
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
   private extractRecords(content: string, filePath: string): JavaClass[] {
     const records: JavaClass[] = [];
     const lines = content.split('\n');
@@ -877,13 +851,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return records;
   }
 
-
-
-
-
-
-
-
   private collectRecordComponentString(
     lines: string[],
     startIndex: number,
@@ -920,7 +887,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
     return undefined;
   }
-
 
   private splitTopLevelByComma(text: string): string[] {
     const parts: string[] = [];
@@ -1035,10 +1001,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
           const parameters = this.extractParameters(line);
           const annotations = this.extractAnnotations(lines, i);
 
-
-
-
-
           const signatureText = this.joinSignatureLines(lines, i);
           const throwsMatch = signatureText.match(/throws\s+([^{;]+)/);
           const throwsExceptions = throwsMatch
@@ -1067,18 +1029,10 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return methods;
   }
 
-
-
-
-
-
-
-
   private extractThrownTypes(lines: string[], bodyStart: number, bodyEnd: number): string[] {
     const types = new Set<string>();
     const from = Math.max(0, bodyStart - 1);
     const to = Math.min(lines.length - 1, bodyEnd - 1);
-
 
     const throwNew = /\bthrow\s+new\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*[(<]/g;
     for (let i = from; i <= to; i++) {
@@ -1093,15 +1047,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
     }
     return Array.from(types);
   }
-
-
-
-
-
-
-
-
-
 
   private buildSignatureThrows(
     declared: string[] | undefined,
@@ -1158,14 +1103,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private isMethodDeclaration(line: string): boolean {
     const trimmed = line.trim();
 
-
-
-
-
     if (/^(?:throw|return|if|else|for|while|switch|do|try|catch|finally|synchronized|assert|new|super|this)\b/.test(trimmed)) {
       return false;
     }
 
+    if (trimmed.startsWith('.')) return false;
 
     if (!trimmed.includes('(') || !trimmed.includes(')')) {
       return false;
@@ -1174,16 +1116,13 @@ export class JavaAnalyzer extends BaseAnalyzer {
       return false;
     }
 
-
-
-
     if (/\b(?:if|while|for|switch|catch)\s*\(/.test(trimmed)) {
       return false;
     }
 
-
-
-
+    const assignmentIndex = trimmed.indexOf('=');
+    const parameterIndex = trimmed.indexOf('(');
+    if (assignmentIndex !== -1 && assignmentIndex < parameterIndex) return false;
 
     const hasModifier = /\b(?:public|private|protected|static|final|abstract|synchronized|native|default)\b/.test(trimmed);
     const hasVoid = /\bvoid\s+\w+\s*\(/.test(trimmed);
@@ -1191,18 +1130,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
     return hasModifier || hasVoid || hasTypeName;
   }
-
-
-
-
-
-
-
-
-
-
-
-
 
   private joinSignatureLines(lines: string[], startIndex: number, maxLookahead = 8): string {
     let joined = lines[startIndex];
@@ -2062,11 +1989,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return match ? match[1].trim() : null;
   }
 
-
-
-
-
-
   private buildJavaReceiverTypeMap(content: string, startLine?: number, endLine?: number): Map<string, string> {
     const map = new Map<string, string>();
     if (!content || !startLine) return map;
@@ -2108,7 +2030,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
       const content = await fs.readFile(fullPath, 'utf-8');
       const lines = content.split('\n');
       const packageName = this.extractPackage(content) || 'default';
-
 
       const varTypeCache = new Map<string, Map<string, string>>();
 
@@ -2166,9 +2087,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
               }
             } else {
 
-
-
-
               let varTypes = varTypeCache.get(callerMethod.id);
               if (!varTypes) {
                 varTypes = this.buildJavaReceiverTypeMap(content, callerMethod.source?.line, callerMethod.source?.end_line);
@@ -2182,8 +2100,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
                   edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
                 );
               }
-
-
 
               if (!targetMethod) {
                 const named = methodNodes.filter(n => n.name === methodName);
@@ -2265,6 +2181,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
   private findNextMethodDeclaration(lines: string[], startIndex: number): number {
     for (let i = startIndex + 1; i < lines.length; i++) {
+      if (/\b(?:class|interface|enum|record)\s+[A-Za-z_$][\w$]*/.test(lines[i])) return -1;
       if (this.isMethodDeclaration(lines[i])) {
         return i;
       }
@@ -2358,19 +2275,6 @@ export class JavaAnalyzer extends BaseAnalyzer {
       'technical-debt-analysis'
     ];
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {

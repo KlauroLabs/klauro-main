@@ -21576,6 +21576,11 @@ export class AnalyzerOrchestrator {
           ep.handler.node_id = matchedFunctionNode.id;
         }
 
+        if (!nodeById.has(routeNodeId)) {
+          ep.source_node = matchedFunctionNode.id;
+          continue;
+        }
+
         const edgeId = `route_calls_${routeNodeId}_${matchedFunctionNode.id}`;
         if (!existingEdgeIds.has(edgeId)) {
           const framework = ep.metadata?.graphql_operation_type ? 'graphene' :
