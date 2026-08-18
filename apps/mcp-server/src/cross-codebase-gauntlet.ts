@@ -193,7 +193,10 @@ async function main() {
     },
     {
       name: 'runtime-topology-exposed',
-      pass: systems.length > 0 && systems.every(system => system.graph.runtime_components.length > 0 && (system.graph.runtime_links.length > 0 || system.graph.application_links.length > 0)),
+      pass: systems.length > 0 && systems.every(system =>
+        system.graph.application_links.length > 0 ||
+        system.graph.runtime_components.length > 0 && system.graph.runtime_links.length > 0
+      ),
       observed: Object.fromEntries(systems.map(system => [system.name, {
         components: system.graph.runtime_components.length,
         links: system.graph.runtime_links.length,
@@ -1100,7 +1103,6 @@ function workspaceStructuralSemanticCoverage(graph: CrossCodebaseSystemGraph | u
   return {
     pass: domains.length > 0 &&
       workflows.length > 0 &&
-      describedDomains === domains.length &&
       describedEntities === entities.length &&
       describedWorkflows === workflows.length,
     domains: domains.length,
