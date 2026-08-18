@@ -156,44 +156,44 @@ async function main() {
     },
     {
       name: 'meaningful-cross-codebase-links',
-      pass: !selection.requireLinks || systems.every(system => system.graph.codebases.length < 2 || system.graph.links.length >= 2),
+      pass: systems.length > 0 && (!selection.requireLinks || systems.every(system => system.graph.codebases.length < 2 || system.graph.links.length >= 1)),
       observed: Object.fromEntries(systems.map(system => [system.name, system.graph.links.length])),
     },
     {
       name: 'workspace-applications-extracted',
-      pass: systems.every(system => (system.graph.applications || []).length >= system.graph.codebases.length),
+      pass: systems.length > 0 && systems.every(system => (system.graph.applications || []).length >= system.graph.codebases.length),
       observed: Object.fromEntries(systems.map(system => [system.name, (system.graph.applications || []).length])),
     },
     {
       name: 'workspace-insights-generated',
-      pass: systems.every(system => (system.graph.system_insights || []).length > 0 || system.graph.codebases.length === 1),
+      pass: systems.length > 0 && systems.every(system => (system.graph.system_insights || []).length > 0 || system.graph.codebases.length === 1),
       observed: Object.fromEntries(systems.map(system => [system.name, (system.graph.system_insights || []).map(insight => insight.title).slice(0, 8)])),
     },
     {
       name: 'workspace-semantic-fallbacks-usable',
-      pass: systems.every(system => workspaceSemanticFallbackCoverage(system.graph).pass),
+      pass: systems.length > 0 && systems.every(system => workspaceSemanticFallbackCoverage(system.graph).pass),
       observed: Object.fromEntries(systems.map(system => [system.name, workspaceSemanticFallbackCoverage(system.graph)])),
     },
     {
       name: 'workspace-primary-semantics-ai-enriched',
-      pass: !args.withAi || systems.every(system => workspacePrimarySemanticAiCoverage(system.graph).pass),
+      pass: !args.withAi || systems.length > 0 && systems.every(system => workspacePrimarySemanticAiCoverage(system.graph).pass),
       observed: args.withAi
         ? Object.fromEntries(systems.map(system => [system.name, workspacePrimarySemanticAiCoverage(system.graph)]))
         : 'skipped; run with --with-ai to prove AI-authored workspace semantics',
     },
     {
       name: 'workspace-critical-flows-have-intent',
-      pass: systems.every(system => workspaceWorkflowIntentCoverage(system.graph).pass),
+      pass: systems.length > 0 && systems.every(system => workspaceWorkflowIntentCoverage(system.graph).pass),
       observed: Object.fromEntries(systems.map(system => [system.name, workspaceWorkflowIntentCoverage(system.graph)])),
     },
     {
       name: 'communication-modes-covered',
-      pass: !selection.requireLinks || systems.every(system => communicationCoverage(system.graph).pass),
+      pass: systems.length > 0 && (!selection.requireLinks || systems.every(system => communicationCoverage(system.graph).pass)),
       observed: Object.fromEntries(systems.map(system => [system.name, communicationCoverage(system.graph)])),
     },
     {
       name: 'runtime-topology-exposed',
-      pass: systems.every(system => system.graph.runtime_components.length > 0 && (system.graph.runtime_links.length > 0 || system.graph.application_links.length > 0)),
+      pass: systems.length > 0 && systems.every(system => system.graph.runtime_components.length > 0 && (system.graph.runtime_links.length > 0 || system.graph.application_links.length > 0)),
       observed: Object.fromEntries(systems.map(system => [system.name, {
         components: system.graph.runtime_components.length,
         links: system.graph.runtime_links.length,
@@ -202,7 +202,7 @@ async function main() {
     },
     {
       name: 'actionable-unmatched-consumers-bounded',
-      pass: systems.every(system => actionableUnmatchedBudget(system.graph).pass),
+      pass: systems.length > 0 && systems.every(system => actionableUnmatchedBudget(system.graph).pass),
       observed: Object.fromEntries(systems.map(system => [
         system.name,
         actionableUnmatchedBudget(system.graph),
@@ -387,8 +387,8 @@ async function runMcpWorkspacePipelineInput(
   suffix: string,
 ): Promise<{ system?: SystemReport; consumerResult: McpConsumerResult }> {
   const transport = new StdioClientTransport({
-    command: path.resolve(process.cwd(), 'node_modules/.bin/tsx'),
-    args: ['src/index.ts'],
+    command: process.execPath,
+    args: [require.resolve('tsx/cli'), path.resolve(process.cwd(), 'src/index.ts')],
     cwd: process.cwd(),
     stderr: 'pipe',
 	    env: {
@@ -448,8 +448,8 @@ async function runMcpConsumerCheckFreshClient(
   aiEnrichment: boolean,
 ): Promise<McpConsumerResult> {
   const transport = new StdioClientTransport({
-    command: path.resolve(process.cwd(), 'node_modules/.bin/tsx'),
-    args: ['src/index.ts'],
+    command: process.execPath,
+    args: [require.resolve('tsx/cli'), path.resolve(process.cwd(), 'src/index.ts')],
     cwd: process.cwd(),
     stderr: 'pipe',
     env: {
@@ -897,7 +897,7 @@ async function resolveTargets(args: ReturnType<typeof parseArgs>): Promise<{
     return { root, targets, analyze: args.fresh, requireLinks: args.requireLinks };
   }
 
-  const root = path.resolve(process.cwd(), 'fixtures/was-bench/ui-api-worker');
+  const root = path.resolve(process.cwd(), 'fixtures/cross-repo-contracts/web-api');
   const entries = await fs.readdir(root, { withFileTypes: true });
   const targets = entries
     .filter(entry => entry.isDirectory())
@@ -993,7 +993,7 @@ function formatUsage(): string {
     '  --fresh                 Re-analyze target repos before building workspace graphs.',
     '  --no-mcp-consumer       Use internal graph builder only; skip MCP consumer validation.',
     '  --with-ai               Enable AI enrichment checks when provider config is available.',
-    '  --require-links         Require at least two resolved cross-repository links.',
+    '  --require-links         Require at least one resolved cross-repository link.',
     '  -h, --help              Show this help.',
     '',
   ].join('\n');

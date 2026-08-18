@@ -179,7 +179,7 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-gauntlet.ts",
-      "ceiling": 1541
+      "ceiling": 1314
     },
     {
       "file": "apps/mcp-server/src/incremental-benchmark.ts",
