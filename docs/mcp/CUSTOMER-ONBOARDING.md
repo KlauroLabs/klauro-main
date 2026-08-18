@@ -13,8 +13,9 @@ macOS and Linux:
 
 ```bash
 curl -fsSL https://mcp.klauro.com/install.sh | sh
-klauro login --email you@example.com
+klauro login --register
 cd /absolute/path/to/repo
+klauro install --claude-scope user
 klauro init
 klauro analyze
 klauro doctor
@@ -24,14 +25,15 @@ Windows PowerShell:
 
 ```powershell
 irm https://mcp.klauro.com/install.ps1 | iex
-klauro login --email you@example.com
+klauro login --register
 Set-Location C:\absolute\path\to\repo
+klauro install --claude-scope user
 klauro init
 klauro analyze
 klauro doctor
 ```
 
-The installer downloads the checksum-verified platform executable, smoke-tests it, and installs `klauro`. If no executable is available for the platform, it explicitly offers the dependency-free npm-package fallback. `klauro init` binds the repository, writes the local policy files, configures supported agent clients, and enables Fabric when the account and workspace permit it. `klauro analyze` submits the filtered committed-source context to the hosted analyzer and waits for a queryable CAS.
+The installer downloads the checksum-verified platform executable, smoke-tests it, and installs `klauro`. If no executable is published for the platform, it installs the published npm tarball and requires Node.js 20+. `klauro install` registers the MCP and agent guidance. `klauro init` binds the repository and writes local source policy. `klauro analyze` submits the filtered source context to the hosted analyzer and waits for a queryable CAS.
 
 Expected customer-visible outputs:
 

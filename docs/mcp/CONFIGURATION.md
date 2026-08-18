@@ -1,17 +1,31 @@
 # Klauro MCP Server - Configuration
 
-## Prerequisites
+## Customer installation
 
-- Node.js 20+
-- npm
-- The Klauro proof-of-concept repository cloned locally
+macOS and Linux:
+
+```bash
+curl -fsSL https://mcp.klauro.com/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://mcp.klauro.com/install.ps1 | iex
+```
+
+The installer prefers a checksum-verified native binary. If the release does not publish one for the current platform, it installs the customer npm tarball and requires Node.js 20+.
+
+## Contributor source installation
+
+Building the monorepo requires Node.js 22, npm, and a source checkout.
 
 ## Installation
 
 ```bash
-cd apps/mcp-server
-npm install --legacy-peer-deps
-npm run build
+cd /absolute/path/to/proof-of-concept
+npm ci --include=dev --legacy-peer-deps
+npm --prefix apps/mcp-server run build
 ```
 
 The `--legacy-peer-deps` flag is required due to tree-sitter native module peer dependency ranges.

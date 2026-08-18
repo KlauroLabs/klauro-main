@@ -1,50 +1,51 @@
 # Klauro MCP - Getting Started
 
-From zero to first agent context in under ten minutes on a mid-size repository. The path is: install the MCP server, analyze the repo with the fast agent profile, ask for task-scoped agent context. On a warm developer machine this is usually under two minutes; the ten-minute bar includes dependency install and bundle build.
+From zero to first agent context through the hosted product path. The supported customer flow installs the thin CLI/MCP, authenticates, registers the MCP with an agent client, initializes a repository, and submits it to the hosted analyzer.
 
 ## Prerequisites
 
-- Node.js 20+
-- A local checkout of this repository (`proof-of-concept`)
+- macOS or Linux with `curl`; Windows customers use the PowerShell installer.
+- Node.js 20+ and npm only when no native binary is published for the current platform.
+- A local checkout of the repository to analyze.
 
 ## 1. Install: one command
 
 ```bash
-node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /path/to/your/repo --claude-md /path/to/your/repo
+curl -fsSL https://mcp.klauro.com/install.sh | sh
+klauro login --register
+cd /absolute/path/to/your/repo
+klauro install --claude-scope user
+klauro init
+klauro analyze
+klauro doctor
 ```
 
-To prove immediate value in the same command, add `--first-value`:
+The download is checksum-verified and smoke-tested before installation. If the manifest has no native binary for the platform, the installer uses the published npm tarball and requires Node.js 20+.
 
-```bash
-node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /path/to/your/repo --first-value --claude-md /path/to/your/repo
-```
-
-Equivalent once dependencies exist: `npm --prefix apps/mcp-server run setup -- ...` or `klauro install ...`.
-
-The installer is idempotent and does all of the following, printing a PASS/WARN/FAIL line with a concrete fix for every step:
-
-1. Verifies Node.js 20+ and npm.
-2. Runs `npm install` in `apps/mcp-server/` if dependencies are missing.
-3. Locates the bundled server (`dist/index.cjs`) and CLI (`dist/cli.cjs`) and builds them only when missing (`--rebuild` to force).
-4. Creates `~/.klauro/analyses` (or `KLAURO_STORAGE_PATH`) and verifies it is writable.
-5. Registers the server with Claude Code (`claude mcp add --scope user klauro -- node .../dist/index.cjs`; `--no-register` to skip, `--claude-scope` for project/local scope) and prints the project-scoped `.mcp.json` snippet plus exact Codex CLI registration commands.
-6. With `--claude-md <repo>`, appends the Klauro operating loop to that repo's `CLAUDE.md` (idempotent; without the flag it prints the snippet to copy).
-7. Self-check: spawns the bundle, asserts the MCP initialize handshake answers within 600ms, then calls `resolve_agent_analysis` end to end — reporting either the selected analysis or a clear "no analyses yet" message with the exact analyze command to run next.
-8. With `--first-value`, runs `agent-fast` analysis and prints the first agent-context summary: system name, graph size, selected task, and first files to inspect.
+`klauro install` registers the MCP with supported agent clients and installs repository operating guidance. Restart the agent client after this step. `klauro init` binds the repository and writes the source-transfer policy. `klauro analyze` sends the filtered source snapshot to the hosted analyzer and waits for queryable CAS.
 
 Restart Claude Code and confirm with `/mcp` that the `klauro` server is listed.
 
 Environment health at any later point:
 
 ```bash
-npm --prefix apps/mcp-server run doctor
+klauro doctor
 ```
 
-With no path, `klauro doctor` checks the machine: Node version, bundle presence and freshness against the sources, handshake latency, `~/.klauro` writability and disk usage, AI provider availability (none configured means analysis runs fully deterministic — the agent-fast profile is unaffected), zstd, stored-analysis versions against the 1.6.0 compatibility floor, and running Klauro server processes. Every WARN/FAIL carries its fix. With a path, `klauro doctor /path/to/repo` reports per-repository analysis readiness instead.
+With no path, `klauro doctor` checks installation, authentication, MCP registration, storage, release compatibility, and running processes. Every warning or failure carries its recovery action. With a path, `klauro doctor /path/to/repo` reports repository analysis readiness.
 
-## Manual install (what the installer automates)
+## Contributor source install
 
-The bundled entry (`dist/index.cjs`) starts in well under a second, so the server connects inside the Claude Code init window and its tools are visible to the agent from the first turn. The `src/index.ts` + tsx entry remains the development path (`npm run dev`), but registering it with clients is not recommended: its slower startup can leave the server pending at session init.
+Building the monorepo from source requires Node.js 22. This is a contributor path, not the customer installation path.
+
+```bash
+cd /absolute/path/to/proof-of-concept
+npm ci --include=dev --legacy-peer-deps
+npm --prefix apps/mcp-server run build
+node apps/mcp-server/scripts/install.mjs /path/to/your/repo --claude-md /path/to/your/repo
+```
+
+The bundled entry (`dist/index.cjs`) is the supported source-built MCP entrypoint. `tsx src/index.ts` is development-only.
 
 Add Klauro to the target project's `.mcp.json` (or `~/.claude.json` for global use):
 
@@ -68,14 +69,13 @@ claude mcp add klauro -- node /absolute/path/to/proof-of-concept/apps/mcp-server
 
 Restart Claude Code and confirm with `/mcp` that the `klauro` server is listed.
 
-## 2. Analyze: build the CAS graph with the fast agent profile
+## 2. Analyze
 
 ```bash
-cd /absolute/path/to/proof-of-concept/apps/mcp-server
-npm --silent run analyze -- /path/to/your/repo --analysis-focus agent-fast
+klauro analyze /path/to/your/repo --analysis-focus agent-fast
 ```
 
-`agent-fast` includes the required AI system narrative and primary capability summaries, but skips lazy entity/flow/node descriptions and embeddings so agents get the structural graph and product orientation without paying for heavy enrichment. Run `--analysis-focus full` later if you also want every deeper enrichment layer.
+`agent-fast` builds the structural graph and requests the system narrative and primary capability summaries. If hosted AI enrichment is unavailable, the result reports degraded narrative provenance instead of presenting deterministic filler as authored comprehension. Use `--analysis-focus full` for deeper enrichment.
 
 From inside an agent session the equivalent is the `analyze_codebase` tool with `analysis_focus: "agent-fast"`.
 
@@ -120,20 +120,16 @@ The capsule-only context contains the K15 context capsule, K5 execution capsule,
 
 ## Measured timing
 
-Measured on a mid-size production Angular repository (truckspyui, ~800 TypeScript files) on an Apple Silicon laptop, full rebuild from scratch (`--force`):
+The source-exact VPS new-user proof completes customer artifact construction, clean-prefix installation, authentication, hosted full analysis, installed MCP first context, and hosted incremental sync in 19.9 seconds. Real repositories vary with source size and analysis focus.
 
-- `analyze --analysis-focus agent-fast --force`: 12.9s
-- `agent-context --task-type modify`: 2.4s
-- Total install-to-first-context (excluding one-time `npm install`): ~15s after a one-time npm install and build
-
-The release smoke test for this path is:
+The release gate for this path is:
 
 ```bash
 cd /absolute/path/to/proof-of-concept/apps/mcp-server
 npm run new-user-e2e
 ```
 
-It creates a fresh temporary repo, runs the deterministic installer with `--first-value`, verifies the installed CLI, starts a local hosted analyzer, runs remote full analysis, edits the repo, and proves incremental remote sync updates CAS. It writes `.klauro-new-user-e2e/latest-report.json`, and `npm run agent-proof-full` now requires that report through `agent-vision-acceptance`.
+It creates a fresh repository, builds and installs the customer artifact, verifies the CLI, authenticates, runs hosted full analysis, queries installed MCP context, edits the repository, and proves hosted incremental sync updates CAS. The beta process runs this gate on the source-exact VPS candidate.
 
 ## Operations: analysis memory
 
