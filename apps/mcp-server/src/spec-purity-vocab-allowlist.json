@@ -89,6 +89,12 @@
       "name": "SEMANTIC_SOURCE_EXTENSIONS",
       "category": "closed-technical-taxonomy",
       "reason": "Supported source file extensions select a syntax-valid benchmark probe and never infer product purpose or capability meaning."
+    },
+    {
+      "file": "apps/mcp-server/src/test-discovery.ts",
+      "name": "JAVASCRIPT_TEST_APIS",
+      "category": "closed-technical-taxonomy",
+      "reason": "Established JavaScript test declaration APIs identify syntax-backed test definitions and never infer product purpose or capability meaning."
     }
   ]
 }

@@ -260,10 +260,6 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline:qucukc1myjpc>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
       "name": "<inline:vyvceg16jegw>"
     },
     {
@@ -537,10 +533,6 @@
     {
       "file": "apps/mcp-server/src/storage-maintenance.ts",
       "name": "TEMP_ARTIFACT_PREFIXES"
-    },
-    {
-      "file": "apps/mcp-server/src/test-discovery.ts",
-      "name": "<inline:jegtt41hhi1h>"
     },
     {
       "file": "apps/mcp-server/src/test-discovery.ts",
