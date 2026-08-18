@@ -316,6 +316,57 @@ test('segmented CAS retrieval retries a dropped section response', async (t) => 
   assert.equal(sectionRequests, 2);
 });
 
+test('whole CAS retrieval retries a dropped export response', async (t) => {
+  const analysisId = 'whole-export-resilience';
+  const expected = { system: { name: 'resilient-whole-export' }, nodes: [], edges: [] };
+  const payload = JSON.stringify(expected);
+  let exportRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'error', error: 'Segmented analysis is not ready' }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/export`) {
+      exportRequests += 1;
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload),
+        'x-klauro-cas-codec': 'none',
+      });
+      if (exportRequests === 1) {
+        res.write(payload.slice(0, Math.floor(payload.length / 2)));
+        res.socket?.destroy();
+        return;
+      }
+      res.end(payload);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+
+  const cas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    ['identity'],
+  );
+
+  assert.equal(cas.system.name, 'resilient-whole-export');
+  assert.equal(exportRequests, 2);
+});
+
 test('segmented CAS retrieval retries a section that is still being published', async (t) => {
   const analysisId = 'segmented-publication-race';
   let sectionRequests = 0;

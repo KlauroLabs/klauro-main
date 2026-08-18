@@ -333,39 +333,39 @@ export async function waitForRemoteAnalysis(
         requestedSections || CAS_SECTION_NAMES,
       );
       if (segmented) return segmented;
-      let exportResponse: Response;
       try {
-        exportResponse = await fetchWithTimeout(
-          `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/export`,
-          { headers },
-          remoteRequestTimeoutMs(),
-        );
+        const exported = await withRemoteReadRetry(async () => {
+          const exportResponse = await fetchWithTimeout(
+            `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/export`,
+            { headers },
+            remoteRequestTimeoutMs(),
+          );
+          if (exportResponse.status === 404 || exportResponse.status === 409) return undefined;
+          if (!exportResponse.ok) throw new Error(`Remote CAS export returned ${exportResponse.status}`);
+          const exportedRevisionValue = exportResponse.headers.get('x-klauro-analysis-revision');
+          const exportedRevision = exportedRevisionValue ? Number(exportedRevisionValue) : undefined;
+          if (expectedRevision !== undefined && exportedRevision !== undefined && exportedRevision !== expectedRevision) {
+            if (exportedRevision > expectedRevision) {
+              throw new Error(`Remote analysis ${analysisId} revision ${expectedRevision} was superseded by revision ${exportedRevision}`);
+            }
+            return undefined;
+          }
+          const codec = exportResponse.headers.get('x-klauro-cas-codec') || 'none';
+          if (exportResponse.body) {
+            return decodeCasExportStream<RemoteAnalyzeResponse['cas']>(Readable.fromWeb(exportResponse.body as any), codec);
+          }
+          return fetchUncompressedRemoteCas(serverUrl, analysisId, headers);
+        });
+        if (exported) return exported;
+        lastStatus = expectedRevision === undefined
+          ? 'CAS export is still populating'
+          : `waiting for revision ${expectedRevision} export`;
       } catch (error) {
+        if (!isRetriableNetworkError(error)) throw error;
         lastStatus = `CAS export temporarily unreachable (${error instanceof Error ? error.message : String(error)})`;
-        await sleep(100);
-        continue;
       }
-      if (exportResponse.status === 404 || exportResponse.status === 409) {
-        lastStatus = 'CAS export is still populating';
-        await sleep(100);
-        continue;
-      }
-      if (!exportResponse.ok) throw new Error(`Remote CAS export returned ${exportResponse.status}`);
-      const exportedRevisionValue = exportResponse.headers.get('x-klauro-analysis-revision');
-      const exportedRevision = exportedRevisionValue ? Number(exportedRevisionValue) : undefined;
-      if (expectedRevision !== undefined && exportedRevision !== undefined && exportedRevision !== expectedRevision) {
-        if (exportedRevision > expectedRevision) {
-          throw new Error(`Remote analysis ${analysisId} revision ${expectedRevision} was superseded by revision ${exportedRevision}`);
-        }
-        lastStatus = `waiting for revision ${expectedRevision} export`;
-        await sleep(100);
-        continue;
-      }
-      const codec = exportResponse.headers.get('x-klauro-cas-codec') || 'none';
-      if (exportResponse.body) {
-        return decodeCasExportStream<RemoteAnalyzeResponse['cas']>(Readable.fromWeb(exportResponse.body as any), codec);
-      }
-      return fetchUncompressedRemoteCas(serverUrl, analysisId, headers);
+      await sleep(100);
+      continue;
     }
     await sleep(100);
   }

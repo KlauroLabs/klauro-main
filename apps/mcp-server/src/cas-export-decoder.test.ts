@@ -29,3 +29,13 @@ test('streams uncompressed CAS exports into structured values', async () => {
   const decoded = await decodeCasExportStream<typeof expected>(Readable.from([JSON.stringify(expected)]), 'none');
   assert.deepEqual(decoded, expected);
 });
+
+test('turns a dropped compressed response into a handled decode rejection', async () => {
+  const compressed = zlib.zstdCompressSync(Buffer.from(JSON.stringify({ nodes: [{ id: 'node-1' }] })));
+  const source = Readable.from((async function* () {
+    yield compressed.subarray(0, Math.max(1, Math.floor(compressed.length / 2)));
+    throw new Error('socket closed mid-export');
+  })());
+
+  await assert.rejects(decodeCasExportStream(source, 'zstd'), /socket closed mid-export/);
+});

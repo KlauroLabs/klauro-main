@@ -2,8 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
-import { shutdownAnalysisWorker } from './analyzer';
+import type { Server } from 'node:http';
 
 interface StepResult {
   name: string;
@@ -48,6 +47,7 @@ async function main(): Promise<void> {
     NPM_CONFIG_CACHE: npmCache,
     KLAURO_STORAGE_PATH: path.join(root, 'storage'),
     KLAURO_REMOTE_ANALYZER_DATA: remoteData,
+    KLAURO_COORD_DIR: path.join(remoteData, 'coordination'),
     KLAURO_SMOKE_MAX_STARTUP_MS: process.env.KLAURO_SMOKE_MAX_STARTUP_MS || '3000',
   };
   fs.mkdirSync(env.HOME, { recursive: true });
@@ -56,7 +56,8 @@ async function main(): Promise<void> {
   fs.cpSync(fixturePath, repo, { recursive: true });
   initGitRepo(repo, env);
 
-  let server: ReturnType<typeof createRemoteAnalyzerHttpServer> | undefined;
+  let server: Server | undefined;
+  let shutdownAnalysisWorker: (() => void) | undefined;
   try {
     results.push(runStep('build customer artifact', () => {
       const result = run('npm', ['run', 'build'], env, 3 * 60 * 1000);
@@ -84,6 +85,12 @@ async function main(): Promise<void> {
       return result.stdout.trim();
     }));
 
+    process.env.KLAURO_COORD_DIR = env.KLAURO_COORD_DIR;
+    const [{ createRemoteAnalyzerHttpServer }, analyzer] = await Promise.all([
+      import('./remote-analyzer-service'),
+      import('./analyzer'),
+    ]);
+    shutdownAnalysisWorker = analyzer.shutdownAnalysisWorker;
     const activeServer = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
     server = activeServer;
     await new Promise<void>(resolve => activeServer.listen(0, '127.0.0.1', resolve));
@@ -146,7 +153,7 @@ async function main(): Promise<void> {
     process.stdout.write(formatReport(report));
   } finally {
     if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
-    shutdownAnalysisWorker();
+    shutdownAnalysisWorker?.();
     if (process.env.KLAURO_KEEP_NEW_USER_E2E !== 'true') {
       fs.rmSync(root, { recursive: true, force: true });
     }
