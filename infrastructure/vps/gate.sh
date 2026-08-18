@@ -51,10 +51,12 @@ reap_stale_containers "$GATE_MAX_AGE_MIN"
 
 REBUILD=0
 ALLOW_SOURCE_MISMATCH=0
+RUN_AS_ROOT=0
 while [[ "${1:-}" == --* ]]; do
   case "${1:-}" in
     --rebuild) REBUILD=1 ;;
     --allow-source-mismatch) ALLOW_SOURCE_MISMATCH=1 ;;
+    --run-as-root) RUN_AS_ROOT=1 ;;
     *) echo "unknown flag: ${1:-}" >&2; exit 2 ;;
   esac
   shift
@@ -65,7 +67,7 @@ shift || true
 CMD="$*"
 
 if [ -z "$WORKSPACE" ] || [ -z "$CMD" ]; then
-  echo "usage: gate.sh [--rebuild] [--allow-source-mismatch] <workspace> <cmd...>" >&2
+  echo "usage: gate.sh [--rebuild] [--allow-source-mismatch] [--run-as-root] <workspace> <cmd...>" >&2
   exit 2
 fi
 
@@ -196,6 +198,11 @@ if [ -n "${KLAURO_GATE_INPUT_DIR:-}" ]; then
   DOCKER_MOUNT_ARGS+=(-v "$GATE_INPUT_DIR:/gate-input:ro")
 fi
 
+DOCKER_USER_ARGS=(--user gate)
+if [ "$RUN_AS_ROOT" = "1" ]; then
+  DOCKER_USER_ARGS=()
+fi
+
 RUN_STARTED_AT="$(date +%s)"
 set +e
 timeout --signal=TERM --kill-after=10s "${GATE_TIMEOUT_S}s" \
@@ -203,7 +210,7 @@ timeout --signal=TERM --kill-after=10s "${GATE_TIMEOUT_S}s" \
   --cidfile "$CIDFILE" \
   --label "$GATE_LABEL" \
   --label "klauro-gate-timeout-s=$GATE_TIMEOUT_S" \
-  --user gate \
+  "${DOCKER_USER_ARGS[@]}" \
   -e NODE_ENV=development \
   -e KLAURO_STORAGE_PATH=/tmp/klauro-gate-storage \
   -e KLAURO_REMOTE_ANALYZER_DATA=/tmp/klauro-gate-data \

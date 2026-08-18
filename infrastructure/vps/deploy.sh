@@ -107,16 +107,6 @@ if [ -z "$REACHABLE_BRANCH" ]; then
 fi
 echo "==> Deploy sha $DEPLOY_SHA_FULL is reachable from branch '$REACHABLE_BRANCH'." >&2
 
-echo "==> Checking spec/source purity (evidence-derived forbidden-name gate — see spec-purity-gate.ts)"
-if ! ( cd "$APP_DIR/apps/mcp-server" && npx tsx src/spec-purity-gate-cli.ts "$APP_DIR" ); then
-  exit 1
-fi
-
-echo "==> Checking file-size ratchet (no tracked file may grow — see file-size-ratchet-gate.ts)"
-if ! ( cd "$APP_DIR/apps/mcp-server" && npx tsx src/file-size-ratchet-gate-cli.ts "$APP_DIR" ); then
-  exit 1
-fi
-
 if [ -f "$APP_DIR/.env" ]; then set -a; . "$APP_DIR/.env"; set +a; fi
 if [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_USER:-}" ] || [ -z "${VPS_PASSWORD:-}" ]; then
   echo "ERROR: VPS_HOST/VPS_USER/VPS_PASSWORD missing (repo-root .env). Cannot deploy." >&2
@@ -134,23 +124,35 @@ SOURCE_SYNC_EXCLUDES=(
   --exclude .pack
   --exclude logs
   --exclude docs.zip
-  --exclude .claude/worktrees
+  --exclude .claude
+  --exclude .proof-output
   --exclude '.klauro-*'
   --exclude .customer-package
 )
 
-if ! grep -q '/opt/klauro/downloads' "$APP_DIR/infrastructure/vps/docker-compose.yml"; then
+if ! git -C "$APP_DIR" show "$DEPLOY_SHA_FULL:infrastructure/vps/docker-compose.yml" | grep -q '/opt/klauro/downloads'; then
   echo "ERROR: docker-compose.yml is missing the /opt/klauro/downloads mount." >&2
   echo "       Deploying it would break the install/update distribution channel. Aborting." >&2
   exit 1
 fi
 
+echo "==> Staging exact deployment candidate on the VPS"
+bash "$APP_DIR/infrastructure/vps/sync-gate-candidate.sh" --commit "$DEPLOY_SHA_FULL"
+
+echo "==> Checking spec/source purity on the VPS"
+$SSH "$DEST" "cd /opt/klauro/devgate && GATE_TIMEOUT_S=900 bash infrastructure/vps/gate.sh --allow-source-mismatch apps/mcp-server 'npx tsx src/spec-purity-gate-cli.ts ../..'"
+
+echo "==> Checking file-size ratchet on the VPS"
+$SSH "$DEST" "cd /opt/klauro/devgate && GATE_TIMEOUT_S=900 bash infrastructure/vps/gate.sh --allow-source-mismatch apps/mcp-server 'npx tsx src/file-size-ratchet-gate-cli.ts ../..'"
+
 if [ "$SKIP_APP_BUILD" = "0" ]; then
-  echo "==> Building app with VITE_KLAURO_API_URL=$KLAURO_URL"
-  VITE_KLAURO_API_URL="$KLAURO_URL" npm run app:build
+  printf -v KLAURO_URL_SHELL '%q' "$KLAURO_URL"
+  echo "==> Building app on the VPS with VITE_KLAURO_API_URL=$KLAURO_URL"
+  $SSH "$DEST" "cd /opt/klauro/devgate && GATE_TIMEOUT_S=1800 bash infrastructure/vps/gate.sh --allow-source-mismatch --run-as-root . 'VITE_KLAURO_API_URL=$KLAURO_URL_SHELL npm run app:build'"
+  $SSH "$DEST" "mkdir -p /opt/klauro/app-dist && rsync -a --delete /opt/klauro/devgate/apps/app/dist/ /opt/klauro/app-dist/"
 else
-  echo "==> --skip-app-build: reusing existing apps/app/dist"
-  test -d "$APP_DIR/apps/app/dist" || { echo "ERROR: apps/app/dist not found." >&2; exit 1; }
+  echo "==> --skip-app-build: reusing existing VPS app-dist"
+  $SSH "$DEST" "test -d /opt/klauro/app-dist" || { echo "ERROR: /opt/klauro/app-dist not found on the VPS." >&2; exit 1; }
 fi
 
 DEPLOY_SHA="$DEPLOY_SHA_FULL"
@@ -162,8 +164,6 @@ git -C "$APP_DIR" archive --format=tar "$DEPLOY_SHA" | tar -x -C "$STAGE"
 STAGED_FILES="$(find "$STAGE" -type f | wc -l | tr -d ' ')"
 echo "    staged $STAGED_FILES file(s) from the commit"
 
-echo "==> Syncing app-dist"
-rsync -az --delete -e "$SSH" apps/app/dist/ "$DEST:/opt/klauro/app-dist/"
 echo "==> Syncing source (excluding heavy/generated dirs)"
 rsync -az --delete-delay "${SOURCE_SYNC_EXCLUDES[@]}" -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/source/"
 echo "==> Syncing remote gate source to the identical deployment snapshot"

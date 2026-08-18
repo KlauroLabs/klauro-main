@@ -29,7 +29,8 @@ test('native C sharp grammar stays on the tree-sitter 0.21 compatible release', 
 
 test('VPS source sync preserves remote generated workspaces outside the deployment snapshot', () => {
   const source = read('infrastructure/vps/deploy.sh');
-  assert.match(source, /--exclude \.claude\/worktrees/);
+  assert.match(source, /--exclude \.claude/);
+  assert.match(source, /--exclude \.proof-output/);
   assert.match(source, /--exclude '\.klauro-\*'/);
   assert.match(source, /--exclude \.customer-package/);
 });

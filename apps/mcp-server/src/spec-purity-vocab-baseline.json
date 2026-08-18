@@ -507,10 +507,6 @@
       "name": "EXCLUDED_DIRS"
     },
     {
-      "file": "apps/mcp-server/src/repo-discovery.ts",
-      "name": "MANIFESTS"
-    },
-    {
       "file": "apps/mcp-server/src/robustness-battery.ts",
       "name": "CASES"
     },
