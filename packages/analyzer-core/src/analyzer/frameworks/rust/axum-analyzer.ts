@@ -1,6 +1,7 @@
 import { AnalysisContext, BaseAnalyzer } from '../../core/base-analyzer';
 import { CASContribution, CASEntryPoint } from '../../../types/cas.types';
 import { isAuthenticationGuardName } from '../../core/guard-classification';
+import { maskCStyleComments } from '../../core/source-comment-mask';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
@@ -33,7 +34,7 @@ export class AxumAnalyzer extends BaseAnalyzer {
       const cargo = await fs.readFile(path.join(projectPath, 'Cargo.toml'), 'utf-8');
       if (!/\baxum\b/.test(cargo)) return false;
       for (const file of await this.findRustFiles(projectPath)) {
-        const content = await fs.readFile(file, 'utf-8');
+        const content = maskCStyleComments(await fs.readFile(file, 'utf-8'), { singleQuotedStrings: false });
         if (/\bRouter::new\s*\(/.test(content) && /\.route\s*\(/.test(content)) return true;
       }
     } catch {
@@ -54,11 +55,11 @@ export class AxumAnalyzer extends BaseAnalyzer {
         file,
         relativePath: path.relative(context.projectPath, file),
         stem: path.basename(file, '.rs'),
-        content: await fs.readFile(file, 'utf-8'),
+        content: maskCStyleComments(await fs.readFile(file, 'utf-8'), { singleQuotedStrings: false }),
       })));
 
 
-      for (const src of sources) this.extractAxumRoutes(src.content, src.relativePath, entryPoints);
+      for (const src of sources) this.extractAxumRoutes(src.content, src.relativePath, nodes, entryPoints);
       const model = this.buildAxumRouterModel(sources);
       const routeAuth = this.computeScopeRouteAuth(sources);
       this.applyRouterModel(entryPoints, model, routeAuth);
@@ -122,7 +123,12 @@ export class AxumAnalyzer extends BaseAnalyzer {
   }
 
 
-  private extractAxumRoutes(content: string, relativePath: string, entryPoints: CASEntryPoint[]): void {
+  private extractAxumRoutes(
+    content: string,
+    relativePath: string,
+    nodes: NonNullable<CASContribution['nodes']>,
+    entryPoints: CASEntryPoint[],
+  ): void {
     if (!/\.route\s*\(/.test(content) || !/\bRouter::|axum/.test(content)) return;
     const lines = content.split('\n');
     const lineStartOffsets: number[] = [];
@@ -139,7 +145,16 @@ export class AxumAnalyzer extends BaseAnalyzer {
       if (seen.has(dedupeKey)) return;
       seen.add(dedupeKey);
       const lineNo = lineForIndex(index);
-      const nodeId = `function:${relativePath}:${handlerFn}`;
+      const nodeId = this.generateId('route', relativePath, `${method}_${routePath}_${handlerFn}`);
+      nodes.push(this.createNodeBuilder(nodeId, `${method} ${routePath}`, 'route')
+        .withLevel(3, 'handlers')
+        .withCategory('backend', ['axum', 'http', 'route'])
+        .withSource({ file: relativePath, line: lineNo, end_line: lineNo })
+        .withMetadata({
+          framework: 'axum',
+          attributes: { method, path: routePath, handler: handlerFn },
+        })
+        .build());
       entryPoints.push(this.createEntryPoint(
         `entry:http:${relativePath}:${handlerFn}:${method}:${routePath}`,
         nodeId,
