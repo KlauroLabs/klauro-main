@@ -216,7 +216,7 @@ async function readJsonReports(directory: string): Promise<Array<{ path: string;
 }
 
 function isScratchBuildReport(report: JsonObject): boolean {
-  return Boolean(report.task && report.with_klauro && report.without_klauro && report.comparison);
+  return Boolean(report.task && report.comparison);
 }
 
 function scratchReportIdentity(report: JsonObject, reportPath: string): string {

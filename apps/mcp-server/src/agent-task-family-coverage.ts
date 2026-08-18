@@ -177,7 +177,7 @@ async function loadReports(root: string): Promise<LoadedReports> {
   return {
     ...Object.fromEntries(entries) as Record<keyof typeof REPORTS, JsonObject>,
     existingLive: await discoverReports(path.resolve(root, '.klauro-existing-task-benchmark'), report => array(report.scenarios).some(scenario => scenario.live_summary)),
-    scratch: await discoverReports(path.resolve(root, '.klauro-agent-scratch-build-benchmark'), report => Boolean(report.task && report.with_klauro && report.without_klauro && report.comparison)),
+    scratch: await discoverReports(path.resolve(root, '.klauro-agent-scratch-build-benchmark'), report => Boolean(report.task && report.comparison)),
   };
 }
 
