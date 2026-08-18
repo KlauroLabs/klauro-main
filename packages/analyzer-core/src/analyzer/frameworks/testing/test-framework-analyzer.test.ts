@@ -195,6 +195,33 @@ class CalcTest {
   }
 });
 
+test('JUnit: extracts Kotlin backtick test names', async () => {
+  const root = await makeProject('junit-kotlin');
+  try {
+    await fs.writeFile(
+      path.join(root, 'PlaybackPolicyTest.kt'),
+      `import org.junit.Test
+
+class PlaybackPolicyTest {
+    @Test
+    fun \`child mode never honors exclusions\`() {}
+
+    @Test
+    fun regularName() {}
+}
+`
+    );
+    const analyzer = new TestFrameworkAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: root });
+    assert.deepEqual(caseNodes(contribution.nodes).map(node => node.name).sort(), [
+      'child mode never honors exclusions',
+      'regularName',
+    ]);
+  } finally {
+    await fs.remove(root);
+  }
+});
+
 test('RSpec: extracts it blocks from describe do ... end', async () => {
   const root = await makeProject('rspec');
   try {

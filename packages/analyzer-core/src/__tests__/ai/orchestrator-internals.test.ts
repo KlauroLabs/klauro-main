@@ -166,16 +166,24 @@ describe('orchestrator test-suite fallback discovery', () => {
       '  @Test fun extractsWakeWord() {}',
       '}',
     ].join('\n'));
+    write('apps/android/app/src/test/java/ai/openclaw/android/PlaybackPolicyTest.kt', [
+      'import org.junit.Test',
+      'class PlaybackPolicyTest {',
+      '  @Test fun `child mode never honors exclusions`() {}',
+      '}',
+    ].join('\n'));
     write('fixtures/demo/tests/ignored.test.ts', "test('fixture smoke', async () => {});\n");
 
     const suites = await orch.buildTestSuites([], [], root);
 
     expect(suites.map((suite: any) => suite.file_path).sort()).toEqual([
       'alpha_engine/tests/unit/test_risk_manager.py',
+      'apps/android/app/src/test/java/ai/openclaw/android/PlaybackPolicyTest.kt',
       'apps/android/app/src/test/java/ai/openclaw/android/WakeWordsTest.kt',
     ]);
     expect(suites.find((suite: any) => suite.file_path.endsWith('test_risk_manager.py')).framework).toBe('pytest');
     expect(suites.find((suite: any) => suite.file_path.endsWith('WakeWordsTest.kt')).framework).toBe('junit');
+    expect(suites.find((suite: any) => suite.file_path.endsWith('PlaybackPolicyTest.kt')).tests[0].name).toBe('child mode never honors exclusions');
   });
 });
 

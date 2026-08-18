@@ -22847,7 +22847,13 @@ export class AnalyzerOrchestrator {
         { regex: /\b(?:test|testWidgets)\s*\(\s*(['"`])([^'"`]+)\1/g, nameGroup: 2, skipped: () => false, focused: () => false },
       ];
     }
-    if (/\.(java|kt|cs|php)$/i.test(lowerFile)) {
+    if (lowerFile.endsWith('.kt')) {
+      return [
+        { regex: /@Test[\s\S]{0,220}?\bfun\s+`([^`\r\n]+)`\s*\(/g, nameGroup: 1, skipped: () => false, focused: () => false },
+        { regex: /@Test[\s\S]{0,220}?\bfun\s+([A-Za-z0-9_]+)\s*\(/g, nameGroup: 1, skipped: () => false, focused: () => false },
+      ];
+    }
+    if (/\.(java|cs|php)$/i.test(lowerFile)) {
       return [
         { regex: /@Test[\s\S]{0,220}?\b(?:fun|void|public\s+\w+|function)\s+([A-Za-z0-9_]+)/g, nameGroup: 1, skipped: () => false, focused: () => false },
       ];

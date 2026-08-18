@@ -743,7 +743,11 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         language: 'java',
         filePatterns: ['**/*Test.java', '**/*Tests.java', '**/*Test.kt', '**/*Tests.kt'],
         evidence: [/@Test\b/, /org\.junit/, /import\s+org\.junit/],
-        casePatterns: [/@Test[\s\S]{0,120}?\b(?:public|private|protected|fun|void)[\s\S]{0,40}?\b([A-Za-z0-9_]+)\s*\(/gm]
+        casePatterns: [
+          /@Test(?:\s*\([^)]*\))?\s*(?:(?:public|private|protected|internal|suspend|inline|open|final|override)\s+)*fun\s+`([^`\r\n]+)`\s*\(/gm,
+          /@Test(?:\s*\([^)]*\))?\s*(?:(?:public|private|protected|internal|suspend|inline|open|final|override)\s+)*fun\s+([A-Za-z0-9_]+)\s*\(/gm,
+          /@Test(?:\s*\([^)]*\))?\s*(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:void|[A-Za-z_$][A-Za-z0-9_$<>, ?.\[\]]*)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gm,
+        ]
       },
       {
         framework: 'testng',
