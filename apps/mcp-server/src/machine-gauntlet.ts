@@ -24,6 +24,7 @@ import { clearLoadedAnalysisCache } from './storage';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
+import { selectGreenfieldReferencePaths, selectIdiomProofTargets } from './machine-proof-target-selection';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -970,33 +971,6 @@ function isDistinctiveMachineDescriptionTerm(value: string): boolean {
 
 function descriptionTermIsGroundedInMachineCas(cas: any, term: string): boolean {
   return descriptionTermIsGroundedInCas(cas, term);
-}
-
-function selectIdiomProofTargets(selectedEligible: RealRepoTarget[], repoResults: any[], targetCount: number): RealRepoTarget[] {
-  const passingPaths = new Set(repoResults.filter(result =>
-    result.proof_status === 'pass' &&
-    result.readiness?.agent_context_ready === true &&
-    Number(result.cas?.codebase_idioms || 0) > 0
-  ).map(result => result.path));
-  const preferredNames = ['proof-of-concept', 'zerac-api', 'soon-ui', 'soon-bos', 'zerac-ui', 'admin-ui'];
-  const preferred = preferredNames
-    .map(name => selectedEligible.find(repo => repo.name === name && passingPaths.has(repo.path)))
-    .filter((repo): repo is RealRepoTarget => Boolean(repo));
-  const fallback = selectedEligible.filter(repo => passingPaths.has(repo.path) && !preferred.some(item => item.path === repo.path));
-  const selected = [...preferred, ...fallback].slice(0, targetCount);
-  return selected.length > 0 ? selected : selectedEligible.slice(0, Math.min(targetCount, selectedEligible.length));
-}
-
-function selectGreenfieldReferencePaths(selectedEligible: RealRepoTarget[], repoResults: any[]): string[] {
-  const passing = new Set(repoResults
-    .filter(result => result.proof_status === 'pass')
-    .map(result => result.path));
-  const preferredNames = ['proof-of-concept', 'zerac-api', 'soon-ui', 'soon-bos', 'kadra', 'SoundSyft'];
-  const preferred = preferredNames
-    .map(name => selectedEligible.find(repo => repo.name === name && passing.has(repo.path)))
-    .filter((repo): repo is RealRepoTarget => Boolean(repo));
-  const fallback = selectedEligible.filter(repo => passing.has(repo.path) && !preferred.some(item => item.path === repo.path));
-  return [...preferred, ...fallback].slice(0, 6).map(repo => repo.path);
 }
 
 function logMachineProgress(message: string): void {

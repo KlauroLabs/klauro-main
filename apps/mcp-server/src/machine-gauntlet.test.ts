@@ -10,6 +10,7 @@ import {
   selectEligibleReposForMachineProof,
   type ParsedArgs,
 } from './machine-gauntlet';
+import { selectGreenfieldReferencePaths, selectIdiomProofTargets } from './machine-proof-target-selection';
 import { defaultIncrementalBenchmarkWorkRoot } from './incremental-benchmark';
 import { defaultLiveTrialWorkRoot } from './agent-live-trial';
 import type { RealRepoTarget } from './repo-discovery';
@@ -37,6 +38,29 @@ test('proof scratch workspaces default outside durable Klauro storage', () => {
   assert.equal(defaultIncrementalBenchmarkWorkRoot().startsWith(tempRoot), true);
   assert.equal(defaultLiveTrialWorkRoot().startsWith(tempRoot), true);
   assert.equal(defaultMachineProofWorkRoot('machine-test').includes('/.klauro'), false);
+});
+
+test('machine proof selects diverse evidence-backed repositories without repository-name preferences', () => {
+  const repositories = [
+    repo('historically-preferred-name', 800, ['TypeScript']),
+    repo('polyglot-platform', 500, ['Python', 'Go']),
+    repo('rust-worker', 300, ['Rust']),
+    repo('large-typescript-service', 1200, ['TypeScript']),
+  ];
+  const results = repositories.map((target, index) => ({
+    path: target.path,
+    proof_status: index === 3 ? 'fail' : 'pass',
+    readiness: { agent_context_ready: true },
+    cas: { codebase_idioms: index + 1 },
+  }));
+
+  const idiomTargets = selectIdiomProofTargets(repositories, results, 3);
+  assert.deepEqual(idiomTargets.map(target => target.name), ['polyglot-platform', 'rust-worker', 'historically-preferred-name']);
+  assert.deepEqual(selectGreenfieldReferencePaths(repositories, results), [
+    repositories[1].path,
+    repositories[0].path,
+    repositories[2].path,
+  ]);
 });
 
 test('machine proof defaults to fast mode when callers omit mode', () => {
@@ -332,13 +356,13 @@ function baseOptions(overrides: Partial<ParsedArgs> = {}): ParsedArgs {
   };
 }
 
-function repo(name: string, sourceFiles: number): RealRepoTarget {
+function repo(name: string, sourceFiles: number, languages = ['TypeScript']): RealRepoTarget {
   return {
     name,
     path: `/tmp/dev/${name}`,
     status: 'eligible',
     supported: true,
-    languages: ['TypeScript'],
+    languages,
     manifests: ['package.json'],
     source_files: sourceFiles,
   };
