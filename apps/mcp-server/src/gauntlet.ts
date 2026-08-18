@@ -4,6 +4,7 @@ import { glob } from 'glob';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { isDirectCliInvocation } from './cli-invocation';
+import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -58,134 +59,6 @@ interface GauntletReport {
   score: number;
   targets: TargetReport[];
 }
-
-const DEFAULT_TARGETS: Array<{ name: string; relativePath: string; expectation: RepoExpectation }> = [
-  {
-    name: 'klauro-proof-of-concept',
-    relativePath: 'unravl/proof-of-concept',
-    expectation: {
-      minNodes: 250,
-      minEdges: 150,
-      minEntryPoints: 5,
-      minMethodCalls: 25,
-      minCallChains: 5,
-      requiredFrameworks: ['NestJS', 'React'],
-      requiredLanguages: ['TypeScript/JavaScript']
-    }
-  },
-  {
-    name: 'kadra-ai',
-    relativePath: 'personal/kadra.ai',
-    expectation: {
-      minNodes: 100,
-      minEdges: 50
-    }
-  },
-  {
-    name: 'money',
-    relativePath: 'personal/money',
-    expectation: {
-      minNodes: 150,
-      minEdges: 75,
-      requiredLanguages: ['TypeScript/JavaScript', 'Python', 'Rust']
-    }
-  },
-  {
-    name: 'zerac-ui',
-    relativePath: 'zerac/zerac-ui',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40,
-      requiredFrameworks: ['React']
-    }
-  },
-  {
-    name: 'zerac-api',
-    relativePath: 'zerac/zerac-api',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40
-    }
-  },
-  {
-    name: 'zerac-demo',
-    relativePath: 'zerac/zerac-demo',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40,
-      requiredLanguages: ['Go', 'Rust']
-    }
-  },
-  {
-    name: 'zerac-scan',
-    relativePath: 'zerac/zerac-scan',
-    expectation: {
-      minNodes: 50,
-      minEdges: 25,
-      requiredLanguages: ['Rust']
-    }
-  },
-  {
-    name: 'openclaw',
-    relativePath: 'openclaw',
-    expectation: {
-      minNodes: 250,
-      minEdges: 150,
-      requiredLanguages: ['TypeScript/JavaScript', 'Go', 'Python']
-    }
-  },
-  {
-    name: 'soon-sync',
-    relativePath: 'soon/soon-sync',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40
-    }
-  },
-  {
-    name: 'soon-sync-root',
-    relativePath: 'soon-sync',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40
-    }
-  },
-  {
-    name: 'soon-ui',
-    relativePath: 'soon/soon-ui',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40,
-      requiredFrameworks: ['React']
-    }
-  },
-  {
-    name: 'soon-bos',
-    relativePath: 'soon/soon-bos',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40
-    }
-  },
-  {
-    name: 'soundsyft',
-    relativePath: 'personal/cleanmusic',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40,
-      requiredLanguages: ['Python']
-    }
-  },
-  {
-    name: 'soundsyft-backend',
-    relativePath: 'personal/cleanmusic/backend',
-    expectation: {
-      minNodes: 75,
-      minEdges: 40,
-      requiredLanguages: ['Python']
-    }
-  }
-];
 
 function parseArgs(argv: string[]) {
   const repos: RepoTarget[] = [];
@@ -242,81 +115,30 @@ function printHelp(): void {
 }
 
 async function discoverTargets(devRoot: string): Promise<RepoTarget[]> {
-  const targets: RepoTarget[] = [];
-
-  for (const candidate of DEFAULT_TARGETS) {
-    const repoPath = path.join(devRoot, candidate.relativePath);
-    if (await fs.pathExists(repoPath)) {
-      if (!await repoHasAnalyzableSource(repoPath)) {
-        continue;
-      }
-      if (targets.some(target => path.resolve(target.path) === path.resolve(repoPath))) {
-        continue;
-      }
-      targets.push({
-        name: candidate.name,
-        path: repoPath,
-        expectation: await resolveExpectation(repoPath, candidate.expectation)
-      });
-    }
-  }
-
-  return targets;
+  const discovery = await discoverRealRepos(devRoot);
+  return discovery.repos
+    .filter(repo => repo.status === 'eligible')
+    .sort(compareDiscoveredRepos)
+    .map(repo => ({
+      name: repo.name,
+      path: repo.path,
+      expectation: {
+        requiredLanguages: normalizeDiscoveredLanguages(repo.languages),
+      },
+    }));
 }
 
-async function repoHasAnalyzableSource(repoPath: string): Promise<boolean> {
-  const matches = await glob([
-    '**/package.json',
-    '**/pyproject.toml',
-    '**/requirements.txt',
-    '**/Cargo.toml',
-    '**/go.mod',
-    '**/pom.xml',
-    '**/*.csproj',
-    '**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,prisma}',
-  ], {
-    cwd: repoPath,
-    ignore: [
-      '**/node_modules/**',
-      '**/dist/**',
-      '**/build/**',
-      '**/.git/**',
-      '**/target/**',
-      '**/coverage/**',
-      '**/vendor/**',
-      '**/vendors/**',
-      '**/site-packages/**',
-      '**/.sourcemaps/**',
-      '**/sourcemaps/**',
-      '**/*.js.map',
-      '**/*.css.map',
-      '**/*.bundle.js',
-      '**/*.bundle.css',
-      '**/*.min.js',
-      '**/*.min.css',
-      '**/Generated/**',
-      '**/generated/**',
-      '**/.next/**',
-    ],
-    nodir: true,
-  });
-
-  return matches.length > 0;
+function compareDiscoveredRepos(left: RealRepoTarget, right: RealRepoTarget): number {
+  return right.languages.length - left.languages.length
+    || right.source_files - left.source_files
+    || left.path.localeCompare(right.path);
 }
 
-async function resolveExpectation(repoPath: string, expectation: RepoExpectation): Promise<RepoExpectation> {
-  if (!expectation.requiredLanguages?.length) return expectation;
-
-  const requiredLanguages = (
-    await Promise.all(expectation.requiredLanguages.map(async language =>
-      await repoAppearsToContainLanguage(repoPath, language) ? language : null
-    ))
-  ).filter((language): language is string => Boolean(language));
-
-  return {
-    ...expectation,
-    requiredLanguages
-  };
+function normalizeDiscoveredLanguages(languages: string[]): string[] {
+  const normalized = languages.map(language =>
+    language === 'TypeScript' || language === 'JavaScript' ? 'TypeScript/JavaScript' : language
+  );
+  return Array.from(new Set(normalized));
 }
 
 export async function nestedGitRepoIgnorePatterns(repoPath: string): Promise<string[]> {
