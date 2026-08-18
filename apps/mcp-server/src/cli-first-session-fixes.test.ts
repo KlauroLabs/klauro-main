@@ -413,18 +413,21 @@ async function runInstallSh(options: {
   if (options.manifest) {
     const platformKey = currentPlatformKey();
     const manifest = { ...options.manifest };
+    const dist = path.join(dir, 'dist');
+    await fs.mkdir(dist, { recursive: true });
+    await fs.chmod(dist, 0o755);
     if (options.fakeBinary && platformKey) {
-      await fs.mkdir(path.join(dir, 'dist'), { recursive: true });
-      const binaryPath = path.join(dir, 'dist', `klauro-${platformKey.replace('_', '-')}`);
+      const binaryPath = path.join(dist, `klauro-${platformKey.replace('_', '-')}`);
       await fs.writeFile(binaryPath, options.fakeBinary, { mode: 0o755 });
+      await fs.chmod(binaryPath, 0o755);
       const crypto = await import('node:crypto');
       const sha256 = crypto.createHash('sha256').update(await fs.readFile(binaryPath)).digest('hex');
       (manifest as Record<string, string>)[`bin_${platformKey}_path`] = `/dist/klauro-${platformKey.replace('_', '-')}`;
       (manifest as Record<string, string>)[`bin_${platformKey}_sha256`] = sha256;
-    } else {
-      await fs.mkdir(path.join(dir, 'dist'), { recursive: true });
     }
-    await fs.writeFile(path.join(dir, 'dist', 'latest.json'), JSON.stringify(manifest));
+    const manifestPath = path.join(dist, 'latest.json');
+    await fs.writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o644 });
+    await fs.chmod(manifestPath, 0o644);
     klauroUrl = `file://${dir}`;
   }
 
