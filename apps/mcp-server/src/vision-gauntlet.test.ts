@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { projectCasForCrossRepositoryAnalysis } from './vision-gauntlet';
+import { projectCasForCrossRepositoryAnalysis, visionReportTimestamps } from './vision-gauntlet';
+
+test('vision gauntlet reports use the canonical freshness timestamp while preserving compatibility', () => {
+  const generatedAt = '2026-08-18T22:00:00.000Z';
+
+  assert.deepEqual(visionReportTimestamps(generatedAt), {
+    generated_at: generatedAt,
+    generatedAt,
+  });
+});
 
 test('vision gauntlet releases nodes that cannot contribute to cross-repository analysis', () => {
   const cas = {

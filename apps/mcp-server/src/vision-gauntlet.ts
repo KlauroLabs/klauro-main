@@ -87,6 +87,13 @@ export function projectCasForCrossRepositoryAnalysis(cas: CASOutput): CASOutput 
   } as CASOutput;
 }
 
+export function visionReportTimestamps(generatedAt = new Date().toISOString()): {
+  generated_at: string;
+  generatedAt: string;
+} {
+  return { generated_at: generatedAt, generatedAt };
+}
+
 function parseArgs(argv: string[]) {
   const repos: RepoTarget[] = [];
   let devRoot = path.join(process.env.HOME || '', 'dev');
@@ -235,7 +242,7 @@ async function main(): Promise<void> {
   const crossRepoStatus: GateStatus = args.requireCrossRepoLinks && repositories.length > 1 && crossRepo.links.length === 0 ? 'warn' : 'pass';
   const crossRepoScore = args.requireCrossRepoLinks && repositories.length > 1 ? [crossRepo.links.length > 0 ? 100 : 75] : [];
   const report = {
-    generatedAt: new Date().toISOString(),
+    ...visionReportTimestamps(),
     status: aggregateStatus([...targetReports.map(target => target.status), crossRepoStatus]),
     score: Math.round(average([
       ...targetReports.map(target => target.score),
@@ -255,6 +262,8 @@ async function main(): Promise<void> {
 }
 
 function printReport(report: {
+  generated_at: string;
+  generatedAt: string;
   status: GateStatus;
   score: number;
   targets: VisionTargetReport[];
