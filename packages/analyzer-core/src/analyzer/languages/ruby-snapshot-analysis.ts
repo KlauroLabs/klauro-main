@@ -17,8 +17,8 @@ export function buildRubySnapshotAnalysis(nodes: CASNode[], currentFile: string)
     lineStart: node.source?.line || 0,
     lineEnd: node.source?.end_line || node.source?.line || 0,
     calls: [],
-    ivarTypes: {},
-    localVarTypes: {},
+    ivarTypes: Object.create(null) as Record<string, string>,
+    localVarTypes: Object.create(null) as Record<string, string>,
   });
   const classes: RubyClass[] = [];
   const modules: RubyModule[] = [];

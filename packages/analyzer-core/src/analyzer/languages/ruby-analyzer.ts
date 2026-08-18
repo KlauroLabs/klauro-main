@@ -16,6 +16,14 @@ interface RubyMethodCall {
   line: number;
 }
 
+function createRubyTypeRegistry(): Record<string, string> {
+  return Object.create(null) as Record<string, string>;
+}
+
+function rubyTypeFor(registry: Record<string, string>, name: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(registry, name) ? registry[name] : undefined;
+}
+
 export interface RubyMethod {
   name: string;
   visibility: 'public' | 'private' | 'protected';
@@ -604,8 +612,8 @@ export class RubyAnalyzer extends BaseAnalyzer {
           lineStart: lineNumber,
           lineEnd: lineNumber,
           calls: [],
-          ivarTypes: {},
-          localVarTypes: {}
+          ivarTypes: createRubyTypeRegistry(),
+          localVarTypes: createRubyTypeRegistry()
         };
 
         const ownerClass = enclosingClass();
@@ -777,12 +785,12 @@ export class RubyAnalyzer extends BaseAnalyzer {
 
   private captureCallsFromLine(code: string, line: number, method: RubyMethod): void {
     const ivarAssignment = code.match(IVAR_ASSIGNMENT_PATTERN);
-    if (ivarAssignment && !(ivarAssignment[1] in method.ivarTypes)) {
+    if (ivarAssignment && !Object.prototype.hasOwnProperty.call(method.ivarTypes, ivarAssignment[1])) {
       method.ivarTypes[ivarAssignment[1]] = ivarAssignment[2];
     }
 
     const localAssignment = code.match(LOCAL_VAR_ASSIGNMENT_PATTERN);
-    if (localAssignment && !(localAssignment[1] in method.localVarTypes)) {
+    if (localAssignment && !Object.prototype.hasOwnProperty.call(method.localVarTypes, localAssignment[1])) {
       method.localVarTypes[localAssignment[1]] = localAssignment[2];
     }
 
@@ -1115,6 +1123,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
     }
 
     const resolveOwner = (reference: string): RubyClass | RubyModule | undefined => {
+      if (typeof reference !== 'string' || !reference) return undefined;
       const qualified = ownersByQualifiedName.get(reference.replace(/^::/, ''));
       if (qualified && qualified.length === 1) return qualified[0];
       const candidates = ownersByName.get(reference.split('::').pop()!);
@@ -1161,10 +1170,10 @@ export class RubyAnalyzer extends BaseAnalyzer {
         ? [...(owner as RubyClass).includedModules, ...(owner as RubyClass).extendedModules]
         : [];
 
-      const classIvarTypes: Record<string, string> = {};
+      const classIvarTypes = createRubyTypeRegistry();
       for (const method of owner.methods) {
         for (const [ivar, type] of Object.entries(method.ivarTypes)) {
-          if (!(ivar in classIvarTypes)) classIvarTypes[ivar] = type;
+          if (!Object.prototype.hasOwnProperty.call(classIvarTypes, ivar)) classIvarTypes[ivar] = type;
         }
       }
 
@@ -1214,7 +1223,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
           }
 
           if (call.receiverKind === 'ivar') {
-            const ivarType = method.ivarTypes[call.receiver!] || classIvarTypes[call.receiver!];
+            const ivarType = rubyTypeFor(method.ivarTypes, call.receiver!) || rubyTypeFor(classIvarTypes, call.receiver!);
             if (!ivarType) continue;
             const targetOwner = resolveOwner(ivarType);
             if (!targetOwner) continue;
@@ -1225,7 +1234,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
           }
 
           if (call.receiverKind === 'local') {
-            const localType = method.localVarTypes[call.receiver!];
+            const localType = rubyTypeFor(method.localVarTypes, call.receiver!);
             if (!localType) continue;
             const targetOwner = resolveOwner(localType);
             if (!targetOwner) continue;

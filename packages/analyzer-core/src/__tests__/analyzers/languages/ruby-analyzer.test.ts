@@ -301,6 +301,36 @@ describe('RubyAnalyzer', () => {
       expect(chargeEdge.metadata.attributes.receiver).toBe('gateway');
     });
 
+    it('resolves local receivers that share names with object prototype properties', () => {
+      const callEdges = buildEdges([
+        [
+          'app/services/checkout.rb',
+          [
+            'class Checkout',
+            '  def pay',
+            '    constructor = PaymentGateway.new',
+            '    constructor.charge(total)',
+            '  end',
+            'end',
+          ].join('\n'),
+        ],
+        [
+          'app/services/payment_gateway.rb',
+          [
+            'class PaymentGateway',
+            '  def charge(amount)',
+            '  end',
+            'end',
+          ].join('\n'),
+        ],
+      ]);
+
+      const chargeEdge = callEdges.find(edge => edge.metadata.attributes.targetMethod === 'charge');
+      expect(chargeEdge).toBeDefined();
+      expect(chargeEdge.metadata.attributes.receiver).toBe('constructor');
+      expect(chargeEdge.metadata.attributes.targetClass).toBe('PaymentGateway');
+    });
+
     it('resolves calls against owners restored from a prior CAS snapshot', () => {
       const current = analyzer.parseRubySource([
         'class ShiftTypesController < ApplicationController',
