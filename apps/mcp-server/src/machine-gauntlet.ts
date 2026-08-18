@@ -23,6 +23,7 @@ import { descriptionTermIsGroundedInCas, unexplainedShortTitleCaseTerms } from '
 import { clearLoadedAnalysisCache } from './storage';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
+import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -204,6 +205,39 @@ function printHelp(): void {
 
 export async function runMachineAgentProof(options: ParsedArgs) {
   options = normalizeMachineProofOptions(options);
+  const previousAuthDisabled = process.env.KLAURO_CONNECTOR_AUTH_DISABLED;
+  const previousCoordDir = process.env.KLAURO_COORD_DIR;
+  let localDataDir: string | undefined;
+  let localServer: ReturnType<typeof createRemoteAnalyzerHttpServer> | undefined;
+  try {
+    if (options.productLocal) {
+      localDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-machine-local-analyzer-'));
+      process.env.KLAURO_COORD_DIR = path.join(localDataDir, 'coordination');
+      process.env.KLAURO_CONNECTOR_AUTH_DISABLED = '1';
+      localServer = createRemoteAnalyzerHttpServer({ dataDir: localDataDir });
+      await new Promise<void>((resolve, reject) => {
+        localServer!.once('error', reject);
+        localServer!.listen(0, '127.0.0.1', resolve);
+      });
+      const address = localServer.address();
+      if (!address || typeof address === 'string') throw new Error('Local machine-proof analyzer did not bind a TCP port');
+      options = { ...options, analyzerServerUrl: `http://127.0.0.1:${address.port}` };
+    }
+    return await runConfiguredMachineAgentProof(options);
+  } finally {
+    if (previousAuthDisabled === undefined) delete process.env.KLAURO_CONNECTOR_AUTH_DISABLED;
+    else process.env.KLAURO_CONNECTOR_AUTH_DISABLED = previousAuthDisabled;
+    if (previousCoordDir === undefined) delete process.env.KLAURO_COORD_DIR;
+    else process.env.KLAURO_COORD_DIR = previousCoordDir;
+    if (localServer) {
+      const server = localServer;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+    if (localDataDir) await fs.remove(localDataDir).catch(() => undefined);
+  }
+}
+
+async function runConfiguredMachineAgentProof(options: ParsedArgs) {
   const previousFreshOrchestrator = process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS;
   if (previousFreshOrchestrator === undefined) {
     process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '1';
@@ -222,7 +256,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     : null;
   if (options.analysisPath === 'klauro-product' || options.inFlightPath === 'klauro-product') {
     logMachineProgress(options.analyzerServerUrl
-      ? `klauro-product path -> hosted analyzer ${options.analyzerServerUrl} (installed CLI ${installedCliVersion})`
+      ? `klauro-product path -> ${options.productLocal ? 'local' : 'hosted'} analyzer ${options.analyzerServerUrl} (installed CLI ${installedCliVersion})`
       : `klauro-product path -> OFFLINE local mode (installed CLI ${installedCliVersion})`);
   }
   const selectedPaths = new Set(selectedEligible.map(repo => repo.path));
@@ -247,6 +281,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
       const cas = options.analysisPath === 'klauro-product'
         ? (await analyzeCasWithInstalledKlauro(analysisPath, {
           analysisFocus, serverUrl: options.analyzerServerUrl,
+          analysisId: options.productLocal ? machineLocalAnalysisId(repo.path) : undefined,
           forceFull: process.env.KLAURO_BENCH_FORCE_ANALYSIS === '1',
           env: { KLAURO_STORAGE_PATH: klauroProductStoragePath },
           timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000,
@@ -1161,6 +1196,7 @@ async function runMachineInFlightBenchmarkKlauroProduct(
     concurrency: options.incrementalConcurrency,
     analysisPath: 'klauro-product',
     analyzerServerUrl: options.analyzerServerUrl,
+    installedAnalysisId: options.productLocal ? machineLocalAnalysisId : undefined,
     quiet: true,
     progress: event => {
       if (event.stage === 'start') {
@@ -1334,6 +1370,10 @@ function runChildProcess(
 
 function slugForMachineFile(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'repo';
+}
+
+function machineLocalAnalysisId(workspace: string): string {
+  return `machine-${crypto.createHash('sha256').update(path.resolve(workspace)).digest('hex').slice(0, 20)}`;
 }
 
 function withNodeHeapLimit(value: string | undefined): string {

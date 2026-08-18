@@ -58,6 +58,7 @@ test('analyzeCasWithInstalledKlauro accepts a completed hosted CAS without incre
     process.env.KLAURO_INSTALLED_CLI = `${process.execPath} ${executable}`;
     const result = await analyzeCasWithInstalledKlauro(project, {
       serverUrl: 'http://127.0.0.1:18787',
+      analysisId: 'analysis-proof',
       analysisFocus: 'full',
       forceFull: true,
       env: { KLAURO_FAKE_INVOCATION: invocation },
@@ -71,6 +72,8 @@ test('analyzeCasWithInstalledKlauro accepts a completed hosted CAS without incre
       '--wait',
       '--server-url',
       'http://127.0.0.1:18787',
+      '--analysis-id',
+      'analysis-proof',
       '--force',
       '--analysis-focus',
       'full',
@@ -101,6 +104,7 @@ test('prepareInstalledKlauroIncrementalBaseline combines full CAS output with re
     process.env.KLAURO_INSTALLED_CLI = `${process.execPath} ${executable}`;
     const baseline = await prepareInstalledKlauroIncrementalBaseline(project, {
       serverUrl: 'http://127.0.0.1:18787',
+      analysisId: 'incremental-proof',
       analysisFocus: 'agent-fast',
       env: { KLAURO_FAKE_INVOCATION: invocation },
     });
@@ -109,8 +113,8 @@ test('prepareInstalledKlauroIncrementalBaseline combines full CAS output with re
     assert.equal(baseline.result.wasFullRebuild, true);
     const invocations = (await fs.readFile(invocation, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(invocations, [
-      ['analyze', project, '--json', '--wait', '--server-url', 'http://127.0.0.1:18787', '--force', '--analysis-focus', 'agent-fast'],
-      ['sync', project, '--json', '--wait', '--server-url', 'http://127.0.0.1:18787'],
+      ['analyze', project, '--json', '--wait', '--server-url', 'http://127.0.0.1:18787', '--analysis-id', 'incremental-proof', '--force', '--analysis-focus', 'agent-fast'],
+      ['sync', project, '--json', '--wait', '--server-url', 'http://127.0.0.1:18787', '--analysis-id', 'incremental-proof'],
     ]);
   } finally {
     if (previousCommand === undefined) delete process.env.KLAURO_INSTALLED_CLI;

@@ -13,6 +13,7 @@ export interface InstalledKlauroRunOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   serverUrl?: string;
+  analysisId?: string;
 }
 
 export interface InstalledKlauroAnalysisResult {
@@ -80,6 +81,7 @@ export async function analyzeCasWithInstalledKlauro(
     '--wait',
   ];
   if (options.serverUrl) args.push('--server-url', options.serverUrl);
+  if (options.analysisId) args.push('--analysis-id', options.analysisId);
   if (options.forceFull) args.push('--force');
   if (options.analysisFocus) args.push('--analysis-focus', options.analysisFocus);
 
@@ -93,6 +95,7 @@ export async function syncWithInstalledKlauro(
   const installed = resolveInstalledKlauroCommand();
   const args = [...installed.args, 'sync', projectPath, '--json', '--wait'];
   if (options.serverUrl) args.push('--server-url', options.serverUrl);
+  if (options.analysisId) args.push('--analysis-id', options.analysisId);
   const result = parseInstalledAnalysis(
     await runJsonCommand(installed.command, args, options),
     projectPath,
