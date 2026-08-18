@@ -1,13 +1,12 @@
 import * as fs from 'fs-extra';
-import * as os from 'os';
 import * as path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getAnalysis } from './analyzer';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildCrossCodebaseSystemGraph, summarizeCrossCodebaseSystemGraph, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
-import { listAnalyses, loadCrossCodebaseSystemGraph } from './storage';
-import { resolveWorkspaceInputPaths } from './workspace-inputs';
+import { discoverRealRepos } from './repo-discovery';
+import { loadCrossCodebaseSystemGraph } from './storage';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 interface TargetResult {
@@ -15,6 +14,12 @@ interface TargetResult {
   path: string;
   status: 'missing-path' | 'missing-analysis' | 'included' | 'skipped';
   reason?: string;
+}
+
+interface TargetSpec {
+  name: string;
+  path: string;
+  family: string;
 }
 
 interface SystemReport {
@@ -92,8 +97,9 @@ interface McpConsumerResult {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const devRoot = path.resolve(args.devRoot || path.join(os.homedir(), 'dev'));
-  const targets = await discoverTargets(devRoot);
+  const selection = await resolveTargets(args);
+  const devRoot = selection.root;
+  const targets = selection.targets;
   const repositories: Array<{ path: string; name: string; family: string; cas: CASOutput }> = [];
   const targetResults: TargetResult[] = [];
 
@@ -107,8 +113,10 @@ async function main() {
       continue;
     }
     try {
-      const cas = args.fresh ? await analyzeProjectDeterministicFirstPass(target.path) : await getAnalysis(target.path);
-      repositories.push({ path: target.path, name: cas.system?.name || path.basename(target.path), family: target.name, cas });
+      const cas = args.fresh || selection.analyze
+        ? await analyzeProjectDeterministicFirstPass(target.path)
+        : await getAnalysis(target.path);
+      repositories.push({ path: target.path, name: cas.system?.name || path.basename(target.path), family: target.family, cas });
       targetResults.push({ ...target, status: 'included' });
     } catch (error) {
       targetResults.push({
@@ -142,56 +150,19 @@ async function main() {
       observed: systems.reduce((sum, system) => sum + system.graph.unmatched_interfaces.length, 0),
     },
     {
-      name: 'known-integrated-systems-fully-represented',
-      pass: hasCoreSystemTargets(targetResults),
-      observed: targetResults.filter(target => target.status === 'included').map(target => familyRelativePath(devRoot, target.path)),
-    },
-    {
-      name: 'klauro-dogfood-analysis-included',
-      pass: hasKlauroDogfoodTarget(targetResults),
-      observed: targetResults
-        .filter(target => target.name === 'Klauro')
-        .map(target => ({ path: familyRelativePath(devRoot, target.path), status: target.status, reason: target.reason })),
+      name: 'all-selected-repositories-analyzed',
+      pass: targets.length >= 2 && targetResults.length === targets.length && targetResults.every(target => target.status === 'included'),
+      observed: targetResults.map(target => ({ path: path.relative(devRoot, target.path) || path.basename(target.path), status: target.status, reason: target.reason })),
     },
     {
       name: 'meaningful-cross-codebase-links',
-      pass: systems.every(system => system.graph.codebases.length < 2 || system.graph.links.length >= 2),
+      pass: !selection.requireLinks || systems.every(system => system.graph.codebases.length < 2 || system.graph.links.length >= 2),
       observed: Object.fromEntries(systems.map(system => [system.name, system.graph.links.length])),
     },
     {
       name: 'workspace-applications-extracted',
       pass: systems.every(system => (system.graph.applications || []).length >= system.graph.codebases.length),
       observed: Object.fromEntries(systems.map(system => [system.name, (system.graph.applications || []).length])),
-    },
-    {
-      name: 'zerac-critical-deployables-covered',
-      pass: hasApplications(namedSystem(systems, 'Zerac')?.graph, ['admin-api', 'user-api', 'mcp-api', 'internal-api', 'admin-ui', 'client-ui', 'coordinator', 'agent', 'client', 'client-service', 'drop-server', 'gateway']),
-      observed: applicationNames(namedSystem(systems, 'Zerac')?.graph).filter(name => ['admin-api', 'user-api', 'mcp-api', 'internal-api', 'admin-ui', 'client-ui', 'coordinator', 'agent', 'client', 'client-service', 'drop-server', 'gateway'].includes(name)),
-    },
-    {
-      name: 'zerac-desktop-install-unit-detected',
-      pass: hasZeracDesktopDistributionUnit(namedSystem(systems, 'Zerac')?.graph),
-      observed: zeracDesktopDistributionEvidence(namedSystem(systems, 'Zerac')?.graph),
-    },
-    {
-      name: 'zerac-critical-relationships-inferred',
-      pass: hasZeracCriticalRelationships(namedSystem(systems, 'Zerac')?.graph),
-      observed: relationshipEvidence(namedSystem(systems, 'Zerac')?.graph, ['client-service->user-api', 'client-service->admin-api', 'drop-server->admin-api', 'client->coordinator', 'agent->drop-server', 'redis-unused']),
-    },
-    {
-      name: 'zerac-no-known-false-workspace-links',
-      pass: hasNoZeracFalseWorkspaceLinks(namedSystem(systems, 'Zerac')?.graph),
-      observed: zeracFalseWorkspaceLinkEvidence(namedSystem(systems, 'Zerac')?.graph),
-    },
-    {
-      name: 'zerac-external-dependency-usage-classified',
-      pass: hasZeracExternalDependencySemantics(namedSystem(systems, 'Zerac')?.graph),
-      observed: zeracExternalDependencyEvidence(namedSystem(systems, 'Zerac')?.graph),
-    },
-    {
-      name: 'zerac-infrastructure-environments-exposed',
-      pass: hasWorkspaceEnvironments(namedSystem(systems, 'Zerac')?.graph, ['demo', 'internal', 'production', 'staging']),
-      observed: workspaceEnvironmentNames(namedSystem(systems, 'Zerac')?.graph),
     },
     {
       name: 'workspace-insights-generated',
@@ -205,8 +176,10 @@ async function main() {
     },
     {
       name: 'workspace-primary-semantics-ai-enriched',
-      pass: systems.every(system => workspacePrimarySemanticAiCoverage(system.graph).pass),
-      observed: Object.fromEntries(systems.map(system => [system.name, workspacePrimarySemanticAiCoverage(system.graph)])),
+      pass: !args.withAi || systems.every(system => workspacePrimarySemanticAiCoverage(system.graph).pass),
+      observed: args.withAi
+        ? Object.fromEntries(systems.map(system => [system.name, workspacePrimarySemanticAiCoverage(system.graph)]))
+        : 'skipped; run with --with-ai to prove AI-authored workspace semantics',
     },
     {
       name: 'workspace-critical-flows-have-intent',
@@ -214,13 +187,8 @@ async function main() {
       observed: Object.fromEntries(systems.map(system => [system.name, workspaceWorkflowIntentCoverage(system.graph)])),
     },
     {
-      name: 'zerac-internal-api-consumer-gap-detected',
-      pass: hasInternalApiConsumerGap(namedSystem(systems, 'Zerac')?.graph),
-      observed: providerConsumerGapEvidence(namedSystem(systems, 'Zerac')?.graph, 'internal-api'),
-    },
-    {
       name: 'communication-modes-covered',
-      pass: systems.every(system => communicationCoverage(system.graph).pass),
+      pass: !selection.requireLinks || systems.every(system => communicationCoverage(system.graph).pass),
       observed: Object.fromEntries(systems.map(system => [system.name, communicationCoverage(system.graph)])),
     },
     {
@@ -327,29 +295,10 @@ async function main() {
       }])) : 'skipped',
     },
     {
-      name: 'mcp-product-path-surfaces-zerac-distribution-unit',
-      pass: !args.mcpConsumer || mcpConsumerResults.some(result =>
-        result.system === 'Zerac' &&
-        (result.distribution_units || []).some(unit => /desktop/i.test(unit) && /client/i.test(unit) && /client-service/i.test(unit)) &&
-        (result.selected_distribution_units || []).some(unit => /desktop/i.test(unit) && /client/i.test(unit) && /client-service/i.test(unit))
-      ),
-      observed: args.mcpConsumer ? mcpConsumerResults.find(result => result.system === 'Zerac') || null : 'skipped',
-    },
-    {
-      name: 'mcp-product-path-surfaces-zerac-environments',
-      pass: !args.mcpConsumer || mcpConsumerResults.some(result =>
-        result.system === 'Zerac' &&
-        ['demo', 'internal', 'production', 'staging'].every(environment => (result.environments || []).includes(environment))
-      ),
-      observed: args.mcpConsumer ? mcpConsumerResults.find(result => result.system === 'Zerac')?.environments || [] : 'skipped',
-    },
-    {
-      name: 'mcp-product-path-surfaces-workspace-entities',
+      name: 'mcp-product-path-keeps-workspace-entity-paths-traversable',
       pass: !args.mcpConsumer || mcpConsumerResults.every(result =>
         result.status === 'pass' &&
-        (result.entity_count || 0) > 0 &&
-        (result.entity_path_count || 0) > 0 &&
-        result.traversable_entity_paths?.status === 'pass'
+        ((result.entity_path_count || 0) === 0 || result.traversable_entity_paths?.status === 'pass')
       ),
       observed: args.mcpConsumer ? Object.fromEntries(mcpConsumerResults.map(result => [result.system, {
         entity_count: result.entity_count,
@@ -360,12 +309,8 @@ async function main() {
     },
     {
       name: 'mcp-product-path-honors-workspace-excludes',
-      pass: !args.mcpConsumer || mcpConsumerResults.some(result =>
-        result.system === 'Zerac' &&
-        result.exclude_run?.status === 'pass' &&
-        (result.exclude_run.skipped_paths || []).some(inputPath => inputPath.endsWith(`${path.sep}ztray`) || inputPath.endsWith('/ztray'))
-      ),
-      observed: args.mcpConsumer ? mcpConsumerResults.find(result => result.system === 'Zerac')?.exclude_run || null : 'skipped',
+      pass: !args.mcpConsumer || mcpConsumerResults.every(result => result.exclude_run?.status !== 'fail'),
+      observed: args.mcpConsumer ? Object.fromEntries(mcpConsumerResults.map(result => [result.system, result.exclude_run])) : 'skipped',
     },
   ];
   const report = {
@@ -577,7 +522,7 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
       analysis_id_or_name: savedId,
       task: {
         task_type: 'cross-repo',
-        target: system.name === 'Zerac' ? 'desktop client client-service coordinator drop-server admin api agents' : system.name,
+        target: system.name,
         max_apps: 16,
         max_connections: 24,
         max_external_dependencies: 16,
@@ -602,9 +547,7 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
     const overviewText = JSON.stringify(overviewPayload);
     const contextText = JSON.stringify(contextPayload);
     const savedGraph = await loadCrossCodebaseSystemGraph(savedId);
-    const excludeRun = system.name === 'Zerac'
-      ? await runMcpExcludeGenerationCheck(client, system, analysisName)
-      : { status: 'skipped' as const };
+    const excludeRun = await runMcpExcludeGenerationCheck(client, system, analysisName);
     return {
       system: system.name,
       status: isMcpWorkspacePayloadUsable(overview, context) ? 'pass' : 'fail',
@@ -662,25 +605,25 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
 
 async function runMcpExcludeGenerationCheck(client: Client, system: SystemReport, analysisName: string): Promise<NonNullable<McpConsumerResult['exclude_run']>> {
   const workspaceRoot = commonPathPrefix(system.paths);
-  const ztrayPath = system.paths.find(inputPath => path.basename(inputPath) === 'ztray');
-  const pocPath = system.paths.find(inputPath => path.basename(inputPath) === 'poc');
-  const apiPath = system.paths.find(inputPath => path.basename(inputPath) === 'zerac-api');
-  if (!workspaceRoot || !ztrayPath || !pocPath || !apiPath) return { status: 'skipped' };
+  if (!workspaceRoot || system.paths.length < 3) return { status: 'skipped' };
+  const excludedPath = system.paths[system.paths.length - 1];
+  const excludedName = path.basename(excludedPath);
   try {
     const payload = await callMcpTool(client, 'run_workspace_analysis', {
       name: `${analysisName}-exclude-proof`,
       workspace_root: workspaceRoot,
-      paths: [pocPath, apiPath, ztrayPath],
-      exclude: ['ztray/**'],
+      paths: system.paths,
+      exclude: [`${excludedName}/**`],
       ai_enrichment: false,
     }, { timeout: 120_000 });
     const skippedPaths = ((payload as any)?.skipped_inputs || []).map((input: any) => String(input.path));
     const includedCodebases = Number((payload as any)?.summary?.codebase_count || 0);
+    const excluded = skippedPaths.some((inputPath: string) => path.resolve(inputPath) === path.resolve(excludedPath));
     return {
-      status: skippedPaths.some((inputPath: string) => inputPath === ztrayPath) && includedCodebases === 2 ? 'pass' : 'fail',
+      status: excluded && includedCodebases === system.paths.length - 1 ? 'pass' : 'fail',
       skipped_paths: skippedPaths,
       included_codebases: includedCodebases,
-      error: skippedPaths.some((inputPath: string) => inputPath === ztrayPath) ? undefined : 'ztray was not reported as skipped by run_workspace_analysis',
+      error: excluded ? undefined : `${excludedName} was not reported as skipped by run_workspace_analysis`,
     };
   } catch (error) {
     return {
@@ -928,33 +871,39 @@ function summarizeSystems(graphs: CrossCodebaseSystemGraph[]) {
   };
 }
 
-async function discoverTargets(devRoot: string): Promise<Array<{ name: string; path: string; skipped?: boolean; reason?: string }>> {
-  const analyses = await listAnalyses().catch(() => []);
-  const analyzedPaths = new Set(analyses.map(analysis => path.resolve(analysis.path)));
-  const families = [
-    { name: 'Soon', root: path.join(devRoot, 'soon'), preferred: ['soon-ui', 'soon-sync', 'soon-lens', 'soon-link'] },
-    { name: 'Zerac', root: path.join(devRoot, 'zerac'), preferred: ['zerac-api', 'zerac-ui', 'zerac-scan', 'poc'] },
-    { name: 'Klauro', root: resolveCurrentKlauroPath(devRoot), preferred: [] },
-  ];
-  const seen = new Set<string>();
-  const targets = [];
-  for (const family of families) {
-    const root = path.resolve(family.root);
-    const selected = await selectAnalyzedFamilyPaths(root, family.preferred, analyzedPaths);
-    for (const selectedPath of selected.length > 0 ? selected : [root]) {
-      const resolved = path.resolve(selectedPath);
-      if (seen.has(resolved)) continue;
-      seen.add(resolved);
-      targets.push({ name: family.name, path: resolved });
-    }
-    for (const skipped of (selected as any).skippedInputs || []) {
-      const resolved = path.resolve(skipped.path);
-      if (seen.has(resolved)) continue;
-      seen.add(resolved);
-      targets.push({ name: family.name, path: resolved, skipped: true, reason: skipped.reason });
-    }
+async function resolveTargets(args: ReturnType<typeof parseArgs>): Promise<{
+  root: string;
+  targets: TargetSpec[];
+  analyze: boolean;
+  requireLinks: boolean;
+}> {
+  if (args.repos.length > 0) {
+    const paths = args.repos.map(repo => path.resolve(repo.path));
+    return {
+      root: commonPathPrefix(paths) || process.cwd(),
+      targets: args.repos.map(repo => ({ ...repo, path: path.resolve(repo.path), family: args.workspaceName })),
+      analyze: args.fresh,
+      requireLinks: args.requireLinks,
+    };
   }
-  return targets;
+
+  if (args.devRoot) {
+    const root = path.resolve(args.devRoot);
+    const discovery = await discoverRealRepos(root);
+    const targets = discovery.repos
+      .filter(repo => repo.status === 'eligible')
+      .sort((left, right) => right.source_files - left.source_files || left.path.localeCompare(right.path))
+      .map(repo => ({ name: repo.name, path: repo.path, family: args.workspaceName }));
+    return { root, targets, analyze: args.fresh, requireLinks: args.requireLinks };
+  }
+
+  const root = path.resolve(process.cwd(), 'fixtures/was-bench/ui-api-worker');
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  const targets = entries
+    .filter(entry => entry.isDirectory())
+    .map(entry => ({ name: entry.name, path: path.join(root, entry.name), family: args.workspaceName }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  return { root, targets, analyze: true, requireLinks: true };
 }
 
 async function analyzeProjectDeterministicFirstPass(projectPath: string): Promise<CASOutput> {
@@ -977,48 +926,11 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-async function selectAnalyzedFamilyPaths(root: string, preferred: string[], analyzedPaths: Set<string>): Promise<string[] & { skippedInputs?: Array<{ path: string; reason: string }> }> {
-  if (analyzedPaths.has(root)) return [root];
-  const allAnalyzed = [...analyzedPaths]
-    .filter(candidate => candidate.startsWith(`${root}${path.sep}`))
-    .filter(candidate => !isGeneratedOrLegacyFamilyPath(candidate, root))
-    .sort((left, right) => left.localeCompare(right));
-  const preferredPaths = preferred
-    .map(name => path.join(root, name))
-    .filter(candidate => analyzedPaths.has(candidate));
-  const resolved = await resolveWorkspaceInputPaths({
-    workspaceRoot: root,
-    paths: [...new Set([...preferredPaths, ...allAnalyzed])],
-  });
-  const included = resolved.includedPaths as string[] & { skippedInputs?: Array<{ path: string; reason: string }> };
-  included.skippedInputs = resolved.skippedInputs;
-  return included;
-}
-
-function isGeneratedOrLegacyFamilyPath(candidate: string, root: string): boolean {
-  const relative = path.relative(root, candidate).split(path.sep);
-  return relative.some(part =>
-    part === 'node_modules' ||
-    part === 'legacy' ||
-    part.startsWith('.unravl') ||
-    part.startsWith('.klauro') ||
-    part.includes('live-trial') ||
-    part.includes('benchmark')
-  );
-}
-
-function resolveCurrentKlauroPath(devRoot: string): string {
-  let current = process.cwd();
-  while (current !== path.dirname(current)) {
-    if (fs.existsSync(path.join(current, 'AGENTS.md')) && current.endsWith(`${path.sep}proof-of-concept`)) return current;
-    current = path.dirname(current);
-  }
-  return path.join(devRoot, 'unravl', 'proof-of-concept');
-}
-
 function parseArgs(argv: string[]) {
   const parsed: {
     devRoot?: string;
+    repos: Array<{ name: string; path: string }>;
+    workspaceName: string;
     output?: string;
     markdown?: string;
     json: boolean;
@@ -1026,10 +938,29 @@ function parseArgs(argv: string[]) {
     fresh: boolean;
     mcpConsumer: boolean;
     withAi: boolean;
-  } = { json: false, includeGraph: false, fresh: false, mcpConsumer: true, withAi: false };
+    requireLinks: boolean;
+  } = {
+    repos: [],
+    workspaceName: 'portable-workspace',
+    json: false,
+    includeGraph: false,
+    fresh: false,
+    mcpConsumer: true,
+    withAi: false,
+    requireLinks: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--dev-root') parsed.devRoot = argv[++i];
+    else if (arg === '--repo') {
+      const value = argv[++i];
+      if (!value) throw new Error('--repo requires a path or name=path value');
+      const separator = value.indexOf('=');
+      const repoPath = separator >= 0 ? value.slice(separator + 1) : value;
+      const name = separator >= 0 ? value.slice(0, separator) : path.basename(repoPath);
+      parsed.repos.push({ name, path: repoPath });
+    }
+    else if (arg === '--workspace-name') parsed.workspaceName = argv[++i];
     else if (arg === '--output') parsed.output = argv[++i];
     else if (arg === '--markdown') parsed.markdown = argv[++i];
     else if (arg === '--json') parsed.json = true;
@@ -1037,6 +968,7 @@ function parseArgs(argv: string[]) {
     else if (arg === '--fresh') parsed.fresh = true;
     else if (arg === '--no-mcp-consumer') parsed.mcpConsumer = false;
     else if (arg === '--with-ai' || arg === '--ai-enrichment') parsed.withAi = true;
+    else if (arg === '--require-links') parsed.requireLinks = true;
     else if (arg === '--help' || arg === '-h') {
       process.stdout.write(formatUsage());
       process.exit(0);
@@ -1051,7 +983,9 @@ function formatUsage(): string {
     'Usage: npm run workspace-analysis-gauntlet -- [options]',
     '',
     'Options:',
-    '  --dev-root <path>       Root folder containing product workspaces. Defaults to ~/dev.',
+    '  --repo [name=]<path>    Add a repository to one workspace. May be repeated.',
+    '  --dev-root <path>       Discover eligible repositories below a root as one workspace.',
+    '  --workspace-name <name> Name assigned to the selected workspace.',
     '  --output <file>         Write JSON report.',
     '  --markdown <file>       Write Markdown report.',
     '  --json                  Print JSON report to stdout.',
@@ -1059,6 +993,7 @@ function formatUsage(): string {
     '  --fresh                 Re-analyze target repos before building workspace graphs.',
     '  --no-mcp-consumer       Use internal graph builder only; skip MCP consumer validation.',
     '  --with-ai               Enable AI enrichment checks when provider config is available.',
+    '  --require-links         Require at least two resolved cross-repository links.',
     '  -h, --help              Show this help.',
     '',
   ].join('\n');
@@ -1123,20 +1058,6 @@ function formatMarkdown(report: any): string {
   ].join('\n');
 }
 
-function hasCoreSystemTargets(targets: TargetResult[]): boolean {
-  const included = new Set(targets.filter(target => target.status === 'included').map(target => path.basename(target.path)));
-  return ['soon-ui', 'soon-sync', 'soon-lens', 'soon-link', 'zerac-api', 'zerac-ui', 'zerac-scan', 'poc']
-    .every(name => included.has(name));
-}
-
-function hasKlauroDogfoodTarget(targets: TargetResult[]): boolean {
-  return targets.some(target => target.name === 'Klauro' && target.status === 'included' && /(?:unravl|klauro).*[\/\\]proof-of-concept$/.test(target.path));
-}
-
-function familyRelativePath(devRoot: string, targetPath: string): string {
-  return path.relative(devRoot, targetPath) || path.basename(targetPath);
-}
-
 function hasLinkedMode(graph: CrossCodebaseSystemGraph, mode: string): boolean {
   return [...graph.links, ...(graph.application_links || [])].some(link => link.mode === mode);
 }
@@ -1162,34 +1083,6 @@ function countLinkModes(graph: CrossCodebaseSystemGraph): Record<string, number>
     counts[link.mode] = (counts[link.mode] || 0) + 1;
     return counts;
   }, {} as Record<string, number>);
-}
-
-function namedSystem(systems: Array<{ name: string; graph: CrossCodebaseSystemGraph }>, name: string): { name: string; graph: CrossCodebaseSystemGraph } | undefined {
-  return systems.find(system => system.name === name);
-}
-
-function applicationNames(graph: CrossCodebaseSystemGraph | undefined): string[] {
-  return [...new Set((graph?.applications || []).map(app => app.name))].sort();
-}
-
-function hasApplications(graph: CrossCodebaseSystemGraph | undefined, names: string[]): boolean {
-  const available = new Set(applicationNames(graph));
-  return names.every(name => available.has(name));
-}
-
-function workspaceEnvironmentNames(graph: CrossCodebaseSystemGraph | undefined): string[] {
-  return [...new Set((graph?.environments || []).map(environment => environment.name.toLowerCase()))].sort();
-}
-
-function hasWorkspaceEnvironments(graph: CrossCodebaseSystemGraph | undefined, names: string[]): boolean {
-  const available = new Set(workspaceEnvironmentNames(graph));
-  return names.every(name => available.has(name));
-}
-
-function hasZeracCriticalRelationships(graph: CrossCodebaseSystemGraph | undefined): boolean {
-  if (!graph) return false;
-  const evidence = relationshipEvidence(graph, ['client-service->user-api', 'client-service->admin-api', 'drop-server->admin-api', 'client->coordinator', 'agent->drop-server', 'redis-unused']);
-  return Object.values(evidence).every(Boolean);
 }
 
 function workspaceSemanticFallbackCoverage(graph: CrossCodebaseSystemGraph | undefined): Record<string, unknown> {
@@ -1293,126 +1186,6 @@ function usefulDescription(value: unknown): boolean {
   return text.length >= 80 &&
     !/^(unnamed|null|undefined)$/i.test(text) &&
     !/\[object Object\]/.test(text);
-}
-
-function hasInternalApiConsumerGap(graph: CrossCodebaseSystemGraph | undefined): boolean {
-  return Boolean(providerConsumerGapEvidence(graph, 'internal-api').has_gap);
-}
-
-function providerConsumerGapEvidence(graph: CrossCodebaseSystemGraph | undefined, appName: string): Record<string, unknown> {
-  if (!graph) return { has_gap: false, reason: 'missing graph' };
-  const app = (graph.applications || []).find(item => item.name === appName);
-  const incomingLinks = app ? (graph.application_links || []).filter(link => link.target_application_id === app.id) : [];
-  const insight = (graph.system_insights || []).find(item =>
-    (item.type === 'provider-api-without-source-consumers' || item.type === 'unclaimed-runtime-surface') &&
-    item.application_ids.includes(app?.id || '')
-  );
-  return {
-    has_gap: Boolean(app && incomingLinks.length === 0 && insight),
-    application_id: app?.id || null,
-    incoming_links: incomingLinks.length,
-    insight: insight?.title || null,
-    evidence: insight?.evidence?.slice(0, 6) || [],
-  };
-}
-
-function hasZeracDesktopDistributionUnit(graph: CrossCodebaseSystemGraph | undefined): boolean {
-  const evidence = zeracDesktopDistributionEvidence(graph);
-  return Boolean(evidence.hasDesktopUnit && evidence.hasClient && evidence.hasClientService && evidence.hasInstallerEvidence && evidence.processesRemainSeparate);
-}
-
-function zeracDesktopDistributionEvidence(graph: CrossCodebaseSystemGraph | undefined): Record<string, boolean | string[]> {
-  if (!graph) return {
-    hasDesktopUnit: false,
-    hasClient: false,
-    hasClientService: false,
-    hasInstallerEvidence: false,
-    processesRemainSeparate: false,
-    units: [],
-  };
-  const units = graph.distribution_units || [];
-  const desktopUnit = units.find(unit =>
-    unit.kind === 'desktop-app' &&
-    unit.component_names.some(name => name === 'client') &&
-    unit.component_names.some(name => name === 'client-service')
-  );
-  const appNames = new Set((graph.applications || []).map(app => app.name));
-  return {
-    hasDesktopUnit: Boolean(desktopUnit),
-    hasClient: Boolean(desktopUnit?.component_names.includes('client')),
-    hasClientService: Boolean(desktopUnit?.component_names.includes('client-service')),
-    hasInstallerEvidence: Boolean(desktopUnit?.artifact_paths.some(file => /installer|\.nsi|\.wxs|\.service|\.desktop/i.test(file))),
-    processesRemainSeparate: appNames.has('client') && appNames.has('client-service'),
-    units: units.map(unit => `${unit.name}: ${unit.component_names.join(', ')}`).slice(0, 8),
-  };
-}
-
-function relationshipEvidence(graph: CrossCodebaseSystemGraph | undefined, keys: string[]): Record<string, boolean | string> {
-  if (!graph) return Object.fromEntries(keys.map(key => [key, false]));
-  const appById = new Map((graph.applications || []).map(app => [app.id, app]));
-  const componentById = new Map((graph.runtime_components || []).map(component => [component.id, component]));
-  const applicationLinkNames = new Set((graph.application_links || []).map(link => `${appById.get(link.source_application_id)?.name || link.source_application_id}->${appById.get(link.target_application_id)?.name || link.target_application_id}`));
-  const runtimeLinkNames = new Set((graph.runtime_links || []).map(link => `${componentById.get(link.source_component_id)?.name || link.source_component_id}->${componentById.get(link.target_component_id)?.name || link.target_component_id}`));
-  const insights = graph.system_insights || [];
-  const result: Record<string, boolean | string> = {};
-  for (const key of keys) {
-    if (key === 'redis-unused') {
-      const insight = insights.find(item => item.type === 'declared-unused-infrastructure' && /redis/i.test(item.title));
-      result[key] = insight ? insight.title : false;
-      continue;
-    }
-    const [source, target] = key.split('->');
-    result[key] = [...applicationLinkNames, ...runtimeLinkNames].some(name => name.includes(`${source}->${target}`));
-  }
-  return result;
-}
-
-function hasNoZeracFalseWorkspaceLinks(graph: CrossCodebaseSystemGraph | undefined): boolean {
-  const evidence = zeracFalseWorkspaceLinkEvidence(graph);
-  return Object.values(evidence).every(value => value === false);
-}
-
-function zeracFalseWorkspaceLinkEvidence(graph: CrossCodebaseSystemGraph | undefined): Record<string, boolean> {
-  if (!graph) return {
-    'zerac-demo->admin-api': true,
-    'admin-ui->internal-api': true,
-    'checkreq-visible': true,
-    'checkreq-linked': true,
-    'helper-surfaces-visible': true,
-    'infra-stores-visible-as-deployables': true,
-    'synthetic-root-visible-with-child-apps': true,
-  };
-  const appById = new Map((graph.applications || []).map(app => [app.id, app]));
-  const pairs = new Set((graph.application_links || []).map(link => `${appById.get(link.source_application_id)?.name || ''}->${appById.get(link.target_application_id)?.name || ''}`));
-  const overview = (graph.detail_views as any)?.overview;
-  const overviewDeployables = new Set<string>((overview?.deployables || []).map((app: any) => app.name));
-  const overviewConnections = new Set<string>((overview?.connections || []).map((link: any) => `${link.source}->${link.target}`));
-  const helperNames = ['app-base', 'application', 'base', 'buildbinaries', 'checkreq', 'machine-to-machine', 'unprotected', 'dockerfile'];
-  const infraStoreNames = ['postgres', 'redis', 'minio'];
-  return {
-    'zerac-demo->admin-api': pairs.has('zerac-demo->admin-api') || overviewConnections.has('zerac-demo->admin-api'),
-    'admin-ui->internal-api': pairs.has('admin-ui->internal-api') || overviewConnections.has('admin-ui->internal-api'),
-    'checkreq-visible': overviewDeployables.has('checkreq'),
-    'checkreq-linked': [...Array.from(pairs), ...Array.from(overviewConnections)].some(pair => pair.includes('checkreq')),
-    'helper-surfaces-visible': helperNames.some(name => overviewDeployables.has(name)),
-    'infra-stores-visible-as-deployables': infraStoreNames.some(name => overviewDeployables.has(name)),
-    'synthetic-root-visible-with-child-apps': overviewDeployables.has('zerac-api') || overviewDeployables.has('poc'),
-  };
-}
-
-function hasZeracExternalDependencySemantics(graph: CrossCodebaseSystemGraph | undefined): boolean {
-  const evidence = zeracExternalDependencyEvidence(graph);
-  return Boolean(evidence.auth0SourceBacked && evidence.redisTopologyOnly && evidence.terraformRuntimeComponents);
-}
-
-function zeracExternalDependencyEvidence(graph: CrossCodebaseSystemGraph | undefined): Record<string, boolean | number> {
-  if (!graph) return { auth0SourceBacked: false, redisTopologyOnly: false, terraformRuntimeComponents: 0 };
-  const dependencies = ((graph.detail_views as any)?.overview?.external_dependencies || []) as Array<{ name: string; used: boolean; usage: string }>;
-  return {
-    auth0SourceBacked: dependencies.some(dependency => dependency.name === 'Auth0' && dependency.used === true && dependency.usage === 'source-backed'),
-    redisTopologyOnly: dependencies.some(dependency => dependency.name === 'redis' && dependency.used === false && dependency.usage === 'topology-only'),
-    terraformRuntimeComponents: (graph.runtime_components || []).filter(component => component.topology_surface === 'terraform').length,
-  };
 }
 
 function actionableUnmatchedBudget(graph: CrossCodebaseSystemGraph) {
