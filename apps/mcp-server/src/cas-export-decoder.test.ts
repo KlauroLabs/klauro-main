@@ -30,6 +30,16 @@ test('streams uncompressed CAS exports into structured values', async () => {
   assert.deepEqual(decoded, expected);
 });
 
+test('retains streaming assembly beyond the bounded JSON buffer', async () => {
+  const expected = { nodes: Array.from({ length: 100 }, (_, index) => ({ id: `node-${index}` })) };
+  const decoded = await decodeCasExportStream<typeof expected>(
+    Readable.from([JSON.stringify(expected)]),
+    'none',
+    { bufferedJsonLimitBytes: 32 },
+  );
+  assert.deepEqual(decoded, expected);
+});
+
 test('turns a dropped compressed response into a handled decode rejection', async () => {
   const compressed = zlib.zstdCompressSync(Buffer.from(JSON.stringify({ nodes: [{ id: 'node-1' }] })));
   const source = Readable.from((async function* () {
