@@ -1002,7 +1002,8 @@ function isGenericApiRoute(...routes: string[]): boolean {
       .filter(Boolean)
       .map(part => part.toLowerCase())
       .filter(part => !part.startsWith(':') && !/^v\d+$/.test(part) && part !== 'api');
-    if (topics.length === 0 || topics.length > 2) return false;
+    if (topics.length === 0) return true;
+    if (topics.length > 2) return false;
     return topics.every(topic => generic.has(topic));
   });
 }
@@ -2464,14 +2465,10 @@ function repositoryIdentityParts(repo: { path: string; name: string }): string[]
   const homeName = path.basename(process.env.HOME || '').toLowerCase();
   const userName = (process.env.USER || '').toLowerCase();
   const ignored = new Set([
-    'users',
-    'dev',
-    'personal',
-    'proof-of-concept',
-    'backend',
-    'frontend',
-    homeName,
-    userName,
+    'users', 'dev', 'personal', 'gate', 'tmp', 'var', 'opt', 'mnt',
+    'repo', 'repos', 'source', 'src', 'code', 'project', 'projects',
+    'workspace', 'workspaces', 'proof-corpus', 'proof-of-concept', 'backend', 'frontend',
+    homeName, userName,
   ].filter(Boolean));
   const parts = repo.path.split(/[\\/]/).slice(-4).map(normalizeTopic).filter(part =>
     part.length > 2 &&

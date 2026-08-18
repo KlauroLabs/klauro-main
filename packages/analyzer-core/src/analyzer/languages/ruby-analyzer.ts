@@ -1,27 +1,18 @@
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
-import {
-  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, FileAnalysisResult
-} from '../../types/cas.types';
+import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, FileAnalysisResult } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import { buildRubySnapshotAnalysis } from './ruby-snapshot-analysis';
+import { createRubyTypeRegistry, rubyTypeFor } from './ruby-type-registry';
 
 interface RubyMethodCall {
   name: string;
   receiver?: string;
   receiverKind: 'none' | 'self' | 'constant' | 'ivar' | 'local';
   line: number;
-}
-
-function createRubyTypeRegistry(): Record<string, string> {
-  return Object.create(null) as Record<string, string>;
-}
-
-function rubyTypeFor(registry: Record<string, string>, name: string): string | undefined {
-  return Object.prototype.hasOwnProperty.call(registry, name) ? registry[name] : undefined;
 }
 
 export interface RubyMethod {

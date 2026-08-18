@@ -133,6 +133,42 @@ test('unrelated frontend paths do not link to backend routes', () => {
   assert.equal(result.links.filter(link => link.type === 'api').length, 0);
 });
 
+test('a shared generic workspace parent does not create repository affinity', () => {
+  const consumer = {
+    path: '/tmp/proof-corpus/consumer',
+    name: 'consumer',
+    cas: frontendCas({
+      exit_points: [{
+        id: 'exit-generic-doc',
+        type: 'api',
+        name: 'GET /docs',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '/docs' },
+        operation: { method: 'GET' },
+      }],
+    }),
+  };
+  const producer = {
+    path: '/tmp/proof-corpus/producer',
+    name: 'producer',
+    cas: backendCas({
+      entry_points: [{
+        id: 'entry-generic-id',
+        type: 'http',
+        name: 'GET /:id',
+        source_node: 'node-things-handler',
+        trigger: { method: 'GET', path: '/:id' },
+        handler: { node_id: 'node-things-handler', method_name: 'detail', file: 'src/controller.ts', line: 1 },
+      }],
+    }),
+  };
+
+  const result = buildCrossRepositoryLinks([consumer, producer]);
+
+  assert.equal(result.links.filter(link => link.type === 'api').length, 0);
+  assert.equal(result.conflicts.length, 0);
+});
+
 test('generic ORM resource labels do not fabricate a shared database', () => {
   const first = makeCas('first', {
     exit_points: [{ id: 'first-orm', source_node: 'first-node', type: 'database', name: 'orm', target: { resource: 'orm' } }],

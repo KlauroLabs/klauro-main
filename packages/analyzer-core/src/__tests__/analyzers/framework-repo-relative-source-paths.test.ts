@@ -216,6 +216,23 @@ describe('framework analyzers record repo-relative source.file, never absolute',
     expect(leakedSourceFiles(nodes)).toEqual([]);
   });
 
+  it('Laravel: every inferred external boundary references an emitted node', async () => {
+    writeJson('composer.json', { name: 'acme/orders', require: { 'laravel/framework': '^10.0' } });
+    write(
+      'app/Models/User.php',
+      ['<?php', 'namespace App\\Models;', 'use Illuminate\\Database\\Eloquent\\Model;', 'class User extends Model {}'].join('\n')
+    );
+
+    const contribution = await new LaravelAnalyzer().analyze({
+      projectPath: root,
+    });
+    const nodeIds = new Set((contribution.nodes || []).map(node => node.id));
+    const exitPoints = contribution.exit_points || [];
+
+    expect(exitPoints.length).toBeGreaterThan(0);
+    expect(exitPoints.every(exitPoint => nodeIds.has(exitPoint.source_node))).toBe(true);
+  });
+
   it('Django: project/settings nodes stay repo-relative', async () => {
     write('requirements.txt', 'django==5.0\n');
     write('manage.py', 'import django\n');

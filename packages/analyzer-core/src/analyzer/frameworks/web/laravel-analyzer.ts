@@ -9,6 +9,7 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
 interface LaravelApplication {
+  nodeId: string;
   name: string;
   version: string;
   type: 'laravel' | 'lumen' | 'custom';
@@ -189,8 +190,8 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const resources = await this.analyzeResources(phpFiles, context.projectPath, nodes, edges);
 
       this.buildLaravelRelationships(controllers, models, migrations, routes, middleware, services, commands, jobs, nodes, edges);
-      this.identifyDatabaseConnections(models, migrations, exitPoints);
-      this.identifyExternalConnections(controllers, services, jobs, exitPoints);
+      this.identifyDatabaseConnections(models, migrations, application?.nodeId, exitPoints);
+      this.identifyExternalConnections(controllers, services, jobs, application?.nodeId, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -268,9 +269,12 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const session = this.detectSessionDriver(deps);
       const mail = this.detectMailDriver(deps);
       const version = deps['laravel/framework'] || deps['laravel/lumen-framework'] || 'unknown';
+      const applicationName = composerJson.name || 'laravel-app';
+      const appId = this.generateId('app', path.join(projectPath, 'composer.json'), applicationName);
 
       const application: LaravelApplication = {
-        name: composerJson.name || 'laravel-app',
+        nodeId: appId,
+        name: applicationName,
         version,
         type,
         hasEnvConfig,
@@ -281,7 +285,6 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         mail
       };
 
-      const appId = this.generateId('app', path.join(projectPath, 'composer.json'), application.name);
       const documentation = this.extractDocumentation('', path.join(projectPath, 'composer.json'));
       const comments = this.extractComments('', path.join(projectPath, 'composer.json'));
       const todos = this.extractTodos(comments);
@@ -1666,8 +1669,6 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     const middleware: string[] = [];
     const escapedUri = uri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-
-
     const verb = method ? method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '\\w+';
     const routeBlockPattern = new RegExp(
       `Route::${verb}\\(\\s*['"\`]${escapedUri}['"\`][^;]*->middleware\\(([^)]+)\\)`,
@@ -1926,11 +1927,17 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private identifyDatabaseConnections(models: LaravelModel[], migrations: LaravelMigration[], exitPoints: CASExitPoint[]): void {
-    if (models.length > 0 || migrations.length > 0) {
+  private identifyDatabaseConnections(
+    models: LaravelModel[], migrations: LaravelMigration[],
+    applicationNodeId: string | undefined, exitPoints: CASExitPoint[]
+  ): void {
+    const sourceNodeId = applicationNodeId || (models[0]
+      ? this.generateId('model', models[0].filePath, models[0].name)
+      : migrations[0] ? this.generateId('migration', migrations[0].filePath, migrations[0].name) : undefined);
+    if ((models.length > 0 || migrations.length > 0) && sourceNodeId) {
       exitPoints.push(this.createExitPoint(
         'exit_laravel_database',
-        'laravel_app',
+        sourceNodeId,
         'database',
         'Database Connection',
         'Database operations through Eloquent ORM',
@@ -1952,21 +1959,23 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   }
 
   private identifyExternalConnections(
-    controllers: LaravelController[],
-    services: LaravelService[],
-    jobs: LaravelJob[],
-    exitPoints: CASExitPoint[]
+    controllers: LaravelController[], services: LaravelService[], jobs: LaravelJob[],
+    applicationNodeId: string | undefined, exitPoints: CASExitPoint[]
   ): void {
-    const hasHTTPConnection = controllers.some(c =>
+    const httpController = controllers.find(c =>
       c.dependencies.some(dep => dep.includes('GuzzleHttp') || dep.includes('Http'))
-    ) || services.some(s =>
+    );
+    const httpService = services.find(s =>
       s.dependencies.some(dep => dep.includes('GuzzleHttp') || dep.includes('Http'))
     );
 
-    if (hasHTTPConnection) {
+    const httpSourceNodeId = applicationNodeId || (httpController
+      ? this.generateId('controller', httpController.filePath, httpController.name)
+      : httpService ? this.generateId('service', httpService.filePath, httpService.name) : undefined);
+    if ((httpController || httpService) && httpSourceNodeId) {
       exitPoints.push(this.createExitPoint(
         'exit_laravel_http',
-        'laravel_app',
+        httpSourceNodeId,
         'api',
         'HTTP API Connection',
         'External HTTP API connections',
@@ -1984,10 +1993,13 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    if (jobs.length > 0) {
+    const queueSourceNodeId = applicationNodeId || (jobs[0]
+      ? this.generateId('job', jobs[0].filePath, jobs[0].name)
+      : undefined);
+    if (jobs.length > 0 && queueSourceNodeId) {
       exitPoints.push(this.createExitPoint(
         'exit_laravel_queue',
-        'laravel_app',
+        queueSourceNodeId,
         'message',
         'Queue System Connection',
         'Background job processing through Laravel queues',
@@ -2007,14 +2019,10 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     }
   }
 
-
   private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
     if (!content || content.trim().length === 0) return undefined;
 
     const lines = content.split('\n');
-
-
-
 
     const modelDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\//g);
     const modelDocs = [];
@@ -2022,20 +2030,17 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       modelDocs.push(match[1].trim());
     }
 
-
     const controllerDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/\s*public\s+function/g);
     const controllerDocs = [];
     for (const match of controllerDocMatches) {
       controllerDocs.push(match[1].trim());
     }
 
-
     const bladeCommentMatches = content.matchAll(/{{--\s*([^-]*?)\s*--}}/g);
     const bladeDocs = [];
     for (const match of bladeCommentMatches) {
       bladeDocs.push(match[1].trim());
     }
-
 
     const migrationDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/\s*(?:public\s+)?function\s+(?:up|down|run)/g);
     const migrationDocs = [];
@@ -2078,7 +2083,6 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-
       if (trimmedLine.startsWith('//') || trimmedLine.startsWith('#')) {
         const commentText = trimmedLine.substring(trimmedLine.startsWith('//') ? 2 : 1).trim();
         if (commentText.length > 0) {
@@ -2103,7 +2107,6 @@ export class LaravelAnalyzer extends BaseAnalyzer {
           comments.push(comment);
         }
       }
-
 
       if (trimmedLine.includes('/*') && !trimmedLine.includes('/**')) {
         let commentText = '';
@@ -2146,7 +2149,6 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         i = j - 1;
       }
 
-
       const bladeCommentMatch = line.match(/{{--\s*([^-]*?)\s*--}}/);
       if (bladeCommentMatch) {
         const commentText = bladeCommentMatch[1].trim();
@@ -2187,10 +2189,8 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
         const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
 
-
         const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
         const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
-
 
         const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
         let priority: CASTodo['priority'] = 'medium';
