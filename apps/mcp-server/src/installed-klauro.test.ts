@@ -97,7 +97,7 @@ test('analyzeCasWithInstalledKlauro streams JSON responses beyond the buffered d
   const previousCommand = process.env.KLAURO_INSTALLED_CLI;
   try {
     process.env.KLAURO_INSTALLED_CLI = `${process.execPath} ${executable}`;
-    const result = await analyzeCasWithInstalledKlauro(project, { timeoutMs: 30_000 });
+    const result = await analyzeCasWithInstalledKlauro(project, { timeoutMs: 30_000, jsonBufferLimitBytes: 1024 * 1024 });
     assert.equal(result.output.nodes[0].id, 'large-node');
     assert.equal(result.output.nodes[0].description?.length, 9 * 1024 * 1024);
   } finally {

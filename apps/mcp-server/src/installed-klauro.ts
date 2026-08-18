@@ -16,6 +16,7 @@ export interface InstalledKlauroRunOptions {
   timeoutMs?: number;
   serverUrl?: string;
   analysisId?: string;
+  jsonBufferLimitBytes?: number;
 }
 
 export interface InstalledKlauroAnalysisResult {
@@ -171,7 +172,7 @@ function runJsonCommand(command: string, args: string[], options: InstalledKlaur
       },
     });
     const decoded = decodeCasExportStream<any>(child.stdout.pipe(stdoutTap), 'identity', {
-      bufferedJsonLimitBytes: 8 * 1024 * 1024,
+      bufferedJsonLimitBytes: options.jsonBufferLimitBytes ?? 256 * 1024 * 1024,
     }).then(value => ({ value }), error => ({ error }));
     const finish = (action: () => void): void => {
       if (settled) return;
