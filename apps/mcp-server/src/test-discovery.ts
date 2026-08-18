@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
+import pLimit from 'p-limit';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 export type TestDiscoveryStatus =
@@ -120,14 +121,16 @@ export async function getTestDiscoveryEvidence(projectPath: string, cas?: CASOut
 
   const casSuites = cas?.test_suites || [];
   const casFiles = new Set(casSuites.map(suite => normalizeProjectPath(projectPath, suite.file_path)).filter(Boolean));
-  const sourceDetails: Array<{ path: string; framework: string }> = [];
-  for (const file of sourceFiles.sort()) {
-    if (!(await isExecutableTestFile(projectPath, file))) continue;
+  const casFileIndex = buildPathSuffixIndex(casFiles);
+  const readLimit = pLimit(16);
+  const inspectedSourceFiles = await Promise.all(sourceFiles.sort().map(file => readLimit(async () => {
+    if (!(await isExecutableTestFile(projectPath, file))) return null;
     const normalizedPath = normalizeProjectPath(projectPath, file);
-    if (normalizedPath) sourceDetails.push({ path: normalizedPath, framework: inferFramework(file) });
-  }
+    return normalizedPath ? { path: normalizedPath, framework: inferFramework(file) } : null;
+  })));
+  const sourceDetails = inspectedSourceFiles.filter((file): file is { path: string; framework: string } => Boolean(file));
   const potentialUncovered = sourceDetails
-    .filter(file => !hasMatchingCasSuite(file.path, casFiles))
+    .filter(file => !hasMatchingCasSuite(file.path, casFileIndex))
     .slice(0, 50)
     .map(file => ({
       path: file.path,
@@ -164,11 +167,27 @@ function summaryFor(status: TestDiscoveryStatus, casSuites: number, sourceFiles:
   return 'No source test files were found after scanning common test paths and naming conventions.';
 }
 
-function hasMatchingCasSuite(sourceFile: string, casFiles: Set<string>): boolean {
-  for (const casFile of casFiles) {
-    if (sourceFile === casFile || sourceFile.endsWith(`/${casFile}`) || casFile.endsWith(`/${sourceFile}`)) return true;
+interface PathSuffixIndex {
+  exact: Set<string>;
+  suffixes: Set<string>;
+}
+
+function buildPathSuffixIndex(paths: Set<string>): PathSuffixIndex {
+  const suffixes = new Set<string>();
+  for (const filePath of paths) {
+    for (const suffix of pathSuffixes(filePath)) suffixes.add(suffix);
   }
-  return false;
+  return { exact: paths, suffixes };
+}
+
+function hasMatchingCasSuite(sourceFile: string, index: PathSuffixIndex): boolean {
+  if (index.suffixes.has(sourceFile)) return true;
+  return pathSuffixes(sourceFile).some(suffix => index.exact.has(suffix));
+}
+
+function pathSuffixes(filePath: string): string[] {
+  const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts.map((_, index) => parts.slice(index).join('/'));
 }
 
 function normalizeProjectPath(projectPath: string, filePath?: string): string {
