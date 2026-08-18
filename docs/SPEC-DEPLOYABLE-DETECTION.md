@@ -177,6 +177,7 @@ interface DeployableEvidence {
       | 'package-identity'                                       // Tier 3
       | 'folder-prior';                                          // Tier 4
   evidence: string[];           // human-readable citations (file:line or file)
+  entry_files?: string[];       // source/config files that establish this unit's entry boundary
   ships_paths?: string[];       // Tier-1 only: other roots this artifact bundles in
   ports?: string[];
 }

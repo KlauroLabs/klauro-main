@@ -308,7 +308,7 @@ const DECLARED_ENTRY_FILE_PATTERNS: RegExp[] = [
 
 
 function evidenceDeclaredFiles(unit: DeployableEvidence): string[] {
-  const out: string[] = [];
+  const out = (unit.entry_files || []).map(normalizeEvidencePath);
   for (const line of unit.evidence || []) {
     for (const pattern of DECLARED_ENTRY_FILE_PATTERNS) {
       const match = line.match(pattern);

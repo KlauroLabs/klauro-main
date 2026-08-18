@@ -85,6 +85,28 @@ test('analyzeCasWithInstalledKlauro accepts a completed hosted CAS without incre
   }
 });
 
+test('analyzeCasWithInstalledKlauro streams JSON responses beyond the buffered decoder limit', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-installed-stream-'));
+  const executable = path.join(root, 'fake-cli.cjs');
+  const project = path.join(root, 'repo');
+  await fs.ensureDir(project);
+  await fs.writeFile(executable, [
+    "const description = 'x'.repeat(9 * 1024 * 1024);",
+    "process.stdout.write(JSON.stringify({ cas: { nodes: [{ id: 'large-node', description }], edges: [] }, analysis_type: 'full' }));",
+  ].join('\n'));
+  const previousCommand = process.env.KLAURO_INSTALLED_CLI;
+  try {
+    process.env.KLAURO_INSTALLED_CLI = `${process.execPath} ${executable}`;
+    const result = await analyzeCasWithInstalledKlauro(project, { timeoutMs: 30_000 });
+    assert.equal(result.output.nodes[0].id, 'large-node');
+    assert.equal(result.output.nodes[0].description?.length, 9 * 1024 * 1024);
+  } finally {
+    if (previousCommand === undefined) delete process.env.KLAURO_INSTALLED_CLI;
+    else process.env.KLAURO_INSTALLED_CLI = previousCommand;
+    await fs.remove(root);
+  }
+});
+
 test('prepareInstalledKlauroIncrementalBaseline combines full CAS output with real sync evidence', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-installed-baseline-'));
   const executable = path.join(root, 'fake-cli.cjs');

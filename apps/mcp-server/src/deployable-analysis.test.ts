@@ -463,8 +463,8 @@ test('sibling build targets in one directory are told apart by their own entry f
     entry_points: [],
     exit_points: [],
     deployable_evidence: [
-      { root_path: 'crates/host/src', name: 'spike', tier: 2, kind: 'bin', evidence: ['src/bin entry: crates/host/src/bin/spike.rs'] },
-      { root_path: 'crates/host/src', name: 'host', tier: 2, kind: 'bin', evidence: ['src/bin entry: crates/host/src/bin/host.rs'] },
+      { root_path: 'crates/host/src', name: 'spike', tier: 2, kind: 'bin', evidence: ['Cargo target spike'], entry_files: ['crates/host/src/bin/spike.rs'] },
+      { root_path: 'crates/host/src', name: 'host', tier: 2, kind: 'bin', evidence: ['Cargo target host'], entry_files: ['crates/host/src/bin/host.rs'] },
     ],
   } as unknown as CASOutput;
 

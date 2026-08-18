@@ -672,7 +672,6 @@ export class AnalyzerOrchestrator {
   ): boolean {
     if (nestedIgnoredDirectories.has(relativePath)) return true;
     if (this.isExcludedLegacyReferencePath(relativePath, projectPath)) return true;
-    if (relativePath === 'bin') return false;
     if (isBuildArtifactDirectoryName(directoryName)) return true;
     return new Set([
       'node_modules',
@@ -699,7 +698,6 @@ export class AnalyzerOrchestrator {
       '.dart_tool',
       '.gradle',
       'Pods',
-      'bin',
       'obj',
       '.next',
       '.turbo',
@@ -915,7 +913,6 @@ export class AnalyzerOrchestrator {
       '**/.dart_tool/**',
       '**/.gradle/**',
       '**/Pods/**',
-      '**/bin/**',
       '**/obj/**',
       '**/.next/**',
       '**/.turbo/**',

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isBenchmarkCopyExcludedPath } from './incremental-benchmark';
+import * as fs from 'fs-extra';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { copyIncrementalBenchmarkRepo, isBenchmarkCopyExcludedPath } from './incremental-benchmark';
 import { requiresIncrementalGitBaseline } from './incremental-benchmark-execution';
 import { provesIncrementalLocality } from './incremental-locality-proof';
 
@@ -24,6 +27,27 @@ test('incremental benchmark repo copies exclude binary package artifacts', () =>
   assert.equal(isBenchmarkCopyExcludedPath('packages/Grpc.Core.2.30.0/native/linux/libgrpc.so'), true);
   assert.equal(isBenchmarkCopyExcludedPath('src/users/users.service.ts'), false);
   assert.equal(isBenchmarkCopyExcludedPath('migrations/20260609000000_add_users.sql'), false);
+});
+
+test('incremental benchmark repo copies preserve source directories named bin', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-benchmark-copy-'));
+  const source = path.join(root, 'source');
+  const destination = path.join(root, 'destination');
+  try {
+    await fs.outputFile(path.join(source, 'bin', 'main.rs'), 'fn main() {}');
+    await fs.outputFile(path.join(source, 'src', 'bin', 'tool.rs'), 'fn main() {}');
+    await fs.outputFile(path.join(source, 'target', 'debug', 'tool'), 'compiled');
+    await fs.outputFile(path.join(source, 'obj', 'Debug', 'tool.dll'), 'compiled');
+
+    await copyIncrementalBenchmarkRepo(source, destination);
+
+    assert.equal(await fs.pathExists(path.join(destination, 'bin', 'main.rs')), true);
+    assert.equal(await fs.pathExists(path.join(destination, 'src', 'bin', 'tool.rs')), true);
+    assert.equal(await fs.pathExists(path.join(destination, 'target')), false);
+    assert.equal(await fs.pathExists(path.join(destination, 'obj')), false);
+  } finally {
+    await fs.remove(root);
+  }
 });
 
 test('incremental locality accepts an affected closure that spans the complete repository', () => {

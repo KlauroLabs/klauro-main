@@ -16,6 +16,7 @@ import { formatClientDoctor, runClientDoctor } from './client-doctor';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
 import { missingEmailMessage, missingPasswordMessage, promptLine, promptPassword, readAllStdin } from './password-prompt';
 import { extractServerUrlFlag, getStaleClientUpdateHint } from './stale-client-hint';
+import { writeJsonValue } from './stream-json-output';
 
 
 
@@ -712,8 +713,12 @@ async function getHostedProject(serverUrl: string, token: string, projectId: str
   throw new Error(payload.error || `Klauro project verification failed with HTTP ${response.status}`);
 }
 
-function output(value: unknown, json: boolean) {
-  process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : `${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}\n`);
+async function output(value: unknown, json: boolean): Promise<void> {
+  if (json) {
+    await writeJsonValue(value);
+    return;
+  }
+  process.stdout.write(`${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}\n`);
 }
 
 main().catch(async error => {

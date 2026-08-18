@@ -1183,6 +1183,33 @@ describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DE
     expect(toolB!.bundled_into).toBeUndefined();
   });
 
+  test('Cargo bin declarations expose explicit and conventional entry files', () => {
+    projectPath = tempProject();
+    fs.mkdirpSync(path.join(projectPath, 'src', 'bin'));
+    fs.mkdirpSync(path.join(projectPath, 'tools'));
+    fs.writeFileSync(path.join(projectPath, 'src', 'bin', 'watcher.rs'), 'fn main() {}');
+    fs.writeFileSync(path.join(projectPath, 'tools', 'inspect.rs'), 'fn main() {}');
+    fs.writeFileSync(
+      path.join(projectPath, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "platform"',
+        '',
+        '[[bin]]',
+        'name = "watcher"',
+        '',
+        '[[bin]]',
+        'name = "inspect"',
+        'path = "tools/inspect.rs"',
+        '',
+      ].join('\n'),
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    expect(result.find(item => item.kind === 'bin' && item.name === 'watcher')?.entry_files).toEqual(['src/bin/watcher.rs']);
+    expect(result.find(item => item.kind === 'bin' && item.name === 'inspect')?.entry_files).toEqual(['tools/inspect.rs']);
+  });
+
   describe('Android Gradle: one ship unit, not sibling root-aggregator/module-dir rows', () => {
     function writeSingleModuleAndroidApp(projectPath: string, displayName: string): void {
       // Standard Android Studio template shape: root build.gradle.kts only

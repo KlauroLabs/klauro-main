@@ -2718,6 +2718,7 @@ interface DeployableEvidence {
   kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' |
         'ci-deploy' | 'bin' | 'server-entry' | 'package';
   evidence: string[];
+  entry_files?: string[];             // Source/config files that establish this unit's entry boundary
   ships_paths?: string[];
   ports?: number[];
   entrypoint_member?: string;         // Which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle

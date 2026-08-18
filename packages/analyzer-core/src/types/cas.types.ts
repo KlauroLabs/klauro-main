@@ -5006,6 +5006,7 @@ export interface DeployableEvidence {
   tier: 1 | 2 | 3;
   kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package' | 'build-image';
   evidence: string[];
+  entry_files?: string[];
   ships_paths?: string[];
   ports?: number[];
   entrypoint_member?: string;

@@ -4,6 +4,37 @@ import type { CASEntryPoint, CASNode, DeployableEvidence } from '../../../../typ
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, isGenericStructuralDirName, safeDeployableName, safeGlobSync } from '../util';
 
+interface CargoBinDeclaration {
+  name: string;
+  entryFile?: string;
+}
+
+function relativeEntryFile(manifest: string, entryFile: string): string {
+  return path.join(path.dirname(manifest), entryFile).replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function cargoBinDeclarations(content: string, manifest: string, projectPath: string): CargoBinDeclaration[] {
+  const lines = content.split(/\r?\n/);
+  const declarations: CargoBinDeclaration[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^\s*\[\[bin\]\]\s*$/.test(lines[index])) continue;
+    const values = new Map<string, string>();
+    for (index += 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
+      const match = lines[index].match(/^\s*([A-Za-z0-9_-]+)\s*=\s*["']([^"']+)["']/);
+      if (match) values.set(match[1], match[2]);
+    }
+    index -= 1;
+    const name = values.get('name');
+    if (!name) continue;
+    const explicitPath = values.get('path');
+    const conventional = relativeEntryFile(manifest, `src/bin/${name}.rs`);
+    const entryFile = explicitPath
+      ? relativeEntryFile(manifest, explicitPath)
+      : (fs.existsSync(path.join(projectPath, conventional)) ? conventional : undefined);
+    declarations.push({ name, entryFile });
+  }
+  return declarations;
+}
 
 function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   const { projectPath, displayName } = ctx;
@@ -23,24 +54,27 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
     } catch {
       continue;
     }
-    const binMatches = [...content.matchAll(/\[\[bin\]\]\s*\n(?:[^\n[]*\n)*?\s*name\s*=\s*"([^"]+)"/g)];
-    for (const match of binMatches) {
+    const binDeclarations = cargoBinDeclarations(content, manifest, projectPath);
+    for (const declaration of binDeclarations) {
       out.push({
         root_path: path.dirname(manifest),
-        name: match[1],
+        name: declaration.name,
         tier: 2,
         kind: 'bin',
-        evidence: [`Cargo.toml [[bin]] name = "${match[1]}" (${manifest})`],
+        evidence: [`Cargo.toml [[bin]] name = "${declaration.name}" (${manifest})`],
+        entry_files: declaration.entryFile ? [declaration.entryFile] : undefined,
       });
     }
-    if (!binMatches.length && fs.existsSync(path.join(projectPath, path.dirname(manifest), 'src', 'main.rs'))) {
+    if (!binDeclarations.length && fs.existsSync(path.join(projectPath, path.dirname(manifest), 'src', 'main.rs'))) {
       const packageName = content.match(/^\s*name\s*=\s*"([^"]+)"/m)?.[1];
+      const entryFile = relativeEntryFile(manifest, 'src/main.rs');
       out.push({
         root_path: path.dirname(manifest),
         name: packageName || path.basename(path.dirname(manifest)),
         tier: 2,
         kind: 'bin',
-        evidence: [`src/main.rs present, no [[bin]] override (${path.join(path.dirname(manifest), 'src', 'main.rs')})`],
+        evidence: [`src/main.rs present, no [[bin]] override (${entryFile})`],
+        entry_files: [entryFile],
       });
     }
   }
@@ -62,12 +96,14 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
     if (json.bin) {
       const binEntries = typeof json.bin === 'string' ? { [json.name || path.basename(path.dirname(manifest))]: json.bin } : json.bin;
       for (const [binName, binPath] of Object.entries(binEntries)) {
+        if (typeof binPath !== 'string') continue;
         out.push({
           root_path: path.dirname(manifest),
           name: binName,
           tier: 2,
           kind: 'bin',
           evidence: [`package.json bin["${binName}"] = "${binPath}" (${manifest})`],
+          entry_files: [relativeEntryFile(manifest, binPath)],
         });
       }
     }
@@ -96,6 +132,7 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
             ? [`activationEvents: ${json.activationEvents.slice(0, 5).join(', ')}`]
             : []),
         ],
+        entry_files: [relativeEntryFile(manifest, vscodeEntry)],
       });
     }
 
@@ -117,6 +154,7 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
         tier: 2,
         kind: 'bin',
         evidence: [`Electron app entry: main="${json.main}", electron in dependencies (${manifest})`],
+        entry_files: [relativeEntryFile(manifest, json.main)],
       });
     }
   }
@@ -146,6 +184,7 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
       tier: 2,
       kind: 'bin',
       evidence: [`package main entry: ${goFile}`],
+      entry_files: [goFile.replace(/\\/g, '/')],
     });
   }
 
@@ -163,6 +202,7 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
       tier: 2,
       kind: 'bin',
       evidence: [`src/bin entry: ${file}`],
+      entry_files: [file.replace(/\\/g, '/')],
     });
   }
 
@@ -332,6 +372,7 @@ function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidenc
           `HTTP entry point: ${entry.name} (${handlerFile}${entry.handler?.line ? `:${entry.handler.line}` : ''})`,
           ...(routeEvidence ? [routeEvidence] : []),
         ],
+        entry_files: [handlerFile],
         ports: port ? [port] : undefined,
       });
       continue;
@@ -341,6 +382,9 @@ function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidenc
 
     if (routeEvidence && !existing.evidence.includes(routeEvidence) && existing.evidence.length < 10) {
       existing.evidence.push(routeEvidence);
+    }
+    if (!existing.entry_files?.includes(handlerFile)) {
+      existing.entry_files = [...(existing.entry_files || []), handlerFile];
     }
     if (port && !(existing.ports || []).includes(port)) {
       existing.ports = [...(existing.ports || []), port];

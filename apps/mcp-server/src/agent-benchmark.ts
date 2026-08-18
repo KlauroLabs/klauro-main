@@ -219,7 +219,6 @@ async function sourceFileStats(projectPath: string): Promise<SourceFileStat[]> {
       '**/target/**',
       '**/coverage/**',
       '**/.dart_tool/**',
-      '**/bin/**',
       '**/obj/**',
       '**/vendor/**',
       '**/vendors/**',

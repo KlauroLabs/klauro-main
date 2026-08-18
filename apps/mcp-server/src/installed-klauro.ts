@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from 'child_process';
+import { Transform } from 'node:stream';
 import type { AnalysisFocus } from './analysis-focus';
 import type { IncrementalAnalysisResult } from './analyzer';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { decodeCasExportStream } from './cas-export-decoder';
 
 export interface InstalledKlauroCommand {
   command: string;
@@ -159,38 +161,51 @@ function runJsonCommand(command: string, args: string[], options: InstalledKlaur
       env: { ...process.env, ...(options.env || {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let stdout = '';
     let stderr = '';
+    let stdoutTail = '';
+    let settled = false;
+    const stdoutTap = new Transform({
+      transform(chunk, _encoding, callback) {
+        stdoutTail = appendTail(stdoutTail, chunk.toString('utf8'));
+        callback(null, chunk);
+      },
+    });
+    const decoded = decodeCasExportStream<any>(child.stdout.pipe(stdoutTap), 'identity', {
+      bufferedJsonLimitBytes: 8 * 1024 * 1024,
+    }).then(value => ({ value }), error => ({ error }));
+    const finish = (action: () => void): void => {
+      if (settled) return;
+      settled = true;
+      action();
+    };
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error(`Command timed out after ${options.timeoutMs || 120_000}ms: ${command} ${args.join(' ')}\nstdout: ${trim(stdout)}\nstderr: ${trim(stderr)}`));
+      finish(() => reject(new Error(`Command timed out after ${options.timeoutMs || 120_000}ms: ${command} ${args.join(' ')}\nstdout: ${stdoutTail}\nstderr: ${stderr}`)));
     }, options.timeoutMs || 120_000);
 
-    child.stdout.on('data', chunk => {
-      stdout += chunk.toString();
-    });
     child.stderr.on('data', chunk => {
-      stderr += chunk.toString();
+      stderr = appendTail(stderr, chunk.toString('utf8'));
     });
     child.on('error', error => {
       clearTimeout(timer);
-      reject(error);
+      finish(() => reject(error));
     });
-    child.on('close', code => {
+    child.on('close', async code => {
       clearTimeout(timer);
+      const result = await decoded;
       if (code !== 0) {
-        reject(new Error([
+        finish(() => reject(new Error([
           `Command failed: ${command} ${args.join(' ')}`,
-          stdout ? `stdout: ${trim(stdout)}` : undefined,
-          stderr ? `stderr: ${trim(stderr)}` : undefined,
-        ].filter(Boolean).join('\n')));
+          stdoutTail ? `stdout: ${stdoutTail}` : undefined,
+          stderr ? `stderr: ${stderr}` : undefined,
+        ].filter(Boolean).join('\n'))));
         return;
       }
-      try {
-        resolve(JSON.parse(stdout));
-      } catch {
-        reject(new Error(`Command did not emit JSON: ${command} ${args.join(' ')}\nstdout: ${trim(stdout)}\nstderr: ${trim(stderr)}`));
+      if ('error' in result) {
+        finish(() => reject(new Error(`Command did not emit JSON: ${command} ${args.join(' ')}\nstdout: ${stdoutTail}\nstderr: ${stderr}\nerror: ${result.error instanceof Error ? result.error.message : result.error}`)));
+        return;
       }
+      finish(() => resolve(result.value));
     });
   });
 }
@@ -200,6 +215,7 @@ function splitCommand(value: string): string[] {
     ?.map(part => part.replace(/^['"]|['"]$/g, '')) || ['klauro'];
 }
 
-function trim(value: string): string {
-  return value.length > 4000 ? `${value.slice(0, 4000)}...` : value;
+function appendTail(current: string, addition: string): string {
+  const combined = current + addition;
+  return combined.length > 4000 ? combined.slice(-4000) : combined;
 }

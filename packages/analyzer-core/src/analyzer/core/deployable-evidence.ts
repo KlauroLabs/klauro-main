@@ -62,6 +62,7 @@ function dedupe(items: DeployableEvidence[], projectPath: string): DeployableEvi
     const existing = byIdentity.get(key);
     if (existing) {
       existing.evidence = [...new Set([...existing.evidence, ...item.evidence])];
+      existing.entry_files = unionOptional(existing.entry_files, item.entry_files);
       existing.ships_paths = unionOptional(existing.ships_paths, item.ships_paths);
       existing.ports = unionOptional(existing.ports, item.ports);
       existing.base_images = unionOptional(existing.base_images, item.base_images);
@@ -136,6 +137,7 @@ function mergeDuplicateNamedInstallerLeaves(items: DeployableEvidence[]): Deploy
     const loser = survivor === bestMatch ? leaf : bestMatch;
 
     survivor.evidence = [...new Set([...survivor.evidence, ...loser.evidence, `merged-duplicate-identity:${loser.kind}:${loser.name}`])];
+    survivor.entry_files = unionOptional(survivor.entry_files, loser.entry_files);
     survivor.ships_paths = [...new Set([...(survivor.ships_paths || []), ...(loser.ships_paths || [])])];
     removed.add(loser);
   }
@@ -205,6 +207,7 @@ function joinComposeAndContainerUnits(items: DeployableEvidence[]): DeployableEv
     if (!match) continue;
 
     compose.evidence = [...new Set([...compose.evidence, ...match.evidence, `merged-container-identity:${match.name}`])];
+    compose.entry_files = unionOptional(compose.entry_files, match.entry_files);
     const unionShipsPaths = [...new Set([...(compose.ships_paths || []), ...(match.ships_paths || [])])];
     compose.ships_paths = unionShipsPaths.length ? unionShipsPaths : undefined;
     if (!compose.entrypoint_member && match.entrypoint_member) compose.entrypoint_member = match.entrypoint_member;
@@ -249,6 +252,7 @@ function mergeSameNamedTier1Rows(items: DeployableEvidence[]): DeployableEvidenc
     const [survivor, ...rest] = ranked;
     for (const dupe of rest) {
       survivor.evidence = [...new Set([...survivor.evidence, ...dupe.evidence, `merged-same-name-tier1:${dupe.kind}:${dupe.root_path}`])];
+      survivor.entry_files = unionOptional(survivor.entry_files, dupe.entry_files);
       survivor.ships_paths = unionOptional(survivor.ships_paths, dupe.ships_paths);
       survivor.ports = unionOptional(survivor.ports, dupe.ports);
       survivor.base_images = unionOptional(survivor.base_images, dupe.base_images);

@@ -71,8 +71,9 @@ export interface DeployableEvidence {
   root_path: string;
   name: string;
   tier: 1 | 2 | 3;
-  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package';
+  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package' | 'build-image';
   evidence: string[];
+  entry_files?: string[];
   ships_paths?: string[];
   ports?: number[];
 
@@ -10652,13 +10653,16 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
         evidenceByRoot.set(evidence.root_path, {
           ...evidence,
           evidence: mergeStrings(evidence.evidence, existing.evidence),
+          entry_files: mergeStrings(evidence.entry_files || [], existing.entry_files || []),
           ships_paths: mergeStrings(evidence.ships_paths || [], existing.ships_paths || []),
         });
       } else if (evidence.tier > existing.tier) {
         existing.evidence = mergeStrings(existing.evidence, evidence.evidence);
+        existing.entry_files = mergeStrings(existing.entry_files || [], evidence.entry_files || []);
         existing.ships_paths = mergeStrings(existing.ships_paths || [], evidence.ships_paths || []);
       } else {
         existing.evidence = mergeStrings(existing.evidence, evidence.evidence);
+        existing.entry_files = mergeStrings(existing.entry_files || [], evidence.entry_files || []);
         existing.ships_paths = mergeStrings(existing.ships_paths || [], evidence.ships_paths || []);
       }
     }

@@ -415,7 +415,7 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
       '**/*.{ts,tsx,js,jsx,cs,java,kt,php,py,yaml,yml}',
     ], {
       cwd: context.projectPath,
-      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**', '**/bin/**'],
+      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**'],
       nodir: true,
       absolute: false,
     }), 'DI container candidate files');

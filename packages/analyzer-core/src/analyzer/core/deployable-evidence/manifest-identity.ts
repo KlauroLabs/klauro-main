@@ -18,6 +18,8 @@ export function mergeManifestIdentityRows(items: DeployableEvidence[]): Deployab
     );
     if (!executable) continue;
     executable.evidence = [...new Set([...executable.evidence, ...manifest.evidence, `merged-manifest-identity:${manifest.name}`])];
+    const entryFiles = [...new Set([...(executable.entry_files || []), ...(manifest.entry_files || [])])];
+    executable.entry_files = entryFiles.length > 0 ? entryFiles : undefined;
     const paths = [...new Set([...(executable.ships_paths || []), ...(manifest.ships_paths || [])])];
     executable.ships_paths = paths.length > 0 ? paths : undefined;
     removed.add(manifest);

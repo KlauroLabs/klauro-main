@@ -183,6 +183,8 @@ function mergeInstallerUnit(units: Map<string, DeployableEvidence>, key: string,
     return;
   }
   existing.evidence = [...new Set([...existing.evidence, ...candidate.evidence])];
+  const entryFiles = [...new Set([...(existing.entry_files || []), ...(candidate.entry_files || [])])];
+  existing.entry_files = entryFiles.length > 0 ? entryFiles : undefined;
   existing.ships_paths = [...new Set([...(existing.ships_paths || []), ...(candidate.ships_paths || [])])];
 }
 
@@ -232,6 +234,7 @@ function collectFromDistributionArtifactNodes(ctx: EvidenceCollectionContext): D
       tier: 1,
       kind: 'installer',
       evidence,
+      entry_files: file ? [file] : undefined,
       ships_paths: binaryNames,
     });
   }
@@ -487,6 +490,7 @@ function collectFromInstallerScripts(ctx: EvidenceCollectionContext): Deployable
         `installer script: ${relativeFile}`,
         `bundles: ${[...members].join(', ')}`,
       ],
+      entry_files: [relativeFile],
       ships_paths: [...members],
     });
   }
@@ -518,6 +522,8 @@ function mergeCrossCollectorInstallerUnits(candidates: DeployableEvidence[]): De
     });
     if (match) {
       match.evidence = [...new Set([...match.evidence, ...candidate.evidence])];
+      const entryFiles = [...new Set([...(match.entry_files || []), ...(candidate.entry_files || [])])];
+      match.entry_files = entryFiles.length > 0 ? entryFiles : undefined;
       match.ships_paths = [...new Set([...(match.ships_paths || []), ...(candidate.ships_paths || [])])];
     } else {
       merged.push({ ...candidate });

@@ -418,7 +418,7 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
       '**/*{telemetry,observability,instrumentation,tracing,metrics,logger,logging}*.{ts,tsx,js,jsx,py,java,cs,go}',
     ], {
       cwd: context.projectPath,
-      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**', '**/bin/**'],
+      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**'],
       nodir: true,
       absolute: false,
     });
@@ -431,7 +431,7 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
       '**/*.{ts,tsx,js,jsx,py,java,cs,go}',
     ], {
       cwd: context.projectPath,
-      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**', '**/bin/**'],
+      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**'],
       nodir: true,
       absolute: false,
     }), 'observability instrumentation candidate files');

@@ -103,7 +103,6 @@ export function getIncrementalSourceFiles(projectPath: string): string[] {
         '**/web/assets/**',
         '**/Generated/**',
         '**/generated/**',
-        '**/bin/**',
         '**/obj/**'
       ],
       nodir: true

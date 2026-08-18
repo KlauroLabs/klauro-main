@@ -122,6 +122,7 @@ function collectElectronBuilder(ctx: EvidenceCollectionContext): DeployableEvide
       name,
       tier: 1,
       kind: 'installer',
+      entry_files: [configFile],
       evidence: [
         `electron-builder config: ${configFile}`,
         ...(productName ? [`productName: ${productName}`] : []),
@@ -137,6 +138,7 @@ function collectElectronBuilder(ctx: EvidenceCollectionContext): DeployableEvide
       name: productName || appId || safeDeployableName(displayName || path.basename(projectPath)),
       tier: 1,
       kind: 'installer',
+      entry_files: ['package.json'],
       evidence: [
         'electron-builder "build" config in package.json (electron-builder present in dependencies)',
         ...(productName ? [`productName: ${productName}`] : []),
@@ -172,6 +174,7 @@ function collectElectronForge(ctx: EvidenceCollectionContext): DeployableEvidenc
       name: safeDeployableName(displayName || path.basename(projectPath)),
       tier: 1,
       kind: 'installer',
+      entry_files: [configFile],
       evidence: [`electron-forge config: ${configFile}`],
     });
   }
@@ -188,6 +191,7 @@ function collectElectronForge(ctx: EvidenceCollectionContext): DeployableEvidenc
           name: safeDeployableName(displayName || path.basename(projectPath)),
           tier: 1,
           kind: 'installer',
+          entry_files: ['package.json'],
           evidence: ['electron-forge "config.forge" in package.json (@electron-forge tooling present in dependencies)'],
         });
       }
