@@ -4,7 +4,7 @@ import { availableParallelism, tmpdir } from 'node:os';
 import * as crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -232,6 +232,7 @@ async function runTestFile(tsxCli, file, forwarded, runRoot, activeChildren) {
   const home = path.join(isolatedRoot, 'home');
   const temporary = path.join(isolatedRoot, 'tmp');
   await Promise.all([home, temporary].map(directory => mkdir(directory, { recursive: true })));
+  await Promise.all([isolatedRoot, temporary].map(directory => chmod(directory, 0o711)));
   const started = Date.now();
   const child = spawn(process.execPath, [tsxCli, '--test', '--test-concurrency=1', ...forwarded, file], {
     cwd: packageRoot,
