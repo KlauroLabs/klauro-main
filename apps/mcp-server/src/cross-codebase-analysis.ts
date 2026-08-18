@@ -11362,11 +11362,10 @@ function routeMatchConfidence(source: SystemInterface, target: SystemInterface):
 
 function hasLikelyExternalTemplatedBase(endpoint: string | undefined): boolean {
   const raw = String(endpoint || '');
-  const template = raw.match(/\$\{([^}]+)}/)?.[1] || '';
-  if (!template) return false;
-
-  if (/\b(API_HOST|BASE_URL|SERVICE|INTERNAL|PUBLIC_API|HOST|URL|ENDPOINT|API|SYNC|LINK)\b/i.test(template)) return false;
-  return true;
+  const template = raw.match(/\$\{([^}]+)}/);
+  if (!template || template.index === undefined) return false;
+  const prefix = raw.slice(0, template.index);
+  return prefix.length === 0 || /^(?:https?:\/\/|wss?:\/\/)$/.test(prefix);
 }
 
 function routeCompatible(left: string, right: string): boolean {

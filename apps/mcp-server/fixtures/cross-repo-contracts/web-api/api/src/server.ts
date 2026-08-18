@@ -23,5 +23,6 @@ export function getAccount(req: express.Request, res: express.Response) {
 }
 
 app.get('/api/accounts/:id', getAccount);
+app.listen(3000);
 
 export { app };

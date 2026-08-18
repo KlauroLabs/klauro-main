@@ -527,6 +527,39 @@ test('does not invent cross-repo links from relative http calls', () => {
   ));
 });
 
+test('links a specific templated relative request to a parameterized provider route', () => {
+  const api = cas({
+    system: { id: 'api', name: 'accounts-api', type: 'service', root_path: '/tmp/accounts-api' },
+    nodes: [{ id: 'account-route', name: 'getAccount', type: 'function', source: { file: 'src/accounts.ts', line: 1 } } as any],
+    entry_points: [{
+      id: 'entry:account',
+      source_node: 'account-route',
+      type: 'http',
+      name: 'GET /api/accounts/:id',
+      trigger: { method: 'GET', path: '/api/accounts/:id' },
+    }],
+  });
+  const web = cas({
+    system: { id: 'web', name: 'accounts-web', type: 'application', root_path: '/tmp/accounts-web' },
+    nodes: [{ id: 'account-panel', name: 'AccountPanel', type: 'component', source: { file: 'src/AccountPanel.tsx', line: 1 } } as any],
+    exit_points: [{
+      id: 'exit:account',
+      source_node: 'account-panel',
+      type: 'api',
+      name: 'fetch account',
+      target: { endpoint: '/api/accounts/${accountId}' },
+      operation: { method: 'FETCH', async: true },
+    }],
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('accounts-workspace', [
+    { path: '/tmp/accounts-api', name: 'accounts-api', cas: api },
+    { path: '/tmp/accounts-web', name: 'accounts-web', cas: web },
+  ]);
+
+  assert.ok(graph.links.some(link => link.kind === 'http-call'));
+});
+
 test('keeps infra overlay mappings tied to deployable names, not dependency aliases', () => {
   const builder = cas({
     system: { id: 'builder', name: 'self-hosted-builder', type: 'service', root_path: '/tmp/self-hosted-builder' },

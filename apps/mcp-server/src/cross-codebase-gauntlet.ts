@@ -170,9 +170,9 @@ async function main() {
       observed: Object.fromEntries(systems.map(system => [system.name, (system.graph.system_insights || []).map(insight => insight.title).slice(0, 8)])),
     },
     {
-      name: 'workspace-semantic-fallbacks-usable',
-      pass: systems.length > 0 && systems.every(system => workspaceSemanticFallbackCoverage(system.graph).pass),
-      observed: Object.fromEntries(systems.map(system => [system.name, workspaceSemanticFallbackCoverage(system.graph)])),
+      name: 'workspace-structural-semantics-usable',
+      pass: systems.length > 0 && systems.every(system => workspaceStructuralSemanticCoverage(system.graph).pass),
+      observed: Object.fromEntries(systems.map(system => [system.name, workspaceStructuralSemanticCoverage(system.graph)])),
     },
     {
       name: 'workspace-primary-semantics-ai-enriched',
@@ -1089,26 +1089,26 @@ function countLinkModes(graph: CrossCodebaseSystemGraph): Record<string, number>
   }, {} as Record<string, number>);
 }
 
-function workspaceSemanticFallbackCoverage(graph: CrossCodebaseSystemGraph | undefined): Record<string, unknown> {
+function workspaceStructuralSemanticCoverage(graph: CrossCodebaseSystemGraph | undefined): Record<string, unknown> {
   if (!graph) return { pass: false, reason: 'missing graph' };
-  const capabilities = graph.workspace_capabilities || [];
+  const domains = graph.workspace_domains || [];
   const entities = graph.workspace_entities || [];
-  const capabilityDescriptions = capabilities.filter(item => usefulDescription(item.description)).length;
-  const entityDescriptions = entities.filter(item => usefulDescription(item.description)).length;
-  const capabilityRatio = capabilities.length ? capabilityDescriptions / capabilities.length : 1;
-  const entityRatio = entities.length ? entityDescriptions / entities.length : 1;
+  const workflows = graph.workspace_workflows || [];
+  const describedDomains = domains.filter(item => usefulDescription(item.description)).length;
+  const describedEntities = entities.filter(item => usefulDescription(item.description)).length;
+  const describedWorkflows = workflows.filter(item => usefulDescription(item.description)).length;
   return {
-    pass: capabilities.length > 0 &&
-      entities.length > 0 &&
-      capabilityRatio >= 0.8 &&
-      entityRatio >= 0.8,
-    capabilities: capabilities.length,
-    capability_descriptions: capabilityDescriptions,
-    capability_ratio: Number(capabilityRatio.toFixed(2)),
+    pass: domains.length > 0 &&
+      workflows.length > 0 &&
+      describedDomains === domains.length &&
+      describedEntities === entities.length &&
+      describedWorkflows === workflows.length,
+    domains: domains.length,
+    described_domains: describedDomains,
     entities: entities.length,
-    entity_descriptions: entityDescriptions,
-    entity_ratio: Number(entityRatio.toFixed(2)),
-    narrative_source: graph.workspace_narrative?.source,
+    described_entities: describedEntities,
+    workflows: workflows.length,
+    described_workflows: describedWorkflows,
   };
 }
 
