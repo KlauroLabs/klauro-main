@@ -181,6 +181,11 @@ interface PhpTypeIndex {
   bindingByInterface: Map<string, string>;
 }
 
+interface PhpCallGraphOptions {
+  files?: string[];
+  relationshipEdges?: CASEdge[];
+}
+
 export class PHPAnalyzer extends BaseAnalyzer {
   private laravelFrameworkDetected = false;
   private symfonyFrameworkDetected = false;
@@ -287,12 +292,27 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return content;
   }
 
+  private hasPhpAnalyzerAttribution(item: CASNode | CASEdge): boolean {
+    const attributes = item.metadata?.attributes as Record<string, unknown> | undefined;
+    if (attributes?.source_analyzer === this.analyzerId) return true;
+    if ('primaryAnalyzer' in item && item.primaryAnalyzer === this.analyzerId) return true;
+    return 'analyzers' in item && Boolean(item.analyzers?.includes(this.analyzerId));
+  }
+
+  private samePhpSourceFile(sourceFile: string | undefined, relativePath: string): boolean {
+    if (!sourceFile) return false;
+    const normalize = (file: string) => file.replace(/\\/g, '/').replace(/^\.\//, '');
+    return normalize(sourceFile) === normalize(relativePath);
+  }
+
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
     const namespaces = new Map<string, string[]>();
+    this.fileContentCache.delete(context.filePath);
+    this.astCache.delete(context.relativePath);
     const content = await this.readFileCached(context.filePath);
     const stat = await fs.stat(context.filePath);
 
@@ -301,15 +321,28 @@ export class PHPAnalyzer extends BaseAnalyzer {
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
     this.applyTestFileBoundary(nodes);
-    await this.analyzeCallGraphFastFallback(
-      context.projectPath,
-      [context.relativePath],
-      nodes,
-      edges,
-      exitPoints,
-      nodes.filter(n => n.type === 'method' || n.type === 'function'),
-      nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'trait')
-    );
+    const existingNodes = (context.existingAnalysis || [])
+      .flatMap(contribution => contribution.nodes || [])
+      .filter(node => this.hasPhpAnalyzerAttribution(node));
+    const replacedNodeIds = new Set(existingNodes
+      .filter(node => this.samePhpSourceFile(node.source?.file, context.relativePath))
+      .map(node => node.id));
+    const resolutionNodes = [...new Map([
+      ...existingNodes.filter(node => !replacedNodeIds.has(node.id)),
+      ...nodes,
+    ].map(node => [node.id, node])).values()];
+    const relationshipEdges = [...new Map([
+      ...(context.existingAnalysis || [])
+        .flatMap(contribution => contribution.edges || [])
+        .filter(edge => this.hasPhpAnalyzerAttribution(edge))
+        .filter(edge => !replacedNodeIds.has(edge.source) && !replacedNodeIds.has(edge.target))
+        .filter(edge => edge.type === 'has_method' || edge.type === 'declares'),
+      ...edges,
+    ].map(edge => [edge.id, edge])).values()];
+    await this.analyzeCallGraph(context.projectPath, resolutionNodes, edges, exitPoints, {
+      files: [context.relativePath],
+      relationshipEdges,
+    });
 
     const imports = this.extractUses(content).map(use => use.namespace);
     const exports = nodes
@@ -2886,13 +2919,23 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return m;
   }
 
-  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
-    const phpFiles = await glob(['**/*.php'], {
+  private async analyzeCallGraph(
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    options: PhpCallGraphOptions = {}
+  ): Promise<void> {
+    const allPhpFiles = await glob(['**/*.php'], {
       cwd: projectPath,
       ignore: this.getPHPIgnorePatterns({ projectPath }),
       nodir: true
     });
-    phpFiles.sort();
+    allPhpFiles.sort();
+    const phpFiles = options.files
+      ? [...new Set(options.files.map(file => file.replace(/\\/g, '/')))].sort()
+      : allPhpFiles;
+    const relationshipEdges = options.relationshipEdges || edges;
 
     const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'function');
     const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'trait');
@@ -2927,7 +2970,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       classNodesByName.set(classNode.name, byName);
     }
 
-    for (const edge of edges) {
+    for (const edge of relationshipEdges) {
       if ((edge.type === 'has_method' || edge.type === 'declares') && classIds.has(edge.source)) {
         const method = methodNodesById.get(edge.target);
         if (method) {
@@ -2941,10 +2984,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
 
 
-    const typeIndex = await this.buildPhpTypeIndex(projectPath, phpFiles);
+    const typeIndex = await this.buildPhpTypeIndex(projectPath, allPhpFiles);
 
-    if (phpFiles.length > 1000 || methodNodes.length > 12000) {
-      await this.analyzeCallGraphFastFallback(projectPath, phpFiles, nodes, edges, exitPoints, methodNodes, classNodes, typeIndex);
+    if (allPhpFiles.length > 1000 || methodNodes.length > 12000) {
+      await this.analyzeCallGraphFastFallback(projectPath, phpFiles, nodes, edges, exitPoints, methodNodes, classNodes, typeIndex, relationshipEdges);
       return;
     }
 
@@ -3244,7 +3287,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
     exitPoints: CASExitPoint[],
     methodNodes: CASNode[],
     classNodes: CASNode[],
-    prebuiltTypeIndex?: PhpTypeIndex
+    prebuiltTypeIndex?: PhpTypeIndex,
+    relationshipEdges: CASEdge[] = edges
   ): Promise<void> {
     const typeIndex = prebuiltTypeIndex ?? await this.buildPhpTypeIndex(projectPath, phpFiles);
     const edgeIds = new Set(edges.map(edge => edge.id));
@@ -3275,7 +3319,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       classNodesByName.set(classNode.name, classes);
     }
 
-    for (const edge of edges) {
+    for (const edge of relationshipEdges) {
       if ((edge.type === 'has_method' || edge.type === 'declares') && classIds.has(edge.source)) {
         const method = methodNodesById.get(edge.target);
         const classNode = classNodesById.get(edge.source);

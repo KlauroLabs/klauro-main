@@ -185,6 +185,46 @@ async function analyzeFixture(dir: string, opts: { forceFastFallback?: boolean }
   return { ...cas, edges };
 }
 
+test('single-file incremental PHP call edges match a cold analysis', async () => {
+  const dir = writeFixtureProject();
+  try {
+    const analyzer = new PHPAnalyzer();
+    const baseline = await analyzer.analyze({ projectPath: dir });
+    for (const node of baseline.nodes) {
+      node.primaryAnalyzer = 'php';
+      node.analyzers = [...new Set([...(node.analyzers || []), 'php'])];
+    }
+    for (const edge of baseline.edges) {
+      edge.metadata = {
+        ...edge.metadata,
+        attributes: { ...edge.metadata?.attributes, source_analyzer: 'php' },
+      };
+    }
+    const relativePath = 'src/Controller/BookingController.php';
+    const filePath = path.join(dir, relativePath);
+    fs.appendFileSync(filePath, '\nfunction analysis_benchmark_probe_42(): int { return 42; }\n');
+    const incremental = await analyzer.analyzeFileSingle({
+      projectPath: dir,
+      filePath,
+      relativePath,
+      existingAnalysis: [baseline],
+    });
+    const cold = await analyzer.analyze({ projectPath: dir });
+    const coldNodes = new Map(cold.nodes.map(node => [node.id, node]));
+    const expected = cold.edges
+      .filter(edge => edge.type === 'calls' && coldNodes.get(edge.source)?.source?.file === relativePath)
+      .map(edge => ({ id: edge.id, source: edge.source, target: edge.target, metadata: edge.metadata }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const actual = incremental.edges
+      .filter(edge => edge.type === 'calls')
+      .map(edge => ({ id: edge.id, source: edge.source, target: edge.target, metadata: edge.metadata }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    assert.deepEqual(actual, expected);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 for (const forceFastFallback of [false, true]) {
   const label = forceFastFallback ? 'fast-fallback (regex) path' : 'AST path';
 
