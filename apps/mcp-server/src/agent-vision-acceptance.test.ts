@@ -1,6 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { capabilityInferenceBenchmarkGates, competitorBaselineBenchmarkGates, freshnessGates, machineProofGates, newUserE2EGates } from './agent-vision-acceptance';
+import * as fs from 'fs-extra';
+import * as os from 'os';
+import * as path from 'path';
+import { capabilityInferenceBenchmarkGates, competitorBaselineBenchmarkGates, discoverCurrentScratchReports, freshnessGates, machineProofGates, newUserE2EGates } from './agent-vision-acceptance';
+
+test('scratch acceptance discovers current reports by proof shape and task identity', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-vision-scratch-discovery-'));
+  const directory = path.join(root, '.klauro-agent-scratch-build-benchmark');
+  await fs.ensureDir(directory);
+  const report = (id: string, generatedAt: string, score: number) => ({
+    generated_at: generatedAt,
+    task: { id },
+    with_klauro: { score },
+    without_klauro: { score: score - 1 },
+    comparison: { quality_delta: 1 },
+  });
+  await fs.writeJson(path.join(directory, 'arbitrary-old.json'), report('domain-a', '2026-01-01T00:00:00.000Z', 91));
+  await fs.writeJson(path.join(directory, 'arbitrary-current.json'), report('domain-a', '2026-01-02T00:00:00.000Z', 96));
+  await fs.writeJson(path.join(directory, 'another-shape.json'), report('domain-b', '2026-01-01T00:00:00.000Z', 94));
+  await fs.writeJson(path.join(directory, 'unrelated.json'), { generated_at: '2026-01-03T00:00:00.000Z', status: 'pass' });
+
+  const reports = await discoverCurrentScratchReports(root);
+
+  assert.deepEqual(reports.map(item => item.identity), ['domain-a', 'domain-b']);
+  assert.equal(reports.find(item => item.identity === 'domain-a')?.report.with_klauro.score, 96);
+});
 
 test('acceptance freshness follows live execution time instead of rescore time', () => {
   const now = new Date();

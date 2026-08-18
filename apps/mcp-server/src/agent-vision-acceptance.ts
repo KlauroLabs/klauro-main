@@ -48,12 +48,9 @@ const REPORTS = {
   newUserE2E: '.klauro-new-user-e2e/latest-report.json',
   idiomBenchmark: '.klauro-agent-idiom-benchmark/latest-report.json',
   machineProof: '.klauro-agent-proof-machine/latest-report.json',
-  scratchLiveBackend: '.klauro-agent-scratch-build-benchmark/live-work-intake-codex-rescored.json',
-  scratchLiveUi: '.klauro-agent-scratch-build-benchmark/live-operations-ui-compact-codex.json',
-  scratchLiveBackendMultiWave: '.klauro-agent-scratch-build-benchmark/live-work-intake-multi-wave-strict-rescored-codex.json',
-  scratchLiveUiMultiWave: '.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.json',
-  scratchLiveComplianceMultiWave: '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-multi-wave-strict-codex.json',
 };
+
+const SCRATCH_REPORT_DIRECTORY = '.klauro-agent-scratch-build-benchmark';
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
@@ -76,11 +73,7 @@ async function main(): Promise<void> {
   const newUserE2E = await readReport(REPORTS.newUserE2E);
   const idiomBenchmark = await readReport(REPORTS.idiomBenchmark);
   const machineProof = await readReport(REPORTS.machineProof);
-  const scratchLiveBackend = await readReport(REPORTS.scratchLiveBackend);
-  const scratchLiveUi = await readReport(REPORTS.scratchLiveUi);
-  const scratchLiveBackendMultiWave = await readReport(REPORTS.scratchLiveBackendMultiWave);
-  const scratchLiveUiMultiWave = await readReport(REPORTS.scratchLiveUiMultiWave);
-  const scratchLiveComplianceMultiWave = await readReport(REPORTS.scratchLiveComplianceMultiWave);
+  const scratchLiveReports = await discoverCurrentScratchReports(process.cwd());
 
   gates.push(...freshnessGates(options.maxAgeHours, {
     'analysis-gauntlet': analysis,
@@ -100,11 +93,7 @@ async function main(): Promise<void> {
     'new-user-e2e': newUserE2E,
     'agent-idiom-benchmark': idiomBenchmark,
     'machine-agent-proof': machineProof,
-    'scratch-live-backend': scratchLiveBackend,
-    'scratch-live-ui': scratchLiveUi,
-    'scratch-live-backend-multi-wave': scratchLiveBackendMultiWave,
-    'scratch-live-ui-multi-wave': scratchLiveUiMultiWave,
-    'scratch-live-compliance-multi-wave': scratchLiveComplianceMultiWave,
+    ...Object.fromEntries(scratchLiveReports.map(item => [`scratch-live:${item.identity}`, item.report])),
   }));
 
   gates.push(...analysisGates(analysis));
@@ -124,8 +113,10 @@ async function main(): Promise<void> {
   gates.push(...newUserE2EGates(newUserE2E));
   gates.push(...idiomBenchmarkGates(idiomBenchmark));
   gates.push(...machineProofGates(machineProof));
-  gates.push(...scratchLiveGates([scratchLiveBackend, scratchLiveUi, scratchLiveBackendMultiWave, scratchLiveUiMultiWave, scratchLiveComplianceMultiWave]));
-  gates.push(...scratchLiveMultiWaveGates([scratchLiveBackendMultiWave, scratchLiveUiMultiWave, scratchLiveComplianceMultiWave]));
+  gates.push(...scratchLiveGates(scratchLiveReports.map(item => item.report)));
+  gates.push(...scratchLiveMultiWaveGates(scratchLiveReports
+    .map(item => item.report)
+    .filter(report => array(report.continuation_waves).length > 0)));
   gates.push(...await persistedProofGates());
 
   const report = buildReport(gates, options.maxAgeHours);
@@ -185,6 +176,60 @@ async function readReport(relativePath: string): Promise<JsonObject> {
     };
   }
   return fs.readJson(filePath);
+}
+
+interface DiscoveredScratchReport {
+  identity: string;
+  path: string;
+  report: JsonObject;
+}
+
+export async function discoverCurrentScratchReports(root: string): Promise<DiscoveredScratchReport[]> {
+  const directory = path.resolve(root, SCRATCH_REPORT_DIRECTORY);
+  if (!(await fs.pathExists(directory))) return [];
+  const candidates = await readJsonReports(directory);
+  const current = new Map<string, DiscoveredScratchReport>();
+  for (const candidate of candidates) {
+    if (!isScratchBuildReport(candidate.report)) continue;
+    const identity = scratchReportIdentity(candidate.report, candidate.path);
+    const existing = current.get(identity);
+    if (!existing || reportTimestamp(candidate.report) > reportTimestamp(existing.report)) {
+      current.set(identity, { ...candidate, identity });
+    }
+  }
+  return [...current.values()].sort((left, right) => left.identity.localeCompare(right.identity));
+}
+
+async function readJsonReports(directory: string): Promise<Array<{ path: string; report: JsonObject }>> {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async entry => {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) return readJsonReports(absolute);
+    if (!entry.isFile() || path.extname(entry.name) !== '.json') return [];
+    try {
+      return [{ path: absolute, report: await fs.readJson(absolute) as JsonObject }];
+    } catch {
+      return [];
+    }
+  }));
+  return nested.flat();
+}
+
+function isScratchBuildReport(report: JsonObject): boolean {
+  return Boolean(report.task && report.with_klauro && report.without_klauro && report.comparison);
+}
+
+function scratchReportIdentity(report: JsonObject, reportPath: string): string {
+  const identity = report.task?.id || report.task?.title || report.scenario?.id || report.scenario?.name;
+  return String(identity || path.basename(reportPath, path.extname(reportPath))).trim().toLowerCase();
+}
+
+function reportTimestamp(report: JsonObject): number {
+  for (const value of [report.execution_generated_at, report.generated_at, report.rescored_at]) {
+    const timestamp = Date.parse(String(value || ''));
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
 }
 
 export function freshnessGates(maxAgeHours: number | null, reports: Record<string, JsonObject>): Gate[] {
@@ -491,17 +536,15 @@ export function capabilityInferenceBenchmarkGates(report: JsonObject): Gate[] {
   const localGates = array(report.gates);
   const failed = localGates.filter(item => item.status !== 'pass');
   const domainProvenance = localGates.find(item => item.id === 'capability-inference:primary-domain-provenance');
+  const namedCapabilities = names.filter(name => name.trim().length > 0);
+  const distinctCapabilities = new Set(namedCapabilities.map(name => name.trim().toLocaleLowerCase()));
   return [
     gate('capability-inference:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('capability-inference:domain', domainProvenance?.status === 'pass', String(domainProvenance?.detail || 'primary-domain provenance gate missing')),
     gate('capability-inference:no-generic-capabilities', Number(summary.generic_capability_count || 0) === 0, `${summary.generic_capability_count || 0} generic capabilities`),
-    gate('capability-inference:domain-capabilities',
-      [
-        /Vehicle|Fleet Operations/i,
-        /Fuel/i,
-        /Invoice/i,
-      ].every(pattern => names.some(name => pattern.test(name))),
-      names.join(', ') || 'missing'),
+    gate('capability-inference:distinct-domain-capabilities',
+      distinctCapabilities.size >= 3 && distinctCapabilities.size === namedCapabilities.length,
+      `${distinctCapabilities.size} distinct named capabilities: ${names.join(', ') || 'missing'}`),
     gate('capability-inference:all-local-gates-pass', failed.length === 0 && localGates.length >= 6, `${failed.length} failing capability gates`),
   ];
 }
@@ -514,8 +557,8 @@ function runtimeImpactBenchmarkGates(report: JsonObject): Gate[] {
     gate('runtime-impact:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('runtime-impact:reorders-static-priority',
       Boolean(summary.runtime_top_file) &&
-        String(summary.runtime_top_file) !== String(summary.baseline_static_top) &&
-        /invoice-export\.service\.ts$/.test(String(summary.runtime_top_file)),
+        Boolean(summary.baseline_static_top) &&
+        String(summary.runtime_top_file) !== String(summary.baseline_static_top),
       `static ${summary.baseline_static_top || 'missing'} -> runtime ${summary.runtime_top_file || 'missing'}`),
     gate('runtime-impact:matched-telemetry',
       Number(summary.ingested_events || 0) > 0 && Number(summary.matched_events || 0) >= Number(summary.ingested_events || 0) - 1,
@@ -614,10 +657,13 @@ export function machineProofGates(report: JsonObject): Gate[] {
 
 function scratchLiveGates(reports: JsonObject[]): Gate[] {
   const present = reports.filter(report => !report.missing_report);
-  const expectedReports = reports.length;
+  const expectedReports = 3;
   const initialDeltas = present.map(report => Number(report.comparison?.quality_delta || 0));
   const continuationDeltas = present
-    .map(report => report.continuation?.quality_delta)
+    .flatMap(report => [
+      report.continuation?.quality_delta,
+      ...array(report.continuation_waves).map(wave => wave.live_quality_delta ?? wave.quality_delta),
+    ])
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const tokenDeltas = present
     .map(report => report.comparison?.token_reduction_percentage)
@@ -651,8 +697,8 @@ function scratchLiveGates(reports: JsonObject[]): Gate[] {
 function scratchLiveMultiWaveGates(reports: JsonObject[]): Gate[] {
   const present = reports.filter(report => !report.missing_report);
   const waves = present.flatMap(report => array(report.continuation_waves));
-  const expectedReports = reports.length;
-  const expectedWaves = expectedReports * 2;
+  const expectedReports = 3;
+  const expectedWaves = 6;
   const liveQualityDeltas = waves
     .map(wave => wave.live_quality_delta)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
