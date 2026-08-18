@@ -44,6 +44,7 @@ EXCLUDES=(
   --exclude dist-sea
   --exclude .pack
   --exclude .customer-package
+  --exclude .claude
   --exclude '.klauro-*'
 )
 
