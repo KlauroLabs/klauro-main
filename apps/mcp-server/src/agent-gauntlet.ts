@@ -10,6 +10,9 @@ type GateStatus = 'pass' | 'warn' | 'fail';
 
 interface TargetAgentReport extends AgentReadinessReport {
   durationMs: number;
+  analysis_duration_ms: number;
+  test_discovery_duration_ms: number;
+  readiness_duration_ms: number;
 }
 
 interface AgentGauntletReport {
@@ -77,11 +80,18 @@ function printHelp(): void {
 async function analyzeTarget(target: RepoTarget): Promise<TargetAgentReport> {
   const startedAt = Date.now();
   const output = await analyzeForBench(target.path);
+  const analyzedAt = Date.now();
   const testEvidence = await getTestDiscoveryEvidence(target.path, output);
+  const testsDiscoveredAt = Date.now();
+  const readiness = evaluateAgentReadiness(output, target.path, { testEvidence });
+  const completedAt = Date.now();
   return {
-    ...evaluateAgentReadiness(output, target.path, { testEvidence }),
+    ...readiness,
     name: target.name,
-    durationMs: Date.now() - startedAt,
+    durationMs: completedAt - startedAt,
+    analysis_duration_ms: analyzedAt - startedAt,
+    test_discovery_duration_ms: testsDiscoveredAt - analyzedAt,
+    readiness_duration_ms: completedAt - testsDiscoveredAt,
   };
 }
 
@@ -103,7 +113,7 @@ function printReport(report: AgentGauntletReport): void {
       `${target.summary.entry_points} entries`,
       `${target.summary.call_chains} chains`,
       `${target.summary.runtime_static_links} runtime links`,
-      `${Math.round(target.durationMs / 1000)}s`,
+      `${Math.round(target.durationMs / 1000)}s (${Math.round(target.analysis_duration_ms / 1000)}s analysis, ${Math.round(target.test_discovery_duration_ms / 1000)}s tests, ${Math.round(target.readiness_duration_ms / 1000)}s readiness)`,
     ].join(' | '));
     if (target.adoption_gaps.length > 0) {
       for (const gap of target.adoption_gaps) {

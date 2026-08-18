@@ -124,9 +124,10 @@ export async function getTestDiscoveryEvidence(projectPath: string, cas?: CASOut
   const casFileIndex = buildPathSuffixIndex(casFiles);
   const readLimit = pLimit(16);
   const inspectedSourceFiles = await Promise.all(sourceFiles.sort().map(file => readLimit(async () => {
-    if (!(await isExecutableTestFile(projectPath, file))) return null;
     const normalizedPath = normalizeProjectPath(projectPath, file);
-    return normalizedPath ? { path: normalizedPath, framework: inferFramework(file) } : null;
+    if (!normalizedPath) return null;
+    if (!hasMatchingCasSuite(normalizedPath, casFileIndex) && !(await isExecutableTestFile(projectPath, file))) return null;
+    return { path: normalizedPath, framework: inferFramework(file) };
   })));
   const sourceDetails = inspectedSourceFiles.filter((file): file is { path: string; framework: string } => Boolean(file));
   const potentialUncovered = sourceDetails

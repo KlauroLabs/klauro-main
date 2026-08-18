@@ -74,3 +74,25 @@ test('test discovery matches CAS suites across relative and relocated path prefi
     await fs.remove(root);
   }
 });
+
+test('test discovery trusts source-backed CAS suites without rereading represented files', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-test-discovery-cas-'));
+  try {
+    await fs.outputFile(path.join(root, 'src', 'represented.test.ts'), 'export const generated = true;\n');
+    const evidence = await getTestDiscoveryEvidence(root, {
+      test_suites: [{
+        id: 'represented',
+        name: 'represented',
+        file_path: 'src/represented.test.ts',
+        test_type: 'unit',
+        framework: 'node:test',
+        tests: [],
+      }],
+    } as any);
+
+    assert.equal(evidence.source_test_files, 1);
+    assert.equal(evidence.status, 'cas-covered');
+  } finally {
+    await fs.remove(root);
+  }
+});
