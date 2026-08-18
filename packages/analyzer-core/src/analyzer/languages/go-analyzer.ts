@@ -108,6 +108,11 @@ interface GoConstant {
   iota?: boolean;
 }
 
+interface GoCallGraphOptions {
+  files?: string[];
+  relationshipEdges?: CASEdge[];
+}
+
 interface GoType {
   name: string;
   packageName: string;
@@ -172,8 +177,8 @@ export class GoAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  incrementalContributionScope(): 'project' {
-    return 'project';
+  incrementalContributionScope(): 'file' {
+    return 'file';
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
@@ -196,10 +201,32 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     await this.detectProjectType(context.projectPath);
     await this.analyzeGoFile(context.filePath, context.relativePath, nodes, edges, entryPoints, exitPoints, packages, context);
+    this.buildPackageHierarchy(packages, nodes, edges);
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildTypeRelationships(nodes, edges);
     this.applyTestFileBoundary(nodes);
-    await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+    const existingNodes = (context.existingAnalysis || [])
+      .flatMap(contribution => contribution.nodes || [])
+      .filter(node => this.hasGoAnalyzerAttribution(node));
+    const replacedNodeIds = new Set(existingNodes
+      .filter(node => this.sameGoSourceFile(node.source?.file, context.relativePath))
+      .map(node => node.id));
+    const resolutionNodes = [...new Map([
+      ...existingNodes.filter(node => !replacedNodeIds.has(node.id)),
+      ...nodes,
+    ].map(node => [node.id, node])).values()];
+    const relationshipEdges = [...new Map([
+      ...(context.existingAnalysis || [])
+        .flatMap(contribution => contribution.edges || [])
+        .filter(edge => this.hasGoAnalyzerAttribution(edge))
+        .filter(edge => !replacedNodeIds.has(edge.source) && !replacedNodeIds.has(edge.target))
+        .filter(edge => edge.type === 'has_method' || edge.type === 'declares'),
+      ...edges,
+    ].map(edge => [edge.id, edge])).values()];
+    await this.analyzeCallGraph(context.projectPath, resolutionNodes, edges, exitPoints, {
+      files: [context.relativePath],
+      relationshipEdges,
+    });
 
     const imports = this.extractImports(content).map(imp => imp.path);
     const exports = nodes
@@ -1862,13 +1889,36 @@ export class GoAnalyzer extends BaseAnalyzer {
     return name.length > 0 && name[0] >= 'A' && name[0] <= 'Z';
   }
 
-  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
-    const goFiles = await glob(['**/*.go'], {
+  private hasGoAnalyzerAttribution(item: CASNode | CASEdge): boolean {
+    const attributes = item.metadata?.attributes as Record<string, unknown> | undefined;
+    if (attributes?.source_analyzer === this.analyzerId) return true;
+    if ('primaryAnalyzer' in item && item.primaryAnalyzer === this.analyzerId) return true;
+    return 'analyzers' in item && Boolean(item.analyzers?.includes(this.analyzerId));
+  }
+
+  private sameGoSourceFile(sourceFile: string | undefined, relativePath: string): boolean {
+    if (!sourceFile) return false;
+    const normalize = (file: string) => file.replace(/\\/g, '/').replace(/^\.\//, '');
+    return normalize(sourceFile) === normalize(relativePath);
+  }
+
+  private async analyzeCallGraph(
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    options: GoCallGraphOptions = {}
+  ): Promise<void> {
+    const allGoFiles = await glob(['**/*.go'], {
       cwd: projectPath,
       ignore: this.getIgnorePatterns({ projectPath }),
       nodir: true
     });
-    goFiles.sort();
+    allGoFiles.sort();
+    const goFiles = options.files
+      ? [...new Set(options.files.map(file => file.replace(/\\/g, '/')))].sort()
+      : allGoFiles;
+    const relationshipEdges = options.relationshipEdges || edges;
 
     const functionNodes = nodes.filter(n => n.type === 'function' || n.type === 'method');
     const structNodes = nodes.filter(n => n.type === 'struct' || n.type === 'interface');
@@ -1878,12 +1928,12 @@ export class GoAnalyzer extends BaseAnalyzer {
 
       const ast = await this.astRunner.parseGoAST(fullPath);
       if (!ast) {
-        await this.analyzeCallGraphEnhanced(fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, projectPath);
+        await this.analyzeCallGraphEnhanced(fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, projectPath, relationshipEdges);
         continue;
       }
 
       this.astCache.set(file, ast);
-      await this.processGoASTCallGraph(ast, fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes);
+      await this.processGoASTCallGraph(ast, fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, relationshipEdges);
     }
   }
 
@@ -1895,7 +1945,8 @@ export class GoAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     exitPoints: CASExitPoint[],
     functionNodes: CASNode[],
-    structNodes: CASNode[]
+    structNodes: CASNode[],
+    relationshipEdges: CASEdge[] = edges
   ): Promise<void> {
     const currentPackage = ast.package || 'main';
     let fileContent = '';
@@ -1931,7 +1982,7 @@ export class GoAnalyzer extends BaseAnalyzer {
               if (targetStruct) {
                 targetFunction = functionNodes.find(n =>
                   n.name === call.function &&
-                  edges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
+                  relationshipEdges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
                 );
               }
             }
@@ -1999,7 +2050,8 @@ export class GoAnalyzer extends BaseAnalyzer {
     exitPoints: CASExitPoint[],
     functionNodes: CASNode[],
     structNodes: CASNode[],
-    projectPath: string
+    projectPath: string,
+    relationshipEdges: CASEdge[] = edges
   ): Promise<void> {
     const content = await fs.readFile(fullPath, 'utf-8');
     const lines = content.split('\n');
@@ -2067,7 +2119,7 @@ export class GoAnalyzer extends BaseAnalyzer {
 
               return receiverType === normalizedTarget ||
                      receiverType === target ||
-                     (target === 'this' && edges.some(e =>
+                     (target === 'this' && relationshipEdges.some(e =>
                        e.type === 'has_method' && e.target === n.id &&
                        nodes.find(s => s.id === e.source)?.source?.file === file
                      ));
@@ -2080,7 +2132,7 @@ export class GoAnalyzer extends BaseAnalyzer {
               if (targetStruct) {
                 targetFunction = functionNodes.find(n =>
                   n.name === method &&
-                  edges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
+                  relationshipEdges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
                 );
               }
             }
