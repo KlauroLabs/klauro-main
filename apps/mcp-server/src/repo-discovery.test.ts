@@ -83,3 +83,23 @@ test('repo discovery excludes nested fixture manifests from real repo accounting
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('repo discovery follows the analyzer language registry beyond the original language subset', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-repo-discovery-registry-'));
+  const repo = path.join(root, 'mixed-platform');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'Application.kt'), 'fun main() = println("ready")\n');
+  fs.writeFileSync(path.join(repo, 'worker.rb'), 'def perform = true\n');
+  fs.writeFileSync(path.join(repo, 'Client.swift'), 'func connect() -> Bool { true }\n');
+  fs.writeFileSync(path.join(repo, 'Routes.scala'), 'object Routes {}\n');
+
+  try {
+    const report = await discoverRealRepos(root);
+    const found = report.repos.find(item => item.path === repo);
+    assert.equal(found?.status, 'eligible');
+    assert.deepEqual(found?.languages.slice().sort(), ['Kotlin', 'Ruby', 'Scala', 'Swift']);
+    assert.equal(found?.source_files, 4);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

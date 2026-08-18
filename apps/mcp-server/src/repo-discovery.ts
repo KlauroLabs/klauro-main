@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { isDirectCliInvocation } from './cli-invocation';
+import { isRegisteredManifest, LANGUAGE_REGISTRY } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 
 export type RepoDiscoveryStatus = 'eligible' | 'unsupported' | 'skipped';
 
@@ -78,43 +79,21 @@ const GENERATED_NAME_PATTERNS = [
   /^cloned[_-]?repo$/i,
 ];
 
-const MANIFESTS = [
-  'package.json',
-  'tsconfig.json',
-  'jsconfig.json',
-  'requirements.txt',
-  'pyproject.toml',
-  'setup.py',
-  'Cargo.toml',
-  'go.mod',
-  'pom.xml',
-  'build.gradle',
-  'build.gradle.kts',
-  'composer.json',
-  'pubspec.yaml',
-  '*.csproj',
-  '*.sln',
-  '*.tf',
-  '*.tfvars',
-];
-
-const SOURCE_EXTENSIONS: Record<string, string> = {
-  '.ts': 'TypeScript',
-  '.tsx': 'TypeScript',
-  '.js': 'JavaScript',
-  '.jsx': 'JavaScript',
-  '.mjs': 'JavaScript',
-  '.cjs': 'JavaScript',
-  '.py': 'Python',
-  '.rs': 'Rust',
-  '.go': 'Go',
-  '.java': 'Java',
-  '.cs': 'C#',
-  '.php': 'PHP',
-  '.dart': 'Dart',
-  '.tf': 'Terraform',
-  '.tfvars': 'Terraform',
+const LANGUAGE_NAMES: Record<string, string> = {
+  csharp: 'C#',
+  cpp: 'C++',
+  fsharp: 'F#',
+  javascript: 'JavaScript',
+  objc: 'Objective-C',
+  opencl: 'OpenCL',
+  php: 'PHP',
+  powershell: 'PowerShell',
+  sql: 'SQL',
+  sql_more: 'SQL',
+  typescript: 'TypeScript',
 };
+
+const LANGUAGE_BY_EXTENSION = buildLanguageByExtension();
 
 export async function discoverRealRepos(devRoot = path.join(process.env.HOME || '', 'dev')): Promise<RepoDiscoveryReport> {
   const root = path.resolve(devRoot);
@@ -160,7 +139,7 @@ async function classifyRepo(repoPath: string): Promise<RealRepoTarget> {
   const languageCounts = new Map<string, number>();
   let sourceFiles = 0;
   for (const file of files) {
-    const language = SOURCE_EXTENSIONS[path.extname(file)];
+    const language = languageForSourceFile(file);
     if (!language) continue;
     sourceFiles++;
     languageCounts.set(language, (languageCounts.get(language) || 0) + 1);
@@ -297,11 +276,35 @@ function isGeneratedRepo(repoPath: string): boolean {
 }
 
 function matchesManifest(file: string): boolean {
-  const base = path.basename(file);
-  return MANIFESTS.some(pattern => {
-    if (pattern.startsWith('*.')) return base.endsWith(pattern.slice(1));
-    return base === pattern || file.endsWith(`/${pattern}`);
-  });
+  return isRegisteredManifest(file);
+}
+
+function buildLanguageByExtension(): Map<string, string> {
+  const languages = new Map<string, string>();
+  for (const entry of LANGUAGE_REGISTRY) {
+    for (const extension of entry.extensions) {
+      const normalized = extension.toLowerCase();
+      if (!languages.has(normalized)) {
+        languages.set(normalized, languageName(entry.id));
+      }
+    }
+  }
+  return languages;
+}
+
+function languageForSourceFile(file: string): string | undefined {
+  const basename = path.basename(file).toLowerCase();
+  const extension = basename.includes('.') ? basename.slice(basename.lastIndexOf('.') + 1) : basename;
+  return LANGUAGE_BY_EXTENSION.get(extension);
+}
+
+function languageName(id: string): string {
+  const canonical = id.replace(/_(?:more|extra|lang|page)$/, '');
+  return LANGUAGE_NAMES[canonical] || canonical
+    .split(/[_-]/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 async function main(): Promise<void> {
