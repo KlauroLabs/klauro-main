@@ -25,6 +25,11 @@ for arg in "$@"; do
   esac
 done
 
+if [ -n "$WITH_RELEASE" ]; then
+  echo "==> Cutting release ($WITH_RELEASE) before selecting the deployment commit"
+  bash "$APP_DIR/apps/mcp-server/scripts/release.sh" "$WITH_RELEASE"
+fi
+
 DIRTY_DEPLOY=0
 SNAPSHOT_SHA=""
 DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
@@ -134,11 +139,6 @@ SOURCE_SYNC_EXCLUDES=(
   --exclude .customer-package
 )
 
-if [ -n "$WITH_RELEASE" ]; then
-  echo "==> Cutting release ($WITH_RELEASE) before deploy"
-  bash "$APP_DIR/apps/mcp-server/scripts/release.sh" "$WITH_RELEASE"
-fi
-
 if ! grep -q '/opt/klauro/downloads' "$APP_DIR/infrastructure/vps/docker-compose.yml"; then
   echo "ERROR: docker-compose.yml is missing the /opt/klauro/downloads mount." >&2
   echo "       Deploying it would break the install/update distribution channel. Aborting." >&2
@@ -226,21 +226,28 @@ fi
 echo "    health: $HEALTH"
 
 DIST_VER="$(curl -fsS -m 10 "$KLAURO_URL/dist/latest.json" 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
+DIST_SHA="$(curl -fsS -m 10 "$KLAURO_URL/dist/latest.json" 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0)).git_sha" 2>/dev/null || echo unknown)"
 TARBALL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 -m 10 "$KLAURO_URL/dist/klauro-latest.tgz" 2>/dev/null || echo 000)"
 LOCAL_VER="$(node -p "require('$APP_DIR/apps/mcp-server/package.json').version")"
-echo "    dist latest.json: $DIST_VER ; tarball HTTP: $TARBALL_CODE ; local package.json: $LOCAL_VER"
+LIVE_SHA="$(printf '%s' "$HEALTH" | node -p "JSON.parse(require('fs').readFileSync(0)).build?.git_sha || 'unknown'" 2>/dev/null || echo unknown)"
+echo "    health git sha: $LIVE_SHA ; expected: $GIT_SHA"
+echo "    dist latest.json: $DIST_VER+$DIST_SHA ; tarball HTTP: $TARBALL_CODE ; local package.json: $LOCAL_VER"
 
+if [ "$LIVE_SHA" != "$GIT_SHA" ]; then
+  echo "    !! Live source mismatch: health reports $LIVE_SHA, expected $GIT_SHA." >&2
+  exit 1
+fi
 if [ "$TARBALL_CODE" != "200" ] && [ "$TARBALL_CODE" != "206" ]; then
   echo "    !! Distribution channel broken: tarball HTTP $TARBALL_CODE (want 200/206)." >&2
   echo "    !! Common cause: api container missing the /opt/klauro/downloads mount." >&2
   exit 1
 fi
-if [ -n "$WITH_RELEASE" ] && [ "$DIST_VER" != "$LOCAL_VER" ]; then
-  echo "    !! Released $LOCAL_VER but hosted /dist reports $DIST_VER — upload/mount mismatch." >&2
+if [ -n "$WITH_RELEASE" ] && { [ "$DIST_VER" != "$LOCAL_VER" ] || [ "$DIST_SHA" != "$GIT_SHA" ]; }; then
+  echo "    !! Released $LOCAL_VER+$GIT_SHA but hosted /dist reports $DIST_VER+$DIST_SHA — upload/mount mismatch." >&2
   exit 1
 fi
-if [ -z "$WITH_RELEASE" ] && [ "$DIST_VER" != "$LOCAL_VER" ]; then
-  echo "    !! Client-channel skew: deploying server $LOCAL_VER but /dist still publishes CLI $DIST_VER." >&2
+if [ -z "$WITH_RELEASE" ] && { [ "$DIST_VER" != "$LOCAL_VER" ] || [ "$DIST_SHA" != "$GIT_SHA" ]; }; then
+  echo "    !! Client-channel skew: deploying server $LOCAL_VER+$GIT_SHA but /dist publishes CLI $DIST_VER+$DIST_SHA." >&2
   echo "    !! Installed clients keep the OLD client contract; if this deploy tightens one (e.g. the" >&2
   echo "    !! analysis protocol version), every installed CLI is rejected with nothing to upgrade to." >&2
   echo "    !! Fix: cut a release first (apps/mcp-server/scripts/release.sh), then deploy," >&2

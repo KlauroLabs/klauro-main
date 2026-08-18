@@ -22,6 +22,9 @@ silently break the install/update channel). Creds come from the repo-root `.env`
 and `--allow-dirty`. A normal deploy refuses a dirty tree. `--allow-dirty`
 creates and retains an exact snapshot commit, then deploys and stamps that
 snapshot rather than mixing a working-tree build with committed source.
+Without `--with-release`, verification also requires the published client
+artifact to carry the deployed Git SHA unless `DEPLOY_ALLOW_CLIENT_SKEW=1` is
+an explicitly reviewed exception.
 Override the API base with `KLAURO_URL=` (default `https://mcp.klauro.com`).
 
 ## What it does under the hood (manual equivalent)
