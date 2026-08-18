@@ -388,7 +388,7 @@ async function runMcpWorkspacePipelineInput(
 ): Promise<{ system?: SystemReport; consumerResult: McpConsumerResult }> {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [require.resolve('tsx/cli'), path.resolve(process.cwd(), 'src/index.ts')],
+    args: [require.resolve('tsx/cli'), localMcpEntryPath()],
     cwd: process.cwd(),
     stderr: 'pipe',
 	    env: {
@@ -449,7 +449,7 @@ async function runMcpConsumerCheckFreshClient(
 ): Promise<McpConsumerResult> {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [require.resolve('tsx/cli'), path.resolve(process.cwd(), 'src/index.ts')],
+    args: [require.resolve('tsx/cli'), localMcpEntryPath()],
     cwd: process.cwd(),
     stderr: 'pipe',
     env: {
@@ -808,6 +808,10 @@ function commonPathPrefix(paths: string[]): string | undefined {
   let index = 0;
   while (index < first.length && splitPaths.every(parts => parts[index] === first[index])) index++;
   return first.slice(0, index).join(path.sep) || path.sep;
+}
+
+function localMcpEntryPath(): string {
+  return path.resolve(process.cwd(), 'src/gauntlet/local-mcp-entry.ts');
 }
 
 async function callMcpTool(client: Client, name: string, args: Record<string, unknown>, options: { timeout?: number } = {}): Promise<any> {
