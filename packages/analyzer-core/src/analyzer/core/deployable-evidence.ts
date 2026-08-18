@@ -45,7 +45,6 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
   rebundleBinsIntoServiceUnits(collapsed);
   return collapsed;
 }
-
 function canonicalEvidenceRoot(projectPath: string, rootPath: string): string {
   const normalized = rootPath.replace(/\\/g, '/').replace(/\/$/, '') || '.';
   if (!path.isAbsolute(normalized)) return normalized.replace(/^\.\//, '') || '.';
@@ -76,7 +75,6 @@ function dedupe(items: DeployableEvidence[], projectPath: string): DeployableEvi
   }
   return out;
 }
-
 function unionOptional<T>(left: T[] | undefined, right: T[] | undefined): T[] | undefined {
   const values = [...new Set([...(left || []), ...(right || [])])];
   return values.length > 0 ? values : undefined;
@@ -132,10 +130,8 @@ function mergeDuplicateNamedInstallerLeaves(items: DeployableEvidence[]): Deploy
       if (otherRank === bestRank && other.evidence.length > bestMatch.evidence.length) bestMatch = other;
     }
     if (!bestMatch) continue;
-
     const survivor = survivorRank(bestMatch) <= survivorRank(leaf) ? bestMatch : leaf;
     const loser = survivor === bestMatch ? leaf : bestMatch;
-
     survivor.evidence = [...new Set([...survivor.evidence, ...loser.evidence, `merged-duplicate-identity:${loser.kind}:${loser.name}`])];
     survivor.entry_files = unionOptional(survivor.entry_files, loser.entry_files);
     survivor.ships_paths = [...new Set([...(survivor.ships_paths || []), ...(loser.ships_paths || [])])];

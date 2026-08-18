@@ -66,7 +66,6 @@ interface CrossCodebaseLookupIndex {
   provider_sdk_refs: CrossCodebaseRef[];
   diagnostics?: CrossCodebaseBuildDiagnostics;
 }
-
 export interface DeployableEvidence {
   root_path: string;
   name: string;
@@ -76,12 +75,9 @@ export interface DeployableEvidence {
   entry_files?: string[];
   ships_paths?: string[];
   ports?: number[];
-
   entrypoint_member?: string;
 }
-
 export type WorkspaceAnalysisInput = CrossCodebaseInput;
-
 export interface CrossCodebaseRef {
   id: string;
   name?: string;
