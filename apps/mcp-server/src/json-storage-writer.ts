@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import { execFile, spawnSync } from 'child_process';
 import type { Writable } from 'stream';
+import { finished } from 'stream/promises';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -144,17 +145,14 @@ function isJsonStringTooLargeError(error: unknown): boolean {
 
 async function writeJsonStreamed(filePath: string, value: unknown): Promise<void> {
   const stream = fs.createWriteStream(filePath, { encoding: 'utf8' });
-  const finished = new Promise<void>((resolve, reject) => {
-    stream.on('error', reject);
-    stream.on('finish', resolve);
-  });
+  const completion = finished(stream, { cleanup: true });
   try {
     await writeJsonToStream(stream, value);
     stream.end();
-    await finished;
+    await completion;
   } catch (error) {
     stream.destroy();
-    await finished.catch(() => undefined);
+    await completion.catch(() => undefined);
     throw error;
   }
 }
