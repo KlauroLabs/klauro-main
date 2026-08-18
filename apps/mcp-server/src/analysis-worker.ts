@@ -171,7 +171,7 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
 
   });
   if ((request.repoFacts || request.repoFactsUnavailable) && !enrichmentPersistsOutput) {
-    await saveAnalysis(request.projectPath, deferred.output);
+    await saveAnalysis(request.projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
   }
   const aiEnrichment = deferred.output.ai_enrichment;
   sendPhase(

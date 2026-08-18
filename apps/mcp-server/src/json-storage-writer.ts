@@ -8,6 +8,7 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 const brotliCompressAsync = promisify(zlib.brotliCompress);
+const STREAM_WRITE_BUFFER_CHARS = 1024 * 1024;
 export type JsonStorageCodec = 'none' | 'brotli' | 'zstd';
 
 function atomicTempPath(filePath: string, suffix: string): string {
@@ -159,9 +160,15 @@ async function writeJsonStreamed(filePath: string, value: unknown): Promise<void
 }
 
 async function writeJsonToStream(stream: Writable, value: unknown): Promise<void> {
-  const write = (chunk: string) => {
+  let bufferedChunks: string[] = [];
+  let bufferedCharacters = 0;
+  const flush = async (): Promise<void> => {
+    if (bufferedCharacters === 0) return;
+    const chunk = bufferedChunks.length === 1 ? bufferedChunks[0] : bufferedChunks.join('');
+    bufferedChunks = [];
+    bufferedCharacters = 0;
     if (stream.write(chunk)) return undefined;
-    return new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const onDrain = () => {
         stream.off('error', onError);
         resolve();
@@ -173,6 +180,11 @@ async function writeJsonToStream(stream: Writable, value: unknown): Promise<void
       stream.once('drain', onDrain);
       stream.once('error', onError);
     });
+  };
+  const write = async (chunk: string): Promise<void> => {
+    bufferedChunks.push(chunk);
+    bufferedCharacters += chunk.length;
+    if (bufferedCharacters >= STREAM_WRITE_BUFFER_CHARS) await flush();
   };
 
   const writeValue = async (current: unknown): Promise<void> => {
@@ -216,6 +228,7 @@ async function writeJsonToStream(stream: Writable, value: unknown): Promise<void
 
   await writeValue(value);
   await write('\n');
+  await flush();
 }
 
 function canStringifyStreamArrayItem(value: unknown): boolean {

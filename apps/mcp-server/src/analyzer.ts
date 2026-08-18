@@ -1360,7 +1360,7 @@ export async function analyzeProjectLayered(
     }
     if (!structuralCheckpointPrepared) {
       stampStructuralLayers(deferred.output);
-      await saveAnalysis(projectPath, deferred.output);
+      await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
       clearFreshnessSummaryCache();
     }
 
@@ -1406,7 +1406,7 @@ export async function analyzeProjectLayered(
 
         return;
       }
-      await saveAnalysis(projectPath, deferred.output);
+      await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
       clearFreshnessSummaryCache();
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -3158,7 +3158,7 @@ export async function runLayeredAnalysis(
       }
       const enrichmentPersistsOutput = deferred.output.ai_enrichment === 'pending';
       await deferred.enrichment.catch(() => undefined);
-      if ((options.repoFacts || options.repoFactsUnavailable) && !enrichmentPersistsOutput) await saveAnalysis(projectPath, deferred.output);
+      if ((options.repoFacts || options.repoFactsUnavailable) && !enrichmentPersistsOutput) await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
       const aiEnrichment = deferred.output.ai_enrichment;
       options.onPhase?.({
         phase: 'enrichment',
