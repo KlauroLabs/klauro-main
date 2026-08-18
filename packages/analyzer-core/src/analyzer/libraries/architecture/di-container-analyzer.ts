@@ -4,29 +4,6 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 type DiContainerId =
   | 'inversify'
   | 'tsyringe'
@@ -105,7 +82,6 @@ const RULES: DiContainerRule[] = [
         },
       },
       {
-
 
         label: 'bind().to()',
         pattern: /\bbind\s*\(\s*(?:[A-Za-z0-9_.]*\.)?(?<iface>[A-Za-z0-9_]+)\s*\)\s*\.to\s*\(\s*(?<impl>[A-Za-z0-9_.]+)\s*\)(?<lifetime>(?:\s*\.\s*in\w*Scope\s*\(\s*\))?)/g,
@@ -384,7 +360,8 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
     const { nodes, edges, libraries } = await this.analyzeBindings(
       context.projectPath,
       await this.sourceFiles(context),
-      true
+      true,
+      context.existingAnalysis
     );
 
     const contribution = this.createContribution(nodes, edges, [], [], {
@@ -400,7 +377,12 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
     const content = await fs.readFile(context.filePath, 'utf8');
     const stat = await fs.stat(context.filePath);
-    const { nodes, edges } = await this.analyzeBindings(context.projectPath, [context.relativePath], false);
+    const { nodes, edges } = await this.analyzeBindings(
+      context.projectPath,
+      [context.relativePath],
+      false,
+      context.existingAnalysis
+    );
     return this.createFileAnalysisResult(
       context.filePath,
       context.relativePath,
@@ -451,11 +433,6 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
       } catch {
         continue;
       }
-
-
-
-
-
 
       if (!this.fileReferencesContainerPackage(content, ruleDef)) continue;
 
@@ -513,12 +490,14 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
   private async analyzeBindings(
     projectPath: string,
     sourceFiles: string[],
-    includeLibraries: boolean
+    includeLibraries: boolean,
+    existingAnalysis?: CASContribution[]
   ): Promise<{ nodes: CASNode[]; edges: CASEdge[]; libraries: CASLibrary[] }> {
     const dependencies = await this.readDependencies(projectPath);
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const libraries: CASLibrary[] = [];
+    const existingNodes = existingAnalysis?.flatMap(contribution => contribution.nodes || []) || [];
 
     for (const ruleDef of RULES) {
       const dependencyHits = dependencies.filter(dep => this.ruleMatchesDependency(ruleDef, dep));
@@ -574,7 +553,6 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
           }
         ));
 
-
         edges.push(this.createEdge(
           `edge_${containerNodeId}_binds_${bindingNodeId}`,
           containerNodeId,
@@ -584,10 +562,13 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
           { container: ruleDef.id, lifetime: binding.lifetime }
         ));
 
-
-
         if (binding.implementationName) {
-          const implementationNodeId = `di_impl_${this.sanitizeId(ruleDef.id)}_${this.sanitizeId(binding.implementationName)}`;
+          const implementationNodeId = this.resolveImplementationNode(
+            binding,
+            ruleDef,
+            existingNodes,
+            nodes
+          );
           edges.push(this.createEdge(
             `edge_${bindingNodeId}_provides_${implementationNodeId}`,
             bindingNodeId,
@@ -603,6 +584,58 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
     }
 
     return { nodes, edges, libraries };
+  }
+
+  private resolveImplementationNode(
+    binding: BindingMatch,
+    ruleDef: DiContainerRule,
+    existingNodes: CASNode[],
+    contributedNodes: CASNode[]
+  ): string {
+    const implementationName = binding.implementationName!;
+    const normalizedName = this.normalizeImplementationName(implementationName);
+    const candidates = existingNodes.filter(node => {
+      if (node.level !== undefined && node.level > 3) return false;
+      const names = [node.name, node.qualified_name]
+        .filter((name): name is string => Boolean(name))
+        .map(name => this.normalizeImplementationName(name));
+      return names.some(name => name === normalizedName || this.simpleTypeName(name) === this.simpleTypeName(normalizedName));
+    });
+    const candidateIds = [...new Set(candidates.map(node => node.id))];
+    if (candidateIds.length === 1) return candidateIds[0];
+
+    const implementationNodeId = `di_impl_${this.sanitizeId(ruleDef.id)}_${this.sanitizeId(implementationName)}`;
+    if (!contributedNodes.some(node => node.id === implementationNodeId)) {
+      contributedNodes.push(this.createNode(
+        implementationNodeId,
+        implementationName,
+        'di_implementation',
+        3,
+        binding.file,
+        binding.line,
+        binding.line,
+        {
+          container: ruleDef.displayName,
+          resolution: candidateIds.length === 0 ? 'unresolved' : 'ambiguous',
+          candidate_node_ids: candidateIds,
+          subcategories: ['dependency-injection-implementation', ruleDef.id],
+        }
+      ));
+    }
+    return implementationNodeId;
+  }
+
+  private normalizeImplementationName(name: string): string {
+    return name
+      .replace(/^global::/, '')
+      .replace(/<.*>$/, '')
+      .replace(/\s+/g, '')
+      .toLowerCase();
+  }
+
+  private simpleTypeName(name: string): string {
+    const segments = name.split(/[.:+$]/).filter(Boolean);
+    return segments[segments.length - 1] || name;
   }
 
   private buildLibraryFact(ruleDef: DiContainerRule, dependencyHits: DependencyHit[], bindings: BindingMatch[], bindingNodeIds: string[]): CASLibrary {

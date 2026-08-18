@@ -8,6 +8,7 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 
 interface WpfWindow {
+  nodeId: string;
   name: string;
   filePath: string;
   xamlPath?: string;
@@ -20,6 +21,7 @@ interface WpfWindow {
 }
 
 interface WpfUserControl {
+  nodeId: string;
   name: string;
   filePath: string;
   xamlPath?: string;
@@ -28,6 +30,7 @@ interface WpfUserControl {
 }
 
 interface WpfViewModel {
+  nodeId: string;
   name: string;
   filePath: string;
   properties: WpfProperty[];
@@ -70,6 +73,7 @@ interface WpfProperty {
 }
 
 interface WpfService {
+  nodeId: string;
   name: string;
   filePath: string;
   interfaces: string[];
@@ -77,16 +81,12 @@ interface WpfService {
 }
 
 interface WpfConverter {
+  nodeId: string;
   name: string;
   filePath: string;
   implementsIValueConverter: boolean;
   implementsIMultiValueConverter: boolean;
 }
-
-
-
-
-
 
 interface WpfEventHandlerBinding {
   event: string;
@@ -153,7 +153,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
     const exitPoints: CASExitPoint[] = [];
     const perspectives: CASPerspective[] = [];
 
-    const existingNodes = context.existingAnalysis?.[0]?.nodes || [];
+    const existingNodes = context.existingAnalysis?.flatMap(contribution => contribution.nodes || []) || [];
 
     try {
       const ignorePatterns = [
@@ -176,18 +176,17 @@ export class WPFAnalyzer extends BaseAnalyzer {
       const windows = await this.analyzeWindows(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, entryPoints);
       const userControls = await this.analyzeUserControls(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, entryPoints);
       const viewModels = await this.analyzeViewModels(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, windows, entryPoints);
-      const services = await this.analyzeServices(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
-      const converters = await this.analyzeConverters(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
+      const services = await this.analyzeServices(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes);
+      const converters = await this.analyzeConverters(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes);
 
-
-      this.buildMvvmRelationships(windows, viewModels, services, existingNodes, edges, newNodes);
+      this.buildMvvmRelationships(windows, viewModels, services, edges);
       this.buildDataBindingRelationships(windows, userControls, viewModels, edges);
       this.buildConverterRelationships(converters, windows, userControls, edges);
-      this.identifyEntryPoints(windows, entryPoints, newNodes);
+      this.identifyEntryPoints(windows, entryPoints);
       await this.identifyServiceEntryPoints(csFiles, context.projectPath, existingNodes, newNodes, entryPoints);
       await this.identifyAppStartupEntryPoints(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, entryPoints);
       await this.analyzeReportGeneration(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, exitPoints);
-      this.identifyExitPoints(services, exitPoints, existingNodes);
+      this.identifyExitPoints(services, exitPoints);
 
       this.createPerspectives(perspectives, windows, userControls, viewModels, services);
 
@@ -256,7 +255,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
           const dataContext = this.extractDataContext(content, xamlContent);
           const resourceDictionaries = this.extractResourceDictionaries(xamlContent);
 
+          const windowId = this.generateId('window', file, windowName);
           const windowInfo: WpfWindow = {
+            nodeId: windowId,
             name: windowName,
             filePath: file,
             xamlPath,
@@ -268,13 +269,11 @@ export class WPFAnalyzer extends BaseAnalyzer {
             resourceDictionaries
           };
 
-          windows.push(windowInfo);
-
-          const windowId = this.generateId('window', file, windowName);
-
           const existingNode = existingNodes.find(n =>
             n.name === windowName && n.type === 'class'
           );
+          if (existingNode) windowInfo.nodeId = existingNode.id;
+          windows.push(windowInfo);
 
           if (existingNode) {
             existingNode.type = 'window';
@@ -333,20 +332,14 @@ export class WPFAnalyzer extends BaseAnalyzer {
               .build();
             newNodes.push(xamlNode);
 
-            const edgeId = this.generateEdgeId(windowId, xamlNodeId, 'defines-layout');
-            edges.push(this.createEdgeBuilder(edgeId, windowId, xamlNodeId, 'defines-layout')
+            const edgeId = this.generateEdgeId(windowInfo.nodeId, xamlNodeId, 'defines-layout');
+            edges.push(this.createEdgeBuilder(edgeId, windowInfo.nodeId, xamlNodeId, 'defines-layout')
               .withMetadata({ attributes: { relationship: 'code-behind-to-xaml' } })
               .build());
           }
 
-
-
-
-
-
-
           this.emitUiEventHandlerEntryPoints(
-            windowId, windowName, file,
+            windowInfo.nodeId, windowName, file,
             this.extractEventHandlerBindings(content, xamlContent),
             content, newNodes, edges, entryPoints
           );
@@ -391,7 +384,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
           const depProperties = this.extractDependencyProperties(content);
           const events = this.extractRoutedEvents(content);
 
+          const controlId = this.generateId('control', file, controlName);
           const controlInfo: WpfUserControl = {
+            nodeId: controlId,
             name: controlName,
             filePath: file,
             xamlPath,
@@ -399,13 +394,11 @@ export class WPFAnalyzer extends BaseAnalyzer {
             events
           };
 
-          controls.push(controlInfo);
-
-          const controlId = this.generateId('control', file, controlName);
-
           const existingNode = existingNodes.find(n =>
             n.name === controlName && n.type === 'class'
           );
+          if (existingNode) controlInfo.nodeId = existingNode.id;
+          controls.push(controlInfo);
 
           if (existingNode) {
             existingNode.type = 'ui_component';
@@ -441,11 +434,8 @@ export class WPFAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
-
-
-
           this.emitUiEventHandlerEntryPoints(
-            controlId, controlName, file,
+            controlInfo.nodeId, controlName, file,
             this.extractEventHandlerBindings(content, xamlContent),
             content, newNodes, edges, entryPoints
           );
@@ -468,11 +458,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
   ): Promise<WpfViewModel[]> {
     const viewModels: WpfViewModel[] = [];
 
-
-
-
-
-
     const xamlBoundCommandNames = new Set<string>();
     for (const window of windows) {
       for (const cmd of window.commands) xamlBoundCommandNames.add(cmd);
@@ -494,7 +479,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
           const properties = this.extractViewModelProperties(content);
           const commands = this.extractViewModelCommands(content);
 
+          const vmId = this.generateId('viewmodel', file, vmName);
           const vmInfo: WpfViewModel = {
+            nodeId: vmId,
             name: vmName,
             filePath: file,
             properties,
@@ -502,13 +489,11 @@ export class WPFAnalyzer extends BaseAnalyzer {
             implementsINotifyPropertyChanged: implementsINPC
           };
 
-          viewModels.push(vmInfo);
-
-          const vmId = this.generateId('viewmodel', file, vmName);
-
           const existingNode = existingNodes.find(n =>
             n.name === vmName && n.type === 'class'
           );
+          if (existingNode) vmInfo.nodeId = existingNode.id;
+          viewModels.push(vmInfo);
 
           if (existingNode) {
             existingNode.type = 'viewmodel';
@@ -553,7 +538,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
             const cmdNode = this.createNodeBuilder(cmdId, cmd.name, 'command')
               .withLevel(4, this.getLevelName(4))
               .withSource({ file: file })
-              .withParent(vmId)
+              .withParent(vmInfo.nodeId)
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -567,16 +552,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
             newNodes.push(cmdNode);
 
             edges.push(this.createEdgeBuilder(
-              this.generateEdgeId(vmId, cmdId, 'has-command'),
-              vmId, cmdId, 'has-command'
+              this.generateEdgeId(vmInfo.nodeId, cmdId, 'has-command'),
+              vmInfo.nodeId, cmdId, 'has-command'
             ).build());
-
-
-
-
-
-
-
 
             const isWired = !!cmd.executeMethod || xamlBoundCommandNames.has(cmd.name);
             if (isWired) {
@@ -612,8 +590,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
     projectPath: string,
     existingNodes: CASNode[],
     newNodes: CASNode[],
-    enhancedNodes: CASNode[],
-    edges: CASEdge[]
+    enhancedNodes: CASNode[]
   ): Promise<WpfService[]> {
     const services: WpfService[] = [];
 
@@ -641,20 +618,20 @@ export class WPFAnalyzer extends BaseAnalyzer {
           const interfaces = baseTypes.filter(t => t.startsWith('I'));
           const methods = this.extractServiceMethods(content, serviceName);
 
+          const serviceId = this.generateId('service', file, serviceName);
           const serviceInfo: WpfService = {
+            nodeId: serviceId,
             name: serviceName,
             filePath: file,
             interfaces,
             methods
           };
 
-          services.push(serviceInfo);
-
-          const serviceId = this.generateId('service', file, serviceName);
-
           const existingNode = existingNodes.find(n =>
             n.name === serviceName && n.type === 'class'
           );
+          if (existingNode) serviceInfo.nodeId = existingNode.id;
+          services.push(serviceInfo);
 
           if (existingNode) {
             existingNode.type = 'service';
@@ -700,8 +677,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
     projectPath: string,
     existingNodes: CASNode[],
     newNodes: CASNode[],
-    enhancedNodes: CASNode[],
-    edges: CASEdge[]
+    enhancedNodes: CASNode[]
   ): Promise<WpfConverter[]> {
     const converters: WpfConverter[] = [];
 
@@ -718,18 +694,19 @@ export class WPFAnalyzer extends BaseAnalyzer {
           const implementsIValueConverter = /IValueConverter(?!s)/.test(match[0]);
           const implementsIMultiValueConverter = /IMultiValueConverter/.test(match[0]);
 
-          converters.push({
+          const converterId = this.generateId('converter', file, converterName);
+          const converterInfo: WpfConverter = {
+            nodeId: converterId,
             name: converterName,
             filePath: file,
             implementsIValueConverter,
             implementsIMultiValueConverter
-          });
-
-          const converterId = this.generateId('converter', file, converterName);
-
+          };
           const existingNode = existingNodes.find(n =>
             n.name === converterName && n.type === 'class'
           );
+          if (existingNode) converterInfo.nodeId = existingNode.id;
+          converters.push(converterInfo);
 
           if (existingNode) {
             existingNode.type = 'converter';
@@ -767,14 +744,11 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return converters;
   }
 
-
   private buildMvvmRelationships(
     windows: WpfWindow[],
     viewModels: WpfViewModel[],
     services: WpfService[],
-    existingNodes: CASNode[],
-    edges: CASEdge[],
-    newNodes: CASNode[]
+    edges: CASEdge[]
   ): void {
     for (const window of windows) {
       if (!window.dataContext) continue;
@@ -783,21 +757,15 @@ export class WPFAnalyzer extends BaseAnalyzer {
       if (vm) {
         vm.boundWindow = window.name;
 
-        const windowId = this.generateId('window', window.filePath, window.name);
-        const vmId = this.generateId('viewmodel', vm.filePath, vm.name);
-
         edges.push(this.createEdgeBuilder(
-          this.generateEdgeId(windowId, vmId, 'binds-to'),
-          windowId, vmId, 'binds-to'
+          this.generateEdgeId(window.nodeId, vm.nodeId, 'binds-to'),
+          window.nodeId, vm.nodeId, 'binds-to'
         ).withMetadata({ attributes: { relationship: 'data-context', pattern: 'mvvm' } }).build());
       }
     }
 
     for (const vm of viewModels) {
-      const vmId = this.generateId('viewmodel', vm.filePath, vm.name);
-
       for (const service of services) {
-        const serviceId = this.generateId('service', service.filePath, service.name);
         const nameMatch = service.interfaces.some(iface => {
           const stripped = iface.replace(/^I/, '');
           return vm.name.toLowerCase().includes(stripped.toLowerCase()) ||
@@ -806,8 +774,8 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
         if (nameMatch) {
           edges.push(this.createEdgeBuilder(
-            this.generateEdgeId(vmId, serviceId, 'depends-on'),
-            vmId, serviceId, 'depends-on'
+            this.generateEdgeId(vm.nodeId, service.nodeId, 'depends-on'),
+            vm.nodeId, service.nodeId, 'depends-on'
           ).withMetadata({ attributes: { relationship: 'service-dependency' } }).build());
         }
       }
@@ -821,18 +789,15 @@ export class WPFAnalyzer extends BaseAnalyzer {
     edges: CASEdge[]
   ): void {
     for (const window of windows) {
-      const windowId = this.generateId('window', window.filePath, window.name);
-
       for (const control of window.controls) {
         for (const binding of control.bindings) {
           const vm = viewModels.find(v => v.name === window.dataContext);
           if (vm) {
-            const vmId = this.generateId('viewmodel', vm.filePath, vm.name);
             const prop = vm.properties.find(p => p.name === binding.path);
             if (prop) {
-              const edgeId = this.generateEdgeId(windowId, vmId, `binding-${binding.path}`);
+              const edgeId = this.generateEdgeId(window.nodeId, vm.nodeId, `binding-${binding.path}`);
               if (!edges.find(e => e.id === edgeId)) {
-                edges.push(this.createEdgeBuilder(edgeId, windowId, vmId, 'data-binding')
+                edges.push(this.createEdgeBuilder(edgeId, window.nodeId, vm.nodeId, 'data-binding')
                   .withMetadata({
                     attributes: {
                       binding_path: binding.path,
@@ -856,16 +821,14 @@ export class WPFAnalyzer extends BaseAnalyzer {
     edges: CASEdge[]
   ): void {
     for (const window of windows) {
-      const windowId = this.generateId('window', window.filePath, window.name);
       for (const control of window.controls) {
         for (const binding of control.bindings) {
           if (binding.converter) {
             const converter = converters.find(c => c.name === binding.converter);
             if (converter) {
-              const converterId = this.generateId('converter', converter.filePath, converter.name);
               edges.push(this.createEdgeBuilder(
-                this.generateEdgeId(windowId, converterId, 'uses-converter'),
-                windowId, converterId, 'uses-converter'
+                this.generateEdgeId(window.nodeId, converter.nodeId, 'uses-converter'),
+                window.nodeId, converter.nodeId, 'uses-converter'
               ).withMetadata({ attributes: { binding_property: binding.property } }).build());
             }
           }
@@ -876,22 +839,14 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
   private identifyEntryPoints(
     windows: WpfWindow[],
-    entryPoints: CASEntryPoint[],
-    newNodes: CASNode[]
+    entryPoints: CASEntryPoint[]
   ): void {
     for (const window of windows) {
       if (window.baseClass === 'Window' || window.name.toLowerCase().includes('main')) {
-        const windowId = this.generateId('window', window.filePath, window.name);
-
-
-
-
-
-
         const project = path.basename(path.dirname(window.filePath));
         entryPoints.push(this.createEntryPoint(
           this.generateId('entry', window.filePath, window.name),
-          windowId,
+          window.nodeId,
           'event',
           project && project !== '.' ? `${project}.${window.name}` : window.name,
           `WPF Window: ${window.name}`,
@@ -905,7 +860,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
             data_context: window.dataContext,
             event_handler_count: window.eventHandlers.length
           },
-          { node_id: windowId, method_name: window.name, file: window.filePath }
+          { node_id: window.nodeId, method_name: window.name, file: window.filePath }
         ));
       }
     }
@@ -974,12 +929,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return nsMatch ? nsMatch[1] : 'global';
   }
 
-
-
-
-
-
-
   private async identifyAppStartupEntryPoints(
     csFiles: string[],
     projectPath: string,
@@ -1002,9 +951,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
         const onStartupPattern = /(?:protected|public)\s+override\s+(?:async\s+)?void\s+OnStartup\s*\(/;
         const onStartupMatch = onStartupPattern.exec(content);
-
-
-
 
         const startupMatch = onStartupMatch || mainMatch;
         if (!startupMatch) continue;
@@ -1175,12 +1121,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
   private identifyExitPoints(
     services: WpfService[],
-    exitPoints: CASExitPoint[],
-    existingNodes: CASNode[]
+    exitPoints: CASExitPoint[]
   ): void {
     for (const service of services) {
-      const serviceId = this.generateId('service', service.filePath, service.name);
-
       for (const method of service.methods) {
         const isDbOperation = /^(Get|Find|Query|Insert|Update|Delete|Save|Load|Fetch|Add|Remove|Create|Read)/i.test(method.name);
         const isExternalCall = /^(Send|Post|Call|Invoke|Request|Notify|Publish|Dispatch)/i.test(method.name);
@@ -1188,7 +1131,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
         if (isDbOperation) {
           exitPoints.push(this.createExitPoint(
             this.generateId('exit', service.filePath, `${service.name}_${method.name}`),
-            serviceId,
+            service.nodeId,
             'database',
             `${service.name}.${method.name}`,
             `Database operation via ${service.name}`,
@@ -1199,7 +1142,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
         } else if (isExternalCall) {
           exitPoints.push(this.createExitPoint(
             this.generateId('exit', service.filePath, `${service.name}_${method.name}`),
-            serviceId,
+            service.nodeId,
             'api',
             `${service.name}.${method.name}`,
             `External call via ${service.name}`,
@@ -1255,11 +1198,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
   }
 
   private findMatchingXaml(csFile: string, xamlFiles: string[]): string | undefined {
-
-
-
-
-
 
     const baseName = csFile.endsWith('.xaml.cs')
       ? csFile.slice(0, -'.xaml.cs'.length)
@@ -1379,9 +1317,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return handlers;
   }
 
-
-
-
   private extractEventHandlerBindings(csContent: string, xamlContent: string): WpfEventHandlerBinding[] {
     const bindings: WpfEventHandlerBinding[] = [];
     const seen = new Set<string>();
@@ -1409,11 +1344,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
     return bindings;
   }
-
-
-
-
-
 
   private emitUiEventHandlerEntryPoints(
     parentId: string,

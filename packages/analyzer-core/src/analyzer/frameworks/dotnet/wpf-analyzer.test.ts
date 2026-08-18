@@ -4,6 +4,7 @@ import * as fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { WPFAnalyzer } from './wpf-analyzer';
+import { CASContribution, CASNode } from '../../../types/cas.types';
 
 async function makeProject(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wpf-analyzer-test-'));
@@ -170,6 +171,51 @@ test('WPFAnalyzer surfaces the UI interaction surface as entry points', async ()
     // just not promoted to an entry point.
     const unwiredCommandNode = result.nodes.find(n => n.type === 'command' && n.name === 'UnwiredCommand');
     assert.ok(unwiredCommandNode, 'the UnwiredCommand node should still be emitted for structural navigation');
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
+test('WPFAnalyzer preserves canonical language node identities across graph surfaces', async () => {
+  const dir = await makeProject();
+  try {
+    await fs.writeFile(path.join(dir, 'PatientService.cs'), [
+      'namespace WpfApp',
+      '{',
+      '    public class PatientService : IPatientService',
+      '    {',
+      '        public Patient GetPatient() { return null; }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const existingNodes: CASNode[] = [
+      { id: 'class_main_window', name: 'MainWindow', type: 'class', level: 3, source: { file: 'MainWindow.xaml.cs' } },
+      { id: 'class_main_view_model', name: 'MainViewModel', type: 'class', level: 3, source: { file: 'MainViewModel.cs' } },
+      { id: 'class_patient_service', name: 'PatientService', type: 'class', level: 3, source: { file: 'PatientService.cs' } },
+    ];
+    const existingContribution: CASContribution = {
+      nodes: existingNodes,
+      analyzer_metadata: {
+        analyzer_id: 'fixture',
+        analyzer_name: 'Fixture',
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        capabilities: [],
+      },
+    };
+    const result = await new WPFAnalyzer().analyze({ projectPath: dir, existingAnalysis: [existingContribution] });
+    const availableIds = new Set([
+      ...result.nodes.map(node => node.id),
+      ...result.entry_points.map(entry => entry.id),
+      ...result.exit_points.map(exit => exit.id),
+    ]);
+
+    assert.equal(result.nodes.find(node => node.name === 'MainWindow')?.id, 'class_main_window');
+    assert.equal(result.entry_points.find(entry => entry.metadata?.entry_type === 'window')?.source_node, 'class_main_window');
+    assert.equal(result.exit_points.find(exit => exit.name.includes('PatientService'))?.source_node, 'class_patient_service');
+    assert.ok(result.edges.every(edge => availableIds.has(edge.source) && availableIds.has(edge.target)));
+    assert.ok(result.exit_points.every(exit => availableIds.has(exit.source_node)));
   } finally {
     await fs.remove(dir);
   }

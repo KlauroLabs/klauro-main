@@ -21,7 +21,8 @@ describe('DiContainerBindingAnalyzer surfaces the DI binding graph (interface ->
 
   async function analyzeProject(
     manifests: Record<string, unknown>,
-    files: Record<string, string>
+    files: Record<string, string>,
+    existingAnalysis?: CASContribution[]
   ): Promise<CASContribution> {
     for (const [name, content] of Object.entries(manifests)) {
       if (typeof content === 'string') {
@@ -36,7 +37,7 @@ describe('DiContainerBindingAnalyzer surfaces the DI binding graph (interface ->
       await fs.writeFile(fullPath, content);
     }
     const analyzer = new DiContainerBindingAnalyzer();
-    return analyzer.analyze({ projectPath: tempDir } as any);
+    return analyzer.analyze({ projectPath: tempDir, existingAnalysis });
   }
 
   function bindingNodes(contribution: CASContribution): Array<CASNode & { metadata: any }> {
@@ -157,6 +158,43 @@ describe('DiContainerBindingAnalyzer surfaces the DI binding graph (interface ->
     const binding = bindings.find(n => n.metadata?.interface === 'IFooService');
     expect(binding).toBeDefined();
     expect(binding!.metadata?.implementation).toBe('FooService');
+  });
+
+  it('links provider edges to canonical implementation nodes and materializes unresolved implementations', async () => {
+    const canonicalNode: CASNode = {
+      id: 'class_existing_foo_service',
+      name: 'FooService',
+      qualified_name: 'Example.Services.FooService',
+      type: 'class',
+      level: 3,
+      source: { file: 'FooService.cs' },
+    };
+    const contribution = await analyzeProject(
+      { 'App.csproj': '<Project><ItemGroup><PackageReference Include="Ninject" Version="3.3.6" /></ItemGroup></Project>' },
+      {
+        'NinjectModule.cs': [
+          'using Ninject;',
+          'using Ninject.Modules;',
+          'public class AppModule : NinjectModule {',
+          '  public override void Load() {',
+          '    Bind<IFooService>().To<FooService>();',
+          '    Bind<IBarService>().To<BarService>();',
+          '  }',
+          '}',
+        ].join('\n'),
+      },
+      [{ nodes: [canonicalNode], analyzer_metadata: { analyzer_id: 'fixture', analyzer_name: 'Fixture', version: '1.0.0', contribution_type: 'language', capabilities: [] } }]
+    );
+
+    const providesEdges = (contribution.edges || []).filter(edge => edge.type === 'provides');
+    const implementationName = (edge: typeof providesEdges[number]): unknown =>
+      (edge.metadata as Record<string, unknown> | undefined)?.implementation;
+    expect(providesEdges.find(edge => implementationName(edge) === 'FooService')?.target).toBe(canonicalNode.id);
+    const unresolvedEdge = providesEdges.find(edge => implementationName(edge) === 'BarService');
+    expect(unresolvedEdge).toBeDefined();
+    expect(contribution.nodes?.some(node => node.id === unresolvedEdge!.target && node.type === 'di_implementation')).toBe(true);
+    const availableIds = new Set([canonicalNode.id, ...(contribution.nodes || []).map(node => node.id)]);
+    expect(providesEdges.every(edge => availableIds.has(edge.target))).toBe(true);
   });
 
   it('Guice: extracts bind(IFoo.class).to(Foo.class).in(Singleton.class)', async () => {
