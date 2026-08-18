@@ -20,17 +20,9 @@ export function linkStructuralOwnership(nodes: CASNode[], edges: CASEdge[]): voi
     const existing = fileNodeByPath.get(normalized);
     if (!existing || compareFileOwners(node, existing) < 0) fileNodeByPath.set(normalized, node);
   }
-  for (const node of nodes) {
-    if (node.type === 'system' || incidentNodeIds.has(node.id)) continue;
-    const parent = node.parent ? nodeById.get(node.parent) : undefined;
-    const fileOwner = node.source?.file
-      ? fileNodeByPath.get(normalizeOwnershipPath(node.source.file))
-      : undefined;
-    const owner = parent || (fileOwner?.id !== node.id ? fileOwner : undefined);
-    if (!owner) continue;
-    const resolution = parent && parent.id !== fileOwner?.id ? 'declared-parent' : 'same-source-file';
+  const addOwnershipEdge = (owner: CASNode, node: CASNode, resolution: string): void => {
     const key = `${owner.id}\0${node.id}\0contains`;
-    if (edgeKeys.has(key)) continue;
+    if (edgeKeys.has(key)) return;
     edges.push({
       id: `structural_ownership_${crypto.createHash('sha256').update(owner.id).update('\0').update(node.id).digest('hex').slice(0, 20)}`,
       source: owner.id,
@@ -44,6 +36,29 @@ export function linkStructuralOwnership(nodes: CASNode[], edges: CASEdge[]): voi
       },
     });
     edgeKeys.add(key);
+    incidentNodeIds.add(owner.id);
+    incidentNodeIds.add(node.id);
+  };
+  for (const node of nodes) {
+    if (node.type === 'system' || incidentNodeIds.has(node.id)) continue;
+    const parent = node.parent ? nodeById.get(node.parent) : undefined;
+    const fileOwner = node.source?.file
+      ? fileNodeByPath.get(normalizeOwnershipPath(node.source.file))
+      : undefined;
+    const owner = parent || (fileOwner?.id !== node.id ? fileOwner : undefined);
+    if (!owner) continue;
+    const resolution = parent && parent.id !== fileOwner?.id ? 'declared-parent' : 'same-source-file';
+    addOwnershipEdge(owner, node, resolution);
+  }
+  for (const [normalizedPath, fileNode] of fileNodeByPath) {
+    if (incidentNodeIds.has(fileNode.id)) continue;
+    const candidates = nodes.filter(node =>
+      node.id !== fileNode.id &&
+      node.source?.file &&
+      normalizeOwnershipPath(node.source.file) === normalizedPath
+    );
+    const root = candidates.find(node => !node.parent || !nodeById.has(node.parent)) || candidates[0];
+    if (root) addOwnershipEdge(fileNode, root, 'file-root');
   }
 }
 

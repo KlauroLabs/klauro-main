@@ -23,6 +23,19 @@ describe('structural ownership', () => {
     expect(edges).toHaveLength(1);
   });
 
+  it('connects an otherwise orphaned file to an already-connected declaration', () => {
+    const file = { id: 'file_service', name: 'service.ts', type: 'file', source: { file: 'src/service.ts', line: 1 } } as CASNode;
+    const declaration = { id: 'class_service', name: 'Service', type: 'class', source: { file: 'src/service.ts', line: 2 } } as CASNode;
+    const dependency = { id: 'class_dependency', name: 'Dependency', type: 'class', source: { file: 'src/dependency.ts', line: 1 } } as CASNode;
+    const edges: CASEdge[] = [{ id: 'depends', source: declaration.id, target: dependency.id, type: 'depends-on' }];
+
+    linkStructuralOwnership([file, declaration, dependency], edges);
+
+    expect(edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: file.id, target: declaration.id, type: 'contains' }),
+    ]));
+  });
+
   it('rebuilds derived ownership from non-structural edges independent of prior output and node order', () => {
     const file = { id: 'file_service', name: 'service.ts', type: 'file', source: { file: 'src/service.ts', line: 1 } } as CASNode;
     const first = { id: 'usage_first', name: 'First call', type: 'library_service_sdk_usage', source: { file: 'src/service.ts', line: 3 } } as CASNode;

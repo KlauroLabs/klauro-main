@@ -9,6 +9,51 @@ describe('RubyAnalyzer', () => {
   });
 
   describe('parseRubySource', () => {
+    it('keeps methods after an assigned conditional expression inside their class', () => {
+      const source = [
+        'class ApplicationController',
+        '  def select_role(admin)',
+        '    role = if admin',
+        "             'admin'",
+        '           else',
+        "             'member'",
+        '           end',
+        '    role',
+        '  end',
+        '',
+        '  def current_role',
+        '    session[:role]',
+        '  end',
+        'end',
+      ].join('\n');
+
+      const analysis = analyzer.parseRubySource(source, 'app/controllers/application_controller.rb');
+
+      expect(analysis.classes[0].methods.map(method => method.name)).toEqual(['select_role', 'current_role']);
+      expect(analysis.topLevelMethods).toHaveLength(0);
+    });
+
+    it('does not close an outer scope when an indented end belongs to an unclassified block', () => {
+      const source = [
+        'module Helpers',
+        '  def collect_names(items)',
+        '    items.each do |item|;',
+        '      item.name',
+        '    end',
+        '  end',
+        '',
+        '  def current_name',
+        '    names.last',
+        '  end',
+        'end',
+      ].join('\n');
+
+      const analysis = analyzer.parseRubySource(source, 'app/helpers/helpers.rb');
+
+      expect(analysis.modules[0].methods.map(method => method.name)).toEqual(['collect_names', 'current_name']);
+      expect(analysis.topLevelMethods).toHaveLength(0);
+    });
+
     it('extracts classes with superclass, methods, and visibility', () => {
       const source = [
         'class Invoice < Document',

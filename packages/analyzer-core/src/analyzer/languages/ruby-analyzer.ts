@@ -111,6 +111,7 @@ interface ScopeFrame {
 }
 
 const BLOCK_KEYWORD_PATTERN = /^(if|unless|while|until|case|begin|for)\b/;
+const ASSIGNED_BLOCK_KEYWORD_PATTERN = /=\s*(if|unless|while|until|case|begin|for)\b/;
 const TRAILING_DO_PATTERN = /(^|[\s)])do(\s*\|[^|]*\|)?\s*$/;
 const END_PATTERN = /^end\b/;
 const CLASS_PATTERN = /^class\s+([A-Z][\w:]*)(?:\s*<\s*([A-Z][\w:]*))?/;
@@ -405,7 +406,6 @@ export class RubyAnalyzer extends BaseAnalyzer {
         continue;
       }
       if (trimmed === '' || trimmed.startsWith('#')) continue;
-
       const requireMatch = trimmed.match(REQUIRE_PATTERN);
       if (requireMatch) {
         analysis.requires.push({
@@ -415,10 +415,13 @@ export class RubyAnalyzer extends BaseAnalyzer {
         });
         continue;
       }
-
       const endMatch = trimmed.match(END_PATTERN);
       if (endMatch) {
-        const frame = stack.pop();
+        const frame = stack[stack.length - 1];
+        const frameIndent = frame ? (lines[frame.lineStart - 1].match(/^[\t ]*/)?.[0].length || 0) : 0;
+        const endIndent = raw.match(/^[\t ]*/)?.[0].length || 0;
+        if (frame && frame.kind !== 'block' && endIndent > frameIndent) continue;
+        stack.pop();
         if (frame) {
           if (frame.classRef) frame.classRef.lineEnd = lineNumber;
           if (frame.moduleRef) frame.moduleRef.lineEnd = lineNumber;
@@ -427,7 +430,6 @@ export class RubyAnalyzer extends BaseAnalyzer {
         }
         continue;
       }
-
       const machineFrameIndex = this.findStateMachineFrameIndex(stack);
       if (machineFrameIndex === -1) {
         const machineStartMatch = trimmed.match(STATE_MACHINE_START_PATTERN);
@@ -668,7 +670,8 @@ export class RubyAnalyzer extends BaseAnalyzer {
         this.captureCallsFromLine(this.stripStringsAndComments(trimmed), lineNumber, callerMethod);
       }
 
-      if (BLOCK_KEYWORD_PATTERN.test(trimmed) || TRAILING_DO_PATTERN.test(trimmed.replace(/#.*$/, '').trimEnd())) {
+      if (BLOCK_KEYWORD_PATTERN.test(trimmed) || ASSIGNED_BLOCK_KEYWORD_PATTERN.test(trimmed) ||
+          TRAILING_DO_PATTERN.test(trimmed.replace(/#.*$/, '').trimEnd())) {
         stack.push({ kind: 'block', visibility: 'public', lineStart: lineNumber });
       }
     }
