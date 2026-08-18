@@ -3,6 +3,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { saveAgenticBenchmarkReport } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
+import { discoverProofReports, ProofReportEntry, proofReportTimestamp } from './proof-report-discovery';
 
 type CoverageStatus = 'strong' | 'partial' | 'gap';
 type ReportStatus = 'pass' | 'warn' | 'fail';
@@ -45,10 +46,7 @@ interface Options {
   strict: boolean;
 }
 
-interface ReportEntry {
-  path: string;
-  report: JsonObject;
-}
+type ReportEntry = ProofReportEntry<JsonObject>;
 
 const REPORTS = {
   agentBenchmark: '.klauro-agent-benchmark/latest-report.json',
@@ -176,26 +174,9 @@ async function loadReports(root: string): Promise<LoadedReports> {
   }));
   return {
     ...Object.fromEntries(entries) as Record<keyof typeof REPORTS, JsonObject>,
-    existingLive: await discoverReports(path.resolve(root, '.klauro-existing-task-benchmark'), report => array(report.scenarios).some(scenario => scenario.live_summary)),
-    scratch: await discoverReports(path.resolve(root, '.klauro-agent-scratch-build-benchmark'), report => Boolean(report.task && report.comparison)),
+    existingLive: await discoverProofReports(path.resolve(root, '.klauro-existing-task-benchmark'), report => array(report.scenarios).some(scenario => scenario.live_summary)),
+    scratch: await discoverProofReports(path.resolve(root, '.klauro-agent-scratch-build-benchmark'), report => Boolean(report.task && report.comparison)),
   };
-}
-
-async function discoverReports(directory: string, accepts: (report: JsonObject) => boolean): Promise<ReportEntry[]> {
-  if (!(await fs.pathExists(directory))) return [];
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  const nested = await Promise.all(entries.map(async entry => {
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) return discoverReports(absolute, accepts);
-    if (!entry.isFile() || path.extname(entry.name) !== '.json') return [];
-    try {
-      const report = await fs.readJson(absolute) as JsonObject;
-      return accepts(report) ? [{ path: absolute, report }] : [];
-    } catch {
-      return [];
-    }
-  }));
-  return nested.flat();
 }
 
 function greenfieldCreation(reports: LoadedReports): TaskFamilyCoverage {
@@ -789,7 +770,7 @@ function liveExistingEvidence(reports: LoadedReports, family: string): (ReportEn
     .sort((left, right) => {
       const strength = Number(liveQualityAndTokenPassed(right.scenario)) - Number(liveQualityAndTokenPassed(left.scenario));
       if (strength !== 0) return strength;
-      return reportTimestamp(right.report) - reportTimestamp(left.report);
+      return proofReportTimestamp(right.report) - proofReportTimestamp(left.report);
     });
   return candidates[0] || null;
 }
@@ -798,14 +779,6 @@ function liveScenarioEvidence(entry: (ReportEntry & { scenario: JsonObject }) | 
   if (!entry) return [];
   const live = entry.scenario;
   return [evidence(entry.report, entry.path, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)];
-}
-
-function reportTimestamp(report: JsonObject): number {
-  for (const value of [report.execution_generated_at, report.generated_at, report.rescored_at]) {
-    const timestamp = Date.parse(String(value || ''));
-    if (Number.isFinite(timestamp)) return timestamp;
-  }
-  return 0;
 }
 
 function liveQualityAndTokenPassed(live: JsonObject | null): boolean {
@@ -887,7 +860,7 @@ function liveScratchReports(reports: LoadedReports): JsonObject[] {
     const key = scratchTaskKey(entry.report);
     if (!key) continue;
     const existing = current.get(key);
-    if (!existing || reportTimestamp(entry.report) > reportTimestamp(existing.report)) current.set(key, entry);
+    if (!existing || proofReportTimestamp(entry.report) > proofReportTimestamp(existing.report)) current.set(key, entry);
   }
   return [...current.values()].map(entry => entry.report);
 }

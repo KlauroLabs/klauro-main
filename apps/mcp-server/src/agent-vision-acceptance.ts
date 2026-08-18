@@ -2,6 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { buildAgentPerformanceProof } from './agent-performance-proof';
 import { isDirectCliInvocation } from './cli-invocation';
+import { discoverProofReports, ProofReportEntry, proofReportTimestamp } from './proof-report-discovery';
 import { listAgenticBenchmarkReports, loadAgenticBenchmarkReport } from './storage';
 
 type GateStatus = 'pass' | 'fail';
@@ -178,41 +179,23 @@ async function readReport(relativePath: string): Promise<JsonObject> {
   return fs.readJson(filePath);
 }
 
-interface DiscoveredScratchReport {
+interface DiscoveredScratchReport extends ProofReportEntry<JsonObject> {
   identity: string;
-  path: string;
-  report: JsonObject;
 }
 
 export async function discoverCurrentScratchReports(root: string): Promise<DiscoveredScratchReport[]> {
   const directory = path.resolve(root, SCRATCH_REPORT_DIRECTORY);
   if (!(await fs.pathExists(directory))) return [];
-  const candidates = await readJsonReports(directory);
+  const candidates = await discoverProofReports<JsonObject>(directory, isScratchBuildReport);
   const current = new Map<string, DiscoveredScratchReport>();
   for (const candidate of candidates) {
-    if (!isScratchBuildReport(candidate.report)) continue;
     const identity = scratchReportIdentity(candidate.report, candidate.path);
     const existing = current.get(identity);
-    if (!existing || reportTimestamp(candidate.report) > reportTimestamp(existing.report)) {
+    if (!existing || proofReportTimestamp(candidate.report) > proofReportTimestamp(existing.report)) {
       current.set(identity, { ...candidate, identity });
     }
   }
   return [...current.values()].sort((left, right) => left.identity.localeCompare(right.identity));
-}
-
-async function readJsonReports(directory: string): Promise<Array<{ path: string; report: JsonObject }>> {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  const nested = await Promise.all(entries.map(async entry => {
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) return readJsonReports(absolute);
-    if (!entry.isFile() || path.extname(entry.name) !== '.json') return [];
-    try {
-      return [{ path: absolute, report: await fs.readJson(absolute) as JsonObject }];
-    } catch {
-      return [];
-    }
-  }));
-  return nested.flat();
 }
 
 function isScratchBuildReport(report: JsonObject): boolean {
@@ -222,14 +205,6 @@ function isScratchBuildReport(report: JsonObject): boolean {
 function scratchReportIdentity(report: JsonObject, reportPath: string): string {
   const identity = report.task?.id || report.task?.title || report.scenario?.id || report.scenario?.name;
   return String(identity || path.basename(reportPath, path.extname(reportPath))).trim().toLowerCase();
-}
-
-function reportTimestamp(report: JsonObject): number {
-  for (const value of [report.execution_generated_at, report.generated_at, report.rescored_at]) {
-    const timestamp = Date.parse(String(value || ''));
-    if (Number.isFinite(timestamp)) return timestamp;
-  }
-  return 0;
 }
 
 export function freshnessGates(maxAgeHours: number | null, reports: Record<string, JsonObject>): Gate[] {
