@@ -10,6 +10,7 @@ import { cachedGlob as glob } from '../core/glob-cache';
 import { TreeSitterParser } from '../core/tree-sitter-parser';
 import type { GoASTNode } from '../core/ast-types';
 import * as path from 'path';
+import { buildIncrementalLanguageResolution } from '../core/incremental-language-resolution';
 
 interface GoStruct {
   name: string;
@@ -205,27 +206,17 @@ export class GoAnalyzer extends BaseAnalyzer {
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildTypeRelationships(nodes, edges);
     this.applyTestFileBoundary(nodes);
-    const existingNodes = (context.existingAnalysis || [])
-      .flatMap(contribution => contribution.nodes || [])
-      .filter(node => this.hasGoAnalyzerAttribution(node));
-    const replacedNodeIds = new Set(existingNodes
-      .filter(node => this.sameGoSourceFile(node.source?.file, context.relativePath))
-      .map(node => node.id));
-    const resolutionNodes = [...new Map([
-      ...existingNodes.filter(node => !replacedNodeIds.has(node.id)),
-      ...nodes,
-    ].map(node => [node.id, node])).values()];
-    const relationshipEdges = [...new Map([
-      ...(context.existingAnalysis || [])
-        .flatMap(contribution => contribution.edges || [])
-        .filter(edge => this.hasGoAnalyzerAttribution(edge))
-        .filter(edge => !replacedNodeIds.has(edge.source) && !replacedNodeIds.has(edge.target))
-        .filter(edge => edge.type === 'has_method' || edge.type === 'declares'),
-      ...edges,
-    ].map(edge => [edge.id, edge])).values()];
-    await this.analyzeCallGraph(context.projectPath, resolutionNodes, edges, exitPoints, {
+    const resolution = buildIncrementalLanguageResolution({
+      analyzerId: this.analyzerId,
+      existingAnalysis: context.existingAnalysis,
+      relativePath: context.relativePath,
+      nodes,
+      edges,
+      relationshipTypes: new Set(['has_method', 'declares']),
+    });
+    await this.analyzeCallGraph(context.projectPath, resolution.nodes, edges, exitPoints, {
       files: [context.relativePath],
-      relationshipEdges,
+      relationshipEdges: resolution.relationshipEdges,
     });
 
     const imports = this.extractImports(content).map(imp => imp.path);
@@ -1887,19 +1878,6 @@ export class GoAnalyzer extends BaseAnalyzer {
 
   private isExported(name: string): boolean {
     return name.length > 0 && name[0] >= 'A' && name[0] <= 'Z';
-  }
-
-  private hasGoAnalyzerAttribution(item: CASNode | CASEdge): boolean {
-    const attributes = item.metadata?.attributes as Record<string, unknown> | undefined;
-    if (attributes?.source_analyzer === this.analyzerId) return true;
-    if ('primaryAnalyzer' in item && item.primaryAnalyzer === this.analyzerId) return true;
-    return 'analyzers' in item && Boolean(item.analyzers?.includes(this.analyzerId));
-  }
-
-  private sameGoSourceFile(sourceFile: string | undefined, relativePath: string): boolean {
-    if (!sourceFile) return false;
-    const normalize = (file: string) => file.replace(/\\/g, '/').replace(/^\.\//, '');
-    return normalize(sourceFile) === normalize(relativePath);
   }
 
   private async analyzeCallGraph(

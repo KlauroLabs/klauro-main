@@ -11,6 +11,7 @@ import { cachedGlob as glob } from '../core/glob-cache';
 import { TreeSitterParser } from '../core/tree-sitter-parser';
 import type { PHPASTNode } from '../core/ast-types';
 import * as path from 'path';
+import { buildIncrementalLanguageResolution } from '../core/incremental-language-resolution';
 
 interface PHPClass {
   name: string;
@@ -119,7 +120,6 @@ interface PHPVariable {
   lineNumber: number;
 }
 
-
 interface PHPUse {
   namespace: string;
   alias?: string;
@@ -149,13 +149,6 @@ interface PHPEnumCase {
   lineNumber: number;
 }
 
-
-
-
-
-
-
-
 interface PhpClassTypeInfo {
   name: string;
   isInterface: boolean;
@@ -164,15 +157,8 @@ interface PhpClassTypeInfo {
   interfaces: string[];
   traits: string[];
   propertyTypes: Map<string, string>;
-
   methodReturnTypes: Map<string, string>;
 }
-
-
-
-
-
-
 
 interface PhpTypeIndex {
   classInfoByName: Map<string, PhpClassTypeInfo>;
@@ -251,23 +237,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
     ];
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   private applyTestFileBoundary(nodes: CASNode[]): void {
     for (const node of nodes) {
       const file = node.source?.file;
@@ -292,19 +261,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return content;
   }
 
-  private hasPhpAnalyzerAttribution(item: CASNode | CASEdge): boolean {
-    const attributes = item.metadata?.attributes as Record<string, unknown> | undefined;
-    if (attributes?.source_analyzer === this.analyzerId) return true;
-    if ('primaryAnalyzer' in item && item.primaryAnalyzer === this.analyzerId) return true;
-    return 'analyzers' in item && Boolean(item.analyzers?.includes(this.analyzerId));
-  }
-
-  private samePhpSourceFile(sourceFile: string | undefined, relativePath: string): boolean {
-    if (!sourceFile) return false;
-    const normalize = (file: string) => file.replace(/\\/g, '/').replace(/^\.\//, '');
-    return normalize(sourceFile) === normalize(relativePath);
-  }
-
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -321,27 +277,17 @@ export class PHPAnalyzer extends BaseAnalyzer {
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
     this.applyTestFileBoundary(nodes);
-    const existingNodes = (context.existingAnalysis || [])
-      .flatMap(contribution => contribution.nodes || [])
-      .filter(node => this.hasPhpAnalyzerAttribution(node));
-    const replacedNodeIds = new Set(existingNodes
-      .filter(node => this.samePhpSourceFile(node.source?.file, context.relativePath))
-      .map(node => node.id));
-    const resolutionNodes = [...new Map([
-      ...existingNodes.filter(node => !replacedNodeIds.has(node.id)),
-      ...nodes,
-    ].map(node => [node.id, node])).values()];
-    const relationshipEdges = [...new Map([
-      ...(context.existingAnalysis || [])
-        .flatMap(contribution => contribution.edges || [])
-        .filter(edge => this.hasPhpAnalyzerAttribution(edge))
-        .filter(edge => !replacedNodeIds.has(edge.source) && !replacedNodeIds.has(edge.target))
-        .filter(edge => edge.type === 'has_method' || edge.type === 'declares'),
-      ...edges,
-    ].map(edge => [edge.id, edge])).values()];
-    await this.analyzeCallGraph(context.projectPath, resolutionNodes, edges, exitPoints, {
+    const resolution = buildIncrementalLanguageResolution({
+      analyzerId: this.analyzerId,
+      existingAnalysis: context.existingAnalysis,
+      relativePath: context.relativePath,
+      nodes,
+      edges,
+      relationshipTypes: new Set(['has_method', 'declares']),
+    });
+    await this.analyzeCallGraph(context.projectPath, resolution.nodes, edges, exitPoints, {
       files: [context.relativePath],
-      relationshipEdges,
+      relationshipEdges: resolution.relationshipEdges,
     });
 
     const imports = this.extractUses(content).map(use => use.namespace);
