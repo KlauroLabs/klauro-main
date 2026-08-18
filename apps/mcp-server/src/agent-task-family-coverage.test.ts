@@ -65,9 +65,9 @@ test('task family coverage separates proven creation from unproven engineering t
     ],
   });
   for (const [relative, id] of [
-    ['.klauro-agent-scratch-build-benchmark/live-work-intake-multi-wave-strict-rescored-codex.json', 'work-intake-backend'],
-    ['.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.json', 'operations-command-center-ui'],
-    ['.klauro-agent-scratch-build-benchmark/live-compliance-evidence-multi-wave-growth-control-codex.json', 'compliance-evidence-backend'],
+    ['.klauro-agent-scratch-build-benchmark/arbitrary/domain-one.json', 'work-intake-backend'],
+    ['.klauro-agent-scratch-build-benchmark/arbitrary/domain-two.json', 'operations-command-center-ui'],
+    ['.klauro-agent-scratch-build-benchmark/arbitrary/domain-three.json', 'compliance-evidence-backend'],
   ] as const) {
     await writeReport(root, relative, scratchReport(id));
   }
@@ -81,11 +81,11 @@ test('task family coverage separates proven creation from unproven engineering t
     with_klauro: { tests: 2 },
     without_klauro: { tests: 3 },
   });
-  await writeReport(root, '.klauro-existing-task-benchmark/live-product-enhancement-report.json', liveExisting('task-label-product-enhancement', 'real-product-enhancements', 93, 83, 'pass'));
-  await writeReport(root, '.klauro-existing-task-benchmark/live-auth-tenant-report.json', liveExisting('workspace-role-policy-hardening', 'auth-tenant-boundary-changes', 99, 82, 'pass'));
-  await writeReport(root, '.klauro-existing-task-benchmark/live-test-coverage-report.json', liveExisting('missing-coverage-task-archive', 'test-addition-coverage', 99, 74, 'pass'));
-  await writeReport(root, '.klauro-existing-task-benchmark/live-refactor-report.json', liveExisting('controller-repository-refactor', 'architectural-change-refactor', 96, 88, 'pass', -20));
-  await writeReport(root, '.klauro-existing-task-benchmark/live-contract-report.json', liveExisting('producer-consumer-contract-change', 'cross-repo-contract-changes', 85, 85, 'warn'));
+  await writeReport(root, '.klauro-existing-task-benchmark/arbitrary/proof-one.json', liveExisting('task-label-product-enhancement', 'real-product-enhancements', 93, 83, 'pass'));
+  await writeReport(root, '.klauro-existing-task-benchmark/arbitrary/proof-two.json', liveExisting('workspace-role-policy-hardening', 'auth-tenant-boundary-changes', 99, 82, 'pass'));
+  await writeReport(root, '.klauro-existing-task-benchmark/arbitrary/proof-three.json', liveExisting('missing-coverage-task-archive', 'test-addition-coverage', 99, 74, 'pass'));
+  await writeReport(root, '.klauro-existing-task-benchmark/arbitrary/proof-four.json', liveExisting('controller-repository-refactor', 'architectural-change-refactor', 96, 88, 'pass', -20));
+  await writeReport(root, '.klauro-existing-task-benchmark/arbitrary/proof-five.json', liveExisting('producer-consumer-contract-change', 'cross-repo-contract-changes', 85, 85, 'warn'));
 
   const report = await buildAgentTaskFamilyCoverage(root);
   const byId = new Map(report.families.map(family => [family.id, family]));

@@ -45,6 +45,11 @@ interface Options {
   strict: boolean;
 }
 
+interface ReportEntry {
+  path: string;
+  report: JsonObject;
+}
+
 const REPORTS = {
   agentBenchmark: '.klauro-agent-benchmark/latest-report.json',
   qualityBenchmark: '.klauro-agent-quality-benchmark/latest-report.json',
@@ -52,30 +57,12 @@ const REPORTS = {
   greenfieldBenchmark: '.klauro-agent-greenfield-benchmark/latest-report.json',
   fromZeroProof: '.klauro-from-zero-build-context-proof/latest-report.json',
   existingTaskBenchmark: '.klauro-existing-task-benchmark/latest-report.json',
-  existingTaskLiveSmoke: '.klauro-existing-task-benchmark/live-smoke-report.json',
-  existingTaskLiveHard: '.klauro-existing-task-benchmark/live-hard-report.json',
-  existingTaskLiveAuthCompact: '.klauro-existing-task-benchmark/live-auth-compact3-report.json',
-  existingTaskLiveDistributedAuth: '.klauro-existing-task-benchmark/live-distributed-auth-report.json',
-  existingTaskLiveMonolithCompact: '.klauro-existing-task-benchmark/live-monolith-compact2-report.json',
-  existingTaskLiveAuditFeature: '.klauro-existing-task-benchmark/live-audit-feature-report.json',
-  existingTaskLiveBugFix: '.klauro-existing-task-benchmark/live-bug-fix-report.json',
-  existingTaskLiveMigration: '.klauro-existing-task-benchmark/live-migration-report.json',
-  existingTaskLiveMfa: '.klauro-existing-task-benchmark/live-mfa-report.json',
-  existingTaskLivePerformance: '.klauro-existing-task-benchmark/live-performance-report.json',
-  existingTaskLiveRefactor: '.klauro-existing-task-benchmark/live-refactor-report.json',
-  existingTaskLiveAuthTenant: '.klauro-existing-task-benchmark/live-auth-tenant-report.json',
-  existingTaskLiveProductEnhancement: '.klauro-existing-task-benchmark/live-product-enhancement-report.json',
-  existingTaskLiveTestCoverage: '.klauro-existing-task-benchmark/live-test-coverage-report.json',
-  existingTaskLiveContract: '.klauro-existing-task-benchmark/live-contract-report.json',
   machineProof: '.klauro-agent-proof-machine/latest-report.json',
-  workIntakeMultiWave: '.klauro-agent-scratch-build-benchmark/live-work-intake-multi-wave-strict-rescored-codex.json',
-  projectManagerMultiWave: '.klauro-agent-scratch-build-benchmark/live-project-manager-saas-multi-wave-focused-tests-codex.json',
-  operationsUiMultiWave: '.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.json',
-  complianceMultiWave: '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-multi-wave-growth-control-codex.json',
-  complianceGoalRescored: '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-goal-codex-rescored.json',
-  complianceGoalCompact: '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-goal-compact-codex.json',
-  complianceInitialEntry: '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-initial-fileplan2-codex.json',
-  complianceContinuationReadBudget: '.klauro-agent-scratch-build-benchmark/live-compliance-continuation-read-budget-codex.json',
+};
+
+type LoadedReports = Record<keyof typeof REPORTS, JsonObject> & {
+  existingLive: ReportEntry[];
+  scratch: ReportEntry[];
 };
 
 async function main(): Promise<void> {
@@ -179,7 +166,7 @@ export function formatTaskFamilyCoverageMarkdown(report: CoverageReport): string
   return `${lines.join('\n')}\n`;
 }
 
-async function loadReports(root: string): Promise<Record<keyof typeof REPORTS, JsonObject>> {
+async function loadReports(root: string): Promise<LoadedReports> {
   const entries = await Promise.all(Object.entries(REPORTS).map(async ([key, relative]) => {
     const absolute = path.resolve(root, relative);
     if (!(await fs.pathExists(absolute))) {
@@ -187,10 +174,31 @@ async function loadReports(root: string): Promise<Record<keyof typeof REPORTS, J
     }
     return [key, await fs.readJson(absolute)] as const;
   }));
-  return Object.fromEntries(entries) as Record<keyof typeof REPORTS, JsonObject>;
+  return {
+    ...Object.fromEntries(entries) as Record<keyof typeof REPORTS, JsonObject>,
+    existingLive: await discoverReports(path.resolve(root, '.klauro-existing-task-benchmark'), report => array(report.scenarios).some(scenario => scenario.live_summary)),
+    scratch: await discoverReports(path.resolve(root, '.klauro-agent-scratch-build-benchmark'), report => Boolean(report.task && report.with_klauro && report.without_klauro && report.comparison)),
+  };
 }
 
-function greenfieldCreation(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+async function discoverReports(directory: string, accepts: (report: JsonObject) => boolean): Promise<ReportEntry[]> {
+  if (!(await fs.pathExists(directory))) return [];
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async entry => {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) return discoverReports(absolute, accepts);
+    if (!entry.isFile() || path.extname(entry.name) !== '.json') return [];
+    try {
+      const report = await fs.readJson(absolute) as JsonObject;
+      return accepts(report) ? [{ path: absolute, report }] : [];
+    } catch {
+      return [];
+    }
+  }));
+  return nested.flat();
+}
+
+function greenfieldCreation(reports: LoadedReports): TaskFamilyCoverage {
   const live = liveScratchReports(reports);
   const greenfieldBenchmark = reports.greenfieldBenchmark;
   const tradeoffWarnings = activeScratchTradeoffWarningReports(reports);
@@ -238,7 +246,7 @@ function greenfieldCreation(reports: Record<keyof typeof REPORTS, JsonObject>): 
   });
 }
 
-function greenfieldMultiWaveGrowth(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function greenfieldMultiWaveGrowth(reports: LoadedReports): TaskFamilyCoverage {
   const waves = liveScratchReports(reports).flatMap(report => array(report.continuation_waves).map(wave => ({ report, wave })));
   const liveQualityDeltas = waves.map(item => number(item.wave.live_quality_delta)).filter(isFiniteNumber);
   const precisionDeltas = waves.map(item => number(item.wave.changed_file_precision_delta)).filter(isFiniteNumber);
@@ -271,7 +279,7 @@ function greenfieldMultiWaveGrowth(reports: Record<keyof typeof REPORTS, JsonObj
   });
 }
 
-function fromZeroCapabilityMemory(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function fromZeroCapabilityMemory(reports: LoadedReports): TaskFamilyCoverage {
   const report = reports.fromZeroProof;
   const summary = report.summary || {};
   const strong = report.status === 'pass'
@@ -296,7 +304,7 @@ function fromZeroCapabilityMemory(reports: Record<keyof typeof REPORTS, JsonObje
   });
 }
 
-function existingProjectOrientationAndTargeting(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function existingProjectOrientationAndTargeting(reports: LoadedReports): TaskFamilyCoverage {
   const report = reports.agentBenchmark;
   const taskTypes = agentTaskTypes(report);
   const summary = report.summary || {};
@@ -321,10 +329,11 @@ function existingProjectOrientationAndTargeting(reports: Record<keyof typeof REP
   });
 }
 
-function bugDiagnosis(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function bugDiagnosis(reports: LoadedReports): TaskFamilyCoverage {
   const quality = reports.qualityBenchmark;
   const existing = reports.existingTaskBenchmark;
-  const live = liveExistingFamily(reports.existingTaskLiveSmoke, 'bug-diagnosis-root-cause');
+  const liveEvidence = liveExistingEvidence(reports, 'bug-diagnosis-root-cause');
+  const live = liveEvidence?.scenario || null;
   const debugTasks = qualityTasks(quality).filter(task => task.task?.task_type === 'debug');
   const seeded = seededFamily(existing, 'bug-diagnosis-root-cause');
   const livePassed = liveQualityAndTokenPassed(live);
@@ -336,7 +345,7 @@ function bugDiagnosis(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFa
     evidence: [
       evidence(quality, REPORTS.qualityBenchmark, `${debugTasks.length} deterministic debug/root-cause-shaped tasks in quality benchmark`),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveSmoke, REPORTS.existingTaskLiveSmoke, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Deterministic benchmarks exercise debug-oriented context retrieval.',
@@ -354,14 +363,15 @@ function bugDiagnosis(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFa
   });
 }
 
-function bugFixes(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function bugFixes(reports: LoadedReports): TaskFamilyCoverage {
   const quality = reports.qualityBenchmark;
   const idiom = reports.idiomBenchmark;
   const existing = reports.existingTaskBenchmark;
   const modifyTasks = qualityTasks(quality).filter(task => task.task?.task_type === 'modify');
   const idiomTasks = array(idiom.trials);
   const seeded = seededFamily(existing, 'bug-fix-live-edits');
-  const live = liveExistingFamily(reports.existingTaskLiveBugFix, 'bug-fix-live-edits');
+  const liveEvidence = liveExistingEvidence(reports, 'bug-fix-live-edits');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'bug-fix-live-edits',
@@ -372,7 +382,7 @@ function bugFixes(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamily
       evidence(quality, REPORTS.qualityBenchmark, `${modifyTasks.length} deterministic modify tasks`),
       evidence(idiom, REPORTS.idiomBenchmark, `${idiomTasks.length} idiom edit tasks, idiom delta ${signed(idiom.summary?.average_idiom_conformance_delta)}`),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveBugFix, REPORTS.existingTaskLiveBugFix, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Klauro provides task-targeted files and idiom guidance for edit-shaped work.',
@@ -389,11 +399,12 @@ function bugFixes(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamily
   });
 }
 
-function productEnhancements(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function productEnhancements(reports: LoadedReports): TaskFamilyCoverage {
   const waves = liveScratchReports(reports).flatMap(report => array(report.continuation_waves));
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'real-product-enhancements');
-  const live = liveExistingFamily(reports.existingTaskLiveProductEnhancement, 'real-product-enhancements');
+  const liveEvidence = liveExistingEvidence(reports, 'real-product-enhancements');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   const hasEnhancements = waves.length >= 6 && waves.every(wave => Number(wave.with_klauro?.score || 0) >= 90);
   return family({
@@ -404,7 +415,7 @@ function productEnhancements(reports: Record<keyof typeof REPORTS, JsonObject>):
     evidence: [
       ...liveScratchReports(reports).map(report => evidence(report, scratchReportPath(report, reports), `${array(report.continuation_waves).map(wave => wave.title || wave.task_id).join('; ')}`)),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveProductEnhancement, REPORTS.existingTaskLiveProductEnhancement, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Greenfield continuation waves add product capabilities after initial creation.',
@@ -421,11 +432,12 @@ function productEnhancements(reports: Record<keyof typeof REPORTS, JsonObject>):
   });
 }
 
-function architecturalChanges(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function architecturalChanges(reports: LoadedReports): TaskFamilyCoverage {
   const machine = reports.machineProof;
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'architectural-change-refactor');
-  const live = liveExistingFamily(reports.existingTaskLiveRefactor, 'architectural-change-refactor');
+  const liveEvidence = liveExistingEvidence(reports, 'architectural-change-refactor');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'architectural-change-refactor',
@@ -435,7 +447,7 @@ function architecturalChanges(reports: Record<keyof typeof REPORTS, JsonObject>)
     evidence: [
       evidence(machine, REPORTS.machineProof, `${machine.discovery?.eligible_repos || 0} eligible repos analyzed for architecture facts`),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveRefactor, REPORTS.existingTaskLiveRefactor, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'CAS emits architecture summaries and idioms that could guide refactors.',
@@ -461,11 +473,11 @@ function architecturalChanges(reports: Record<keyof typeof REPORTS, JsonObject>)
   });
 }
 
-function monolithDecomposition(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function monolithDecomposition(reports: LoadedReports): TaskFamilyCoverage {
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'monolith-decomposition');
-  const live = liveExistingFamily(reports.existingTaskLiveMonolithCompact, 'monolith-decomposition') ||
-    liveExistingFamily(reports.existingTaskLiveHard, 'monolith-decomposition');
+  const liveEvidence = liveExistingEvidence(reports, 'monolith-decomposition');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'monolith-decomposition',
@@ -474,7 +486,7 @@ function monolithDecomposition(reports: Record<keyof typeof REPORTS, JsonObject>
     partial: livePassed || Boolean(seeded),
     evidence: [
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveHard, REPORTS.existingTaskLiveHard, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       ...(seeded ? ['Seeded existing-project proof checks that Klauro points a monolith split at controller, service, repository, and focused service tests instead of only the obvious monolith file.'] : []),
@@ -489,28 +501,23 @@ function monolithDecomposition(reports: Record<keyof typeof REPORTS, JsonObject>
   });
 }
 
-function schemaMigrationChanges(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
-  const compliance = reports.complianceMultiWave;
-  const continuation = reports.complianceContinuationReadBudget;
+function schemaMigrationChanges(reports: LoadedReports): TaskFamilyCoverage {
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'schema-migration-changes');
-  const live = liveExistingFamily(reports.existingTaskLiveMigration, 'schema-migration-changes');
+  const liveEvidence = liveExistingEvidence(reports, 'schema-migration-changes');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
-  const complianceWaves = array(compliance.continuation_waves);
-  const strong = compliance.status === 'pass'
-    && continuation.status === 'pass'
-    && continuation.continuation_pair?.with_klauro?.validation_passed === true
-    && continuation.continuation_pair?.without_klauro?.validation_passed === true;
+  const migrationScratch = reports.scratch.filter(entry => reportSupportsFamily(entry.report, 'schema-migration-changes'));
+  const migrationWaves = migrationScratch.flatMap(entry => array(entry.report.continuation_waves));
   return family({
     id: 'schema-migration-changes',
     label: 'Schema And Migration Changes',
     strong: livePassed,
-    partial: livePassed || strong || complianceWaves.length >= 2 || Boolean(seeded),
+    partial: livePassed || migrationWaves.length >= 2 || Boolean(seeded),
     evidence: [
-      evidence(compliance, REPORTS.complianceMultiWave, `${compliance.status || 'missing'} ${compliance.score ?? 'unknown'}/100, ${complianceWaves.length} compliance continuation waves`),
-      evidence(continuation, REPORTS.complianceContinuationReadBudget, `${continuation.status || 'missing'} ${continuation.score ?? 'unknown'}/100, continuation validation with Klauro ${String(continuation.continuation_pair?.with_klauro?.validation_passed)}`),
+      ...migrationScratch.map(entry => evidence(entry.report, entry.path, `${entry.report.status || 'unknown'} ${entry.report.score ?? 'unknown'}/100, ${array(entry.report.continuation_waves).length} migration continuation waves`)),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveMigration, REPORTS.existingTaskLiveMigration, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Compliance greenfield continuation now explicitly requires migration evidence and can validate it.',
@@ -531,11 +538,12 @@ function schemaMigrationChanges(reports: Record<keyof typeof REPORTS, JsonObject
   });
 }
 
-function authTenantBoundaryChanges(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function authTenantBoundaryChanges(reports: LoadedReports): TaskFamilyCoverage {
   const idiom = reports.idiomBenchmark;
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'auth-tenant-boundary-changes');
-  const live = liveExistingFamily(reports.existingTaskLiveAuthTenant, 'auth-tenant-boundary-changes');
+  const liveEvidence = liveExistingEvidence(reports, 'auth-tenant-boundary-changes');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   const authTasks = array(idiom.trials).filter(trial => JSON.stringify(trial.task || {}).includes('auth-tenant-scope'));
   const strong = authTasks.length >= 3 && Number(idiom.summary?.average_idiom_conformance_delta || 0) > 0;
@@ -547,7 +555,7 @@ function authTenantBoundaryChanges(reports: Record<keyof typeof REPORTS, JsonObj
     evidence: [
       evidence(idiom, REPORTS.idiomBenchmark, `${authTasks.length} auth/tenant-scope idiom tasks, total idiom delta ${signed(idiom.summary?.average_idiom_conformance_delta)}`),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveAuthTenant, REPORTS.existingTaskLiveAuthTenant, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Idiom extraction can surface auth/tenant-scope guidance for edit contexts.',
@@ -571,23 +579,11 @@ function authTenantBoundaryChanges(reports: Record<keyof typeof REPORTS, JsonObj
   });
 }
 
-function authSystemReplacement(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function authSystemReplacement(reports: LoadedReports): TaskFamilyCoverage {
   const existing = reports.existingTaskBenchmark;
-  const seeded = seededScenario(existing, 'distributed-auth-oidc-replacement') ||
-    seededFamily(existing, 'auth-system-replacement');
-  const liveReport = !reports.existingTaskLiveDistributedAuth.missing_report
-    ? reports.existingTaskLiveDistributedAuth
-    : !reports.existingTaskLiveAuthCompact.missing_report
-      ? reports.existingTaskLiveAuthCompact
-      : reports.existingTaskLiveHard;
-  const liveReportPath = !reports.existingTaskLiveDistributedAuth.missing_report
-    ? REPORTS.existingTaskLiveDistributedAuth
-    : !reports.existingTaskLiveAuthCompact.missing_report
-      ? REPORTS.existingTaskLiveAuthCompact
-      : REPORTS.existingTaskLiveHard;
-  const live = liveExistingFamily(liveReport, 'auth-system-replacement') ||
-    liveExistingFamily(reports.existingTaskLiveAuthCompact, 'auth-system-replacement') ||
-    liveExistingFamily(reports.existingTaskLiveHard, 'auth-system-replacement');
+  const seeded = seededFamily(existing, 'auth-system-replacement');
+  const liveEvidence = liveExistingEvidence(reports, 'auth-system-replacement');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'auth-system-replacement',
@@ -596,7 +592,7 @@ function authSystemReplacement(reports: Record<keyof typeof REPORTS, JsonObject>
     partial: livePassed || Boolean(seeded),
     evidence: [
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(liveReport, liveReportPath, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       ...(seeded ? ['Seeded existing-project proof checks OIDC replacement across AuthService, AuthModule, SessionController, SessionRepository, AuditLogger, and focused tests.'] : []),
@@ -611,10 +607,11 @@ function authSystemReplacement(reports: Record<keyof typeof REPORTS, JsonObject>
   });
 }
 
-function mfaSecurityEnhancement(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function mfaSecurityEnhancement(reports: LoadedReports): TaskFamilyCoverage {
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'mfa-security-enhancement');
-  const live = liveExistingFamily(reports.existingTaskLiveMfa, 'mfa-security-enhancement');
+  const liveEvidence = liveExistingEvidence(reports, 'mfa-security-enhancement');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'mfa-security-enhancement',
@@ -623,7 +620,7 @@ function mfaSecurityEnhancement(reports: Record<keyof typeof REPORTS, JsonObject
     partial: livePassed || Boolean(seeded),
     evidence: [
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveMfa, REPORTS.existingTaskLiveMfa, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       ...(seeded ? ['Seeded existing-project proof checks MFA guidance across AuthService, MfaService, SessionRepository, and focused auth tests.'] : []),
@@ -646,23 +643,22 @@ function mfaSecurityEnhancement(reports: Record<keyof typeof REPORTS, JsonObject
   });
 }
 
-function testAdditionAndCoverage(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function testAdditionAndCoverage(reports: LoadedReports): TaskFamilyCoverage {
   const scratchLive = liveScratchReports(reports);
-  const continuation = reports.complianceContinuationReadBudget;
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'test-addition-coverage');
-  const coverageLive = liveExistingFamily(reports.existingTaskLiveTestCoverage, 'test-addition-coverage');
+  const liveEvidence = liveExistingEvidence(reports, 'test-addition-coverage');
+  const coverageLive = liveEvidence?.scenario || null;
   const coverageLivePassed = liveQualityAndTokenPassed(coverageLive);
   return family({
     id: 'test-addition-coverage',
     label: 'Test Addition And Coverage Targeting',
     strong: coverageLivePassed,
-    partial: coverageLivePassed || (scratchLive.length >= 3 && continuation.status === 'pass') || Boolean(seeded),
+    partial: coverageLivePassed || scratchLive.length >= 3 || Boolean(seeded),
     evidence: [
       ...scratchLive.map(report => evidence(report, scratchReportPath(report, reports), `${report.task?.id || 'scratch'} score ${report.score}/100, continuation waves ${array(report.continuation_waves).length}`)),
-      evidence(continuation, REPORTS.complianceContinuationReadBudget, `read-budget continuation: with ${continuation.with_klauro?.tests || 0} tests, without ${continuation.without_klauro?.tests || 0} tests`),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(coverageLive ? [evidence(reports.existingTaskLiveTestCoverage, REPORTS.existingTaskLiveTestCoverage, `${coverageLive.id}: live ${coverageLive.live_summary?.status}, with ${coverageLive.live_summary?.with_score}/100 vs without ${coverageLive.live_summary?.without_score}/100, quality delta ${signed(coverageLive.live_summary?.quality_delta)}, token reduction ${percent(coverageLive.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Scratch and continuation scorers now count focused tests and penalize weak continuation test evidence.',
@@ -679,11 +675,12 @@ function testAdditionAndCoverage(reports: Record<keyof typeof REPORTS, JsonObjec
   });
 }
 
-function performanceFixes(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function performanceFixes(reports: LoadedReports): TaskFamilyCoverage {
   const machine = reports.machineProof;
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'performance-fixes');
-  const live = liveExistingFamily(reports.existingTaskLivePerformance, 'performance-fixes');
+  const liveEvidence = liveExistingEvidence(reports, 'performance-fixes');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'performance-fixes',
@@ -693,7 +690,7 @@ function performanceFixes(reports: Record<keyof typeof REPORTS, JsonObject>): Ta
     evidence: [
       evidence(machine, REPORTS.machineProof, `incremental proof speedups are product performance, not application performance-fix tasks`),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLivePerformance, REPORTS.existingTaskLivePerformance, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Klauro itself has incremental-analysis performance proof.',
@@ -709,11 +706,12 @@ function performanceFixes(reports: Record<keyof typeof REPORTS, JsonObject>): Ta
   });
 }
 
-function crossRepoContractChanges(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function crossRepoContractChanges(reports: LoadedReports): TaskFamilyCoverage {
   const machine = reports.machineProof;
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'cross-repo-contract-changes');
-  const live = liveExistingFamily(reports.existingTaskLiveContract, 'cross-repo-contract-changes');
+  const liveEvidence = liveExistingEvidence(reports, 'cross-repo-contract-changes');
+  const live = liveEvidence?.scenario || null;
   const liveQualityPassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'cross-repo-contract-changes',
@@ -723,7 +721,7 @@ function crossRepoContractChanges(reports: Record<keyof typeof REPORTS, JsonObje
     evidence: [
       evidence(machine, REPORTS.machineProof, `${machine.workspace_graph?.link_count || machine.cross_repository?.links?.length || 0} cross-repo links reported in machine proof`),
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveContract, REPORTS.existingTaskLiveContract, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       'Machine proof can account for cross-repo links.',
@@ -743,10 +741,11 @@ function crossRepoContractChanges(reports: Record<keyof typeof REPORTS, JsonObje
   });
 }
 
-function largeFeatureIntegration(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
+function largeFeatureIntegration(reports: LoadedReports): TaskFamilyCoverage {
   const existing = reports.existingTaskBenchmark;
   const seeded = seededFamily(existing, 'large-feature-integration');
-  const live = liveExistingFamily(reports.existingTaskLiveAuditFeature, 'large-feature-integration');
+  const liveEvidence = liveExistingEvidence(reports, 'large-feature-integration');
+  const live = liveEvidence?.scenario || null;
   const livePassed = liveQualityAndTokenPassed(live);
   return family({
     id: 'large-feature-integration',
@@ -755,7 +754,7 @@ function largeFeatureIntegration(reports: Record<keyof typeof REPORTS, JsonObjec
     partial: livePassed || Boolean(seeded),
     evidence: [
       ...(seeded ? [evidence(existing, REPORTS.existingTaskBenchmark, `${seeded.id}: ${seeded.status} ${seeded.score}/100, score delta +${seeded.deltas?.score_delta}`)] : []),
-      ...(live ? [evidence(reports.existingTaskLiveAuditFeature, REPORTS.existingTaskLiveAuditFeature, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
+      ...liveScenarioEvidence(liveEvidence),
     ],
     proven: [
       ...(seeded ? ['Seeded existing-project proof checks a cross-cutting audit-log feature that must attach to existing TaskService workflows and repository boundaries instead of creating a parallel workflow.'] : []),
@@ -775,14 +774,38 @@ function seededFamily(report: JsonObject, family: string): JsonObject | null {
   return array(report.scenarios).find(scenario => scenario.family === family && Number(scenario.score || 0) >= 70) || null;
 }
 
-function seededScenario(report: JsonObject, id: string): JsonObject | null {
-  if (report.missing_report || report.status === 'fail') return null;
-  return array(report.scenarios).find(scenario => scenario.id === id && Number(scenario.score || 0) >= 70) || null;
-}
-
 function liveExistingFamily(report: JsonObject, family: string): JsonObject | null {
   if (report.missing_report || report.status === 'fail') return null;
   return array(report.scenarios).find(scenario => scenario.family === family && scenario.live_summary) || null;
+}
+
+function liveExistingEvidence(reports: LoadedReports, family: string): (ReportEntry & { scenario: JsonObject }) | null {
+  const candidates = reports.existingLive
+    .map(entry => {
+      const scenario = liveExistingFamily(entry.report, family);
+      return scenario ? { ...entry, scenario } : null;
+    })
+    .filter((entry): entry is ReportEntry & { scenario: JsonObject } => Boolean(entry))
+    .sort((left, right) => {
+      const strength = Number(liveQualityAndTokenPassed(right.scenario)) - Number(liveQualityAndTokenPassed(left.scenario));
+      if (strength !== 0) return strength;
+      return reportTimestamp(right.report) - reportTimestamp(left.report);
+    });
+  return candidates[0] || null;
+}
+
+function liveScenarioEvidence(entry: (ReportEntry & { scenario: JsonObject }) | null): Evidence[] {
+  if (!entry) return [];
+  const live = entry.scenario;
+  return [evidence(entry.report, entry.path, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)];
+}
+
+function reportTimestamp(report: JsonObject): number {
+  for (const value of [report.execution_generated_at, report.generated_at, report.rescored_at]) {
+    const timestamp = Date.parse(String(value || ''));
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
 }
 
 function liveQualityAndTokenPassed(live: JsonObject | null): boolean {
@@ -857,22 +880,20 @@ function evidence(report: JsonObject, reportPath: string, summary: string): Evid
   return { path: reportPath, summary };
 }
 
-function liveScratchReports(reports: Record<keyof typeof REPORTS, JsonObject>): JsonObject[] {
-  return [
-    reports.workIntakeMultiWave,
-    reports.projectManagerMultiWave,
-    reports.operationsUiMultiWave,
-    reports.complianceMultiWave,
-    reports.complianceInitialEntry,
-  ].filter(report => !report.missing_report);
+function liveScratchReports(reports: LoadedReports): JsonObject[] {
+  const current = new Map<string, ReportEntry>();
+  for (const entry of reports.scratch) {
+    if (entry.report.status !== 'pass') continue;
+    const key = scratchTaskKey(entry.report);
+    if (!key) continue;
+    const existing = current.get(key);
+    if (!existing || reportTimestamp(entry.report) > reportTimestamp(existing.report)) current.set(key, entry);
+  }
+  return [...current.values()].map(entry => entry.report);
 }
 
-function scratchTradeoffWarningReports(reports: Record<keyof typeof REPORTS, JsonObject>): JsonObject[] {
-  return [
-    reports.complianceGoalRescored,
-    reports.complianceGoalCompact,
-  ].filter(report =>
-    !report.missing_report &&
+function scratchTradeoffWarningReports(reports: LoadedReports): JsonObject[] {
+  return reports.scratch.map(entry => entry.report).filter(report =>
     (
       report.comparison?.quality_token_tradeoff_status === 'token-regression-without-quality-win' ||
       report.comparison?.quality_token_tradeoff_status === 'quality-win-token-regression-too-large'
@@ -880,12 +901,12 @@ function scratchTradeoffWarningReports(reports: Record<keyof typeof REPORTS, Jso
   );
 }
 
-function activeScratchTradeoffWarningReports(reports: Record<keyof typeof REPORTS, JsonObject>): JsonObject[] {
+function activeScratchTradeoffWarningReports(reports: LoadedReports): JsonObject[] {
   return scratchTradeoffWarningReports(reports)
     .filter(report => !supersedingScratchReport(report, reports));
 }
 
-function supersededScratchTradeoffWarningReports(reports: Record<keyof typeof REPORTS, JsonObject>): Array<{ warning: JsonObject; replacement: JsonObject }> {
+function supersededScratchTradeoffWarningReports(reports: LoadedReports): Array<{ warning: JsonObject; replacement: JsonObject }> {
   return scratchTradeoffWarningReports(reports)
     .map(warning => {
       const replacement = supersedingScratchReport(warning, reports);
@@ -894,7 +915,7 @@ function supersededScratchTradeoffWarningReports(reports: Record<keyof typeof RE
     .filter((item): item is { warning: JsonObject; replacement: JsonObject } => Boolean(item));
 }
 
-function supersedingScratchReport(warning: JsonObject, reports: Record<keyof typeof REPORTS, JsonObject>): JsonObject | null {
+function supersedingScratchReport(warning: JsonObject, reports: LoadedReports): JsonObject | null {
   const warningTask = scratchTaskKey(warning);
   const warningTime = Date.parse(String(warning.generated_at || ''));
   if (!warningTask || !Number.isFinite(warningTime)) return null;
@@ -914,15 +935,20 @@ function scratchTaskKey(report: JsonObject): string {
   return String(report.task?.id || report.task?.title || '').trim().toLowerCase();
 }
 
-function scratchReportPath(report: JsonObject, reports: Record<keyof typeof REPORTS, JsonObject>): string {
-  if (report === reports.workIntakeMultiWave) return REPORTS.workIntakeMultiWave;
-  if (report === reports.projectManagerMultiWave) return REPORTS.projectManagerMultiWave;
-  if (report === reports.operationsUiMultiWave) return REPORTS.operationsUiMultiWave;
-  if (report === reports.complianceMultiWave) return REPORTS.complianceMultiWave;
-  if (report === reports.complianceGoalRescored) return REPORTS.complianceGoalRescored;
-  if (report === reports.complianceGoalCompact) return REPORTS.complianceGoalCompact;
-  if (report === reports.complianceInitialEntry) return REPORTS.complianceInitialEntry;
+function scratchReportPath(report: JsonObject, reports: LoadedReports): string {
+  const entry = reports.scratch.find(candidate => candidate.report === report);
+  if (entry) return entry.path;
   return '.klauro-agent-scratch-build-benchmark/unknown.json';
+}
+
+function reportSupportsFamily(report: JsonObject, family: string): boolean {
+  const families = [
+    report.family,
+    report.task?.family,
+    ...array(report.families).map(item => item.id || item.family || item),
+    ...array(report.continuation_waves).map(wave => wave.family || wave.task?.family),
+  ].filter(Boolean).map(value => String(value));
+  return families.includes(family);
 }
 
 function agentTaskTypes(report: JsonObject): Set<string> {
