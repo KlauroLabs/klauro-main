@@ -98,6 +98,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'imported-handler-resolver.ts': 1,
   'incremental-contribution-refresh.ts': 1,
   'incremental-impact.ts': 1,
+  'incremental-language-resolution.ts': 1,
   'incremental-locality.ts': 1,
   'incremental-scope.ts': 1,
   'incremental-state-refresh.ts': 1,
