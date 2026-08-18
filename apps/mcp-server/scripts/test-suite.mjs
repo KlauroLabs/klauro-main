@@ -155,6 +155,7 @@ async function main() {
   const runParent = path.join(shortTempBase(), 'klauro-tests');
   await mkdir(runParent, { recursive: true });
   const runRoot = await mkdtemp(path.join(runParent, 'run-'));
+  await chmod(runRoot, 0o711);
   let nextIndex = 0;
   const failures = [];
   const totals = { tests: 0, passed: 0, failed: 0, skipped: 0, crashed: 0 };
