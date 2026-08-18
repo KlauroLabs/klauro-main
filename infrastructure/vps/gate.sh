@@ -100,11 +100,21 @@ if [ "$ALLOW_SOURCE_MISMATCH" != "1" ] && [ -d /opt/klauro/source ]; then
 fi
 
 DEPLOYED_BUILD_STAMP="/opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json"
-if [ -z "${KLAURO_GIT_SHA:-}" ] && [ -f "$DEPLOYED_BUILD_STAMP" ]; then
-  KLAURO_GIT_SHA="$(sed -n 's/.*"git_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DEPLOYED_BUILD_STAMP")"
+CANDIDATE_BUILD_STAMP="$DEVGATE_DIR/apps/mcp-server/.klauro-build-stamp.json"
+BUILD_STAMP="$DEPLOYED_BUILD_STAMP"
+if [ "$ALLOW_SOURCE_MISMATCH" = "1" ]; then
+  BUILD_STAMP="$CANDIDATE_BUILD_STAMP"
 fi
-if [ -z "${KLAURO_BUILD_TIME:-}" ] && [ -f "$DEPLOYED_BUILD_STAMP" ]; then
-  KLAURO_BUILD_TIME="$(sed -n 's/.*"build_time"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DEPLOYED_BUILD_STAMP")"
+if [ -z "${KLAURO_GIT_SHA:-}" ] && [ -f "$BUILD_STAMP" ]; then
+  KLAURO_GIT_SHA="$(sed -n 's/.*"git_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BUILD_STAMP")"
+fi
+if [ -z "${KLAURO_BUILD_TIME:-}" ] && [ -f "$BUILD_STAMP" ]; then
+  KLAURO_BUILD_TIME="$(sed -n 's/.*"build_time"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BUILD_STAMP")"
+fi
+if [ -z "${KLAURO_GIT_SHA:-}" ] || [ -z "${KLAURO_BUILD_TIME:-}" ]; then
+  echo "ERROR: gate source has no exact build identity." >&2
+  echo "       Sync a committed candidate with sync-gate-candidate.sh or provide both KLAURO_GIT_SHA and KLAURO_BUILD_TIME." >&2
+  exit 4
 fi
 export KLAURO_GIT_SHA KLAURO_BUILD_TIME
 

@@ -18,7 +18,10 @@ verification (`/health`, `/dist` version, tarball HTTP) and a guard that refuses
 ship a `docker-compose.yml` missing the `/opt/klauro/downloads` mount (which would
 silently break the install/update channel). Creds come from the repo-root `.env`
 (`VPS_HOST`/`VPS_USER`/`VPS_PASSWORD`); requires `sshpass` + `rsync`. Flags:
-`--with-release[=patch|minor|major|x.y.z]`, `--skip-app-build`, `--no-verify`.
+`--with-release[=patch|minor|major|x.y.z]`, `--skip-app-build`, `--no-verify`,
+and `--allow-dirty`. A normal deploy refuses a dirty tree. `--allow-dirty`
+creates and retains an exact snapshot commit, then deploys and stamps that
+snapshot rather than mixing a working-tree build with committed source.
 Override the API base with `KLAURO_URL=` (default `https://mcp.klauro.com`).
 
 ## What it does under the hood (manual equivalent)
@@ -98,14 +101,19 @@ current api image that fixes both — adds `git` + `procps`, and renames the
 base image's existing uid-1000 `node` user to `gate` so tests run as a real
 non-root user with git configured.
 
-**Sync the tree** (from the dev machine — devgate has no self-sync mode,
-deliberately: syncing FROM a live agent's working tree via this repo's own
-tooling risks the exact torn-file problem `deploy.sh` guards against, see
-above):
+**Sync a committed candidate** from the development machine. The sync exports
+the exact Git commit into an isolated staging directory, updates devgate, and
+stamps the candidate identity used by packaged-product checks. It refuses dirty
+or detached working trees so a gate can never describe candidate source as the
+currently deployed revision:
 ```bash
-rsync -az --exclude node_modules --exclude .git ./ root@74.208.212.208:/opt/klauro/devgate/
+infrastructure/vps/sync-gate-candidate.sh
 ssh root@74.208.212.208 'cd /opt/klauro/devgate && npm install --include=dev'
 ```
+
+`gate.sh --allow-source-mismatch` reads only the candidate stamp. It fails
+closed when the candidate has no exact Git SHA and build time; it never falls
+back to the deployed build stamp.
 
 **Run a gate** via `gate.sh <workspace> <cmd...>` (builds/rebuilds
 `klauro-gate` automatically if missing):

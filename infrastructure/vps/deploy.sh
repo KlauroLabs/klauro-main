@@ -27,20 +27,15 @@ done
 
 DIRTY_DEPLOY=0
 SNAPSHOT_SHA=""
-if [ "$ALLOW_DIRTY" != "1" ]; then
-  DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
-  if [ -n "$DIRTY" ]; then
-    echo "NOTE: the working tree is dirty; these changes are NOT in this deploy." >&2
-    echo "      Shipping the tree of $(git -C "$APP_DIR" rev-parse --short=12 HEAD) instead (safe by construction)." >&2
-    echo "" >&2
-    echo "$DIRTY" | sed 's/^/        /' >&2
-    echo "" >&2
-    echo "      Commit and re-deploy when you want the above live." >&2
-  fi
+DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
+if [ "$ALLOW_DIRTY" != "1" ] && [ -n "$DIRTY" ]; then
+  echo "ERROR: refusing to deploy from a dirty working tree." >&2
+  echo "$DIRTY" | sed 's/^/       /' >&2
+  echo "       Commit the candidate or use --allow-dirty to create a traceable snapshot." >&2
+  exit 1
 fi
 
 if [ "$ALLOW_DIRTY" = "1" ]; then
-  DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
   if [ -n "$DIRTY" ]; then
     DIRTY_DEPLOY=1
     if ! git -C "$APP_DIR" rev-parse --git-dir >/dev/null 2>&1; then
@@ -72,7 +67,12 @@ if [ "$DIRTY_DEPLOY" = "1" ]; then
 fi
 
 REACHABLE_BRANCH=""
+if [ "$DIRTY_DEPLOY" = "1" ]; then
+  REACHABLE_BRANCH="deploy-snapshot/$(git -C "$APP_DIR" rev-parse --short=12 "$DEPLOY_SHA_FULL")-$(date -u +%Y%m%dT%H%M%SZ)"
+  git -C "$APP_DIR" branch "$REACHABLE_BRANCH" "$DEPLOY_SHA_FULL"
+fi
 while IFS= read -r branch; do
+  [ -n "$REACHABLE_BRANCH" ] && break
   [ -z "$branch" ] && continue
   if git -C "$APP_DIR" merge-base --is-ancestor "$DEPLOY_SHA_FULL" "$branch" 2>/dev/null; then
     REACHABLE_BRANCH="$branch"
@@ -153,11 +153,11 @@ else
   test -d "$APP_DIR/apps/app/dist" || { echo "ERROR: apps/app/dist not found." >&2; exit 1; }
 fi
 
-DEPLOY_SHA="$(git -C "$APP_DIR" rev-parse HEAD)"
+DEPLOY_SHA="$DEPLOY_SHA_FULL"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/klauro-deploy-stage.XXXXXX")"
 chmod 755 "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
-echo "==> Exporting $(git -C "$APP_DIR" rev-parse --short=12 HEAD) to a staging dir (not the live tree)"
+echo "==> Exporting $(git -C "$APP_DIR" rev-parse --short=12 "$DEPLOY_SHA") to a staging dir (not the live tree)"
 git -C "$APP_DIR" archive --format=tar "$DEPLOY_SHA" | tar -x -C "$STAGE"
 STAGED_FILES="$(find "$STAGE" -type f | wc -l | tr -d ' ')"
 echo "    staged $STAGED_FILES file(s) from the commit"
@@ -172,12 +172,13 @@ echo "==> Syncing Caddyfile + docker-compose.yml"
 rsync -az -e "$SSH" infrastructure/vps/Caddyfile "$DEST:/opt/klauro/Caddyfile"
 rsync -az -e "$SSH" infrastructure/vps/docker-compose.yml "$DEST:/opt/klauro/docker-compose.yml"
 
-GIT_SHA="$(git -C "$APP_DIR" rev-parse --short=12 HEAD)"
+GIT_SHA="$(git -C "$APP_DIR" rev-parse --short=12 "$DEPLOY_SHA")"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$DIRTY_DEPLOY" = "1" ]; then
-  echo "==> Stamping build identity (DIRTY: snapshot $SNAPSHOT_SHA on top of $GIT_SHA @ $BUILD_TIME)"
+  BASE_GIT_SHA="$(git -C "$APP_DIR" rev-parse --short=12 HEAD)"
+  echo "==> Stamping build identity (DIRTY: snapshot $GIT_SHA on top of $BASE_GIT_SHA @ $BUILD_TIME)"
   $SSH "$DEST" "cat > /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
-{"git_sha": "$GIT_SHA", "build_time": "$BUILD_TIME", "dirty": true, "snapshot_sha": "$SNAPSHOT_SHA"}
+{"git_sha": "$GIT_SHA", "build_time": "$BUILD_TIME", "dirty": true, "base_git_sha": "$BASE_GIT_SHA"}
 STAMP
 else
   echo "==> Stamping build identity ($GIT_SHA @ $BUILD_TIME)"
@@ -185,6 +186,7 @@ else
 {"git_sha": "$GIT_SHA", "build_time": "$BUILD_TIME"}
 STAMP
 fi
+$SSH "$DEST" "cp /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json /opt/klauro/devgate/apps/mcp-server/.klauro-build-stamp.json"
 
 echo "==> Rebuilding + restarting containers on $VPS_HOST"
 $SSH "$DEST" "install -d -m 700 /opt/klauro/data /opt/klauro/redis-data && chmod -R go-rwx /opt/klauro/data /opt/klauro/redis-data"
