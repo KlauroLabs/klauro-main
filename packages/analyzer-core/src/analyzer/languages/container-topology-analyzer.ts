@@ -5,12 +5,11 @@ import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as yaml from 'js-yaml';
 import { isIdentifierShapedRepoBasename, UNNAMED_SERVICE_PLACEHOLDER } from '../core/deployable-evidence/util';
-
+import { dockerfileStartupEntryPoint } from './container-topology-entry-points';
 interface ComposeService {
   name: string;
   image?: string;
   build?: string;
-
   dockerfile?: string;
   ports: Array<{ host?: string; container: string }>;
   dependsOn: string[];
@@ -151,7 +150,8 @@ export class DockerfileAnalyzer extends ContainerTopologyAnalyzer {
       }),
     ];
 
-    const entryPoints: CASEntryPoint[] = [];
+    const command = entrypoint || cmd;
+    const entryPoints = command ? [dockerfileStartupEntryPoint(nodeId, relativeFile, command, workdir)] : [];
     return { nodes, entryPoints };
   }
 }
@@ -269,7 +269,7 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
       for (const dependency of service.dependsOn) {
         const targetNodeId = `compose_service_${this.sanitizeId(relativeFile)}_${this.sanitizeId(dependency)}`;
         edges.push(this.createEdge(
-          `edge_compose_dep_${this.sanitizeId(service.name)}_${this.sanitizeId(dependency)}`,
+          `edge_compose_dep_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}_${this.sanitizeId(dependency)}`,
           nodeId,
           targetNodeId,
           'DEPENDS_ON',

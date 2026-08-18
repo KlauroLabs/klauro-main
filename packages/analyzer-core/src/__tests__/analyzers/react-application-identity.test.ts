@@ -33,4 +33,25 @@ describe('React application identity', () => {
     expect(first?.id).toBe(second?.id);
     expect(first?.source?.file).toBe('package.json');
   });
+
+  it('connects the application node to its source entry root', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-react-root-'));
+    roots.push(root);
+    await fs.writeJson(path.join(root, 'package.json'), {
+      name: '@example/product',
+      dependencies: { react: '19.0.0' },
+    });
+    await fs.ensureDir(path.join(root, 'src'));
+    await fs.writeFile(path.join(root, 'src', 'index.tsx'), 'export function App() { return <main>Hello</main>; }');
+
+    const result = await new ReactAnalyzer().analyze({ projectPath: root });
+    const application = result.nodes?.find(node => node.type === 'react_app');
+    const component = result.nodes?.find(node => node.type === 'functional_component' && node.name === 'App');
+
+    expect(application).toBeDefined();
+    expect(component).toBeDefined();
+    expect(result.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: application!.id, target: component!.id, type: 'contains' }),
+    ]));
+  });
 });

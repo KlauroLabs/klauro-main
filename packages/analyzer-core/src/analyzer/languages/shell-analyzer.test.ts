@@ -90,3 +90,19 @@ test('ShellAnalyzer.analyze extracts functions, calls, sources, and entry points
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('ShellAnalyzer treats conventional build and test scripts as CLI entry points without a shebang', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-command-surface-test-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'build.sh'), 'cargo build --release\n');
+    fs.writeFileSync(path.join(dir, 'test.sh'), 'cargo test\n');
+
+    const cas = await new ShellAnalyzer().analyze({ projectPath: dir });
+    const names = (cas.entry_points || []).map(entry => entry.name);
+
+    assert.ok(names.includes('Shell script: build.sh'));
+    assert.ok(names.includes('Shell script: test.sh'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

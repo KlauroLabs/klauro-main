@@ -31,8 +31,6 @@ interface ReactComponent {
   exports: string[];
   jsx: boolean;
   renderedComponents: Array<{ name: string; line: number; props: string[] }>;
-
-
   eventHandlers: Array<{ event: string; handlerName?: string; line: number }>;
 }
 
@@ -63,16 +61,8 @@ interface ReactRoute {
   guards?: string[];
   children?: ReactRoute[];
   lazy?: boolean;
-
   index?: boolean;
-
   filePath?: string;
-
-
-
-
-
-
   componentModule?: string;
 }
 
@@ -662,9 +652,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
       if (content.includes('Route') || content.includes('Router') || content.includes('routing')) {
         try {
           const extractedRoutes = this.extractRoutes(content, file);
-
-
-
           const moduleMap = this.buildComponentModuleMap(content);
           const annotate = (route: ReactRoute): void => {
             route.filePath = file;
@@ -674,10 +661,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
           };
           extractedRoutes.forEach(annotate);
           routes.push(...extractedRoutes);
-
-
-
-
           extractedRoutes.filter(route => route.path).forEach((route, index) => {
             const routeId = this.generateId('route', file, `${route.path}_${index}`);
             route.nodeId = routeId;
@@ -854,11 +837,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
       for (const child of route.children || []) visit(child);
     };
     routes.forEach(visit);
-
-
-
-
-
     const isRouted = (page: ReactPage): boolean => {
       if (routedComponents.has(page.component) || routedComponents.has(page.name)) return true;
       return routedModules.some(target => this.moduleTargetsAgree(target, page.filePath));
@@ -891,14 +869,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
       }
 
       if (isRouted(page)) continue;
-
-
-
-
-
-
-
-
       entryPoints.push(this.createEntryPoint(
         `entry_${pageId}`,
         pageId,
@@ -913,8 +883,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
           component: page.component,
           name: page.name,
           trigger_kind: 'page-component',
-
-
           has_declared_route: false
         },
         {
@@ -2590,6 +2558,33 @@ export class ReactAnalyzer extends BaseAnalyzer {
         { page_route: page.route }
       ));
     });
+    this.linkApplicationRoots(nodes, edges);
+  }
+
+  private linkApplicationRoots(nodes: CASNode[], edges: CASEdge[]): void {
+    const application = nodes.find(node => node.type === 'react_app');
+    if (!application) return;
+    const entryFile = String(application.metadata?.attributes?.entry_point || '').replace(/^\.\//, '');
+    const entryNodes = entryFile
+      ? nodes.filter(node => node.id !== application.id && node.source?.file?.replace(/^\.\//, '') === entryFile)
+      : [];
+    const pages = nodes.filter(node => node.type === 'react_page');
+    const routes = nodes.filter(node => node.type === 'react_route');
+    const components = nodes.filter(node => node.type === 'functional_component' || node.type === 'class_component');
+    const incoming = new Set(edges.filter(edge => edge.type === 'renders' || edge.type === 'implements').map(edge => edge.target));
+    const componentRoots = components.filter(node => !incoming.has(node.id));
+    const roots = entryNodes.length ? entryNodes : pages.length ? pages : routes.length ? routes : componentRoots;
+    for (const root of roots) {
+      if (root.id === application.id || edges.some(edge => edge.source === application.id && edge.target === root.id)) continue;
+      edges.push(this.createEdge(
+        this.generateEdgeId(application.id, root.id, 'contains'),
+        application.id,
+        root.id,
+        'contains',
+        'structural',
+        { resolution: entryNodes.length ? 'application-entry-file' : 'application-root' }
+      ));
+    }
   }
 
   private computeComponentMetrics(

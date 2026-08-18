@@ -157,6 +157,32 @@ test('DockerComposeAnalyzer extracts service build, ports, dependencies, env, vo
   }
 });
 
+test('DockerComposeAnalyzer keeps dependency edges distinct across compose files', async () => {
+  const dir = tempDir('compose-multi-file-test');
+  try {
+    const content = [
+      'services:',
+      '  api:',
+      '    depends_on:',
+      '      - db',
+      '  db:',
+      '    image: postgres:16',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(dir, 'compose.yaml'), content);
+    fs.writeFileSync(path.join(dir, 'docker-compose.dev.yaml'), content);
+
+    const cas = await new DockerComposeAnalyzer().analyze({ projectPath: dir });
+    const dependencyEdges = cas.edges.filter(edge => edge.type === 'DEPENDS_ON');
+
+    assert.equal(dependencyEdges.length, 2);
+    assert.equal(new Set(dependencyEdges.map(edge => edge.id)).size, 2);
+    assert.equal(new Set(dependencyEdges.map(edge => `${edge.source}:${edge.target}`)).size, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('DockerfileAnalyzer extracts stages, workdir, entrypoint, cmd, and copy/add sources', async () => {
   const dir = tempDir('dockerfile-test');
   try {
@@ -186,6 +212,7 @@ test('DockerfileAnalyzer extracts stages, workdir, entrypoint, cmd, and copy/add
     assert.equal(image?.metadata?.cmd, '["dist/server.js"]');
     assert.deepEqual(image?.metadata?.copy_sources, ['package.json', 'package-lock.json', '/app/dist']);
     assert.deepEqual(image?.metadata?.add_sources, ['src']);
+    assert.ok(cas.entry_points.find(entry => entry.source_node === image?.id && entry.type === 'lifecycle'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

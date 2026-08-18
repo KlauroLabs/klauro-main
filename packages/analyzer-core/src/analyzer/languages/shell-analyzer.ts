@@ -34,7 +34,7 @@ interface ShellFileInfo {
 const SHEBANG_SHELLS = /^#!\s*(?:\/usr\/bin\/env\s+)?\/?(?:\S*\/)?(sh|bash|zsh|ksh|dash|ash)\b/;
 const ENTRYPOINT_NAMES = new Set([
   'main.sh', 'run.sh', 'entrypoint.sh', 'install.sh', 'setup.sh',
-  'deploy.sh', 'bootstrap.sh',
+  'deploy.sh', 'bootstrap.sh', 'build.sh', 'test.sh',
 ]);
 
 const EXTERNAL_EXIT_COMMANDS = new Set([

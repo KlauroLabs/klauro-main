@@ -81,6 +81,9 @@ describe('DistributionArtifactAnalyzer', () => {
     const contribution = await analyzer.analyze({ projectPath });
     const node = (contribution.nodes ?? []).find(n => (n.metadata as any)?.artifact_kind === 'installer');
     expect(node).toBeDefined();
+    expect(contribution.entry_points).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source_node: node!.id, type: 'command', name: 'Install MyApp 2.0' }),
+    ]));
     const productName = (node!.metadata as any).product_name as string | undefined;
     expect(productName).toBe('MyApp 2.0');
   });

@@ -1,5 +1,5 @@
 import { AnalysisContext, BaseAnalyzer, FileAnalysisContext, FileAnalysisResult } from '../core/base-analyzer';
-import { CASNode } from '../../types/cas.types';
+import { CASEntryPoint, CASNode } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
@@ -73,11 +73,14 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
   async analyze(context: AnalysisContext) {
     const files = this.capAndPrioritizeSourceFiles(await this.getRelevantFiles(context.projectPath), 'distribution artifact files');
     const nodes: CASNode[] = [];
+    const entryPoints: CASEntryPoint[] = [];
     for (const relativeFile of files) {
       const parsed = await this.analyzeArtifact(context.projectPath, relativeFile);
-      if (parsed) nodes.push(parsed);
+      if (!parsed) continue;
+      nodes.push(parsed);
+      entryPoints.push(this.createArtifactEntryPoint(parsed));
     }
-    return this.createContribution(nodes, [], [], [], {
+    return this.createContribution(nodes, [], entryPoints, [], {
       topology_surface: 'distribution-artifacts',
       distribution_artifact_files: files.length,
     });
@@ -94,7 +97,7 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
       stat.mtimeMs,
       node ? [node] : [],
       [],
-      [],
+      node ? [this.createArtifactEntryPoint(node)] : [],
       [],
       [],
       []
@@ -112,6 +115,25 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
 
   protected getLevelName(level: number): string {
     return level <= 3 ? 'distribution topology' : 'distribution detail';
+  }
+
+  private createArtifactEntryPoint(node: CASNode): CASEntryPoint {
+    const metadata = node.metadata as (Record<string, unknown> & { distribution_role?: string; product_name?: string }) | undefined;
+    const role = String(metadata?.distribution_role || 'script');
+    const action = role === 'service' ? 'start' : role === 'installer' ? 'install' : role === 'desktop-ui' ? 'launch' : 'run';
+    const type = role === 'service' ? 'lifecycle' : 'command';
+    const subject = String(metadata?.product_name || node.name.replace(/^[^:]+:\s*/, ''));
+    return this.createEntryPoint(
+      `entry_${node.id}`,
+      node.id,
+      type,
+      `${action.charAt(0).toUpperCase()}${action.slice(1)} ${subject}`,
+      `${subject} is invoked through ${node.source?.file || 'its distribution artifact'}.`,
+      { event: `${role}:${action}` },
+      undefined,
+      { topology_surface: 'distribution-artifacts', distribution_role: role, action },
+      { node_id: node.id, method_name: action, file: node.source?.file }
+    );
   }
 
   private async analyzeArtifact(projectPath: string, relativeFile: string): Promise<CASNode | undefined> {

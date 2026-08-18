@@ -1,17 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
 import { extractStructure } from '../core/generic-tree-sitter-analyzer';
@@ -21,6 +7,7 @@ import { LanguageAnalyzers } from './index';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
+import { genericScriptEntryPoint } from './generic-script-entry-point';
 
 
 
@@ -141,6 +128,8 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
           },
         })
         .build());
+      const scriptEntryPoint = genericScriptEntryPoint(fileId, file.relativePath, file.grammar);
+      if (scriptEntryPoint) entryPoints.push(scriptEntryPoint);
 
       const funcs: FuncDecl[] = [];
       for (const fn of extract.functions) {

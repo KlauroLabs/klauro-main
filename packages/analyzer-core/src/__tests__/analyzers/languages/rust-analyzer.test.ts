@@ -48,6 +48,23 @@ describe('RustAnalyzer', () => {
       expect(capabilities).toContain('framework-detection');
       expect(capabilities).toContain('perspective-system');
     });
+
+    test('represents imports and public reexports in the relationship graph', async () => {
+      setupMockFileSystem([
+        createMockRustFile('src/config.rs', 'pub use zerac::config::{PhysicalGatewayConfig, PhysicalGatewayFile};'),
+        createMockCargoToml(['zerac'])
+      ]);
+
+      const result = await analyzer.analyze(testContext) as any;
+      const file = result.nodes.find((node: any) => node.type === 'file' && node.name === 'config.rs');
+      const imported = result.nodes.find((node: any) => node.type === 'import' && node.name.startsWith('zerac::config'));
+
+      expect(file).toBeDefined();
+      expect(imported?.metadata?.reexport).toBe(true);
+      expect(result.edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: file.id, target: imported.id, type: 'imports' })
+      ]));
+    });
   });
 
   describe('HTTP service alias inference', () => {

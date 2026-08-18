@@ -835,7 +835,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       const relativePath = path.relative(context.projectPath, fullPath);
 
       await this.extractModules(content, relativePath, nodes);
-      await this.extractUses(content, relativePath, nodes);
+      await this.extractUses(content, relativePath, nodes, edges);
       const structs = await this.extractStructs(content, relativePath, nodes, edges);
       const enums = await this.extractEnums(content, relativePath, nodes);
       const traits = await this.extractTraits(content, relativePath, nodes);
@@ -904,19 +904,32 @@ export class RustAnalyzer extends BaseAnalyzer {
     return modules;
   }
 
-  private async extractUses(content: string, relativePath: string, nodes: CASNode[]): Promise<RustUse[]> {
+  private async extractUses(content: string, relativePath: string, nodes: CASNode[], edges: CASEdge[]): Promise<RustUse[]> {
     const uses: RustUse[] = [];
     const lines = content.split('\n');
+    const fileId = this.generateId('file', relativePath, path.basename(relativePath));
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line.startsWith('use ')) {
-        const useMatch = line.match(/use\s+(.+);/);
+      const line = lines[i].trim();
+      if (/^(?:pub\s+)?use\s+/.test(line)) {
+        const useMatch = line.match(/^(pub\s+)?use\s+(.+);/);
         if (useMatch) {
-          const importPath = useMatch[1];
-          const isPublic = line.includes('pub');
-
-
+          const importPath = useMatch[2];
+          const isPublic = Boolean(useMatch[1]);
+          const importId = this.generateId('import', relativePath, `${i + 1}_${importPath}`);
+          nodes.push(this.createNode(importId, importPath, 'import', 2, relativePath, i + 1, i + 1, {
+            language: 'rust',
+            visibility: isPublic ? 'public' : 'private',
+            reexport: isPublic,
+          }));
+          edges.push(this.createEdge(
+            this.generateEdgeId(fileId, importId, 'imports'),
+            fileId,
+            importId,
+            'imports',
+            'dependency',
+            { import_path: importPath, reexport: isPublic }
+          ));
           const importedItems = importPath.split(',').map(item => item.trim());
 
           const use: RustUse = {
@@ -1455,20 +1468,6 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     return impls;
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   private findCfgTestModuleRanges(lines: string[]): Array<[number, number]> {
     const ranges: Array<[number, number]> = [];
     for (let i = 0; i < lines.length; i++) {
