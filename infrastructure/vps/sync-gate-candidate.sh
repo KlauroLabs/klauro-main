@@ -45,11 +45,13 @@ EXCLUDES=(
   --exclude .pack
   --exclude .customer-package
   --exclude .claude
+  --exclude .proof-output
   --exclude '.klauro-*'
 )
 
 $SSH "$DEST" "mkdir -p /opt/klauro/devgate"
 rsync -az --delete-delay "${EXCLUDES[@]}" -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/devgate/"
+$SSH "$DEST" "mkdir -p /opt/klauro/devgate/.proof-output && chmod a+rwx /opt/klauro/devgate/.proof-output"
 $SSH "$DEST" "cat > /opt/klauro/devgate/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
 {"git_sha":"$CANDIDATE_SHORT_SHA","build_time":"$CANDIDATE_TIME"}
 STAMP
