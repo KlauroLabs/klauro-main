@@ -51,6 +51,7 @@ import {
   ReactAnalyzer,
   VueAnalyzer,
   AngularAnalyzer,
+  AngularJsAnalyzer,
   LaravelAnalyzer,
   SinatraAnalyzer,
   SlimAnalyzer
@@ -180,6 +181,14 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     languages: ['typescript'],
     frameworks: ['@angular/core', '@angular/cli'],
     priority: 90
+  },
+  {
+    name: 'AngularJS',
+    analyzer: AngularJsAnalyzer,
+    category: 'web',
+    languages: ['javascript'],
+    frameworks: ['angular', 'angularjs'],
+    priority: 89
   },
   {
     name: 'Laravel',

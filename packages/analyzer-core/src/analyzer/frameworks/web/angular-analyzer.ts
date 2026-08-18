@@ -136,7 +136,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
         return false;
       }
 
-      if (Object.keys(deps).some(dep => dep.startsWith('@angular/') || dep === 'angular')) {
+      if (Object.keys(deps).some(dep => dep.startsWith('@angular/'))) {
         return true;
       }
 

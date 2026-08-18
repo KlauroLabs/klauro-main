@@ -15,6 +15,7 @@ export { NodeHttpAnalyzer } from './node-http-analyzer';
 export { ReactAnalyzer } from './react-analyzer';
 export { VueAnalyzer } from './vue-analyzer';
 export { AngularAnalyzer } from './angular-analyzer';
+export { AngularJsAnalyzer } from './angularjs-analyzer';
 export { LaravelAnalyzer } from './laravel-analyzer';
 export { SymfonyAnalyzer } from './symfony-analyzer';
 export { RailsAnalyzer } from './rails-analyzer';
