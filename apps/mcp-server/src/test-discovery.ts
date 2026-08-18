@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 import pLimit from 'p-limit';
+import * as ts from 'typescript';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 export type TestDiscoveryStatus =
@@ -104,6 +105,21 @@ const IGNORE_PATTERNS = [
   '**/public/assets/**',
   '**/static/assets/**',
 ];
+
+const JAVASCRIPT_TEST_APIS = new Set([
+  'context',
+  'describe',
+  'fdescribe',
+  'fit',
+  'ftest',
+  'it',
+  'specify',
+  'suite',
+  'test',
+  'xdescribe',
+  'xit',
+  'xtest',
+]);
 
 export async function getTestDiscoveryEvidence(projectPath: string, cas?: CASOutput): Promise<TestDiscoveryEvidence> {
   const sourceFiles = await glob(TEST_PATTERNS, {
@@ -229,7 +245,7 @@ async function isExecutableTestFile(projectPath: string, filePath: string): Prom
   if (!content.trim()) return false;
 
   if (/\.(test|spec|cy)\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(name) || /\/tests?\//i.test(normalized) && /\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(name)) {
-    return /\b(?:describe|context|suite|it|test|specify|xdescribe|xit|xtest|fdescribe|fit|ftest)(?:\.|\s*\()/.test(content);
+    return hasJavaScriptTestDeclaration(content, name);
   }
   if (/\.py$/i.test(name)) {
     return /^\s*(?:async\s+)?def\s+test_[A-Za-z0-9_]+\s*\(/m.test(content) ||
@@ -240,4 +256,48 @@ async function isExecutableTestFile(projectPath: string, filePath: string): Prom
   if (/_test\.dart$/i.test(name)) return /\b(?:test|testWidgets)\s*\(\s*(['"`])([^'"`]+)\1/.test(content);
   if (/(Test|Tests)\.(java|kt|cs|php)$/i.test(name)) return /@Test/.test(content);
   return false;
+}
+
+function hasJavaScriptTestDeclaration(content: string, fileName: string): boolean {
+  const sourceFile = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, false, scriptKindFor(fileName));
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isCallExpression(node) && isTestApiExpression(node.expression)) {
+      found = true;
+      return;
+    }
+    if (ts.isTaggedTemplateExpression(node) && isTestApiExpression(node.tag)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
+function isTestApiExpression(expression: ts.Expression): boolean {
+  if (ts.isIdentifier(expression)) return JAVASCRIPT_TEST_APIS.has(expression.text);
+  if (ts.isPropertyAccessExpression(expression)) {
+    return JAVASCRIPT_TEST_APIS.has(expression.name.text) || isTestApiExpression(expression.expression);
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    const argument = expression.argumentExpression;
+    return Boolean(argument && ts.isStringLiteralLike(argument) && JAVASCRIPT_TEST_APIS.has(argument.text)) || isTestApiExpression(expression.expression);
+  }
+  if (ts.isCallExpression(expression)) return isTestApiExpression(expression.expression);
+  if (ts.isParenthesizedExpression(expression)) return isTestApiExpression(expression.expression);
+  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isNonNullExpression(expression)) {
+    return isTestApiExpression(expression.expression);
+  }
+  return false;
+}
+
+function scriptKindFor(fileName: string): ts.ScriptKind {
+  const extension = path.extname(fileName).toLowerCase();
+  if (extension === '.tsx') return ts.ScriptKind.TSX;
+  if (extension === '.jsx') return ts.ScriptKind.JSX;
+  if (extension === '.js' || extension === '.mjs' || extension === '.cjs') return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
 }

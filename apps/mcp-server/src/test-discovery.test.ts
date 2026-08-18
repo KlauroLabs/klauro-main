@@ -19,6 +19,10 @@ test('test discovery ignores fixture tests but includes real source tests with e
       path.join(root, 'fixtures', 'sample', 'tests', 'ignored.test.ts'),
       "test('fixture smoke', () => {});\n"
     );
+    await fs.outputFile(
+      path.join(root, 'src', 'environment.test.ts'),
+      "export const environment = { endpoint: 'https://service-test.example.com/api' };\n"
+    );
 
     const evidence = await getTestDiscoveryEvidence(root, {
       test_suites: [{
