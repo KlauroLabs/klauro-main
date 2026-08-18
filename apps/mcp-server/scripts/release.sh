@@ -55,13 +55,6 @@ if [ "${RELEASE_ALLOW_DIRTY:-0}" != "1" ]; then
 fi
 mark_step "clean-tree-gate"
 
-echo "==> Checking spec/source purity for the released bundle (see spec-purity-gate-cli.ts)"
-if ! ( npx tsx src/spec-purity-gate-cli.ts "$REPO_ROOT" ); then
-  echo "ERROR: refusing to release — spec-purity gate failed on the tree this tarball is built from." >&2
-  exit 1
-fi
-mark_step "spec-purity-gate"
-
 CURRENT_PKG_VERSION="$(node -p "require('$APP_DIR/package.json').version")"
 LAST_COMMIT_MSG="$(git -C "$REPO_ROOT" log -1 --pretty=%s 2>/dev/null || echo "")"
 if [ "$LAST_COMMIT_MSG" = "Release v$CURRENT_PKG_VERSION" ] \
@@ -128,128 +121,54 @@ cd "$APP_DIR"
 mark_step "version-bump(v$VERSION)"
 fi
 
-echo "==> Building self-contained SEA binaries (Node-free install path)"
-npm run build >/dev/null
-npm run build:sea
-test -f ./dist-sea/manifest.json || { echo "ERROR: dist-sea/manifest.json not produced — SEA binaries did not build."; exit 1; }
-SEA_BIN_COUNT="$(node -p "require('./dist-sea/manifest.json').targets.length")"
-echo "    built $SEA_BIN_COUNT platform binaries"
-mark_step "build-sea"
-
-echo "==> Packing tarball (build + npm pack + latest.json)"
-npm run pack:tarball >/dev/null
-test -f ./.pack/klauro-latest.tgz || { echo "ERROR: tarball not produced"; exit 1; }
-test -f ./.pack/latest.json       || { echo "ERROR: latest.json not produced"; exit 1; }
-mark_step "pack-tarball"
-
-MANIFEST_BIN_COUNT="$(node -p "Object.keys(require('./.pack/latest.json').binaries || {}).length")"
-if [ "$MANIFEST_BIN_COUNT" != "$SEA_BIN_COUNT" ]; then
-  echo "ERROR: latest.json carries $MANIFEST_BIN_COUNT binary entries, expected $SEA_BIN_COUNT. Refusing to upload a manifest that strands the binary install path." >&2
+if [ -f "$REPO_ROOT/.env" ]; then set -a; . "$REPO_ROOT/.env"; set +a; fi
+if [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_USER:-}" ] || [ -z "${VPS_PASSWORD:-}" ]; then
+  echo "ERROR: VPS_HOST, VPS_USER, and VPS_PASSWORD are required for source-exact remote release builds." >&2
   exit 1
 fi
-echo "    latest.json carries $MANIFEST_BIN_COUNT platform binaries"
+command -v sshpass >/dev/null || { echo "ERROR: sshpass is required." >&2; exit 1; }
 
-INNER_VER="$(tar -xzOf ./.pack/klauro-latest.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
-if [ "$INNER_VER" != "$VERSION" ]; then
-  echo "ERROR: tarball is STALE — inner package version $INNER_VER != release $VERSION. Refusing to upload." >&2
-  exit 1
-fi
-echo "    tarball freshness OK (inner package version $INNER_VER)"
+RELEASE_SHA_FULL="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+RELEASE_SHA="$(git -C "$REPO_ROOT" rev-parse --short=12 "$RELEASE_SHA_FULL")"
+echo "==> Staging release $VERSION+$RELEASE_SHA on the VPS"
+bash "$REPO_ROOT/infrastructure/vps/sync-gate-candidate.sh" --commit "$RELEASE_SHA_FULL"
 
-IDENT_TMP="$(mktemp -d)"
-tar -xzf ./.pack/klauro-latest.tgz -C "$IDENT_TMP" package/dist/cli.cjs
-PACKED_IDENT="$(node "$IDENT_TMP/package/dist/cli.cjs" version 2>/dev/null || echo unknown)"
-rm -rf "$IDENT_TMP"
-HEAD_SHA="$(cd "$REPO_ROOT" && git rev-parse --short=12 HEAD)"
-echo "    packed CLI identity: $PACKED_IDENT (HEAD $HEAD_SHA)"
-case "$PACKED_IDENT" in
-  *-dirty*)
-    echo "ERROR: packed CLI self-reports a '-dirty' build ($PACKED_IDENT). Refusing to publish an unreproducible release." >&2
-    exit 1;;
-esac
-case "$PACKED_IDENT" in
-  *"$VERSION"*"$HEAD_SHA"*) : ;;
-  *)
-    echo "ERROR: packed CLI identity '$PACKED_IDENT' does not carry version $VERSION + HEAD sha $HEAD_SHA." >&2
-    echo "       The tarball was built from different bits than HEAD. Refusing to publish." >&2
-    exit 1;;
-esac
-echo "    packed $(du -h ./.pack/klauro-latest.tgz | cut -f1) tarball, manifest version $(node -p "require('./.pack/latest.json').version")"
-mark_step "pack-verified(freshness+identity)"
+export SSHPASS="$VPS_PASSWORD"
+SSHOPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=/tmp/klauro-rel-%C -o ControlPersist=180"
+SSH="sshpass -e ssh $SSHOPTS"
+DEST="$VPS_USER@$VPS_HOST"
+
+echo "==> Building and verifying release artifacts on the VPS"
+$SSH "$DEST" "cd /opt/klauro/devgate && GATE_TIMEOUT_S=3600 bash infrastructure/vps/gate.sh --allow-source-mismatch --run-as-root apps/mcp-server 'npx tsx src/spec-purity-gate-cli.ts ../.. && bash scripts/build-release-artifacts.sh'"
+mark_step "remote-build-and-verification"
 
 if [ "${RELEASE_SKIP_UPLOAD:-0}" = "1" ]; then
-  echo "==> RELEASE_SKIP_UPLOAD=1 — skipping VPS upload"
+  echo "==> RELEASE_SKIP_UPLOAD=1 — verified artifacts remain in /opt/klauro/devgate/apps/mcp-server"
 else
-  if [ -f "$REPO_ROOT/.env" ]; then set -a; . "$REPO_ROOT/.env"; set +a; fi
-  if [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_USER:-}" ] || [ -z "${VPS_PASSWORD:-}" ]; then
-    echo "    VPS creds missing (VPS_HOST/VPS_USER/VPS_PASSWORD) — skipping upload."
-    echo "    Upload manually: scp .pack/klauro-latest.tgz .pack/latest.json <user>@<host>:/opt/klauro/downloads/"
-  else
-    SEA_BIN_FILES="$(node -p "require('./dist-sea/manifest.json').targets.map(t => './dist-sea/' + t.file).join(' ')")"
-    SEA_SHA_FILES="$(node -p "require('./dist-sea/manifest.json').targets.map(t => './dist-sea/' + t.file + '.sha256').join(' ')")"
-    echo "==> Uploading tarball + latest.json + $SEA_BIN_COUNT SEA binaries to $VPS_HOST:/opt/klauro/downloads/"
-    SSHOPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=/tmp/klauro-rel-%C -o ControlPersist=180"
-    upload_scp() {
-      sshpass -p "$VPS_PASSWORD" scp $SSHOPTS \
-        ./.pack/klauro-latest.tgz ./.pack/latest.json \
-        $SEA_BIN_FILES $SEA_SHA_FILES \
-        "$VPS_USER@$VPS_HOST:/opt/klauro/downloads/"
-    }
-    if ! retry_with_backoff "VPS upload (scp)" upload_scp; then
-      echo "ERROR: upload failed after retries. Artifacts are NOT live; the release is NOT tagged." >&2
-      echo "       Re-run this script once the transient issue clears — it will resume from here," >&2
-      echo "       not re-bump the version (see the idempotent-resume check above)." >&2
-      exit 1
-    fi
-    mark_step "upload(scp)"
-    upload_versioned_copy() {
-      sshpass -p "$VPS_PASSWORD" ssh $SSHOPTS "$VPS_USER@$VPS_HOST" \
-        "cp /opt/klauro/downloads/klauro-latest.tgz /opt/klauro/downloads/klauro-${VERSION}.tgz"
-    }
-    if ! retry_with_backoff "VPS versioned-copy (ssh)" upload_versioned_copy; then
-      echo "ERROR: versioned-copy failed after retries. The latest tarball IS uploaded, but the" >&2
-      echo "       archival klauro-${VERSION}.tgz copy is not. Re-run this script to retry just this." >&2
-      exit 1
-    fi
-    mark_step "upload(versioned-copy)"
-    echo "==> Verifying the LIVE distribution channel (not just the upload)"
-    check_live_distribution() {
-      HOSTED="$(curl -fsS "https://mcp.klauro.com/dist/latest.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
-      TARBALL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/klauro-latest.tgz" 2>/dev/null || echo 000)"
-      . "$(cd "$(dirname "$0")" && pwd)/verify-distribution-channel.sh"
-      verify_distribution_channel "$HOSTED" "$VERSION" "$TARBALL_CODE"
-    }
-    if retry_with_backoff "live distribution channel check" check_live_distribution; then
-      echo "    hosted latest.json version: $HOSTED ; tarball HTTP: $TARBALL_CODE"
-      echo "    OK — clients will see $VERSION + download the tarball on 'klauro update'"
-    else
-      echo "    hosted latest.json version: $HOSTED ; tarball HTTP: $TARBALL_CODE"
-      echo "    !! DISTRIBUTION CHANNEL BROKEN: version=$HOSTED (want $VERSION), tarball=$TARBALL_CODE (want 200)." >&2
-      echo "    !! Common cause: the api container is missing the '/opt/klauro/downloads' volume mount" >&2
-      echo "    !! (the deploy rsyncs docker-compose.yml — ensure it keeps the downloads mount)." >&2
-      echo "    !! Tarball uploaded fine, but clients can't fetch it. FIX before announcing the release." >&2
-      exit 1
-    fi
-    mark_step "verify-live-manifest"
+  echo "==> Publishing verified artifacts from the VPS candidate"
+  $SSH "$DEST" "mkdir -p /opt/klauro/downloads && docker run --rm -v /opt/klauro/devgate:/gate -v /opt/klauro/downloads:/downloads -w /gate/apps/mcp-server klauro-gate node scripts/publish-release-artifacts.mjs /downloads"
+  mark_step "publish"
 
-    echo "==> Verifying each SEA binary is reachable"
-    BIN_CHECK_FAILED=0
-    for bin_file in $(node -p "require('./dist-sea/manifest.json').targets.map(t => t.file).join(' ')"); do
-      BIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/${bin_file}" 2>/dev/null || echo 000)"
-      echo "    ${bin_file}: HTTP ${BIN_CODE}"
-      case "$BIN_CODE" in
-        200|206) ;;
-        *) BIN_CHECK_FAILED=1 ;;
-      esac
-    done
-    if [ "$BIN_CHECK_FAILED" = "1" ]; then
-      echo "    !! One or more SEA binaries are NOT reachable at /dist/. install.sh's primary" >&2
-      echo "    !! path will fail and fall back to the npm/Node path for that platform." >&2
-      exit 1
-    fi
-    echo "    OK — all $SEA_BIN_COUNT platform binaries reachable"
-    mark_step "verify-live-binaries"
-  fi
+  check_live_distribution() {
+    HOSTED="$(curl -fsS "https://mcp.klauro.com/dist/latest.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
+    TARBALL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/klauro-latest.tgz" 2>/dev/null || echo 000)"
+    . "$(cd "$(dirname "$0")" && pwd)/verify-distribution-channel.sh"
+    verify_distribution_channel "$HOSTED" "$VERSION" "$TARBALL_CODE"
+  }
+  retry_with_backoff "live distribution channel check" check_live_distribution || {
+    echo "ERROR: live distribution reports version $HOSTED and tarball HTTP $TARBALL_CODE; expected $VERSION and 200 or 206." >&2
+    exit 1
+  }
+
+  BIN_FILES="$($SSH "$DEST" "docker run --rm -v /opt/klauro/devgate:/gate -w /gate/apps/mcp-server klauro-gate node -p \"require('./dist-sea/manifest.json').targets.map(target => target.file).join(' ')\"")"
+  for bin_file in $BIN_FILES; do
+    BIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/${bin_file}" 2>/dev/null || echo 000)"
+    case "$BIN_CODE" in
+      200|206) ;;
+      *) echo "ERROR: published native binary $bin_file returned HTTP $BIN_CODE." >&2; exit 1 ;;
+    esac
+  done
+  mark_step "verify-live-artifacts"
 fi
 
 echo "==> Tagging v$VERSION"

@@ -9,6 +9,10 @@ function script(name: string): string {
   return fs.readFileSync(path.join(infrastructureRoot, name), 'utf8');
 }
 
+function releaseFile(name: string): string {
+  return fs.readFileSync(path.resolve(infrastructureRoot, '../../apps/mcp-server/scripts', name), 'utf8');
+}
+
 test('deployment selects source only after an optional release commit exists', () => {
   const source = script('deploy.sh');
   const release = source.indexOf('apps/mcp-server/scripts/release.sh');
@@ -51,4 +55,21 @@ test('candidate gates require candidate identity and preserve proof artifacts', 
   assert.match(sync, /docker run --rm .*npm ci --include=dev --legacy-peer-deps/s);
   assert.match(sync, /--exclude \.proof-output/);
   assert.match(sync, /chmod a\+rwx \/opt\/klauro\/devgate\/\.proof-output/);
+});
+
+test('release artifacts are built, verified, and published from the VPS candidate', () => {
+  const release = releaseFile('release.sh');
+  const build = releaseFile('build-release-artifacts.sh');
+  const sea = releaseFile('build-sea-binaries.mjs');
+  const publish = releaseFile('publish-release-artifacts.mjs');
+  assert.match(release, /sync-gate-candidate\.sh" --commit "\$RELEASE_SHA_FULL"/);
+  assert.match(release, /gate\.sh .*--run-as-root .*build-release-artifacts\.sh/);
+  assert.doesNotMatch(release, /^npm run /m);
+  assert.doesNotMatch(release, /^npx tsx /m);
+  assert.match(build, /KLAURO_GIT_SHA:\?KLAURO_GIT_SHA is required/);
+  assert.match(build, /PACKED_IDENTITY/);
+  assert.match(sea, /selectedTargets = TARGETS\.filter/);
+  assert.match(sea, /spawnSync\(outPath, \['version'\]/);
+  assert.doesNotMatch(sea, /ran natively on this machine/);
+  assert.ok(publish.indexOf("replace(path.join(destination, 'latest.json')") > publish.indexOf("replace(path.join(destination, 'klauro-latest.tgz')"));
 });

@@ -53,11 +53,11 @@ const SENTINEL_FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 
 
 const TARGETS = [
-  { id: 'macos-arm64', nodeDist: 'darwin-arm64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-macos-arm64', macho: true, verifiedBy: 'ran natively on this machine with PATH stripped of node/npm' },
-  { id: 'macos-x64', nodeDist: 'darwin-x64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-macos-x64', macho: true, verifiedBy: 'ran under Rosetta 2 on this machine with PATH stripped of node/npm' },
-  { id: 'linux-x64', nodeDist: 'linux-x64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-linux-x64', macho: false, verifiedBy: 'ran natively inside a debian:bookworm-slim container with no node/npm installed' },
-  { id: 'linux-arm64', nodeDist: 'linux-arm64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-linux-arm64', macho: false, verifiedBy: 'ran natively inside a linux/arm64 container on this Apple Silicon host (no emulation)' },
-  { id: 'win-x64', nodeDist: 'win-x64', archiveExt: 'zip', exeName: 'node.exe', outExe: 'klauro-win-x64.exe', macho: false, verifiedBy: 'NOT execution-verified this build (no Windows/Wine available) — postject reports the Authenticode signature as corrupted after injection, which is expected; install.ps1 smoke-tests the download and falls back if it fails to run' },
+  { id: 'macos-arm64', nodeDist: 'darwin-arm64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-macos-arm64', macho: true, platform: 'darwin', arch: 'arm64' },
+  { id: 'macos-x64', nodeDist: 'darwin-x64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-macos-x64', macho: true, platform: 'darwin', arch: 'x64' },
+  { id: 'linux-x64', nodeDist: 'linux-x64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-linux-x64', macho: false, platform: 'linux', arch: 'x64' },
+  { id: 'linux-arm64', nodeDist: 'linux-arm64', archiveExt: 'tar.gz', exeName: 'node', outExe: 'klauro-linux-arm64', macho: false, platform: 'linux', arch: 'arm64' },
+  { id: 'win-x64', nodeDist: 'win-x64', archiveExt: 'zip', exeName: 'node.exe', outExe: 'klauro-win-x64.exe', macho: false, platform: 'win32', arch: 'x64' },
 ];
 
 function sh(cmd, args, opts = {}) {
@@ -107,16 +107,15 @@ if (!existsSync(entryBundle)) {
 }
 
 const results = [];
-
-
-
-const hostArch = process.arch === 'arm64' ? 'arm64' : 'x64';
-const hostPlatform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win' : 'linux';
-const generatorTarget = TARGETS.find(t => t.nodeDist === `${hostPlatform}-${hostArch}`) || TARGETS[0];
+const selectedTargets = TARGETS.filter(target => target.platform === process.platform && target.arch === process.arch);
+if (selectedTargets.length !== 1) {
+  throw new Error(`No natively verifiable SEA target for ${process.platform}/${process.arch}. The npm-distributed client remains available for this platform.`);
+}
+const generatorTarget = selectedTargets[0];
 const generatorDir = downloadNode(generatorTarget);
 const generatorNode = path.join(generatorDir, generatorTarget.exeName === 'node.exe' ? 'node.exe' : 'bin/node');
 
-for (const target of TARGETS) {
+for (const target of selectedTargets) {
   console.log(`\n=== ${target.id} ===`);
   const nodeDir = downloadNode(target);
   const seaConfigPath = path.join(seaDir, `sea-config-${target.id}.json`);
@@ -134,20 +133,28 @@ for (const target of TARGETS) {
   copyFileSync(srcBinary, outPath);
   chmodSync(outPath, 0o755);
   if (target.macho) {
-    spawnSync('codesign', ['--remove-signature', outPath]);
+    sh('codesign', ['--remove-signature', outPath]);
   }
   const postjectCli = require.resolve('postject/dist/cli.js');
   const postjectArgs = [postjectCli, outPath, 'NODE_SEA_BLOB', blobPath, '--sentinel-fuse', SENTINEL_FUSE];
   if (target.macho) postjectArgs.push('--macho-segment-name', 'NODE_SEA');
   sh(process.execPath, postjectArgs);
   if (target.macho) {
-    sh('codesign', ['--sign', '-', outPath]);
+    sh('codesign', ['--sign', '-', '--force', outPath]);
   }
 
   const bytes = readFileSync(outPath);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   writeFileSync(`${outPath}.sha256`, `${sha256}  ${target.outExe}\n`);
-  results.push({ id: target.id, file: target.outExe, bytes: bytes.length, sha256, verifiedBy: target.verifiedBy });
+  const verification = spawnSync(outPath, ['version'], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: process.platform === 'win32' ? process.env.SystemRoot || '' : '/usr/bin:/bin' },
+  });
+  if (verification.status !== 0) {
+    throw new Error(`${target.outExe} failed native verification (exit ${verification.status}): ${verification.stderr || verification.error || ''}`);
+  }
+  const verifiedBy = `executed natively on ${process.platform}/${process.arch} with Node and npm absent from PATH`;
+  results.push({ id: target.id, file: target.outExe, bytes: bytes.length, sha256, verifiedBy });
   console.log(`[${target.id}] built ${outPath} (${(bytes.length / 1048576).toFixed(1)} MiB) sha256=${sha256}`);
 }
 
