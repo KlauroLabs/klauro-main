@@ -51,6 +51,7 @@ import {
   compactSmallRepoValidationPlan,
 } from './agent-small-context';
 import { adaptAgentStartContext } from './agent-start-context-budget';
+import { buildComprehensionGate, evaluateComprehensionReadiness, type ComprehensionReadiness } from './comprehension-readiness';
 
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -91,6 +92,9 @@ export interface AgentReadinessReport {
   status: GateStatus;
   score: number;
   agent_context_ready: boolean;
+  comprehension_ready: boolean;
+  analysis_only_understanding_ready: boolean;
+  comprehension: ComprehensionReadiness;
   summary: {
     nodes: number;
     edges: number;
@@ -191,6 +195,9 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       status: readiness.status,
       score: readiness.score,
       agent_context_ready: readiness.agent_context_ready,
+      comprehension_ready: readiness.comprehension_ready,
+      analysis_only_understanding_ready: readiness.analysis_only_understanding_ready,
+      comprehension: readiness.comprehension,
       profile: readiness.profile,
       gaps: readiness.adoption_gaps,
       language_coverage_note: unanalyzedLanguageNote(cas),
@@ -5595,6 +5602,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const invariantGateScore = (cas.behavioral_invariants?.length || 0) === 0
     ? 70
     : 100;
+  const comprehension = evaluateComprehensionReadiness(cas);
   const rawGates: AgentReadinessGate[] = [
     gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors, ${analysisWarningCount} warnings`),
     gate('nodes', cas.nodes.length > 0 ? 'pass' : 'fail', cas.nodes.length > 0 ? 100 : 0, `${cas.nodes.length} nodes`),
@@ -5628,22 +5636,13 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     gate('flow-coverage', hasFlowCoverage(flowCoverage) ? 'pass' : 'warn', hasFlowCoverage(flowCoverage) ? 100 : 80, flowCoverageDetail(flowCoverage)),
   ];
 
-  const capabilityCoverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
-  if (cas.ai_enrichment === 'ready' || capabilityCoverage) {
-    const capabilityCount = cas.product_map?.capabilities?.length || cas.capabilities?.length || 0;
-    const capabilityStatus: GateStatus = capabilityCount === 0 && cas.ai_enrichment === 'ready'
-      ? 'fail'
-      : capabilityCoverage?.status === 'accepted' ? 'pass' : 'warn';
-    const capabilityScore = capabilityStatus === 'pass' ? 100 : capabilityCount > 0 ? 85 : 0;
-    rawGates.push(gate(
-      'product-capabilities',
-      capabilityStatus,
-      capabilityScore,
-      capabilityCount > 0
-        ? `${capabilityCount} published product capabilities; catalog coverage ${capabilityCoverage?.status || 'unreported'}`
-        : 'AI comprehension completed without publishing any product capabilities',
-    ));
-  }
+  const comprehensionGate = buildComprehensionGate(cas, comprehension);
+  rawGates.push(gate(
+    'product-comprehension',
+    comprehensionGate.status,
+    comprehensionGate.score,
+    comprehensionGate.detail,
+  ));
 
   const dominantUnanalyzed = dominantUnanalyzedLanguage(cas);
   if (dominantUnanalyzed) {
@@ -5691,6 +5690,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     .slice(0, 8)
     .map(result => `${result.id}: ${result.detail}`);
   const agentContextReady = analysisErrors === 0 && (rawStatus !== 'fail' ? score >= 85 : score >= 95);
+  const analysisOnlyUnderstandingReady = agentContextReady && comprehension.ready && answerPackGaps.length === 0;
   const status: GateStatus = rawStatus === 'fail' && agentContextReady ? 'warn' : rawStatus;
 
   return {
@@ -5700,6 +5700,9 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     status,
     score,
     agent_context_ready: agentContextReady,
+    comprehension_ready: comprehension.ready,
+    analysis_only_understanding_ready: analysisOnlyUnderstandingReady,
+    comprehension,
     summary: {
       nodes: cas.nodes.length,
       edges: cas.edges.length,

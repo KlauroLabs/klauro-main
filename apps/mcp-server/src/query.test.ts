@@ -740,6 +740,22 @@ test('buildSummary top_capabilities is never led by supporting/admin plumbing', 
     'supporting plumbing ranks strictly below core');
 });
 
+test('buildSummary never presents structural candidates as canonical capabilities', () => {
+  const cas = buildTwoSourceCas();
+  cas.capabilities = [];
+  cas.structural_capability_candidates = [{ id: 'candidate', name: 'Analyze Create', operations: [] } as any];
+  cas.flow_graph = {
+    ...(cas.flow_graph || {} as any),
+    capability_candidates: [{ id: 'flow-candidate', name: 'HTTP Request Handler', signals: { total_score: 100 } } as any],
+  } as any;
+
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+
+  assert.equal(summary.capabilities, 0);
+  assert.equal(summary.structural_capability_candidates, 1);
+  assert.deepEqual(summary.top_capabilities, []);
+});
+
 test('buildSummary.frameworks reports only real product frameworks, not adapter shims or category labels', () => {
   // Regression for the live dogfood leak: Klauro (a TypeScript monorepo) reported
   // django/fastapi (from Python fixtures + the klauro-sdk-py telemetry SDK's

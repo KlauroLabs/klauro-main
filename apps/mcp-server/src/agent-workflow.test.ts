@@ -1410,11 +1410,32 @@ test('readiness rejects completed comprehension with no published product capabi
     } as any;
 
     const readiness = evaluateAgentReadiness(cas, workspace);
-    const capabilityGate = readiness.gates.find(item => item.id === 'product-capabilities');
+    const capabilityGate = readiness.gates.find(item => item.id === 'product-comprehension');
 
     assert.equal(capabilityGate?.status, 'fail');
     assert.equal(readiness.agent_context_ready, false);
-    assert.ok(readiness.adoption_gaps.some(gap => gap.startsWith('product-capabilities:')));
+    assert.equal(readiness.comprehension_ready, false);
+    assert.equal(readiness.analysis_only_understanding_ready, false);
+    assert.ok(readiness.adoption_gaps.some(gap => gap.startsWith('product-comprehension:')));
+  });
+});
+
+test('readiness distinguishes structural agent context from canonical comprehension', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.ai_enrichment = 'disabled';
+    cas.capabilities = [];
+    cas.structural_capability_candidates = [{ id: 'candidate', name: 'Route inventory', operations: [] } as any];
+    if (cas.product_map) cas.product_map.capabilities = [];
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    const comprehensionGate = readiness.gates.find(item => item.id === 'product-comprehension');
+
+    assert.equal(readiness.comprehension_ready, false);
+    assert.equal(readiness.analysis_only_understanding_ready, false);
+    assert.equal(readiness.comprehension.status, 'unavailable');
+    assert.equal(readiness.comprehension.structural_candidates, 1);
+    assert.equal(comprehensionGate?.status, 'warn');
   });
 });
 

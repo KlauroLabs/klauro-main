@@ -50,7 +50,9 @@ async function run(options: SelfDogfoodOptions) {
   const standardMetrics = payloadMetrics(standardStart);
   const firstTurnMetrics = payloadMetrics(firstTurnStart);
   const checks = {
-    readiness: readiness.agent_context_ready,
+    structural_agent_context: readiness.agent_context_ready,
+    canonical_comprehension: readiness.comprehension_ready,
+    analysis_only_understanding: readiness.analysis_only_understanding_ready,
     cli_claim_integrity: !diagnosticCodes.includes('ZERO_NODES_FOR_CLAIMED_FILES'),
     agent_target: Boolean(agentFile?.endsWith(expectedFileSuffix) && !/\.(test|spec)\./i.test(agentFile)),
     coding_target: Boolean(codingFile?.endsWith(expectedFileSuffix) && !/\.(test|spec)\./i.test(codingFile)),
@@ -73,6 +75,9 @@ async function run(options: SelfDogfoodOptions) {
       status: readiness.status,
       score: readiness.score,
       agent_context_ready: readiness.agent_context_ready,
+      comprehension_ready: readiness.comprehension_ready,
+      analysis_only_understanding_ready: readiness.analysis_only_understanding_ready,
+      comprehension: readiness.comprehension,
       gaps: readiness.adoption_gaps,
     },
     payloads: {
