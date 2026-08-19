@@ -323,6 +323,27 @@ describe('RailsAnalyzer', () => {
       ]);
     });
 
+    it('applies independent scope paths and controller modules', () => {
+      const source = [
+        'Rails.application.routes.draw do',
+        '  scope "rails/conductor/action_mailbox/", module: "rails/conductor/action_mailbox" do',
+        '    resources :inbound_emails, only: %i[index new show create]',
+        '  end',
+        '  scope path: "/api", module: :internal do',
+        "    get 'health', to: 'status#show'",
+        '  end',
+        'end',
+      ].join('\n');
+
+      const routes = analyzer.extractRoutes(source);
+
+      expect(routes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: '/rails/conductor/action_mailbox/inbound_emails', controller: 'rails/conductor/action_mailbox/inbound_emails', action: 'index' }),
+        expect.objectContaining({ path: '/rails/conductor/action_mailbox/inbound_emails/new', controller: 'rails/conductor/action_mailbox/inbound_emails', action: 'new' }),
+        expect.objectContaining({ path: '/api/health', controller: 'internal/status', action: 'show' }),
+      ]));
+    });
+
     it('expands full resources into seven actions plus PUT alias', () => {
       const routes = analyzer.extractRoutes('resources :customers\n');
       expect(routes.map(route => `${route.method} ${route.path}`)).toEqual([

@@ -6,6 +6,7 @@ import { AnalyzerError } from '../../core/errors';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { extractRailsRoutes, type RailsRoute } from './rails-route-parser';
 
 interface RailsAssociation {
   type: 'has_many' | 'has_one' | 'belongs_to' | 'has_and_belongs_to_many';
@@ -53,14 +54,6 @@ interface RailsController {
   beforeActions: RailsBeforeAction[];
 }
 
-interface RailsRoute {
-  method: string;
-  path: string;
-  controller: string;
-  action: string;
-  source: 'resources' | 'resource' | 'verb' | 'root';
-}
-
 interface RailsMigration {
   name: string;
   filePath: string;
@@ -85,16 +78,6 @@ interface RailsTestSuite {
   subject?: string;
   examples: number;
 }
-
-const RESTFUL_ACTIONS: Array<{ action: string; method: string; suffix: string }> = [
-  { action: 'index', method: 'GET', suffix: '' },
-  { action: 'create', method: 'POST', suffix: '' },
-  { action: 'new', method: 'GET', suffix: '/new' },
-  { action: 'edit', method: 'GET', suffix: '/:id/edit' },
-  { action: 'show', method: 'GET', suffix: '/:id' },
-  { action: 'update', method: 'PATCH', suffix: '/:id' },
-  { action: 'destroy', method: 'DELETE', suffix: '/:id' },
-];
 
 const AUTH_FILTER_PATTERN = /auth|require_|logged_in|signed_in|login|verify_|authorize/i;
 
@@ -729,8 +712,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
     routes.forEach((route, index) => {
       const routeId = this.generateId('route', routesRelative, `${route.method}_${route.path}_${index}`);
-      const controller = controllers.find(candidate => candidate.controllerPath === route.controller)
-        || controllers.find(candidate => candidate.controllerPath.endsWith(`/${route.controller}`));
+      const controller = this.resolveRouteController(route.controller, controllers);
       const handlerNodeId = controller ? this.actionNodeId(controller, route.action) : '';
       const authenticated = controller
         ? controller.beforeActions.some(filter =>
@@ -776,11 +758,11 @@ export class RailsAnalyzer extends BaseAnalyzer {
           controller: route.controller,
           action: route.action
         },
-        {
+        controller ? {
           node_id: handlerNodeId,
           method_name: route.action,
-          file: controller ? controller.filePath : undefined
-        }
+          file: controller.filePath
+        } : undefined
       ));
 
       if (controller) {
@@ -799,126 +781,14 @@ export class RailsAnalyzer extends BaseAnalyzer {
   }
 
   extractRoutes(content: string): RailsRoute[] {
-    const routes: RailsRoute[] = [];
-    const lines = content.split('\n');
-    const namespaceStack: string[] = [];
-    const blockStack: Array<'namespace' | 'other'> = [];
-
-    for (const raw of lines) {
-      const trimmed = raw.trim();
-      if (trimmed === '' || trimmed.startsWith('#')) continue;
-
-      if (/^end\b/.test(trimmed)) {
-        const popped = blockStack.pop();
-        if (popped === 'namespace') namespaceStack.pop();
-        continue;
-      }
-
-      const namespaceMatch = trimmed.match(/^namespace\s+:(\w+)\s+do\b/);
-      if (namespaceMatch) {
-        namespaceStack.push(namespaceMatch[1]);
-        blockStack.push('namespace');
-        continue;
-      }
-
-      const prefix = namespaceStack.length ? `/${namespaceStack.join('/')}` : '';
-      const controllerPrefix = namespaceStack.length ? `${namespaceStack.join('/')}/` : '';
-
-      const resourcesMatch = trimmed.match(/^resources\s+:(\w+)(.*)$/);
-      if (resourcesMatch) {
-        const resource = resourcesMatch[1];
-        const options = resourcesMatch[2] || '';
-        const only = this.extractRouteSymbolList(options, 'only');
-        const except = this.extractRouteSymbolList(options, 'except');
-        for (const restful of RESTFUL_ACTIONS) {
-          if (only.length > 0 && !only.includes(restful.action)) continue;
-          if (except.includes(restful.action)) continue;
-          routes.push({
-            method: restful.method,
-            path: `${prefix}/${resource}${restful.suffix}`,
-            controller: `${controllerPrefix}${resource}`,
-            action: restful.action,
-            source: 'resources'
-          });
-          if (restful.action === 'update') {
-            routes.push({
-              method: 'PUT',
-              path: `${prefix}/${resource}${restful.suffix}`,
-              controller: `${controllerPrefix}${resource}`,
-              action: restful.action,
-              source: 'resources'
-            });
-          }
-        }
-        if (TRAILING_DO.test(trimmed)) blockStack.push('other');
-        continue;
-      }
-
-      const singularResourceMatch = trimmed.match(/^resource\s+:(\w+)(.*)$/);
-      if (singularResourceMatch) {
-        const resource = singularResourceMatch[1];
-        const controllerName = `${controllerPrefix}${this.pluralize(resource)}`;
-        const singularActions = [
-          { action: 'show', method: 'GET', suffix: '' },
-          { action: 'create', method: 'POST', suffix: '' },
-          { action: 'new', method: 'GET', suffix: '/new' },
-          { action: 'edit', method: 'GET', suffix: '/edit' },
-          { action: 'update', method: 'PATCH', suffix: '' },
-          { action: 'destroy', method: 'DELETE', suffix: '' },
-        ];
-        const only = this.extractRouteSymbolList(singularResourceMatch[2] || '', 'only');
-        const except = this.extractRouteSymbolList(singularResourceMatch[2] || '', 'except');
-        for (const item of singularActions) {
-          if (only.length > 0 && !only.includes(item.action)) continue;
-          if (except.includes(item.action)) continue;
-          routes.push({
-            method: item.method,
-            path: `${prefix}/${resource}${item.suffix}`,
-            controller: controllerName,
-            action: item.action,
-            source: 'resource'
-          });
-        }
-        if (TRAILING_DO.test(trimmed)) blockStack.push('other');
-        continue;
-      }
-
-      const rootMatch = trimmed.match(/^root\s+(?:to:\s*)?['"]([\w\/]+)#(\w+)['"]/);
-      if (rootMatch) {
-        routes.push({
-          method: 'GET',
-          path: prefix || '/',
-          controller: `${controllerPrefix}${rootMatch[1]}`,
-          action: rootMatch[2],
-          source: 'root'
-        });
-        continue;
-      }
-
-      const verbMatch = trimmed.match(/^(get|post|put|patch|delete)\s+['"]([^'"]+)['"]\s*(?:,\s*to:\s*|\s*=>\s*)['"]([\w\/]+)#(\w+)['"]/);
-      if (verbMatch) {
-        const routePath = verbMatch[2].startsWith('/') ? verbMatch[2] : `/${verbMatch[2]}`;
-        routes.push({
-          method: verbMatch[1].toUpperCase(),
-          path: `${prefix}${routePath}`,
-          controller: `${controllerPrefix}${verbMatch[3]}`,
-          action: verbMatch[4],
-          source: 'verb'
-        });
-        continue;
-      }
-
-      if (TRAILING_DO.test(trimmed)) blockStack.push('other');
-    }
-
-    return routes;
+    return extractRailsRoutes(content);
   }
 
-  private extractRouteSymbolList(options: string, key: string): string[] {
-    const match = options.match(new RegExp(`${key}:\\s*(?:%i\\[([^\\]]*)\\]|\\[([^\\]]*)\\])`));
-    if (!match) return [];
-    if (match[1] !== undefined) return match[1].split(/\s+/).filter(Boolean);
-    return (match[2].match(/:(\w+)/g) || []).map(symbol => symbol.slice(1));
+  private resolveRouteController(controllerPath: string, controllers: RailsController[]): RailsController | undefined {
+    const exact = controllers.find(candidate => candidate.controllerPath === controllerPath);
+    if (exact) return exact;
+    const suffixMatches = controllers.filter(candidate => candidate.controllerPath.endsWith(`/${controllerPath}`));
+    return suffixMatches.length === 1 ? suffixMatches[0] : undefined;
   }
 
   private async analyzeMigrations(
@@ -1570,5 +1440,3 @@ export class RailsAnalyzer extends BaseAnalyzer {
     return this.pluralize(this.underscore(modelName));
   }
 }
-
-const TRAILING_DO = /\bdo\s*$/;
