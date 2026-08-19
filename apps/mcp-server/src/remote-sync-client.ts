@@ -280,6 +280,7 @@ export async function waitForRemoteAnalysis(
   if (token) headers.authorization = `Bearer ${token}`;
   const deadline = Date.now() + remoteCompletionTimeoutMs(completionTimeoutMs);
   let lastStatus = 'populating';
+  let lastStatusTimingAt = 0;
   while (Date.now() < deadline) {
     let statusResponse: Response;
     try {
@@ -310,6 +311,14 @@ export async function waitForRemoteAnalysis(
       throw new Error(`Remote analysis status returned ${statusResponse.status}${detail}`);
     }
     lastStatus = statusPayload.status || lastStatus;
+    if (Date.now() - lastStatusTimingAt >= 5000) {
+      emitRemoteCasTiming('status', {
+        status: lastStatus,
+        analysis_revision: statusPayload.analysis_revision,
+        expected_revision: expectedRevision,
+      });
+      lastStatusTimingAt = Date.now();
+    }
     if (lastStatus === 'failed') {
       const detail = statusPayload.failed_layers?.map(layer => `${layer.layer || 'unknown'}: ${layer.error || 'failed'}`).join(', ')
         || statusPayload.last_attempt?.error
@@ -333,6 +342,11 @@ export async function waitForRemoteAnalysis(
         requestedSections || CAS_SECTION_NAMES,
       );
       if (segmented) return segmented;
+      if (segmented === null) {
+        lastStatus = 'segmented CAS is still populating';
+        await sleep(500);
+        continue;
+      }
       try {
         const exported = await withRemoteReadRetry(async () => {
           const exportResponse = await fetchWithTimeout(
@@ -377,23 +391,38 @@ async function fetchSegmentedRemoteCas(
   analysisId: string,
   headers: Record<string, string>,
   requestedSections: readonly CasSectionName[],
-): Promise<RemoteAnalyzeResponse['cas'] | undefined> {
-  const manifest = await withRemoteReadRetry(async () => {
+): Promise<RemoteAnalyzeResponse['cas'] | null | undefined> {
+  const manifestStartedAt = Date.now();
+  const manifestResult = await withRemoteReadRetry(async (): Promise<
+    { state: 'ready'; manifest: CasSectionManifest } | { state: 'pending' } | { state: 'unavailable' }
+  > => {
     const response = await fetchWithTimeout(
       `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/manifest`,
       { headers },
       remoteRequestTimeoutMs(),
     );
-    if (response.status === 404) return undefined;
+    if (response.status === 404) {
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      return payload.error === 'Segmented analysis is not ready'
+        ? { state: 'pending' }
+        : { state: 'unavailable' };
+    }
     if (response.status >= 500) throw new RetriableRemoteError(`Remote CAS manifest returned ${response.status}`);
     if (!response.ok) throw new Error(`Remote CAS manifest returned ${response.status}`);
-    return response.json() as Promise<CasSectionManifest>;
+    return { state: 'ready', manifest: await response.json() as CasSectionManifest };
   });
-  if (!manifest) return undefined;
+  emitRemoteCasTiming('manifest', { elapsed_ms: Date.now() - manifestStartedAt, state: manifestResult.state });
+  if (manifestResult.state === 'pending') return null;
+  if (manifestResult.state === 'unavailable') return undefined;
+  const manifest = manifestResult.manifest;
   const available = new Set(manifest.sections.map(section => section.name));
-  const readSection = pLimit(4);
-  const parts = await Promise.all(requestedSections
-    .filter(section => available.has(section))
+  const requested = requestedSections.filter(section => available.has(section));
+  const descriptors = new Map(manifest.sections.map(section => [section.name, section]));
+  const encodedBytes = requested.reduce((sum, section) => sum + (descriptors.get(section)?.bytes || 0), 0);
+  const parallelism = encodedBytes > 16 * 1024 * 1024 ? 1 : 4;
+  emitRemoteCasTiming('plan', { sections: requested.length, encoded_bytes: encodedBytes, parallelism });
+  const readSection = pLimit(parallelism);
+  const parts = await Promise.all(requested
     .map(section => readSection(() => withRemoteReadRetry(async () => {
       const response = await fetchWithTimeout(
         `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/sections/${section}`,
@@ -405,20 +434,45 @@ async function fetchSegmentedRemoteCas(
       }
       if (response.status >= 500) throw new RetriableRemoteError(`Remote CAS section ${section} returned ${response.status}`);
       if (!response.ok) throw new Error(`Remote CAS section ${section} returned ${response.status}`);
-      return parseRemoteCasSection(response);
+      return parseRemoteCasSection(response, section);
     }))));
-  return hydrateCasSections(parts) as RemoteAnalyzeResponse['cas'];
+  const hydrationStartedAt = Date.now();
+  const cas = hydrateCasSections(parts) as RemoteAnalyzeResponse['cas'];
+  emitRemoteCasTiming('hydrate', { elapsed_ms: Date.now() - hydrationStartedAt, sections: parts.length });
+  return cas;
 }
 
-async function parseRemoteCasSection(response: Response): Promise<Partial<RemoteAnalyzeResponse['cas']>> {
+async function parseRemoteCasSection(
+  response: Response,
+  section: CasSectionName
+): Promise<Partial<RemoteAnalyzeResponse['cas']>> {
+  const startedAt = Date.now();
   const codec = response.headers.get('x-klauro-cas-codec') || 'none';
   const raw = Buffer.from(await response.arrayBuffer());
+  const downloadedAt = Date.now();
   const decoded = decodeCasExport(raw, codec);
   if (!decoded) throw new Error(`Remote CAS section could not be decoded with ${codec}`);
+  let parsed: Partial<RemoteAnalyzeResponse['cas']>;
   if (decoded.length <= bufferConstants.MAX_STRING_LENGTH) {
-    return JSON.parse(decoded.toString('utf8')) as Partial<RemoteAnalyzeResponse['cas']>;
+    parsed = JSON.parse(decoded.toString('utf8')) as Partial<RemoteAnalyzeResponse['cas']>;
+  } else {
+    parsed = await decodeCasExportStream<Partial<RemoteAnalyzeResponse['cas']>>(Readable.from([raw]), codec);
   }
-  return decodeCasExportStream<Partial<RemoteAnalyzeResponse['cas']>>(Readable.from([raw]), codec);
+  emitRemoteCasTiming('section', {
+    section,
+    codec,
+    encoded_bytes: raw.length,
+    decoded_bytes: decoded.length,
+    download_ms: downloadedAt - startedAt,
+    parse_ms: Date.now() - downloadedAt,
+    elapsed_ms: Date.now() - startedAt,
+  });
+  return parsed;
+}
+
+function emitRemoteCasTiming(phase: string, details: Record<string, unknown>): void {
+  if (process.env.KLAURO_DEBUG_REMOTE_CAS_TIMINGS !== '1') return;
+  console.error(JSON.stringify({ event: 'remote_cas_timing', phase, ...details }));
 }
 
 async function fetchUncompressedRemoteCas(

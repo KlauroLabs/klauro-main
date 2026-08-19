@@ -329,7 +329,7 @@ test('whole CAS retrieval retries a dropped export response', async (t) => {
     }
     if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
       res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'error', error: 'Segmented analysis is not ready' }));
+      res.end(JSON.stringify({ status: 'error', error: 'Route not found' }));
       return;
     }
     if (req.url === `/v1/analyses/${analysisId}/cas/export`) {
@@ -419,11 +419,71 @@ test('segmented CAS retrieval retries a section that is still being published', 
   assert.equal(sectionRequests, 2);
 });
 
+test('segmented CAS retrieval waits for a current server manifest instead of falling back to the whole export', async (t) => {
+  const analysisId = 'segmented-manifest-pending';
+  let manifestRequests = 0;
+  let wholeExportRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      manifestRequests += 1;
+      if (manifestRequests < 3) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'error', error: 'Segmented analysis is not ready' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        manifest_version: 1,
+        cas_version: '3.0.0',
+        analysis_id: analysisId,
+        analysis_timestamp: new Date().toISOString(),
+        sections: [{ name: 'identity', fields: ['system'], bytes: 100 }],
+        logical_fields: ['system'],
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/sections/identity`) {
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({ system: { name: 'manifest-waited' } }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/export`) {
+      wholeExportRequests += 1;
+      res.writeHead(500).end();
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+
+  const cas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    ['identity'],
+  );
+
+  assert.equal(cas.system.name, 'manifest-waited');
+  assert.equal(manifestRequests, 3);
+  assert.equal(wholeExportRequests, 0);
+});
+
 test('segmented CAS retrieval uses bounded parallel section reads', async (t) => {
   const analysisId = 'segmented-parallel-read';
   const sections = ['identity', 'tree', 'graph', 'calls', 'facts'] as const;
   let activeRequests = 0;
   let peakRequests = 0;
+  let largeManifest = false;
   const server = http.createServer(async (req, res) => {
     if (req.url === `/v1/analyses/${analysisId}/status`) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -437,7 +497,11 @@ test('segmented CAS retrieval uses bounded parallel section reads', async (t) =>
         cas_version: '3.0.0',
         analysis_id: analysisId,
         analysis_timestamp: new Date().toISOString(),
-        sections: sections.map(name => ({ name, fields: name === 'identity' ? ['system'] : [] })),
+        sections: sections.map(name => ({
+          name,
+          fields: name === 'identity' ? ['system'] : [],
+          bytes: largeManifest ? 4 * 1024 * 1024 : 100,
+        })),
         logical_fields: ['system'],
       }));
       return;
@@ -470,6 +534,20 @@ test('segmented CAS retrieval uses bounded parallel section reads', async (t) =>
 
   assert.equal(cas.system.name, 'parallel-segmented-read');
   assert.equal(peakRequests, 4);
+
+  largeManifest = true;
+  peakRequests = 0;
+  const largeCas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    sections,
+  );
+
+  assert.equal(largeCas.system.name, 'parallel-segmented-read');
+  assert.equal(peakRequests, 1);
 });
 
 test('wait mode follows a structural response until pending comprehension completes', async (t) => {
