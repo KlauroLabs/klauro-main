@@ -146,6 +146,20 @@ describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, n
     expect(extraction.hasSyntaxErrors).toBe(false);
   });
 
+  it('classifies indexed-access inline import types and their parser recovery tokens', () => {
+    const source = `
+      export interface Result {
+        decision?: import('./protocol').Accepted['decision'];
+        cas?: Response['cas'];
+        source?: 'head' | 'tree';
+      }
+    `;
+    const extraction = extractor.extractFromSource(source, 'import-type-indexed-access.ts');
+    expect(extraction.hasSyntaxErrors).toBe(true);
+    expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
+    expect(extraction.syntaxErrorLocations?.every(location => location.knownLimitation)).toBe(true);
+  });
+
   it('flags `using` used as an arrow-function parameter name as a known limitation, still extracts the rest of the file', () => {
     const source = `
       export const handler = using => using.x;

@@ -70,6 +70,49 @@ test('first-turn agent contexts include a compact K15 context capsule that agent
   });
 });
 
+test('first-turn start context is compact and preserves readiness, orientation, and next tools', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    const standard = getAgentStartContext(cas, workspace, { task_type: 'orient' }) as any;
+    const compact = getAgentStartContext(cas, workspace, {
+      task_type: 'orient',
+      response_profile: 'first-turn',
+    }) as any;
+
+    assert.equal(compact.context_profile, 'first-turn');
+    assert.equal(compact.readiness.status, standard.readiness.status);
+    assert.equal(compact.system.name, standard.system.name);
+    assert.ok(compact.starting_points.entry_points.length > 0);
+    assert.ok(compact.recommended_first_tools.length > 0);
+    assert.ok(!('idiom_summary' in compact));
+    assert.ok(!('architecture_context' in compact));
+    assert.ok(JSON.stringify(compact).length < JSON.stringify(standard).length * 0.6);
+  });
+});
+
+test('agent context treats an exact file-stem target as a module instead of an inner helper', async () => {
+  await withWorkspace(async workspace => {
+    const relativeFile = 'src/coordination/participant-in-flight-store.ts';
+    fs.mkdirSync(path.join(workspace, 'src', 'coordination'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, relativeFile), 'export function readSnapshots() { return []; }\n');
+    const cas = fixtureCas();
+    cas.system.root_path = workspace;
+    cas.nodes.push(
+      { id: 'file_in_flight_store', name: 'participant-in-flight-store.ts', type: 'file', source: { file: relativeFile, line: 1 }, metadata: {} } as any,
+      { id: 'function_log_path', name: 'logPath', type: 'function', source: { file: relativeFile, line: 30 }, metadata: {} } as any,
+    );
+
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'modify',
+      target: 'participant-in-flight-store',
+      response_profile: 'first-turn',
+    }) as any;
+
+    assert.equal(context.selected.id, 'file_in_flight_store');
+    assert.equal(context.files[0], relativeFile);
+  });
+});
+
 test('capsule-only agent contexts avoid expanded JSON when token savings matter most', async () => {
   await withWorkspace(async workspace => {
     const firstTurn = await getAgentContext(fixtureCas(), workspace, {

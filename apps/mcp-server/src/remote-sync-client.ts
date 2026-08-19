@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import pLimit from 'p-limit';
 import { saveAnalysis } from './storage';
-import type { RemoteAnalyzeResponse, RemoteAnalyzerResponse, RemoteProjectRevisionsResponse } from './remote-analyzer-protocol';
+import type { RemoteAnalyzeAcceptedResponse, RemoteAnalyzeResponse, RemoteAnalyzerResponse, RemoteProjectRevisionsResponse } from './remote-analyzer-protocol';
 import { buildBranchDiffContext, buildStreamingSourceSnapshot, buildStreamingWorkingTreeChanges } from './remote-source';
 import { createAnalyzeUploadRequest, createIncrementalUploadRequest, isStreamingJsonRequest } from './streaming-source-upload';
 import {
@@ -98,7 +98,7 @@ export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'stat
 
 
 
-  reuse_decision?: import('./remote-analyzer-protocol').RemoteAnalyzeAcceptedResponse['reuse_decision'];
+  reuse_decision?: RemoteAnalyzeAcceptedResponse['reuse_decision'];
   cas?: RemoteAnalyzeResponse['cas'];
 
 

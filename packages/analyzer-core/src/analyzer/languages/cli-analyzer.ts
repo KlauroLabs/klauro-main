@@ -78,18 +78,14 @@ export class CliAnalyzer extends BaseAnalyzer {
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
-    const files = await this.getRelevantFiles(projectPath);
-    if (files.length === 0) return false;
-
-
-    for (const relativePath of files.slice(0, 500)) {
+    for (const relativePath of await this.getRelevantFiles(projectPath)) {
       let content: string;
       try {
         content = await fs.readFile(path.join(projectPath, relativePath), 'utf-8');
       } catch {
         continue;
       }
-      if (this.hasAnySignal(content)) return true;
+      if (this.hasAnySignal(relativePath, content)) return true;
     }
     return false;
   }
@@ -103,17 +99,35 @@ export class CliAnalyzer extends BaseAnalyzer {
     return files.sort();
   }
 
-  private hasAnySignal(content: string): boolean {
-    for (const re of Object.values(FRAMEWORK_SIGNALS)) {
-      if (re.test(content)) return true;
+  async getClaimedFiles(projectPath: string): Promise<string[]> {
+    const claimed: string[] = [];
+    for (const relativePath of await this.getRelevantFiles(projectPath)) {
+      try {
+        const content = await fs.readFile(path.join(projectPath, relativePath), 'utf-8');
+        if (this.hasAnySignal(relativePath, content)) claimed.push(relativePath);
+      } catch {}
     }
-    return this.hasGenericEntry(content);
+    return claimed;
   }
 
-  private hasGenericEntry(content: string): boolean {
-    return /if\s+__name__\s*==\s*['"]__main__['"]/.test(content) ||
-      /func\s+main\s*\(\s*\)/.test(content) ||
-      /fn\s+main\s*\(\s*\)/.test(content);
+  private hasAnySignal(relativePath: string, content: string): boolean {
+    const ext = path.extname(relativePath).toLowerCase();
+    const frameworks: Array<Exclude<CliFramework, 'generic'>> =
+      ext === '.py' ? ['click', 'argparse', 'typer'] :
+      ['.ts', '.tsx', '.js', '.mjs', '.cjs'].includes(ext) ? ['commander', 'yargs', 'oclif'] :
+      ext === '.go' ? ['cobra', 'urfave-cli'] :
+      ext === '.rs' ? ['clap'] :
+      ext === '.rb' ? ['thor'] : [];
+    return frameworks.some(framework => FRAMEWORK_SIGNALS[framework].test(content)) ||
+      this.hasGenericEntry(relativePath, content);
+  }
+
+  private hasGenericEntry(relativePath: string, content: string): boolean {
+    const ext = path.extname(relativePath).toLowerCase();
+    if (ext === '.py') return /if\s+__name__\s*==\s*['"]__main__['"]/.test(content);
+    if (ext === '.go') return /package\s+main\b/.test(content) && /func\s+main\s*\(\s*\)/.test(content);
+    if (ext === '.rs') return /fn\s+main\s*\(\s*\)/.test(content);
+    return false;
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -146,19 +160,24 @@ export class CliAnalyzer extends BaseAnalyzer {
     const frameworksSeen = new Set<CliFramework>();
     let filesWithCommands = 0;
 
-    let files = await this.getRelevantFiles(context.projectPath);
-    files = this.capAndPrioritizeSourceFiles(files, 'CLI candidate files');
+    const candidates: Array<{ relativePath: string; fullPath: string; content: string }> = [];
 
-    for (const relativePath of files) {
+    for (const relativePath of await this.getRelevantFiles(context.projectPath)) {
       const fullPath = path.join(context.projectPath, relativePath);
-      let content = '';
       try {
-        content = await fs.readFile(fullPath, 'utf-8');
+        const content = await fs.readFile(fullPath, 'utf-8');
+        if (this.hasAnySignal(relativePath, content)) candidates.push({ relativePath, fullPath, content });
       } catch {
         continue;
       }
-      if (!this.hasAnySignal(content)) continue;
+    }
 
+    const selectedFiles = new Set(this.capAndPrioritizeSourceFiles(
+      candidates.map(candidate => candidate.relativePath),
+      'CLI source files'
+    ));
+    for (const { relativePath, fullPath, content } of candidates) {
+      if (!selectedFiles.has(relativePath)) continue;
       const result = this.parseCliFile(relativePath, fullPath, content);
       if (result.commands.length === 0) continue;
 
@@ -197,7 +216,7 @@ export class CliAnalyzer extends BaseAnalyzer {
       this.parseRuby(content, commands, frameworksDetected);
     }
 
-    if (commands.length === 0 && this.hasGenericEntry(content)) {
+    if (commands.length === 0 && this.hasGenericEntry(relativePath, content)) {
       this.parseGeneric(relativePath, content, commands, frameworksDetected);
     }
 

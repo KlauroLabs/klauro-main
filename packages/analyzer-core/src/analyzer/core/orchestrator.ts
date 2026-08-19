@@ -6231,7 +6231,10 @@ export class AnalyzerOrchestrator {
 
     let claimedFiles: string[] = [];
     try {
-      claimedFiles = (await registration.analyzer.getRelevantFiles?.(matchedRoot)) || [];
+      claimedFiles = (await (
+        registration.analyzer.getClaimedFiles?.(matchedRoot)
+        ?? registration.analyzer.getRelevantFiles?.(matchedRoot)
+      )) || [];
     } catch {
       return null;
     }

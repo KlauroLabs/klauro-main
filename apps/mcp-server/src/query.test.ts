@@ -177,6 +177,20 @@ test('getCodingContext offers near-name matches for a typo close to a real node 
   assert.ok(context.near_matches.some((m: any) => m.name === 'Hub'), `expected a near match for "Hub", got: ${JSON.stringify(context.near_matches)}`);
 });
 
+test('getCodingContext resolves a file-stem target to production code instead of its test', () => {
+  const cas = buildHighFanoutCas({ callerCount: 0, calleeCount: 0 });
+  cas.nodes.push(
+    { id: 'file_store', name: 'participant-in-flight-store.ts', type: 'file', source: { file: 'src/coordination/participant-in-flight-store.ts', line: 1 }, metadata: {} } as CASNode,
+    { id: 'function_log_path', name: 'logPath', type: 'function', source: { file: 'src/coordination/participant-in-flight-store.ts', line: 30 }, metadata: {} } as CASNode,
+    { id: 'file_store_test', name: 'participant-in-flight-store.test.ts', type: 'file', category: 'test', source: { file: 'src/coordination/participant-in-flight-store.test.ts', line: 1 }, metadata: {} } as CASNode,
+  );
+
+  const context: any = getCodingContext(cas, 'participant-in-flight-store');
+
+  assert.equal(context.target_node.id, 'file_store');
+  assert.equal(context.target_node.file, 'src/coordination/participant-in-flight-store.ts');
+});
+
 // Builds a CAS with `entryPointCount` independent traceable entry points
 // (each a small function with its own name/route), so getFlowConcepts has
 // one candidate flow per entry point when no `target` filter is given —

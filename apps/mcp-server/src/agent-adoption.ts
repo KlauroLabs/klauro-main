@@ -50,6 +50,7 @@ import {
   compactSmallRepoTargetResolution,
   compactSmallRepoValidationPlan,
 } from './agent-small-context';
+import { adaptAgentStartContext } from './agent-start-context-budget';
 
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -179,7 +180,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
   const analysisFreshness = summarizeAnalysisFreshness(path, cas.analysis_timestamp);
 
-  return {
+  const context = {
     path,
     generated_at: new Date().toISOString(),
     default_rule: 'Use this CAS-backed MCP context before broad file reads. Read source files after MCP narrows the target or reports a gap. After edits, run validate_behavioral_invariants and validate_codebase_idioms before finalizing changes.',
@@ -259,6 +260,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       'When tests, logs, or source diffs must be inspected to complete the user task.',
     ],
   };
+  return adaptAgentStartContext(context, task.response_profile);
 }
 
 export async function getAgentContext(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
@@ -3846,10 +3848,8 @@ function normalizeFileTargetToken(value: string): string {
 
 function fileDiscoveryRank(file: string): number {
   let score = 0;
-  if (file.startsWith('apps/mcp-server/src/')) score -= 80;
-  if (file.startsWith('packages/analyzer-core/src/analyzer/core/')) score -= 60;
-  if (file.startsWith('packages/analyzer-core/src/')) score -= 35;
-  if (file.startsWith('src/')) score -= 25;
+  const segments = file.replace(/\\/g, '/').split('/').map(segment => segment.toLowerCase());
+  if (segments.some(segment => ['src', 'lib', 'app'].includes(segment))) score -= 25;
   if (file.includes('/test/') || /\.(?:test|spec)\./i.test(file)) score += 35;
   if (file.startsWith('legacy/')) score += 120;
   if (file.includes('/legacy/')) score += 80;
@@ -3879,9 +3879,12 @@ function chooseBestFileTargetNode(nodes: CASNode[]): CASNode | undefined {
 
 function fileTargetNodeScore(node: CASNode): number {
   let score = 0;
-  if (['class', 'function', 'method', 'service', 'controller', 'handler', 'route', 'api_route', 'entity', 'model', 'module'].includes(node.type)) score += 40;
+  if (['class', 'service', 'controller', 'handler', 'route', 'api_route', 'entity', 'model'].includes(node.type)) score += 60;
+  if (node.type === 'module') score += 50;
+  if (node.type === 'file') score += 45;
+  if (node.type === 'function') score += 40;
+  if (node.type === 'method') score += 35;
   if (node.category === 'test' || isNonProductAgentTarget(node)) score -= 80;
-  if (node.type === 'file') score += 10;
   if (node.type === 'import' || node.type === 'property' || node.type === 'variable') score -= 100;
   if ((node.metadata as any)?.exported === true) score += 15;
   return score;
@@ -4408,6 +4411,11 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
   if (nodeNameTokens.length > 1 && nodeNameTokens.every(token => targetTokens.includes(token))) {
     score += 60;
   }
+  if (targetTokens.some(token => ['summary', 'summaries', 'overview', 'synopsis'].includes(token)) &&
+    (nodeTokens.some(token => ['description', 'describe', 'summary', 'summarize', 'summarise', 'overview', 'synopsis'].includes(token)) ||
+      /description|describe|summary|summar|overview|synopsis/.test(normalizedName))) {
+    score += 230;
+  }
 
   const preferredTypes = ['controller', 'service', 'guard', 'middleware', 'gateway', 'resolver', 'handler', 'route', 'api_route', 'react_page', 'custom_hook', 'class', 'function', 'method'];
   if (preferredTypes.includes(node.type)) score += 20;
@@ -4422,15 +4430,9 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
   if (node.name.toLowerCase().includes('dto')) score -= 35;
   if (file.startsWith('legacy/') && !targetTokens.includes('legacy')) score -= 140;
   if (hasAnalyzerMaintenanceIntent(targetTokens)) {
-    if (/packages\/analyzer-core\/src\/analyzer\//.test(file)) score += 110;
-    if (/apps\/mcp-server\/src\/(analysis|agent|idiom|query|server|cli|machine|storage)/.test(file)) score += 80;
+    if (/\/analyzers?\/|\/analysis\/|\/cas\//.test(file)) score += 70;
     if (targetTokens.some(token => ['capability', 'capabilities', 'summary', 'summaries'].includes(token)) &&
-      /orchestrator|capability|domain|analysis-usefulness-review/.test(file)) {
-      score += 150;
-    }
-    if (/buildquickdescription|descriptionsafecapabilityname|buildsystemcapabilities|buildterminalcapabilities/i.test(normalizedName)) {
-      score += 180;
-    }
+      /orchestrator|capability|domain/.test(`${file} ${normalizedName}`)) score += 90;
     if (/legacy\//.test(file)) score -= 120;
   }
 

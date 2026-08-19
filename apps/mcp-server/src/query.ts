@@ -21,6 +21,7 @@ import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/sr
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import { getQueryTraversalIndex } from './query-traversal-index';
+import { resolveCodingContextTarget } from './coding-target-resolution';
 import {
   buildDomainConceptIndex,
   buildEntityRelationIndex,
@@ -3730,21 +3731,11 @@ export function getCodingContext(
 
   const UNCAPPED_COUNT_PROBE = 5000;
 
-  let targetNode: CASNode | undefined;
-  if (target.includes('/') || target.includes('.')) {
-    const fileNodes = cas.nodes.filter(n =>
-      n.source?.file?.endsWith(target) || n.id === target
-    );
-    targetNode = fileNodes.find(n => n.type === 'class' || n.type === 'module' || n.type === 'function') || fileNodes[0];
-  } else {
-    targetNode = cas.nodes.find(n => n.id === target);
-    if (!targetNode) {
-      const searchResults = searchNodes(cas, target, { limit: 1 });
-      if (searchResults.length > 0) {
-        targetNode = cas.nodes.find(n => n.id === searchResults[0].id);
-      }
-    }
-  }
+  const targetNode = resolveCodingContextTarget(
+    cas,
+    target,
+    searchNodes(cas, target, { limit: 10 }).map(result => result.id)
+  );
 
   if (!targetNode) {
     return buildTargetNotFoundResult(cas, target, 'get_coding_context');
@@ -4000,19 +3991,6 @@ export function getCodingContext(
 
   return result;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 function resolveClassMember(cas: CASOutput, className: string, memberName: string): CASNode | undefined {
   const memberNodes = cas.nodes.filter(n =>

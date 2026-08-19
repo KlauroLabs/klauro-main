@@ -29,6 +29,19 @@ test('CliAnalyzer.canAnalyze is false for a project with no CLI framework signal
   }
 });
 
+test('CliAnalyzer ignores entry-point syntax embedded for another language', async () => {
+  const dir = makeTempProject({
+    'fixture.ts': "const rustFixture = 'fn main() {}';\nconst goFixture = 'func main() {}';\n",
+  });
+  try {
+    const analyzer = new CliAnalyzer();
+    assert.equal(await analyzer.canAnalyze(dir), false);
+    assert.deepEqual(await analyzer.getClaimedFiles(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('CliAnalyzer extracts Click commands and groups', async () => {
   const src = [
     'import click',

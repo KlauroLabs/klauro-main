@@ -85,6 +85,7 @@
     "agent-quality-benchmark": "tsx src/agent-quality-benchmark.ts --real-repos --max-targets 6 --max-tasks-per-repo 8",
     "workspace-agent-benchmark": "tsx src/workspace-agent-benchmark.ts",
     "tool-surface-dogfood": "tsx src/tool-surface-dogfood.ts",
+    "self-dogfood-proof": "tsx src/self-dogfood-proof.ts",
     "agent-live-benchmark": "tsx src/agent-quality-benchmark.ts --live",
     "agent-idiom-benchmark": "tsx src/agent-idiom-benchmark.ts --real-repos --max-targets 6 --max-tasks-per-repo 4",
     "agent-greenfield-benchmark": "tsx src/agent-greenfield-benchmark.ts",

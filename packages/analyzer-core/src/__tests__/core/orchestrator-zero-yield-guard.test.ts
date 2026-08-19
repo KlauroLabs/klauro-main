@@ -125,4 +125,26 @@ describe('AnalyzerOrchestrator.detectZeroYieldForClaimedFiles', () => {
 
     expect(error).toBeNull();
   });
+
+  it('uses analyzer claims instead of broad candidate files when the analyzer exposes both', async () => {
+    const registration: AnalyzerRegistration = {
+      id: 'selective-analyzer',
+      name: 'Selective Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {},
+      analyzer: {
+        getRelevantFiles: async () => ['src/a.ts', 'src/b.ts'],
+        getClaimedFiles: async () => [],
+      } as any,
+    };
+
+    const error = await orchestrator.detectZeroYieldForClaimedFiles(
+      registration,
+      fakeContribution([], []),
+      '/fake/project'
+    );
+
+    expect(error).toBeNull();
+  });
 });

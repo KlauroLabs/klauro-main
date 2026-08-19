@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './errors';
+import { classifyKnownTypeScriptGrammarLimitation } from './tree-sitter-grammar-limitations';
 
 export function sanitizeForTreeSitterParse(source: string): string {
   return source.indexOf('\0') === -1 ? source : source.replace(/\0/g, '�');
@@ -243,17 +244,6 @@ function sanitizeSyntaxErrorSnippet(raw: string): string {
     : collapsed;
 }
 
-function classifyKnownGrammarLimitation(lineText: string | undefined): string | undefined {
-  if (!lineText) return undefined;
-  if (/\bimport\s*\(\s*(['"])(?:(?!\1).)*\1\s*\)(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*(?:\[\s*\]|<)/.test(lineText)) {
-    return "inline `import('module').Type` used with an array/generic suffix — tree-sitter-typescript 0.23.2 cannot parse this valid TypeScript construct";
-  }
-  if (/\busing\b/.test(lineText) && !/\busing\s+[A-Za-z_$][\w$]*\s*=/.test(lineText)) {
-    return "the contextual keyword `using` used as an identifier (parameter/variable name) — tree-sitter-typescript 0.23.2 cannot disambiguate it from a `using` resource declaration";
-  }
-  return undefined;
-}
-
 export function collectSyntaxErrorLocations(root: any, sourceLines?: string[]): TSSyntaxErrorLocation[] {
   const locations: TSSyntaxErrorLocation[] = [];
   if (!root) return locations;
@@ -265,7 +255,7 @@ export function collectSyntaxErrorLocations(root: any, sourceLines?: string[]): 
       if (node.type === 'ERROR' || node.isMissing) {
         const line = (node.startPosition?.row ?? 0) + 1;
         const lineText = sourceLines?.[line - 1];
-        const knownLimitation = classifyKnownGrammarLimitation(lineText);
+        const knownLimitation = classifyKnownTypeScriptGrammarLimitation(lineText, line, sourceLines);
         locations.push({
           line,
           snippet: sanitizeSyntaxErrorSnippet(String(node.text ?? '')),
