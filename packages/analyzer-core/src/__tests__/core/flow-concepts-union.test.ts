@@ -129,9 +129,9 @@ describe('computeFlowConcepts — union of terminal + dead-end entry flows', () 
     expect(forOrders[0].terminus?.kind).toBe('database');
   });
 
-  test('union significance filter: test entries and trivial no-surface entries are excluded', () => {
+  test('union significance filter excludes tests without dropping shallow user-facing entries', () => {
     expect(flows.find(f => f.entry_point === 'ep_test')).toBeUndefined();
-    expect(flows.find(f => f.entry_point === 'ep_noop')).toBeUndefined();
+    expect(flows.find(f => f.entry_point === 'ep_noop')).toBeDefined();
   });
 
   test('capability_id is stamped on terminal AND union entry-point flows', () => {

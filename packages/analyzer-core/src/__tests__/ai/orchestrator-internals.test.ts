@@ -4986,6 +4986,58 @@ describe('orchestrator resolveNodeTwins (task #27: analyzer twin nodes/entries)'
 
     expect(nodes.filter((candidate: CASNode) => candidate.name === 'click')).toHaveLength(3);
   });
+
+  it('preserves nested evidence arrays when analyzer twins merge', () => {
+    const cls = node({ id: 'class_test', name: 'RecordResourceTest', type: 'class', source: { file: 'src/RecordResourceTest.java' } });
+    const languageMethod = node({
+      id: 'language_method',
+      name: 'fetchesRecords',
+      type: 'method',
+      parent: cls.id,
+      source: { file: 'src/RecordResourceTest.java', line: 10 },
+      primaryAnalyzer: 'java',
+      metadata: { attributes: { annotations: ['Test'], outgoing_calls: 2 } },
+    });
+    const testMethod = node({
+      id: 'test_method',
+      name: 'fetchesRecords',
+      type: 'method',
+      parent: cls.id,
+      source: { file: 'src/RecordResourceTest.java', line: 10 },
+      primaryAnalyzer: 'test-framework',
+      metadata: { attributes: { http_requests: [{ method: 'GET', path: '/records' }] } },
+    });
+    const edges: CASEdge[] = [{ id: 'language_call', source: languageMethod.id, target: 'repository', type: 'calls' } as CASEdge];
+    const nodes = [cls, languageMethod, testMethod];
+
+    orch.resolveNodeTwins(nodes, edges, [], []);
+
+    const survivor = nodes.find((candidate: CASNode) => candidate.type === 'method')!;
+    expect(survivor.metadata?.attributes?.annotations).toEqual(['Test']);
+    expect(survivor.metadata?.attributes?.http_requests).toEqual([{ method: 'GET', path: '/records' }]);
+  });
+});
+
+describe('orchestrator flow criticality ranking', () => {
+  it('does not rank lifecycle startup above user-facing product behavior', () => {
+    const nodes = [
+      { id: 'startup', name: 'Application', type: 'application', structural_importance: 1 },
+      { id: 'handler', name: 'createRecord', type: 'method', structural_importance: 0.5 },
+    ] as CASNode[];
+    const chains = [
+      { id: 'startup-chain', entry_point: { node_id: 'startup', entry_point_id: 'startup-entry' }, call_path: [{ node_id: 'startup' }] },
+      { id: 'product-chain', entry_point: { node_id: 'handler', entry_point_id: 'product-entry' }, call_path: [{ node_id: 'handler' }] },
+    ] as any[];
+    const entryPoints = [
+      { id: 'startup-entry', source_node: 'startup', type: 'lifecycle', name: 'startup' },
+      { id: 'product-entry', source_node: 'handler', type: 'http', name: 'POST /records' },
+    ] as CASEntryPoint[];
+
+    orch.stampChainCriticalityFromStructuralImportance(chains, nodes, entryPoints);
+
+    expect(chains[0].criticality).toBe('low');
+    expect(chains[1].criticality).toBe('critical');
+  });
 });
 
 describe('orchestrator dedupeHttpEntryPoints', () => {

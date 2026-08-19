@@ -9,6 +9,8 @@ import {
   findClassSpringMappingPath,
   joinSpringRoutePaths,
 } from './java-source-structure';
+import { inheritedSpringDataOperation, simpleJavaType } from './java-spring-data';
+import { extractJavaParameters, extractJavaReturnType } from './java-signature-parsing';
 
 interface JavaClass {
   name: string;
@@ -1082,11 +1084,15 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
   private extractFields(lines: string[], classStart: number, classEnd: number): JavaField[] {
     const fields: JavaField[] = [];
+    const structuralLines = maskCStyleComments(lines.slice(classStart, classEnd).join('\n')).split('\n');
+    let braceDepth = 0;
 
     for (let i = classStart; i < classEnd; i++) {
       const line = lines[i].trim();
+      const structuralLine = (structuralLines[i - classStart] || '')
+        .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '');
 
-      if (this.isFieldDeclaration(line)) {
+      if (braceDepth === 1 && this.isFieldDeclaration(line)) {
         const fieldMatch = line.match(/(\w+)\s*[=;]/);
         if (fieldMatch) {
           const fieldName = fieldMatch[1];
@@ -1107,6 +1113,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
           });
         }
       }
+      braceDepth += (structuralLine.match(/{/g) || []).length - (structuralLine.match(/}/g) || []).length;
     }
 
     return fields;
@@ -1180,11 +1187,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   private isFieldDeclaration(line: string): boolean {
-    return (line.includes('=') || line.endsWith(';')) &&
-           !line.includes('(') && !line.includes('return') &&
-           !line.startsWith('//') && !line.includes('if') &&
-           (line.includes('private') || line.includes('public') ||
-            line.includes('protected') || !!line.match(/\w+\s+\w+\s*[=;]/));
+    const separator = line.search(/[=;]/);
+    if (separator < 0 || line.startsWith('//')) return false;
+    const declaration = line.slice(0, separator).trim();
+    if (!declaration || declaration.includes('(') || /^(?:return|if)\b/.test(declaration)) return false;
+    return /\b(?:private|public|protected)\b/.test(declaration) || /\w+\s+\w+$/.test(declaration);
   }
 
   private extractModifiers(line: string): string[] {
@@ -1201,17 +1208,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   private extractReturnType(line: string): string {
-    const parts = line.trim().split(/\s+/);
-    let returnTypeIndex = -1;
-
-    for (let i = 0; i < parts.length; i++) {
-      if (parts[i].includes('(')) {
-        returnTypeIndex = i - 1;
-        break;
-      }
-    }
-
-    return returnTypeIndex > 0 ? parts[returnTypeIndex] : '';
+    return extractJavaReturnType(line);
   }
 
   private extractFieldType(line: string): string {
@@ -1227,33 +1224,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   private extractParameters(line: string): JavaParameter[] {
-    const parameters: JavaParameter[] = [];
-    const paramMatch = line.match(/\((.*?)\)/);
-
-    if (paramMatch && paramMatch[1].trim()) {
-      const paramString = paramMatch[1];
-      const params = paramString.split(',');
-
-      for (const param of params) {
-        const trimmed = param.trim();
-        const parts = trimmed.split(/\s+/);
-
-        if (parts.length >= 2) {
-          const type = parts[parts.length - 2];
-          const name = parts[parts.length - 1];
-          const isFinal = parts.includes('final');
-
-          parameters.push({
-            name,
-            type,
-            annotations: [],
-            isFinal
-          });
-        }
-      }
-    }
-
-    return parameters;
+    return extractJavaParameters(line);
   }
 
   private extractAnnotations(lines: string[], lineIndex: number): string[] {
@@ -2056,7 +2027,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
     });
     javaFiles.sort();
 
-    const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'interface_method');
+    const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'interface_method' || n.type === 'repository_operation');
     const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface');
 
     for (const file of javaFiles) {
@@ -2124,6 +2095,23 @@ export class JavaAnalyzer extends BaseAnalyzer {
               let varTypes = varTypeCache.get(callerMethod.id);
               if (!varTypes) {
                 varTypes = this.buildJavaReceiverTypeMap(content, callerMethod.source?.line, callerMethod.source?.end_line);
+                for (const parameter of callerMethod.signature?.parameters || []) {
+                  if (parameter.name && parameter.type) varTypes.set(parameter.name, simpleJavaType(parameter.type));
+                }
+                const containingClass = classNodes.find(candidate =>
+                  edges.some(edge => edge.source === candidate.id && edge.target === callerMethod.id &&
+                    (edge.type === 'has_method' || edge.type === 'declares'))
+                );
+                if (containingClass) {
+                  for (const edge of edges) {
+                    if (edge.source !== containingClass.id || edge.type !== 'has_field') continue;
+                    const field = nodes.find(node => node.id === edge.target);
+                    const fieldAttributes = (field?.metadata?.attributes || {}) as Record<string, unknown>;
+                    const fieldMetadata = (field?.metadata || {}) as Record<string, unknown>;
+                    const fieldType = fieldAttributes.type || fieldMetadata.type;
+                    if (field?.name && typeof fieldType === 'string') varTypes.set(field.name, simpleJavaType(fieldType));
+                  }
+                }
                 varTypeCache.set(callerMethod.id, varTypes);
               }
               const recvType = varTypes.get(objectOrClass) || objectOrClass;
@@ -2131,8 +2119,19 @@ export class JavaAnalyzer extends BaseAnalyzer {
               if (targetClass) {
                 targetMethod = methodNodes.find(n =>
                   n.name === methodName &&
-                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                  edges.some(e => e.source === targetClass.id && e.target === n.id &&
+                    (e.type === 'has_method' || e.type === 'declares'))
                 );
+                if (!targetMethod) {
+                  const inherited = inheritedSpringDataOperation(targetClass, methodName, methodNodes);
+                  if (inherited) {
+                    nodes.push(inherited.node);
+                    methodNodes.push(inherited.node);
+                    edges.push(inherited.edge);
+                    exitPoints.push(inherited.exitPoint);
+                    targetMethod = inherited.node;
+                  }
+                }
               }
 
               if (!targetMethod) {

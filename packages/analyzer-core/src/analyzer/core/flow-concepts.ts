@@ -26,9 +26,10 @@ import type {
   StepCodeRelationship,
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
-import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel } from './journey-builder';
+import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { entityLifecycleContractFacts } from './entity-lifecycle-contract';
 import { guardConstraintKind } from './guard-classification';
+import { httpRoutePathsMatch } from './http-route-path';
 export { CONTRACT_MODEL_NAME, UNDERSTANDING_CONTRACT_FACETS } from '../../types/cas.types';
 export type {
   CapabilityFlowRelationship,
@@ -60,7 +61,7 @@ const DEFAULT_MAX_DEPTH = 6;
 const DEFAULT_MAX_FUNCTIONS = 40;
 export const TRACEABLE_NODE_TYPES = new Set([
   'function', 'method', 'controller', 'handler', 'route', 'resolver', 'gateway',
-  'service', 'usecase', 'repository', 'dao',
+  'service', 'usecase', 'repository', 'repository_operation', 'interface_method', 'dao',
   'react_route', 'component', 'functional_component', 'class_component', 'page', 'view',
   'hook_usage', 'hook',
   'zustand_store', 'store',
@@ -378,32 +379,6 @@ function apiRouteCallsForNodes(
     }
   }
   return calls;
-}
-
-const ROUTE_PARAM_SEGMENT = /^(:[\w-]+|\{[\w-]+\}|\*)$/;
-
-function routeSegmentMatches(a: string, b: string): boolean {
-  if (ROUTE_PARAM_SEGMENT.test(a) || ROUTE_PARAM_SEGMENT.test(b)) return true;
-  return a.toLowerCase() === b.toLowerCase();
-}
-
-function normalizeRouteSegments(p: string): string[] {
-  return p.split('?')[0].split('/').filter(Boolean);
-}
-
-function routePathsMatch(callPath: string, opPath: string): boolean {
-  const callSegs = normalizeRouteSegments(callPath);
-  const opSegs = normalizeRouteSegments(opPath);
-  if (callSegs.length === 0 || opSegs.length === 0) return false;
-
-  if (callSegs.length === opSegs.length) {
-    return callSegs.every((seg, i) => routeSegmentMatches(seg, opSegs[i]));
-  }
-  if (callSegs.length < opSegs.length) {
-    const opTail = opSegs.slice(opSegs.length - callSegs.length);
-    return callSegs.every((seg, i) => routeSegmentMatches(seg, opTail[i]));
-  }
-  return false;
 }
 
 const CRUD_VERB_RE = /^(create|update|delete|remove|save|register|reserve|cancel|approve|reject|complete|submit|book|schedule)/i;
@@ -1231,7 +1206,10 @@ function deriveCapabilityRelationships(args: {
         const opMethod = op.trigger?.method;
         const opPath = op.trigger?.path;
         if (!opMethod || !opPath) continue;
-        const call = apiRouteCalls.find(c => c.method === opMethod.toUpperCase() && routePathsMatch(c.path, opPath));
+        const call = apiRouteCalls.find(c =>
+          c.method === opMethod.toUpperCase() &&
+          httpRoutePathsMatch(c.path, opPath, { allowPatternSuffix: true })
+        );
         if (call) { routeMatch = { op, call }; break; }
       }
       if (routeMatch) {
@@ -2434,7 +2412,7 @@ function computeEntryPointFlows(
     const chain = traceForwardChain(traversal, rootNode.id, maxDepth, maxFunctions);
     if (chain.length === 0) continue;
 
-    if (unionOpts.significantOnly && chain.length === 1) {
+    if (unionOpts.significantOnly && chain.length === 1 && !USER_FACING_ENTRY_TYPES.has(ep.type)) {
       const rootId = rootNode.id;
       const hasExit = (exitPointsByNode.get(rootId) || []).length > 0;
       const hasLineage = Boolean(lineageByNode.get(rootId));

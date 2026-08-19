@@ -104,6 +104,9 @@ import { ChangeDetector } from './change-detector';
 import { anchorUnresolvedCliHandler, permitsGlobalHandlerFallback, rankHandlerCandidateFiles } from './route-handler-resolution';
 import { linkStructuralOwnership } from './structural-ownership';
 import { buildGraphValidation } from './graph-validation';
+import { linkHttpTestCoverage } from './http-test-coverage';
+import { mergeNodeMetadata } from './node-metadata-merge';
+import { databaseFieldsFromAttributes, normalizeDatabaseEntities, type DatabaseEntityEvidence } from './database-schema-normalization';
 import {
   computeGraphAffectedFileClosure,
   filesRequiringIncrementalAnalysis,
@@ -1387,6 +1390,7 @@ export class AnalyzerOrchestrator {
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
     this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges);
     this.dedupeEntryPointTwins(allEntryPoints, projectPath, allEdges);
+    linkHttpTestCoverage(allNodes, allEdges, allEntryPoints);
     this.normalizeNodeMetrics(allNodes);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
@@ -2958,6 +2962,7 @@ export class AnalyzerOrchestrator {
     this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints, edges);
     this.dedupeHttpEntryPoints(entryPoints, projectPath, edges);
     this.dedupeEntryPointTwins(entryPoints, projectPath, edges);
+    linkHttpTestCoverage(nodes, edges, entryPoints);
     this.normalizeNodeMetrics(nodes);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     assignNodeRoles({ nodes, edges, entry_points: entryPoints, exit_points: exitPoints, resetDerivedRoles: true });
@@ -7577,7 +7582,7 @@ export class AnalyzerOrchestrator {
   }
 
   private buildDatabaseSchema(nodes: CASNode[], libraries: any[], projectPath?: string, edges: CASEdge[] = []): CASDatabaseSchema {
-    const entities: CASDatabaseEntity[] = [];
+    const entityEvidence: DatabaseEntityEvidence[] = [];
     const relationships: string[] = [];
 
     let orm: string | undefined;
@@ -7617,7 +7622,8 @@ export class AnalyzerOrchestrator {
 
     const propertyIndex = this.buildEntityPropertyIndex(nodes);
     entityNodes.forEach(entityNode => {
-      const fields: CASDatabaseEntity['fields'] = [];
+      const attributes = { ...((entityNode.metadata || {}) as Record<string, unknown>), ...((entityNode.metadata?.attributes || {}) as Record<string, unknown>) };
+      const fields: CASDatabaseEntity['fields'] = databaseFieldsFromAttributes(attributes);
       const entityRelationships: CASDatabaseEntity['relationships'] = [];
 
       const propertyNodes = this.entityPropertyNodesFromIndex(propertyIndex, entityNode);
@@ -7695,19 +7701,30 @@ export class AnalyzerOrchestrator {
             primary: isPrimary,
             unique: isUnique,
             nullable,
-            default: defaultValue
+            default: defaultValue,
+            column: this.decoratorOptionValue(annotations, 'name')
           });
         }
       });
 
-      entities.push({
-        name: entityNode.name,
-        table: entityNode.metadata?.attributes?.tableName as string,
-        source_file: entityNode.source?.file,
-        fields,
-        relationships: entityRelationships
+      const table = typeof attributes.tableName === 'string'
+        ? attributes.tableName
+        : typeof attributes.table_name === 'string'
+          ? attributes.table_name
+          : undefined;
+      entityEvidence.push({
+        sourceKind: attributes.schema_surface === 'sql-ddl' ? 'ddl' : 'model',
+        entity: {
+          name: entityNode.name,
+          table,
+          source_file: entityNode.source?.file,
+          fields,
+          relationships: entityRelationships,
+        },
       });
     });
+
+    const entities = normalizeDatabaseEntities(entityEvidence);
 
     const entityById = new Map(entityNodes.map(n => [n.id, n]));
     const schemaEntityByName = new Map(entities.map(entity => [entity.name.toLowerCase(), entity]));
@@ -7912,10 +7929,9 @@ export class AnalyzerOrchestrator {
 
   private decoratorOptionValue(annotations: string[], option: string): string | undefined {
     const text = annotations.join(' ');
-    const match = text.match(new RegExp(`${option}\\s*:\\s*([^,})]+)`));
-    return match?.[1]?.trim();
+    const match = text.match(new RegExp(`${option}\\s*[:=]\\s*([^,})]+)`));
+    return match?.[1]?.trim().replace(/^['"]|['"]$/g, '');
   }
-
   private buildExternalServices(
     nodes: CASNode[],
     exitPoints: CASExitPoint[],
@@ -8955,9 +8971,10 @@ export class AnalyzerOrchestrator {
 
     const ranked: Array<{ chain: CASCallChain; mass: number }> = [];
     for (const chain of callChains) {
-      if (chainEpType(chain) === 'test') {
+      const entryType = chainEpType(chain);
+      if (entryType === 'test' || entryType === 'lifecycle') {
         chain.criticality = 'low';
-        chain.criticality_factors = Array.from(new Set([...(chain.criticality_factors || []), 'test-entry']));
+        chain.criticality_factors = Array.from(new Set([...(chain.criticality_factors || []), `${entryType}-entry`]));
         continue;
       }
       let mass = 0;
@@ -15947,7 +15964,7 @@ export class AnalyzerOrchestrator {
       if (core && core.length >= 3) dtoNounByTypeName.set((node.name || '').toLowerCase(), this.singularizeNoun(core.toLowerCase()));
     }
     const knownDataNouns = new Set(dtoNounByTypeName.values());
-    const ACCESSOR_TYPES = new Set(['method', 'function', 'controller', 'service', 'route']);
+    const ACCESSOR_TYPES = new Set(['method', 'interface_method', 'repository_operation', 'function', 'controller', 'service', 'route']);
     for (const node of nodes) {
       if (!ACCESSOR_TYPES.has(node.type)) continue;
       const route = routeLifecycleAttribution(node, knownDataNouns, value => this.singularizeNoun(value));
@@ -21801,17 +21818,7 @@ export class AnalyzerOrchestrator {
         if (loser.id === survivor.id) continue;
         redirect.set(loser.id, survivor.id);
         removals.add(loser.id);
-        if (loser.metadata) {
-          const folded: Record<string, unknown> = { ...loser.metadata, ...survivor.metadata };
-          for (const [k, lv] of Object.entries(loser.metadata)) {
-            const sv = (survivor.metadata as Record<string, unknown> | undefined)?.[k];
-            if (Array.isArray(lv) && Array.isArray(sv)) {
-              const seen = new Set(sv.map(v => JSON.stringify(v)));
-              folded[k] = [...sv, ...lv.filter(v => !seen.has(JSON.stringify(v)))];
-            }
-          }
-          survivor.metadata = folded as typeof survivor.metadata;
-        }
+        mergeNodeMetadata(loser, survivor);
         if (loser.tags?.length) survivor.tags = [...new Set([...(survivor.tags || []), ...loser.tags])];
         if (loser.subcategories?.length) {
           survivor.subcategories = [...new Set([...(survivor.subcategories || []), ...loser.subcategories])];
@@ -22642,10 +22649,10 @@ export class AnalyzerOrchestrator {
 
     const testFiles = nodes.filter(n => n.type === 'file' && this.isTestFileNode(n));
 
-    const suiteFiles = new Set(testSuites.map(s => s.file_path));
-
     for (const testFile of testFiles) {
-      if (suiteFiles.has(testFile.source?.file || '')) continue;
+      if (testSuites.some(suite =>
+        this.pathsReferToSameFile(projectPath, suite.file_path, testFile.source?.file || '')
+      )) continue;
       const fileId = `suite_file_${testFile.id}`;
       if (addedSuiteIds.has(fileId)) continue;
 

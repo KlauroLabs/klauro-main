@@ -2763,6 +2763,7 @@ export interface CASDatabaseEntity {
   name: string;
   table?: string;
   source_file?: string;
+  source_files?: string[];
   fields: CASDatabaseField[];
   relationships: CASDatabaseRelationship[];
 }
@@ -2775,6 +2776,7 @@ export interface CASDatabaseField {
   nullable?: boolean;
   default?: string;
   column?: string;
+  type_variants?: string[];
 }
 
 export interface CASDatabaseRelationship {

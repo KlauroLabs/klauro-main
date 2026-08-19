@@ -37,6 +37,10 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'base-analyzer.ts': 1,
   'deployable-evidence.ts': 1,
   'dependency-manifest.ts': 1,
+  'database-schema-normalization.ts': 1,
+  'http-route-path.ts': 1,
+  'http-test-coverage.ts': 1,
+  'node-metadata-merge.ts': 1,
   'reachability-index.ts': 1,
 
   // --- tier 2 ---

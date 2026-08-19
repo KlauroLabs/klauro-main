@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { TEST_FRAMEWORK_DETECTION_FILES } from './test-framework-detection';
 
 /**
  * GUARD against the "three analyzer registration lists" footgun
@@ -136,6 +137,24 @@ test('every concrete analyzer class is wired into the live createOrchestrator() 
     `*Analyzer-extends-BaseAnalyzer, or add it to the documented allowlist in this test with a ` +
     `comment explaining why.`
   );
+});
+
+test('cross-language test detection has a live file signal for every supported test shape', () => {
+  const expected = [
+    '**/*.{test,spec}.{js,jsx,ts,tsx,mjs,cjs}',
+    '**/test_*.py',
+    '**/*_test.go',
+    '**/*_test.rs',
+    '**/*Test.java',
+    '**/*Test.kt',
+    '**/*Test.cs',
+    '**/*_spec.rb',
+    '**/*Test.php',
+    '**/*Tests.swift',
+    '**/*_test.exs',
+    '**/*.t.sol',
+  ];
+  for (const pattern of expected) assert.ok(TEST_FRAMEWORK_DETECTION_FILES.includes(pattern), pattern);
 });
 
 test('inline registration ids equal the analyzer instance self-id (no id drift)', async () => {

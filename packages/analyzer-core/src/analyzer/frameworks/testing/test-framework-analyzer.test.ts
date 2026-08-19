@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import { TestFrameworkAnalyzer } from './test-framework-analyzer';
+import { linkHttpTestCoverage } from '../../core/http-test-coverage';
 
 /**
  * Real-fixture end-to-end coverage for the cross-language test analyzer. Uses
@@ -190,6 +191,64 @@ class CalcTest {
     const cases = caseNodes(contribution.nodes);
     assert.deepEqual(cases.map(c => c.name).sort(), ['addsNumbers', 'subtractsNumbers']);
     assert.strictEqual(suiteNodes(contribution.nodes)[0].metadata?.framework, 'junit');
+  } finally {
+    await fs.remove(root);
+  }
+});
+
+test('JUnit HTTP request literals cover only the matching canonical route', async () => {
+  const root = await makeProject('junit-http');
+  try {
+    const testDirectory = path.join(root, 'src/test/java/org/example/samples/records');
+    await fs.ensureDir(testDirectory);
+    await fs.writeFile(
+      path.join(testDirectory, 'RecordResourceTest.java'),
+      `import org.junit.jupiter.api.Test;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+
+class RecordResourceTest {
+    @Test
+    void fetchesSelectedRecords() throws Exception {
+        mvc.perform(get("/records?recordId=11,22"));
+    }
+}
+`
+    );
+    const existing = [{
+      nodes: [
+        { id: 'controller_records', name: 'RecordResource', type: 'controller' },
+        { id: 'route_records_get', name: 'GET /records', type: 'route', metadata: { attributes: { method: 'GET', path: '/records' } } },
+        { id: 'route_records_post', name: 'POST /records', type: 'route', metadata: { attributes: { method: 'POST', path: '/records' } } },
+        { id: 'handler_records_get', name: 'fetchSelectedRecords', type: 'method' },
+      ],
+      edges: [{ id: 'controller_exposes_get', source: 'controller_records', target: 'route_records_get', type: 'exposes' }],
+      entry_points: [
+        { id: 'entry_records_get', source_node: 'route_records_get', type: 'http', trigger: { method: 'GET', path: '/records' }, handler: { node_id: 'handler_records_get' } },
+        { id: 'entry_records_post', source_node: 'route_records_post', type: 'http', trigger: { method: 'POST', path: '/records' } },
+      ],
+      exit_points: [],
+      analyzer_metadata: {} as any,
+    }];
+
+    const contribution = await new TestFrameworkAnalyzer().analyze({
+      projectPath: root,
+      existingAnalysis: existing as any,
+    });
+    const testCase = caseNodes(contribution.nodes)[0];
+    const mergedEdges = [...existing[0].edges, ...contribution.edges] as any;
+    linkHttpTestCoverage(
+      [...existing[0].nodes, ...contribution.nodes] as any,
+      mergedEdges,
+      existing[0].entry_points as any,
+    );
+    const testedTargets = mergedEdges
+      .filter(edge => edge.type === 'tests' && edge.source === testCase.id)
+      .map(edge => edge.target);
+    assert.deepEqual(testedTargets.sort(), ['controller_records', 'handler_records_get', 'route_records_get']);
+    assert.strictEqual(
+      mergedEdges.find(edge => edge.type === 'tests')?.metadata?.attributes?.evidence,
+      'http-request-literal'
+    );
   } finally {
     await fs.remove(root);
   }

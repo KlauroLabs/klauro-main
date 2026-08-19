@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { createYieldBudget } from '../../core/event-loop-yield';
+import { httpRoutePathsMatch } from '../../core/http-route-path';
 
 
 
@@ -52,6 +53,18 @@ interface DiscoveredSuite {
   cases: DiscoveredCase[];
 
   imports: string[];
+  content: string;
+}
+
+interface HttpRouteTarget {
+  nodeId: string;
+  method: string;
+  path: string;
+}
+
+interface HttpRequestLiteral {
+  method: string;
+  path: string;
 }
 
 interface FrameworkRule {
@@ -77,6 +90,7 @@ interface TestCoverageTargetIndex {
   nodesById: Map<string, CASNode>;
   callsBySource: Map<string, Array<{ target: string; line?: number }>>;
   reachableProductionTargets: Map<string, ReadonlySet<string>>;
+  httpRoutes: HttpRouteTarget[];
 }
 
 export class TestFrameworkAnalyzer extends BaseAnalyzer {
@@ -171,7 +185,8 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         type: this.inferType(normalized, content),
         lineCount: this.sourceLineCount(content),
         cases,
-        imports: this.extractImports(content, rule.language)
+        imports: this.extractImports(content, rule.language),
+        content,
       });
     }
 
@@ -194,7 +209,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
   }
 
   private getTestIgnorePatterns(context: AnalysisContext): string[] {
-    return this.getIgnorePatterns(context).filter(pattern =>
+    return this.getPackageDirSafeIgnorePatterns(context).filter(pattern =>
       pattern !== '__tests__/**' && pattern !== '**/__tests__/**'
     );
   }
@@ -228,6 +243,11 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     const caseNodes: Array<{ discovered: DiscoveredCase; node: CASNode }> = [];
     suite.cases.forEach((testCase, index) => {
       const testId = `test_${suiteId}_${index}`;
+      const httpRequests = this.httpRequestsInCase(
+        suite,
+        testCase.line,
+        suite.cases[index + 1]?.line ?? Number.POSITIVE_INFINITY,
+      );
       const testNode = this.createNodeBuilder(testId, testCase.name, 'test')
         .withLevel(3, 'code')
         .withCategory('test', [suite.type])
@@ -239,7 +259,8 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
           attributes: {
             type: suite.type,
             skipped: testCase.skipped,
-            focused: testCase.focused
+            focused: testCase.focused,
+            http_requests: httpRequests,
           }
         })
         .build();
@@ -422,6 +443,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     const nodesBySourcePath = new Map<string, CASNode[]>();
     const nodesById = new Map<string, CASNode>();
     const callsBySource = new Map<string, Array<{ target: string; line?: number }>>();
+    const httpRoutes = new Map<string, HttpRouteTarget>();
     const sourceKeysByFile = new Map<string, string[]>();
     const sourceKeys = (file: string) => {
       const cached = sourceKeysByFile.get(file);
@@ -459,6 +481,25 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         calls.push({ target: edge.target, line: typeof line === 'number' ? line : undefined });
         callsBySource.set(edge.source, calls);
       }
+      for (const entryPoint of contribution.entry_points || []) {
+        const method = entryPoint.trigger?.method;
+        const routePath = entryPoint.trigger?.path;
+        if (entryPoint.type !== 'http' || !method || !routePath || !entryPoint.source_node) continue;
+        const target = {
+          nodeId: entryPoint.source_node,
+          method: method.toUpperCase(),
+          path: routePath,
+        };
+        httpRoutes.set(`${target.nodeId}\0${target.method}\0${target.path}`, target);
+      }
+      for (const node of contribution.nodes || []) {
+        const attributes = node.metadata?.attributes;
+        const method = attributes?.method;
+        const routePath = attributes?.path;
+        if (node.type !== 'route' || typeof method !== 'string' || typeof routePath !== 'string') continue;
+        const target = { nodeId: node.id, method: method.toUpperCase(), path: routePath };
+        httpRoutes.set(`${target.nodeId}\0${target.method}\0${target.path}`, target);
+      }
     }
     return {
       fileNodesByPath,
@@ -467,6 +508,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       nodesById,
       callsBySource,
       reachableProductionTargets: new Map(),
+      httpRoutes: [...httpRoutes.values()],
     };
   }
 
@@ -515,7 +557,35 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       )) {
         this.pushExactTestEdge(edges, edgeIds, current.node.id, targetId, 'case-call-graph');
       }
+      for (const request of this.httpRequestsInCase(suite, current.discovered.line, nextLine)) {
+        for (const route of index.httpRoutes) {
+          if (request.method !== route.method || !httpRoutePathsMatch(request.path, route.path)) continue;
+          this.pushExactTestEdge(edges, edgeIds, current.node.id, route.nodeId, 'http-request-literal');
+        }
+      }
     }
+  }
+
+  private httpRequestsInCase(suite: DiscoveredSuite, startLine: number, endLine: number): HttpRequestLiteral[] {
+    const lines = suite.content.split('\n');
+    const source = lines.slice(
+      Math.max(0, startLine - 1),
+      Number.isFinite(endLine) ? endLine - 1 : undefined,
+    ).join('\n');
+    const requests = new Map<string, HttpRequestLiteral>();
+    const add = (method: string, requestPath: string) => {
+      const normalizedMethod = method.toUpperCase().replace(/ASYNC$/, '');
+      if (!requestPath.startsWith('/') && !/^[a-z][a-z\d+.-]*:\/\//i.test(requestPath)) return;
+      requests.set(`${normalizedMethod}\0${requestPath}`, { method: normalizedMethod, path: requestPath });
+    };
+    const direct = /(?:^|[^\w])(?:[A-Za-z_$][\w$]*\.)*(get|post|put|patch|delete|head|options)(?:Async)?\s*\(\s*(['"`])([^'"`]+)\2/gi;
+    let match: RegExpExecArray | null;
+    while ((match = direct.exec(source)) !== null) add(match[1], match[3]);
+    const fluent = /\.(get|post|put|patch|delete|head|options)\s*\(\s*\)[\s\S]{0,240}?\.uri\s*\(\s*(['"`])([^'"`]+)\2/gi;
+    while ((match = fluent.exec(source)) !== null) add(match[1], match[3]);
+    const explicit = /\b(?:request|open|send)\s*\(\s*(['"`])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\1\s*,\s*(['"`])([^'"`]+)\3/gi;
+    while ((match = explicit.exec(source)) !== null) add(match[2], match[4]);
+    return [...requests.values()];
   }
 
   private graphNodesForSuite(suite: DiscoveredSuite, index: TestCoverageTargetIndex): CASNode[] {

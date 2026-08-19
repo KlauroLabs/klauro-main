@@ -116,3 +116,56 @@ test('multi-line union/generic types are collapsed to a single renderable token'
   expect(type).not.toMatch(/\n/);
   expect(type).toBe('| MicrosoftEntraOptionsDto | GoogleWorkspaceOptionsDto');
 });
+
+test('combines a logical model with direct-metadata SQL dialect definitions', () => {
+  const entity: CASNode = {
+    id: 'entity_visit',
+    name: 'Visit',
+    type: 'entity',
+    source: { file: 'src/Visit.java', line: 1 },
+  } as CASNode;
+  const sqlNode = (dialect: string, idType: string): CASNode => ({
+    id: `sql_visit_${dialect}`,
+    name: 'Visit',
+    type: 'model',
+    source: { file: `db/${dialect}/schema.sql`, line: 1 },
+    metadata: {
+      schema_surface: 'sql-ddl',
+      table_name: 'visits',
+      is_persisted: true,
+      columns: [
+        { name: 'id', type: idType, primary_key: true, nullable: false },
+        { name: 'visit_date', type: 'DATE', nullable: false },
+      ],
+    },
+  } as CASNode);
+
+  const schema = buildSchema([
+    entity,
+    propNode('entity_visit', 'id', { metadataType: 'Integer' }),
+    propNode('entity_visit', 'date', { metadataType: 'Date', annotations: ['@Column(name = "visit_date")'] }),
+    sqlNode('hsqldb', 'INTEGER'),
+    sqlNode('mysql', 'INT'),
+  ]);
+
+  expect(schema.entities).toHaveLength(1);
+  expect(schema.entities[0]).toMatchObject({
+    name: 'Visit',
+    table: 'visits',
+    source_file: 'src/Visit.java',
+    source_files: ['src/Visit.java', 'db/hsqldb/schema.sql', 'db/mysql/schema.sql'],
+    fields: [{
+      name: 'id',
+      type: 'Integer',
+      primary: true,
+      nullable: false,
+      type_variants: ['Integer', 'INTEGER', 'INT'],
+    }, {
+      name: 'date',
+      type: 'Date',
+      nullable: false,
+      column: 'visit_date',
+      type_variants: ['Date', 'DATE'],
+    }],
+  });
+});

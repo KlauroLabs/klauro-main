@@ -7,6 +7,8 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { extractSpringEndpointParameters, extractSpringResponseStatus, type SpringEndpointParameter } from './spring-web-contract';
+import { discoverSpringOperationalDependencies } from './spring-operational-dependencies';
 
 interface SpringBootApplication {
   name: string;
@@ -29,8 +31,9 @@ interface SpringEndpoint {
   method: string;
   path: string;
   handlerName: string;
-  parameters: Array<{ name: string; type: string; annotation: string }>;
+  parameters: SpringEndpointParameter[];
   responseType: string;
+  responseStatus?: number;
   produces: string[];
   consumes: string[];
   authenticated: boolean;
@@ -147,7 +150,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         nodir: true
       });
 
-      const application = await this.analyzeApplication(javaFiles, context.projectPath, nodes);
+      const application = await this.analyzeApplication(javaFiles, context.projectPath, nodes, entryPoints);
       const controllers = await this.analyzeControllers(javaFiles, context.projectPath, nodes, edges, entryPoints);
       const services = await this.analyzeServices(javaFiles, context.projectPath, nodes, edges);
       const configurations = await this.analyzeConfigurations(javaFiles, context.projectPath, nodes, edges);
@@ -155,9 +158,16 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const security = await this.analyzeSecurity(javaFiles, context.projectPath, nodes, edges);
 
       await this.analyzeMessagingTriggers(javaFiles, context.projectPath, nodes, entryPoints);
+      const operationalDependencies = await discoverSpringOperationalDependencies({
+        projectPath: context.projectPath,
+        application,
+        ignorePatterns: this.getJavaIgnorePatterns(context),
+      });
+      nodes.push(...operationalDependencies.nodes);
+      exitPoints.push(...operationalDependencies.exitPoints);
 
       this.buildSpringBootRelationships(controllers, services, configurations, entities, nodes, edges);
-      this.identifyDatabaseConnections(entities, exitPoints);
+      this.identifyDatabaseConnections(entities, nodes, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -182,7 +192,8 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   private async analyzeApplication(
     files: string[],
     projectPath: string,
-    nodes: CASNode[]
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[]
   ): Promise<SpringBootApplication | null> {
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
@@ -224,6 +235,17 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
             })
             .build();
           nodes.push(appNode);
+          entryPoints.push(this.createEntryPoint(
+            `entry_${appId}`,
+            appId,
+            'lifecycle',
+            `${className} startup`,
+            `Spring Boot application startup for ${className}`,
+            { event: 'application-start' },
+            undefined,
+            { framework: 'spring-boot', mainClass: className },
+            { node_id: appId, method_name: 'main', file, line: 1 }
+          ));
 
           return application;
         }
@@ -315,17 +337,37 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
             ));
 
             const canonicalPath = routePath.replace(/\{([^}]+)\}/g, ':$1');
-            entryPoints.push(this.createEntryPoint(
+            const entryPoint = this.createEntryPoint(
               `entry_${endpointId}`,
               endpointId,
               'http',
               `${endpoint.method.toUpperCase()} ${canonicalPath}`,
               `Spring Boot HTTP endpoint: ${endpoint.method.toUpperCase()} ${canonicalPath}`,
-              { method: endpoint.method.toUpperCase(), path: canonicalPath },
+              {
+                method: endpoint.method.toUpperCase(),
+                path: canonicalPath,
+                parameters: endpoint.parameters.map(parameter => ({
+                  name: parameter.name,
+                  type: parameter.type,
+                  required: parameter.required,
+                  location: parameter.location
+                }))
+              },
               { authenticated: endpoint.authenticated },
               { method: endpoint.method, path: canonicalPath, controller: className, handler: endpoint.handlerName, authenticated: endpoint.authenticated },
               { node_id: endpointId, method_name: endpoint.handlerName, file: file, line: endpoint.line }
-            ));
+            );
+            entryPoint.input = {
+              type: endpoint.parameters.some(parameter => parameter.location === 'body') ? 'request-body' : 'parameters',
+              fields: endpoint.parameters.map(parameter => ({ name: parameter.name, type: parameter.type })),
+              validation: [...new Set(endpoint.parameters.flatMap(parameter => parameter.validations))]
+            };
+            entryPoint.output = {
+              type: endpoint.responseType,
+              status_codes: endpoint.responseStatus ? [endpoint.responseStatus] : undefined,
+              is_void: endpoint.responseType === 'void'
+            };
+            entryPoints.push(entryPoint);
           });
         }
       }
@@ -557,8 +599,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           exitPoints.push({
             id: `exit_db_${entityId}`,
             name: `Database table: ${table}`,
-            type: 'database_table',
+            type: 'database',
             source_node: entityId,
+            target: { resource: table },
+            operation: { action: 'persistence' },
             metadata: {
               table,
               entity: className,
@@ -841,13 +885,21 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
   private extractEndpoints(content: string): SpringEndpoint[] {
 
-    const methodPattern = /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?[\w.]+(?:<[^;{}]*>)?(?:\[\])*\s+(\w+)\s*\([^)]*\)/g;
+    const methodPattern = /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?([\w.$]+(?:\s*<[^;{}]*>)?(?:\[\])*)\s+(\w+)\s*\(([\s\S]*?)\)\s*(?:throws\s+[^{]+)?\{/g;
 
     const classDeclIdx = content.search(/\bclass\s+\w/);
     const classHeader = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : '';
     const classGuarded = /@(?:PreAuthorize|Secured|RolesAllowed)\b/.test(classHeader);
 
-    interface RawMapping { index: number; end: number; verbs: string[]; rawArgs?: string; handlerName: string; }
+    interface RawMapping {
+      index: number;
+      end: number;
+      verbs: string[];
+      rawArgs?: string;
+      handlerName: string;
+      responseType: string;
+      parameterSource: string;
+    }
     const rawMappings: RawMapping[] = [];
 
     let match;
@@ -857,7 +909,9 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         end: match.index + match[0].length,
         verbs: [match[1].toLowerCase()],
         rawArgs: match[2],
-        handlerName: match[3]
+        responseType: match[3].replace(/\s+/g, ' ').trim(),
+        handlerName: match[4],
+        parameterSource: match[5]
       });
     }
 
@@ -869,7 +923,9 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         end: match.index + match[0].length,
         verbs: this.extractRequestMappingVerbs(match[1]),
         rawArgs: match[1],
-        handlerName: match[2]
+        handlerName: match[2],
+        responseType: 'Object',
+        parameterSource: ''
       });
     }
 
@@ -893,8 +949,9 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           method,
           path,
           handlerName: rm.handlerName,
-          parameters: [],
-          responseType: 'Object',
+          parameters: extractSpringEndpointParameters(rm.parameterSource),
+          responseType: rm.responseType,
+          responseStatus: extractSpringResponseStatus(window),
           produces: [],
           consumes: [],
           authenticated: classGuarded || methodGuarded,
@@ -1199,19 +1256,30 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private identifyDatabaseConnections(entities: SpringEntity[], exitPoints: any[]): void {
+  private identifyDatabaseConnections(entities: SpringEntity[], nodes: CASNode[], exitPoints: CASExitPoint[]): void {
     if (entities.length > 0) {
-      exitPoints.push({
-        id: 'exit_jpa_database',
-        name: 'JPA Database Connection',
-        type: 'database_connection',
-        source_node: 'spring_data_jpa',
-        metadata: {
-          entities: entities.map(e => e.name),
-          tables: entities.map(e => e.table),
-          orm: 'JPA/Hibernate'
-        }
-      });
+      const nodeId = 'spring_data_jpa';
+      if (!nodes.some(node => node.id === nodeId)) {
+        nodes.push(this.createNodeBuilder(nodeId, 'JPA Database', 'repository')
+          .withLevel(2, 'architectural')
+          .withCategory('repository', ['database', 'jpa', 'hibernate'])
+          .withDescription('JPA persistence boundary')
+          .withMetadata({
+            framework: 'spring-data-jpa',
+            attributes: { entities: entities.map(entity => entity.name), tables: entities.map(entity => entity.table) }
+          })
+          .build());
+      }
+      exitPoints.push(this.createExitPoint(
+        'exit_jpa_database',
+        nodeId,
+        'database',
+        'JPA Database Connection',
+        'JPA and Hibernate persistence boundary',
+        { resource: entities.map(entity => entity.table).join(',') },
+        { action: 'persist' },
+        { entities: entities.map(entity => entity.name), tables: entities.map(entity => entity.table), orm: 'JPA/Hibernate' }
+      ));
     }
   }
 
