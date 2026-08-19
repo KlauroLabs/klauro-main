@@ -17,10 +17,10 @@ const localPackageNamesByRoot = new Map<string, Promise<Set<string>>>();
 
 export async function deriveLocalPackageImportContext(
   resolutionRoot: string,
-  sources: Array<{ path?: string; content: string }>
+  sources: Iterable<{ path?: string; content: string }> | AsyncIterable<{ path?: string; content: string }>
 ): Promise<LocalPackageImportContext> {
   const imports: LocalPackageImportIdentity[] = [];
-  for (const source of sources) {
+  for await (const source of sources) {
     if (!source.path || source.path === LOCAL_PACKAGE_IMPORT_CONTEXT_PATH) continue;
     for (const specifier of relativeImportSpecifiers(source.content)) {
       const target = path.resolve(resolutionRoot, path.dirname(source.path), specifier);

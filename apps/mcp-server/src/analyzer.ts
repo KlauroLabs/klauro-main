@@ -34,6 +34,7 @@ import { GenericTreeSitterLanguageAnalyzer } from '../../../packages/analyzer-co
 import {
   NestJSAnalyzer,
   SpringBootAnalyzer,
+  SpringCloudGatewayAnalyzer,
   DjangoAnalyzer,
   FlaskAnalyzer,
   FastAPIAnalyzer,
@@ -576,9 +577,6 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       consumesExistingAnalysis: false, analyzer: new CliAnalyzer(),
     },
     {
-
-
-
       id: 'generic-tree-sitter',
       name: 'Generic Tree-sitter Analyzer',
       type: 'language',
@@ -593,6 +591,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
   const frameworkRegistrations: AnalyzerRegistration[] = [
     { id: 'nestjs', name: 'NestJS Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@nestjs/core', '@nestjs/common'] }, requires: ['typescript-javascript'], analyzer: new NestJSAnalyzer() },
     { id: 'spring-boot', name: 'Spring Boot Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['spring-boot-starter', 'org.springframework.boot'], files: ['pom.xml', 'build.gradle'] }, requires: ['java'], analyzer: new SpringBootAnalyzer() },
+    { id: 'spring-cloud-gateway', name: 'Spring Cloud Gateway Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['spring-cloud-starter-gateway', 'spring-cloud-gateway', 'org.springframework.cloud.gateway'], files: ['**/src/main/resources/application*.yml', '**/src/main/resources/application*.yaml', '**/src/main/resources/bootstrap*.yml', '**/src/main/resources/bootstrap*.yaml'], content: [/spring:\s*[\s\S]*?cloud:\s*[\s\S]*?gateway:/, /\buri:\s*(?:lb:)?\/\//] }, analyzer: new SpringCloudGatewayAnalyzer() },
     { id: 'django', name: 'Django Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Django', 'django'], files: ['manage.py', 'requirements.txt'] }, requires: ['python'], analyzer: new DjangoAnalyzer() },
     { id: 'flask', name: 'Flask Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Flask', 'flask'], files: ['requirements.txt'] }, requires: ['python'], analyzer: new FlaskAnalyzer() },
     { id: 'fastapi', name: 'FastAPI Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastapi', 'FastAPI'], files: ['requirements.txt'] }, requires: ['python'], analyzer: new FastAPIAnalyzer() },

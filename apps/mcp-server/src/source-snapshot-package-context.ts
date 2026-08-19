@@ -34,7 +34,7 @@ export async function appendDerivedStreamingLocalPackageContext(
   hashContent: (content: string) => string
 ): Promise<void> {
   const candidates = files.filter(file => isJavaScriptSource(file.path));
-  const sources = await Promise.all(candidates.map(async file => ({ path: file.path, content: await file.readContent() })));
+  const sources = readStreamingSources(candidates);
   const context = await contextContent(root, sources);
   if (!context) return;
   const hash = hashContent(context);
@@ -59,9 +59,18 @@ export async function appendStoredLocalPackageContext(
   upsertSnapshotFile(files, await fs.readFile(contextPath, 'utf8'), hashContent);
 }
 
-async function contextContent(root: string, files: Array<{ path: string; content: string }>): Promise<string | undefined> {
-  const context = await deriveLocalPackageImportContext(root, files.filter(file => isJavaScriptSource(file.path)));
+async function contextContent(
+  root: string,
+  files: Iterable<{ path: string; content: string }> | AsyncIterable<{ path: string; content: string }>
+): Promise<string | undefined> {
+  const context = await deriveLocalPackageImportContext(root, files);
   return context.imports.length > 0 ? `${JSON.stringify(context, null, 2)}\n` : undefined;
+}
+
+async function* readStreamingSources(
+  files: StreamingSnapshotFile[]
+): AsyncGenerator<{ path: string; content: string }> {
+  for (const file of files) yield { path: file.path, content: await file.readContent() };
 }
 
 function upsertSnapshotFile(
