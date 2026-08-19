@@ -785,3 +785,20 @@ test('buildSummary.frameworks reports only real product frameworks, not adapter 
   assert.deepEqual(summary.frameworks, ['react'],
     `summary.frameworks must be only real product frameworks, got ${JSON.stringify(summary.frameworks)}`);
 });
+
+test('buildSummary recognizes a framework from its product entry points', () => {
+  const cas = buildTwoSourceCas();
+  cas.nodes.push({ id: 'dashboard-page', name: 'DashboardPage', type: 'function', source: { file: 'app/dashboard/page.tsx' }, analyzers: ['typescript-javascript'] } as any);
+  cas.entry_points = [{
+    id: 'next-page', source_node: 'dashboard-page', source_analyzer: 'nextjs', type: 'page', name: 'PAGE /dashboard',
+    metadata: { framework: 'nextjs' },
+  } as any];
+  cas.analyzer_contributions = [
+    ...(cas.analyzer_contributions || []),
+    { analyzer_id: 'nextjs', analyzer_type: 'framework', contribution_type: 'framework' } as any,
+  ];
+
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+
+  assert.ok(summary.frameworks.includes('nextjs'));
+});

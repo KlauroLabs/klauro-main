@@ -5,6 +5,7 @@ import type {
   CASTerminalityMember,
   FlowConcept,
 } from '../../types/cas.types';
+import { classifyGuardKind } from './guard-classification';
 
 function uniqueIds(ids: Iterable<string>): string[] {
   return [...new Set([...ids].filter(Boolean))].sort();
@@ -155,6 +156,27 @@ function flowEdges(cas: CASOutput): CASTerminalityEdge[] {
     }
     for (const predecessor of flow.continued_from || []) {
       if (flowIds.has(predecessor)) edges.push({ source: predecessor, target: flow.flow_id });
+    }
+  }
+  const entryPoints = new Map((cas.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
+  const authenticationProviders = flows.filter(flow => {
+    const entryPoint = entryPoints.get(flow.entry_point);
+    const providerEvidence = [
+      flow.name,
+      flow.intent,
+      entryPoint?.name,
+      flow.terminus?.produces,
+      ...flow.steps.map(step => step.name),
+    ].filter(Boolean).join(' ');
+    return classifyGuardKind(providerEvidence) === 'authentication';
+  });
+  for (const flow of flows) {
+    const entryPoint = entryPoints.get(flow.entry_point);
+    const authenticationRequired = Boolean(entryPoint?.security?.authenticated)
+      || (entryPoint?.security?.guards || []).some(guard => classifyGuardKind(guard) === 'authentication');
+    if (!authenticationRequired) continue;
+    for (const provider of authenticationProviders) {
+      if (provider.flow_id !== flow.flow_id) edges.push({ source: provider.flow_id, target: flow.flow_id });
     }
   }
 

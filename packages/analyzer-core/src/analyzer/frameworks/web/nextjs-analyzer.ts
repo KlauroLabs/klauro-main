@@ -59,6 +59,7 @@ export class NextJSAnalyzer extends BaseAnalyzer {
 
     await this.detectAppRouterApiRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);
     await this.detectPagesRouterApiRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);
+    await this.detectServerActions(sourceFiles, context, entryPoints, seenEntryPointIds);
     await this.detectPageRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);
     await this.detectMiddleware(context, nodes, edges, entryPoints, seenEntryPointIds);
     await this.detectNavigationCalls(sourceFiles, context, nodes, exitPoints);
@@ -118,10 +119,11 @@ export class NextJSAnalyzer extends BaseAnalyzer {
         const entryId = `entry_nextjs_api_${file.replace(/[^a-zA-Z0-9]/g, '_')}_${upperName}`;
         if (seenEntryPointIds.has(entryId)) continue;
         seenEntryPointIds.add(entryId);
+        const handlerNodeId = this.findHandlerNodeId(file, name, context.existingAnalysis) || nodeId;
 
         entryPoints.push({
           id: entryId,
-          source_node: nodeId,
+          source_node: handlerNodeId,
           source_analyzer: this.analyzerId,
           type: 'http',
           name: `${upperName} ${routePath}`,
@@ -165,9 +167,10 @@ export class NextJSAnalyzer extends BaseAnalyzer {
         const entryId = `entry_nextjs_api_${file.replace(/[^a-zA-Z0-9]/g, '_')}_default`;
         if (!seenEntryPointIds.has(entryId)) {
           seenEntryPointIds.add(entryId);
+          const handlerNodeId = this.findHandlerNodeId(file, 'default', context.existingAnalysis) || nodeId;
           entryPoints.push({
             id: entryId,
-            source_node: nodeId,
+            source_node: handlerNodeId,
             source_analyzer: this.analyzerId,
             type: 'http',
             name: `API ${routePath}`,
@@ -184,10 +187,11 @@ export class NextJSAnalyzer extends BaseAnalyzer {
         const entryId = `entry_nextjs_api_${file.replace(/[^a-zA-Z0-9]/g, '_')}_${upperName}`;
         if (seenEntryPointIds.has(entryId)) continue;
         seenEntryPointIds.add(entryId);
+        const handlerNodeId = this.findHandlerNodeId(file, name, context.existingAnalysis) || nodeId;
 
         entryPoints.push({
           id: entryId,
-          source_node: nodeId,
+          source_node: handlerNodeId,
           source_analyzer: this.analyzerId,
           type: 'http',
           name: `${upperName} ${routePath}`,
@@ -229,9 +233,10 @@ export class NextJSAnalyzer extends BaseAnalyzer {
       const entryId = `entry_nextjs_page_${file.replace(/[^a-zA-Z0-9]/g, '_')}`;
       if (!seenEntryPointIds.has(entryId)) {
         seenEntryPointIds.add(entryId);
+        const handlerNodeId = this.findHandlerNodeId(file, 'default', context.existingAnalysis) || nodeId;
         entryPoints.push({
           id: entryId,
-          source_node: nodeId,
+          source_node: handlerNodeId,
           source_analyzer: this.analyzerId,
           type: 'page',
           name: `PAGE ${routePath}`,
@@ -265,14 +270,43 @@ export class NextJSAnalyzer extends BaseAnalyzer {
       const entryId = `entry_nextjs_page_${file.replace(/[^a-zA-Z0-9]/g, '_')}`;
       if (!seenEntryPointIds.has(entryId)) {
         seenEntryPointIds.add(entryId);
+        const handlerNodeId = this.findHandlerNodeId(file, 'default', context.existingAnalysis) || nodeId;
         entryPoints.push({
           id: entryId,
-          source_node: nodeId,
+          source_node: handlerNodeId,
           source_analyzer: this.analyzerId,
           type: 'page',
           name: `PAGE ${routePath}`,
           trigger: { method: 'GET', path: routePath },
           metadata: { framework: 'nextjs', pageFile: file }
+        });
+      }
+    }
+  }
+
+  private async detectServerActions(
+    sourceFiles: string[],
+    context: AnalysisContext,
+    entryPoints: CASEntryPoint[],
+    seenEntryPointIds: Set<string>
+  ): Promise<void> {
+    for (const file of sourceFiles) {
+      const content = await fs.readFile(path.join(context.projectPath, file), 'utf8').catch(() => '');
+      if (!/^['"]use server['"]\s*;?/.test(content.trimStart())) continue;
+      for (const exportedName of this.getExportedFunctionNames(content)) {
+        const handlerNodeId = this.findHandlerNodeId(file, exportedName, context.existingAnalysis);
+        if (!handlerNodeId) continue;
+        const entryId = `entry_nextjs_action_${file.replace(/[^a-zA-Z0-9]/g, '_')}_${exportedName}`;
+        if (seenEntryPointIds.has(entryId)) continue;
+        seenEntryPointIds.add(entryId);
+        entryPoints.push({
+          id: entryId,
+          source_node: handlerNodeId,
+          source_analyzer: this.analyzerId,
+          type: 'event',
+          name: `ACTION ${exportedName}`,
+          trigger: { event: 'server-action' },
+          metadata: { framework: 'nextjs', actionFile: file },
         });
       }
     }
@@ -285,15 +319,16 @@ export class NextJSAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     seenEntryPointIds: Set<string>
   ): Promise<void> {
-    const middlewareExtensions = ['ts', 'js'];
+    const middlewareFiles = ['middleware.ts', 'middleware.js', 'proxy.ts', 'proxy.js'];
 
-    for (const ext of middlewareExtensions) {
-      const middlewarePath = path.join(context.projectPath, `middleware.${ext}`);
+    for (const file of middlewareFiles) {
+      const middlewarePath = path.join(context.projectPath, file);
       if (await fs.pathExists(middlewarePath)) {
-        const file = `middleware.${ext}`;
         const nodeId = `nextjs_middleware_${file.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const content = await fs.readFile(middlewarePath, 'utf8');
+        const authenticationMiddleware = /(?:from\s+['"]next-auth['"]|\bNextAuth\s*\()/.test(content);
 
-        nodes.push(this.createNode(nodeId, 'Middleware', 'middleware', 2, file, undefined, undefined, {
+        nodes.push(this.createNode(nodeId, path.basename(file, path.extname(file)), 'middleware', 2, file, undefined, undefined, {
           framework: 'nextjs'
         }));
 
@@ -309,6 +344,17 @@ export class NextJSAnalyzer extends BaseAnalyzer {
             trigger: { method: 'ALL', path: '/' },
             metadata: { framework: 'nextjs', middlewareFile: file }
           });
+        }
+
+        if (authenticationMiddleware) {
+          for (const entryPoint of entryPoints) {
+            if (entryPoint.type !== 'page') continue;
+            entryPoint.security = {
+              ...(entryPoint.security || {}),
+              guards: [...new Set([...(entryPoint.security?.guards || []), 'NextAuth route proxy'])],
+              enforcement: 'enforced',
+            };
+          }
         }
 
         break;
@@ -572,6 +618,28 @@ export class NextJSAnalyzer extends BaseAnalyzer {
       if (bySource) return bySource.id;
     }
     return undefined;
+  }
+
+  private findHandlerNodeId(relativePath: string, exportedName: string, existingAnalysis?: CASContribution[]): string | undefined {
+    if (!existingAnalysis) return undefined;
+    const normalizedPath = relativePath.replace(/\\/g, '/');
+    const callableTypes = new Set(['function', 'method', 'component', 'functional_component', 'class_component']);
+    const candidates = existingAnalysis.flatMap(contribution => contribution.nodes || []).filter(node => {
+      const sourceFile = node.source?.file?.replace(/\\/g, '/');
+      return Boolean(
+        sourceFile &&
+        callableTypes.has(node.type) &&
+        (sourceFile === normalizedPath || sourceFile.endsWith(`/${normalizedPath}`))
+      );
+    });
+    if (exportedName !== 'default') {
+      const exact = candidates.find(node => node.name.toLowerCase() === exportedName.toLowerCase());
+      if (exact) return exact.id;
+    }
+    return candidates
+      .filter(node => node.metadata?.is_exported === true)
+      .sort((left, right) => (left.source?.line || Number.MAX_SAFE_INTEGER) - (right.source?.line || Number.MAX_SAFE_INTEGER))[0]?.id
+      || candidates.sort((left, right) => (left.source?.line || Number.MAX_SAFE_INTEGER) - (right.source?.line || Number.MAX_SAFE_INTEGER))[0]?.id;
   }
 
   private ensureNavigationSourceNode(relativePath: string, nodes: CASNode[]): string {

@@ -632,6 +632,7 @@ function productTechSignals(cas: CASOutput): { languages: string[]; frameworks: 
     analyzerTypeMap(cas.analyzer_contributions || []),
     node => isPrimaryProductNodeForQuery(node as CASNode),
     10,
+    cas.entry_points || [],
   ).filter(name => !isTestFramework(name)).map(normalizeTechLabel);
   return {
     languages: Array.from(languages).filter(Boolean).slice(0, 8),

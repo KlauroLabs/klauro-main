@@ -136,4 +136,19 @@ describe('buildCasTerminality', () => {
     expect(flowById.get('place-order')?.terminal).toBe(true);
     expect(flowById.get('sign-in-request')?.proximal_terminal).toBe(true);
   });
+
+  it('projects authentication guards onto flows without explicit capability dependencies', () => {
+    const cas = {
+      nodes: [], edges: [], entities: [], capabilities: [],
+      entry_points: [
+        { id: 'entry-sign-in', source_node: 'sign-in', type: 'event', name: 'ACTION Authenticate' },
+        { id: 'entry-place-order', source_node: 'place-order', type: 'http', name: 'POST /orders', security: { guards: ['SessionAuthGuard'] } },
+      ],
+      flows: [flow('sign-in'), flow('place-order')],
+    } as unknown as CASOutput;
+    const result = buildCasTerminality(cas);
+    const flowById = new Map(result.flows.map(member => [member.id, member]));
+    expect(flowById.get('place-order')).toMatchObject({ terminal: true, distance_to_terminal: 0 });
+    expect(flowById.get('sign-in')).toMatchObject({ proximal_terminal: true, distance_to_terminal: 1 });
+  });
 });

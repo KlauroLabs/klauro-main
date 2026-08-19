@@ -98,6 +98,7 @@
     "analysis-usefulness-review": "tsx src/analysis-usefulness-review.ts",
     "analysis-output-cold-review": "tsx src/analysis-output-cold-review.ts",
     "analysis-spot-read-quality": "tsx src/analysis-spot-read-quality.ts",
+    "analysis-truth-review": "tsx src/analysis-truth-review.ts",
     "analysis-quality-proof": "tsx src/analysis-quality-proof.ts",
     "analysis-narrative-enrichment-proof": "tsx src/analysis-narrative-enrichment-proof.ts",
     "analysis-narrative-enrichment-runner": "tsx src/analysis-narrative-enrichment-runner.ts",

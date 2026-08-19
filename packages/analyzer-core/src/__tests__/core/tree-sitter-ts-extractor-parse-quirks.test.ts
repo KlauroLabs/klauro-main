@@ -1,4 +1,5 @@
 import { TreeSitterTSExtractor, sanitizeForTreeSitterParse, sanitizeAbstractPropertyKeyword } from '../../analyzer/core/tree-sitter-ts-extractor';
+import { sanitizeTaggedTemplateTypeArguments } from '../../analyzer/core/tree-sitter-grammar-limitations';
 
 /**
  * Regression fixtures for the self-analysis defect class where valid TS/JS
@@ -89,6 +90,21 @@ describe('TreeSitterTSExtractor parse quirks (NUL separator + abstract-as-proper
     expect(sanitized).toContain('"abstract"?:');
     expect(sanitized).toContain('static?:');
     expect(sanitized).not.toContain('"static"');
+  });
+
+  it('parses typed tagged templates without changing source offsets', () => {
+    const source = 'const rows = await sql<Array<Row>>`SELECT * FROM rows`;';
+    const sanitized = sanitizeTaggedTemplateTypeArguments(source);
+    const extraction = extractor.extractFromSource(source, 'typed-query.ts');
+
+    expect(sanitized.length).toBe(source.length);
+    expect(sanitized.slice(sanitized.indexOf('sql') + 3, sanitized.indexOf('`'))).toMatch(/^ +$/);
+    expect(extraction.hasSyntaxErrors).toBe(false);
+  });
+
+  it('leaves comparison expressions and untyped tagged templates unchanged', () => {
+    const source = 'const lower = a < b; const query = sql`SELECT 1`;';
+    expect(sanitizeTaggedTemplateTypeArguments(source)).toBe(source);
   });
 
   it('skips parser child slots that resolve to no node', () => {

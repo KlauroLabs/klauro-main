@@ -1,5 +1,44 @@
 const INLINE_IMPORT_SUFFIX = /\bimport\s*\(\s*(['"])(?:(?!\1).)*\1\s*\)(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*(?:\[\s*(?:\]|['"][^'"\]\n]+['"]\s*\])|<)/;
 
+export function sanitizeTaggedTemplateTypeArguments(source: string): string {
+  let sanitized: string[] | undefined;
+  for (let start = 0; start < source.length; start++) {
+    if (source[start] !== '<') continue;
+    let previous = start - 1;
+    while (previous >= 0 && /\s/.test(source[previous])) previous--;
+    if (previous < 0 || !/[\w$.)\]]/.test(source[previous])) continue;
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+    for (let end = start; end < source.length; end++) {
+      const character = source[end];
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === quote) quote = '';
+        continue;
+      }
+      if (character === "'" || character === '"') {
+        quote = character;
+        continue;
+      }
+      if (character === '<') depth++;
+      else if (character === '>') depth--;
+      if (depth !== 0) continue;
+      let next = end + 1;
+      while (next < source.length && /\s/.test(source[next])) next++;
+      if (source[next] !== '`') break;
+      sanitized ||= [...source];
+      for (let index = start; index <= end; index++) {
+        if (sanitized[index] !== '\n' && sanitized[index] !== '\r') sanitized[index] = ' ';
+      }
+      start = end;
+      break;
+    }
+  }
+  return sanitized?.join('') || source;
+}
+
 export function classifyKnownTypeScriptGrammarLimitation(
   lineText: string | undefined,
   line: number,
