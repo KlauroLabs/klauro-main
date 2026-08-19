@@ -10,6 +10,8 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { createYieldBudget } from '../../core/event-loop-yield';
 import { loadSourceFiles, type LoadedSourceFile } from '../../core/source-file-loader';
+import { extractFiniteControllerRouters } from './finite-controller-routes';
+import { importsLocalPackage } from '../../core/local-package-import-context';
 
 interface ExpressApplication {
   name: string;
@@ -30,6 +32,7 @@ interface ExpressRoute {
   middleware: string[];
   parameters: Array<{ name: string; type: string; source: string }>;
   description?: string;
+  handlerFile?: string;
 }
 
 interface ExpressRouter {
@@ -101,14 +104,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const packageJsonPath = path.join(projectPath, 'package.json');
-      if (!await fs.pathExists(packageJsonPath)) return false;
-
-      const packageJson = await fs.readJson(packageJsonPath);
+      const packageJson = await fs.pathExists(packageJsonPath) ? await fs.readJson(packageJsonPath) : {};
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
-      const hasExpressDependency = Object.keys(deps).some(dep => dep === 'express');
-      if (!hasExpressDependency) return false;
-
-
       const hasNestJS = Object.keys(deps).some(dep =>
         dep.includes('@nestjs/core') ||
         dep.includes('@nestjs/common') ||
@@ -131,7 +128,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
       });
 
       for (const file of jsFiles) {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const fullPath = path.join(projectPath, file);
+        const content = await fs.readFile(fullPath, 'utf-8');
 
 
 
@@ -142,7 +140,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
         const importsExpress =
           /^\s*import\s+(?:\*\s+as\s+)?\w+\b.*\bfrom\s+['"]express['"]/m.test(content) ||
           /^\s*import\s*\{[^}]*\}\s*from\s+['"]express['"]/m.test(content) ||
-          /^\s*(?:const|let|var)\s+\w+\s*=\s*require\(\s*['"]express['"]\s*\)/m.test(content);
+          /^\s*(?:const|let|var)\s+\w+\s*=\s*require\(\s*['"]express['"]\s*\)/m.test(content) ||
+          await importsLocalPackage(projectPath, fullPath, content, 'express');
 
 
 
@@ -299,6 +298,9 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<ExpressRouter[]> {
     const routers: ExpressRouter[] = [];
+    const generatedRouters = new Map(
+      extractFiniteControllerRouters(files).map(router => [router.filePath, router])
+    );
 
 
 
@@ -306,14 +308,19 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     for (const file of files) {
       await maybeYield();
       const { relativePath, fullPath, content } = file;
+      const generatedRouter = generatedRouters.get(relativePath);
 
-      if (this.isRouterFile(content)) {
+      if (this.isRouterFile(content) || generatedRouter) {
         try {
-          const routerName = this.extractRouterName(content, relativePath);
-          const prefix = this.extractRouterPrefix(content, relativePath);
-          const routes = this.extractRoutes(content);
-          const middleware = this.extractRouterMiddleware(content);
-          const subRouters = this.extractSubRouters(content);
+          const routerName = generatedRouter?.name || this.extractRouterName(content, relativePath);
+          const prefix = generatedRouter?.prefix || this.extractRouterPrefix(content, relativePath);
+          const routes: ExpressRoute[] = generatedRouter?.routes.map(route => ({
+            ...route,
+            parameters: this.extractRouteParameters(route.path),
+            description: undefined,
+          })) || this.extractRoutes(content);
+          const middleware = generatedRouter ? [] : this.extractRouterMiddleware(content);
+          const subRouters = generatedRouter ? [] : this.extractSubRouters(content);
 
           const router: ExpressRouter = {
             name: routerName,
@@ -360,7 +367,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullPath}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: router.filePath, line: 1, end_line: 1 })
+              .withSource({ file: route.handlerFile || router.filePath, line: 1, end_line: 1 })
               .withDescription(`Express.js HTTP endpoint: ${route.method.toUpperCase()} ${fullPath}`)
               .withMetadata({
                 framework: 'express',
@@ -392,6 +399,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
               .map(name => name.trim())
               .filter(name => /^[\w$.]+(\(.*\))?$/.test(name));
             const authMiddleware = allMiddleware.filter(name => isAuthenticationGuardName(name) || classifyGuardKind(name) === 'authorization');
+            const guards = allMiddleware.filter(name => classifyGuardKind(name) !== 'unknown');
 
             entryPoints.push({
               id: `entry_${routeId}`,
@@ -407,18 +415,18 @@ export class ExpressAnalyzer extends BaseAnalyzer {
               handler: {
                 node_id: routeId,
                 method_name: route.handler,
-                file: router.filePath
+                file: route.handlerFile || router.filePath
               },
               security: {
                 authenticated: authMiddleware.length > 0,
-                guards: allMiddleware,
+                guards,
                 authorized_roles: []
               },
               metadata: {
                 method: route.method.toUpperCase(),
                 path: fullPath,
                 handler: route.handler,
-                handler_file: router.filePath,
+                handler_file: route.handlerFile || router.filePath,
                 middleware: route.middleware,
                 router: routerName
               }
@@ -775,9 +783,9 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
   private extractAppVariable(content: string): string | null {
     const patterns = [
-      /const\s+(\w+)\s*=\s*express\(\)/,
-      /var\s+(\w+)\s*=\s*express\(\)/,
-      /let\s+(\w+)\s*=\s*express\(\)/
+      /const\s+(\w+)\s*=\s*(?:module\.exports\s*=\s*)?express\(\)/,
+      /var\s+(\w+)\s*=\s*(?:module\.exports\s*=\s*)?express\(\)/,
+      /let\s+(\w+)\s*=\s*(?:module\.exports\s*=\s*)?express\(\)/
     ];
 
     for (const pattern of patterns) {

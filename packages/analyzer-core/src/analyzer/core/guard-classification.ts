@@ -1,12 +1,6 @@
 import type { CASGuardKind } from '../../types/cas.types';
 
-
-
-
-
-
-
-
+export type GuardConstraintKind = 'auth' | 'validation' | 'rate-limit' | 'invariant';
 
 export function classifyGuardKind(guardName: string | undefined): CASGuardKind {
   const name = String(guardName || '').toLowerCase();
@@ -31,4 +25,12 @@ export function classifyGuardKind(guardName: string | undefined): CASGuardKind {
 
 export function isAuthenticationGuardName(guardName: string | undefined): boolean {
   return classifyGuardKind(guardName) === 'authentication';
+}
+
+export function guardConstraintKind(guardName: string | undefined): GuardConstraintKind {
+  const kind = classifyGuardKind(guardName);
+  if (kind === 'validation') return 'validation';
+  if (kind === 'rate-limiting') return 'rate-limit';
+  if (kind === 'authentication' || kind === 'authorization') return 'auth';
+  return 'invariant';
 }

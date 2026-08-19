@@ -177,6 +177,9 @@ import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { computeModuleHealth } from './module-health';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
+import { invalidateLocalPackageImportContext, localPackageImportsAny } from './local-package-import-context';
+import { classifyGuardKind } from './guard-classification';
+import { routeLifecycleAttribution } from './entity-lifecycle-route';
 import { buildRequiredServices } from './configuration-required-services';
 import { externalServiceIdentityForExitPoint } from './external-service-identity';
 import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
@@ -986,6 +989,7 @@ export class AnalyzerOrchestrator {
     this.manifestFileCache.delete(projectPath);
     this.manifestEvidenceCache.delete(projectPath);
     this.manifestRuntimeDependencyCache.delete(projectPath);
+    invalidateLocalPackageImportContext(projectPath);
     this.nestedRepoIgnoreCache.delete(projectPath);
     this.sourceFileInventoryCache.delete(cacheKey);
   }
@@ -4838,6 +4842,9 @@ export class AnalyzerOrchestrator {
     }
 
     const patterns = registration.detectPatterns || {};
+    if (patterns.dependencies?.length && await localPackageImportsAny(projectPath, patterns.dependencies)) {
+      return true;
+    }
     if (patterns.dependencies?.length && await this.manifestContainsAny(projectPath, patterns.dependencies)) {
       return true;
     }
@@ -7599,7 +7606,7 @@ export class AnalyzerOrchestrator {
       !n.subcategories?.includes('abstract') &&
       (
         n.type === 'entity' ||
-        n.type === 'model' ||
+        (n.type === 'model' && Boolean(this.persistenceEvidenceForAnchors([n], schemaPersistence, n.name))) ||
         n.metadata?.annotations?.some(a => a.includes('Entity')) ||
         (n.metadata as any)?.attributes?.annotations?.some((a: string) => a.includes('Entity')) ||
         ((n.subcategories?.includes('entity') ||
@@ -15940,9 +15947,14 @@ export class AnalyzerOrchestrator {
       if (core && core.length >= 3) dtoNounByTypeName.set((node.name || '').toLowerCase(), this.singularizeNoun(core.toLowerCase()));
     }
     const knownDataNouns = new Set(dtoNounByTypeName.values());
-    const ACCESSOR_TYPES = new Set(['method', 'function', 'controller', 'service']);
+    const ACCESSOR_TYPES = new Set(['method', 'function', 'controller', 'service', 'route']);
     for (const node of nodes) {
       if (!ACCESSOR_TYPES.has(node.type)) continue;
+      const route = routeLifecycleAttribution(node, knownDataNouns, value => this.singularizeNoun(value));
+      if (route) {
+        if (route.resource) bucket(route.resource)[route.operation].add(node.id);
+        continue;
+      }
       const op = this.crudBucketFromAccessorName(node.name || '');
       const signatureTypes = [
         ...((node.signature?.parameters || []) as Array<{ type?: string } | string>).map(param => typeof param === 'string' ? param : param?.type || ''),
@@ -23039,7 +23051,7 @@ export class AnalyzerOrchestrator {
     const addedIds = new Set<string>();
 
     const fixtureNodes = nodes.filter(n =>
-      n.name.includes('fixture') ||
+      (n.name.toLowerCase().includes('fixture') && this.isTestOrFixtureFileNode(n)) ||
       n.subcategories?.includes('fixture')
     );
 
@@ -23081,6 +23093,7 @@ export class AnalyzerOrchestrator {
 
     const setupMethods = nodes.filter(n =>
       (n.type === 'method' || n.type === 'function' || n.type === 'hook') &&
+      this.isTestOrFixtureFileNode(n) &&
       (n.name === 'setUp' || n.name === 'tearDown' ||
        n.name === 'setUpClass' || n.name === 'tearDownClass' ||
        n.name === 'beforeEach' || n.name === 'afterEach' ||
@@ -23123,6 +23136,7 @@ export class AnalyzerOrchestrator {
 
     const factoryNodes = nodes.filter(n =>
       (n.type === 'function' || n.type === 'class') &&
+      this.isTestOrFixtureFileNode(n) &&
       (n.name.toLowerCase().includes('factory') ||
        n.name.toLowerCase().includes('builder') ||
        n.name.toLowerCase().includes('seed'))
@@ -25019,10 +25033,9 @@ export class AnalyzerOrchestrator {
     const evidenceAuthNodes = nodes.filter(n => this.hasAuthAnalyzerEvidence(n));
     const authNodes = evidenceAuthNodes.length > 0
       ? evidenceAuthNodes
-      : securityNodes.filter(n => {
-        const tokens = this.signalTokens(n.name);
-        return ['auth', 'login', 'session', 'token'].some(kw => tokens.includes(kw));
-      });
+      : securityNodes.filter(n =>
+        this.hasSecurityEnforcementSemantics(n) && classifyGuardKind(n.name) === 'authentication'
+      );
 
     if (authNodes.length > 0 || guardEdges.length > 0) {
       const methods = new Set<string>();
@@ -25038,7 +25051,7 @@ export class AnalyzerOrchestrator {
       }
       const authEntryPointIds = new Set(
         entryPoints
-          .filter(ep => ep.metadata?.requires_auth || ep.metadata?.guards?.length)
+          .filter(ep => ep.security?.authenticated || ep.metadata?.requires_auth || ep.metadata?.guards?.length)
           .map(ep => ep.id)
       );
       for (const id of edgeTargetEntryPointIds(guardEdges)) authEntryPointIds.add(id);

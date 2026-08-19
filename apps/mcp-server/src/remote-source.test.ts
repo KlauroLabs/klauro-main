@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildSourceSnapshot, sourceSnapshotDigest } from './remote-source';
+import { LOCAL_PACKAGE_IMPORT_CONTEXT_PATH } from '../../../packages/analyzer-core/src/analyzer/core/local-package-import-context';
 
 /**
  * Coverage for repo_facts (contributor_count/first_commit_at/last_commit_at)
@@ -53,6 +54,21 @@ test('snapshot digest is order-independent and changes with path or content', ()
   assert.equal(sourceSnapshotDigest([...files].reverse()), expected);
   assert.notEqual(sourceSnapshotDigest([{ ...files[0], path: 'src/c.ts' }, files[1]]), expected);
   assert.notEqual(sourceSnapshotDigest([{ ...files[0], hash: 'hash-changed' }, files[1]]), expected);
+});
+
+test('source snapshots preserve package identity for relative imports outside the analysis root', async () => {
+  await withTempDir(async workspace => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ name: 'express' }));
+    const project = path.join(workspace, 'examples', 'mvc');
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(project, 'index.js'), "const express = require('../..');\nconst app = express();\n");
+
+    const snapshot = await buildSourceSnapshot(project);
+    const contextFile = snapshot.files.find(file => file.path === LOCAL_PACKAGE_IMPORT_CONTEXT_PATH);
+    assert.ok(contextFile);
+    const context = JSON.parse(contextFile.content);
+    assert.deepEqual(context.imports, [{ source_file: 'index.js', specifier: '../..', package_name: 'express' }]);
+  });
 });
 
 test('repo_facts: single-author git repo carries contributor_count=1 and distinct first/last commit timestamps', async () => {

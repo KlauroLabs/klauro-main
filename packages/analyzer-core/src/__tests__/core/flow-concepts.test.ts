@@ -334,6 +334,14 @@ describe('computeFlowConcepts', () => {
     expect(validation).toBeDefined();
   });
 
+  test('classifies non-authentication guards by their actual constraint kind', () => {
+    const guarded = buildFixtureCas();
+    guarded.entry_points![0].security = { authenticated: false, guards: ['ThrottlerGuard'] };
+    const constraints = computeFlowConcepts(guarded)[0].contract.constraints;
+    expect(constraints.some(constraint => constraint.kind === 'rate-limit' && /ThrottlerGuard/.test(constraint.rule))).toBe(true);
+    expect(constraints.some(constraint => constraint.kind === 'auth')).toBe(false);
+  });
+
   test('no telemetry facet when there are no runtime observations (never fabricated)', () => {
     const flow = flows[0];
     expect(flow.contract.telemetry).toBeUndefined();

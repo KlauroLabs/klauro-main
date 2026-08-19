@@ -28,7 +28,7 @@ import type {
 import { buildTerminalSignal } from './terminal-signal';
 import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel } from './journey-builder';
 import { entityLifecycleContractFacts } from './entity-lifecycle-contract';
-
+import { guardConstraintKind } from './guard-classification';
 export { CONTRACT_MODEL_NAME, UNDERSTANDING_CONTRACT_FACETS } from '../../types/cas.types';
 export type {
   CapabilityFlowRelationship,
@@ -755,7 +755,7 @@ function extractStructuralConstraints(
       push('auth', `caller must have role: ${role}`, `entry point "${ep.name}" security.roles`);
     }
     for (const guard of ep.security?.guards || []) {
-      push('auth', `guarded by: ${guard}`, `entry point "${ep.name}" security.guards`);
+      push(guardConstraintKind(guard), `guarded by: ${guard}`, `entry point "${ep.name}" security.guards`);
     }
     for (const rule of ep.input?.validation || []) {
       push('validation', rule, `entry point "${ep.name}" input.validation`);

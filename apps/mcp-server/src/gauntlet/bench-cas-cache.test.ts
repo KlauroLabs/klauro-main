@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
-import { benchCasCacheRuntimeFingerprint, readBenchCasCache, writeBenchCasCache } from './bench-cas-cache';
+import { benchCasCacheRuntimeFingerprint, computeBenchProductSourceFingerprint, readBenchCasCache, writeBenchCasCache } from './bench-cas-cache';
 
 test('bench CAS cache round-trips structured graph data atomically', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-bench-cas-cache-'));
@@ -17,8 +17,23 @@ test('bench CAS cache round-trips structured graph data atomically', async () =>
   try {
     await writeBenchCasCache(file, cas);
     assert.deepEqual(await readBenchCasCache(file), cas);
-    assert.match(benchCasCacheRuntimeFingerprint(), /^v8-structured-clone:/);
+    assert.match(benchCasCacheRuntimeFingerprint(), /^v8-structured-clone:.*:product-analysis:[a-f0-9]{16}$/);
     assert.deepEqual(await fs.readdir(directory), ['analysis.cas.v8']);
+  } finally {
+    await fs.remove(directory);
+  }
+});
+
+test('bench CAS cache fingerprint tracks product analysis source and ignores tests', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-bench-source-fingerprint-'));
+  try {
+    await fs.outputFile(path.join(directory, 'analysis.ts'), 'export const version = 1;');
+    await fs.outputFile(path.join(directory, 'analysis.test.ts'), 'test version 1');
+    const initial = computeBenchProductSourceFingerprint(directory);
+    await fs.outputFile(path.join(directory, 'analysis.test.ts'), 'test version 2');
+    assert.equal(computeBenchProductSourceFingerprint(directory), initial);
+    await fs.outputFile(path.join(directory, 'analysis.ts'), 'export const version = 2;');
+    assert.notEqual(computeBenchProductSourceFingerprint(directory), initial);
   } finally {
     await fs.remove(directory);
   }

@@ -25,7 +25,7 @@ import * as net from 'node:net';
 import * as os from 'os';
 import * as path from 'path';
 import { devDataRoot, reportDevDataDirSizeOnExit } from './dev-data';
-import { buildSourceSnapshot, matchExcludedDirectoryName } from '../remote-source';
+import { buildSourceSnapshot, matchExcludedDirectoryName, sourceSnapshotDigest } from '../remote-source';
 import { getAnalysisEntry, saveAnalysis } from '../storage';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 import { getStageFingerprints } from '../../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -33,6 +33,11 @@ import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from '../remote-analyzer-protocol';
 import { waitForRemoteAnalysis } from '../remote-sync-client';
 import { CAS_SECTION_NAMES } from '../cas-sections';
 import { benchCasCacheRuntimeFingerprint, readBenchCasCache, writeBenchCasCache } from './bench-cas-cache';
+import {
+  deriveLocalPackageImportContext,
+  LOCAL_PACKAGE_IMPORT_CONTEXT_PATH,
+} from '../../../../packages/analyzer-core/src/analyzer/core/local-package-import-context';
+import { appendStoredLocalPackageContext } from '../source-snapshot-package-context';
 
 let localServerUrl: string | null = null;
 let localServerProcess: ChildProcess | null = null;
@@ -275,6 +280,15 @@ async function analyzeForBenchOnce(dir: string): Promise<CASOutput> {
   let cacheLock: string | undefined;
   try {
     const snapshot = await buildSourceSnapshot(staged);
+    await appendStoredLocalPackageContext(
+      staged,
+      snapshot.files,
+      content => crypto.createHash('sha256').update(content).digest('hex')
+    );
+    snapshot.files.sort((left, right) => left.path.localeCompare(right.path));
+    snapshot.manifest.file_count = snapshot.files.length;
+    snapshot.manifest.total_bytes = snapshot.files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0);
+    snapshot.manifest.snapshot_digest = sourceSnapshotDigest(snapshot.files);
     const cache = benchCacheLocation(dir, snapshot.manifest.snapshot_digest);
     if (cache) {
       const cached = await readBenchCache(cache.file);
@@ -429,7 +443,7 @@ function isStagingExcluded(relPath: string): boolean {
 }
 
 
-async function stageAsGitRepo(dir: string): Promise<string> {
+export async function stageAsGitRepo(dir: string): Promise<string> {
   const tmp = path.join(os.tmpdir(), `klauro-bench-src-${process.pid}-${Math.random().toString(36).slice(2)}`);
   const root = path.resolve(dir);
   await fs.copy(dir, tmp, {
@@ -439,6 +453,14 @@ async function stageAsGitRepo(dir: string): Promise<string> {
       return !isStagingExcluded(rel);
     },
   });
+  const stagedSnapshot = await buildSourceSnapshot(tmp);
+  const context = await deriveLocalPackageImportContext(
+    root,
+    stagedSnapshot.files.filter(file => file.path !== LOCAL_PACKAGE_IMPORT_CONTEXT_PATH)
+  );
+  if (context.imports.length > 0) {
+    await fs.outputJson(path.join(tmp, LOCAL_PACKAGE_IMPORT_CONTEXT_PATH), context, { spaces: 2 });
+  }
   const git = (args: string[]) => execFileSync('git', args, { cwd: tmp, stdio: 'ignore' });
   git(['init', '-q']);
   git(['add', '-A']);

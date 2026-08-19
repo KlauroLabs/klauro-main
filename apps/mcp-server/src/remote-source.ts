@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { loadKlauroConfig, type LoadedKlauroConfig } from './klauro-config';
 import { detectRemoteProvider, type RemoteProviderInfo } from './remote-provider';
 import { isRegisteredManifest, isRegisteredSourceExtension } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
+import { appendDerivedLocalPackageContext, appendDerivedStreamingLocalPackageContext } from './source-snapshot-package-context';
 
 export interface RemoteSourceFile {
   path: string;
@@ -38,13 +39,6 @@ export type RemoteFileChange = RemoteChangedFile | RemoteDeletedFile;
 export interface SourceSnapshot {
   project_name: string;
   base_commit?: string;
-
-
-
-
-
-
-
   snapshot_source: 'committed-head' | 'working-tree';
   files: RemoteSourceFile[];
   manifest: SourceManifest;
@@ -420,6 +414,7 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
       diagnostics,
     });
   }
+  await appendDerivedLocalPackageContext(root, files, hashContent);
 
   return {
     project_name: loaded.config.project.name || path.basename(root),
@@ -463,6 +458,8 @@ export async function buildStreamingSourceSnapshot(projectPath: string): Promise
       diagnostics,
     });
   }
+  await appendDerivedStreamingLocalPackageContext(root, files, hashContent);
+  files.sort((left, right) => left.path.localeCompare(right.path));
   return {
     project_name: loaded.config.project.name || path.basename(root),
     base_commit: head,
@@ -504,6 +501,7 @@ async function buildStreamingHeadSnapshot(
       });
     }
   }
+  await appendDerivedStreamingLocalPackageContext(root, files, hashContent);
   files.sort((left, right) => left.path.localeCompare(right.path));
   return {
     project_name: loaded.config.project.name || path.basename(root),
@@ -640,6 +638,7 @@ export async function buildHeadSourceSnapshot(
     if (content == null) continue;
     files.push({ path: normalized, content, hash: hashContent(content) });
   }
+  await appendDerivedLocalPackageContext(root, files, hashContent);
 
   return {
     project_name: loaded.config.project.name || path.basename(root),

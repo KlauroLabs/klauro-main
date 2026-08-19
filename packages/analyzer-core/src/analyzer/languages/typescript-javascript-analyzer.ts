@@ -20,6 +20,7 @@ import {
   writeTreeSitterExtractionCache,
 } from '../core/tree-sitter-ts-extraction-cache';
 import { loadPrismaModelIdentities, selectPrismaModelIdentity, type PrismaModelIdentity } from '../libraries/orm/prisma-model-identity';
+import { appendInMemoryRecordCollectionNodes } from '../core/javascript-in-memory-data';
 
 interface ParsedAST {
   ast: TSESTree.Program;
@@ -35,13 +36,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private isTypeScriptProject = false;
   private tsExtractor = new TreeSitterTSExtractor();
   private importSourceMap = new Map<string, string>();
-
   private importAliasMap = new Map<string, string>();
-
   private importsByConsumerFile = new Map<string, Map<string, string>>();
-
   private currentProjectPath = '';
-
   private classFieldTypes = new Map<string, { typeName: string; library?: string; source?: 'ctor' | 'field'; isCollection?: boolean }>();
   private repositoryPropertyTypes = new Map<string, string>();
   private prismaModelsByName = new Map<string, PrismaModelIdentity[]>();
@@ -582,6 +579,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
       this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
       this.processTreeSitterVariables(extraction, relativePath, fileId, nodes, edges);
+      appendInMemoryRecordCollectionNodes(content, relativePath, fileId, nodes, edges, this.createNodeBuilder.bind(this), this.createEdge.bind(this));
       this.processTreeSitterExports(extraction, relativePath, entryPoints);
 
       return extractedFunctions;
@@ -657,6 +655,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
       this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
       this.processTreeSitterVariables(extraction, relativePath, fileId, nodes, edges);
+      appendInMemoryRecordCollectionNodes(content, relativePath, fileId, nodes, edges, this.createNodeBuilder.bind(this), this.createEdge.bind(this));
       this.processTreeSitterExportsForSingleFile(extraction, relativePath, entryPoints, exports);
 
       return extractedFunctions;

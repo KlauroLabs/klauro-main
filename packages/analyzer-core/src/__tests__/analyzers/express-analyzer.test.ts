@@ -6,6 +6,11 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { ExpressAnalyzer } from '../../analyzer/frameworks/web/express-analyzer';
+import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import {
+  deriveLocalPackageImportContext,
+  LOCAL_PACKAGE_IMPORT_CONTEXT_PATH,
+} from '../../analyzer/core/local-package-import-context';
 
 /**
  * Regression test for a real blackbox gap found while validating Express
@@ -174,5 +179,112 @@ describe('ExpressAnalyzer template-literal route path normalization', () => {
     expect(routeEntry?.name).toBe('GET /oauth/:provider/callback');
     expect(routeEntry?.trigger?.path).not.toContain('${');
     expect(routeEntry?.name).not.toContain('${');
+  });
+});
+
+describe('ExpressAnalyzer finite controller route generation', () => {
+  let workspace: string;
+  let project: string;
+  let analyzer: ExpressAnalyzer;
+
+  beforeEach(async () => {
+    workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-express-generated-routes-'));
+    project = path.join(workspace, 'examples', 'mvc');
+    analyzer = new ExpressAnalyzer();
+    await fs.writeJson(path.join(workspace, 'package.json'), { name: 'express' });
+    await fs.ensureDir(path.join(project, 'lib'));
+    await fs.ensureDir(path.join(project, 'controllers', 'user'));
+    await fs.ensureDir(path.join(project, 'controllers', 'user-pet'));
+    await fs.writeFile(path.join(project, 'index.js'), [
+      "var express = require('../..');",
+      'var app = module.exports = express();',
+      "require('./lib/boot')(app);",
+      'app.listen(3000);',
+    ].join('\n'));
+    await fs.writeFile(path.join(project, 'lib', 'boot.js'), [
+      "var express = require('../../..');",
+      'module.exports = function(parent) {',
+      '  var obj = {};',
+      '  var name = obj.name || "user";',
+      '  var app = express();',
+      '  var handler;',
+      '  var method;',
+      '  var url;',
+      '  for (var key in obj) {',
+      '    switch (key) {',
+      "      case 'show': method = 'get'; url = '/' + name + '/:' + name + '_id'; break;",
+      "      case 'list': method = 'get'; url = '/' + name + 's'; break;",
+      "      case 'update': method = 'put'; url = '/' + name + '/:' + name + '_id'; break;",
+      "      case 'create': method = 'post'; url = '/' + name; break;",
+      '      default: throw new Error(key);',
+      '    }',
+      '    handler = obj[key];',
+      '    if (obj.before) app[method](url, obj.before, handler);',
+      '    else app[method](url, handler);',
+      '  }',
+      '  parent.use(app);',
+      '};',
+    ].join('\n'));
+    await fs.writeFile(path.join(project, 'controllers', 'user', 'index.js'), [
+      'exports.before = function(req, res, next) { next(); };',
+      'exports.list = function(req, res) { res.send([]); };',
+      'exports.show = function(req, res) { res.send({}); };',
+      'exports.update = function(req, res) { res.send({}); };',
+    ].join('\n'));
+    await fs.writeFile(path.join(project, 'controllers', 'user-pet', 'index.js'), [
+      "exports.name = 'pet';",
+      "exports.prefix = '/user/:user_id';",
+      'exports.create = function(req, res) { res.send({}); };',
+    ].join('\n'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it('resolves a relative local framework package and materializes finite generated routes', async () => {
+    expect(await analyzer.canAnalyze(project)).toBe(true);
+    const contribution = await analyzer.analyze({ projectPath: project, files: [], config: {} } as any);
+    const entries = contribution.entry_points || [];
+    const routes = entries.map(entry => `${entry.trigger?.method} ${entry.trigger?.path}`).sort();
+
+    expect(routes).toEqual([
+      'GET /user/:user_id',
+      'GET /users',
+      'POST /user/:user_id/pet',
+      'PUT /user/:user_id',
+    ]);
+    expect(entries.find(entry => entry.trigger?.path === '/users')?.handler?.file).toBe('controllers/user/index.js');
+    expect(entries.find(entry => entry.trigger?.path === '/users')?.security?.authenticated).toBe(false);
+    expect(entries.find(entry => entry.trigger?.path === '/users')?.security?.guards).toEqual([]);
+  });
+
+  it('selects the framework from transported local package identity', async () => {
+    const sourcePaths = [
+      'index.js',
+      'lib/boot.js',
+      'controllers/user/index.js',
+      'controllers/user-pet/index.js',
+    ];
+    const context = await deriveLocalPackageImportContext(project, await Promise.all(sourcePaths.map(async sourcePath => ({
+      path: sourcePath,
+      content: await fs.readFile(path.join(project, sourcePath), 'utf8'),
+    }))));
+    const transported = path.join(workspace, 'transported');
+    await fs.copy(project, transported);
+    await fs.outputJson(path.join(transported, LOCAL_PACKAGE_IMPORT_CONTEXT_PATH), context);
+
+    const orchestrator = new AnalyzerOrchestrator();
+    orchestrator.registerAnalyzer({
+      id: 'express',
+      name: 'Express.js Analyzer',
+      type: 'framework',
+      version: '1.0.0',
+      detectPatterns: { dependencies: ['express'], files: ['package.json'] },
+      analyzer: new ExpressAnalyzer(),
+    });
+
+    const detected = await orchestrator.detectAnalyzers(transported);
+    expect(detected.map(registration => registration.id)).toContain('express');
   });
 });
