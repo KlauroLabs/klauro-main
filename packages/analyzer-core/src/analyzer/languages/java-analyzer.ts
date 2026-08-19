@@ -4,6 +4,11 @@ import { AnalyzerError } from '../core/errors';
 import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
+import {
+  findClassSpringMappingPath,
+  joinSpringRoutePaths,
+  stripJavaCommentsPreserveLines,
+} from './java-source-structure';
 
 interface JavaClass {
   name: string;
@@ -137,7 +142,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
     await this.analyzeJavaFile(context.filePath, context.relativePath, nodes, edges, entryPoints, exitPoints, packages, context);
     this.detectSpringPatterns(nodes, edges, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
-    await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+    await this.analyzeCallGraph(context.projectPath, nodes, edges, entryPoints, exitPoints);
     this.applyTestFileBoundary(nodes);
 
     const imports = this.extractImports(content).map(imp => imp.importPath);
@@ -189,7 +194,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       this.detectSpringPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
 
-      await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+      await this.analyzeCallGraph(context.projectPath, nodes, edges, entryPoints, exitPoints);
       this.applyTestFileBoundary(nodes);
 
       const warnings = this.collectAnalysisWarnings();
@@ -758,10 +763,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private extractClasses(content: string, filePath: string): JavaClass[] {
     const classes: JavaClass[] = [];
     const lines = content.split('\n');
+    const structuralLines = stripJavaCommentsPreserveLines(content).split('\n');
     const packageName = this.extractPackage(content) || 'default';
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const line = structuralLines[i].trim();
 
       if (line.includes('class ') && !line.startsWith('//') && !line.includes('interface')) {
         const classMatch = line.match(/\b(public|private|protected|abstract|final|\s)*\s*class\s+(\w+)/);
@@ -777,7 +783,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
             : [];
 
           const classStartLine = i + 1;
-          const classEndLine = this.findClassEnd(lines, i);
+          const classEndLine = this.findClassEnd(structuralLines, i);
 
           const fields = this.extractFields(lines, i, classEndLine);
           const methods = this.extractMethods(lines, i, classEndLine);
@@ -807,10 +813,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private extractRecords(content: string, filePath: string): JavaClass[] {
     const records: JavaClass[] = [];
     const lines = content.split('\n');
+    const structuralLines = stripJavaCommentsPreserveLines(content).split('\n');
     const packageName = this.extractPackage(content) || 'default';
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const line = structuralLines[i].trim();
       if (!/\brecord\s+\w+\s*\(/.test(line) || line.startsWith('//')) continue;
 
       const header = this.collectRecordComponentString(lines, i);
@@ -824,7 +831,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
         : [];
 
       const classStartLine = i + 1;
-      const classEndLine = this.findClassEnd(lines, i);
+      const classEndLine = this.findClassEnd(structuralLines, i);
 
       const componentFields = this.extractRecordComponents(header.components, classStartLine);
       const bodyFields = this.extractFields(lines, i, classEndLine);
@@ -945,10 +952,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private extractInterfaces(content: string, filePath: string): JavaInterface[] {
     const interfaces: JavaInterface[] = [];
     const lines = content.split('\n');
+    const structuralLines = stripJavaCommentsPreserveLines(content).split('\n');
     const packageName = this.extractPackage(content) || 'default';
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const line = structuralLines[i].trim();
 
       if (line.includes('interface ') && !line.startsWith('//')) {
         const interfaceMatch = line.match(/\b(public|private|protected|\s)*\s*interface\s+(\w+)/);
@@ -962,7 +970,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
             : [];
 
           const interfaceStartLine = i + 1;
-          const interfaceEndLine = this.findClassEnd(lines, i);
+          const interfaceEndLine = this.findClassEnd(structuralLines, i);
 
           const methods = this.extractMethods(lines, i, interfaceEndLine);
           const fields = this.extractFields(lines, i, interfaceEndLine);
@@ -988,20 +996,23 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
   private extractMethods(lines: string[], classStart: number, classEnd: number): JavaMethod[] {
     const methods: JavaMethod[] = [];
+    let braceDepth = 0;
 
     for (let i = classStart; i < classEnd; i++) {
-      const line = lines[i].trim();
+      const firstLine = lines[i].trim();
+      const signatureText = firstLine && braceDepth === 1
+        ? this.joinSignatureLines(lines, i)
+        : '';
 
-      if (this.isMethodDeclaration(line)) {
-        const methodMatch = line.match(/\b(\w+)\s*\(/);
+      if (this.isMethodDeclaration(signatureText)) {
+        const methodMatch = signatureText.match(/\b(\w+)\s*\(/);
         if (methodMatch) {
           const methodName = methodMatch[1];
-          const modifiers = this.extractModifiers(line);
-          const returnType = this.extractReturnType(line);
-          const parameters = this.extractParameters(line);
+          const modifiers = this.extractModifiers(signatureText);
+          const returnType = this.extractReturnType(signatureText);
+          const parameters = this.extractParameters(signatureText);
           const annotations = this.extractAnnotations(lines, i);
 
-          const signatureText = this.joinSignatureLines(lines, i);
           const throwsMatch = signatureText.match(/throws\s+([^{;]+)/);
           const throwsExceptions = throwsMatch
             ? throwsMatch[1].split(',').map(s => s.trim()).filter(s => s.length > 0)
@@ -1024,6 +1035,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
           });
         }
       }
+      braceDepth += this.javaBraceDelta(lines[i]);
     }
 
     return methods;
@@ -1101,7 +1113,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   private isMethodDeclaration(line: string): boolean {
-    const trimmed = line.trim();
+    const trimmed = line
+      .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""')
+      .trim();
+
+    if (!trimmed || /^[{}\]),;]/.test(trimmed)) return false;
 
     if (/^(?:throw|return|if|else|for|while|switch|do|try|catch|finally|synchronized|assert|new|super|this)\b/.test(trimmed)) {
       return false;
@@ -1129,6 +1145,18 @@ export class JavaAnalyzer extends BaseAnalyzer {
     const hasTypeName = /\b[A-Za-z_$][\w$]*(?:\s*<[^;{()]*>)?(?:\s*\[\s*\])*\s+[A-Za-z_$][\w$]*\s*\(/.test(trimmed);
 
     return hasModifier || hasVoid || hasTypeName;
+  }
+
+  private javaBraceDelta(line: string): number {
+    const structural = line
+      .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '')
+      .replace(/\/\/.*$/, '');
+    let delta = 0;
+    for (const character of structural) {
+      if (character === '{') delta++;
+      else if (character === '}') delta--;
+    }
+    return delta;
   }
 
   private joinSignatureLines(lines: string[], startIndex: number, maxLookahead = 8): string {
@@ -2014,7 +2042,13 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return map;
   }
 
-  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
+  private async analyzeCallGraph(
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
+  ): Promise<void> {
     const javaFiles = await glob(['**/*.java'], {
       cwd: projectPath,
       ignore: this.getJavaIgnorePatterns({ projectPath }),
@@ -2150,7 +2184,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
         for (const mapping of springMappings) {
           const mappingType = mapping[1];
-          const path = mapping[2];
+          const methodPath = mapping[2];
 
           const nextMethodLine = this.findNextMethodDeclaration(lines, i);
           if (nextMethodLine !== -1) {
@@ -2160,15 +2194,56 @@ export class JavaAnalyzer extends BaseAnalyzer {
             );
 
             if (methodAtLine) {
+              const containingClass = classNodes.find(node =>
+                node.source?.file === file &&
+                node.source?.line !== undefined && node.source.line <= nextMethodLine + 1 &&
+                node.source?.end_line !== undefined && node.source.end_line >= nextMethodLine + 1
+              );
+              const classPath = containingClass?.source?.line
+                ? findClassSpringMappingPath(lines, containingClass.source.line - 1)
+                : '';
+              const routePath = joinSpringRoutePaths(classPath, methodPath);
+              const httpMethod = mappingType === 'RequestMapping'
+                ? 'ALL'
+                : mappingType.replace('Mapping', '').toUpperCase();
+              const entryId = `entry_${methodAtLine.id}`;
+              const existingEntry = entryPoints.find(entryPoint => entryPoint.id === entryId);
+              const routeEntry: CASEntryPoint = {
+                ...(existingEntry || {}),
+                id: entryId,
+                source_node: methodAtLine.id,
+                type: 'http',
+                name: `${httpMethod} ${routePath}`,
+                description: `Spring HTTP endpoint: ${httpMethod} ${routePath}`,
+                trigger: { method: httpMethod, path: routePath },
+                handler: {
+                  node_id: methodAtLine.id,
+                  method_name: methodAtLine.name,
+                  file,
+                  line: methodAtLine.source?.line,
+                },
+                metadata: {
+                  ...(existingEntry?.metadata || {}),
+                  method: httpMethod.toLowerCase(),
+                  path: routePath,
+                  controller: containingClass?.name,
+                  handler: methodAtLine.name,
+                },
+              };
+              if (existingEntry) {
+                entryPoints[entryPoints.indexOf(existingEntry)] = routeEntry;
+              } else {
+                entryPoints.push(routeEntry);
+              }
               edges.push(this.createEdge(
                 `http_endpoint_${methodAtLine.id}`,
-                `entry_${methodAtLine.id}`,
+                entryId,
                 methodAtLine.id,
                 'exposes',
                 'behavior',
                 {
-                  httpMethod: mappingType.replace('Mapping', '').toUpperCase(),
-                  path,
+                  httpMethod,
+                  path: routePath,
                   annotation: `@${mappingType}`
                 }
               ));
@@ -2182,7 +2257,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private findNextMethodDeclaration(lines: string[], startIndex: number): number {
     for (let i = startIndex + 1; i < lines.length; i++) {
       if (/\b(?:class|interface|enum|record)\s+[A-Za-z_$][\w$]*/.test(lines[i])) return -1;
-      if (this.isMethodDeclaration(lines[i])) {
+      const firstLine = lines[i].trim();
+      if (firstLine && this.isMethodDeclaration(this.joinSignatureLines(lines, i))) {
         return i;
       }
     }

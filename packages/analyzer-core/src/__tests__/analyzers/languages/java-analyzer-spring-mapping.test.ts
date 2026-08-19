@@ -22,14 +22,25 @@ describe('JavaAnalyzer Spring mapping ownership', () => {
     const relativePath = 'OwnerResource.java';
     const filePath = path.join(projectPath, relativePath);
     await fs.writeFile(filePath, [
+      '/** Base class for owner endpoints. */',
       '@RequestMapping("/owners")',
       '@RestController',
       'class OwnerResource {',
       '  private static final Logger log = LoggerFactory.getLogger(OwnerResource.class);',
       '  @PostMapping("/{id}")',
-      '  public Owner create(int id) {',
+      '  public Owner create(',
+      '      int id,',
+      '      String name) {',
       '    return repository.findById(id)',
       '      .orElseThrow(() -> new ResourceNotFoundException());',
+      '  }',
+      '  private void verify() {',
+      '    assertNotNull(name, "source property toString() returned null");',
+      '  }',
+      '  static class Nested {',
+      '    void nested() {',
+      '      verify();',
+      '    }',
       '  }',
       '}',
     ].join('\n'));
@@ -39,8 +50,14 @@ describe('JavaAnalyzer Spring mapping ownership', () => {
     const exposedMethods = result.edges
       .filter(edge => edge.type === 'exposes')
       .map(edge => result.nodes.find(node => node.id === edge.target)?.name);
+    const endpoint = result.entryPoints.find(entry => entry.type === 'http');
 
     expect(exposedMethods).toEqual(['create']);
     expect(result.edges.filter(edge => edge.type === 'exposes').every(edge => entryIds.has(edge.source))).toBe(true);
+    expect(endpoint?.trigger).toEqual({ method: 'POST', path: '/owners/:id' });
+    expect(endpoint?.handler?.method_name).toBe('create');
+    expect(result.nodes.filter(node => node.type === 'method' && node.name === 'nested')).toHaveLength(1);
+    expect(result.nodes.some(node => node.type === 'method' && node.name === 'assertNotNull')).toBe(false);
+    expect(result.nodes.some(node => node.type === 'class' && node.name === 'for')).toBe(false);
   });
 });

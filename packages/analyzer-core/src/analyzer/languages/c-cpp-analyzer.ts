@@ -103,6 +103,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
     const fileByRel = new Map<string, CFileInfo>([[this.normalize(info.relativePath), info]]);
 
     this.emitFileNodes(info, nodes, edges, entryPoints);
+    this.emitInheritanceEdges([info], nodes, edges);
     await this.emitCallEdges([info], definedFunctionNames, edges);
     this.emitIncludeEdges([info], context.projectPath, fileByRel, edges);
 
@@ -159,6 +160,7 @@ export class CCppAnalyzer extends BaseAnalyzer {
         this.emitFileNodes(info, nodes, edges, entryPoints);
       }
 
+      this.emitInheritanceEdges(fileInfos, nodes, edges);
       await this.emitCallEdges(fileInfos, definedFunctionNames, edges);
       this.emitIncludeEdges(fileInfos, context.projectPath, fileByRel, edges);
 
@@ -452,17 +454,6 @@ export class CCppAnalyzer extends BaseAnalyzer {
         `${fileId}_contains_${classId}`, fileId, classId, 'contains'
       ));
 
-
-      for (const base of cls.bases) {
-        edges.push(this.createEdge(
-          `inherit_${classId}_${this.sanitizeId(base)}`,
-          classId,
-          `class_name_${this.sanitizeId(base)}`,
-          'inheritance',
-          'structure',
-          { baseName: base, language: info.language }
-        ));
-      }
     }
 
 
@@ -511,6 +502,79 @@ export class CCppAnalyzer extends BaseAnalyzer {
         ));
       }
     }
+  }
+
+  private emitInheritanceEdges(fileInfos: CFileInfo[], nodes: CASNode[], edges: CASEdge[]): void {
+    const classesByName = new Map<string, Array<{ info: CFileInfo; cls: CClass; id: string }>>();
+    for (const info of fileInfos) {
+      for (const cls of info.classes) {
+        const candidates = classesByName.get(cls.name) || [];
+        candidates.push({ info, cls, id: this.classId(info.relativePath, cls.name, cls.lineStart) });
+        classesByName.set(cls.name, candidates);
+      }
+    }
+
+    const nodeIds = new Set(nodes.map(node => node.id));
+    for (const info of fileInfos) {
+      for (const cls of info.classes) {
+        const sourceId = this.classId(info.relativePath, cls.name, cls.lineStart);
+        for (const baseName of cls.bases) {
+          const candidates = classesByName.get(baseName) || [];
+          const target = this.resolveBaseClass(info, candidates);
+          const targetId = target?.id || this.typeReferenceId(info.relativePath, baseName);
+          if (!target && !nodeIds.has(targetId)) {
+            nodes.push(this.createNodeBuilder(targetId, baseName, 'type_reference')
+              .withLevel(2, 'Class')
+              .withCategory('classes', ['cpp-classes', 'unresolved-reference'])
+              .withSource({ file: cls.filePath, line: cls.lineStart, end_line: cls.lineStart })
+              .withMetadata({
+                language: info.language,
+                attributes: {
+                  unresolved_reference: true,
+                  referenced_from: info.relativePath,
+                  candidate_count: candidates.length,
+                }
+              })
+              .build());
+            nodeIds.add(targetId);
+          }
+          edges.push(this.createEdge(
+            `inherit_${sourceId}_${this.sanitizeId(baseName)}`,
+            sourceId,
+            targetId,
+            'inheritance',
+            'structure',
+            {
+              baseName,
+              language: info.language,
+              resolution: target ? 'source' : candidates.length > 0 ? 'ambiguous-reference' : 'external-reference',
+            }
+          ));
+        }
+      }
+    }
+  }
+
+  private resolveBaseClass(
+    source: CFileInfo,
+    candidates: Array<{ info: CFileInfo; cls: CClass; id: string }>
+  ): { info: CFileInfo; cls: CClass; id: string } | undefined {
+    if (candidates.length === 0) return undefined;
+    const sameFile = candidates.filter(candidate => candidate.info.relativePath === source.relativePath);
+    if (sameFile.length === 1) return sameFile[0];
+
+    const includedFiles = new Set(
+      source.includes
+        .filter(include => !include.system)
+        .map(include => this.normalize(path.posix.join(path.posix.dirname(source.relativePath), include.rawPath)))
+    );
+    const included = candidates.filter(candidate => includedFiles.has(this.normalize(candidate.info.relativePath)));
+    if (included.length === 1) return included[0];
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
+  private typeReferenceId(relativePath: string, baseName: string): string {
+    return `type_reference_${this.sanitizeId(relativePath)}_${this.sanitizeId(baseName)}`;
   }
 
   private async emitCallEdges(

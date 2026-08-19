@@ -5006,13 +5006,54 @@ describe('orchestrator dedupeHttpEntryPoints', () => {
           handler: { node_id: 'fn_order', method_name: 'getOrder', file: 'main.go', line: 4 },
         },
       ] as CASEntryPoint[];
-      orch.dedupeHttpEntryPoints(entries, root);
+      const edges: CASEdge[] = [{
+        id: 'generic_exposes_handler',
+        source: 'generic',
+        target: 'fn_order',
+        type: 'exposes',
+      } as CASEdge];
+      orch.dedupeHttpEntryPoints(entries, root, edges);
       expect(entries).toHaveLength(1);
       expect(entries[0].id).toBe('framework');
       expect(entries[0].handler?.method_name).toBe('getOrder');
+      expect(edges[0].source).toBe('framework');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('orchestrator entry-point merge integrity', () => {
+  it('redirects existing and incoming edges to the merged entry identity', async () => {
+    const existing = {
+      id: 'entry_generic', source_node: 'method_update', type: 'http', name: 'POST /pets/:id',
+      trigger: { method: 'POST', path: '/pets/:id' },
+      handler: { node_id: 'method_update', file: 'src/pets.ts', line: 42 },
+    } as CASEntryPoint;
+    const incoming = {
+      id: 'entry_framework', source_node: 'method_update', type: 'http', name: 'POST /pets/:id',
+      description: 'Updates a pet record.',
+      trigger: { method: 'POST', path: '/pets/:id' },
+      handler: { node_id: 'method_update', method_name: 'updatePet', file: 'src/pets.ts', line: 42 },
+      metadata: { framework: 'spring', method: 'POST', path: '/pets/:id' },
+    } as CASEntryPoint;
+    const target = {
+      allNodes: [],
+      allEdges: [{ id: 'existing_edge', source: existing.id, target: 'method_update', type: 'exposes' } as CASEdge],
+      allEntryPoints: [existing],
+      allExitPoints: [],
+    };
+
+    await orch.mergeAnalysisResult(target, {
+      nodes: [],
+      edges: [{ id: 'incoming_edge', source: incoming.id, target: 'method_update', type: 'exposes' } as CASEdge],
+      entry_points: [incoming],
+      exit_points: [],
+    }, { analyzerId: 'spring' });
+
+    expect(target.allEntryPoints).toHaveLength(1);
+    expect(target.allEntryPoints[0].id).toBe(incoming.id);
+    expect(target.allEdges.map(edge => edge.source)).toEqual([incoming.id]);
   });
 });
 
@@ -5042,7 +5083,13 @@ describe('orchestrator dedupeEntryPointTwins (task #27: entry-point twins)', () 
     } as CASEntryPoint;
 
     const entryPoints = [entryA, entryB];
-    orch.dedupeEntryPointTwins(entryPoints);
+    const edges: CASEdge[] = [{
+      id: 'cli_entry_invokes_execute',
+      source: entryA.id,
+      target: 'method_execute_0',
+      type: 'invokes',
+    } as CASEdge];
+    orch.dedupeEntryPointTwins(entryPoints, undefined, edges);
 
     expect(entryPoints).toHaveLength(1);
     // The richer record (resolved handler + description) survives.
@@ -5050,6 +5097,26 @@ describe('orchestrator dedupeEntryPointTwins (task #27: entry-point twins)', () 
     // Evidence from the dropped twin (framework/kind attributes) is folded in.
     expect(entryPoints[0].metadata?.framework).toBe('symfony');
     expect(entryPoints[0].metadata?.command_name).toBe('app:import-orders');
+    expect(edges[0].source).toBe(entryB.id);
+  });
+
+  it('keeps same-event entries that invoke different handlers', () => {
+    const entryPoints: CASEntryPoint[] = [
+      {
+        id: 'entry_input_counter', source_node: 'component_app', type: 'event', name: 'App input',
+        trigger: { pattern: 'input' }, handler: { node_id: 'component_app', method_name: 'App', file: 'src/app.ts' },
+        metadata: { handler_name: 'onCounterSet' },
+      } as CASEntryPoint,
+      {
+        id: 'entry_input_text', source_node: 'component_app', type: 'event', name: 'App input',
+        trigger: { pattern: 'input' }, handler: { node_id: 'component_app', method_name: 'App', file: 'src/app.ts' },
+        metadata: { handler_name: 'onTextSet' },
+      } as CASEntryPoint,
+    ];
+
+    orch.dedupeEntryPointTwins(entryPoints);
+
+    expect(entryPoints.map(entryPoint => entryPoint.id)).toEqual(['entry_input_counter', 'entry_input_text']);
   });
 
   it('keeps two entries for the same source_node when they are genuinely different triggers (e.g. a subscriber handling two distinct events)', () => {

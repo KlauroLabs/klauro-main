@@ -1381,8 +1381,8 @@ export class AnalyzerOrchestrator {
       writeAnalyzerStatus('[Klauro] in-repo call resolution:', internalizedCalls);
     }
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
-    this.dedupeHttpEntryPoints(allEntryPoints, projectPath);
-    this.dedupeEntryPointTwins(allEntryPoints, projectPath);
+    this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges);
+    this.dedupeEntryPointTwins(allEntryPoints, projectPath, allEdges);
     this.normalizeNodeMetrics(allNodes);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
@@ -1406,7 +1406,7 @@ export class AnalyzerOrchestrator {
         }
       }
       if (conventionsResult.entry_points.length > 0) {
-        this.dedupeHttpEntryPoints(allEntryPoints, projectPath);
+        this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges);
       }
     } catch (error) {
       console.error('[Klauro] conventions-applier pass failed:', error);
@@ -2952,8 +2952,8 @@ export class AnalyzerOrchestrator {
       nodes, edges, exitPoints, libraries: previousOutput.libraries || [],
     });
     this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints, edges);
-    this.dedupeHttpEntryPoints(entryPoints, projectPath);
-    this.dedupeEntryPointTwins(entryPoints, projectPath);
+    this.dedupeHttpEntryPoints(entryPoints, projectPath, edges);
+    this.dedupeEntryPointTwins(entryPoints, projectPath, edges);
     this.normalizeNodeMetrics(nodes);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     assignNodeRoles({ nodes, edges, entry_points: entryPoints, exit_points: exitPoints, resetDerivedRoles: true });
@@ -5511,7 +5511,8 @@ export class AnalyzerOrchestrator {
     sectionLabel: 'entry point' | 'exit point' | 'edge',
     analyzerId: string,
     analysisErrors?: CASAnalysisError[],
-    indexes?: { byId: Map<string, T>; byCanonicalKey?: Map<string, T> }
+    indexes?: { byId: Map<string, T>; byCanonicalKey?: Map<string, T> },
+    onEntryPointMerge?: (replacedIds: string[], survivorId: string) => void
   ): void {
     const byId = indexes?.byId ?? new Map<string, T>(target.map(item => [item.id, item]));
     const isEntryPoint = sectionLabel === 'entry point';
@@ -5573,6 +5574,7 @@ export class AnalyzerOrchestrator {
           byId.set(merged.id, merged);
           indexCanonicalKeys(merged);
           indexCrossAnalyzerKeys(merged, canonicalExisting);
+          onEntryPointMerge?.([canonicalExisting.id, item.id], merged.id);
           continue;
         }
         target.push(item);
@@ -5589,6 +5591,7 @@ export class AnalyzerOrchestrator {
         byId.set(merged.id, merged);
         indexCanonicalKeys(merged);
         indexCrossAnalyzerKeys(merged, existing);
+        onEntryPointMerge?.([existing.id, item.id], merged.id);
         continue;
       }
       if (warnedIds.has(item.id)) continue;
@@ -5756,14 +5759,21 @@ export class AnalyzerOrchestrator {
       });
     }
 
+    const entryPointRedirects = new Map<string, string>();
     this.appendGraphItemsUnique(
       target.allEntryPoints,
       validEntryPoints,
       'entry point',
       contributingAnalyzer,
       options?.analysisErrors,
-      { byId: mergeIndexes.entryPointsById, byCanonicalKey: mergeIndexes.entryPointsByCanonicalKey }
+      { byId: mergeIndexes.entryPointsById, byCanonicalKey: mergeIndexes.entryPointsByCanonicalKey },
+      (replacedIds, survivorId) => {
+        for (const replacedId of replacedIds) {
+          if (replacedId !== survivorId) entryPointRedirects.set(replacedId, survivorId);
+        }
+      }
     );
+    this.redirectGraphReferences(target.allEdges, entryPointRedirects);
     this.appendGraphItemsUnique(
       target.allExitPoints,
       validExitPoints,
@@ -21897,7 +21907,32 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private dedupeHttpEntryPoints(entryPoints: CASEntryPoint[], projectPath?: string): void {
+  private redirectGraphReferences(edges: CASEdge[] | undefined, redirects: Map<string, string>): void {
+    if (!edges || redirects.size === 0) return;
+    const resolve = (id: string): string => {
+      const visited: string[] = [];
+      const seen = new Set<string>();
+      let current = id;
+      while (redirects.has(current) && !seen.has(current)) {
+        visited.push(current);
+        seen.add(current);
+        current = redirects.get(current)!;
+      }
+      for (const alias of visited) redirects.set(alias, current);
+      return current;
+    };
+    for (const edge of edges) {
+      edge.source = resolve(edge.source);
+      edge.target = resolve(edge.target);
+    }
+    dedupeCanonicalEdges(edges);
+  }
+
+  private dedupeHttpEntryPoints(
+    entryPoints: CASEntryPoint[],
+    projectPath?: string,
+    edges?: CASEdge[]
+  ): void {
     const isHttp = (entry: CASEntryPoint) => entry.type === 'http' || entry.type === 'route';
     const normalizeFile = (entry: CASEntryPoint): string =>
       String(entry.handler?.file || entry.metadata?.file || '').replace(/\\/g, '/').replace(/^\.\//, '');
@@ -21932,6 +21967,7 @@ export class AnalyzerOrchestrator {
     };
     const bestByKey = new Map<string, CASEntryPoint>();
     const removals = new Set<CASEntryPoint>();
+    const redirects = new Map<string, string>();
     for (const entry of entryPoints) {
       if (!isHttp(entry)) continue;
       const key = keyOf(entry);
@@ -21941,14 +21977,20 @@ export class AnalyzerOrchestrator {
       const winner = loser === existing ? entry : existing;
       bestByKey.set(key, winner);
       removals.add(loser);
+      if (loser.id !== winner.id) redirects.set(loser.id, winner.id);
     }
     if (removals.size === 0) return;
     for (let i = entryPoints.length - 1; i >= 0; i--) {
       if (removals.has(entryPoints[i])) entryPoints.splice(i, 1);
     }
+    this.redirectGraphReferences(edges, redirects);
   }
 
-  private dedupeEntryPointTwins(entryPoints: CASEntryPoint[], projectPath?: string): void {
+  private dedupeEntryPointTwins(
+    entryPoints: CASEntryPoint[],
+    projectPath?: string,
+    edges?: CASEdge[]
+  ): void {
     const triggerSignature = (entry: CASEntryPoint): string => {
       const t = entry.trigger || {};
       const method = (entry.metadata?.method || t.method || '').toString().toUpperCase();
@@ -21979,7 +22021,10 @@ export class AnalyzerOrchestrator {
     };
     const keyOf = (entry: CASEntryPoint) => {
       const handlerFile = canonicalHandlerFile(entry);
-      const handlerName = entry.handler?.method_name || '';
+      const metadataHandler = typeof entry.metadata?.handler_name === 'string'
+        ? entry.metadata.handler_name.trim()
+        : '';
+      const handlerName = metadataHandler || entry.handler?.method_name || '';
       const semanticHandler = handlerFile && handlerName
         ? `handler:${handlerFile}:${handlerName}`
         : `source:${entry.source_node}`;
@@ -21995,6 +22040,7 @@ export class AnalyzerOrchestrator {
 
     const bestByKey = new Map<string, CASEntryPoint>();
     const removals = new Set<CASEntryPoint>();
+    const redirects = new Map<string, string>();
     for (const entry of entryPoints) {
       if (!entry.source_node) continue;
       const key = keyOf(entry);
@@ -22007,11 +22053,13 @@ export class AnalyzerOrchestrator {
       if (!winner.description && loser.description) winner.description = loser.description;
       bestByKey.set(key, winner);
       removals.add(loser);
+      if (loser.id !== winner.id) redirects.set(loser.id, winner.id);
     }
     if (removals.size === 0) return;
     for (let i = entryPoints.length - 1; i >= 0; i--) {
       if (removals.has(entryPoints[i])) entryPoints.splice(i, 1);
     }
+    this.redirectGraphReferences(edges, redirects);
   }
 
   private addDiscoveredEntryPoints(

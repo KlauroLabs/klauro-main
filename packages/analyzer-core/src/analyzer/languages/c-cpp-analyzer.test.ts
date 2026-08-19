@@ -36,8 +36,12 @@ function makeTempProject(): string {
   ].join('\n');
   fs.writeFileSync(path.join(dir, 'main.c'), mainC);
 
+  fs.writeFileSync(path.join(dir, 'base.hpp'), 'class Base {};\n');
+
   // widget.cpp: class Foo with method bar() that calls a free function helper()
   const cpp = [
+    '#include "base.hpp"',
+    '',
     'int helper() {',
     '  return 42;',
     '}',
@@ -48,6 +52,8 @@ function makeTempProject(): string {
     '    return helper();',
     '  }',
     '};',
+    '',
+    'class ExternalDerived : public ExternalBase {};',
     '',
   ].join('\n');
   fs.writeFileSync(path.join(dir, 'widget.cpp'), cpp);
@@ -83,6 +89,19 @@ test('CCppAnalyzer extracts functions, classes, includes, calls, and entry point
 
   // Class node: Foo
   assert.ok(byName('class', 'Foo'), 'expected class node "Foo"');
+
+  const foo = byName('class', 'Foo')!;
+  const base = byName('class', 'Base')!;
+  const inheritance = edges.find(edge => edge.type === 'inheritance' && edge.source === foo.id);
+  assert.equal(inheritance?.target, base.id);
+
+  const externalDerived = byName('class', 'ExternalDerived')!;
+  const unresolvedInheritance = edges.find(
+    edge => edge.type === 'inheritance' && edge.source === externalDerived.id
+  );
+  const unresolvedBase = nodes.find(node => node.id === unresolvedInheritance?.target);
+  assert.equal(unresolvedBase?.type, 'type_reference');
+  assert.equal(unresolvedBase?.metadata?.attributes?.unresolved_reference, true);
 
   // #include edge from main.c -> math.h
   const mainFileId = nodes.find(n => n.type === 'file' && n.name === 'main.c')?.id;
