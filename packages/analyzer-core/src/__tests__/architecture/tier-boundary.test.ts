@@ -113,6 +113,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'route-handler-resolution.ts': 1,
   'run-log.ts': 1,
   'scaffold-paths.ts': 1,
+  'source-comment-mask.ts': 1,
   'source-corpus.ts': 1,
   'source-file-loader.ts': 1,
   'stage-fingerprint.ts': 1,

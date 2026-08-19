@@ -4,10 +4,10 @@ import { AnalyzerError } from '../core/errors';
 import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
+import { maskCStyleComments } from '../core/source-comment-mask';
 import {
   findClassSpringMappingPath,
   joinSpringRoutePaths,
-  stripJavaCommentsPreserveLines,
 } from './java-source-structure';
 
 interface JavaClass {
@@ -763,7 +763,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private extractClasses(content: string, filePath: string): JavaClass[] {
     const classes: JavaClass[] = [];
     const lines = content.split('\n');
-    const structuralLines = stripJavaCommentsPreserveLines(content).split('\n');
+    const structuralLines = maskCStyleComments(content).split('\n');
     const packageName = this.extractPackage(content) || 'default';
 
     for (let i = 0; i < lines.length; i++) {
@@ -813,7 +813,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private extractRecords(content: string, filePath: string): JavaClass[] {
     const records: JavaClass[] = [];
     const lines = content.split('\n');
-    const structuralLines = stripJavaCommentsPreserveLines(content).split('\n');
+    const structuralLines = maskCStyleComments(content).split('\n');
     const packageName = this.extractPackage(content) || 'default';
 
     for (let i = 0; i < lines.length; i++) {
@@ -952,7 +952,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private extractInterfaces(content: string, filePath: string): JavaInterface[] {
     const interfaces: JavaInterface[] = [];
     const lines = content.split('\n');
-    const structuralLines = stripJavaCommentsPreserveLines(content).split('\n');
+    const structuralLines = maskCStyleComments(content).split('\n');
     const packageName = this.extractPackage(content) || 'default';
 
     for (let i = 0; i < lines.length; i++) {
