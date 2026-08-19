@@ -5398,6 +5398,32 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     expect((feed.fields || []).map((f: any) => f.name)).toEqual(expect.arrayContaining(['ID', 'UserID', 'Title']));
   });
 
+  it('groups serializable Rust structs into a domain entity and attributes CRUD handlers', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'struct_todo', name: 'Todo', type: 'struct', source: { file: 'src/main.rs', line: 1 }, subcategories: ['struct', 'serializable'] }),
+      node({ id: 'field_todo_id', name: 'id', type: 'field', parent: 'struct_todo', source: { file: 'src/main.rs', line: 2 }, metadata: { attributes: { type: 'Uuid' } } }),
+      node({ id: 'field_todo_text', name: 'text', type: 'field', parent: 'struct_todo', source: { file: 'src/main.rs', line: 3 }, metadata: { attributes: { type: 'String' } } }),
+      node({ id: 'struct_create_todo', name: 'CreateTodo', type: 'struct', source: { file: 'src/main.rs', line: 6 }, subcategories: ['struct', 'serializable'] }),
+      node({ id: 'field_create_todo_text', name: 'text', type: 'field', parent: 'struct_create_todo', source: { file: 'src/main.rs', line: 7 }, metadata: { attributes: { type: 'String' } } }),
+      node({ id: 'struct_update_todo', name: 'UpdateTodo', type: 'struct', source: { file: 'src/main.rs', line: 10 }, subcategories: ['struct', 'serializable'] }),
+      node({ id: 'field_update_todo_completed', name: 'completed', type: 'field', parent: 'struct_update_todo', source: { file: 'src/main.rs', line: 11 }, metadata: { attributes: { type: 'Option<bool>' } } }),
+      node({ id: 'fn_create', name: 'todos_create', type: 'function', signature: { parameters: [{ name: 'input', type: 'CreateTodo' }] } }),
+      node({ id: 'fn_update', name: 'todos_update', type: 'function', signature: { parameters: [{ name: 'input', type: 'UpdateTodo' }] } }),
+      node({ id: 'fn_delete', name: 'todos_delete', type: 'function' }),
+      node({ id: 'fn_index', name: 'todos_index', type: 'function', signature: { return_type: 'Vec<Todo>', parameters: [] } }),
+    ];
+
+    const todo = orch.buildDataEntities(nodes, []).find((entity: any) => entity.name === 'Todo');
+
+    expect(todo).toBeDefined();
+    expect(todo.kind).toBe('domain-shape');
+    expect((todo.fields || []).map((field: any) => field.name)).toEqual(expect.arrayContaining(['id', 'text', 'completed']));
+    expect(todo.lifecycle.created_by).toContain('fn_create');
+    expect(todo.lifecycle.read_by).toContain('fn_index');
+    expect(todo.lifecycle.updated_by).toContain('fn_update');
+    expect(todo.lifecycle.deleted_by).toContain('fn_delete');
+  });
+
   describe('persisted-entity requires CITED persistence evidence', () => {
     it('does not treat a generic analyzer model node as persistence evidence', () => {
       const nodes: CASNode[] = [node({

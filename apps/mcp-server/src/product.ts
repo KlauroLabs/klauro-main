@@ -3,6 +3,7 @@ import type {
   CASCrossRepositoryLink,
   CASEntryPoint,
   CASExitPoint,
+  FlowConcept,
   CASNode,
   CASOutput,
   CASRuntimeStaticLink,
@@ -369,7 +370,8 @@ function answerEntryPoints(cas: CASOutput) {
 }
 
 function answerRepresentativeFlow(cas: CASOutput) {
-  const entryPoint = (cas.entry_points || []).find(entry =>
+  const flow = selectRepresentativeFlow(cas.flows || [], cas.entry_points || []);
+  const entryPoint = (cas.entry_points || []).find(entry => entry.id === flow?.entry_point) || (cas.entry_points || []).find(entry =>
     (cas.call_chains || []).some(chain => chain.entry_point.entry_point_id === entry.id)
   ) || (cas.entry_points || [])[0];
 
@@ -387,12 +389,42 @@ function answerRepresentativeFlow(cas: CASOutput) {
       type: entryPoint.type,
       trigger: entryPoint.trigger,
     },
+    flow,
     chain,
   }, [
     ...entryPointEvidence([entryPoint]),
+    ...(flow ? flowEvidence(flow) : []),
     ...(chain ? callChainEvidence([chain]) : []),
-    ...nodeEvidence(nodesForChain(cas, chain).slice(0, 8)),
-  ], confidence(Boolean(chain), Boolean(entryPoint)));
+    ...nodeEvidence(nodesForRepresentativeFlow(cas, flow, chain).slice(0, 8)),
+  ], confidence(Boolean(flow || chain), Boolean(entryPoint)));
+}
+
+function selectRepresentativeFlow(flows: FlowConcept[], entryPoints: CASEntryPoint[]): FlowConcept | undefined {
+  const entryTypes = new Map(entryPoints.map(entry => [entry.id, entry.type]));
+  return [...flows].sort((left, right) => flowInformationScore(right, entryTypes) - flowInformationScore(left, entryTypes) || left.flow_id.localeCompare(right.flow_id))[0];
+}
+
+function flowInformationScore(flow: FlowConcept, entryTypes: Map<string, string>): number {
+  const entryType = entryTypes.get(flow.entry_point);
+  const userFacingWeight = ['http', 'graphql', 'rpc', 'websocket', 'event', 'message'].includes(entryType || '') ? 20 : 0;
+  return flow.steps.length * 2
+    + flow.entities.length * 10
+    + flow.contract.input.length
+    + flow.contract.output.length
+    + flow.contract.side_effects.state_changes.length * 8
+    + flow.contract.side_effects.external_integrations.length
+    + userFacingWeight
+    + (flow.terminus ? 3 : 0);
+}
+
+function flowEvidence(flow: FlowConcept): EvidenceRef[] {
+  return [{ type: 'fact', id: flow.flow_id, label: flow.name, confidence: 0.9 }];
+}
+
+function nodesForRepresentativeFlow(cas: CASOutput, flow: FlowConcept | undefined, chain: CASCallChain | undefined): CASNode[] {
+  if (!flow) return nodesForChain(cas, chain);
+  const ids = new Set(flow.steps.flatMap(step => step.functions.map(fn => fn.function_id)));
+  return cas.nodes.filter(node => ids.has(node.id));
 }
 
 function answerImpact(cas: CASOutput) {

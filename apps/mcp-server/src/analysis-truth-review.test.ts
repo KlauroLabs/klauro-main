@@ -42,6 +42,9 @@ test('truth review preserves named terminality and source-backed flow evidence',
 
   const review = buildAnalysisTruthReview(cas, '/workspace/orders');
 
+  assert.equal(review.answer_pack.pack, 'mastery');
+  assert.equal(review.answer_pack.answers.length, 9);
+
   assert.equal(review.terminality.terminal_flows[0].name, 'Place order');
   assert.equal(review.terminality.proximal_flows[0].name, 'Sign in');
   assert.equal(review.terminality.flow_evidence.find(flow => flow.id === 'order-flow')?.entry_file, 'src/orders.ts');

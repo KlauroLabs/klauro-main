@@ -5,6 +5,7 @@ import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyze
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { buildSummary } from './query';
+import { runAnswerPack } from './product';
 import { isDirectCliInvocation } from './cli-invocation';
 
 interface NamedTerminality extends CASTerminalityMember {
@@ -50,6 +51,7 @@ function flowEvidence(flow: FlowConcept, entryFiles: Map<string, string | undefi
 export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
   const summary = buildSummary(cas);
   const readiness = evaluateAgentReadiness(cas, projectPath);
+  const answerPack = runAnswerPack(cas, projectPath);
   const terminality = cas.terminality || { nodes: [], entities: [], flows: [], capabilities: [] };
   const flowById = new Map((cas.flows || []).map(flow => [flow.flow_id, flow]));
   const flowNames = new Map((cas.flows || []).map(flow => [flow.flow_id, flow.name]));
@@ -60,6 +62,13 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
   const proximalFlows = namedTerminality(terminality.flows, flowNames, member => member.proximal_terminal);
   const reviewedFlowIds = new Set([...terminalFlows, ...proximalFlows].map(member => member.id));
   const terminalSignal = buildTerminalSignal({ journeys: cas.user_journeys || [], systemCapabilities: cas.capabilities || [] });
+  const fieldsByParent = new Map<string, typeof cas.nodes>();
+  for (const node of cas.nodes) {
+    if (!node.parent || !['field', 'property', 'attribute'].includes(node.type)) continue;
+    const fields = fieldsByParent.get(node.parent) || [];
+    fields.push(node);
+    fieldsByParent.set(node.parent, fields);
+  }
 
   return {
     project_path: projectPath,
@@ -81,6 +90,21 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
       diagnostics: cas.analysis_errors || [],
     },
     comprehension: readiness.comprehension,
+    answer_pack: answerPack,
+    data_shape_evidence: cas.nodes
+      .filter(node => ['struct', 'dto', 'entity', 'model', 'interface', 'type'].includes(node.type))
+      .slice(0, 60)
+      .map(node => ({
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        source: node.source,
+        subcategories: node.subcategories || [],
+        fields: (fieldsByParent.get(node.id) || []).map(field => ({
+          name: field.name,
+          type: field.signature?.return_type || field.metadata?.attributes?.type || (field.metadata as Record<string, unknown> | undefined)?.type || 'unknown',
+        })),
+      })),
     canonical_capabilities: (cas.capabilities || []).map(capability => ({
       id: capability.id,
       name: capability.name,

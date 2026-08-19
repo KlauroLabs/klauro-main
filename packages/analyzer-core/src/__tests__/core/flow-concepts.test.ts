@@ -59,6 +59,47 @@ describe('materialized comprehension flows', () => {
   });
 });
 
+test('retains entry flows whose only behavioral evidence is entity lifecycle', () => {
+  const cas = {
+    system: { id: 'todos', name: 'todos', type: 'service', root_path: '.', technologies: { languages: [], frameworks: [] }, quality: {} },
+    nodes: [
+      node({ id: 'create', name: 'todos_create', type: 'function' }),
+      node({ id: 'update', name: 'todos_update', type: 'function' }),
+    ],
+    edges: [],
+    entry_points: [
+      { id: 'entry-create', source_node: 'create', type: 'http', name: 'POST /todos', handler: { node_id: 'create' } },
+      { id: 'entry-update', source_node: 'update', type: 'http', name: 'PATCH /todos/:id', handler: { node_id: 'update' } },
+    ],
+    exit_points: [
+      { id: 'create-exit', source_node: 'create', type: 'sdk', name: 'Uuid::new_v4' },
+    ],
+    call_chains: [
+      {
+        id: 'create-chain', chain_type: 'entry-to-exit',
+        entry_point: { node_id: 'create', entry_point_id: 'entry-create' },
+        exit_point: { node_id: 'create', exit_point_id: 'create-exit' },
+        call_path: [{ call_id: 'create-call', node_id: 'create', method_name: 'todos_create', depth: 0 }],
+      },
+      {
+        id: 'update-chain', chain_type: 'dead-end',
+        entry_point: { node_id: 'update', entry_point_id: 'entry-update' },
+        call_path: [{ call_id: 'update-call', node_id: 'update', method_name: 'todos_update', depth: 0 }],
+      },
+    ],
+    entities: [{
+      id: 'entity-todo', name: 'Todo',
+      lifecycle: { created_by: ['create'], read_by: [], updated_by: ['update'], deleted_by: [] },
+    }],
+    analyzer_contributions: [],
+  } as unknown as CASOutput;
+
+  const flows = computeFlowConcepts(cas);
+  expect(flows.map(flow => flow.entry_point)).toEqual(['entry-create', 'entry-update']);
+  expect(flows.find(flow => flow.entry_point === 'entry-create')?.contract.side_effects.state_changes).toContain('Todo created');
+  expect(flows.find(flow => flow.entry_point === 'entry-update')?.contract.side_effects.state_changes).toContain('Todo updated');
+});
+
 
 
 

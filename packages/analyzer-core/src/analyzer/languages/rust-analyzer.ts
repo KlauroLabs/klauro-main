@@ -8,6 +8,7 @@ import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
+import { externalRustReceiverNames, normalizeRustDependencyName } from './rust-call-classification';
 
 let detectedRustVersion: string | undefined;
 
@@ -306,6 +307,7 @@ export class RustAnalyzer extends BaseAnalyzer {
   private projectVersion = '';
   private crateNamesByDir = new Map<string, string>();
   private crateManifestProjectPath = '';
+  private directDependencyNames = new Set<string>();
 
   constructor() {
     super(
@@ -706,6 +708,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           const [name] = trimmed.split('=');
           if (name) {
             const depName = name.trim();
+            this.directDependencyNames.add(normalizeRustDependencyName(depName));
             this.detectCrateDependency(depName);
           }
         }
@@ -1011,9 +1014,9 @@ export class RustAnalyzer extends BaseAnalyzer {
               generics,
               rustAttributes: attributes,
               visibility: isPublic ? 'public' : 'private'
-            },
-            subcategories: subcategories
+            }
           });
+          structNode.subcategories = subcategories;
           if (documentation) structNode.documentation = documentation;
           nodes.push(structNode);
 
@@ -1535,7 +1538,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 
 	          const bodyLines = lines.slice(bodyStartLine, fnEnd + 1);
 	          const body = bodyLines.join('\n');
-	          const calls = this.extractCallsFromBody(body, fnName, relativePath, bodyStartLine + 1);
+	          const calls = this.extractCallsFromBody(body, fnName, relativePath, bodyStartLine + 1, signature.parameters);
 	          const implType = implContext.get(i + 1);
 
           const isMethod = !!implType;
@@ -1811,10 +1814,11 @@ export class RustAnalyzer extends BaseAnalyzer {
     return todos;
   }
 
-  private extractCallsFromBody(body: string, callerFunction: string, callerFile: string, bodyStartLine: number): RustFunctionCall[] {
+  private extractCallsFromBody(body: string, callerFunction: string, callerFile: string, bodyStartLine: number, parameters: RustParameter[]): RustFunctionCall[] {
     const calls: RustFunctionCall[] = [];
     const lines = body.split('\n');
     const seenCalls = new Set<string>();
+    const externalReceivers = externalRustReceiverNames(body, parameters, this.directDependencyNames);
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -1889,7 +1893,7 @@ export class RustAnalyzer extends BaseAnalyzer {
             callerLine: bodyStartLine + i,
             targetFunction: methodName,
             targetModule: objectName,
-            isExternal: this.isExternalObjectCall(objectName),
+            isExternal: externalReceivers.has(objectName),
             isAsync: isAsyncContext,
             isMethodCall: true,
             callLine: bodyStartLine + i
@@ -1932,12 +1936,6 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     return calls;
-  }
-
-  private isExternalObjectCall(objectName: string): boolean {
-    const externalIndicators = ['client', 'conn', 'db', 'pool', 'session', 'http', 'request', 'response', 'stream', 'reader', 'writer', 'file', 'socket'];
-    const lowerName = objectName.toLowerCase();
-    return externalIndicators.some(ind => lowerName.includes(ind));
   }
 
   private isDatabaseRelatedCall(module: string | undefined, functionName: string): boolean {
@@ -2621,8 +2619,9 @@ export class RustAnalyzer extends BaseAnalyzer {
         if (seenCalls.has(uniqueKey)) continue;
         if (this.isStandardLibraryCall(moduleName, functionName)) continue;
 
-        seenCalls.add(uniqueKey);
         const category = this.categorizeExitPoint(moduleName, functionName);
+        if (category.type === 'sdk') continue;
+        seenCalls.add(uniqueKey);
         const exitPointId = `ext_call:${filePath}:${call.callLine}:${callKey}`.replace(/[^a-zA-Z0-9_:/.-]/g, '_');
 
         pushExitPoint(this.createExitPoint(

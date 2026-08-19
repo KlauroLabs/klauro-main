@@ -15934,10 +15934,12 @@ export class AnalyzerOrchestrator {
     };
     const dtoNounByTypeName = new Map<string, string>();
     for (const node of nodes) {
-      if (node.type !== 'dto' && node.type !== 'entity' && node.type !== 'model') continue;
+      const serializableStruct = node.type === 'struct' && (node.subcategories || []).includes('serializable');
+      if (node.type !== 'dto' && node.type !== 'entity' && node.type !== 'model' && !serializableStruct) continue;
       const core = this.dataShapeAffix(node.name || '').core;
       if (core && core.length >= 3) dtoNounByTypeName.set((node.name || '').toLowerCase(), this.singularizeNoun(core.toLowerCase()));
     }
+    const knownDataNouns = new Set(dtoNounByTypeName.values());
     const ACCESSOR_TYPES = new Set(['method', 'function', 'controller', 'service']);
     for (const node of nodes) {
       if (!ACCESSOR_TYPES.has(node.type)) continue;
@@ -15956,6 +15958,12 @@ export class AnalyzerOrchestrator {
       const PREPOSITIONS = new Set(['for', 'by', 'with', 'from', 'to', 'of', 'per', 'on', 'in', 'into', 'at', 'as', 'via']);
       const orderedTokens = (node.name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
       const attributedNouns = new Set<string>();
+      for (const token of orderedTokens) {
+        const noun = this.singularizeNoun(token);
+        if (!knownDataNouns.has(noun) || attributedNouns.has(noun)) continue;
+        attributedNouns.add(noun);
+        bucket(noun)[op].add(node.id);
+      }
       for (let i = 1; i < orderedTokens.length; i++) {
         if (orderedTokens[i].length < 4) continue;
         if (PREPOSITIONS.has(orderedTokens[i - 1])) continue;
@@ -16155,6 +16163,9 @@ export class AnalyzerOrchestrator {
       const everyAnchorNested = group.nodes.every(node =>
         nestedFieldTypeNames.has(String(node.name || '').toLowerCase()));
       const declaresIdentity = fields.some(field => IDENTITY_FIELD.test(field.name));
+      if (declaresIdentity && derivedEntity.kind === 'value-object') {
+        derivedEntity.kind = 'domain-shape';
+      }
       if (everyAnchorNested && !declaresIdentity &&
           derivedEntity.kind !== 'persisted-entity' &&
           derivedEntity.kind !== 'api-response') {
@@ -16214,6 +16225,11 @@ export class AnalyzerOrchestrator {
 
   private isDtoLikeDataShapeNode(node: CASNode, propertyIndex?: EntityPropertyIndex): boolean {
     if (node.type === 'dto') return true;
+    if (node.type === 'struct') {
+      const serializable = (node.subcategories || []).includes('serializable');
+      if (!serializable) return false;
+      return propertyIndex ? this.dataShapeNodeHasFieldEvidence(node, propertyIndex) : true;
+    }
     if (node.type !== 'interface' && node.type !== 'type') return false;
     const name = String(node.name || '');
     const file = String(node.source?.file || '').replace(/\\/g, '/').toLowerCase();

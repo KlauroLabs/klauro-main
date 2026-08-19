@@ -165,6 +165,28 @@ describe('RustAnalyzer', () => {
     });
   });
 
+  describe('External receiver classification', () => {
+    test('does not classify in-process state named db as an external service', async () => {
+      setupMockFileSystem([
+        createMockRustFile('src/main.rs', `
+          use std::sync::{Arc, RwLock};
+          type Db = Arc<RwLock<Vec<String>>>;
+          async fn list(State(db): State<Db>) {
+              let values = db.read().unwrap();
+              let router = Router::new();
+              let id = Uuid::new_v4();
+          }
+        `),
+        createMockCargoToml(['axum'])
+      ]);
+
+      const result = await analyzer.analyze(testContext) as any;
+      expect(result.exit_points.some((exit: any) => exit.target?.sdk === 'db')).toBe(false);
+      expect(result.method_calls.some((call: any) => call.external_details?.library === 'db')).toBe(false);
+      expect(result.exit_points.some((exit: any) => ['Router', 'Uuid'].includes(exit.target?.sdk))).toBe(false);
+    });
+  });
+
   describe('Struct Analysis', () => {
     test('should extract struct information correctly', async () => {
       const rustCode = `
@@ -222,6 +244,24 @@ describe('RustAnalyzer', () => {
       expect(containerStruct).toBeDefined();
       expect(containerStruct.metadata.attributes.generics).toEqual(['T']);
       expect(userStruct).toBeDefined();
+    });
+
+    test('publishes serializable struct classification on the node contract', async () => {
+      setupMockFileSystem([
+        createMockRustFile('src/lib.rs', `
+          #[derive(Debug, Serialize, Deserialize)]
+          struct Todo {
+            id: Uuid,
+            text: String,
+          }
+        `),
+        createMockCargoToml(),
+      ]);
+
+      const result = await analyzer.analyze(testContext) as any;
+      const todo = result.nodes.find((node: any) => node.type === 'struct' && node.name === 'Todo');
+
+      expect(todo.subcategories).toEqual(expect.arrayContaining(['struct', 'serializable']));
     });
 
     test('should set parent relationships for fields', async () => {

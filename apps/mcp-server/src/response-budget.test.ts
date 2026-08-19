@@ -173,6 +173,70 @@ test('runAnswerPack treats a complete absence of external boundaries as a confid
   assert.equal(externalBoundaries?.evidence[0]?.label, 'CAS reports no external boundaries');
 });
 
+test('runAnswerPack prefers a materialized behavioral flow over a shallow call chain', () => {
+  const result = runAnswerPack({
+    cas_version: '3.0.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'analysis-todos',
+    system: {
+      id: 'todos',
+      name: 'Todos',
+      type: 'application',
+      root_path: '/tmp/example',
+      technologies: { languages: [{ name: 'Rust' }], frameworks: [], databases: [], external_services: [] },
+    },
+    analyzer_contributions: [],
+    nodes: [
+      { id: 'handler', name: 'createTodo', type: 'function', source: { file: 'src/main.rs', line: 10 } },
+      { id: 'uuid', name: 'new_v4', type: 'function', source: { file: 'src/main.rs', line: 12 } },
+    ],
+    edges: [],
+    entry_points: [{ id: 'post-todos', name: 'POST /todos', type: 'http', handler: { node_id: 'handler', file: 'src/main.rs', line: 10 } }],
+    exit_points: [],
+    call_chains: [{
+      id: 'shallow-chain',
+      entry_point: { entry_point_id: 'post-todos' },
+      chain_type: 'synchronous',
+      nodes: [{ node_id: 'handler' }, { node_id: 'uuid' }],
+    }],
+    flows: [{
+      flow_id: 'create-todo-flow',
+      name: 'Create Todo',
+      intent: 'Create a todo',
+      entry_point: 'post-todos',
+      entities: ['Todo'],
+      contract: {
+        input: ['CreateTodo'],
+        logic: 'createTodo',
+        side_effects: { state_changes: ['Todo created'], external_integrations: [] },
+        output: ['Todo'],
+        constraints: [],
+      },
+      steps: [{
+        step_id: 'create-step',
+        order: 1,
+        name: 'Create Todo',
+        description: 'Creates the requested todo.',
+        description_source: 'deterministic-label',
+        contract: {
+          input: ['CreateTodo'],
+          logic: 'createTodo',
+          side_effects: { state_changes: ['Todo created'], external_integrations: [] },
+          output: ['Todo'],
+          constraints: [],
+        },
+        functions: [{ function_id: 'handler' }],
+        entities: ['Todo'],
+      }],
+    }],
+  } as any, '/tmp/example');
+
+  const representative = result.answers.find(answer => answer.id === 'representative-flow');
+  assert.equal((representative?.answer.flow as any)?.flow_id, 'create-todo-flow');
+  assert.deepEqual((representative?.answer.flow as any)?.contract.side_effects.state_changes, ['Todo created']);
+  assert.ok(representative?.evidence.some(item => item.id === 'create-todo-flow'));
+});
+
 test('getTestSummary aggregates gap statistics server-side and pages the highest-severity gaps', () => {
   const cas = {
     test_summary: { total_tests: 5 },

@@ -27,6 +27,7 @@ import type {
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
 import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel } from './journey-builder';
+import { entityLifecycleContractFacts } from './entity-lifecycle-contract';
 
 export { CONTRACT_MODEL_NAME, UNDERSTANDING_CONTRACT_FACETS } from '../../types/cas.types';
 export type {
@@ -51,15 +52,12 @@ export type {
   StepCodeSubSegment,
   UnderstandingContractFacet,
 } from '../../types/cas.types';
-
 export interface ChainNode {
   node: CASNode;
   depth: number;
 }
-
 const DEFAULT_MAX_DEPTH = 6;
 const DEFAULT_MAX_FUNCTIONS = 40;
-
 export const TRACEABLE_NODE_TYPES = new Set([
   'function', 'method', 'controller', 'handler', 'route', 'resolver', 'gateway',
   'service', 'usecase', 'repository', 'dao',
@@ -67,12 +65,9 @@ export const TRACEABLE_NODE_TYPES = new Set([
   'hook_usage', 'hook',
   'zustand_store', 'store',
 ]);
-
 const VALIDATE_NAME_RE = /\b(validate|guard|check|assert|sanitize|verify|authoriz|authentic)/i;
 const RESPOND_NAME_RE = /\b(respond|render|reply|serialize|format|toJson|toResponse|present)/i;
-
 export type StepRole = 'validate' | 'persist' | 'dispatch' | 'call_external' | 'respond' | 'process';
-
 const ROLE_PRIORITY: StepRole[] = ['validate', 'persist', 'dispatch', 'call_external', 'respond', 'process'];
 
 interface RoleOccurrence {
@@ -915,17 +910,21 @@ function buildContract(
   for (const nodeId of nodeIds) {
     for (const lineage of facts.lineageByNode.get(nodeId) || []) relevantLineage.add(lineage);
   }
+  const lifecycleFacts = entityLifecycleContractFacts(cas.entities || [], nodeIds, normalizeEntityKey);
+  for (const value of lifecycleFacts.inputs) input.add(value);
+  for (const value of lifecycleFacts.stateChanges) stateChanges.add(value);
+  for (const item of lifecycleFacts.evidence) recordEvidence(item.facet, item.value, item.evidence);
   const orderedLineage = [...relevantLineage].sort((left, right) =>
     (facts.lineageOrdinal.get(left) ?? 0) - (facts.lineageOrdinal.get(right) ?? 0));
   for (const entry of orderedLineage) {
     const writesHere = entry.writers.some(w => nodeIds.has(w.node_id));
     const readsHere = entry.readers.some(r => nodeIds.has(r.node_id));
-    if (writesHere) {
+    if (writesHere && !lifecycleFacts.writtenEntityKeys.has(normalizeEntityKey(entry.entity_name))) {
       stateChanges.add(`${entry.entity_name} updated`);
       recordEvidence('state_change', `${entry.entity_name} updated`,
         `data_lineage "${entry.entity_name}" writers include a node in this unit`);
     }
-    if (readsHere) {
+    if (readsHere && !input.has(`reads ${entry.entity_name}`)) {
       input.add(`reads ${entry.entity_name}`);
       recordEvidence('input', `reads ${entry.entity_name}`,
         `data_lineage "${entry.entity_name}" readers include a node in this unit`);
@@ -2439,12 +2438,13 @@ function computeEntryPointFlows(
       const rootId = rootNode.id;
       const hasExit = (exitPointsByNode.get(rootId) || []).length > 0;
       const hasLineage = Boolean(lineageByNode.get(rootId));
+      const hasEntity = entitiesForNodes(new Set([rootId]), cas).length > 0;
       const hasSurface = Boolean(
         ep.security?.authenticated ||
         (ep.security?.guards || []).length > 0 ||
         (ep.input?.validation || []).length > 0
       );
-      if (!hasExit && !hasLineage && !hasSurface) continue;
+      if (!hasExit && !hasLineage && !hasEntity && !hasSurface) continue;
     }
 
     const segments = segmentIntoStepsByRole(chain, exitPointsByNode, lineageByNode, entryPointsByNode);
