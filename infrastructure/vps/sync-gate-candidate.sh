@@ -55,6 +55,7 @@ EXCLUDES=(
   --exclude .pack
   --exclude .customer-package
   --exclude .claude
+  --exclude .proof-corpus
   --exclude .proof-output
   --exclude '.klauro-*'
 )

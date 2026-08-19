@@ -122,11 +122,33 @@ async function main(): Promise<void> {
       return `${payload.analysis_type} remote analysis returned ${payload.cas.nodes.length} nodes and ${payload.cas.edges.length} edges`;
     }));
 
-    results.push(await runStepAsync('installed MCP first context', async () => {
-      const payload = await callMcpTool(mcpPath, 'get_agent_start_context', { path: repo }, env);
-      if (payload.error) throw new Error(String(payload.error));
-      if (!JSON.stringify(payload).includes('system')) throw new Error('Agent start context did not include system context');
-      return 'installed MCP returned hosted system context';
+    results.push(await runStepAsync('installed MCP analysis-first workflow', async () => {
+      const task = {
+        task_type: 'review',
+        target: 'app/main.py',
+        instructions: 'Explain the primary HTTP implementation path, validation, risks, and tests without broad source exploration.',
+        success_criteria: ['Identify the implementation path', 'Identify relevant tests and risks'],
+        response_profile: 'first-turn',
+      };
+      const payloads = await callMcpTools(mcpPath, [
+        { name: 'resolve_agent_analysis', arguments: { path: repo, task } },
+        { name: 'get_agent_start_context', arguments: { path: repo, task } },
+        { name: 'get_agent_tool_plan', arguments: { path: repo, task } },
+        { name: 'get_agent_context', arguments: { path: repo, task } },
+        { name: 'get_coding_context', arguments: { path: repo, target: 'app/main.py', task_type: 'modify' } },
+      ], env);
+      for (const [name, payload] of Object.entries(payloads)) {
+        if (payload?.error) throw new Error(`${name}: ${String(payload.error)}`);
+      }
+      const start = JSON.stringify(payloads.get_agent_start_context);
+      const context = JSON.stringify(payloads.get_agent_context);
+      const coding = JSON.stringify(payloads.get_coding_context);
+      if (!start.includes('system')) throw new Error('Agent start context did not include system context');
+      if (!context.includes('app/main.py')) throw new Error('Task context did not resolve app/main.py');
+      if (!coding.includes('target_node')) throw new Error('Coding context did not resolve a target node');
+      return Object.entries(payloads)
+        .map(([name, payload]) => `${name}=${summarizeMcpPayload(payload)}`)
+        .join('; ');
     }));
 
     results.push(await runStepAsync('hosted analyzer incremental sync', async () => {
@@ -160,15 +182,20 @@ async function main(): Promise<void> {
   }
 }
 
-function callMcpTool(bundlePath: string, tool: string, args: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<any> {
+function callMcpTools(
+  bundlePath: string,
+  calls: Array<{ name: string; arguments: Record<string, unknown> }>,
+  env: NodeJS.ProcessEnv
+): Promise<Record<string, any>> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bundlePath], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    const responses = new Map<number, any>();
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error(`MCP tool ${tool} timed out: ${trim(stderr)}`));
-    }, 120_000);
+      reject(new Error(`MCP workflow timed out: ${trim(stderr)}`));
+    }, 180_000);
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
@@ -179,19 +206,26 @@ function callMcpTool(bundlePath: string, tool: string, args: Record<string, unkn
         newline = stdout.indexOf('\n');
         if (!line) continue;
         const message = JSON.parse(line);
-        if (message.id !== 2) continue;
+        if (typeof message.id !== 'number' || message.id < 2) continue;
+        responses.set(message.id, message);
+        if (responses.size < calls.length) continue;
         clearTimeout(timer);
         child.kill();
-        if (message.error) {
-          reject(new Error(message.error.message || JSON.stringify(message.error)));
-          return;
+        const payloads: Record<string, any> = {};
+        for (let index = 0; index < calls.length; index++) {
+          const response = responses.get(index + 2);
+          if (response?.error) {
+            reject(new Error(response.error.message || JSON.stringify(response.error)));
+            return;
+          }
+          const text = response?.result?.content?.[0]?.text;
+          try {
+            payloads[calls[index].name] = typeof text === 'string' ? JSON.parse(text) : response?.result;
+          } catch {
+            payloads[calls[index].name] = { text };
+          }
         }
-        const text = message.result?.content?.[0]?.text;
-        try {
-          resolve(typeof text === 'string' ? JSON.parse(text) : message.result);
-        } catch {
-          resolve({ text });
-        }
+        resolve(payloads);
         return;
       }
     });
@@ -202,10 +236,21 @@ function callMcpTool(bundlePath: string, tool: string, args: Record<string, unkn
     child.stdin.write([
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'klauro-new-user-e2e', version: '1' } } }),
       JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } }),
+      ...calls.map((call, index) => JSON.stringify({
+        jsonrpc: '2.0',
+        id: index + 2,
+        method: 'tools/call',
+        params: call,
+      })),
       '',
     ].join('\n'));
   });
+}
+
+function summarizeMcpPayload(payload: any): string {
+  const serialized = JSON.stringify(payload);
+  const paths = new Set(serialized.match(/[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|php|rb|dart|cs)/g) || []);
+  return `${Buffer.byteLength(serialized)}b/${Math.ceil(serialized.length / 4)}t/${paths.size}files`;
 }
 
 function runStep(name: string, fn: () => string): StepResult {
