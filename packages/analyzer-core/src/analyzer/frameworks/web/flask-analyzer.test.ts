@@ -68,3 +68,29 @@ test('FlaskAnalyzer.canAnalyze rejects a project without flask', async () => {
   assert.equal(await analyzer.canAnalyze(root), false);
   await fs.remove(root);
 });
+
+test('FlaskAnalyzer resolves nested templates and represents missing templates without dangling edges', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flask-analyzer-templates-'));
+  await fs.ensureDir(path.join(root, 'templates', 'admin'));
+  await fs.writeFile(path.join(root, 'templates', 'admin', 'index.html'), '<h1>Admin</h1>');
+  await fs.writeFile(path.join(root, 'app.py'), [
+    'from flask import Flask, render_template',
+    'app = Flask(__name__)',
+    '@app.get("/admin")',
+    'def admin():',
+    '    return render_template("admin/index.html")',
+    '@app.get("/missing")',
+    'def missing():',
+    '    return render_template("missing.html")',
+  ].join('\n'));
+
+  const contribution = await new FlaskAnalyzer().analyze({ projectPath: root } as any);
+  const nodeIds = new Set((contribution.nodes || []).map(node => node.id));
+  const renderEdges = (contribution.edges || []).filter(edge => edge.type === 'renders');
+
+  assert.equal(renderEdges.length, 2);
+  assert.equal(renderEdges.every(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target)), true);
+  assert.equal((contribution.nodes || []).some(node => node.name === 'admin/index.html' && node.source?.file === 'templates/admin/index.html'), true);
+  assert.equal((contribution.nodes || []).some(node => node.name === 'missing.html' && node.metadata?.attributes?.resolution === 'unresolved-reference'), true);
+  await fs.remove(root);
+});

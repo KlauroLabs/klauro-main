@@ -64,3 +64,25 @@ test('FastAPIAnalyzer.canAnalyze rejects a project without fastapi', async () =>
   assert.equal(await analyzer.canAnalyze(root), false);
   await fs.remove(root);
 });
+
+test('FastAPIAnalyzer scopes dependency identities and preserves unresolved dependency references as nodes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fastapi-analyzer-dependencies-'));
+  await fs.writeFile(path.join(root, 'main.py'), [
+    'from fastapi import FastAPI, Depends',
+    'def verify_token():',
+    '    return True',
+    'app = FastAPI(dependencies=[Depends(verify_token), Depends(dynamic_dependency("tenant"))])',
+    '@app.get("/users")',
+    'def list_users():',
+    '    return {"users": []}',
+  ].join('\n'));
+
+  const contribution = await new FastAPIAnalyzer().analyze({ projectPath: root } as any);
+  const nodeIds = new Set((contribution.nodes || []).map(node => node.id));
+  const dependencyEdges = (contribution.edges || []).filter(edge => edge.type === 'depends_on');
+
+  assert.equal(dependencyEdges.length > 0, true);
+  assert.equal(dependencyEdges.every(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target)), true);
+  assert.equal((contribution.nodes || []).some(node => node.metadata?.attributes?.resolution === 'unresolved-reference'), true);
+  await fs.remove(root);
+});

@@ -8,6 +8,7 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { fastApiDependencyNodeId, planFastAPIDependencyLinks } from './fastapi-dependency-resolver';
 
 interface FastAPIApplication {
   name: string;
@@ -612,7 +613,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         dependencies.push(...extractedDeps);
 
         extractedDeps.forEach(dep => {
-          const depId = `dependency_${this.sanitizeId(dep.name)}`;
+          const depId = fastApiDependencyNodeId(dep.filePath, dep.name);
           const depDocumentation = this.extractDocumentation(content, fullPath);
           const depComments = this.extractComments(content, fullPath);
           const depTodos = this.extractTodos(depComments);
@@ -1469,31 +1470,28 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         routerId,
         'includes'
       ));
-
-      router.dependencies.forEach(depName => {
-        const depId = `dependency_${this.sanitizeId(depName)}`;
-        edges.push(this.createEdge(
-          `${routerId}_depends_on_${depId}`,
-          routerId,
-          depId,
-          'depends_on'
-        ));
-      });
     });
-
-    dependencies.forEach(dependency => {
-      const depId = `dependency_${this.sanitizeId(dependency.name)}`;
-
-      dependency.dependencies.forEach(subDepName => {
-        const subDepId = `dependency_${this.sanitizeId(subDepName)}`;
-        edges.push(this.createEdge(
-          `${depId}_depends_on_${subDepId}`,
-          depId,
-          subDepId,
-          'depends_on'
-        ));
-      });
-    });
+    const definitions = dependencies.map(dependency => ({
+      ...dependency, nodeId: fastApiDependencyNodeId(dependency.filePath, dependency.name)
+    }));
+    const sources = [
+      ...routers.map(router => ({ nodeId: this.routerNodeId(router.name, router.filePath), filePath: router.filePath, dependencies: router.dependencies })),
+      ...definitions
+    ];
+    const nodeIds = new Set(nodes.map(node => node.id));
+    for (const link of planFastAPIDependencyLinks(sources, definitions)) {
+      if (!link.resolved && !nodeIds.has(link.targetId)) {
+        nodes.push(this.createNodeBuilder(link.targetId, link.targetName, 'service')
+          .withLevel(3, 'code').withCategory('service', ['injectable', 'unresolved-reference'])
+          .withSource({ file: link.targetFile, line: 1, end_line: 1 })
+          .withDescription(`FastAPI dependency reference: ${link.targetName}`)
+          .withMetadata({ framework: 'fastapi', attributes: { resolution: 'unresolved-reference' } }).build());
+        nodeIds.add(link.targetId);
+      }
+      edges.push(this.createEdge(
+        this.generateEdgeId(link.sourceId, link.targetId, 'depends_on'), link.sourceId, link.targetId, 'depends_on'
+      ));
+    }
 
     middleware.forEach(mw => {
       const middlewareId = `middleware_${this.sanitizeId(mw.name)}`;

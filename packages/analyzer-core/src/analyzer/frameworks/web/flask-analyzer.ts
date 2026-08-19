@@ -7,6 +7,7 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { flaskTemplateLogicalName, flaskTemplateNodeId, flaskTemplateReferenceNodeId, resolveFlaskTemplate } from './flask-template-resolver';
 
 interface FlaskApplication {
   name: string;
@@ -231,7 +232,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       const blueprints = await this.analyzeBlueprints(pythonFiles, context.projectPath, nodes, edges, entryPoints);
       const views = await this.analyzeViews(pythonFiles, context.projectPath, nodes, edges, entryPoints);
       const models = await this.analyzeModels(pythonFiles, context.projectPath, nodes, edges, exitPoints);
-      const templates = await this.analyzeTemplates(htmlFiles, context.projectPath, nodes, edges);
+      const templates = await this.analyzeTemplates(htmlFiles, context.projectPath, nodes);
       const forms = await this.analyzeFormsImpl(pythonFiles, context.projectPath, nodes, edges);
       const extensions = await this.analyzeExtensionsImpl(pythonFiles, context.projectPath, nodes);
 
@@ -591,8 +592,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
   private async analyzeTemplates(
     files: string[],
     projectPath: string,
-    nodes: CASNode[],
-    edges: CASEdge[]
+    nodes: CASNode[]
   ): Promise<FlaskTemplate[]> {
     const templates: FlaskTemplate[] = [];
 
@@ -600,7 +600,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
-      const templateName = path.basename(file);
+      const templateName = flaskTemplateLogicalName(file);
       const extendsTemplate = this.extractTemplateExtends(content);
       const blocks = this.extractTemplateBlocks(content);
       const includes = this.extractTemplateIncludes(content);
@@ -617,7 +617,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
       templates.push(template);
 
-      const templateId = `template_${this.sanitizeId(templateName)}`;
+      const templateId = flaskTemplateNodeId(template);
       const templateNode = this.createNodeBuilder(templateId, templateName, 'component')
         .withLevel(4, 'member')
         .withCategory('component', ['ui', 'template'])
@@ -635,33 +635,10 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         .build();
       nodes.push(templateNode);
 
-      if (extendsTemplate) {
-        const parentTemplateId = `template_${this.sanitizeId(extendsTemplate)}`;
-        edges.push(this.createEdge(
-          `${templateId}_extends_${parentTemplateId}`,
-          templateId,
-          parentTemplateId,
-          'extends'
-        ));
-      }
-
-      includes.forEach(include => {
-        const includedTemplateId = `template_${this.sanitizeId(include)}`;
-        edges.push(this.createEdge(
-          `${templateId}_includes_${includedTemplateId}`,
-          templateId,
-          includedTemplateId,
-          'includes'
-        ));
-      });
     }
 
     return templates;
   }
-
-
-
-
   private extractPythonImports(content: string): string[] {
     const imports: string[] = [];
     const importPattern = /^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/gm;
@@ -673,16 +650,6 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
     return imports;
   }
-
-
-
-
-
-
-
-
-
-
 
 
   private flaskSecurity(decorators: string[] = []): { authenticated: boolean; guards: string[] } {
@@ -1082,11 +1049,35 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       ));
     });
 
+    const nodeIds = new Set(nodes.map(node => node.id));
+    const templateTarget = (name: string, sourceFile: string): string => {
+      const resolved = resolveFlaskTemplate(name, sourceFile, templates);
+      if (resolved) return flaskTemplateNodeId(resolved);
+      const referenceId = flaskTemplateReferenceNodeId(sourceFile, name);
+      if (!nodeIds.has(referenceId)) {
+        nodes.push(this.createNodeBuilder(referenceId, name, 'component')
+          .withLevel(4, 'member').withCategory('component', ['ui', 'template', 'unresolved-reference'])
+          .withSource({ file: sourceFile, line: 1, end_line: 1 })
+          .withDescription(`Unresolved Jinja template reference: ${name}`)
+          .withMetadata({ framework: 'flask', attributes: { resolution: 'unresolved-reference' } }).build());
+        nodeIds.add(referenceId);
+      }
+      return referenceId;
+    };
+    for (const template of templates) {
+      const sourceId = flaskTemplateNodeId(template);
+      for (const [type, names] of [['extends', template.extends ? [template.extends] : []], ['includes', template.includes]] as const) {
+        for (const name of names) {
+          const targetId = templateTarget(name, template.filePath);
+          edges.push(this.createEdge(this.generateEdgeId(sourceId, targetId, type), sourceId, targetId, type));
+        }
+      }
+    }
+
     views.forEach(view => {
       const viewId = `view_${this.sanitizeId(view.name)}`;
-
       if (view.templateName) {
-        const templateId = `template_${this.sanitizeId(view.templateName)}`;
+        const templateId = templateTarget(view.templateName, view.filePath);
         edges.push(this.createEdge(
           `${viewId}_renders_${templateId}`,
           viewId,
@@ -1111,7 +1102,6 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
     models.forEach(model => {
       const modelId = `model_${this.sanitizeId(model.name)}`;
-
       model.relationships.forEach(relationship => {
         const targetModelId = `model_${this.sanitizeId(relationship.target)}`;
         edges.push(this.createEdge(
@@ -1267,18 +1257,19 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
   private extractRoutesImpl(content: string, blueprintName?: string): FlaskRoute[] {
     const routes: FlaskRoute[] = [];
-    const routePattern = /@(?:(\w+)\.)?route\s*\(\s*['"]([^'"]+)['"](?:,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)[\s\S]*?def\s+(\w+)\s*\(/g;
+    const routePattern = /@(?:(\w+)\.)?(route|get|post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"](?:,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)[\s\S]*?def\s+(\w+)\s*\(/g;
 
     let match;
     while ((match = routePattern.exec(content)) !== null) {
       const routeBlueprintName = match[1];
-      const pattern = match[2];
-      const methodsStr = match[3];
-      const viewFunction = match[4];
+      const decoratorMethod = match[2];
+      const pattern = match[3];
+      const methodsStr = match[4];
+      const viewFunction = match[5];
 
       const methods = methodsStr
         ? methodsStr.split(',').map(m => m.trim().replace(/['"]/g, '').toLowerCase())
-        : ['get'];
+        : [decoratorMethod === 'route' ? 'get' : decoratorMethod];
 
       const decorators = this.extractRouteDecorators(content, match.index!);
       const parameters = this.extractRouteParameters(pattern);
@@ -1299,7 +1290,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
   private extractFunctionViewsImpl(content: string, filePath: string): FlaskView[] {
     const views: FlaskView[] = [];
-    const functionPattern = /@(?:\w+\.)?route[\s\S]*?def\s+(\w+)\s*\(/g;
+    const functionPattern = /@(?:\w+\.)?(?:route|get|post|put|patch|delete)[\s\S]*?def\s+(\w+)\s*\(/g;
 
     let match;
     while ((match = functionPattern.exec(content)) !== null) {
