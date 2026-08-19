@@ -376,7 +376,7 @@ async function seedBenchAnalysisIfAbsent(dir: string, cas: CASOutput): Promise<v
 }
 
 function benchCacheLocation(dir: string, snapshotDigest: string | undefined): { file: string; lock: string } | undefined {
-  if (!snapshotDigest || process.env.KLAURO_BENCH_ANALYZER_URL) return undefined;
+  if (!snapshotDigest || process.env.KLAURO_BENCH_ANALYZER_URL || process.env.KLAURO_BENCH_DISABLE_CAS_CACHE === '1') return undefined;
   const root = process.env.KLAURO_BENCH_CAS_CACHE_DIR || path.join(devDataRoot(), 'bench-cas-cache');
   const stageFingerprints = getStageFingerprints();
   const key = crypto.createHash('sha256')

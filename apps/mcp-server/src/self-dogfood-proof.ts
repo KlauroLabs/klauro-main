@@ -31,18 +31,33 @@ function sourceFile(value: any): string | null {
 }
 
 async function run(options: SelfDogfoodOptions) {
+  const timings: Record<string, number> = {};
+  let startedAt = Date.now();
   const cas = await analyzeForBench(options.projectPath);
+  timings.analysis_ms = Date.now() - startedAt;
   const task = {
     task_type: 'modify' as const,
     target: options.target,
-    instructions: 'Prove real-time overlapping participant collaboration through the coordination fabric.',
+    instructions: `Locate and understand ${options.target} before broad source inspection.`,
   };
+  startedAt = Date.now();
   const readiness = evaluateAgentReadiness(cas, options.projectPath);
+  timings.readiness_ms = Date.now() - startedAt;
+  startedAt = Date.now();
   const standardStart = getAgentStartContext(cas, options.projectPath, task);
+  timings.standard_start_ms = Date.now() - startedAt;
+  startedAt = Date.now();
   const firstTurnStart = getAgentStartContext(cas, options.projectPath, { ...task, response_profile: 'first-turn' });
+  timings.first_turn_start_ms = Date.now() - startedAt;
+  startedAt = Date.now();
   const agentContext = await getAgentContext(cas, options.projectPath, { ...task, response_profile: 'first-turn' }) as any;
+  timings.agent_context_ms = Date.now() - startedAt;
+  startedAt = Date.now();
   const codingContext = getCodingContext(cas, options.target) as any;
+  timings.coding_context_ms = Date.now() - startedAt;
+  startedAt = Date.now();
   const summary = buildSummary(cas);
+  timings.summary_ms = Date.now() - startedAt;
   const expectedFileSuffix = `${options.target}.ts`;
   const agentFile = sourceFile(agentContext.selected) || sourceFile(agentContext.selected_node);
   const codingFile = sourceFile(codingContext.target_node);
@@ -62,6 +77,7 @@ async function run(options: SelfDogfoodOptions) {
     generated_at: new Date().toISOString(),
     project_path: options.projectPath,
     target: options.target,
+    timings,
     passed: Object.values(checks).every(Boolean),
     checks,
     analysis: {
