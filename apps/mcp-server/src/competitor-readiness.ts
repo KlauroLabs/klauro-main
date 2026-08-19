@@ -110,12 +110,12 @@ export function detectInstalledCompetitors(): CompetitorProbe[] {
   const cursorStatus = cursor ? commandOutput('cursor-agent', ['status']) : '';
 
   const probes: CompetitorProbe[] = [
-    codeIntel('codebase-memory-mcp', 'codebase-memory-mcp', 'codebase-memory-mcp --version', 'Real installed LSP/tree-sitter graph competitor used by Camp B/C/DEPTH/WAS head-to-heads.'),
-    codeIntel('scip-typescript', 'scip-typescript', 'scip-typescript --version', 'Compiler-accurate TS/JS code-intelligence ceiling competitor.'),
-    codeIntel('stack-graphs-typescript', 'tree-sitter-stack-graphs-typescript', 'tree-sitter-stack-graphs-typescript --version', 'GitHub stack-graphs TypeScript name-resolution competitor.'),
-    codeIntel('universal-ctags', 'ctags', 'ctags --version', 'Universal Ctags symbol-index competitor.'),
-    codeIntel('ast-grep', 'ast-grep', 'ast-grep --version', 'AST pattern-search competitor.'),
-    retrieval('ripgrep', 'rg', 'rg --version', 'Lexical retrieval floor and first-file discovery baseline.'),
+    codeIntel('codebase-memory-mcp', 'codebase-memory-mcp', 'Real installed LSP/tree-sitter graph competitor used by Camp B/C/DEPTH/WAS head-to-heads.'),
+    codeIntel('scip-typescript', 'scip-typescript', 'Compiler-accurate TS/JS code-intelligence ceiling competitor.'),
+    codeIntel('stack-graphs-typescript', 'tree-sitter-stack-graphs-typescript', 'GitHub stack-graphs TypeScript name-resolution competitor.'),
+    codeIntel('universal-ctags', 'ctags', 'Universal Ctags symbol-index competitor.'),
+    codeIntel('ast-grep', 'ast-grep', 'AST pattern-search competitor.'),
+    retrieval('ripgrep', 'rg', 'Lexical retrieval floor and first-file discovery baseline.'),
     {
       id: 'ollama-nomic-embed-text',
       label: 'Ollama nomic-embed-text',
@@ -194,27 +194,31 @@ async function runCli(): Promise<void> {
   if (report.status === 'fail') process.exitCode = 1;
 }
 
-function codeIntel(id: string, commandName: string, versionCommand: string, proofRole: string): CompetitorProbe {
+function codeIntel(id: string, commandName: string, proofRole: string): CompetitorProbe {
   const command = executable(commandName);
+  const versionProbe = command ? probeCommand(command, ['--version']) : undefined;
   return {
     id,
     label: id,
     kind: 'code-intelligence',
     command: command || undefined,
     installed: Boolean(command),
-    version: command ? firstLine(shellOutput(versionCommand)) : undefined,
+    version: firstLine(versionProbe?.output),
     auth_state: 'not-required',
     free_or_open_source: true,
     live_agent_capable: false,
     token_metrics_capable: false,
-    status: command ? 'ready' : 'missing',
+    status: command ? versionProbe?.ok ? 'ready' : 'blocked' : 'missing',
     proof_role: proofRole,
     benchmark_path: 'npm test -- src/gauntlet/*.test.ts / npm run agent-proof-full',
+    block_reason: command && !versionProbe?.ok
+      ? `Executable found but could not run: ${compactOutput(versionProbe?.output)}`
+      : undefined,
   };
 }
 
-function retrieval(id: string, commandName: string, versionCommand: string, proofRole: string): CompetitorProbe {
-  const item = codeIntel(id, commandName, versionCommand, proofRole);
+function retrieval(id: string, commandName: string, proofRole: string): CompetitorProbe {
+  const item = codeIntel(id, commandName, proofRole);
   return { ...item, kind: 'retrieval' };
 }
 
@@ -238,29 +242,44 @@ function missingAgent(id: string, label: string, proofRole: string): CompetitorP
   };
 }
 
-function executable(name: string): string | null {
-  const output = shellOutput(`command -v ${quoteShell(name)}`);
-  if (!output.trim()) return null;
+export function executable(name: string, env: NodeJS.ProcessEnv = process.env): string | null {
   if (name === 'continue') return null;
-  return output.trim().split('\n')[0] || null;
+  const extensions = process.platform === 'win32'
+    ? (env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';')
+    : [''];
+  for (const directory of (env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${name}${extension}`);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
 }
 
 function commandOutput(command: string, args: string[]): string {
+  return probeCommand(command, args).output;
+}
+
+export function probeCommand(command: string, args: string[]): { ok: boolean; output: string } {
   try {
-    return execFileSync(command, args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 20_000, env: process.env });
+    return {
+      ok: true,
+      output: execFileSync(command, args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 20_000, env: process.env }),
+    };
   } catch (error) {
     const anyError = error as { stdout?: Buffer | string; stderr?: Buffer | string };
-    return `${anyError.stdout || ''}${anyError.stderr || ''}`;
+    return { ok: false, output: `${anyError.stdout || ''}${anyError.stderr || ''}` };
   }
 }
 
-function shellOutput(command: string): string {
-  try {
-    return execFileSync('/bin/zsh', ['-lc', command], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 20_000, env: process.env });
-  } catch (error) {
-    const anyError = error as { stdout?: Buffer | string; stderr?: Buffer | string };
-    return `${anyError.stdout || ''}${anyError.stderr || ''}`;
-  }
+function compactOutput(value: string | undefined): string {
+  const output = String(value || 'unknown execution failure').replace(/\s+/g, ' ').trim();
+  return output.length <= 240 ? output : `${output.slice(0, 239)}…`;
 }
 
 function firstLine(value: string | undefined): string | undefined {
@@ -274,10 +293,6 @@ function gate(id: string, ok: boolean, detail: string): BenchmarkGate {
 
 function softGate(id: string, ok: boolean, detail: string): BenchmarkGate {
   return { id, status: ok ? 'pass' : 'warn', detail };
-}
-
-function quoteShell(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function parseArgs(argv: string[]): CliArgs {

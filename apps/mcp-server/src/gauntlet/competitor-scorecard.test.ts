@@ -46,10 +46,15 @@ const stubRunners: Partial<ScorecardRunners> = {
   frameworkRoutes: async () => [
     row({ camp: 'C', scenario: 'framework-routes: express-routes', best_competitor: 'none', best_competitor_score: null, verdict: 'win' }),
   ],
-  // The remaining runners contribute nothing in this stub.
-  ormRelations: async () => [],
-  componentTree: async () => [],
-  fullGrid: async () => [],
+  ormRelations: async () => [
+    row({ camp: 'C', scenario: 'orm-relations: drizzle', best_competitor: 'none', best_competitor_score: null, verdict: 'win' }),
+  ],
+  componentTree: async () => [
+    row({ camp: 'C', scenario: 'component-tree: react', best_competitor: 'none', best_competitor_score: null, verdict: 'win' }),
+  ],
+  fullGrid: async () => [
+    row({ camp: 'B', scenario: 'full-grid: language/ts', best_competitor: 'scip-typescript', best_competitor_score: 1, verdict: 'tie' }),
+  ],
 };
 
 test('normalizes injected runner rows into A/B/C camps with correct counts', async () => {
@@ -65,18 +70,18 @@ test('normalizes injected runner rows into A/B/C camps with correct counts', asy
   assert.equal(byCamp.A.wins, 2);
   assert.equal(byCamp.A.ties, 1);
   assert.equal(byCamp.A.losses, 0);
-  // Camp B: 2 wins (primitive + was).
-  assert.equal(byCamp.B.rows.length, 2);
+  assert.equal(byCamp.B.rows.length, 3);
   assert.equal(byCamp.B.wins, 2);
+  assert.equal(byCamp.B.ties, 1);
   assert.equal(byCamp.B.losses, 0);
-  // Camp C: 1 win (framework routes, out-of-category).
-  assert.equal(byCamp.C.rows.length, 1);
-  assert.equal(byCamp.C.wins, 1);
+  assert.equal(byCamp.C.rows.length, 3);
+  assert.equal(byCamp.C.wins, 3);
 
-  assert.equal(report.totals.scenarios, 6);
-  assert.equal(report.totals.wins, 5);
-  assert.equal(report.totals.ties, 1);
+  assert.equal(report.totals.scenarios, 9);
+  assert.equal(report.totals.wins, 7);
+  assert.equal(report.totals.ties, 2);
   assert.equal(report.totals.losses, 0);
+  assert.equal(report.complete, true);
   assert.equal(report.zeroLosses, true);
   assert.equal(report.endpoint, 'https://mcp.klauro.com');
 });
@@ -101,9 +106,24 @@ test('renderScorecardMarkdown emits per-camp tables + the zero-losses summary', 
   assert.match(md, /camp-c-routes-vs-cbm: express-routes .* WIN/);
   // Out-of-category competitor rendered as n/a (no score).
   assert.match(md, /none \(n\/a\)/);
-  // The headline assertion.
   assert.match(md, /\*\*Zero losses\*\*/);
-  assert.match(md, /Total: 5 win \/ 1 tie \/ 0 loss across 6 scenarios/);
+  assert.match(md, /Total: 7 win \/ 2 tie \/ 0 loss across 9 scenarios/);
+});
+
+test('runner errors make the scorecard incomplete and suppress the zero-loss claim', async () => {
+  const report = await generateCompetitorScorecard({
+    runners: {
+      ...stubRunners,
+      campCRoutes: async () => {
+        throw new Error('codebase-memory unavailable');
+      },
+    },
+    timestamp: 'x',
+  });
+  assert.equal(report.complete, false);
+  assert.equal(report.zeroLosses, false);
+  assert.deepEqual(report.runner_failures, [{ runner: 'campCRoutes', error: 'codebase-memory unavailable' }]);
+  assert.match(renderScorecardMarkdown(report), /\*\*Incomplete evidence\*\*/);
 });
 
 test('a loss anywhere flips zeroLosses and the summary line', async () => {

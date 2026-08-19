@@ -83,6 +83,8 @@ export interface CampSummary {
 export interface CompetitorScorecard {
   endpoint: string;
   timestamp: string;
+  complete: boolean;
+  runner_failures: Array<{ runner: keyof ScorecardRunners; error: string }>;
   camps: CampSummary[];
   totals: { wins: number; ties: number; losses: number; scenarios: number };
 
@@ -166,6 +168,7 @@ function rowFromArmBench(
 
 
 function rowsFromCampCRoutes(report: CampCRoutesVsCbmReport): ScorecardRow[] {
+  if (!report.available) throw new Error('codebase-memory was not available for the route comparison');
   return report.results.map(r => ({
     camp: 'A' as Camp,
     scenario: `camp-c-routes-vs-cbm: ${r.fixture}`,
@@ -180,6 +183,7 @@ function rowsFromCampCRoutes(report: CampCRoutesVsCbmReport): ScorecardRow[] {
 }
 
 function rowsFromBehavioralDiff(report: DepthBehavioralDiffReport): ScorecardRow[] {
+  if (!report.available) throw new Error('codebase-memory was not available for the behavioral-diff comparison');
   return report.results.map(r => ({
     camp: 'A' as Camp,
     scenario: `depth-behavioral-diff-vs-cbm: ${r.fixture}`,
@@ -312,13 +316,17 @@ export async function generateCompetitorScorecard(
   const groups = await Promise.all(
     (Object.keys(runners) as (keyof ScorecardRunners)[]).map(async key => {
       try {
-        return await runners[key]();
-      } catch {
-        return [] as ScorecardRow[];
+        const rows = await runners[key]();
+        return { key, rows, error: rows.length === 0 ? 'runner returned no scenarios' : undefined };
+      } catch (error) {
+        return { key, rows: [] as ScorecardRow[], error: error instanceof Error ? error.message : String(error) };
       }
     }),
   );
-  const rows = groups.flat();
+  const rows = groups.flatMap(group => group.rows);
+  const runnerFailures = groups
+    .filter((group): group is typeof group & { error: string } => Boolean(group.error))
+    .map(group => ({ runner: group.key, error: group.error }));
 
   const camps: CampSummary[] = (['A', 'B', 'C'] as Camp[]).map(camp => {
     const campRows = rows.filter(r => r.camp === camp);
@@ -340,12 +348,18 @@ export async function generateCompetitorScorecard(
     scenarios: rows.length,
   };
 
+  const complete = runnerFailures.length === 0 &&
+    camps.every(camp => camp.rows.length > 0) &&
+    camps.filter(camp => camp.camp !== 'C').every(camp => camp.rows.some(row => row.best_competitor_score !== null));
+
   return {
     endpoint,
     timestamp,
+    complete,
+    runner_failures: runnerFailures,
     camps,
     totals,
-    zeroLosses: totals.losses === 0,
+    zeroLosses: complete && totals.losses === 0,
   };
 }
 
@@ -367,7 +381,15 @@ export function renderScorecardMarkdown(report: CompetitorScorecard): string {
   lines.push('');
   lines.push(`- Endpoint: \`${report.endpoint}\``);
   lines.push(`- Generated: ${report.timestamp}`);
+  lines.push(`- Evidence complete: ${report.complete ? 'yes' : 'no'}`);
   lines.push('');
+
+  if (report.runner_failures.length > 0) {
+    lines.push('## Runner failures');
+    lines.push('');
+    for (const failure of report.runner_failures) lines.push(`- ${failure.runner}: ${failure.error}`);
+    lines.push('');
+  }
 
   for (const camp of report.camps) {
     lines.push(`## ${camp.label}`);
@@ -400,7 +422,9 @@ export function renderScorecardMarkdown(report: CompetitorScorecard): string {
   lines.push(
     report.zeroLosses
       ? '**Zero losses** — Klauro ties-or-beats every competitor in every camp.'
-      : `**${t.losses} loss(es)** — a Klauro bug to fix; surfaced, never hidden.`,
+      : !report.complete
+        ? '**Incomplete evidence** — runner failures, missing camp coverage, or unmeasured competitors prevent a win claim.'
+        : `**${t.losses} loss(es)** — a Klauro bug to fix; surfaced, never hidden.`,
   );
   lines.push('');
   return lines.join('\n');
@@ -439,6 +463,7 @@ async function main(): Promise<void> {
 
     process.stdout.write(markdown);
   }
+  if (!report.complete || !report.zeroLosses) process.exitCode = 1;
 }
 
 

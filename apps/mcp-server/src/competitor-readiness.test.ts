@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCompetitorReadinessReport, type CompetitorProbe } from './competitor-readiness';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { buildCompetitorReadinessReport, executable, probeCommand, type CompetitorProbe } from './competitor-readiness';
 
 function probe(overrides: Partial<CompetitorProbe> & Pick<CompetitorProbe, 'id' | 'kind' | 'status'>): CompetitorProbe {
   return {
@@ -57,4 +60,30 @@ test('competitor readiness passes when at least one true live autonomous executo
   assert.equal(report.status, 'pass');
   assert.equal(report.summary.ready_true_live_agent_executors, 1);
   assert.ok(report.gates.every(gate => gate.status === 'pass'));
+});
+
+test('competitor executable discovery preserves the provided PATH', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-competitor-path-'));
+  const command = path.join(directory, 'codebase-memory-mcp');
+  try {
+    fs.writeFileSync(command, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(command, 0o755);
+    assert.equal(executable('codebase-memory-mcp', { PATH: directory }), command);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('competitor command probes reject executables that cannot run', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-competitor-probe-'));
+  const command = path.join(directory, 'broken-tool');
+  try {
+    fs.writeFileSync(command, '#!/bin/sh\necho missing-runtime >&2\nexit 127\n');
+    fs.chmodSync(command, 0o755);
+    const probe = probeCommand(command, ['--version']);
+    assert.equal(probe.ok, false);
+    assert.match(probe.output, /missing-runtime/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
