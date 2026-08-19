@@ -19,6 +19,7 @@ import {
   readTreeSitterExtractionCache,
   writeTreeSitterExtractionCache,
 } from '../core/tree-sitter-ts-extraction-cache';
+import { loadPrismaModelIdentities, selectPrismaModelIdentity, type PrismaModelIdentity } from '../libraries/orm/prisma-model-identity';
 
 interface ParsedAST {
   ast: TSESTree.Program;
@@ -43,7 +44,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private classFieldTypes = new Map<string, { typeName: string; library?: string; source?: 'ctor' | 'field'; isCollection?: boolean }>();
   private repositoryPropertyTypes = new Map<string, string>();
-  private prismaModelNames = new Map<string, string>();
+  private prismaModelsByName = new Map<string, PrismaModelIdentity[]>();
   private nodeById = new Map<string, CASNode>();
   private nodesByName = new Map<string, CASNode[]>();
   private methodsByParent = new Map<string, CASNode[]>();
@@ -199,7 +200,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     this.currentProjectPath = context.projectPath;
     this.classFieldTypes.clear();
     this.repositoryPropertyTypes.clear();
-    this.prismaModelNames.clear();
+    this.prismaModelsByName.clear();
     this.analysisWarnings = [];
     this.suppressedWarningCount = 0;
 
@@ -229,7 +230,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           );
         }
       }
-      await this.collectPrismaModelNames(context);
+      await this.collectPrismaModels(context, nodes);
       tsTimings['setup'] = Date.now() - tsStart;
 
       tsStart = Date.now();
@@ -1718,7 +1719,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             }
           }
           if (sourceNodeId && !targetNodeId) {
-            this.addEntityAccessEdge(edges, sourceNodeId, call, func);
+            this.addEntityAccessEdge(edges, sourceNodeId, call, func, filePath);
           }
         } else if (call.targetType === 'property' && call.argumentCount === 0 && !call.httpMethod) {
 
@@ -2153,21 +2154,20 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return TypeScriptJavaScriptAnalyzer.ENTITY_ACCESS_BY_METHOD[method.toLowerCase()];
   }
 
-  private async collectPrismaModelNames(context: AnalysisContext): Promise<void> {
+  private async collectPrismaModels(context: AnalysisContext, nodes: CASNode[]): Promise<void> {
     try {
       const schemaFiles = await glob(['**/prisma/schema.prisma'], {
         cwd: context.projectPath,
         ignore: this.getIgnorePatterns(context),
         nodir: true
       });
-      const modelPattern = /model\s+(\w+)\s*\{/g;
-      for (const schemaFile of schemaFiles.slice(0, 10)) {
-        const schemaContent = await fs.readFile(path.join(context.projectPath, schemaFile), 'utf-8');
-        let modelMatch;
-        while ((modelMatch = modelPattern.exec(schemaContent)) !== null) {
-          this.prismaModelNames.set(modelMatch[1].toLowerCase(), modelMatch[1]);
-        }
-        modelPattern.lastIndex = 0;
+      for (const identity of await loadPrismaModelIdentities(context.projectPath, schemaFiles)) {
+        const candidates = this.prismaModelsByName.get(identity.name.toLowerCase()) || [];
+        candidates.push(identity);
+        this.prismaModelsByName.set(identity.name.toLowerCase(), candidates);
+        nodes.push(this.createNode(identity.nodeId, identity.name, 'entity', 3, identity.schemaPath, undefined, undefined, {
+          orm: 'Prisma', source: 'prisma_schema', schema_path: identity.schemaPath, subcategories: ['entity', 'prisma']
+        }));
       }
     } catch {
 
@@ -2189,7 +2189,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return !!fieldType && fieldType.toLowerCase().includes('entitymanager');
   }
 
-  private resolveEntityAccessTarget(call: any, func: any): string | undefined {
+  private resolveEntityAccessTarget(call: any, func: any, filePath: string): string | undefined {
     const callExpression = String(call.callExpression || '');
     const targetParts = String(call.target || '').split('.');
     targetParts.pop();
@@ -2207,8 +2207,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const prismaParent = callerParts.length >= 2 ? callerParts[callerParts.length - 2].toLowerCase() : '';
     if (prismaParent.includes('prisma')) {
       const modelKey = callerProperty.toLowerCase();
-      if (this.prismaModelNames.has(modelKey)) return `entity_prisma_${modelKey}`;
-      return undefined;
+      return selectPrismaModelIdentity(this.prismaModelsByName.get(modelKey) || [], filePath, call.library)?.nodeId;
     }
 
     const propertyType = (func?.className && this.classFieldTypes.get(`${func.className}.${callerProperty}`)?.typeName)
@@ -2284,12 +2283,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     sourceNodeId: string,
     call: any,
-    func: any
+    func: any,
+    filePath: string
   ): void {
     const method = String(call.target || '').split('.').pop() || '';
     const access = this.classifyEntityAccess(method);
     if (!access) return;
-    const entityNodeId = this.resolveEntityAccessTarget(call, func);
+    const entityNodeId = this.resolveEntityAccessTarget(call, func, filePath);
     if (!entityNodeId || entityNodeId === sourceNodeId) return;
     this.addCallEdge(edges, {
       id: `entity_access_${sourceNodeId}_${entityNodeId}_${access}`,

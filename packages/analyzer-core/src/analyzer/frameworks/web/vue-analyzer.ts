@@ -7,6 +7,7 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { resolveVueComponentImports, resolveVueRouteComponents } from './vue-relationship-resolver';
 
 interface VueApplication {
   name: string;
@@ -67,6 +68,8 @@ interface VueStore {
 
 interface VueRoute {
   path: string;
+  filePath: string;
+  nodeId?: string;
   name?: string;
   component: string;
   children?: VueRoute[];
@@ -558,6 +561,7 @@ export class VueAnalyzer extends BaseAnalyzer {
 
           extractedRoutes.forEach((route, index) => {
             const routeId = this.generateId('route', file, `${route.path}_${index}`);
+            route.nodeId = routeId;
             const routeNode = this.createNodeBuilder(routeId, route.path, 'vue_route')
               .withLevel(3, 'code')
               .withCategory('route', ['vue', 'navigation'])
@@ -895,6 +899,7 @@ export class VueAnalyzer extends BaseAnalyzer {
 
       routes.push({
         path,
+        filePath,
         component,
         name: this.extractRouteName(content, path),
         meta: this.extractRouteMeta(content, path)
@@ -1550,37 +1555,20 @@ export class VueAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
-    components.forEach(component => {
-      const componentId = this.generateId('component', component.filePath, component.name);
-
-      component.imports.forEach(importPath => {
-        if (importPath.startsWith('./') || importPath.startsWith('../')) {
-          const importedComponentId = this.generateId('component', '', path.basename(importPath));
-          edges.push(this.createEdge(
-            this.generateEdgeId(componentId, importedComponentId, 'imports'),
-            componentId,
-            importedComponentId,
-            'imports',
-            'dependency',
-            { import_path: importPath }
-          ));
-        }
-      });
-    });
-
-    routes.forEach((route, index) => {
-      const routeId = this.generateId('route', '', `${route.path}_${index}`);
-      const componentId = this.generateId('component', '', route.component);
-
+    for (const { source, target, importPath } of resolveVueComponentImports(components)) {
+      const sourceId = this.generateId('component', source.filePath, source.name);
+      const targetId = this.generateId('component', target.filePath, target.name);
       edges.push(this.createEdge(
-        this.generateEdgeId(routeId, componentId, 'renders'),
-        routeId,
-        componentId,
-        'renders',
-        'structural',
-        { route_path: route.path }
+        this.generateEdgeId(sourceId, targetId, 'imports'), sourceId, targetId, 'imports', 'dependency', { import_path: importPath }
       ));
-    });
+    }
+    for (const { route, target } of resolveVueRouteComponents(routes, components)) {
+      if (!route.nodeId) continue;
+      const targetId = this.generateId('component', target.filePath, target.name);
+      edges.push(this.createEdge(
+        this.generateEdgeId(route.nodeId, targetId, 'renders'), route.nodeId, targetId, 'renders', 'structural', { route_path: route.path }
+      ));
+    }
   }
 
   private identifyAPIConnections(components: VueComponent[], composables: VueComposable[], exitPoints: CASExitPoint[]): void {

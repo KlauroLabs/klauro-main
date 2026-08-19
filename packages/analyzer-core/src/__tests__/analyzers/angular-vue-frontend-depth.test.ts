@@ -116,4 +116,27 @@ describe('VueAnalyzer: event bindings as event entry points', () => {
     const triggersEdge = (cas.edges || []).find((e: any) => e.type === 'triggers' && e.target === methodNode!.id);
     expect(triggersEdge).toBeTruthy();
   });
+
+  it('resolves relative component imports and router edges to emitted nodes', async () => {
+    write('src/components/QuoteWrapper.vue', '<template><section><slot /></section></template>');
+    write('src/components/Quote.vue', [
+      '<template><QuoteWrapper /></template>',
+      '<script setup>',
+      "import QuoteWrapper from './QuoteWrapper.vue';",
+      '</script>',
+    ].join('\n'));
+    write('src/router.ts', [
+      "import Quote from './components/Quote.vue';",
+      "export const router = createRouter({ routes: [{ path: '/quote', component: Quote }] });",
+    ].join('\n'));
+
+    const analyzer = new VueAnalyzer();
+    const cas: any = await analyzer.analyze({ projectPath: root } as any);
+    const nodeIds = new Set((cas.nodes || []).map((node: any) => node.id));
+    const relationshipEdges = (cas.edges || []).filter((edge: any) => edge.type === 'imports' || edge.type === 'renders');
+
+    expect(relationshipEdges.some((edge: any) => edge.type === 'imports')).toBe(true);
+    expect(relationshipEdges.some((edge: any) => edge.type === 'renders')).toBe(true);
+    expect(relationshipEdges.every((edge: any) => nodeIds.has(edge.source) && nodeIds.has(edge.target))).toBe(true);
+  });
 });

@@ -3,6 +3,7 @@ import { CASNode, CASEdge, CASContribution } from '../../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createPrismaModelIdentity, prismaSchemaNodeId } from './prisma-model-identity';
 
 interface PrismaField {
   name: string;
@@ -38,8 +39,13 @@ export class PrismaAnalyzer extends BaseAnalyzer {
       }
     }
 
-    const schemaPath = path.join(projectPath, 'prisma', 'schema.prisma');
-    return fs.pathExists(schemaPath);
+    if (await fs.pathExists(path.join(projectPath, 'prisma', 'schema.prisma'))) return true;
+    const nestedSchemas = await glob('**/prisma/schema.prisma', {
+      cwd: projectPath,
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
+    });
+    return nestedSchemas.length > 0;
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
@@ -57,12 +63,18 @@ export class PrismaAnalyzer extends BaseAnalyzer {
     for (const schemaFile of schemaFiles) {
       const content = await fs.readFile(schemaFile, 'utf-8');
       const relativePath = path.relative(context.projectPath, schemaFile);
+      const identityPath = path.relative(context.analysisRootPath || context.projectPath, schemaFile);
       const models = this.parseModels(content, relativePath);
+      const schemaNodeId = prismaSchemaNodeId(identityPath);
+
+      nodes.push(this.createNode(schemaNodeId, path.basename(path.dirname(identityPath)), 'schema', 2, relativePath, undefined, undefined, {
+        orm: 'Prisma', source: 'prisma_schema', schema_path: identityPath, subcategories: ['schema', 'prisma']
+      }));
 
       const modelNames = new Set(models.map(m => m.name));
 
       for (const model of models) {
-        const nodeId = `entity_prisma_${model.name.toLowerCase()}`;
+        const nodeId = createPrismaModelIdentity(identityPath, model.name).nodeId;
 
         const fields = model.fields.map(field => ({
           name: field.name,
@@ -91,12 +103,19 @@ export class PrismaAnalyzer extends BaseAnalyzer {
         );
 
         nodes.push(node);
+        edges.push(this.createEdge(
+          this.generateEdgeId(schemaNodeId, nodeId, 'contains'),
+          schemaNodeId,
+          nodeId,
+          'contains',
+          'structural'
+        ));
 
         for (const field of model.fields) {
           if (modelNames.has(field.type)) {
-            const edgeId = `prisma_rel_${model.name}_${field.name}_${field.type}`;
+            const edgeId = this.generateEdgeId(nodeId, field.name, 'references');
             const sourceId = nodeId;
-            const targetId = `entity_prisma_${field.type.toLowerCase()}`;
+            const targetId = createPrismaModelIdentity(identityPath, field.type).nodeId;
 
             const edge = this.createEdge(
               edgeId,

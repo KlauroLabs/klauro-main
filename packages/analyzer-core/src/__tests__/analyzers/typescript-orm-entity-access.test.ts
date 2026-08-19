@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { TypeScriptJavaScriptAnalyzer } from '../../analyzer/languages/typescript-javascript-analyzer';
 import { CASContribution, CASEdge, CASNode } from '../../types/cas.types';
+import { createPrismaModelIdentity } from '../../analyzer/libraries/orm/prisma-model-identity';
 
 const ACCESS_EDGE_TYPES = new Set(['creates', 'updates', 'deletes', 'reads']);
 
@@ -340,9 +341,29 @@ describe('TypeScript ORM entity access edges', () => {
         ].join('\n'),
       });
 
-      const prismaEdges = accessEdges(contribution).filter(edge => edge.target === 'entity_prisma_order');
+      const entityId = createPrismaModelIdentity('prisma/schema.prisma', 'Order').nodeId;
+      const prismaEdges = accessEdges(contribution).filter(edge => edge.target === entityId);
       const types = prismaEdges.map(edge => edge.type).sort();
       expect(types).toEqual(['creates', 'deletes', 'reads']);
+      expect((contribution.nodes || []).some(node => node.id === entityId)).toBe(true);
+    });
+
+    it('keeps same-named models and access edges scoped to their nearest schema', async () => {
+      const contribution = await analyzeProject({
+        'apps/billing/prisma/schema.prisma': 'model Record {\n  id Int @id\n  amount Int\n}\n',
+        'apps/billing/src/read.ts': 'const prisma = new PrismaClient();\nexport async function read() { return prisma.record.findMany(); }\n',
+        'apps/audit/prisma/schema.prisma': 'model Record {\n  id Int @id\n  event String\n}\n',
+        'apps/audit/src/write.ts': 'const prisma = new PrismaClient();\nexport async function write() { return prisma.record.create({ data: { event: "created" } }); }\n',
+      });
+
+      const billingId = createPrismaModelIdentity('apps/billing/prisma/schema.prisma', 'Record').nodeId;
+      const auditId = createPrismaModelIdentity('apps/audit/prisma/schema.prisma', 'Record').nodeId;
+      const edges = accessEdges(contribution);
+
+      expect(billingId).not.toBe(auditId);
+      expect(edges.some(edge => edge.type === 'reads' && edge.target === billingId)).toBe(true);
+      expect(edges.some(edge => edge.type === 'creates' && edge.target === auditId)).toBe(true);
+      expect(edges.every(edge => (contribution.nodes || []).some(node => node.id === edge.target))).toBe(true);
     });
   });
 
