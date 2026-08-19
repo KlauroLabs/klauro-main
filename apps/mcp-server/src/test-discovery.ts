@@ -121,6 +121,9 @@ const JAVASCRIPT_TEST_APIS = new Set([
   'xtest',
 ]);
 
+const JAVASCRIPT_TEST_NAMESPACES = new Set(['Bun', 'Deno', 'QUnit']);
+const JAVASCRIPT_TEST_MODIFIERS = new Set(['concurrent', 'each', 'fails', 'only', 'serial', 'skip', 'todo']);
+
 export async function getTestDiscoveryEvidence(projectPath: string, cas?: CASOutput): Promise<TestDiscoveryEvidence> {
   const sourceFiles = await glob(TEST_PATTERNS, {
     cwd: projectPath,
@@ -239,6 +242,11 @@ async function isExecutableTestFile(projectPath: string, filePath: string): Prom
   const normalized = filePath.replace(/\\/g, '/');
   const name = path.basename(normalized);
   if (name === '__init__.py' || name.endsWith('.d.ts')) return false;
+  const pathSegments = normalized.toLowerCase().split('/');
+  const explicitJavaScriptTestName = /\.(test|spec|cy)\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(name);
+  const supportDirectory = pathSegments.some(segment => ['helpers', 'support', 'test-helpers', 'test_helpers'].includes(segment));
+  const supportFileName = /(?:^|[_-])(helper|support)(?:[_-]|\.)/i.test(name);
+  if ((supportDirectory && !explicitJavaScriptTestName) || supportFileName) return false;
 
   const absolutePath = path.join(projectPath, filePath);
   const content = await fs.readFile(absolutePath, 'utf8').catch(() => '');
@@ -280,11 +288,18 @@ function hasJavaScriptTestDeclaration(content: string, fileName: string): boolea
 function isTestApiExpression(expression: ts.Expression): boolean {
   if (ts.isIdentifier(expression)) return JAVASCRIPT_TEST_APIS.has(expression.text);
   if (ts.isPropertyAccessExpression(expression)) {
-    return JAVASCRIPT_TEST_APIS.has(expression.name.text) || isTestApiExpression(expression.expression);
+    if (JAVASCRIPT_TEST_MODIFIERS.has(expression.name.text)) return isTestApiExpression(expression.expression);
+    return ts.isIdentifier(expression.expression) &&
+      JAVASCRIPT_TEST_NAMESPACES.has(expression.expression.text) &&
+      JAVASCRIPT_TEST_APIS.has(expression.name.text);
   }
   if (ts.isElementAccessExpression(expression)) {
     const argument = expression.argumentExpression;
-    return Boolean(argument && ts.isStringLiteralLike(argument) && JAVASCRIPT_TEST_APIS.has(argument.text)) || isTestApiExpression(expression.expression);
+    if (!argument || !ts.isStringLiteralLike(argument)) return false;
+    if (JAVASCRIPT_TEST_MODIFIERS.has(argument.text)) return isTestApiExpression(expression.expression);
+    return ts.isIdentifier(expression.expression) &&
+      JAVASCRIPT_TEST_NAMESPACES.has(expression.expression.text) &&
+      JAVASCRIPT_TEST_APIS.has(argument.text);
   }
   if (ts.isCallExpression(expression)) return isTestApiExpression(expression.expression);
   if (ts.isParenthesizedExpression(expression)) return isTestApiExpression(expression.expression);

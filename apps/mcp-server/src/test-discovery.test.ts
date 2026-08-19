@@ -100,3 +100,32 @@ test('test discovery trusts source-backed CAS suites without rereading represent
     await fs.remove(root);
   }
 });
+
+test('test discovery rejects support files that only call non-test APIs named test', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-test-discovery-support-'));
+  try {
+    await fs.outputFile(
+      path.join(root, 'package', 'test', 'helpers', 'consumer_test_helper.js'),
+      "export const register = name => QUnit.test(name, assert => assert.ok(true));\n"
+    );
+    await fs.outputFile(
+      path.join(root, 'package', 'test', 'unit', 'consumer_test.js'),
+      "QUnit.test('connects a consumer', assert => assert.ok(true));\n"
+    );
+    await fs.outputFile(
+      path.join(root, 'package', 'test', 'helpers', 'connection.test.js'),
+      "test('connects through the helper', () => {});\n"
+    );
+
+    const evidence = await getTestDiscoveryEvidence(root, { test_suites: [] } as any);
+
+    assert.equal(evidence.source_test_files, 2);
+    assert.equal(evidence.status, 'potential-tests-missing-from-cas');
+    assert.deepEqual(
+      evidence.sample_source_test_files.map(file => file.path),
+      ['package/test/helpers/connection.test.js', 'package/test/unit/consumer_test.js']
+    );
+  } finally {
+    await fs.remove(root);
+  }
+});

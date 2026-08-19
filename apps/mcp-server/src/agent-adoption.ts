@@ -5570,6 +5570,12 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const methodCalls = cas.method_calls?.length || cas.nodes.reduce((total, node) => total + (node.call_graph?.calls?.length || 0), 0);
   const tests = findTests(cas, { limit: 1 });
   const security = getSecurityOverview(cas);
+  const securityObserved = security.boundary_count > 0 || security.context_count > 0;
+  const securityAbsenceProven = Boolean(
+    security.security_summary &&
+    security.security_summary.unprotected_sensitive_ops.length === 0 &&
+    security.security_summary.assumed_vs_enforced.missing === 0
+  );
   const flowCoverage = storedFlowCoverageSummary(cas);
   const graphIntegrity = cas.validation?.graph_integrity;
   const runtimeLinks = cas.runtime_static_links?.length || 0;
@@ -5606,7 +5612,16 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
         : 'No behavior-level invariants inferred'
     ),
     testGate,
-    gate('security', security.boundary_count > 0 || security.context_count > 0 ? 'pass' : 'warn', security.boundary_count > 0 || security.context_count > 0 ? 100 : 80, `${security.boundary_count || 0} boundaries, ${security.context_count || 0} contexts`),
+    gate(
+      'security',
+      securityObserved || securityAbsenceProven ? 'pass' : 'warn',
+      securityObserved || securityAbsenceProven ? 100 : 80,
+      securityObserved
+        ? `${security.boundary_count || 0} boundaries, ${security.context_count || 0} contexts`
+        : securityAbsenceProven
+          ? 'No security enforcement or unprotected sensitive operations found'
+          : `${security.boundary_count || 0} boundaries, ${security.context_count || 0} contexts`,
+    ),
     gate('runtime-correlation', runtimeLinks > 0 ? 'pass' : 'warn', runtimeLinks > 0 ? 100 : 80, `${runtimeLinks} runtime static links`),
     gate('flow-coverage', hasFlowCoverage(flowCoverage) ? 'pass' : 'warn', hasFlowCoverage(flowCoverage) ? 100 : 80, flowCoverageDetail(flowCoverage)),
   ];

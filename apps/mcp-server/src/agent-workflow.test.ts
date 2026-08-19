@@ -1309,6 +1309,46 @@ test('readiness does not reduce the score for an explicitly optional dimension',
   });
 });
 
+test('readiness accepts an evidence-backed absence of security enforcement', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.security_boundaries = [];
+    cas.security_contexts = [];
+    cas.security_summary = {
+      boundaries: [],
+      unprotected_sensitive_ops: [],
+      assumed_vs_enforced: { enforced: 0, assumed: 0, missing: 0 },
+    };
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    const securityGate = readiness.gates.find(item => item.id === 'security');
+
+    assert.equal(readiness.profile.kind, 'backend-service');
+    assert.equal(securityGate?.status, 'pass');
+    assert.equal(securityGate?.score, 100);
+    assert.equal(securityGate?.detail, 'No security enforcement or unprotected sensitive operations found');
+  });
+});
+
+test('readiness warns when security evidence reports missing enforcement', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.security_boundaries = [];
+    cas.security_contexts = [];
+    cas.security_summary = {
+      boundaries: [],
+      unprotected_sensitive_ops: ['entry-create-user'],
+      assumed_vs_enforced: { enforced: 0, assumed: 0, missing: 1 },
+    };
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    const securityGate = readiness.gates.find(item => item.id === 'security');
+
+    assert.equal(securityGate?.status, 'warn');
+    assert.equal(securityGate?.score, 80);
+  });
+});
+
 test('readiness rejects completed comprehension with no published product capabilities', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();

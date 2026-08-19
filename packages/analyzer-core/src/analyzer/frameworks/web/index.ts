@@ -1,5 +1,6 @@
 export { NestJSAnalyzer } from './nestjs-analyzer';
 export { SpringBootAnalyzer } from './spring-boot-analyzer';
+export { SpringCloudGatewayAnalyzer } from './spring-cloud-gateway-analyzer';
 export { DjangoAnalyzer } from './django-analyzer';
 export { FlaskAnalyzer } from './flask-analyzer';
 export { FastAPIAnalyzer } from './fastapi-analyzer';

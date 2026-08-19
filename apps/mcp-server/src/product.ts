@@ -7,7 +7,6 @@ import type {
   CASOutput,
   CASRuntimeStaticLink,
 } from '../../../packages/analyzer-core/src/types/cas.types';
-import * as path from 'path';
 import {
   assessChangeRisk,
   buildSummary,
@@ -29,6 +28,14 @@ import {
 } from './query';
 import { classifyAnalysisProfile, shouldSuppressAnswerGap } from './analysis-profile';
 import { RESPONSE_BUDGET_BYTES } from './response-budget';
+import {
+  entityShapesCompatible,
+  entityTypeNodes,
+  entityVocabulary,
+  isNonRuntimeSourceFile,
+  repositoryAffinityScore,
+  type EntityContractEvidence,
+} from './cross-repository-evidence';
 
 export interface EvidenceRef {
   type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'call_chain' | 'runtime_link' | 'repository_link' | 'fact' | 'data_entity' | 'test' | 'summary';
@@ -515,20 +522,24 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
     for (let rightIndex = leftIndex + 1; rightIndex < repositories.length; rightIndex++) {
       const left = repositories[leftIndex];
       const right = repositories[rightIndex];
-      links.push(...detectApiLinks(left, right));
-      links.push(...detectApiLinks(right, left));
-      links.push(...detectSharedDatabaseLinks(left, right));
-      links.push(...detectMessageLinks(left, right));
-      links.push(...detectMessageLinks(right, left));
-      links.push(...detectExternalServiceLinks(left, right));
-      links.push(...detectExternalServiceLinks(right, left));
-      links.push(...detectEnvironmentContractLinks(left, right));
-      links.push(...detectEnvironmentContractLinks(right, left));
-      links.push(...detectSharedSchemaLinks(left, right));
+      const directLinks = [
+        ...detectApiLinks(left, right),
+        ...detectApiLinks(right, left),
+        ...detectSharedDatabaseLinks(left, right),
+        ...detectMessageLinks(left, right),
+        ...detectMessageLinks(right, left),
+        ...detectExternalServiceLinks(left, right),
+        ...detectExternalServiceLinks(right, left),
+        ...detectEnvironmentContractLinks(left, right),
+        ...detectEnvironmentContractLinks(right, left),
+        ...detectNamespaceImportLinks(left, right),
+        ...detectNamespaceImportLinks(right, left),
+      ];
+      const hasDirectContract = directLinks.some(link => (link.metadata?.confidence || 0) >= 0.75);
+      links.push(...directLinks);
+      links.push(...detectSharedSchemaLinks(left, right, hasDirectContract));
       links.push(...detectSharedLibraryLinks(left, right));
-      links.push(...detectSharedEntityLinks(left, right));
-      links.push(...detectNamespaceImportLinks(left, right));
-      links.push(...detectNamespaceImportLinks(right, left));
+      links.push(...detectSharedEntityLinks(left, right, hasDirectContract));
     }
   }
 
@@ -953,20 +964,6 @@ function isFrontendRouteFile(file: string): boolean {
     file.endsWith('/src/app.js');
 }
 
-function isNonRuntimeSourceFile(file: string): boolean {
-  if (!file) return false;
-  return file.includes('/fixtures/') ||
-    file.includes('/__tests__/') ||
-    file.includes('/tests/') ||
-    file.includes('/test/') ||
-    file.endsWith('.spec.ts') ||
-    file.endsWith('.test.ts') ||
-    file.endsWith('.spec.js') ||
-    file.endsWith('.test.js') ||
-    file.endsWith('.spec.tsx') ||
-    file.endsWith('.test.tsx');
-}
-
 function isExternalAbsoluteEndpoint(value: string): boolean {
   if (!/^https?:\/\//i.test(value)) return false;
   try {
@@ -1153,8 +1150,10 @@ function detectEnvironmentContractLinks(
 
 function detectSharedSchemaLinks(
   left: { path: string; name: string; cas: CASOutput },
-  right: { path: string; name: string; cas: CASOutput }
+  right: { path: string; name: string; cas: CASOutput },
+  hasDirectContract: boolean
 ): CASCrossRepositoryLink[] {
+  if (!hasDirectContract && repositoryAffinityScore(left, right) < 0.1) return [];
   const links: CASCrossRepositoryLink[] = [];
   const leftSchemas = schemaContracts(left.cas);
   const rightSchemas = schemaContracts(right.cas);
@@ -1264,73 +1263,16 @@ function detectSharedLibraryLinks(
   return links;
 }
 
-const GENERIC_ENTITY_NAMES = new Set([
-  'user',
-  'account',
-  'profile',
-  'status',
-  'config',
-  'configuration',
-  'base',
-  'item',
-  'data',
-  'error',
-  'event',
-  'test',
-  'model',
-  'type',
-  'entity',
-  'result',
-  'response',
-  'request',
-  'client',
-  'service',
-]);
-
-const ENTITY_NODE_TYPES = new Set(['class', 'interface', 'type', 'enum', 'model', 'entity', 'dto']);
-
-function entityVocabulary(cas: CASOutput): Array<{ name: string; nodeIds: string[] }> {
-  const names = new Map<string, string>();
-  for (const entity of cas.entities || []) {
-    if (isGenericEntityName(entity.name)) continue;
-    names.set(entity.name.toLowerCase(), entity.name);
-  }
-  for (const entity of cas.database_schema?.entities || []) {
-    if (isGenericEntityName(entity.name)) continue;
-    if (!names.has(entity.name.toLowerCase())) names.set(entity.name.toLowerCase(), entity.name);
-  }
-
-  return [...names.entries()]
-    .map(([key, name]) => ({
-      name,
-      nodeIds: cas.nodes
-        .filter(node => ENTITY_NODE_TYPES.has(node.type) && node.name.toLowerCase() === key)
-        .map(node => node.id)
-        .slice(0, 5),
-    }))
-    .sort((left, right) => left.name.localeCompare(right.name));
-}
-
-function isGenericEntityName(name: string): boolean {
-  const normalized = name.toLowerCase();
-  return normalized.length < 4 || GENERIC_ENTITY_NAMES.has(normalized);
-}
-
-function entityTypeNodes(cas: CASOutput, name: string): CASNode[] {
-  const key = name.toLowerCase();
-  return cas.nodes
-    .filter(node => ENTITY_NODE_TYPES.has(node.type) && node.name.toLowerCase() === key && !isNonRuntimeSourceFile(node.source?.file?.toLowerCase() || ''))
-    .slice(0, 5);
-}
-
 function detectSharedEntityLinks(
   left: { path: string; name: string; cas: CASOutput },
-  right: { path: string; name: string; cas: CASOutput }
+  right: { path: string; name: string; cas: CASOutput },
+  hasDirectContract: boolean
 ): CASCrossRepositoryLink[] {
+  if (!hasDirectContract && repositoryAffinityScore(left, right) < 0.1) return [];
   const links: CASCrossRepositoryLink[] = [];
   const leftEntities = entityVocabulary(left.cas);
   const rightEntities = entityVocabulary(right.cas);
-  const rightEntityNames = new Set(rightEntities.map(entity => entity.name.toLowerCase()));
+  const rightEntitiesByName = new Map(rightEntities.map(entity => [entity.name.toLowerCase(), entity]));
   const seen = new Set<string>();
 
   const addLink = (
@@ -1339,12 +1281,14 @@ function detectSharedEntityLinks(
     sourceNodeIds: string[],
     target: { path: string; name: string; cas: CASOutput },
     targetNodes: CASNode[],
-    bothSidesEntities: boolean
+    sourceEntity: EntityContractEvidence,
+    targetEntity: EntityContractEvidence
   ) => {
     const key = entityName.toLowerCase();
     if (seen.has(key)) return;
+    if (!entityShapesCompatible(sourceEntity, targetEntity)) return;
     seen.add(key);
-    const confidenceValue = bothSidesEntities ? 0.88 : 0.8;
+    const confidenceValue = hasDirectContract ? 0.9 : 0.84;
     links.push({
       id: crossRepoId('shared-schema', source.name, `entity-${entityName}`, target.name, `entity-${entityName}`),
       type: 'shared-schema',
@@ -1373,16 +1317,20 @@ function detectSharedEntityLinks(
   };
 
   for (const entity of leftEntities) {
+    const targetEntity = rightEntitiesByName.get(entity.name.toLowerCase());
+    if (!targetEntity) continue;
     const targetNodes = entityTypeNodes(right.cas, entity.name);
     if (targetNodes.length === 0) continue;
-    addLink(entity.name, left, entity.nodeIds, right, targetNodes, rightEntityNames.has(entity.name.toLowerCase()));
+    addLink(entity.name, left, entity.nodeIds, right, targetNodes, entity, targetEntity);
   }
 
   for (const entity of rightEntities) {
     if (seen.has(entity.name.toLowerCase())) continue;
+    const targetEntity = leftEntities.find(candidate => candidate.name.toLowerCase() === entity.name.toLowerCase());
+    if (!targetEntity) continue;
     const targetNodes = entityTypeNodes(left.cas, entity.name);
     if (targetNodes.length === 0) continue;
-    addLink(entity.name, right, entity.nodeIds, left, targetNodes, false);
+    addLink(entity.name, right, entity.nodeIds, left, targetNodes, entity, targetEntity);
   }
 
   return links;
@@ -2397,6 +2345,7 @@ function normalizeRoute(value: string): string {
     .replace(/\$\{[^}]*\}/g, ':param')
     .replace(/:[a-z0-9_]+/g, ':param')
     .replace(/\{[^}]+\}/g, ':param')
+    .replace(/(^|\/)\*+(?=\/|$)/g, '$1:param')
     .replace(/\/+/g, '/')
     .replace(/\/$/, '') || '/';
 }
@@ -2407,9 +2356,11 @@ function routesCompatible(left: string, right: string): boolean {
     const leftParts = routeSegments(left);
     const rightParts = routeSegments(right);
     if (leftParts.length === rightParts.length) {
-      return leftParts.every((part, index) => part === rightParts[index] || part === ':param' || rightParts[index] === ':param');
+      const compatible = leftParts.every((part, index) => part === rightParts[index] || part === ':param' || rightParts[index] === ':param');
+      const sharedLiteral = leftParts.some((part, index) => part !== ':param' && part === rightParts[index]);
+      return compatible && sharedLiteral;
     }
-    return dynamicPrefixSuffixMatch(leftParts, rightParts) || dynamicPrefixSuffixMatch(rightParts, leftParts);
+    return parameterizedSuffixMatch(leftParts, rightParts) || parameterizedSuffixMatch(rightParts, leftParts);
   }
   return left.endsWith(right) || right.endsWith(left);
 }
@@ -2418,13 +2369,12 @@ function routeSegments(route: string): string[] {
   return route.split('/').filter(Boolean);
 }
 
-function dynamicPrefixSuffixMatch(wildcardParts: string[], fullParts: string[]): boolean {
-  if (wildcardParts[0] !== ':param') return false;
-  const suffix = wildcardParts.slice(1);
-  if (suffix.length === 0 || suffix.length >= fullParts.length) return false;
-  if (!suffix.some(part => part !== ':param')) return false;
-  const tail = fullParts.slice(fullParts.length - suffix.length);
-  return suffix.every((part, index) => part === tail[index] || part === ':param');
+function parameterizedSuffixMatch(shorterParts: string[], longerParts: string[]): boolean {
+  if (shorterParts.length === 0 || shorterParts.length >= longerParts.length) return false;
+  const tail = longerParts.slice(longerParts.length - shorterParts.length);
+  const compatible = shorterParts.every((part, index) => part === tail[index] || part === ':param' || tail[index] === ':param');
+  const sharedLiteral = shorterParts.some((part, index) => part !== ':param' && part === tail[index]);
+  return compatible && sharedLiteral;
 }
 
 function routeMatchScore(left: string, right: string): number {
@@ -2438,44 +2388,13 @@ function routeMatchScore(left: string, right: string): number {
     ).length;
     return Math.max(0.65, Math.round((matches / leftParts.length) * 100) / 100);
   }
-  if (dynamicPrefixSuffixMatch(leftParts, rightParts) || dynamicPrefixSuffixMatch(rightParts, leftParts)) {
-    const wildcardParts = leftParts[0] === ':param' && leftParts.length < rightParts.length ? leftParts : rightParts;
-    const literalSuffix = wildcardParts.slice(1).filter(part => part !== ':param').length;
+  if (parameterizedSuffixMatch(leftParts, rightParts) || parameterizedSuffixMatch(rightParts, leftParts)) {
+    const wildcardParts = leftParts.length < rightParts.length ? leftParts : rightParts;
+    const literalSuffix = wildcardParts.filter(part => part !== ':param').length;
     return literalSuffix >= 2 ? 0.82 : 0.74;
   }
   if (left.endsWith(right) || right.endsWith(left)) return 0.78;
   return 0.55;
-}
-
-function repositoryAffinityScore(
-  consumer: { path: string; name: string },
-  producer: { path: string; name: string }
-): number {
-  const consumerParts = repositoryIdentityParts(consumer);
-  const producerParts = repositoryIdentityParts(producer);
-  const shared = consumerParts.filter(part => producerParts.includes(part));
-  if (shared.length >= 2) return 0.1;
-  if (shared.length === 1) return 0.06;
-  const leftPrefix = normalizeTopic(consumer.name).split('-')[0];
-  const rightPrefix = normalizeTopic(producer.name).split('-')[0];
-  return leftPrefix && leftPrefix === rightPrefix ? 0.06 : 0;
-}
-
-function repositoryIdentityParts(repo: { path: string; name: string }): string[] {
-  const homeName = path.basename(process.env.HOME || '').toLowerCase();
-  const userName = (process.env.USER || '').toLowerCase();
-  const ignored = new Set([
-    'users', 'dev', 'personal', 'gate', 'tmp', 'var', 'opt', 'mnt',
-    'repo', 'repos', 'source', 'src', 'code', 'project', 'projects',
-    'workspace', 'workspaces', 'proof-corpus', 'proof-of-concept', 'backend', 'frontend',
-    homeName, userName,
-  ].filter(Boolean));
-  const parts = repo.path.split(/[\\/]/).slice(-4).map(normalizeTopic).filter(part =>
-    part.length > 2 &&
-    !ignored.has(part)
-  );
-  parts.push(...normalizeTopic(repo.name).split('-').filter(part => part.length > 2 && !ignored.has(part)));
-  return [...new Set(parts)];
 }
 
 function normalizeHttpMethod(value?: string): string | undefined {

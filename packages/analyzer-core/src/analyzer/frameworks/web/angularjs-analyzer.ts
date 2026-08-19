@@ -3,6 +3,7 @@ import { CASContribution, CASEdge, CASEntryPoint, CASExitPoint, CASNode } from '
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { extractStaticMemberCalls } from '../../core/javascript-static-call';
 
 interface AngularJsModule {
   id: string;
@@ -254,22 +255,25 @@ export class AngularJsAnalyzer extends BaseAnalyzer {
   }
 
   private extractHttpExits(content: string, file: string, registrations: AngularJsRegistration[], exitPoints: CASExitPoint[]): void {
-    const pattern = /\$http\.(get|post|put|patch|delete|head|jsonp)\s*\(\s*(['"])([^'"]+)\2/g;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(content)) !== null) {
-      const owner = [...registrations].reverse().find(registration => registration.index <= match!.index);
+    const calls = extractStaticMemberCalls(
+      content,
+      new Set(['$http']),
+      new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'jsonp'])
+    );
+    for (const call of calls) {
+      const owner = [...registrations].reverse().find(registration => registration.index <= call.index);
       if (!owner) continue;
-      const method = match[1].toUpperCase();
-      const url = match[3];
+      const method = call.method.toUpperCase();
+      const url = call.value;
       exitPoints.push(this.createExitPoint(
-        this.generateId('exit', file, `${owner.name}_${method}_${url}_${match.index}`),
+        this.generateId('exit', file, `${owner.name}_${method}_${url}_${call.index}`),
         owner.id,
         'api',
         `${method} ${url}`,
         `AngularJS HTTP request to ${url}`,
         { service_id: 'http', resource: url },
         { action: method.toLowerCase(), method },
-        { framework: 'angularjs', line: this.lineAt(content, match.index) }
+        { framework: 'angularjs', line: call.line, endpoint_exact: call.exact }
       ));
     }
   }

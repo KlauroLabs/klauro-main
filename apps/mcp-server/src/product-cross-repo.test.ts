@@ -115,6 +115,34 @@ test('frontend template-literal HTTP call links to backend route with path-param
   assert.ok((link.metadata?.confidence || 0) >= 0.9);
 });
 
+test('prefixed client routes match provider suffixes with framework wildcard segments', () => {
+  const frontend = frontendCas({
+    exit_points: [{
+      id: 'exit-events',
+      type: 'api',
+      name: 'getEvents',
+      source_node: 'node-things-service-method',
+      target: { endpoint: '/api/orders/customers/:customerId/items/:itemId/events' },
+      operation: { method: 'GET' },
+    }],
+  });
+  const backend = backendCas({
+    entry_points: [{
+      id: 'entry-events',
+      type: 'http',
+      name: 'GET customers/*/items/:itemId/events',
+      source_node: 'node-things-handler',
+      trigger: { method: 'GET', path: 'customers/*/items/:itemId/events' },
+      handler: { node_id: 'node-things-handler', method_name: 'events', file: 'src/events.ts', line: 1 },
+    }],
+  });
+
+  const result = buildCrossRepositoryLinks([repo('orders-frontend', frontend), repo('orders-backend', backend)]);
+
+  assert.equal(result.links.filter(link => link.type === 'api').length, 1);
+  assert.equal(result.links[0].connection?.endpoint, 'customers/*/items/:itemId/events');
+});
+
 test('unrelated frontend paths do not link to backend routes', () => {
   const frontend = frontendCas({
     exit_points: [
@@ -135,7 +163,7 @@ test('unrelated frontend paths do not link to backend routes', () => {
 
 test('a shared generic workspace parent does not create repository affinity', () => {
   const consumer = {
-    path: '/tmp/proof-corpus/consumer',
+    path: '/tmp/analysis-input/consumer',
     name: 'consumer',
     cas: frontendCas({
       exit_points: [{
@@ -149,7 +177,7 @@ test('a shared generic workspace parent does not create repository affinity', ()
     }),
   };
   const producer = {
-    path: '/tmp/proof-corpus/producer',
+    path: '/tmp/analysis-input/producer',
     name: 'producer',
     cas: backendCas({
       entry_points: [{
@@ -164,6 +192,34 @@ test('a shared generic workspace parent does not create repository affinity', ()
   };
 
   const result = buildCrossRepositoryLinks([consumer, producer]);
+
+  assert.equal(result.links.filter(link => link.type === 'api').length, 0);
+  assert.equal(result.conflicts.length, 0);
+});
+
+test('a parameter-only provider route does not claim an unrelated literal consumer route', () => {
+  const consumer = frontendCas({
+    exit_points: [{
+      id: 'exit-docs',
+      type: 'api',
+      name: 'docs',
+      source_node: 'node-things-service-method',
+      target: { endpoint: 'http://localhost:8000/docs' },
+      operation: { method: 'GET' },
+    }],
+  });
+  const producer = backendCas({
+    entry_points: [{
+      id: 'entry-id',
+      type: 'http',
+      name: 'GET /:id',
+      source_node: 'node-things-handler',
+      trigger: { method: 'GET', path: '/:id' },
+      handler: { node_id: 'node-things-handler', method_name: 'detail', file: 'src/controller.ts', line: 1 },
+    }],
+  });
+
+  const result = buildCrossRepositoryLinks([repo('consumer', consumer), repo('producer', producer)]);
 
   assert.equal(result.links.filter(link => link.type === 'api').length, 0);
   assert.equal(result.conflicts.length, 0);
@@ -295,6 +351,17 @@ test('shared entity vocabulary links repositories through shared-schema links', 
       },
     ],
     exit_points: [],
+    entities: [
+      {
+        id: 'entity-thing',
+        name: 'Thing',
+        fields: [
+          { name: 'id', type: 'string', is_sensitive: false },
+          { name: 'name', type: 'string', is_sensitive: false },
+        ],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+      },
+    ],
   });
   const backend = backendCas({
     nodes: [
@@ -312,17 +379,51 @@ test('shared entity vocabulary links repositories through shared-schema links', 
       },
     ],
     entities: [
-      { id: 'entity-thing', name: 'Thing', lifecycle: {} },
+      {
+        id: 'entity-thing',
+        name: 'Thing',
+        fields: [
+          { name: 'id', type: 'string', is_sensitive: false },
+          { name: 'name', type: 'string', is_sensitive: false },
+          { name: 'createdAt', type: 'date', is_sensitive: false },
+        ],
+        lifecycle: {},
+      },
       { id: 'entity-user', name: 'User', lifecycle: {} },
     ],
   });
-  const result = buildCrossRepositoryLinks([repo('frontend', frontend), repo('backend', backend)]);
+  const result = buildCrossRepositoryLinks([repo('things-frontend', frontend), repo('things-backend', backend)]);
   const sharedSchema = result.links.filter(link => link.type === 'shared-schema');
 
   assert.equal(sharedSchema.length, 1);
   assert.equal(sharedSchema[0].connection?.contract, 'Thing');
-  assert.ok(sharedSchema[0].source_repository?.node_ids?.includes('node-backend-thing-entity'));
-  assert.ok(sharedSchema[0].target_repository?.node_ids?.includes('node-frontend-thing-model'));
+  assert.ok(sharedSchema[0].source_repository?.node_ids?.includes('node-frontend-thing-model'));
+  assert.ok(sharedSchema[0].target_repository?.node_ids?.includes('node-backend-thing-entity'));
+});
+
+test('matching entity names and shapes do not link repositories without relationship evidence', () => {
+  const entity = {
+    id: 'entity-invoice',
+    name: 'Invoice',
+    fields: [
+      { name: 'id', type: 'string', is_sensitive: false },
+      { name: 'total', type: 'number', is_sensitive: false },
+      { name: 'status', type: 'string', is_sensitive: false },
+    ],
+    lifecycle: {},
+  };
+  const first = makeCas('first', {
+    nodes: [{ id: 'first-invoice', type: 'class', name: 'Invoice', source: { file: 'src/invoice.ts', line: 1 } }],
+    entities: [entity],
+  });
+  const second = makeCas('second', {
+    nodes: [{ id: 'second-invoice', type: 'class', name: 'Invoice', source: { file: 'src/invoice.ts', line: 1 } }],
+    entities: [{ ...entity, id: 'other-invoice' }],
+  });
+
+  const result = buildCrossRepositoryLinks([repo('billing', first), repo('accounting', second)]);
+
+  assert.equal(result.links.filter(link => link.type === 'shared-schema').length, 0);
 });
 
 test('namespace imports link a consumer to the repository that defines the class', () => {

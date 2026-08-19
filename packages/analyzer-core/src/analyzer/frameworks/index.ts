@@ -40,6 +40,7 @@ import { GinAnalyzer, EchoAnalyzer, FiberAnalyzer, ChiAnalyzer } from './go';
 import {
   NestJSAnalyzer,
   SpringBootAnalyzer,
+  SpringCloudGatewayAnalyzer,
   DjangoAnalyzer,
   FlaskAnalyzer,
   FastAPIAnalyzer,
@@ -93,6 +94,14 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     languages: ['java'],
     frameworks: ['spring-boot', 'org.springframework.boot'],
     priority: 115
+  },
+  {
+    name: 'Spring Cloud Gateway',
+    analyzer: SpringCloudGatewayAnalyzer,
+    category: 'web',
+    languages: ['java', 'yaml'],
+    frameworks: ['spring-cloud-gateway', 'org.springframework.cloud.gateway'],
+    priority: 116
   },
   {
     name: 'Django',
