@@ -37,7 +37,7 @@ async function bootService(options: { rateLimitPerMinute?: number; fabricRateLim
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = path.join(root, 'remote-data');
-  process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
+  process.env.KLAURO_COORD_DIR = path.join(root, 'remote-data', 'coordination');
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: path.join(root, 'remote-data'), token: TOKEN, ...options });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

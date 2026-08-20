@@ -166,7 +166,7 @@ async function fixtureDirs(group: string): Promise<string[]> {
 function distill(arms: ArmResult[], verdict: WinVerdict): {
   klauroF1: number | null;
   competitorBestF1: number | null;
-  gridVerdict: 'win' | 'ceiling-tie' | 'loss';
+  gridVerdict: GridVerdict;
   armsRan: string[];
   tokenSaving: number | null;
 } {
@@ -180,8 +180,10 @@ function distill(arms: ArmResult[], verdict: WinVerdict): {
 
 
 
-  let gridVerdict: 'win' | 'ceiling-tie' | 'loss';
-  if (verdict.klauro_wins) {
+  let gridVerdict: GridVerdict;
+  if (competitors.length === 0) {
+    gridVerdict = 'uncovered';
+  } else if (verdict.klauro_wins) {
     gridVerdict = verdict.quality_tied_at_ceiling ? 'ceiling-tie' : 'win';
   } else {
     gridVerdict = 'loss';

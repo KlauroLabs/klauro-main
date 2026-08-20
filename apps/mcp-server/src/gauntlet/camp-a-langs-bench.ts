@@ -56,9 +56,10 @@ export interface CampALangsReport {
   perLanguage: CampALangRow[];
   aggregate: {
     languages: number;
-    klauroWinRate: number;
+    comparedLanguages: number;
+    klauroWinRate: number | null;
     meanKlauroF1: number;
-    meanEmbeddingF1: number;
+    meanEmbeddingF1: number | null;
   };
   note: string;
 }
@@ -213,29 +214,30 @@ export async function buildCampALangsReport(): Promise<CampALangsReport> {
       rank: tl.rank,
       klauroF1,
       embeddingF1,
-      klauroWins: ran ? klauroF1 >= embeddingF1 : true,
+      klauroWins: ran && klauroF1 >= embeddingF1,
       embeddingModel,
-      available: langSupported(tl.lang) && (ran || !haveOllama),
+      available: langSupported(tl.lang) && ran,
     });
   }
 
   const n = perLanguage.length;
-  const ranRows = perLanguage.filter(r => r.embeddingModel !== '');
+  const ranRows = perLanguage.filter(r => r.available);
   const meanKlauroF1 = n ? perLanguage.reduce((a, r) => a + r.klauroF1, 0) / n : 0;
-  const meanEmbeddingF1 = ranRows.length ? ranRows.reduce((a, r) => a + r.embeddingF1, 0) / ranRows.length : 0;
-  const winRate = ranRows.length ? ranRows.filter(r => r.klauroWins).length / ranRows.length : 1;
+  const meanEmbeddingF1 = ranRows.length ? ranRows.reduce((a, r) => a + r.embeddingF1, 0) / ranRows.length : null;
+  const winRate = ranRows.length ? ranRows.filter(r => r.klauroWins).length / ranRows.length : null;
 
   cache = {
     available: ranRows.length > 0,
     perLanguage,
     aggregate: {
       languages: n,
+      comparedLanguages: ranRows.length,
       klauroWinRate: winRate,
       meanKlauroF1,
       meanEmbeddingF1,
     },
     note: ranRows.length
-      ? `Klauro structurally out-qualifies local embeddings on who-calls across ${n} languages (win-rate ${(winRate * 100).toFixed(0)}%).`
+      ? `Klauro structurally out-qualifies local embeddings on who-calls across ${ranRows.length} measured languages (win-rate ${(winRate! * 100).toFixed(0)}%).`
       : `Ollama / embedding models unavailable — Camp A skipped (honest). Klauro structural coverage proven on ${perLanguage.filter(r => r.klauroF1 > 0).length}/${n} languages.`,
   };
   return cache;

@@ -22,7 +22,7 @@ test('POST /v1/coordination/conceptual-conflicts persists reports and returns co
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
-  process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
+  process.env.KLAURO_COORD_DIR = path.join(remoteData, 'coordination');
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData, token });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

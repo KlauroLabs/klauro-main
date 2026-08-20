@@ -79,7 +79,7 @@ export const OSS_STUDY_REPOS: OssStudyRepo[] = [
 
 const CORPUS_ROOT = path.join(devDataRoot(), 'oss-study-corpus');
 
-export type OssVerdict = 'win' | 'tie-ceiling' | 'loss';
+export type OssVerdict = 'win' | 'tie-ceiling' | 'loss' | 'unmeasured';
 
 export interface OssCompetitorArm {
   arm: 'codebase-memory' | 'ctags' | 'scip' | 'moderne';
@@ -122,11 +122,14 @@ export interface OssRepoResult {
 }
 
 export interface OssStudySummary {
+  compared: number;
+  unmeasured: number;
   wins: number;
   ties: number;
   losses: number;
-  winRate: number;
-  avgTokenRatio: number;
+  strictWinRate: number | null;
+  nonLossRate: number | null;
+  avgKlauroToCompetitorTokenRatio: number | null;
   reason?: string;
 }
 
@@ -399,19 +402,14 @@ function decideVerdict(
   const available = arms.filter(a => a.available);
 
   if (available.length === 0) {
-    if (klauroSymbolCount >= 1) {
-      const skipped = arms.filter(a => !a.available && a.unavailable_reason);
-      const skippedNote = skipped.length
-        ? ` (${skipped.map(a => `${a.arm}: ${a.unavailable_reason}`).join('; ')})`
-        : '';
-      return {
-        verdict: 'win',
-        note: arms.length > 0
-          ? `no competitor arm indexed any symbols; Klauro extracted ${klauroSymbolCount}${skippedNote}`
-          : 'no competitor arm installed; Klauro extracted symbols (recorded win, not a fixture-tuned claim)',
-      };
-    }
-    return { verdict: 'tie-ceiling', note: 'neither side extracted symbols (degenerate, no-loss tie)' };
+    const skipped = arms.filter(a => !a.available && a.unavailable_reason);
+    const skippedNote = skipped.length
+      ? `: ${skipped.map(a => `${a.arm}: ${a.unavailable_reason}`).join('; ')}`
+      : '';
+    return {
+      verdict: 'unmeasured',
+      note: `no competitor arm produced a comparable result${skippedNote}; Klauro extracted ${klauroSymbolCount}`,
+    };
   }
 
   for (const competitor of available) {
@@ -438,7 +436,32 @@ function decideVerdict(
 
   return {
     verdict: 'tie-ceiling',
-    note: `symbol-name parity with ${available.map(a => a.arm).join(', ')}; Klauro's edge is tokens`,
+    note: `symbol-name parity with ${available.map(a => a.arm).join(', ')}`,
+  };
+}
+
+export function summarizeOssStudy(rows: OssRepoResult[]): OssStudySummary {
+  const compared = rows.filter(row => row.cloned && row.verdict !== 'unmeasured');
+  const wins = compared.filter(row => row.verdict === 'win').length;
+  const ties = compared.filter(row => row.verdict === 'tie-ceiling').length;
+  const losses = compared.filter(row => row.verdict === 'loss').length;
+  const ratios: number[] = [];
+  for (const row of compared) {
+    for (const arm of row.competitor_arms) {
+      if (!arm.available) continue;
+      const competitorTokens = tokensOf(JSON.stringify([...new Set(arm.names)].sort()));
+      if (competitorTokens > 0) ratios.push(row.klauro.tokens / competitorTokens);
+    }
+  }
+  return {
+    compared: compared.length,
+    unmeasured: rows.filter(row => row.cloned && row.verdict === 'unmeasured').length,
+    wins,
+    ties,
+    losses,
+    strictWinRate: compared.length ? wins / compared.length : null,
+    nonLossRate: compared.length ? (wins + ties) / compared.length : null,
+    avgKlauroToCompetitorTokenRatio: ratios.length ? ratios.reduce((left, right) => left + right, 0) / ratios.length : null,
   };
 }
 
@@ -483,7 +506,7 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
           klauro: { nodes: 0, functions: 0, classes: 0, tokens: 0, fnNames: [] },
           competitor: null,
           competitor_arms: [],
-          verdict: 'tie-ceiling',
+          verdict: 'unmeasured',
           note: 'no network and no fallback corpus present — repo skipped honestly',
         });
         continue;
@@ -500,17 +523,14 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
           klauro: { nodes: 0, functions: 0, classes: 0, tokens: 0, fnNames: [] },
           competitor: null,
           competitor_arms: [],
-          verdict: 'tie-ceiling',
+          verdict: 'unmeasured',
           note: `analyzeForBench failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`,
         });
         continue;
       }
 
       const { fnNames, functions, classes } = klauroNames(cas);
-      const klauroPayload = JSON.stringify({
-        functions: (cas.nodes || []).filter((n: any) => n.type === 'function' || n.type === 'method'),
-        classes: (cas.nodes || []).filter((n: any) => n.type === 'class' || n.type === 'struct'),
-      });
+      const klauroPayload = JSON.stringify([...new Set(fnNames)].sort());
       const tokens = tokensOf(klauroPayload);
 
       const { primary: competitor, all: competitorArms } = runCompetitorArm(sourceDir);
@@ -531,27 +551,11 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
     await fs.remove(workRoot).catch(() => undefined);
   }
 
-  const measured = rows.filter(r => r.cloned);
-  const wins = measured.filter(r => r.verdict === 'win').length;
-  const ties = measured.filter(r => r.verdict === 'tie-ceiling').length;
-  const losses = measured.filter(r => r.verdict === 'loss').length;
-  const winRate = measured.length ? (wins + ties) / measured.length : 0;
-
-  const ratios: number[] = [];
-  for (const r of measured) {
-    for (const arm of r.competitor_arms) {
-      if (!arm.available) continue;
-
-
-      const competitorTokens = tokensOf(JSON.stringify(arm.names));
-      if (competitorTokens > 0) ratios.push(r.klauro.tokens / competitorTokens);
-    }
-  }
-  const avgTokenRatio = ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
-
-  const summary: OssStudySummary = { wins, ties, losses, winRate, avgTokenRatio };
-  if (measured.length === 0) {
+  const summary = summarizeOssStudy(rows);
+  if (rows.every(row => !row.cloned)) {
     summary.reason = 'no repos cloned (offline) and no fallback corpus present under ' + CORPUS_ROOT;
+  } else if (summary.compared === 0) {
+    summary.reason = 'no competitor arm produced a comparable result';
   }
 
   return { repos: rows, summary };

@@ -46,6 +46,10 @@ test('camp-a-langs: covers >=40 top languages, Klauro structural F1 is high, and
   } else {
     // Ollama absent: honest skip — assert Klauro-only coverage instead.
     assert.equal(ran.length, 0, 'no embedding model should run when ollama is absent');
+    assert.equal(report.aggregate.comparedLanguages, 0);
+    assert.equal(report.aggregate.klauroWinRate, null);
+    assert.equal(report.aggregate.meanEmbeddingF1, null);
+    assert.ok(report.perLanguage.every(r => !r.available && !r.klauroWins));
     const klauroCovered = report.perLanguage.filter(r => r.klauroF1 >= 1).length;
     assert.ok(klauroCovered >= 40, `Klauro-only coverage must be >=40, got ${klauroCovered}`);
   }
@@ -55,9 +59,10 @@ test('camp-a-langs: covers >=40 top languages, Klauro structural F1 is high, and
   // eslint-disable-next-line no-console
   console.log(
     `\nCAMP-A-LANGS SUMMARY: ${a.languages} languages, ` +
-    `Klauro win-rate ${(a.klauroWinRate * 100).toFixed(0)}%, ` +
+    `compared ${a.comparedLanguages}, ` +
+    `Klauro win-rate ${a.klauroWinRate === null ? 'N/A' : `${(a.klauroWinRate * 100).toFixed(0)}%`}, ` +
     `meanKlauroF1 ${a.meanKlauroF1.toFixed(3)}, ` +
-    `meanEmbeddingF1 ${a.meanEmbeddingF1.toFixed(3)} ` +
+    `meanEmbeddingF1 ${a.meanEmbeddingF1 === null ? 'N/A' : a.meanEmbeddingF1.toFixed(3)} ` +
     `(embeddings ${report.available ? 'ran' : 'unavailable — Klauro-only'})`,
   );
 });

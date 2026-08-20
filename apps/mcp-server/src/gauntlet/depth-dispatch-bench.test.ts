@@ -1,6 +1,17 @@
-import { test } from 'node:test';
+import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildDepthDispatchReport, __resetDepthDispatchCache } from './depth-dispatch-bench';
+import { startCodebaseMemoryDaemon, type CodebaseMemoryDaemonLease } from './real-camp-arms';
+
+let daemon: CodebaseMemoryDaemonLease | null = null;
+
+before(() => {
+  daemon = startCodebaseMemoryDaemon();
+});
+
+after(() => {
+  daemon?.close();
+});
 
 test('DEPTH-4 dispatch: Klauro never strictly loses to codebase-memory on impl resolution', async () => {
   __resetDepthDispatchCache();

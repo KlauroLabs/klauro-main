@@ -6,12 +6,21 @@
  * run, so the suite no-ops (it is a competitor-present test, not a Klauro test).
  */
 
-import { test } from 'node:test';
+import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildDepthTaintReport, __resetDepthTaintCache } from './depth-taint-bench';
-import { codebaseMemoryPath } from './real-camp-arms';
+import { codebaseMemoryPath, startCodebaseMemoryDaemon, type CodebaseMemoryDaemonLease } from './real-camp-arms';
 
 const CBM = codebaseMemoryPath() != null;
+let daemon: CodebaseMemoryDaemonLease | null = null;
+
+before(() => {
+  if (CBM) daemon = startCodebaseMemoryDaemon();
+});
+
+after(() => {
+  daemon?.close();
+});
 
 test('Depth-taint vs codebase-memory: Klauro proves cross-function source->sink, cbm cannot', { skip: !CBM, timeout: 600_000 }, async () => {
   __resetDepthTaintCache();

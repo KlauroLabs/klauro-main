@@ -1,13 +1,24 @@
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildDepthContractDriftReport,
+  getDepthContractDriftReport,
   __resetDepthContractDriftCache,
 } from './depth-contract-drift-bench';
+import { startCodebaseMemoryDaemon, type CodebaseMemoryDaemonLease } from './real-camp-arms';
+
+let daemon: CodebaseMemoryDaemonLease | null = null;
+
+before(() => {
+  daemon = startCodebaseMemoryDaemon();
+});
+
+after(() => {
+  daemon?.close();
+});
 
 test('depth-contract-drift: Klauro detects cross-repo field-level drift; cbm out-of-category; no losses', async () => {
   __resetDepthContractDriftCache();
-  const report = await buildDepthContractDriftReport();
+  const report = await getDepthContractDriftReport();
 
   assert.equal(report.available, true, 'Klauro side must always be available');
   assert.equal(report.results.length, 5, 'five drift cases: type-change, field-rename, field-removed, interface-dto, bare-interface');
@@ -48,7 +59,7 @@ test('depth-contract-drift: Klauro detects cross-repo field-level drift; cbm out
 });
 
 test('depth-contract-drift: cbm binary presence is reported honestly (skip-guard)', async () => {
-  const report = await buildDepthContractDriftReport();
+  const report = await getDepthContractDriftReport();
   // When the binary is absent the bench still runs Klauro and reports cbm as
   // out-of-category; this assertion just documents the guard is observed.
   assert.equal(typeof report.cbmAvailable, 'boolean');

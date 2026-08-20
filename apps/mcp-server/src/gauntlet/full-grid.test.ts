@@ -95,37 +95,20 @@ test('full grid: zero losses, covered language cells win, coverage reported', as
   assert.ok(a.winRate >= 0 && a.winRate <= 1, `winRate out of range: ${a.winRate}`);
   assert.ok(a.total - a.uncovered > 0, 'no covered cells — nothing was measured');
 
-  // (3b) The 46+ verified Camp-A per-language wins are FOLDED IN on the distinct
-  // `structural-retrieval` metric (Klauro structural caller-resolution vs local
-  // embeddings) — a metric separate from `who-calls`. Coverage must reflect that
-  // reality: the structural-retrieval rows are real covered language cells.
-  const structuralCells = grid.cells.filter(
-    c => c.rowKind === 'language' && c.metric === 'structural-retrieval',
+  const coveredCells = grid.cells.filter(c => c.verdict !== 'uncovered');
+  for (const cell of coveredCells) {
+    assert.ok(cell.armsRan.length > 0, `${cell.rowKind}/${cell.row}[${cell.metric}] cannot be covered without a measured competitor arm`);
+  }
+  const structuralCovered = coveredCells.filter(
+    cell => cell.rowKind === 'language' && cell.metric === 'structural-retrieval',
   );
-  const structuralCovered = structuralCells.filter(c => c.verdict !== 'uncovered');
-  assert.ok(
-    structuralCovered.length >= 46,
-    `expected >= 46 covered structural-retrieval language cells (the folded camp-a-langs wins), got ${structuralCovered.length}`,
-  );
-  // Every covered structural-retrieval cell is an outright win (Klauro is exact on
-  // this metric); a loss here would already have failed assertion (1).
-  for (const c of structuralCovered) {
+  for (const cell of structuralCovered) {
     assert.equal(
-      c.verdict,
+      cell.verdict,
       'win',
-      `structural-retrieval ${c.row} must be a win (klauro=${c.klauroF1} vs embedding=${c.competitorBestF1})`,
+      `structural-retrieval ${cell.row} must be a win (klauro=${cell.klauroF1} vs embedding=${cell.competitorBestF1})`,
     );
   }
-  // Folding the camp-a-langs wins MUST raise total coverage past the who-calls-only
-  // baseline (which had 133 covered cells across 305).
-  assert.ok(
-    a.total - a.uncovered > 133,
-    `covered cells must rise above the who-calls-only baseline of 133 after folding camp-a-langs, got ${a.total - a.uncovered}`,
-  );
-  assert.ok(
-    grid.rows.languages.covered >= 14 + 46,
-    `language coverage must rise (14 who-calls + >=46 structural-retrieval), got ${grid.rows.languages.covered}`,
-  );
 
   // Over the COVERED set, every cell is win or ceiling-tie (since losses === 0 and
   // uncovered is excluded) — the 100%-on-covered invariant the claim rests on.

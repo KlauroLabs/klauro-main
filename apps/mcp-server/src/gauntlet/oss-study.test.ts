@@ -9,12 +9,22 @@
  * sandbox with no network or no cbm/ctags binary is not a Klauro regression.
  */
 
-import { test } from 'node:test';
+import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'child_process';
 
 import { buildOssStudyReport } from './oss-study';
-import { codebaseMemoryPath, ctagsAvailable } from './real-camp-arms';
+import { codebaseMemoryPath, ctagsAvailable, startCodebaseMemoryDaemon, type CodebaseMemoryDaemonLease } from './real-camp-arms';
+
+let daemon: CodebaseMemoryDaemonLease | null = null;
+
+before(() => {
+  daemon = startCodebaseMemoryDaemon();
+});
+
+after(() => {
+  daemon?.close();
+});
 
 function networkAvailable(): boolean {
   try {
@@ -45,7 +55,7 @@ test('OSS study: Klauro vs real competitors on untuned real OSS repos', { timeou
 
   assert.ok(report.repos.length > 0, 'expected at least one repo row in the report');
 
-  const measured = report.repos.filter(r => r.cloned);
+  const measured = report.repos.filter(r => r.cloned && r.verdict !== 'unmeasured');
   if (measured.length === 0) {
     t.skip(`no repo could be cloned or resolved from the fallback corpus: ${report.summary.reason}`);
     return;
@@ -64,5 +74,5 @@ test('OSS study: Klauro vs real competitors on untuned real OSS repos', { timeou
     assert.notEqual(r.verdict, 'loss', `${r.repo} must not be a loss`);
   }
 
-  console.log(`[oss-study] measured ${measured.length} repo(s): wins=${report.summary.wins} ties=${report.summary.ties} losses=${report.summary.losses} winRate=${report.summary.winRate.toFixed(2)} avgTokenRatio=${report.summary.avgTokenRatio.toFixed(2)}`);
+  console.log(`[oss-study] compared=${report.summary.compared} unmeasured=${report.summary.unmeasured} wins=${report.summary.wins} ties=${report.summary.ties} losses=${report.summary.losses} strictWinRate=${report.summary.strictWinRate?.toFixed(2) ?? 'N/A'} nonLossRate=${report.summary.nonLossRate?.toFixed(2) ?? 'N/A'} avgKlauroToCompetitorTokenRatio=${report.summary.avgKlauroToCompetitorTokenRatio?.toFixed(2) ?? 'N/A'}`);
 });

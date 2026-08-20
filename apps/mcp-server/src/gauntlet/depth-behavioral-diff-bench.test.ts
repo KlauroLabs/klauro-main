@@ -7,15 +7,24 @@
  * test).
  */
 
-import { test } from 'node:test';
+import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildDepthBehavioralDiffReport,
   __resetDepthBehavioralDiffCache,
 } from './depth-behavioral-diff-bench';
-import { codebaseMemoryPath } from './real-camp-arms';
+import { codebaseMemoryPath, startCodebaseMemoryDaemon, type CodebaseMemoryDaemonLease } from './real-camp-arms';
 
 const CBM = codebaseMemoryPath() != null;
+let daemon: CodebaseMemoryDaemonLease | null = null;
+
+before(() => {
+  if (CBM) daemon = startCodebaseMemoryDaemon();
+});
+
+after(() => {
+  daemon?.close();
+});
 
 test('Depth-behavioral-diff vs codebase-memory: Klauro produces a behavioral delta, cbm produces only file churn', { skip: !CBM, timeout: 600_000 }, async () => {
   __resetDepthBehavioralDiffCache();

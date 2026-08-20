@@ -219,6 +219,7 @@ timeout --signal=TERM --kill-after=10s "${GATE_TIMEOUT_S}s" \
   -e NODE_ENV=development \
   -e KLAURO_STORAGE_PATH=/tmp/klauro-gate-storage \
   -e KLAURO_REMOTE_ANALYZER_DATA=/tmp/klauro-gate-data \
+  -e KLAURO_COORD_DIR=/tmp/klauro-gate-data/coordination \
   -e KLAURO_BENCH_CAS_CACHE_DIR=/tmp/klauro-gate-bench-cas \
   "${DOCKER_ENV_ARGS[@]}" \
   -v "$DEVGATE_DIR:/gate" \

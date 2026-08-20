@@ -15,7 +15,7 @@ test('GET /v1/coordination/stream pushes a claim delta after POST /v1/coordinati
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
-  process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
+  process.env.KLAURO_COORD_DIR = path.join(remoteData, 'coordination');
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData, token: TOKEN });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
