@@ -10,6 +10,11 @@ export interface CapabilityCatalogProjectSignal {
   summary?: string;
 }
 
+export interface CapabilityCatalogEntityFact {
+  fields: string[];
+  name: string;
+}
+
 function normalizedSubjectTokens(value: string): Set<string> {
   const scaffolding = new Set(['management', 'capability', 'workflow', 'handling', 'operation', 'operations']);
   return new Set(String(value || '')
@@ -41,6 +46,35 @@ function isCorroboratedInternalBehavior(candidate: SystemCapability, signal?: Ca
   return candidate.category === 'core' || operations.some(operation => !/^(?:coordinate|handle|process)$/i.test(operation.action || ''));
 }
 
+function hasLifecycleEvidence(entity: CASDataEntity): boolean {
+  return Object.values(entity.lifecycle || {}).some(nodeIds => nodeIds.length > 0);
+}
+
+function domainEntitySupportsCandidate(entity: CASDataEntity, candidate: SystemCapability): boolean {
+  if (entity.kind !== 'domain-shape') return false;
+  if (candidate.category === 'internal' || candidate.category === 'admin') return false;
+  if ((candidate.operations || []).length === 0) return false;
+  const entityTokens = normalizedSubjectTokens(entity.name);
+  const candidateTokens = normalizedSubjectTokens([
+    candidate.name,
+    candidate.structural_label,
+    ...(candidate.related_domains || []),
+    ...(candidate.operations || []).flatMap(operation => [operation.action, operation.path_or_command]),
+    ...(candidate.evidence_examples || []),
+  ].filter(Boolean).join(' '));
+  return [...entityTokens].some(token => candidateTokens.has(token)) &&
+    (hasLifecycleEvidence(entity) || candidate.category === 'core' || candidate.category === 'supporting');
+}
+
+function candidateHasProductEntity(candidate: SystemCapability, entityById: Map<string, CASDataEntity>): boolean {
+  return (candidate.related_entities || []).some(entityId => {
+    const entity = entityById.get(entityId);
+    if (!entity) return false;
+    if (!entity.kind || entity.kind === 'persisted-entity' || entity.kind === 'api-response') return true;
+    return domainEntitySupportsCandidate(entity, candidate);
+  });
+}
+
 export function catalogCandidateTerminality(candidates: SystemCapability[]) {
   const candidateIds = new Set(candidates.map(candidate => candidate.id));
   return new Map(analyzeTerminality(
@@ -70,6 +104,103 @@ export function catalogBehaviorSurfaceCandidates(surfaces: SystemCapability[]): 
   });
 }
 
+export function catalogEntityCandidateGroups(candidates: SystemCapability[]): string[][] {
+  const eligible = candidates.filter(candidate =>
+    candidate.id &&
+    candidate.evidence_kind !== 'behavior-surface' &&
+    (candidate.related_entities || []).length > 0 &&
+    (candidate.operations || []).some(operation => operation.entry_point_type !== 'external')
+  );
+  const parent = eligible.map((_, index) => index);
+  const find = (index: number): number => parent[index] === index ? index : (parent[index] = find(parent[index]));
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+  };
+  const entityOwners = new Map<string, number>();
+  eligible.forEach((candidate, index) => {
+    for (const entityId of candidate.related_entities || []) {
+      const owner = entityOwners.get(entityId);
+      if (owner === undefined) entityOwners.set(entityId, index);
+      else union(owner, index);
+    }
+  });
+  const groups = new Map<number, string[]>();
+  eligible.forEach((candidate, index) => {
+    const root = find(index);
+    const group = groups.get(root);
+    if (group) group.push(candidate.id);
+    else groups.set(root, [candidate.id]);
+  });
+  return [...groups.values()]
+    .map(group => group.sort())
+    .sort((left, right) => left[0].localeCompare(right[0]));
+}
+
+export function catalogPromptEntities(
+  dataEntities: CASDataEntity[],
+  candidates: SystemCapability[],
+  limit = 18,
+): CapabilityCatalogEntityFact[] {
+  const candidateEntityIds = new Set(candidates.flatMap(candidate => candidate.related_entities || []));
+  return dataEntities
+    .filter(entity => entity.kind === 'persisted-entity' || entity.kind === 'api-response' || candidateEntityIds.has(entity.id))
+    .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0) || left.name.localeCompare(right.name))
+    .slice(0, limit)
+    .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
+}
+
+export function catalogCandidateEntityFacts(
+  candidate: SystemCapability,
+  entityById: Map<string, CASDataEntity>,
+): CapabilityCatalogEntityFact[] {
+  return (candidate.related_entities || []).map(id => {
+    const entity = entityById.get(id);
+    return { name: entity?.name || id, fields: (entity?.fields || []).slice(0, 8).map(field => field.name) };
+  });
+}
+
+export function catalogEvidenceCoverageFailure(
+  reconciled: SystemCapability[],
+  requiredBehaviorCandidateIds: string[],
+  requiredEntityCandidateGroups: string[][],
+): string | undefined {
+  const citedCandidateIds = new Set(reconciled.flatMap(capability => (capability.criticality_factors || [])
+    .filter(factor => factor.startsWith('catalog-candidate:'))
+    .map(factor => factor.slice('catalog-candidate:'.length))));
+  const omittedBehaviorCandidateIds = requiredBehaviorCandidateIds.filter(candidateId => !citedCandidateIds.has(candidateId));
+  if (omittedBehaviorCandidateIds.length > 0) {
+    return `catalog omitted ${omittedBehaviorCandidateIds.length} behavior evidence famil${omittedBehaviorCandidateIds.length === 1 ? 'y' : 'ies'}: ${omittedBehaviorCandidateIds.slice(0, 8).join(', ')}`;
+  }
+  const omittedEntityGroups = requiredEntityCandidateGroups.filter(group => !group.some(candidateId => citedCandidateIds.has(candidateId)));
+  if (omittedEntityGroups.length > 0) {
+    return `catalog omitted ${omittedEntityGroups.length} product-entity evidence famil${omittedEntityGroups.length === 1 ? 'y' : 'ies'}: ${omittedEntityGroups.slice(0, 8).map(group => group.join('|')).join(', ')}`;
+  }
+  return undefined;
+}
+
+export function catalogCountBounds(
+  distinctFamilyCount: number,
+  behaviorFamilyCount: number,
+  entityFamilyCount: number,
+): { min: number; max: number } {
+  const max = Math.max(1, Math.min(20, Math.max(distinctFamilyCount, behaviorFamilyCount, entityFamilyCount)));
+  const min = Math.min(max, Math.max(1, Math.ceil(Math.log2(distinctFamilyCount + 1)), entityFamilyCount));
+  return { min, max };
+}
+
+export function catalogMinimumCapabilityCount(distinctFamilyCount: number, entityFamilyCount: number): number {
+  return Math.max(Math.ceil(Math.log2(distinctFamilyCount + 1)), entityFamilyCount);
+}
+
+export function catalogRelatedEntityIds(
+  authoredEntityIds: string[],
+  candidateEntityIds: Iterable<string>,
+): string[] {
+  return [...new Set(authoredEntityIds.length > 0 ? authoredEntityIds : [...candidateEntityIds])];
+}
+
 export function firstPartySupportsIdentityProduct(signal?: CapabilityCatalogProjectSignal): boolean {
   if (!signal) return false;
   const text = [signal.productDocTitle, signal.productDocSummary, signal.manifestDescription, signal.summary]
@@ -88,14 +219,12 @@ export function catalogEvidenceCandidates(
   artifactType = 'app',
   projectTextSignal?: CapabilityCatalogProjectSignal,
 ): SystemCapability[] {
-  const productEntityIds = new Set((dataEntities || [])
-    .filter(entity => !entity.kind || entity.kind === 'persisted-entity' || entity.kind === 'api-response')
-    .map(entity => entity.id));
+  const entityById = new Map((dataEntities || []).map(entity => [entity.id, entity]));
   const scopeCandidates = dataEntities === undefined || ['library', 'client-sdk', 'infrastructure'].includes(artifactType)
     ? candidates
     : candidates.filter(candidate => {
         const operations = candidate.operations || [];
-        const hasProductEntity = (candidate.related_entities || []).some(entityId => productEntityIds.has(entityId));
+        const hasProductEntity = candidateHasProductEntity(candidate, entityById);
         const presentationOnly = operations.length > 0 &&
           operations.some(operation => /^(?:page|route)$/i.test(operation.entry_point_type || '')) &&
           operations.every(operation => /^(?:page|route|event)$/i.test(operation.entry_point_type || ''));

@@ -181,7 +181,7 @@ describe('shared element description validator', () => {
         { name: description.split(' ').slice(0, 3).join(' '), kind: 'capability', relatedDomains: ['analysis'] },
       );
       expect(result.ok).toBe(false);
-      expect(['generic-structural-phrase', 'implementation-surface-restatement', 'too-short', 'lets-users-scaffold-ungrounded', 'lets-users-scaffold-restatement']).toContain(result.reason);
+      expect(['generic-structural-phrase', 'implementation-surface-restatement', 'implementation-identifier-restatement', 'too-short', 'lets-users-scaffold-ungrounded', 'lets-users-scaffold-restatement']).toContain(result.reason);
     }
   });
 
@@ -270,7 +270,7 @@ describe('shared element description validator', () => {
 
   it('accepts a capability description grounded by its explicit related entity', () => {
     const result = validateElementDescription(
-      'Operators create and retrieve user records needed to maintain accurate user information.',
+      'User records retain the identities created and retrieved through user management.',
       { name: 'Manage users', kind: 'capability', relatedEntities: ['User'] },
     );
     expect(result.ok).toBe(true);
@@ -291,6 +291,53 @@ describe('shared element description validator', () => {
     expect(result.reason).toContain('unsupported-marketing-language');
   });
 
+  it('rejects promotional qualifiers that add no behavior to a capability description', () => {
+    for (const description of [
+      'Invoice Coordination accurately manages all relevant purchase details so invoice records are properly organized for users.',
+      'Fuel Purchases effectively tracks fuel records and keeps their consumption details organized for daily operations.',
+    ]) {
+      const result = validateElementDescription(description, {
+        name: description.startsWith('Invoice') ? 'Invoice Coordination' : 'Fuel Purchases',
+        kind: 'capability',
+        relatedEntities: [description.startsWith('Invoice') ? 'Invoice' : 'FuelPurchase'],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain('unsupported-marketing-language');
+    }
+  });
+
+  it('rejects product entities that are unrelated to the described capability', () => {
+    const result = validateElementDescription(
+      'Vehicle records connect vehicles with fuel purchases and invoices used by the product.',
+      {
+        name: 'Update vehicle records',
+        kind: 'capability',
+        relatedEntities: ['Vehicle'],
+        unrelatedEntities: ['FuelPurchase', 'Invoice'],
+      },
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'unrelated-entity-vocabulary:FuelPurchase' });
+  });
+
+  it('rejects implementation types and internal entity terminology from capability descriptions', () => {
+    for (const description of [
+      'Fuel purchases are reviewed through FuelPurchaseService before purchase details are returned.',
+      'Fuel purchases let users review related fuel purchase entities and their recorded gallons.',
+    ]) {
+      expect(validateElementDescription(description, {
+        name: 'Review fuel purchases', kind: 'capability', relatedEntities: ['FuelPurchase'],
+      }).ok).toBe(false);
+    }
+  });
+
+  it('rejects generic details-related-to prose that only restates the capability subject', () => {
+    expect(validateElementDescription(
+      'Track vehicle information enables users to read and update details related to vehicles.',
+      { name: 'Track vehicle information', kind: 'capability', relatedEntities: ['Vehicle'] },
+    )).toEqual({ ok: false, reason: 'generic-structural-phrase' });
+  });
+
   it('is the validator used by both the combined path and the orchestrator wrapper', () => {
     const target = { id: 'cap_0', name: 'Session Authentication', kind: 'capability', relatedDomains: ['session'], fields: [] };
     const text = 'Session Authentication facilitates the interaction between session services and protocol modules to support secure data transmission.';
@@ -299,6 +346,10 @@ describe('shared element description validator', () => {
       'Session Authentication handles session keepalive and renegotiation between gateway peers before traffic is allowed through.',
       target,
     ).ok).toBe(true);
+    expect(orch.validateElementDescription(
+      'Vehicle records connect vehicles with fuel purchases used by the product.',
+      { ...target, name: 'Update vehicle records', relatedEntities: ['Vehicle'], unrelatedEntities: ['FuelPurchase'] },
+    ).reason).toBe('unrelated-entity-vocabulary:FuelPurchase');
   });
 });
 
@@ -854,6 +905,61 @@ describe('AI enrichment completeness is independent of aggregate elapsed time', 
       expect(spy).toHaveBeenCalledTimes(2);
       expect(entities.every(entity => entity.description_generation?.attempted)).toBe(true);
       expect(entities.some(entity => entity.description_generation?.reason === 'budget-exhausted')).toBe(false);
+    } finally {
+      spy.mockRestore();
+      aiConfig.features.naturalLanguageDescriptions = descriptionsEnabled;
+      for (const key of envKeys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+});
+
+describe('capability description evidence isolation', () => {
+  it('authors one capability per prompt with local entity facts and no global sibling vocabulary', async () => {
+    const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_ELEMENT_DESCRIPTIONS', 'KLAURO_AI_CONCURRENCY'];
+    const saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    const descriptionsEnabled = aiConfig.features.naturalLanguageDescriptions;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'true';
+    process.env.KLAURO_AI_CONCURRENCY = '1';
+    aiConfig.features.naturalLanguageDescriptions = true;
+    const descriptions: Record<string, string> = {
+      cap_invoice: 'Invoice status records which invoices have been created and whether settlement has completed.',
+      cap_vehicle: 'Vehicle registration numbers identify the vehicles available for subsequent updates.',
+    };
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (context: any) => {
+      const item = context.additionalContext.items[0];
+      return JSON.stringify({ descriptions: [{ id: item.id, description: descriptions[item.id] }] });
+    });
+    const capabilities: any[] = [
+      {
+        id: 'cap_invoice', name: 'Create and settle invoices', category: 'core', related_entities: ['entity_invoice'], related_domains: ['invoices'], criticality_factors: [],
+        operations: [{ entry_point_id: 'invoice-create', entry_point_type: 'http', action: 'Create' }, { entry_point_id: 'invoice-settle', entry_point_type: 'http', action: 'Settle' }],
+      },
+      {
+        id: 'cap_vehicle', name: 'Track vehicle information', category: 'core', related_entities: ['entity_vehicle'], related_domains: ['vehicles'], criticality_factors: [],
+        operations: [{ entry_point_id: 'vehicle-create', entry_point_type: 'http', action: 'Create' }, { entry_point_id: 'vehicle-update', entry_point_type: 'http', action: 'Update' }],
+      },
+    ];
+    const lifecycle = { created_by: [], read_by: [], updated_by: [], deleted_by: [] };
+    const entityEvidence: any[] = [
+      { id: 'entity_invoice', name: 'Invoice', fields: [{ name: 'status', type: 'string' }], lifecycle },
+      { id: 'entity_vehicle', name: 'Vehicle', fields: [{ name: 'registrationNumber', type: 'string' }], lifecycle },
+    ];
+
+    try {
+      await (orch as any).applyAIElementDescriptions(capabilities, [], {
+        systemName: 'fleet-billing', includeEntities: false, preferredBatchSize: 1, capabilityEntityEvidence: entityEvidence,
+        enhancedSystemPurpose: { primary_domain: 'fleet-billing', core_concepts: ['invoice', 'vehicle'], inferred_description: 'Invoices and vehicles share one billing product.' },
+      });
+      expect(spy).toHaveBeenCalledTimes(2);
+      const prompts = spy.mock.calls.map(call => (call[0] as any).additionalContext as any);
+      expect(prompts.every(prompt => prompt.items.length === 1)).toBe(true);
+      expect(prompts.every(prompt => prompt.system.domain === undefined && prompt.system.description === undefined && prompt.system.concepts.length === 0)).toBe(true);
+      expect(prompts[0].items[0]).toMatchObject({ relatedEntities: ['Invoice'], unrelatedEntities: ['Vehicle'], fields: ['status:string'] });
+      expect(prompts[1].items[0]).toMatchObject({ relatedEntities: ['Vehicle'], unrelatedEntities: ['Invoice'], fields: ['registrationNumber:string'] });
     } finally {
       spy.mockRestore();
       aiConfig.features.naturalLanguageDescriptions = descriptionsEnabled;

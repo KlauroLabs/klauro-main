@@ -12591,6 +12591,21 @@ describe('capability description-provenance invariant (choke point)', () => {
     expect(capabilities[0].description_source).toBe('deterministic');
   });
 
+  it('does not replace an explicitly rejected AI description with deterministic placeholder prose', () => {
+    const capabilities: any[] = [{
+      id: 'cap_1',
+      name: 'Review findings',
+      description: undefined,
+      description_source: undefined,
+      description_generation: { status: 'ai_rejected', attempted: true, reason: 'failed-grounding' },
+      operations: [{ entry_point_id: 'ep_1', entry_point_type: 'http', action: 'list' }],
+    }];
+    orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
+    expect(capabilities[0].description).toBeUndefined();
+    expect(capabilities[0].description_source).toBeUndefined();
+    expect(capabilities[0].description_generation.status).toBe('ai_rejected');
+  });
+
   // With real operations/entities the filler must cite THEM, not claim "no
   // operations or related data entities have been resolved" — the last-resort
   // sentence is only honest when there is genuinely nothing.

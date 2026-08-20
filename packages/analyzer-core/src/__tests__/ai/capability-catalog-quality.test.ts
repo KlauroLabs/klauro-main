@@ -1,4 +1,5 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import { evaluateCapabilityCatalogAudience } from '../../analyzer/core/capability-catalog-audience';
 import type { SystemCapability } from '../../types/cas.types';
 
 // Private-method tests (same convention as orchestrator-internals.test.ts):
@@ -201,6 +202,70 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     capabilities[2].criticality_factors = ['catalog-candidate:runtime'];
     expect(orch.catalogQualityFailure(capabilities, 5, ['analysis', 'fabric', 'runtime']))
       .toBeUndefined();
+  });
+
+  it('requires one cited candidate from every distinct product-entity family', () => {
+    const capabilities = [
+      purposeful('Track parcels'),
+      purposeful('Record inspections'),
+    ];
+    capabilities[0].criticality_factors = ['catalog-candidate:parcel-read'];
+    capabilities[1].criticality_factors = ['catalog-candidate:inspection'];
+
+    expect(orch.catalogQualityFailure(capabilities, 2, [], [
+      ['parcel-read', 'parcel-write'],
+      ['inspection'],
+      ['reservation'],
+    ])).toContain('reservation');
+    capabilities.push(purposeful('Manage reservations'));
+    capabilities[2].criticality_factors = ['catalog-candidate:reservation'];
+    expect(orch.catalogQualityFailure(capabilities, 3, [], [
+      ['parcel-read', 'parcel-write'],
+      ['inspection'],
+      ['reservation'],
+    ])).toBeUndefined();
+  });
+});
+
+describe('capability catalog entity grounding', () => {
+  it('rejects another product entity in a name unless the capability cites that entity', () => {
+    const evaluation = evaluateCapabilityCatalogAudience([
+      cap({
+        id: 'invoice',
+        name: 'Settle invoices for fuel purchases',
+        description: 'Invoices are marked settled after their payments are captured.',
+        related_entities: ['entity_invoice'],
+        operations: [{ entry_point_id: 'ep_invoice', entry_point_type: 'http', action: 'Settle' }] as any,
+      }),
+    ], [
+      { id: 'entity_invoice', name: 'Invoice', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'entity_fuel', name: 'FuelPurchase', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+    ] as any, [], []);
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toMatchObject({
+      target: 'name',
+      reasons: ['unrelated-entity-vocabulary'],
+      flaggedTokens: ['FuelPurchase'],
+    });
+  });
+
+  it('allows a combined outcome when every named product entity is structurally related', () => {
+    const evaluation = evaluateCapabilityCatalogAudience([
+      cap({
+        id: 'settlement',
+        name: 'Settle invoices for fuel purchases',
+        description: 'Fuel purchases retain the invoices marked settled after their payments are captured.',
+        related_entities: ['entity_invoice', 'entity_fuel'],
+        operations: [{ entry_point_id: 'ep_settlement', entry_point_type: 'http', action: 'Settle' }] as any,
+      }),
+    ], [
+      { id: 'entity_invoice', name: 'Invoice', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'entity_fuel', name: 'FuelPurchase', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+    ] as any, [], []);
+
+    expect(evaluation.rejections).toEqual([]);
+    expect(evaluation.accepted).toHaveLength(1);
   });
 });
 

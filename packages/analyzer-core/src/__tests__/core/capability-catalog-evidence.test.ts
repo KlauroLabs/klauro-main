@@ -1,5 +1,5 @@
-import { catalogEvidenceCandidates } from '../../analyzer/core/capability-catalog-evidence';
-import type { SystemCapability } from '../../types/cas.types';
+import { catalogEntityCandidateGroups, catalogEvidenceCandidates, catalogRelatedEntityIds } from '../../analyzer/core/capability-catalog-evidence';
+import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 
 function candidate(id: string, name: string, category: SystemCapability['category'], actions: string[]): SystemCapability {
   return {
@@ -18,6 +18,20 @@ function candidate(id: string, name: string, category: SystemCapability['categor
       action,
     })),
   } as SystemCapability;
+}
+
+function entity(id: string, name: string, kind: CASDataEntity['kind'], lifecycle = false): CASDataEntity {
+  return {
+    id,
+    name,
+    kind,
+    lifecycle: {
+      created_by: lifecycle ? [`${id}_create`] : [],
+      read_by: [],
+      updated_by: [],
+      deleted_by: [],
+    },
+  };
 }
 
 describe('catalogEvidenceCandidates', () => {
@@ -40,5 +54,88 @@ describe('catalogEvidenceCandidates', () => {
     ], [], [], 'app', { concepts: ['quantity', 'commerce'] });
 
     expect(selected).toEqual([]);
+  });
+
+  test('keeps operation-backed domain entities as distinct product evidence', () => {
+    const parcel = candidate('parcel', 'Track parcels', 'core', ['Track']);
+    parcel.related_entities = ['entity_parcel'];
+    const inspection = candidate('inspection', 'Record inspections', 'supporting', ['Record']);
+    inspection.related_entities = ['entity_inspection'];
+
+    const selected = catalogEvidenceCandidates(
+      [parcel, inspection],
+      [],
+      [
+        entity('entity_parcel', 'Parcel', 'domain-shape'),
+        entity('entity_inspection', 'Inspection', 'domain-shape', true),
+      ],
+      'app',
+    );
+
+    expect(selected.map(item => item.id)).toEqual(['parcel', 'inspection']);
+  });
+
+  test('does not turn request contracts, unperformed models, or unrelated internal shapes into product evidence', () => {
+    const request = candidate('request', 'Submit transfer', 'core', ['Submit']);
+    request.related_entities = ['entity_transfer_request'];
+    const dormant = candidate('dormant', 'Track reservation', 'core', []);
+    dormant.related_entities = ['entity_reservation'];
+    const unrelated = candidate('unrelated', 'Run indexing', 'supporting', ['Index']);
+    unrelated.related_entities = ['entity_parcel'];
+    const internal = candidate('internal', 'Process parcels', 'internal', ['Process']);
+    internal.related_entities = ['entity_parcel'];
+
+    const selected = catalogEvidenceCandidates(
+      [request, dormant, unrelated, internal],
+      [],
+      [
+        entity('entity_transfer_request', 'TransferRequest', 'request-dto', true),
+        entity('entity_reservation', 'Reservation', 'domain-shape', true),
+        entity('entity_parcel', 'Parcel', 'domain-shape', true),
+      ],
+      'app',
+    );
+
+    expect(selected).toEqual([]);
+  });
+});
+
+describe('catalogEntityCandidateGroups', () => {
+  test('groups candidates sharing an entity while preserving unrelated product families', () => {
+    const parcelRead = candidate('parcel-read', 'Review parcels', 'core', ['Read']);
+    parcelRead.related_entities = ['entity_parcel'];
+    const parcelWrite = candidate('parcel-write', 'Record parcels', 'core', ['Write']);
+    parcelWrite.related_entities = ['entity_parcel'];
+    const inspection = candidate('inspection', 'Record inspections', 'supporting', ['Write']);
+    inspection.related_entities = ['entity_inspection'];
+
+    expect(catalogEntityCandidateGroups([parcelRead, parcelWrite, inspection])).toEqual([
+      ['inspection'],
+      ['parcel-read', 'parcel-write'],
+    ]);
+  });
+
+  test('excludes entity-free, external-only, and behavior-surface candidates', () => {
+    const external = candidate('external', 'Call carrier', 'supporting', ['Call']);
+    external.related_entities = ['entity_parcel'];
+    external.operations[0].entry_point_type = 'external';
+    const surface = candidate('surface', 'Parcel surface', 'supporting', ['Read']);
+    surface.related_entities = ['entity_parcel'];
+    surface.evidence_kind = 'behavior-surface';
+
+    expect(catalogEntityCandidateGroups([external, surface])).toEqual([]);
+  });
+});
+
+describe('catalogRelatedEntityIds', () => {
+  test('preserves the authored entity family when structural evidence spans other entities', () => {
+    expect(catalogRelatedEntityIds(
+      ['entity_invoice'],
+      new Set(['entity_invoice', 'entity_vehicle', 'entity_fuel_purchase']),
+    )).toEqual(['entity_invoice']);
+  });
+
+  test('uses structural entity evidence when the authored catalog omits entity mapping', () => {
+    expect(catalogRelatedEntityIds([], new Set(['entity_vehicle', 'entity_vehicle']))).toEqual(['entity_vehicle']);
   });
 });

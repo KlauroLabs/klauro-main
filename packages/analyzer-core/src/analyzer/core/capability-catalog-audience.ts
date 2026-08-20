@@ -30,6 +30,30 @@ export interface CapabilityAudienceEvaluation {
   rejections: CapabilityAudienceRejection[];
 }
 
+function normalizedEntityPhrase(value: string): string {
+  return String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3)
+    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
+    .join(' ');
+}
+
+function unrelatedEntityReferences(
+  text: string,
+  relatedEntityIds: Set<string>,
+  entities: CASDataEntity[],
+): string[] {
+  const normalizedText = ` ${normalizedEntityPhrase(text)} `;
+  return entities
+    .filter(entity => !relatedEntityIds.has(entity.id))
+    .map(entity => ({ name: entity.name, phrase: normalizedEntityPhrase(entity.name) }))
+    .filter(entity => entity.phrase.includes(' ') || entity.phrase.length >= 5)
+    .filter(entity => normalizedText.includes(` ${entity.phrase} `))
+    .map(entity => entity.name);
+}
+
 export function capabilityCatalogProductTerms(
   purpose: EnhancedSystemPurpose | undefined,
   productText: CapabilityCatalogProductText,
@@ -76,6 +100,7 @@ export function evaluateCapabilityCatalogAudience(
   const rejections: CapabilityAudienceRejection[] = [];
 
   for (const capability of capabilities) {
+    const relatedEntityIds = new Set(capability.related_entities || []);
     const operationTerms = (capability.operations || []).flatMap(operation => [
       operation.action,
       operation.path_or_command,
@@ -86,6 +111,17 @@ export function evaluateCapabilityCatalogAudience(
       .map(entityId => entityNamesById.get(entityId))
       .filter((value): value is string => Boolean(value));
     const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
+    const unrelatedNameEntities = unrelatedEntityReferences(capability.name, relatedEntityIds, dataEntities);
+    if (unrelatedNameEntities.length > 0) {
+      rejections.push({
+        name: capability.name,
+        description: capability.description,
+        target: 'name',
+        reasons: ['unrelated-entity-vocabulary'],
+        flaggedTokens: unrelatedNameEntities,
+      });
+      continue;
+    }
 
     if (libraries.length > 0) {
       const nameVerdict = testCapabilityNameAgainstIdentifierVocabulary(
@@ -113,6 +149,12 @@ export function evaluateCapabilityCatalogAudience(
       dataEntities,
       [...capabilityProductTerms, capability.name],
     );
+    const unrelatedDescriptionEntities = unrelatedEntityReferences(capability.description, relatedEntityIds, dataEntities);
+    if (unrelatedDescriptionEntities.length > 0) {
+      descriptionVerdict.failsAudienceTest = true;
+      descriptionVerdict.reasons.push('unrelated-entity-vocabulary');
+      descriptionVerdict.flaggedTokens.push(...unrelatedDescriptionEntities);
+    }
     if (descriptionVerdict.failsAudienceTest) {
       const reason = `catalog-audience:${descriptionVerdict.reasons.join(',')}`;
       rejections.push({

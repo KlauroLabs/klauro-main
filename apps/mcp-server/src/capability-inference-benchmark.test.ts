@@ -21,15 +21,17 @@ test('capability inference benchmark prefers domain capabilities over framework 
       ] });
     }
     const items: Array<{ id: string; name?: string }> = Array.isArray(context.items) ? context.items : [];
-    const descriptions: Record<string, string> = {
-      'Track fleet vehicles': 'Maintains unit numbers so dispatchers can identify vehicles during daily fleet work.',
-      'Record fuel purchases': 'Captures gallons and purchase details so operators can monitor fleet consumption.',
-      'Settle customer invoices': 'Records payment completion so outstanding invoices reflect their final settlement status.',
+    const descriptionFor = (item: { name?: string; relatedEntities?: string[] }): string => {
+      const subject = [item.name, ...(item.relatedEntities || [])].join(' ').toLowerCase();
+      if (subject.includes('vehicle')) return 'Vehicle records retain the vehicles identified for daily fleet operations.';
+      if (subject.includes('fuel')) return 'Fuel purchase records capture each fuel purchase recorded by the product.';
+      if (subject.includes('invoice')) return 'Invoice records preserve the invoices marked settled after their payments are captured.';
+      return 'Product records retain the evidenced subjects and actions represented by this product behavior.';
     };
     return JSON.stringify({
       system_description: 'Fleet operations teams use this service to maintain vehicle, fuel purchase, and invoice records for daily work. Dispatchers retrieve vehicle information while operators record fuel activity and consumption details. Billing staff settle invoices after payments are captured and preserve the resulting status. The service coordinates these evidenced workflows through its registered application behavior.',
       domain: 'fleet-operations',
-      descriptions: items.map(item => ({ id: item.id, description: descriptions[item.name || ''] || 'Keeps fleet records accurate and available for daily operational decisions.' })),
+      descriptions: items.map(item => ({ id: item.id, description: descriptionFor(item) })),
       quality_check: { used_facts: ['Vehicle', 'FuelPurchase', 'Invoice'], unsupported_claims: [] },
     });
   };

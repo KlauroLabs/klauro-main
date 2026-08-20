@@ -5,6 +5,7 @@ export interface ElementDescriptionSubject {
   fields?: string[];
 
   relatedEntities?: string[];
+  unrelatedEntities?: string[];
 
 
 
@@ -79,6 +80,7 @@ const FILLER_PHRASE_PATTERN = new RegExp([
   '\\bcurrent product context\\b',
   '\\bsurrounding product workflows?\\b',
   '\\bconfiguration support\\b',
+  '\\b(?:details|information|data) (?:related|associated) (?:to|with)\\b',
   '\\bcentralizes? the coordination of [^.]{0,140}\\bscripts?\\b',
 ].join('|'), 'i');
 
@@ -97,7 +99,7 @@ const FILLER_PHRASE_PATTERN = new RegExp([
 
 const ENTITY_LEGITIMATE_STATE_PATTERN = /\b(?:state mutations?|screen state|workflow state|current product context|surrounding product workflows?|records?, lists?, or screen state)\b/gi;
 
-const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|performance|compliant|compliance|advanced|modern|leverag(?:e|es|ing)|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|scalability|flexibility|secure by design|user experience|strong foundation|ideal solution|best[- ]in[- ]class|state[- ]of[- ]the[- ]art|cutting[- ]edge|feature[- ]rich|decision[- ]making|collaboration|metrics?)\b/gi;
+const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|accurate(?:ly)?|effective(?:ly)?|efficient(?:ly)?|efficiency|organized|properly|relevant|productivity|performance|compliant|compliance|advanced|modern|leverag(?:e|es|ing)|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|scalability|flexibility|secure by design|user experience|strong foundation|ideal solution|best[- ]in[- ]class|state[- ]of[- ]the[- ]art|cutting[- ]edge|feature[- ]rich|decision[- ]making|collaboration|metrics?)\b/gi;
 
 function splitGroundingSource(value: string): string[] {
   return value
@@ -187,6 +189,17 @@ function unsupportedEnumeratedDetail(
   return undefined;
 }
 
+function unrelatedEntityReference(description: string, unrelatedEntities: string[]): string | undefined {
+  const singularize = (token: string): string => token.length > 4 && token.endsWith('s') && !token.endsWith('ss')
+    ? token.slice(0, -1)
+    : token;
+  const normalizedText = ` ${splitGroundingSource(description).map(singularize).filter(token => token.length >= 3).join(' ')} `;
+  return unrelatedEntities.find(entityName => {
+    const phrase = splitGroundingSource(entityName).map(singularize).filter(token => token.length >= 3).join(' ');
+    return (phrase.includes(' ') || phrase.length >= 5) && normalizedText.includes(` ${phrase} `);
+  });
+}
+
 
 
 
@@ -249,10 +262,13 @@ export function validateElementDescription(
     return { ok: false, reason: 'implementation-function-restatement' };
   }
   if (subject.kind === 'capability') {
-    const codeIdentifierMatches = cleaned.match(/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || [];
-    if (codeIdentifierMatches.length >= 2 || /\b(?:functions?|helpers?|methods?)\b/i.test(cleaned) && codeIdentifierMatches.length > 0) {
+    const codeIdentifierMatches = cleaned.match(/\b[A-Za-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || [];
+    if (codeIdentifierMatches.length >= 2 ||
+      codeIdentifierMatches.some(identifier => /(?:Service|Controller|Repository|Handler|Manager|Client|Provider)$/.test(identifier)) ||
+      /\b(?:functions?|helpers?|methods?)\b/i.test(cleaned) && codeIdentifierMatches.length > 0) {
       return { ok: false, reason: 'implementation-identifier-restatement' };
     }
+    if (/\b(?:data )?entit(?:y|ies)\b/i.test(cleaned)) return { ok: false, reason: 'internal-analysis-vocabulary' };
     const titleCaseInventoryItems = cleaned.match(/\b[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+){1,4}\b/g) || [];
     const uniqueInventoryItems = new Set(titleCaseInventoryItems.filter(item =>
       !new RegExp(`^${escapeRegExp(subject.name)}$`, 'i').test(item) &&
@@ -263,6 +279,8 @@ export function validateElementDescription(
     }
   }
   if (subject.kind === 'capability') {
+    const unrelatedEntity = unrelatedEntityReference(cleaned, subject.unrelatedEntities || []);
+    if (unrelatedEntity) return { ok: false, reason: `unrelated-entity-vocabulary:${unrelatedEntity}` };
     const scaffoldReason = capabilityDescriptionScaffoldReason(cleaned, subject.name, [
       ...(subject.relatedEntities || []),
       ...(subject.relatedDomains || []),

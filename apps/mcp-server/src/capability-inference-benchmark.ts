@@ -61,12 +61,28 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
       ? domainSource === 'ai' || domainSource === 'ai-refined'
       : ['ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus) || aiEnrichment === 'disabled';
     const genericCapabilities = capabilities.filter(capability => isGenericCapabilityName(capability.name));
+    const isolatedDomainCapabilities = ['vehicle', 'fuel', 'invoice'].filter(domain =>
+      capabilityText.some(text => text.includes(domain) &&
+        ['vehicle', 'fuel', 'invoice'].filter(other => other !== domain).every(other => !text.includes(other)))
+    );
+    const publishableDescriptions = (cas.capabilities || []).filter(capability =>
+      capability.description_source &&
+      ['ai', 'manual', 'reused'].includes(capability.description_source) &&
+      String(capability.description || '').trim().split(/\s+/).length >= 8 &&
+      capability.description_generation?.status !== 'ai_rejected'
+    );
     const gates = [
       gate('capability-inference:primary-domain-provenance', domainProvenanceOk, `primary domain ${primaryDomain || 'absent'} (domain_source=${domainSource || 'unset'}, description_generation=${descriptionStatus || 'unset'}, ai_enrichment=${aiEnrichment || 'unset'})`),
       gate('capability-inference:no-generic-primary-capabilities', genericCapabilities.length === 0, `${genericCapabilities.length} generic capabilities: ${genericCapabilities.map(item => item.name).join(', ') || 'none'}`),
       gate('capability-inference:canonical-language-authored', (cas.capabilities || []).every(capability =>
         ['ai', 'manual', 'reused'].includes(capability.name_source || '')
       ), `${cas.capabilities?.length || 0} canonical capabilities; unauthored candidates remain structural evidence`),
+      gate('capability-inference:publishable-descriptions',
+        (cas.capabilities || []).length > 0 && publishableDescriptions.length === (cas.capabilities || []).length,
+        `${publishableDescriptions.length}/${cas.capabilities?.length || 0} canonical descriptions passed authored quality validation`),
+      gate('capability-inference:distinct-domain-capabilities',
+        isolatedDomainCapabilities.length === 3,
+        `${isolatedDomainCapabilities.length}/3 domains have independently expressed capabilities: ${names.join(', ')}`),
 
 
 
@@ -153,6 +169,18 @@ async function seedSymfonyFleetFixture(root: string): Promise<void> {
     '<?php',
     'namespace App\\Service;',
     'class InvoiceSettlementService { public function settleInvoice() {} public function captureInvoicePayment() {} }',
+  ].join('\n'));
+  await fs.outputFile(path.join(root, 'src/Service/VehicleService.php'), [
+    '<?php',
+    'namespace App\\Service;',
+    'use App\\Entity\\Vehicle;',
+    'class VehicleService { public function findVehicle(Vehicle $vehicle): Vehicle { return $vehicle; } public function updateVehicle(Vehicle $vehicle): Vehicle { return $vehicle; } }',
+  ].join('\n'));
+  await fs.outputFile(path.join(root, 'src/Service/FuelPurchaseService.php'), [
+    '<?php',
+    'namespace App\\Service;',
+    'use App\\Entity\\FuelPurchase;',
+    'class FuelPurchaseService { public function recordFuelPurchase(FuelPurchase $purchase): FuelPurchase { return $purchase; } public function listFuelPurchases(): array { return []; } }',
   ].join('\n'));
   await fs.outputFile(path.join(root, 'src/Repository/InvoiceRepository.php'), [
     '<?php',

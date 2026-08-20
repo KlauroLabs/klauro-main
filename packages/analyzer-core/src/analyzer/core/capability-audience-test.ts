@@ -259,7 +259,7 @@ function descriptionCandidateTokens(description: string): string[] {
 
 
 const SOURCE_FILE_PATH_PATTERN = /(?:^|[\s"'(])[\w.\-/\\]*[\/\\][\w.\-]+\.(?:ts|tsx|js|jsx|py|rb|java|kt|swift|go|rs|cs|php|c|cpp|h|hpp|scala|ex|exs)\b/i;
-const VAGUE_MARKETING_PATTERN = /\b(?:insights?|comprehensive and accurate|seamless(?:ly)?|robust|best[- ]in[- ]class|world[- ]class|various operations?)\b/i;
+const VAGUE_MARKETING_PATTERN = /\b(?:insights?|comprehensive|accurate(?:ly)?|effective(?:ly)?|efficient(?:ly)?|organized|properly|relevant|seamless(?:ly)?|robust|best[- ]in[- ]class|world[- ]class|various operations?)\b/i;
 const IMPLEMENTATION_PROSE_PATTERN = /\b(?:cli|command[- ]line)\s+(?:entry\s+point|command|interface)\b|\b(?:source[- ]code|implementation)\s+(?:type|class|interface|structure|detail)s?\b|\b(?:route|handler|controller|ui\s+widget)\s+(?:class|interface|implementation)s?\b/i;
 
 export interface AudienceDescriptionTestResult {

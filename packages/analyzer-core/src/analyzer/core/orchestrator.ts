@@ -147,9 +147,11 @@ import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
-  behaviorSurfaceEntryCount as countBehaviorSurfaceEntries,
+  behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
+  catalogCountBounds, catalogEntityCandidateGroups, catalogEvidenceCoverageFailure,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
+  catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
   firstPartySupportsIdentityProduct as supportsIdentityProduct,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
@@ -375,9 +377,7 @@ interface ProjectTextSignal {
   productDocSource?: string;
   productVocabulary?: string[];
 }
-
 type DescriptionTargetKind = 'capability' | 'entity';
-
 interface DescriptionTarget {
   id: string;
   name: string;
@@ -389,7 +389,7 @@ interface DescriptionTarget {
   operations?: string[];
   sourceAreas?: string[];
   evidenceSummary?: string[];
-  relatedEntities?: string[];
+  relatedEntities?: string[]; unrelatedEntities?: string[];
   relatedDomains?: string[];
   readOnly?: boolean;
   artifactType?: string;
@@ -401,7 +401,6 @@ interface DescriptionTarget {
   };
   priorityScore?: number;
 }
-
 interface EntityPropertyIndex {
   byParent: Map<string, Array<{ node: CASNode; position: number }>>;
   byFileBasename: Map<string, Array<{ node: CASNode; position: number; normalizedFile: string }>>;
@@ -414,13 +413,10 @@ interface PersistenceEvidenceContext {
   migrationNames: Map<string, string>;
   repositoryNames: Map<string, string>;
 }
-
 const PERSISTENCE_DECLARATION =
   /@?\b(Entity|Table|Document|Collection|Model|Embeddable|MappedSuperclass|PrimaryKey|PrimaryGeneratedColumn|Column|ObjectType|Schema|Index|sqlx|Migration)\b(?![A-Za-z])/;
-
 const MIGRATION_VOCABULARY =
   /^(create|add|drop|alter|rename|remove|delete|update|change|modify|init|initial|migration|migrate|table|tables|column|columns|index|indexes|indices|constraint|key|keys|to|from|for|and|the|schema|seed|up|down|v\d*)$/i;
-
 const PERSISTENCE_BASE_CLASS =
   /\b(BaseEntity|ActiveRecord|ApplicationRecord|Model|Document|DbContext|SQLModel|DeclarativeBase|EntityBase|AggregateRoot)\b/;
 
@@ -9267,15 +9263,6 @@ export class AnalyzerOrchestrator {
         writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
         terminal: (journey.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
       }));
-    const productEntities = (input.dataEntities || []).filter(entity =>
-      entity.kind === 'persisted-entity' || entity.kind === 'api-response'
-    );
-    const entities = [...productEntities]
-      .sort((left, right) =>
-        (right.fields?.length || 0) - (left.fields?.length || 0) ||
-        left.name.localeCompare(right.name))
-      .slice(0, 18)
-      .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
     const artifactType = String(purpose.artifact_type || 'app');
     const candidatePoolForRanking = this.catalogEvidenceCandidates(
       input.candidateCapabilities,
@@ -9284,6 +9271,7 @@ export class AnalyzerOrchestrator {
       artifactType,
       input.projectTextSignal,
     );
+    const entities = catalogPromptEntities(input.dataEntities || [], candidatePoolForRanking);
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const behaviorCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind === 'behavior-surface');
     const requiredBehaviorCandidateAreas = behaviorCandidateAreas.filter(candidate => candidate.category !== 'internal');
@@ -9292,7 +9280,7 @@ export class AnalyzerOrchestrator {
       ...rankedCandidateAreas.filter(candidate => candidate.evidence_kind !== 'behavior-surface'),
     ];
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
-    const catalogEntityNameById = new Map(input.dataEntities.map(entity => [entity.id, entity.name]));
+    const catalogEntityById = new Map(input.dataEntities.map(entity => [entity.id, entity]));
     const candidateWindowSize = Math.min(64, Math.max(24, behaviorCandidateAreas.length, Math.ceil(rankedCandidateAreas.length / 6)));
     const candidateAreas = promptCandidateAreas
       .map(capability => capability.name)
@@ -9301,14 +9289,16 @@ export class AnalyzerOrchestrator {
       .slice(0, candidateWindowSize)
       .map(capability => {
         const promptEvidence = projectCapabilityCatalogPromptEvidence(capability);
+        const entityFacts = catalogCandidateEntityFacts(capability, catalogEntityById);
         return {
           candidate_id: capability.id,
           family: capability.name,
           operations: promptEvidence.operations,
           name: promptEvidence.name,
           entry_points: this.behaviorSurfaceEntryCount(capability),
-          entities: (capability.related_entities || []).length,
-          entity_names: (capability.related_entities || []).map(id => catalogEntityNameById.get(id) || id),
+          entities: entityFacts.length,
+          entity_names: entityFacts.map(entity => entity.name),
+          entity_fields: entityFacts,
           terminality: candidateTerminality.get(capability.id)?.terminal ? 'terminal'
             : candidateTerminality.get(capability.id)?.proximal_terminal ? 'proximal-terminal'
               : 'upstream',
@@ -9317,8 +9307,10 @@ export class AnalyzerOrchestrator {
       });
     const services = (input.externalServices || []).slice(0, 12);
     const promptFamilyCount = this.catalogDistinctFamilyCount(candidatePoolForRanking);
-    const catalogCountMax = Math.max(1, Math.min(20, Math.max(promptFamilyCount, behaviorCandidateAreas.length)));
-    const catalogCountMin = Math.min(catalogCountMax, Math.max(1, Math.ceil(Math.log2(promptFamilyCount + 1))));
+    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(candidatePoolForRanking);
+    const { min: catalogCountMin, max: catalogCountMax } = catalogCountBounds(
+      promptFamilyCount, behaviorCandidateAreas.length, requiredEntityCandidateGroups.length,
+    );
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
       'runtime', 'service', 'topology', 'workload',
@@ -9343,7 +9335,7 @@ export class AnalyzerOrchestrator {
       ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
-        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Every subject noun in a capability name and description must come from a cited candidate's entity_names or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
+        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. Do not lead a name with Coordinate, Handle, Process, or Manage; choose a more specific verb only when operations, entity fields, journeys, or first-party text supports it. (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability. (7) Every subject noun in a capability name and description must come from a cited candidate's entity_names, entity_fields, or operations, a supplied journey, or top_down_signals. Inflection is allowed; substituting a plausible synonym that the evidence never names is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
     const catalogNarrativeContract = 'The system_description must be exactly 4 concise, grammatical sentences for a non-technical reader: what the product or operational system is, what users or operators can do, one concrete action and result, and another evidenced behavior or operating property. Use concrete nouns from supplied evidence. Do not mention source files, routes, handlers, frameworks, libraries, tools, programming languages, prompt keys, or graph evidence. Never use marketing or generalized value claims such as seamless, robust, comprehensive, various, efficient, productivity, performance, compliant, compliance, advanced, modern, streamline, insights, metrics, decision-making, collaboration, scalable, user experience, business value, or best practices. domain must be a lowercase kebab-case label of 2 to 4 evidence-backed product nouns.';
     const catalogTask = `${catalogTaskBase} DESCRIPTION CONTRACT: ${catalogDescriptionContract} SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract}`;
     const signal = input.projectTextSignal;
@@ -9368,11 +9360,11 @@ export class AnalyzerOrchestrator {
       const additionalContextWithoutFacts = {
         ...toAIContextRoute(resolveCapabilityCatalogRoute(process.env, this.narrativeModel())),
         responseFormat: 'json',
-        maxTokens: Math.min(2600, Math.max(900, 420 + catalogCountMax * 110)),
+        maxTokens: Math.min(1900, Math.max(450, 260 + catalogCountMax * 80)),
         requestTimeoutMs: 65000,
         requestRetries: 0,
         ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
-        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence.`,
+        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. Each group represents a structurally distinct product-entity family; do not collapse unrelated groups.` : ''} Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY ISOLATION CHECK: for every result, its name and description may use entity nouns only from the entity_names and entity_fields of its cited candidate_ids. Entity nouns from uncited candidates are forbidden even when they appear in the system domain or top_down_signals. Do not lead a capability name with Coordinate, Handle, Process, or Manage.`,
         style: 'Write like a product engineer or PM. Plain language. No markdown. Begin each description with its concrete product subject, never an actor scaffold. Prefer precise behavior verbs such as tracks, surfaces, exposes, manages, monitors, secures, settles, and enforces. No CRUD inventory, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports and adds evidence-specific information beyond the capability name.',
         product: {
           name: input.systemName, domain: purpose.primary_domain,
@@ -9385,6 +9377,7 @@ export class AnalyzerOrchestrator {
         user_journeys: journeys, entities,
         candidate_route_areas: candidateAreaFacts,
         required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id),
+        required_entity_candidate_groups: requiredEntityCandidateGroups,
         external_services: services,
         ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
       });
@@ -9826,7 +9819,7 @@ export class AnalyzerOrchestrator {
       writeAnalyzerStatus('[catalog-debug] candidate pool:', candidatePoolForRanking.map(candidate => ({
         id: candidate.id,
         name: candidate.name,
-        operations: (candidate.operations || []).length,
+        operations: (candidate.operations || []).length, entities: candidate.related_entities,
       })));
       writeAnalyzerStatus('[catalog-debug] candidate assignments:', staged.map((item, index) => ({
         name: item.name,
@@ -9841,7 +9834,7 @@ export class AnalyzerOrchestrator {
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
       const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
       const anchoredCandidateIds = candidateIdsByItemIndex.get(index) || new Set<string>();
-      const allRelatedEntities = Array.from(new Set([...relatedEntities, ...candidateEntityIds]));
+      const allRelatedEntities = catalogRelatedEntityIds(relatedEntities, candidateEntityIds);
       const resolvedName = name;
       if (!resolvedName) continue;
       const resolvedKey = resolvedName.toLowerCase();
@@ -10273,20 +10266,18 @@ export class AnalyzerOrchestrator {
     reconciled: SystemCapability[],
     distinctFamilyCount: number,
     requiredBehaviorCandidateIds: string[] = [],
+    requiredEntityCandidateGroups: string[][] = [],
   ): string | undefined {
     if (reconciled.length === 0) {
       return distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
     }
-    const citedCandidateIds = new Set(
-      reconciled.flatMap(capability => (capability.criticality_factors || [])
-        .filter(factor => factor.startsWith('catalog-candidate:'))
-        .map(factor => factor.slice('catalog-candidate:'.length))),
+    const evidenceCoverageFailure = catalogEvidenceCoverageFailure(
+      reconciled,
+      requiredBehaviorCandidateIds,
+      requiredEntityCandidateGroups,
     );
-    const omittedBehaviorCandidateIds = requiredBehaviorCandidateIds.filter(candidateId => !citedCandidateIds.has(candidateId));
-    if (omittedBehaviorCandidateIds.length > 0) {
-      return `catalog omitted ${omittedBehaviorCandidateIds.length} behavior evidence famil${omittedBehaviorCandidateIds.length === 1 ? 'y' : 'ies'}: ${omittedBehaviorCandidateIds.slice(0, 8).join(', ')}`;
-    }
-    const minimumCapabilities = Math.ceil(Math.log2(distinctFamilyCount + 1));
+    if (evidenceCoverageFailure) return evidenceCoverageFailure;
+    const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length);
     if (reconciled.length < minimumCapabilities) {
       return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families; at least ${minimumCapabilities} independently expressed outcomes are required`;
     }
@@ -10434,6 +10425,7 @@ export class AnalyzerOrchestrator {
     const requiredBehaviorCandidateIds = evidenceCandidates
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'internal' && candidate.id)
       .map(candidate => candidate.id);
+    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(evidenceCandidates);
     const catalogEntityNameById = new Map(args.dataEntities.map(entity => [entity.id, entity.name]));
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
@@ -10500,6 +10492,7 @@ export class AnalyzerOrchestrator {
         cycleReconciled,
         distinctFamilyCount,
         requiredBehaviorCandidateIds,
+        requiredEntityCandidateGroups,
       );
       writeAnalyzerStatus(
         `[Klauro] capability catalog cycle ${cycle}/3: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${cycleReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
@@ -10846,7 +10839,7 @@ export class AnalyzerOrchestrator {
       edges,
       allCapabilitiesForEvidence: systemCapabilities,
       userJourneys,
-      preferredBatchSize: capabilities.length,
+      preferredBatchSize: 1, capabilityEntityEvidence: dataEntities,
     });
     const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
     const catalogApplication = await scheduleCapabilityCatalog({
@@ -10984,7 +10977,7 @@ export class AnalyzerOrchestrator {
         writeAnalyzerStatus('[catalog-debug] rejected catalog description:', {
           name: target.name,
           description: existingCatalogDescription,
-          reason: existingCatalogValidation.reason,
+          reason: existingCatalogValidation.reason, relatedEntities: target.relatedEntities, unrelatedEntities: target.unrelatedEntities,
         });
       }
       const combinedCandidate = combined.elements.get(target.id) || '';
@@ -11680,7 +11673,7 @@ export class AnalyzerOrchestrator {
       edges?: CASEdge[];
       allCapabilitiesForEvidence?: SystemCapability[];
       userJourneys?: CASUserJourney[];
-      preferredBatchSize?: number;
+      preferredBatchSize?: number; capabilityEntityEvidence?: CASDataEntity[];
     }
   ): Promise<void> {
     this.elementDescriptionArtifactType = context.enhancedSystemPurpose?.artifact_type || this.elementDescriptionArtifactType;
@@ -11693,8 +11686,8 @@ export class AnalyzerOrchestrator {
         ...(context.projectTextSignal?.productVocabulary || []),
       ].filter((value): value is string => Boolean(value)),
     );
-    const entityNamesById = new Map(entities.map(entity => [entity.id, entity.name]));
-    const entityFieldsById = new Map(entities.map(entity => [
+    const entityNamesById = new Map((context.capabilityEntityEvidence || entities).map(entity => [entity.id, entity.name]));
+    const entityFieldsById = new Map((context.capabilityEntityEvidence || entities).map(entity => [
       entity.id,
       (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`),
     ]));
@@ -11707,6 +11700,7 @@ export class AnalyzerOrchestrator {
       ? entities.map(entity => this.entityDescriptionTarget(entity, entityTargetContext))
           .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
       : [];
+    const capabilityOnly = capabilities.length > 0 && !context.includeEntities;
     const allTargets = [
       ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById)),
       ...entityTargets,
@@ -11715,7 +11709,6 @@ export class AnalyzerOrchestrator {
     const targets = Number.isFinite(configuredLimit) && configuredLimit > 0
       ? allTargets.slice(0, configuredLimit)
       : allTargets;
-
     const concurrency = aiConcurrencyLimit();
     const configuredBatchSize = context.preferredBatchSize || Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '');
     const batchSize = capabilityDescriptionBatchSize(targets.length, concurrency, configuredBatchSize);
@@ -11786,14 +11779,15 @@ export class AnalyzerOrchestrator {
           aiService.generateComponentDescription({
             additionalContext: {
               ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
+              entityIsolation: 'Describe each item independently. Use product nouns only from item.relatedEntities, never item.unrelatedEntities, and never say entity, entities, capability, or an implementation identifier.',
             task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. For each CAPABILITY answer in plain product language: what can the product\'s users or operators DO, and what does that action MEAN in THIS product? For each ENTITY answer what real-world concept it represents to the product. Lead with the product meaning, grounded in the related entities (relatedEntities), fields, and product domain (system.domain, system.concepts). When item.readOnly is true, describe only retrieval, presentation, comparison, or review of the supplied records/fields; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources: never infer that infrastructure handles, processes, or manages a business concept from a resource name, and never mention scripts, commands, files, handlers, or other source mechanics. Do NOT describe CRUD mechanisms, lifecycle, routes, or files. Use currentDescription ONLY for facts, never as a template to rephrase.',
-              style: 'No markdown. Write like a product engineer explaining the feature to a new teammate or PM. Never call the item a "capability", "feature", "module", "component", or "functionality" in the description; describe the concrete product behavior directly. Every description must say WHAT concrete records, decisions, workflows, or declared resources the item owns and WHY that matters — a scaffold that only restates the name is rejected: never a bare "Lets users <verb> <noun>" whose verb/noun repeat the item name, and never "The X capability owns the Y lifecycle". Prefer verbs that convey user/product value: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and avoid unsupported value claims (metrics, decision-making, collaboration, seamless, robust, efficient, business value, streamline, insights, productivity, compliant) unless those exact concepts appear in the supplied evidence. Do not mention scripts, commands, files, routes, operation counts, or "lifecycle". Name the concrete product concept or operational responsibility the evidence represents. Stay grounded; do not invent behavior beyond the supplied entities, domain, resources, and evidence.',
+              style: 'No markdown. Write like a product engineer explaining the behavior to a new teammate or PM. Never call the item a "capability", "feature", "module", "component", or "functionality". Use concrete nouns and actions copied from item.name, relatedEntities, fields, relatedDomains, operations, or evidenceSummary. State why an action matters only when those facts contain its outcome; sparse evidence requires a precise factual sentence, not an invented benefit. Never use accurate, effective, efficient, organized, relevant, properly, transaction, expense, cost, metric, decision-making, collaboration, seamless, robust, business value, streamline, insight, productivity, or compliant unless the exact word appears in the item facts. Do not mention scripts, commands, files, routes, operation counts, lifecycle, or source mechanics.',
               descriptionContract: this.buildAIElementDescriptionPromptContract(context.systemName, context.enhancedSystemPurpose, context.projectTextSignal),
               system: {
                 name: context.systemName,
-                domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
-                concepts: context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
-                description: context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
+                domain: capabilityOnly ? undefined : context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
+                concepts: capabilityOnly ? [] : context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
+                description: capabilityOnly ? undefined : context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
                 frameworks: context.frameworks || [],
               },
               items: batch,
@@ -11824,13 +11818,14 @@ export class AnalyzerOrchestrator {
               aiService.generateComponentDescription({
                 additionalContext: {
                   ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
+                  entityIsolation: 'Describe each item independently. Use product nouns only from item.relatedEntities, never item.unrelatedEntities, and never say entity, entities, capability, or an implementation identifier.',
                   task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item in plain PRODUCT language, grounded in item.relatedEntities, item.fields, and the product domain. When item.readOnly is true, describe only what users can retrieve, see, compare, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. Name the concrete user-facing concept and add supported information beyond the item name. Do not describe CRUD mechanisms, lifecycle, routes, files, or implementation symbols.',
-                  style: 'No markdown. Write like a product engineer explaining the behavior to a teammate. Never call the item a "capability", "feature", "module", "component", or "functionality"; describe the concrete product behavior directly. Say WHAT concrete records, decisions, or workflows the item owns and WHY that matters — never a bare "Lets users <verb> <noun>" that restates the name, and never "The X capability owns the Y lifecycle". Prefer value verbs: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces, decides. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and unsupported value claims (metrics, decision-making, collaboration, functionality, module, component, various, robust, efficient, business value, compliant, insights, streamline) unless grounded in the supplied evidence. Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept implied by the item name, domain, and entities; do not invent behavior beyond the evidence.',
+                  style: 'No markdown. Use concrete nouns and actions copied from item.name, relatedEntities, fields, relatedDomains, operations, or evidenceSummary. State an outcome only when those facts contain it. Do not invent a user, benefit, quality, financial meaning, or operational result. Never use accurate, effective, efficient, organized, relevant, properly, transaction, expense, cost, metric, decision-making, collaboration, seamless, robust, business value, streamline, insight, productivity, or compliant unless the exact word appears in the item facts. Do not mention files, routes, operation counts, lifecycle, or implementation structures.',
                   system: {
                     name: context.systemName,
-                    domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
-                    concepts: context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
-                    description: context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
+                    domain: capabilityOnly ? undefined : context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
+                    concepts: capabilityOnly ? [] : context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
+                    description: capabilityOnly ? undefined : context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
                     frameworks: context.frameworks || [],
                   },
                   items: failedTargets.map(target => ({
@@ -11869,13 +11864,14 @@ export class AnalyzerOrchestrator {
               aiService.generateComponentDescription({
                 additionalContext: {
                   ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
+                  entityIsolation: 'Describe this item independently. Use product nouns only from item.relatedEntities, never item.unrelatedEntities, and never say entity, entities, capability, or an implementation identifier.',
                   task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite this one rejected item as one grounded product sentence. Use its related entities, fields, domains, and observed semantics to explain what users or operators can know or accomplish. When item.readOnly is true, describe only retrieval, presentation, comparison, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources: never infer that infrastructure handles, processes, or manages a business concept from a resource name, and never mention scripts, commands, files, handlers, or other source mechanics. Do not list operations, source files, routes, command verbs, or implementation mechanics.',
-                  style: 'No markdown. Describe the concrete product behavior directly; never prefix or label the item as a "capability", "feature", "module", "component", or "functionality". Prefer concrete product verbs consistent with the evidence. Do not use "capability", "lifecycle", "supports", "coordinates", "handles", "spans", "paths", "operations", "functionality", or marketing language. Use only the supplied facts.',
+                  style: 'No markdown. Use only concrete nouns and actions copied from item.name, relatedEntities, fields, relatedDomains, operations, or evidenceSummary. State no benefit, quality, actor, financial meaning, or outcome absent from those facts. Do not use capability, lifecycle, supports, coordinates, handles, spans, paths, operations, functionality, accurate, effective, efficient, organized, relevant, properly, transaction, expense, cost, metric, insight, or other marketing language.',
                   system: {
                     name: context.systemName,
-                    domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
-                    concepts: context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
-                    description: context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
+                    domain: capabilityOnly ? undefined : context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
+                    concepts: capabilityOnly ? [] : context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
+                    description: capabilityOnly ? undefined : context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
                     frameworks: context.frameworks || [],
                   },
                   items: [target],
@@ -11906,6 +11902,7 @@ export class AnalyzerOrchestrator {
             : { ok: false, reason: originalValidation.reason || 'generated-description-failed-quality-gate' };
           const individualDescription = originalValidation.ok || repairedValidation.ok ? undefined : individualRepairs.get(target.id);
           const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription;
+          if (process.env.KLAURO_DEBUG_CATALOG) writeAnalyzerStatus('[catalog-debug] description decision:', { name: target.name, originalDescription, originalReason: originalValidation.reason, repairedDescription, repairedReason: repairedValidation.reason, individualDescription, finalDescription: description });
 
           recordSemanticDecision({
             ts: Date.now(),
@@ -12009,6 +12006,7 @@ export class AnalyzerOrchestrator {
         capability.criticality ? `criticality: ${capability.criticality}` : '',
       ].filter(Boolean),
       relatedEntities: capability.related_entities.map(id => entityNamesById?.get(id) || id),
+      unrelatedEntities: entityNamesById ? [...entityNamesById].filter(([id]) => !capability.related_entities.includes(id)).map(([, name]) => name) : [],
       relatedDomains: capability.related_domains,
       readOnly,
       artifactType: this.elementDescriptionArtifactType,
@@ -12162,12 +12160,15 @@ export class AnalyzerOrchestrator {
 
   private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
+    if (target.kind === 'capability' && (target.operations || []).length > 0 && /\bno operations?\b/i.test(cleaned)) return { ok: false, reason: 'contradicts-resolved-operations' };
+    if (target.kind === 'capability' && (target.relatedEntities || []).length > 0 && /\bno (?:(?:operations?\s+or\s+))?(?:related )?(?:data )?entit(?:y|ies)\b/i.test(cleaned)) return { ok: false, reason: 'contradicts-resolved-entities' };
     const shared = validateSharedElementDescription(cleaned, {
       name: target.name,
       kind: target.kind,
       relatedDomains: target.relatedDomains,
       fields: target.fields,
       relatedEntities: target.relatedEntities,
+      unrelatedEntities: target.unrelatedEntities,
       domainVocabulary: this.elementDescriptionGroundingVocabulary,
     }, {
       minLength: 50,
@@ -12180,12 +12181,6 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'raw-route-restatement' };
     }
     if (target.kind === 'capability') {
-      if ((target.operations || []).length > 0 && /\bno operations?\b/i.test(cleaned)) {
-        return { ok: false, reason: 'contradicts-resolved-operations' };
-      }
-      if ((target.relatedEntities || []).length > 0 && /\bno (?:(?:operations?\s+or\s+))?(?:related )?(?:data )?entit(?:y|ies)\b/i.test(cleaned)) {
-        return { ok: false, reason: 'contradicts-resolved-entities' };
-      }
       if (
         target.artifactType === 'infrastructure' &&
         /\b(?:shell|batch|powershell)\s+(?:scripts?|commands?)\b|\b(?:scripts?|source files?)\s+to\s+(?:provision|deploy|configure|manage|create|update)\b/i.test(cleaned)
@@ -12201,7 +12196,7 @@ export class AnalyzerOrchestrator {
         ...(target.relatedEntities || []),
         ...(target.relatedDomains || []),
       ].filter(Boolean).join(' ').toLowerCase();
-      const unsupportedClaims = cleaned.match(/\b(?:decision[- ]making|collaboration|metrics?|tracking|monitoring|performance)\b/gi) || [];
+      const unsupportedClaims = cleaned.match(/\b(?:decision[- ]making|collaboration|metrics?|tracking|monitoring|performance|costs?|expenses?|transactions?)\b/gi) || [];
       for (const claim of unsupportedClaims) {
         const normalizedClaim = claim.toLowerCase().replace(/[- ]/g, '');
         const evidenceSupportsClaim = ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim) ||
@@ -20906,6 +20901,7 @@ export class AnalyzerOrchestrator {
   private enforceCapabilityDescriptionProvenanceInvariant(capabilities: SystemCapability[] | undefined): void {
     for (const capability of capabilities || []) {
       if (capability.description) continue;
+      if (capability.description_generation?.status === 'ai_rejected') { capability.description_source = undefined; continue; }
       const name = String(capability.name || '').trim();
       if (!name) {
         capability.description_source = undefined;
