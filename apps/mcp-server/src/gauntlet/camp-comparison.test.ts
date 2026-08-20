@@ -10,6 +10,7 @@ import {
   stackGraphsCallers,
   codebaseMemoryPath,
   codebaseMemoryCallers,
+  codebaseMemoryRelatedNodeQualifiedNames,
   codebaseMemoryNodesByLabel,
 } from './real-camp-arms';
 import { runRouteFactsBench } from './framework-bench';
@@ -98,16 +99,10 @@ test(
   },
 );
 
-// LIVE out-of-category head-to-head vs the strongest contender. codebase-memory
-// advertises first-class `Route` nodes, so we let it answer with its OWN best
-// tool (search_graph label=Route) on a real Express fixture it indexes live.
-// It recognizes `app`/`requireAuth` but NOT `app.get('/users')` as a route —
-// returning 0 routes — while Klauro emits the full method+path table. This is
-// the Camp-C win, measured against the contender at full strength, not a proxy.
 const FW_ROOT = path.resolve(__dirname, '../../fixtures/framework-bench');
 
 test(
-  'codebase-memory (LIVE arm): cannot extract routes — Klauro wins out-of-category, measured',
+  'codebase-memory (LIVE arm): route extraction is a ceiling tie with Klauro',
   { skip: codebaseMemoryReady ? false : 'codebase-memory-mcp not installed' },
   async () => {
     const dir = path.join(FW_ROOT, 'express-routes');
@@ -116,12 +111,12 @@ test(
     const cm = codebaseMemoryNodesByLabel(dir, 'Route');
     assert.ok(cm, 'codebase-memory must index the fixture');
     const cmRoutes = cm!.names.filter(n => /\/(users)/.test(n) || /GET|POST|DELETE/i.test(n));
-    assert.equal(cmRoutes.length, 0, `codebase-memory must surface 0 routes, got ${JSON.stringify(cm!.names)}`);
+    assert.equal(cmRoutes.length, 3, `codebase-memory must surface the current exact route set, got ${JSON.stringify(cm!.names)}`);
 
     // Klauro emits the structured route table for the same fixture.
     const r = await runRouteFactsBench(dir);
     const klauro = r.detail.find(d => d.arm === 'klauro')!;
-    assert.equal(klauro.f1, 1, 'Klauro emits the exact route set the contender cannot');
+    assert.equal(klauro.f1, 1, 'Klauro emits the exact route set');
     assert.equal(klauro.can_answer, true);
   },
 );
@@ -194,13 +189,17 @@ import { runRouteAuthBench } from './auth-bench';
 const AUTH_ROOT = path.resolve(__dirname, '../../fixtures/auth-bench');
 
 test(
-  'codebase-memory (LIVE arm): no route/auth concept — Klauro names the protected endpoints, the contender cannot',
+  'codebase-memory (LIVE arm): route authentication is a ceiling tie with Klauro',
   { skip: codebaseMemoryReady ? false : 'codebase-memory-mcp not installed' },
   async () => {
     const dir = path.join(AUTH_ROOT, 'express-auth');
-    const cm = codebaseMemoryNodesByLabel(dir, 'Route');
+    const cm = codebaseMemoryRelatedNodeQualifiedNames(dir, 'requireAuth', 'HANDLES', 'Route');
     assert.ok(cm, 'codebase-memory must index the fixture');
-    assert.equal(cm!.names.filter(n => /users/i.test(n)).length, 0, `no routes -> no auth, got ${JSON.stringify(cm!.names)}`);
+    assert.deepEqual(
+      [...cm!.qualifiedNames].sort(),
+      ['__route__DELETE__/users/{}', '__route__POST__/users'],
+      'current release links the authentication middleware to the exact protected routes',
+    );
 
     const r = await runRouteAuthBench(dir);
     const klauro = r.detail.find(d => d.arm === 'klauro')!;

@@ -78,7 +78,8 @@ export function scipCallers(
   if (!scip || !scipTypescriptAvailable()) return null;
 
   const t0 = Date.now();
-  const indexPath = path.join(dir, 'index.scip');
+  const indexRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-scip-'));
+  const indexPath = path.join(indexRoot, 'index.scip');
   try {
 
     execFileSync('scip-typescript', ['index', '--infer-tsconfig', '--output', indexPath], {
@@ -87,7 +88,7 @@ export function scipCallers(
       timeout: 180_000,
     });
   } catch {
-    try { fs.removeSync(indexPath); } catch {   }
+    try { fs.removeSync(indexRoot); } catch {   }
     return null;
   }
 
@@ -101,10 +102,10 @@ export function scipCallers(
       maxBuffer: 256 * 1024 * 1024,
     });
   } catch {
-    try { fs.removeSync(indexPath); } catch {   }
+    try { fs.removeSync(indexRoot); } catch {   }
     return null;
   }
-  try { fs.removeSync(indexPath); } catch {   }
+  try { fs.removeSync(indexRoot); } catch {   }
 
   const files = new Set<string>();
   try {
@@ -268,6 +269,28 @@ export function codebaseMemoryPath(): string | null {
   return null;
 }
 
+function codebaseMemoryProject(dir: string): string {
+  return dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
+}
+
+function codebaseMemoryString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function codebaseMemoryRows(output: string): string[] {
+  const rows: string[] = [];
+  let insideRows = false;
+  for (const line of output.split('\n')) {
+    if (line.startsWith('rows:')) {
+      insideRows = true;
+      continue;
+    }
+    if (line.startsWith('total:')) break;
+    if (insideRows && line.startsWith('  ') && line.trim()) rows.push(line.trim());
+  }
+  return rows;
+}
+
 
 
 
@@ -295,13 +318,12 @@ export function codebaseMemoryCallers(
 
 
 
-  const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
-  const cypherString = (value: string): string => value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const project = codebaseMemoryProject(dir);
   const qualifiedSuffix = `.${className}.${methodName}`;
   const query = [
     'MATCH (caller)-[:CALLS]->(callee)',
-    `WHERE callee.name = '${cypherString(methodName)}'`,
-    `AND callee.qualified_name ENDS WITH '${cypherString(qualifiedSuffix)}'`,
+    `WHERE callee.name = '${codebaseMemoryString(methodName)}'`,
+    `AND callee.qualified_name ENDS WITH '${codebaseMemoryString(qualifiedSuffix)}'`,
     'RETURN caller.file_path AS caller_file',
   ].join(' ');
   let out = '';
@@ -314,19 +336,40 @@ export function codebaseMemoryCallers(
     return null;
   }
   const files = new Set<string>();
-  let insideRows = false;
-  for (const line of out.split('\n')) {
-    if (line.startsWith('rows:')) {
-      insideRows = true;
-      continue;
-    }
-    if (line.startsWith('total:')) break;
-    if (insideRows && line.startsWith('  ')) {
-      const filePath = line.trim();
-      if (filePath) files.add(path.basename(filePath));
-    }
-  }
+  for (const filePath of codebaseMemoryRows(out)) files.add(path.basename(filePath));
   return { files: [...files], ms: Date.now() - t0 };
+}
+
+export function codebaseMemoryRelatedNodeQualifiedNames(
+  dir: string,
+  sourceName: string,
+  relation: string,
+  targetLabel: string,
+): { qualifiedNames: string[]; ms: number } | null {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(relation) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(targetLabel)) return null;
+  const bin = codebaseMemoryPath();
+  if (!bin) return null;
+  const t0 = Date.now();
+  try {
+    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir], { stdio: 'ignore', timeout: 120_000 });
+  } catch {
+    return null;
+  }
+  const query = [
+    `MATCH (source)-[:${relation}]->(target:${targetLabel})`,
+    `WHERE source.name = '${codebaseMemoryString(sourceName)}'`,
+    'RETURN target.qualified_name AS target',
+  ].join(' ');
+  try {
+    const output = execFileSync(
+      bin,
+      ['cli', 'query_graph', '--project', codebaseMemoryProject(dir), '--query', query],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    );
+    return { qualifiedNames: codebaseMemoryRows(output), ms: Date.now() - t0 };
+  } catch {
+    return null;
+  }
 }
 
 
@@ -353,7 +396,7 @@ export function codebaseMemoryNodesByLabel(
   } catch {
     return null;
   }
-  const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
+  const project = codebaseMemoryProject(dir);
   let out = '';
   try {
     out = execFileSync(bin, ['cli', 'search_graph', '--project', project, '--label', label, '--format', 'json', '--limit', '100000'], {
@@ -389,31 +432,24 @@ export function codebaseMemoryEdgeTypes(dir: string): { types: string[]; ms: num
   if (!bin) return null;
   const t0 = Date.now();
   try {
-    execFileSync(bin, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
+    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir], {
       stdio: 'ignore',
       timeout: 120_000,
     });
   } catch {
     return null;
   }
-  const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
+  const project = codebaseMemoryProject(dir);
   let out = '';
   try {
-    out = execFileSync(bin, ['cli', 'get_architecture', JSON.stringify({ project })], {
+    out = execFileSync(bin, ['cli', 'query_graph', '--project', project, '--query', 'MATCH ()-[relation]->() RETURN DISTINCT type(relation) AS edge_type'], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch {
     return null;
   }
-  const jsonLine = out.split('\n').find(l => l.trim().startsWith('{')) || '{}';
-  let arch: any;
-  try {
-    arch = JSON.parse(jsonLine);
-  } catch {
-    return null;
-  }
-  const types: string[] = (arch.edge_types || []).map((e: any) => String(e.type));
+  const types = codebaseMemoryRows(out);
   return { types, ms: Date.now() - t0 };
 }
 
