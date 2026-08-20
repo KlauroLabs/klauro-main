@@ -1,4 +1,5 @@
 import type { CASEntryPoint, CASNode, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { isInstalledToolName } from './installed-tool-registry';
 
 interface OrientationTask {
   task_type?: string;
@@ -13,26 +14,6 @@ interface ToolStep {
   required: boolean;
 }
 
-const INSTALLED_ORIENTATION_TOOLS = new Set([
-  'get_agent_start_context',
-  'get_agent_context',
-  'get_summary',
-  'get_product_map',
-  'get_conceptual_analysis',
-  'get_data_entities',
-  'get_semantic_coverage',
-  'search_nodes',
-  'get_coding_context',
-  'assess_change_risk',
-  'find_tests',
-  'get_user_journeys',
-  'get_codebase_idioms',
-  'get_behavioral_invariants',
-  'validate_codebase_idioms',
-  'validate_behavioral_invariants',
-  'run_answer_pack',
-]);
-
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 export function normalizeAgentToolSteps<T extends ToolStep>(steps: T[], task: OrientationTask): T[] {
@@ -43,7 +24,7 @@ export function normalizeAgentToolSteps<T extends ToolStep>(steps: T[], task: Or
     return true;
   });
   return (task.task_type === 'orient'
-    ? unique.filter(step => INSTALLED_ORIENTATION_TOOLS.has(step.tool))
+    ? unique.filter(step => isInstalledToolName(step.tool))
     : unique)
     .map((step, index) => ({ ...step, order: index + 1 }));
 }

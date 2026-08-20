@@ -439,7 +439,7 @@
       "name": "RISKABLE_NODE_TYPES"
     },
     {
-      "file": "apps/mcp-server/src/installed-client-server.ts",
+      "file": "apps/mcp-server/src/installed-tool-registry.ts",
       "name": "INSTALLED_TOOL_NAMES"
     },
     {

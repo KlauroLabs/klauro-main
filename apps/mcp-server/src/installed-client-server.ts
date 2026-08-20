@@ -14,30 +14,9 @@ import { getBuildIdentity } from './installed-client-runtime';
 import * as watcher from './watcher';
 import { summarizeUploadManifest } from './upload-manifest-summary';
 import { boundToolPayload } from './response-budget';
+import { isInstalledToolName } from './installed-tool-registry';
 export { summarizeUploadManifest } from './upload-manifest-summary';
-
-export const INSTALLED_TOOL_NAMES = [
-  'analyze_codebase', 'sync_codebase_remote', 'get_upload_manifest', 'resolve_agent_analysis',
-  'get_summary', 'get_product_map', 'get_conceptual_analysis', 'get_data_entities',
-  'get_semantic_coverage', 'get_agent_start_context', 'get_agent_tool_plan', 'get_agent_context',
-  'search_nodes', 'get_coding_context', 'assess_change_risk', 'find_tests', 'get_user_journeys',
-  'get_codebase_idioms', 'get_behavioral_invariants', 'validate_codebase_idioms',
-  'validate_behavioral_invariants', 'run_answer_pack', 'get_agent_revision_tracks', 'start_watch', 'stop_watch',
-  'get_watch_status', 'list_watches', 'poll_watch_changes',
-
-
-
-
-  'get_module_health',
-  'fab_claim_work', 'fab_extend', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work',
-  'check_conceptual_conflicts', 'plan_intent_merge', 'plan_parallel_work',
-
-
-
-
-
-  'list_workspaces', 'run_workspace_analysis', 'get_workspace_analysis',
-] as const;
+export { INSTALLED_TOOL_NAMES } from './installed-tool-registry';
 
 const symbolChangeSchema = z.object({
   symbol_id: z.string(),
@@ -336,7 +315,11 @@ export function createServer(): McpServer {
   const server = new McpServer({ name: 'klauro', version: getBuildIdentity().version }, {
     instructions: 'Klauro installed client. Upload source and diffs for hosted analysis, query hosted slices, and watch in-flight changes. No analysis, CAS construction at any level, graph construction, proposal materialization, or embeddings execute on this machine.',
   });
-  const register = withTransparentErrors(server.registerTool.bind(server) as any);
+  const registerWithErrors = withTransparentErrors(server.registerTool.bind(server) as any);
+  const register = ((name: string, ...args: any[]) => {
+    if (!isInstalledToolName(name)) throw new Error(`Installed MCP tool "${name}" is not declared in the canonical registry.`);
+    return registerWithErrors(name, ...args);
+  }) as typeof registerWithErrors;
 
   register('analyze_codebase', {
     description: 'Upload a filtered source snapshot for hosted Klauro analysis. No analyzer executes locally.',
