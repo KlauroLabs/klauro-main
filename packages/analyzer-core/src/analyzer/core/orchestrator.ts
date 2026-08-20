@@ -9277,13 +9277,31 @@ export class AnalyzerOrchestrator {
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const behaviorCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind === 'behavior-surface');
     const requiredBehaviorCandidateAreas = behaviorCandidateAreas.filter(candidate => candidate.category !== 'internal');
-    const promptCandidateAreas = [
-      ...behaviorCandidateAreas,
-      ...rankedCandidateAreas.filter(candidate => candidate.evidence_kind !== 'behavior-surface'),
-    ];
+    const structuralCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind !== 'behavior-surface');
+    const internalBehaviorCandidateAreas = behaviorCandidateAreas.filter(candidate => candidate.category === 'internal');
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
     const catalogEntityById = new Map(input.dataEntities.map(entity => [entity.id, entity]));
-    const candidateWindowSize = Math.min(64, Math.max(24, behaviorCandidateAreas.length, Math.ceil(rankedCandidateAreas.length / 6)));
+    const candidateWindowSize = Math.min(64, Math.max(24, requiredBehaviorCandidateAreas.length, Math.ceil(rankedCandidateAreas.length / 6)));
+    const remainingCandidateSlots = Math.max(0, candidateWindowSize - requiredBehaviorCandidateAreas.length);
+    const structuralCandidateLimit = Math.min(structuralCandidateAreas.length, Math.ceil(remainingCandidateSlots * 2 / 3));
+    const internalBehaviorCandidateLimit = Math.min(
+      internalBehaviorCandidateAreas.length,
+      remainingCandidateSlots - structuralCandidateLimit,
+    );
+    const unfilledCandidateSlots = remainingCandidateSlots - structuralCandidateLimit - internalBehaviorCandidateLimit;
+    const additionalStructuralCandidates = Math.min(
+      structuralCandidateAreas.length - structuralCandidateLimit,
+      unfilledCandidateSlots,
+    );
+    const additionalInternalBehaviorCandidates = Math.min(
+      internalBehaviorCandidateAreas.length - internalBehaviorCandidateLimit,
+      unfilledCandidateSlots - additionalStructuralCandidates,
+    );
+    const promptCandidateAreas = [
+      ...requiredBehaviorCandidateAreas.slice(0, candidateWindowSize),
+      ...structuralCandidateAreas.slice(0, structuralCandidateLimit + additionalStructuralCandidates),
+      ...internalBehaviorCandidateAreas.slice(0, internalBehaviorCandidateLimit + additionalInternalBehaviorCandidates),
+    ];
     const candidateAreas = promptCandidateAreas
       .map(capability => capability.name)
       .slice(0, candidateWindowSize);

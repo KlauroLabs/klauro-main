@@ -9055,6 +9055,68 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('keeps product-grounded candidates in the prompt when internal behavior families exceed the bounded window', async () => {
+    const captured: any[] = [];
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async (opts: any) => {
+      captured.push(opts);
+      return JSON.stringify({ capabilities: [] });
+    };
+    try {
+      const dataEntities = Array.from({ length: 36 }, (_, index) => ({
+        id: `entity_product_${index}`,
+        name: `ProductRecord${index}`,
+        kind: 'persisted-entity',
+      }));
+      const candidateCapabilities = dataEntities.map((entity, index) => ({
+        id: `product_${index}`,
+        name: `Review Product Record ${index}`,
+        category: 'core',
+        related_entities: [entity.id],
+        related_domains: [`product-${index}`],
+        operations: [{
+          entry_point_id: `product_entry_${index}`,
+          entry_point_type: 'http',
+          action: 'Review',
+          path_or_command: `/products/${index}`,
+        }],
+      }));
+      const behaviorSurfaces = Array.from({ length: 49 }, (_, index) => ({
+        id: `surface_${index}`,
+        name: `Internal Tool Surface ${index}`,
+        category: 'internal',
+        evidence_kind: 'behavior-surface',
+        evidence_examples: [`internal_operation_${index}`],
+        related_entities: [],
+        related_domains: [`internal-${index}`],
+        operations: [0, 1].map(operationIndex => ({
+          entry_point_id: `surface_entry_${index}_${operationIndex}`,
+          entry_point_type: 'message',
+          action: 'Handle',
+        })),
+        criticality_factors: [`2 message entry points form one cohesive behavior family ('internal-${index}')`],
+      }));
+
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'analysis-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-analysis', core_concepts: [] },
+        frameworks: [], userJourneys: [], dataEntities,
+        candidateCapabilities, behaviorSurfaces, externalServices: [],
+        flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+
+      const facts = captured[0]?.additionalContext?.facts;
+      const areas: any[] = facts?.candidate_route_areas || [];
+      expect(areas).toHaveLength(24);
+      expect(areas.filter(area => String(area.candidate_id).startsWith('product_'))).toHaveLength(16);
+      expect(areas.filter(area => String(area.candidate_id).startsWith('surface_'))).toHaveLength(8);
+      expect(facts?.required_behavior_candidate_ids).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('presents a real behavior surface by its true evidence weight and language-neutral operation outcomes', async () => {
     // A large, single-file, diversely-named registration surface — exactly
     // the shape buildBehaviorCapabilities collapses to one candidate whose
