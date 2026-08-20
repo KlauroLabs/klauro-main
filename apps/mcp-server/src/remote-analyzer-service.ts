@@ -114,11 +114,8 @@ interface RemoteAnalyzerServiceOptions {
   maxBodyBytes?: number;
   rateLimitPerMinute?: number;
   fabricRateLimitPerMinute?: number;
-  coordinationOnly?: boolean;
-
   deferAiEnrichment?: boolean;
 }
-
 interface RateLimitBucket {
   windowStart: number;
   count: number;
@@ -150,6 +147,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   ensurePrivateDataRoot(dataDir);
   removeLegacyCwdDataDir(dataDir);
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
+  const coordinationOnly = process.env.KLAURO_COORDINATION_ONLY === '1';
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);
   const buckets = new Map<string, RateLimitBucket>();
@@ -179,7 +177,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   };
 
   initSelfTelemetry();
-
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse): Promise<void> => {
     try {
       const requestUrl = new URL(request.url || '/', 'http://localhost');
@@ -210,10 +207,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-      if (options.coordinationOnly && !route.startsWith('/v1/coordination/')) {
-        writeJson(response, 404, { status: 'error', error: 'This service accepts coordination routes only.' });
-        return;
-      }
+      if (coordinationOnly && !route.startsWith('/v1/coordination/')) return writeJson(response, 404, { status: 'error', error: 'This service accepts coordination routes only.' });
 
       if ((request.method === 'GET' || request.method === 'HEAD') && (route === '/install' || route === '/install.sh')) {
         await serveInstallScript(response);

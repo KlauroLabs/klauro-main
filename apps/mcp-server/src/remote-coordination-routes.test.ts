@@ -36,10 +36,18 @@ async function bootService(options: { rateLimitPerMinute?: number; fabricRateLim
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-remote-coord-'));
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
+  const previousCoordinationOnly = process.env.KLAURO_COORDINATION_ONLY;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = path.join(root, 'remote-data');
   process.env.KLAURO_COORD_DIR = path.join(root, 'remote-data', 'coordination');
+  if (options.coordinationOnly) process.env.KLAURO_COORDINATION_ONLY = '1';
+  else delete process.env.KLAURO_COORDINATION_ONLY;
 
-  const server = createRemoteAnalyzerHttpServer({ dataDir: path.join(root, 'remote-data'), token: TOKEN, ...options });
+  const server = createRemoteAnalyzerHttpServer({
+    dataDir: path.join(root, 'remote-data'),
+    token: TOKEN,
+    rateLimitPerMinute: options.rateLimitPerMinute,
+    fabricRateLimitPerMinute: options.fabricRateLimitPerMinute,
+  });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as { port: number };
   return {
@@ -50,6 +58,8 @@ async function bootService(options: { rateLimitPerMinute?: number; fabricRateLim
       else process.env.KLAURO_REMOTE_ANALYZER_DATA = previousRemoteData;
       if (previousCoordDir === undefined) delete process.env.KLAURO_COORD_DIR;
       else process.env.KLAURO_COORD_DIR = previousCoordDir;
+      if (previousCoordinationOnly === undefined) delete process.env.KLAURO_COORDINATION_ONLY;
+      else process.env.KLAURO_COORDINATION_ONLY = previousCoordinationOnly;
     },
   };
 }

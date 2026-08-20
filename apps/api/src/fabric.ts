@@ -3,7 +3,7 @@ import { restrictProcessFileCreation } from '../../mcp-server/src/hosted-storage
 
 restrictProcessFileCreation();
 const port = Number(process.env.KLAURO_FABRIC_PORT || 8788);
-const server = createRemoteAnalyzerHttpServer({ coordinationOnly: true });
+const server = createRemoteAnalyzerHttpServer();
 
 server.listen(port, () => {
   process.stdout.write(`Klauro Fabric listening on http://0.0.0.0:${port}\n`);

@@ -64,6 +64,7 @@ services:
       - /opt/klauro/.env
     environment:
       KLAURO_SELF_TELEMETRY: "0"
+      KLAURO_COORDINATION_ONLY: "1"
       KLAURO_COORD_DIR: /data/coordination
       KLAURO_FABRIC_PORT: "8788"
       KLAURO_TS_PARSE_WORKERS: "1"

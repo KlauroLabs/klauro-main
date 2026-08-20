@@ -13,10 +13,10 @@ test('hosted Fabric has a resource-isolated process and proxy route', () => {
   const fabricService = compose.match(/\n  fabric:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]*:\n)/)?.[1] ?? '';
   assert.match(fabricService, /command: \["\/app\/node_modules\/\.bin\/tsx", "src\/fabric\.ts"\]/);
   assert.match(fabricService, /KLAURO_SELF_TELEMETRY: "0"/);
+  assert.match(fabricService, /KLAURO_COORDINATION_ONLY: "1"/);
   assert.match(fabricService, /mem_limit: 1536m/);
   assert.match(fabricService, /KLAURO_FABRIC_PORT: "8788"/);
   assert.doesNotMatch(entrypoint, /prewarmAnalysisWorker/);
-  assert.match(entrypoint, /coordinationOnly: true/);
 
   const mcpSite = caddy.indexOf('\nmcp.klauro.com {');
   const fabricRoute = caddy.indexOf('@fabric path /v1/coordination/*', mcpSite);
