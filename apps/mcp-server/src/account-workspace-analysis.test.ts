@@ -9,6 +9,9 @@ import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { AccountWorkspaceAnalysisScheduler, isCasComprehensionSettled, workspaceInputSignature } from './account-workspace-analysis';
+import { beginForegroundAnalysis } from './foreground-analysis';
+
+process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS = '1';
 
 function git(repo: string, args: string[]): void {
   execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
@@ -145,6 +148,34 @@ test('workspace scheduler close cancels pending and follow-up rebuilds', async (
     await inFlight;
     assert.equal(rebuilds, 1);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('isolated workspace rebuild waits for foreground analysis and coalesces notifications received while waiting', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-backpressure-'));
+  const previousInProcess = process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+  delete process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+  let runs = 0;
+  const scheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any, {
+    debounceMs: 10,
+    runIsolated: async () => { runs += 1; },
+  });
+  const endForeground = beginForegroundAnalysis();
+  try {
+    const rebuild = scheduler.rebuild('workspace-busy');
+    scheduler.notifyProjectAnalysisLanded('workspace-busy');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(runs, 0, 'workspace composition must not overlap foreground project analysis');
+    endForeground();
+    await rebuild;
+    await waitFor(async () => !scheduler.isPending('workspace-busy'));
+    assert.equal(runs, 1, 'the notification received while waiting is covered by the rebuild that starts afterward');
+  } finally {
+    endForeground();
+    scheduler.close();
+    if (previousInProcess === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+    else process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS = previousInProcess;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

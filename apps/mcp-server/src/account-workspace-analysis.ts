@@ -6,6 +6,8 @@ import { writeJsonAtomic } from './storage';
 import { enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import type { AccountStore } from './account-store';
+import { waitForForegroundAnalysisIdle } from './foreground-analysis';
+import { runAccountWorkspaceAnalysisWorker } from './account-workspace-analysis-process';
 
 
 
@@ -80,11 +82,14 @@ export class AccountWorkspaceAnalysisScheduler {
   constructor(
     private readonly dataDir: string,
     private readonly accounts: AccountStore,
-    options: { debounceMs?: number } = {},
+    options: { debounceMs?: number; runIsolated?: typeof runAccountWorkspaceAnalysisWorker } = {},
   ) {
     this.storeDir = path.join(dataDir, 'workspace-analyses');
     this.debounceMs = options.debounceMs ?? resolveDebounceMs();
+    this.runIsolated = options.runIsolated ?? runAccountWorkspaceAnalysisWorker;
   }
+
+  private readonly runIsolated: typeof runAccountWorkspaceAnalysisWorker;
 
 
 
@@ -187,6 +192,12 @@ export class AccountWorkspaceAnalysisScheduler {
   }
 
   private async doRebuild(workspaceId: string, force = false): Promise<void> {
+    if (process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS !== '1') {
+      await waitForForegroundAnalysisIdle();
+      this.dirty.delete(workspaceId);
+      await this.runIsolated(this.dataDir, workspaceId, force);
+      return;
+    }
     const workspace = await this.accounts.getWorkspaceById(workspaceId);
     const projects = await this.accounts.listProjectsForWorkspace(workspaceId);
     const inputs: CrossCodebaseInput[] = [];
