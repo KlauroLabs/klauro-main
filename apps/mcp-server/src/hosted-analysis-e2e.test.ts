@@ -214,10 +214,19 @@ test('a background analysis that crashed reports status=failed with the reason (
     await saveAnalysis(serverWorkspace, stored!);
 
     const stateRes = await request(port, 'GET', `/api/projects/${encodeURIComponent(project.id)}/analysis`, undefined, token);
-    const state = JSON.parse(stateRes.body) as { status?: string; analysis_error?: string; failed_layers?: string[] };
+    const state = JSON.parse(stateRes.body) as { status?: string; analysis_error?: string; failed_layers?: string[]; product_map?: unknown };
     assert.equal(state.status, 'failed', 'a crashed structural layer must report failed, NOT populating/ready');
     assert.match(String(state.analysis_error), /ReferenceError/, 'the failure reason must be surfaced to the caller');
     assert.deepEqual(state.failed_layers, ['L1'], 'the failed structural layer must be named (L5 is comprehension-only)');
+    assert.equal(state.product_map, undefined, 'failed analysis responses must not leak a partial product map to older installed clients');
+
+    const queryRes = await request(port, 'POST', `/api/projects/${encodeURIComponent(project.id)}/query`, {
+      tool: 'run_answer_pack', args: {},
+    }, token);
+    const query = JSON.parse(queryRes.body) as { status?: string; result?: { status?: string }; error?: string };
+    assert.equal(query.status, 'failed');
+    assert.equal(query.result?.status, 'failed', 'failed queries must remain serializable for published clients that unwrap result');
+    assert.match(String(query.error), /boom/);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;

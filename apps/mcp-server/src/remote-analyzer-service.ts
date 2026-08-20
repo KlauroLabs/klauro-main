@@ -2649,7 +2649,7 @@ async function handleAccountApi(
           project_id: project.id,
           analysis_id: project.analysis_id,
           summary,
-          product_map: productMap,
+          ...(unavailableComprehensionResponse(cas, { project_id: project.id, analysis_id: project.analysis_id }) ? {} : { product_map: productMap }),
         },
       };
     } catch (error) {

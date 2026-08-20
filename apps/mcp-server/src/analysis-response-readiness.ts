@@ -16,6 +16,13 @@ export interface AnalysisResponseIdentity {
   tool?: string;
 }
 
+export interface LegacyQueryFailureResult {
+  status: Exclude<AnalysisResponseReadiness['status'], 'ready'>;
+  error?: string;
+  failed_layers?: string[];
+  pending_layers?: string[];
+}
+
 export interface ConceptualCatalogPage {
   limit: number;
   offset: number;
@@ -71,11 +78,13 @@ export function unavailableComprehensionResponse(
   cas: CASOutput,
   identity: AnalysisResponseIdentity,
   tool?: string,
-): (AnalysisResponseIdentity & Omit<AnalysisResponseReadiness, 'ready'>) | undefined {
+): (AnalysisResponseIdentity & Omit<AnalysisResponseReadiness, 'ready'> & { result?: LegacyQueryFailureResult }) | undefined {
   const readiness = tool ? hostedQueryResponseReadiness(cas, tool) : comprehensionResponseReadiness(cas);
   if (readiness.ready) return undefined;
   const { ready: _ready, ...responseReadiness } = readiness;
-  return { ...identity, ...responseReadiness };
+  const response = { ...identity, ...responseReadiness };
+  const legacyResult = { ...responseReadiness, status: responseReadiness.status as LegacyQueryFailureResult['status'] };
+  return tool ? { ...response, result: legacyResult } : response;
 }
 
 export function parseConceptualCatalogPage(searchParams: URLSearchParams): ConceptualCatalogPage {

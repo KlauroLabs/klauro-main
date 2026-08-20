@@ -6,6 +6,7 @@ import {
   hostedQueryResponseReadiness,
   paginateConceptualCatalog,
   parseConceptualCatalogPage,
+  unavailableComprehensionResponse,
 } from './analysis-response-readiness';
 
 function cas(overrides: Record<string, unknown> = {}): CASOutput {
@@ -67,6 +68,30 @@ test('readiness gating is scoped to comprehension-dependent hosted queries', () 
   assert.equal(hostedQueryResponseReadiness(failed, 'run_answer_pack').status, 'failed');
   assert.equal(hostedQueryResponseReadiness(failed, 'get_product_map').status, 'failed');
   assert.equal(hostedQueryResponseReadiness(failed, 'search_nodes').status, 'ready');
+});
+
+test('failed hosted queries include a compact legacy-client result without partial analysis data', () => {
+  const failed = cas({
+    layers_ready: {
+      complete: false,
+      layers: [{ layer: 'L4', name: 'Flows', status: 'error', error: 'catalog partial', fields: ['flows'] }],
+    },
+    product_map: { capabilities: [{ id: 'must-not-leak' }] },
+  });
+  const response = unavailableComprehensionResponse(failed, {
+    project_id: 'project', analysis_id: 'analysis', tool: 'run_answer_pack',
+  }, 'run_answer_pack');
+  assert.deepEqual(response, {
+    status: 'failed',
+    project_id: 'project',
+    analysis_id: 'analysis',
+    tool: 'run_answer_pack',
+    failed_layers: ['L4'],
+    error: 'catalog partial',
+    result: { status: 'failed', failed_layers: ['L4'], error: 'catalog partial' },
+  });
+  assert.equal('product_map' in (response || {}), false);
+  assert.doesNotThrow(() => JSON.stringify(response?.result).length, 'published clients must receive a serializable result');
 });
 
 test('legacy CAS without a layer manifest remains queryable', () => {
