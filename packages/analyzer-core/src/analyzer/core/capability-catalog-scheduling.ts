@@ -63,6 +63,12 @@ export function scheduleRejectedCapabilityDescriptions(args: {
   );
 }
 
+export function capabilitiesWithoutDescriptionDisposition(
+  capabilities: SystemCapability[],
+): SystemCapability[] {
+  return capabilities.filter(capability => !capability.description_generation);
+}
+
 export function scheduleCapabilityCatalog<TTarget>(args: {
   outcome: Promise<CapabilityCatalogOutcome>;
   capabilities: SystemCapability[];

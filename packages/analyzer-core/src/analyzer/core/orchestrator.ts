@@ -160,7 +160,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -11295,7 +11295,7 @@ export class AnalyzerOrchestrator {
       }
     }
     if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
-      const skippedCapabilities = systemCapabilities.slice(elementLimit);
+      const skippedCapabilities = capabilitiesWithoutDescriptionDisposition(systemCapabilities.slice(elementLimit));
       const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById));
       this.recordElementDescriptionGenerationByIds(
         skippedTargets.map(target => target.id),

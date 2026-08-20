@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates } from './capability-catalog-scheduling';
+import {
+  capabilitiesWithoutDescriptionDisposition,
+  scheduleRejectedCapabilityDescriptions,
+  selectCapabilityCatalogPromptCandidates,
+} from './capability-catalog-scheduling';
 
 test('prompt selection represents every required entity family beyond the baseline window', () => {
   const productCandidates = Array.from({ length: 37 }, (_, index) => ({
@@ -64,4 +68,18 @@ test('description repair captures rejection immediately and skips empty work', a
     rejectedIds: new Set(),
     authorDescriptions: async () => undefined,
   }), undefined);
+});
+
+test('description scheduling preserves catalog outcomes beyond the element budget', () => {
+  const capabilities = [
+    { id: 'applied', description_generation: { status: 'ai_applied', attempted: true } },
+    { id: 'rejected', description_generation: { status: 'ai_rejected', attempted: true, reason: 'missing-description' } },
+    { id: 'undisposed' },
+  ] as any[];
+
+  assert.deepEqual(
+    capabilitiesWithoutDescriptionDisposition(capabilities).map(capability => capability.id),
+    ['undisposed'],
+  );
+  assert.equal(capabilities[1].description_generation.status, 'ai_rejected');
 });
