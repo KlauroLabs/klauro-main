@@ -52,7 +52,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { extractStructure } from '../../../../packages/analyzer-core/src/analyzer/core/generic-tree-sitter-analyzer';
-import { codebaseMemoryPath } from './real-camp-arms';
+import { codebaseMemoryPath, startCodebaseMemoryDaemon } from './real-camp-arms';
 import { TOP_LANGS } from './camp-a-langs';
 
 
@@ -238,23 +238,14 @@ interface CbmStructuralCounts {
 }
 
 
-function cbmCli(bin: string, tool: string, args: object): { json: any; raw: string } | null {
-  let out = '';
-  try {
-    out = execFileSync(bin, ['cli', tool, JSON.stringify(args)], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch {
-    return null;
-  }
+function cbmCli(bin: string, tool: string, args: object): { json: any; raw: string } {
+  const out = execFileSync(bin, ['cli', tool, JSON.stringify(args)], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
   const line = out.split('\n').find(l => l.trim().startsWith('{')) || '';
-  if (!line) return null;
-  try {
-    return { json: JSON.parse(line), raw: line };
-  } catch {
-    return null;
-  }
+  if (!line) throw new Error(`codebase-memory ${tool} returned no JSON result`);
+  return { json: JSON.parse(line), raw: line };
 }
 
 
@@ -271,45 +262,26 @@ function cbmCli(bin: string, tool: string, args: object): { json: any; raw: stri
 
 
 function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
-  const empty: CbmStructuralCounts = {
-    functions: 0, classes: 0, calls: 0, imports: 0,
-    fnNames: new Set(), classNames: new Set(), schemaRaw: '', available: false,
-  };
-
-
-  let indexNodeTotal = 0;
-  {
-    let idxOut = '';
-    try {
-      idxOut = execFileSync(bin, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
-        encoding: 'utf8',
-        timeout: 120_000,
-      });
-    } catch {
-      return empty;
-    }
-    const line = idxOut.split('\n').find(l => l.trim().startsWith('{')) || '';
-    if (line) {
-      try { indexNodeTotal = Number(JSON.parse(line).nodes) || 0; } catch {   }
-    }
-  }
-
   const project = cbmProjectId(dir);
+  const idxOut = execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  const indexLine = idxOut.split('\n').find(l => l.trim().startsWith('{')) || '';
+  const indexNodeTotal = indexLine ? Number(JSON.parse(indexLine).nodes) || 0 : 0;
 
 
   const schemaRes = cbmCli(bin, 'get_graph_schema', { project });
   let schemaFns = 0, schemaCls = 0, calls = 0, imports = 0, schemaRaw = '';
-  if (schemaRes) {
-    schemaRaw = schemaRes.raw;
-    const labels: Array<{ label: string; count: number }> = schemaRes.json.node_labels || [];
-    const edges: Array<{ type: string; count: number }> = schemaRes.json.edge_types || [];
-    const lc = (n: string) => labels.filter(l => l.label === n).reduce((a, b) => a + (b.count || 0), 0);
-    const ec = (n: string) => edges.filter(e => e.type === n).reduce((a, b) => a + (b.count || 0), 0);
-    schemaFns = lc('Function') + lc('Method');
-    schemaCls = lc('Class') + lc('Struct') + lc('Interface');
-    calls = ec('CALLS');
-    imports = ec('IMPORTS');
-  }
+  schemaRaw = schemaRes.raw;
+  const labels: Array<{ label: string; count: number }> = schemaRes.json.node_labels || [];
+  const edges: Array<{ type: string; count: number }> = schemaRes.json.edge_types || [];
+  const lc = (n: string) => labels.filter(l => l.label === n).reduce((a, b) => a + (b.count || 0), 0);
+  const ec = (n: string) => edges.filter(e => e.type === n).reduce((a, b) => a + (b.count || 0), 0);
+  schemaFns = lc('Function') + lc('Method');
+  schemaCls = lc('Class') + lc('Struct') + lc('Interface');
+  calls = ec('CALLS');
+  imports = ec('IMPORTS');
 
 
 
@@ -322,17 +294,15 @@ function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
   const classNames = new Set<string>();
   const projPrefix = `${project}.`;
   const sgRes = cbmCli(bin, 'search_graph', { project, node_type: 'Function' });
-  if (sgRes) {
-    const results: Array<{ label?: string; name?: string; qualified_name?: string }> =
-      sgRes.json.results || [];
-    for (const r of results) {
-      const q = r.qualified_name || '';
-      const nm = r.name || '';
-      if (!nm || !q.startsWith(projPrefix)) continue;
-      if (r.label === 'Function' || r.label === 'Method') fnNames.add(nm);
-      else if (r.label === 'Class' || r.label === 'Struct' || r.label === 'Interface')
-        classNames.add(nm);
-    }
+  const results: Array<{ label?: string; name?: string; qualified_name?: string }> =
+    sgRes.json.results || [];
+  for (const r of results) {
+    const q = r.qualified_name || '';
+    const nm = r.name || '';
+    if (!nm || !q.startsWith(projPrefix)) continue;
+    if (r.label === 'Function' || r.label === 'Method') fnNames.add(nm);
+    else if (r.label === 'Class' || r.label === 'Struct' || r.label === 'Interface')
+      classNames.add(nm);
   }
 
 
@@ -484,6 +454,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
   }
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-camp-b-'));
+  const daemon = startCodebaseMemoryDaemon(bin);
   const rows: CampBStructuralRow[] = [];
 
   try {
@@ -537,6 +508,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
       rows.push({ lang, klauro, cbm, verdict, note });
     }
   } finally {
+    daemon?.close();
     try {
       fs.removeSync(root);
     } catch {

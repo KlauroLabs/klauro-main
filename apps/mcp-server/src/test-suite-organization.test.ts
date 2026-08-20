@@ -104,6 +104,20 @@ test('summary parsing accepts both node:test reporter prefixes', async () => {
   assert.deepEqual(parseTapSummary(info), expected);
 });
 
+test('summary parsing counts timed-out TAP assertions even when node reports fail zero', async () => {
+  const { parseTapSummary } = await import(path.resolve('scripts/test-suite.mjs')) as any;
+  const output = [
+    'not ok 1 - slow external proof',
+    "  failureType: 'testTimeoutFailure'",
+    '# tests 1',
+    '# pass 0',
+    '# fail 0',
+    '# skipped 0',
+  ].join('\n');
+
+  assert.deepEqual(parseTapSummary(output), { tests: 1, passed: 0, failed: 1, skipped: 0 });
+});
+
 test('per-file temp roots stay short enough for a unix domain socket', async () => {
   const { shortTempBase } = await import(path.resolve('scripts/test-suite.mjs')) as any;
 

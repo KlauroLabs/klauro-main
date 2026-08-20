@@ -16,7 +16,7 @@
 
 
 
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as os from 'os';
@@ -267,6 +267,35 @@ export function codebaseMemoryPath(): string | null {
     }
   }
   return null;
+}
+
+export interface CodebaseMemoryDaemonLease {
+  close(): void;
+}
+
+export function startCodebaseMemoryDaemon(bin = codebaseMemoryPath()): CodebaseMemoryDaemonLease | null {
+  if (!bin) return null;
+  const result = spawnSync(bin, ['daemon', 'start'], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`codebase-memory daemon start failed with status ${result.status}: ${result.stderr || result.stdout}`);
+  }
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  const owned = /daemon:\s+started\b/.test(output);
+  let closed = false;
+  return {
+    close() {
+      if (closed || !owned) return;
+      closed = true;
+      execFileSync(bin, ['daemon', 'stop'], {
+        stdio: 'ignore',
+        timeout: 30_000,
+      });
+    },
+  };
 }
 
 function codebaseMemoryProject(dir: string): string {

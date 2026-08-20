@@ -279,7 +279,14 @@ export function parseTapSummary(output) {
 
 
   const value = label => Number(output.match(new RegExp(`^(?:#|\\u2139) ${label} (\\d+)$`, 'm'))?.[1] || 0);
-  return { tests: value('tests'), passed: value('pass'), failed: value('fail'), skipped: value('skipped') };
+  const explicitFailures = value('fail');
+  const failedAssertions = (output.match(/^not ok \d+\b/gm) || []).length;
+  return {
+    tests: value('tests'),
+    passed: value('pass'),
+    failed: Math.max(explicitFailures, failedAssertions),
+    skipped: value('skipped'),
+  };
 }
 
 async function loadPlanCache() {

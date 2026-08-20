@@ -45,7 +45,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { analyzeForBench } from './product-analysis';
 import { getRouteTable } from '../query';
-import { codebaseMemoryPath } from './real-camp-arms';
+import { codebaseMemoryPath, startCodebaseMemoryDaemon } from './real-camp-arms';
 
 interface RouteTruth {
   task: 'route-facts';
@@ -134,44 +134,25 @@ async function klauroRoutes(dir: string): Promise<{ routes: string[]; bytes: num
 
 
 
-function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: string } {
-  const bin = codebaseMemoryPath();
-  if (!bin) return { routes: [], bytes: 0, source: 'none' };
-
-  let project = '';
-  try {
-    const idx = execFileSync(bin, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
-      encoding: 'utf8',
-      timeout: 120_000,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    const line = idx.split('\n').find(l => l.trim().startsWith('{') && l.includes('"project"'));
-    if (line) project = JSON.parse(line).project;
-  } catch {
-    return { routes: [], bytes: 0, source: 'none' };
-  }
-  if (!project) {
-
-    project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
-  }
+function cbmRoutes(bin: string, dir: string): { routes: string[]; bytes: number; source: string } {
+  const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
+  execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
+    stdio: 'ignore',
+    timeout: 120_000,
+  });
 
 
   let best: { routes: string[]; bytes: number; source: string } = { routes: [], bytes: 0, source: 'none' };
 
   const trySearch = (params: Record<string, unknown>, src: string) => {
-    let out = '';
-    try {
-      out = execFileSync(bin, ['cli', 'search_graph', JSON.stringify({ project, ...params })], {
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: 60_000,
-      });
-    } catch {
-      return;
-    }
-    const jsonLine = out.split('\n').find(l => l.trim().startsWith('{')) || '{}';
-    let parsed: any;
-    try { parsed = JSON.parse(jsonLine); } catch { return; }
+    const out = execFileSync(bin, ['cli', 'search_graph', JSON.stringify({ project, ...params })], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 60_000,
+    });
+    const jsonLine = out.split('\n').find(l => l.trim().startsWith('{'));
+    if (!jsonLine) throw new Error(`codebase-memory ${src} returned no JSON result for ${project}`);
+    const parsed: any = JSON.parse(jsonLine);
     const results: any[] = parsed.results || [];
     const bytes = Buffer.byteLength(jsonLine, 'utf8');
     const routes: string[] = [];
@@ -199,27 +180,24 @@ function cbmRoutes(dir: string): { routes: string[]; bytes: number; source: stri
 
 
 
-  try {
-    const arch = execFileSync(bin, ['cli', 'get_architecture', JSON.stringify({ project })], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 60_000,
-    });
-    const jsonLine = arch.split('\n').find(l => l.trim().startsWith('{')) || '{}';
-    const parsed: any = JSON.parse(jsonLine);
-    const section: any[] = parsed.routes || parsed.endpoints || parsed.http || parsed.http_routes || [];
-    const routes: string[] = [];
-    for (const r of section) {
-      const method = String(r.method || r.verb || '').toUpperCase();
-      const p = String(r.path || r.name || '');
-      if (method && p) routes.push(`${method} ${canonicalizePath(p)}`);
-    }
-    const uniq = [...new Set(routes)];
-    if (uniq.length > best.routes.length) {
-      best = { routes: uniq, bytes: Buffer.byteLength(jsonLine, 'utf8'), source: 'get_architecture' };
-    }
-  } catch {
-
+  const arch = execFileSync(bin, ['cli', 'get_architecture', JSON.stringify({ project })], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  const jsonLine = arch.split('\n').find(l => l.trim().startsWith('{'));
+  if (!jsonLine) throw new Error(`codebase-memory get_architecture returned no JSON result for ${project}`);
+  const parsed: any = JSON.parse(jsonLine);
+  const section: any[] = parsed.routes || parsed.endpoints || parsed.http || parsed.http_routes || [];
+  const routes: string[] = [];
+  for (const r of section) {
+    const method = String(r.method || r.verb || '').toUpperCase();
+    const p = String(r.path || r.name || '');
+    if (method && p) routes.push(`${method} ${canonicalizePath(p)}`);
+  }
+  const uniq = [...new Set(routes)];
+  if (uniq.length > best.routes.length) {
+    best = { routes: uniq, bytes: Buffer.byteLength(jsonLine, 'utf8'), source: 'get_architecture' };
   }
 
   return best;
@@ -241,24 +219,27 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
   if (cached) return cached;
 
   const fixturesRoot = path.join(__dirname, '..', '..', 'fixtures', 'framework-bench');
-  const binAvailable = codebaseMemoryPath() != null;
+  const bin = codebaseMemoryPath();
+  const binAvailable = bin != null;
+  const daemon = bin ? startCodebaseMemoryDaemon(bin) : null;
 
   const results: CampCRouteFrameworkResult[] = [];
-  for (const fxName of FW_DIRS) {
-    const dir = path.join(fixturesRoot, fxName);
-    let truth: RouteTruth;
-    try {
-      truth = await fs.readJson(path.join(dir, 'truth.json'));
-    } catch {
-      continue;
-    }
-    const truthRoutes = [...new Set(truth.true_routes)];
+  try {
+    for (const fxName of FW_DIRS) {
+      const dir = path.join(fixturesRoot, fxName);
+      let truth: RouteTruth;
+      try {
+        truth = await fs.readJson(path.join(dir, 'truth.json'));
+      } catch {
+        continue;
+      }
+      const truthRoutes = [...new Set(truth.true_routes)];
 
-    const kl = await klauroRoutes(dir);
-    const klauroF1 = f1(kl.routes, truthRoutes);
+      const kl = await klauroRoutes(dir);
+      const klauroF1 = f1(kl.routes, truthRoutes);
 
-    const cbm = binAvailable ? cbmRoutes(dir) : { routes: [], bytes: 0, source: 'none' };
-    const cbmF1 = f1(cbm.routes, truthRoutes);
+      const cbm = bin ? cbmRoutes(bin, dir) : { routes: [], bytes: 0, source: 'none' };
+      const cbmF1 = f1(cbm.routes, truthRoutes);
 
     let verdict: RouteVerdict;
     if (cbmF1 > klauroF1 + 1e-9) verdict = 'loss';
@@ -284,20 +265,23 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
     }
     const tokenSaving = cbmTokens > 0 ? (cbmTokens - klauroTokens) / cbmTokens : 0;
 
-    results.push({
-      fixture: fxName,
-      framework: fxName.replace(/-routes$|-groups$|-subrouter$/, '') || fxName,
-      truthRoutes,
-      klauroRoutes: kl.routes,
-      klauroF1,
-      klauroTokens,
-      cbmRoutes: cbm.routes,
-      cbmF1,
-      cbmTokens,
-      cbmSource: cbm.routes.length > 0 ? cbm.source : 'none',
-      verdict,
-      tokenSaving,
-    });
+      results.push({
+        fixture: fxName,
+        framework: fxName.replace(/-routes$|-groups$|-subrouter$/, '') || fxName,
+        truthRoutes,
+        klauroRoutes: kl.routes,
+        klauroF1,
+        klauroTokens,
+        cbmRoutes: cbm.routes,
+        cbmF1,
+        cbmTokens,
+        cbmSource: cbm.routes.length > 0 ? cbm.source : 'none',
+        verdict,
+        tokenSaving,
+      });
+    }
+  } finally {
+    daemon?.close();
   }
 
   const frameworks = results.length;
