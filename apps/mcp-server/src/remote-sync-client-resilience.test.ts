@@ -347,6 +347,60 @@ test('segmented CAS retrieval retries a dropped section response', async (t) => 
   assert.equal(sectionRequests, 2);
 });
 
+test('structural readiness retrieves CAS when only AI comprehension failed', async (t) => {
+  const analysisId = 'structural-readiness';
+  const server = http.createServer((req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'failed',
+        analysis_id: analysisId,
+        failed_layers: [{ layer: 'L5', error: 'AI comprehension is disabled' }],
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        manifest_version: 1,
+        cas_version: '3.0.0',
+        analysis_id: analysisId,
+        analysis_timestamp: new Date().toISOString(),
+        sections: [{ name: 'identity', fields: ['system'] }],
+        logical_fields: ['system'],
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/sections/identity`) {
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({ system: { name: 'structurally-ready' } }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+  const serverUrl = `http://127.0.0.1:${address.port}`;
+
+  await assert.rejects(
+    waitForRemoteAnalysis(serverUrl, analysisId, undefined, undefined, 30_000, ['identity']),
+    /L5: AI comprehension is disabled/,
+  );
+  const cas = await waitForRemoteAnalysis(
+    serverUrl,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    ['identity'],
+    'structural',
+  );
+
+  assert.equal(cas.system.name, 'structurally-ready');
+});
+
 test('whole CAS retrieval retries a dropped export response', async (t) => {
   const analysisId = 'whole-export-resilience';
   const expected = { system: { name: 'resilient-whole-export' }, nodes: [], edges: [] };

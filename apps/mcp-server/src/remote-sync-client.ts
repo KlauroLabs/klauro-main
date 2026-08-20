@@ -275,6 +275,7 @@ export async function waitForRemoteAnalysis(
   expectedRevision?: number,
   completionTimeoutMs?: number,
   requestedSections?: readonly CasSectionName[],
+  readinessRequirement: 'complete' | 'structural' = 'complete',
 ): Promise<RemoteAnalyzeResponse['cas']> {
   const token = connectorToken(explicitToken, serverUrl);
   const headers: Record<string, string> = {};
@@ -322,14 +323,18 @@ export async function waitForRemoteAnalysis(
       });
       lastStatusTimingAt = Date.now();
     }
-    if (lastStatus === 'failed') {
+    const structuralResultAvailable = lastStatus === 'failed'
+      && readinessRequirement === 'structural'
+      && Boolean(statusPayload.failed_layers?.length)
+      && statusPayload.failed_layers!.every(layer => layer.layer === 'L5');
+    if (lastStatus === 'failed' && !structuralResultAvailable) {
       const detail = statusPayload.failed_layers?.map(layer => `${layer.layer || 'unknown'}: ${layer.error || 'failed'}`).join(', ')
         || statusPayload.last_attempt?.error
         || statusPayload.last_attempt?.reason
         || 'unknown analysis failure';
       throw new Error(`Remote analysis ${analysisId} failed: ${detail}`);
     }
-    if (lastStatus === 'ready') {
+    if (lastStatus === 'ready' || structuralResultAvailable) {
       if (expectedRevision !== undefined && (!statusPayload.analysis_revision || statusPayload.analysis_revision < expectedRevision)) {
         lastStatus = `waiting for revision ${expectedRevision}`;
         await sleep(100);

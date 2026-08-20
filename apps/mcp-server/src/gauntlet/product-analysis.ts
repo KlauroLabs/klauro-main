@@ -365,6 +365,7 @@ async function waitForBenchAnalysis(serverUrl: string, response: any): Promise<C
     response.analysis_revision,
     benchAnalysisTimeoutMs(),
     CAS_SECTION_NAMES.filter(section => section !== 'tree'),
+    'structural',
   ) as CASOutput;
 }
 
