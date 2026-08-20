@@ -334,7 +334,7 @@ test('non-path exit targets are ignored', () => {
   assert.equal(result.links.filter(link => link.type === 'api').length, 0);
 });
 
-test('shared entity vocabulary links repositories through shared-schema links', () => {
+test('shared entity structure reinforces repositories already connected by a concrete contract', () => {
   const frontend = frontendCas({
     nodes: [
       {
@@ -350,7 +350,14 @@ test('shared entity vocabulary links repositories through shared-schema links', 
         source: { file: 'src/app/models/user.model.ts', line: 1 },
       },
     ],
-    exit_points: [],
+    exit_points: [{
+      id: 'exit-thing-list',
+      type: 'api',
+      name: 'GET /api/things',
+      source_node: 'node-frontend-thing-model',
+      target: { endpoint: '/api/things' },
+      operation: { method: 'GET' },
+    }],
     entities: [
       {
         id: 'entity-thing',
@@ -391,6 +398,14 @@ test('shared entity vocabulary links repositories through shared-schema links', 
       },
       { id: 'entity-user', name: 'User', lifecycle: {} },
     ],
+    entry_points: [{
+      id: 'entry-thing-list',
+      type: 'http',
+      name: 'GET /api/things',
+      source_node: 'node-backend-thing-entity',
+      trigger: { method: 'GET', path: '/api/things' },
+      handler: { node_id: 'node-backend-thing-entity', method_name: 'list', file: 'src/Entity/Thing.php', line: 8 },
+    }],
   });
   const result = buildCrossRepositoryLinks([repo('things-frontend', frontend), repo('things-backend', backend)]);
   const sharedSchema = result.links.filter(link => link.type === 'shared-schema');

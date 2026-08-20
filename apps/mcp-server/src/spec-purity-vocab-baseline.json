@@ -483,10 +483,6 @@
       "name": "LAYER_DEFINITIONS"
     },
     {
-      "file": "apps/mcp-server/src/product.ts",
-      "name": "GENERIC_ENTITY_NAMES"
-    },
-    {
       "file": "apps/mcp-server/src/query.ts",
       "name": "SEARCH_STOPWORDS"
     },
@@ -1193,10 +1189,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-analyzer.ts",
       "name": "callbacks"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-analyzer.ts",
-      "name": "RESTFUL_ACTIONS"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/react-native-analyzer.ts",

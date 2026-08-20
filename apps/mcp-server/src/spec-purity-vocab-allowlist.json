@@ -95,6 +95,36 @@
       "name": "JAVASCRIPT_TEST_APIS",
       "category": "closed-technical-taxonomy",
       "reason": "Established JavaScript test declaration APIs identify syntax-backed test definitions and never infer product purpose or capability meaning."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-route-parser.ts",
+      "name": "RESTFUL_ACTIONS",
+      "category": "closed-framework-taxonomy",
+      "reason": "Rails resource routing defines this finite REST action, HTTP method, and path expansion table; it emits framework-declared routes and never infers product meaning."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-route-parser.ts",
+      "name": "SINGULAR_ACTIONS",
+      "category": "closed-framework-taxonomy",
+      "reason": "Rails singular-resource routing defines this finite REST action, HTTP method, and path expansion table; it emits framework-declared routes and never infers product meaning."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/languages/java-spring-data.ts",
+      "name": "INHERITED_OPERATIONS",
+      "category": "closed-framework-taxonomy",
+      "reason": "Spring Data repository interfaces expose this finite inherited operation surface; the list is gated by an observed repository base type and emits only framework API facts."
+    },
+    {
+      "file": "apps/mcp-server/src/test-framework-detection.ts",
+      "name": "TEST_FRAMEWORK_DETECTION_FILES",
+      "category": "closed-technical-taxonomy",
+      "reason": "Supported test-runner configuration names and language test filename conventions select test analyzers and never infer product purpose."
+    },
+    {
+      "file": "apps/mcp-server/src/new-user-e2e.ts",
+      "name": "paths",
+      "category": "closed-technical-taxonomy",
+      "reason": "Supported source extensions summarize file paths returned by the installed MCP workflow and do not influence analysis or product inference."
     }
   ]
 }

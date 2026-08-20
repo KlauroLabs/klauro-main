@@ -1,17 +1,6 @@
-import * as path from 'path';
 import type { CASNode, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
-const GENERIC_ENTITY_NAMES = new Set([
-  'account', 'base', 'client', 'config', 'configuration', 'data', 'entity', 'error',
-  'event', 'item', 'model', 'profile', 'request', 'response', 'result', 'service',
-  'status', 'test', 'type', 'user',
-]);
-
 const ENTITY_NODE_TYPES = new Set(['class', 'interface', 'type', 'enum', 'model', 'entity', 'dto']);
-const GENERIC_REPOSITORY_IDENTITY_PARTS = new Set([
-  'api', 'app', 'backend', 'client', 'code', 'frontend', 'library', 'package', 'project',
-  'repo', 'server', 'service', 'source', 'src', 'ui', 'web', 'workspace',
-]);
 
 export interface EntityContractEvidence {
   name: string;
@@ -23,13 +12,11 @@ export function entityVocabulary(cas: CASOutput): EntityContractEvidence[] {
   const names = new Map<string, string>();
   const fieldsByName = new Map<string, Map<string, string>>();
   for (const entity of cas.entities || []) {
-    if (isGenericEntityName(entity.name)) continue;
     const key = entity.name.toLowerCase();
     names.set(key, entity.name);
     fieldsByName.set(key, entityFields(entity.fields || []));
   }
   for (const entity of cas.database_schema?.entities || []) {
-    if (isGenericEntityName(entity.name)) continue;
     const key = entity.name.toLowerCase();
     if (!names.has(key)) names.set(key, entity.name);
     const fields = fieldsByName.get(key) || new Map<string, string>();
@@ -80,20 +67,6 @@ export function isNonRuntimeSourceFile(file: string): boolean {
     file.endsWith('.test.tsx');
 }
 
-export function repositoryAffinityScore(
-  consumer: { path: string; name: string },
-  producer: { path: string; name: string }
-): number {
-  const consumerNameParts = repositoryNameIdentityParts(consumer.name);
-  const producerNameParts = repositoryNameIdentityParts(producer.name);
-  if (consumerNameParts.some(part => producerNameParts.includes(part))) return 0.1;
-
-  const consumerPathParts = repositoryPathIdentityParts(consumer);
-  const producerPathParts = repositoryPathIdentityParts(producer);
-  const sharedPathParts = consumerPathParts.filter(part => producerPathParts.includes(part));
-  return sharedPathParts.length >= 2 ? 0.08 : 0;
-}
-
 function entityFields(fields: Array<{ name: string; type: string }>): Map<string, string> {
   return new Map(fields.map(field => [normalizeEntityFieldName(field.name), normalizeEntityFieldType(field.type)]));
 }
@@ -104,36 +77,4 @@ function normalizeEntityFieldName(value: string): string {
 
 function normalizeEntityFieldType(value: string): string {
   return value.toLowerCase().replace(/[?\[\]|<>]/g, '').replace(/[^a-z0-9]+/g, '');
-}
-
-function isGenericEntityName(name: string): boolean {
-  const normalized = name.toLowerCase();
-  return normalized.length < 4 || GENERIC_ENTITY_NAMES.has(normalized);
-}
-
-function repositoryNameIdentityParts(name: string): string[] {
-  return normalizeIdentity(name)
-    .split('-')
-    .filter(part => part.length > 2 && !GENERIC_REPOSITORY_IDENTITY_PARTS.has(part));
-}
-
-function repositoryPathIdentityParts(repo: { path: string; name: string }): string[] {
-  const homeName = path.basename(process.env.HOME || '').toLowerCase();
-  const userName = (process.env.USER || '').toLowerCase();
-  const nameParts = new Set(repositoryNameIdentityParts(repo.name));
-  const ignored = new Set([
-    'users', 'dev', 'personal', 'gate', 'tmp', 'var', 'opt', 'mnt', 'repo', 'repos',
-    'source', 'src', 'code', 'project', 'projects', 'workspace', 'workspaces',
-    'proof-corpus', 'proof-of-concept', 'backend', 'frontend', homeName, userName,
-  ].filter(Boolean));
-  return [...new Set(repo.path.split(/[\\/]/).slice(-4).map(normalizeIdentity).filter(part =>
-    part.length > 2 &&
-    !ignored.has(part) &&
-    !GENERIC_REPOSITORY_IDENTITY_PARTS.has(part) &&
-    !nameParts.has(part)
-  ))];
-}
-
-function normalizeIdentity(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }

@@ -34,7 +34,6 @@ import {
   entityTypeNodes,
   entityVocabulary,
   isNonRuntimeSourceFile,
-  repositoryAffinityScore,
   type EntityContractEvidence,
 } from './cross-repository-evidence';
 
@@ -926,12 +925,11 @@ function detectApiLinks(
       const methodCompatible = !exitMethod || !entryMethod || exitMethod === 'FETCH' || entryMethod === 'ALL' || exitMethod === entryMethod;
       if (!methodCompatible) continue;
 
-      const affinityScore = repositoryAffinityScore(consumer, producer);
-      if (affinityScore === 0 && isGenericApiRoute(exitRoute, entryRoute)) continue;
+      if (!hasConcreteRouteAgreement(exitRoute, entryRoute)) continue;
 
       const routeScore = routeMatchScore(exitRoute, entryRoute);
       const methodScore = !exitMethod || exitMethod === 'FETCH' || !entryMethod || entryMethod === 'ALL' ? 0.86 : 1;
-      const confidenceValue = Math.min(0.98, Math.round((routeScore * methodScore + affinityScore) * 100) / 100);
+      const confidenceValue = Math.min(0.98, Math.round(routeScore * methodScore * 100) / 100);
 
       links.push({
         id: crossRepoId('api', consumer.name, exitPoint.id, producer.name, entryPoint.id),
@@ -950,7 +948,6 @@ function detectApiLinks(
           evidence: [
             { kind: 'graph', source: `${consumer.name}:${exitPoint.id}`, confidence: 0.85 },
             { kind: 'route', source: `${producer.name}:${entryPoint.id}`, file: entryPoint.handler?.file, line: entryPoint.handler?.line, confidence: 0.9 },
-            ...(affinityScore > 0 ? [{ kind: 'naming' as const, source: `${consumer.name}<->${producer.name}`, confidence: affinityScore }] : []),
           ],
         },
       });
@@ -1008,33 +1005,9 @@ function isExternalAbsoluteEndpoint(value: string): boolean {
   }
 }
 
-function isGenericApiRoute(...routes: string[]): boolean {
-  const generic = new Set([
-    'auth',
-    'login',
-    'logout',
-    'register',
-    'signup',
-    'signin',
-    'users',
-    'user',
-    'profile',
-    'account',
-    'accounts',
-    'health',
-    'status',
-    'me',
-  ]);
-
-  return routes.some(route => {
-    const topics = route.split('/')
-      .filter(Boolean)
-      .map(part => part.toLowerCase())
-      .filter(part => !part.startsWith(':') && !/^v\d+$/.test(part) && part !== 'api');
-    if (topics.length === 0) return true;
-    if (topics.length > 2) return false;
-    return topics.every(topic => generic.has(topic));
-  });
+function hasConcreteRouteAgreement(left: string, right: string): boolean {
+  const leftLiterals = new Set(routeSegments(left).filter(part => part !== ':param'));
+  return routeSegments(right).some(part => part !== ':param' && leftLiterals.has(part));
 }
 
 function detectSharedDatabaseLinks(
@@ -1185,7 +1158,7 @@ function detectSharedSchemaLinks(
   right: { path: string; name: string; cas: CASOutput },
   hasDirectContract: boolean
 ): CASCrossRepositoryLink[] {
-  if (!hasDirectContract && repositoryAffinityScore(left, right) < 0.1) return [];
+  if (!hasDirectContract) return [];
   const links: CASCrossRepositoryLink[] = [];
   const leftSchemas = schemaContracts(left.cas);
   const rightSchemas = schemaContracts(right.cas);
@@ -1300,7 +1273,7 @@ function detectSharedEntityLinks(
   right: { path: string; name: string; cas: CASOutput },
   hasDirectContract: boolean
 ): CASCrossRepositoryLink[] {
-  if (!hasDirectContract && repositoryAffinityScore(left, right) < 0.1) return [];
+  if (!hasDirectContract) return [];
   const links: CASCrossRepositoryLink[] = [];
   const leftEntities = entityVocabulary(left.cas);
   const rightEntities = entityVocabulary(right.cas);
@@ -1320,7 +1293,7 @@ function detectSharedEntityLinks(
     if (seen.has(key)) return;
     if (!entityShapesCompatible(sourceEntity, targetEntity)) return;
     seen.add(key);
-    const confidenceValue = hasDirectContract ? 0.9 : 0.84;
+    const confidenceValue = 0.9;
     links.push({
       id: crossRepoId('shared-schema', source.name, `entity-${entityName}`, target.name, `entity-${entityName}`),
       type: 'shared-schema',
