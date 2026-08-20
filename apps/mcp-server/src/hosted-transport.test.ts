@@ -7,6 +7,7 @@ import {
   describeHttpFailure,
   describeTransportFailure,
   findErrorCode,
+  getHostedArtifactDispatcher,
   getHostedDispatcher,
   getHostedUploadDispatcher,
   hostedFetch,
@@ -14,6 +15,7 @@ import {
   isRetriableTransportError,
   redactUrl,
   resetHostedDispatcher,
+  resetHostedArtifactDispatcher,
   resetHostedUploadDispatcher,
   unwrapCauseChain,
 } from './hosted-transport';
@@ -237,6 +239,21 @@ test('streaming uploads use an isolated dispatcher that is rebuilt between retri
   assert.notEqual(second, first);
   assert.equal(getHostedDispatcher(), reads);
   resetHostedUploadDispatcher();
+});
+
+test('large hosted artifacts use an isolated dispatcher that is rebuilt after a stalled read', () => {
+  const reads = getHostedDispatcher();
+  const uploads = getHostedUploadDispatcher();
+  const first = getHostedArtifactDispatcher();
+  assert.notEqual(first, reads);
+  assert.notEqual(first, uploads);
+  assert.equal(getHostedArtifactDispatcher(), first);
+  resetHostedArtifactDispatcher();
+  const second = getHostedArtifactDispatcher();
+  assert.notEqual(second, first);
+  assert.equal(getHostedDispatcher(), reads);
+  assert.equal(getHostedUploadDispatcher(), uploads);
+  resetHostedArtifactDispatcher();
 });
 
 test('hostedFetch survives a connection dying mid-process and recovers on the next attempt, without a client restart', async () => {

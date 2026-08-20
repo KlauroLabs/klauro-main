@@ -22,7 +22,7 @@ import { connectorToken, findStoredAccountOwningProject, listStoredAccounts, req
 import { assessUploadScope } from './upload-scope-guard';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { fetch as undiciFetch } from 'undici';
-import { describeHttpFailure, describeTransportFailure, getHostedDispatcher, getHostedUploadDispatcher, hostedFetch, isDeadConnectionError, resetHostedDispatcher, resetHostedUploadDispatcher } from './hosted-transport';
+import { describeHttpFailure, describeTransportFailure, getHostedArtifactDispatcher, getHostedDispatcher, getHostedUploadDispatcher, hostedFetch, isDeadConnectionError, resetHostedArtifactDispatcher, resetHostedDispatcher, resetHostedUploadDispatcher } from './hosted-transport';
 import type { AnalysisFocus } from './analysis-focus';
 import { decodeCasExport, decodeCasExportStream } from './cas-export-decoder';
 import { CAS_SECTION_NAMES, hydrateCasSections, type CasSectionManifest, type CasSectionName } from './cas-sections';
@@ -360,6 +360,7 @@ export async function waitForRemoteAnalysis(
             `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/export`,
             { headers },
             remoteRequestTimeoutMs(),
+            { artifact: true },
           );
           if (exportResponse.status === 404 || exportResponse.status === 409) return undefined;
           if (!exportResponse.ok) throw new Error(`Remote CAS export returned ${exportResponse.status}`);
@@ -447,6 +448,7 @@ async function fetchSegmentedRemoteCas(
         `${serverUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cas/sections/${section}`,
         { headers },
         remoteRequestTimeoutMs(),
+        { artifact: true },
       );
       if (response.status === 404 || response.status === 409) {
         throw new RetriableRemoteError(`Remote CAS section ${section} is still populating`);
@@ -503,6 +505,7 @@ async function fetchUncompressedRemoteCas(
     `${serverUrl}/api/projects/${encodeURIComponent(analysisId)}/cas`,
     { headers },
     remoteRequestTimeoutMs(),
+    { artifact: true },
   );
   const payload = await response.json().catch(() => ({})) as {
     status?: string;
@@ -711,7 +714,12 @@ function isRetriableNetworkError(error: unknown): boolean {
   return error.message === 'fetch failed';
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  options: { artifact?: boolean } = {},
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -720,10 +728,18 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
 
 
     const streaming = isStreamingJsonRequestBody(init.body);
+    const dispatcher = streaming
+      ? getHostedUploadDispatcher()
+      : options.artifact
+        ? getHostedArtifactDispatcher()
+        : getHostedDispatcher();
     return await undiciFetch(url, {
-      ...init, signal: controller.signal, dispatcher: streaming ? getHostedUploadDispatcher() : getHostedDispatcher(),
+      ...init, signal: controller.signal, dispatcher,
       ...(streaming ? { duplex: 'half' } : {}),
     } as any) as unknown as Response;
+  } catch (error) {
+    if (options.artifact) resetHostedArtifactDispatcher();
+    throw error;
   } finally {
     clearTimeout(timer);
   }
