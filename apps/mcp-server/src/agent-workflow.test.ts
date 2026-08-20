@@ -1776,11 +1776,11 @@ test('broad orientation avoids arbitrary internal targets and edit-oriented plan
     assert.ok(start.starting_points.connected_nodes.every((item: any) => item.id !== 'internal-benchmark'));
     assert.equal(context.target_resolution.selected_node_id, null);
     assert.equal(context.selected_node, null);
-    assert.deepEqual(context.execution_brief.edit_scope, []);
-    assert.deepEqual(context.execution_brief.validate, []);
-    assert.equal(context.validation_plan.strategy, 'comprehension-only');
-    assert.deepEqual(context.validation_plan.commands, []);
-    assert.ok(context.file_read_plan.every((item: any) => !String(item.file).includes('benchmarks')));
+    assert.equal(context.context_profile, 'read-only-orientation');
+    assert.equal(context.execution_brief, undefined);
+    assert.equal(context.validation_plan, undefined);
+    assert.equal(context.file_read_plan, undefined);
+    assert.ok(JSON.stringify(context).length < 12_000);
   });
 });
 

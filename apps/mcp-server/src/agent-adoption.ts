@@ -52,7 +52,7 @@ import {
 } from './agent-small-context';
 import { adaptAgentStartContext } from './agent-start-context-budget';
 import { buildComprehensionGate, evaluateComprehensionReadiness, type ComprehensionReadiness } from './comprehension-readiness';
-import { buildOrientationExecutionBrief, buildOrientationValidationPlan, normalizeAgentToolSteps, orientationAnchorNodes, rankOrientationEntryPoints } from './agent-orientation';
+import { buildOrientationExecutionBrief, buildOrientationValidationPlan, buildTargetlessOrientationContext, isTargetlessOrientationTask, normalizeAgentToolSteps, orientationAnchorNodes, rankOrientationEntryPoints } from './agent-orientation';
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -270,7 +270,16 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   return adaptAgentStartContext(context, task.response_profile);
 }
 
-export async function getAgentContext(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
+export function getAgentContext(cas: CASOutput, path: string, taskInput: AgentTask = {}): ReturnType<typeof buildAgentContextForTask> {
+  const task = normalizeTask(taskInput);
+  if (isTargetlessOrientationTask(task)) {
+    const startContext = getAgentStartContext(cas, path, { ...task, response_profile: 'first-turn' });
+    return Promise.resolve(buildTargetlessOrientationContext({ path, task, startContext, toolPlan: getAgentToolPlan(cas, { path, task }) })) as ReturnType<typeof buildAgentContextForTask>;
+  }
+  return buildAgentContextForTask(cas, path, task);
+}
+
+async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
   const task = normalizeTask(taskInput);
   const sectionFilter = resolveSectionFilter({ param: task.runtime, exclude_sections: task.exclude_sections });
   const runtimeExcluded = sectionFilter.isExcluded('runtime');
@@ -3703,16 +3712,6 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
     };
   } else return { query: null, selected_node_id: null, selected_node: null, candidates: [], gaps };
 
-  return {
-    query: target || null,
-    selected_node_id: selectedNode?.id || null,
-    selected_node: selectedNode || null,
-    candidates: [...candidateNodes.values()].map(node => ({
-      ...summarizeNodeForAgent(node),
-      score: scoreNodeForTarget(node, target),
-    })),
-    gaps,
-  };
 }
 
 async function resolveSemanticTargetCandidates(

@@ -93,6 +93,35 @@ test('hosted query results match the canonical pure query functions', async () =
   );
 });
 
+test('hosted broad orientation is bounded and never becomes an internal edit target', async () => {
+  const fixture = cas();
+  fixture.nodes.push({
+    id: 'internal-benchmark',
+    name: 'runMachineInFlightBenchmarkProduct',
+    type: 'function',
+    source: { file: 'src/machine-gauntlet.ts', line: 100 },
+  } as any);
+  for (let index = 0; index < 30; index += 1) {
+    fixture.edges.push({ id: `benchmark-edge-${index}`, source: 'internal-benchmark', target: 'orders-service', type: 'calls' } as any);
+  }
+
+  const result = await executeHostedProjectQuery({
+    cas: fixture,
+    tool: 'get_agent_context',
+    args: { task: { task_type: 'orient', instructions: 'Understand the product architecture, capabilities, and major journeys.' } },
+    projectPath: '/hosted/orders',
+  }) as any;
+
+  assert.equal(result.context_profile, 'read-only-orientation');
+  assert.equal(result.target_resolution.selected_node_id, null);
+  assert.equal(result.selected_node, null);
+  assert.equal(result.work_context, undefined);
+  assert.equal(result.execution_brief, undefined);
+  assert.equal(result.validation_plan, undefined);
+  assert.equal(result.file_read_plan, undefined);
+  assert.ok(JSON.stringify(result).length < 12_000);
+});
+
 test('hosted answer packs return a bounded digest and expose every section by id', async () => {
   const fixture = cas();
   const digest = await executeHostedProjectQuery({

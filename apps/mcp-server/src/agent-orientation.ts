@@ -29,6 +29,43 @@ export function normalizeAgentToolSteps<T extends ToolStep>(steps: T[], task: Or
     .map((step, index) => ({ ...step, order: index + 1 }));
 }
 
+export function isTargetlessOrientationTask(task: OrientationTask): boolean {
+  return task.task_type === 'orient' && !String(task.target || '').trim();
+}
+
+export function buildTargetlessOrientationContext(input: {
+  path: string;
+  task: OrientationTask;
+  startContext: any;
+  toolPlan: { steps?: ToolStep[] };
+}): any {
+  const start = input.startContext || {};
+  const readinessGaps = Array.isArray(start.readiness?.gaps) ? start.readiness.gaps.slice(0, 5) : [];
+  return {
+    path: input.path,
+    generated_at: new Date().toISOString(),
+    task: input.task,
+    status: start.readiness?.status === 'ready' ? 'ready' : 'needs-review',
+    agent_context_ready: Boolean(start.readiness?.agent_context_ready),
+    context_profile: 'read-only-orientation',
+    readiness: start.readiness,
+    system: start.system,
+    product_orientation: start.product_orientation,
+    scale: start.scale,
+    starting_points: start.starting_points,
+    target_resolution: { query: null, selected_node_id: null, selected_node: null, candidates: [], gaps: [] },
+    selected_node: null,
+    next_mcp_calls: (input.toolPlan.steps || []).map(step => ({
+      order: step.order,
+      tool: step.tool,
+      purpose: step.purpose,
+      required: step.required,
+    })),
+    source_reading_rule: 'Use product maps, conceptual analysis, user journeys, and answer packs first. Read source only when those comprehension surfaces report a concrete evidence gap.',
+    gaps: readinessGaps,
+  };
+}
+
 export function buildOrientationExecutionBrief(task: OrientationTask, fileReadPlan: any[]): any | null {
   if (task.task_type !== 'orient' || task.target) return null;
   const readFirst = [...new Set(fileReadPlan
