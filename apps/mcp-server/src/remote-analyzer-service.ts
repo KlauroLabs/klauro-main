@@ -1821,7 +1821,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
     }
   };
 
-  return http.createServer(instrumentHttpHandler(requestHandler));
+  return http.createServer(instrumentHttpHandler(requestHandler)).once('close', () => workspaceAnalyses.close());
 }
 
 const CONCEPTUAL_CLAIM_TTL_MS_HTTP = 30 * 60 * 1000;

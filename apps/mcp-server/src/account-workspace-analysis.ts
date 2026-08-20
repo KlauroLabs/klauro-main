@@ -75,6 +75,7 @@ export class AccountWorkspaceAnalysisScheduler {
   private readonly pending = new Map<string, PendingRebuild>();
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly forceRequested = new Set<string>();
+  private closed = false;
 
   constructor(
     private readonly dataDir: string,
@@ -93,7 +94,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
 
   notifyProjectAnalysisLanded(workspaceId: string): void {
-    if (!workspaceId) return;
+    if (!workspaceId || this.closed) return;
     this.dirty.add(workspaceId);
     const existing = this.pending.get(workspaceId);
     if (existing) clearTimeout(existing.timer);
@@ -113,6 +114,14 @@ export class AccountWorkspaceAnalysisScheduler {
 
   isPending(workspaceId: string): boolean {
     return this.pending.has(workspaceId) || this.inFlight.has(workspaceId) || this.dirty.has(workspaceId);
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const rebuild of this.pending.values()) clearTimeout(rebuild.timer);
+    this.pending.clear();
+    this.dirty.clear();
+    this.forceRequested.clear();
   }
 
 
@@ -135,6 +144,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
 
   async rebuild(workspaceId: string, options: { force?: boolean } = {}): Promise<WorkspaceAnalysisRecord | null> {
+    if (this.closed) return this.load(workspaceId);
     if (options.force) this.forceRequested.add(workspaceId);
     const existingRun = this.inFlight.get(workspaceId);
     if (existingRun) {
@@ -148,7 +158,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
 
 
-      if (this.dirty.has(workspaceId) || this.forceRequested.has(workspaceId)) return this.rebuild(workspaceId);
+      if (!this.closed && (this.dirty.has(workspaceId) || this.forceRequested.has(workspaceId))) return this.rebuild(workspaceId);
       return this.load(workspaceId);
     }
 
@@ -172,7 +182,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
 
 
-    if (this.dirty.has(workspaceId) || this.forceRequested.has(workspaceId)) return this.rebuild(workspaceId);
+    if (!this.closed && (this.dirty.has(workspaceId) || this.forceRequested.has(workspaceId))) return this.rebuild(workspaceId);
     return this.load(workspaceId);
   }
 

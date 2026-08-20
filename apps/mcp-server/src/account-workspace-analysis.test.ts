@@ -114,6 +114,41 @@ test('workspace scheduler drains a project notification that arrives during an i
   }
 });
 
+test('workspace scheduler close cancels pending and follow-up rebuilds', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-close-'));
+  try {
+    const debounceMs = 10;
+    const scheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any, { debounceMs });
+    let rebuilds = 0;
+    (scheduler as any).doRebuild = async () => { rebuilds += 1; };
+
+    scheduler.notifyProjectAnalysisLanded('workspace-closing');
+    assert.equal(scheduler.isPending('workspace-closing'), true);
+    scheduler.close();
+    assert.equal(scheduler.isPending('workspace-closing'), false);
+
+    await new Promise(resolve => setTimeout(resolve, debounceMs * 3));
+    assert.equal(rebuilds, 0);
+    assert.equal(await scheduler.rebuild('workspace-closing'), null);
+
+    const inFlightScheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any, { debounceMs });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    (inFlightScheduler as any).doRebuild = async () => {
+      rebuilds += 1;
+      await gate;
+    };
+    const inFlight = inFlightScheduler.rebuild('workspace-in-flight');
+    inFlightScheduler.notifyProjectAnalysisLanded('workspace-in-flight');
+    inFlightScheduler.close();
+    release();
+    await inFlight;
+    assert.equal(rebuilds, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 /**
  * Server-side auto-refreshed workspace-level CAS: pushing member project
  * analyses for an account workspace should automatically (re)build a
