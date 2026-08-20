@@ -4,6 +4,7 @@ import {
   capabilitiesWithoutDescriptionDisposition,
   scheduleRejectedCapabilityDescriptions,
   selectCapabilityCatalogPromptCandidates,
+  uncoveredCapabilityCatalogCandidateIds,
 } from './capability-catalog-scheduling';
 
 test('prompt selection represents every required entity family beyond the baseline window', () => {
@@ -82,4 +83,22 @@ test('description scheduling preserves catalog outcomes beyond the element budge
     ['undisposed'],
   );
   assert.equal(capabilities[1].description_generation.status, 'ai_rejected');
+});
+
+test('targeted catalog repair converges when full passes omit different families', () => {
+  const requiredGroups = Array.from({ length: 37 }, (_, index) => [`family-${index}`]);
+  const capability = (id: string) => ({
+    id,
+    criticality_factors: [`catalog-candidate:${id}`],
+  }) as any;
+  const firstFullPass = requiredGroups.slice(0, 20).map(([id]) => capability(id));
+  const firstRepairIds = uncoveredCapabilityCatalogCandidateIds(firstFullPass, [], requiredGroups);
+  const firstRepair = firstRepairIds.filter((_, index) => index % 2 === 0).map(capability);
+  const partiallyRepaired = [...firstFullPass, ...firstRepair];
+  const secondRepairIds = uncoveredCapabilityCatalogCandidateIds(partiallyRepaired, [], requiredGroups);
+  const fullyRepaired = [...partiallyRepaired, ...secondRepairIds.map(capability)];
+
+  assert.equal(firstRepairIds.length, 17);
+  assert.equal(secondRepairIds.length, 8);
+  assert.deepEqual(uncoveredCapabilityCatalogCandidateIds(fullyRepaired, [], requiredGroups), []);
 });

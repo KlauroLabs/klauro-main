@@ -160,7 +160,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, uncoveredCapabilityCatalogCandidateIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10436,8 +10436,11 @@ export class AnalyzerOrchestrator {
         break;
       }
       cyclesRun = cycle;
+      const repairCandidateIds = uncoveredCapabilityCatalogCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups);
+      const targetedRepair = cycle > 1 && reconciled.length > 0 && repairCandidateIds.length > 0;
+      const repairCandidateIdSet = new Set(repairCandidateIds);
       const cycleNudge = cycle === 1 ? undefined
-        : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} Return a FULL catalog that cites every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
+        : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} ${targetedRepair ? 'Return only the missing evidence-grounded additions requested in this repair batch.' : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
       let extracted: SystemCapability[];
       let extractionRaw = '';
       try {
@@ -10447,8 +10450,8 @@ export class AnalyzerOrchestrator {
           frameworks: args.frameworks,
           userJourneys: args.userJourneys,
           dataEntities: args.dataEntities,
-          candidateCapabilities: catalogCandidates,
-          behaviorSurfaces: args.behaviorSurfaces,
+          candidateCapabilities: targetedRepair ? catalogCandidates.filter(candidate => repairCandidateIdSet.has(candidate.id)) : catalogCandidates,
+          behaviorSurfaces: targetedRepair ? args.behaviorSurfaces.filter(candidate => repairCandidateIdSet.has(candidate.id)) : args.behaviorSurfaces,
           externalServices: args.externalServices,
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
@@ -10483,25 +10486,28 @@ export class AnalyzerOrchestrator {
         publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
         return false;
       });
+      const combinedReconciled = targetedRepair
+        ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled])
+        : cycleReconciled;
       const cycleQualityFailure = this.catalogQualityFailure(
-        cycleReconciled,
+        combinedReconciled,
         distinctFamilyCount,
         requiredBehaviorCandidateIds,
         requiredEntityCandidateGroups,
       );
       writeAnalyzerStatus(
-        `[Klauro] capability catalog cycle ${cycle}/3: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${cycleReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
+        `[Klauro] capability catalog cycle ${cycle}/3${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${combinedReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
       );
       if (!cycleQualityFailure) {
-        reconciled = cycleReconciled;
-        retainedInterpretationRaw = extractionRaw;
+        reconciled = combinedReconciled;
+        if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         qualityFailure = undefined;
         retainedQualityFailure = undefined;
         break;
       }
-      if (cycleReconciled.length > reconciled.length) {
-        reconciled = cycleReconciled;
-        retainedInterpretationRaw = extractionRaw;
+      if (targetedRepair || combinedReconciled.length > reconciled.length) {
+        reconciled = combinedReconciled;
+        if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         retainedQualityFailure = cycleQualityFailure;
       }
       qualityFailure = cycleQualityFailure;

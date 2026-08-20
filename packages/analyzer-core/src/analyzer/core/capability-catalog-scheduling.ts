@@ -69,6 +69,23 @@ export function capabilitiesWithoutDescriptionDisposition(
   return capabilities.filter(capability => !capability.description_generation);
 }
 
+export function uncoveredCapabilityCatalogCandidateIds(
+  capabilities: SystemCapability[],
+  requiredBehaviorCandidateIds: readonly string[],
+  requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
+): string[] {
+  const citedCandidateIds = new Set(capabilities.flatMap(capability =>
+    (capability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-candidate:'))
+      .map(factor => factor.slice('catalog-candidate:'.length))));
+  return [...new Set([
+    ...requiredBehaviorCandidateIds.filter(candidateId => !citedCandidateIds.has(candidateId)),
+    ...requiredEntityCandidateGroups
+      .filter(group => !group.some(candidateId => citedCandidateIds.has(candidateId)))
+      .flat(),
+  ])];
+}
+
 export function scheduleCapabilityCatalog<TTarget>(args: {
   outcome: Promise<CapabilityCatalogOutcome>;
   capabilities: SystemCapability[];

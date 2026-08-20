@@ -20,6 +20,64 @@ import {
 // typed `any` handle rather than widening the class surface.
 const orch = new AnalyzerOrchestrator() as any;
 
+test('catalog quality repair targets and retains independently omitted evidence families', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidates = Array.from({ length: 37 }, (_, index) => ({
+    id: `family-${index}`,
+    name: `Evidence family ${index}`,
+    category: 'core',
+    evidence_kind: 'entity',
+    related_entities: [`entity-${index}`],
+    related_domains: [],
+    operations: [{ entry_point_id: `entry-${index}`, entry_point_type: 'http', action: 'review' }],
+    criticality: 'medium',
+    criticality_factors: [],
+  }));
+  const authored = (candidate: any) => ({
+    ...candidate,
+    name: `Review product area ${candidate.id.slice(7)}`,
+    name_source: 'ai',
+    description: `Operators review grounded product activity for area ${candidate.id.slice(7)}.`,
+    description_source: 'ai',
+    criticality_factors: [`catalog-candidate:${candidate.id}`],
+  });
+  const requested: string[][] = [];
+  let cycle = 0;
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async (input: any) => {
+    requested.push(input.candidateCapabilities.map((candidate: any) => candidate.id));
+    cycle++;
+    if (cycle === 1) return candidates.slice(0, 20).map(authored);
+    if (cycle === 2) return input.candidateCapabilities.filter((_: any, index: number) => index % 2 === 0).map(authored);
+    return input.candidateCapabilities.map(authored);
+  });
+  jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
+
+  const purpose: any = { primary_domain: 'product-review', core_concepts: [] };
+  const result = await localOrch.runCapabilityCatalogWithQualityGate({
+    systemName: 'catalog-repair-fixture',
+    enhancedSystemPurpose: purpose,
+    frameworks: [],
+    userJourneys: [],
+    dataEntities: candidates.map((candidate, index) => ({
+      id: candidate.related_entities[0],
+      name: `ProductArea${index}`,
+      lifecycle: { created_by: [], read_by: [candidate.operations[0].entry_point_id], updated_by: [], deleted_by: [] },
+    })),
+    candidateSnapshot: candidates,
+    behaviorSurfaces: [],
+    externalServices: [],
+    flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: [], evidence: [] },
+    entryPoints: [],
+    nodes: [],
+    budgetMs: 30000,
+  });
+
+  expect(requested.map(ids => ids.length)).toEqual([37, 17, 8]);
+  expect(result).toHaveLength(37);
+  expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+});
+
 describe('AI task model routing', () => {
   const keys = [
     'DEEPINFRA_MODEL',
