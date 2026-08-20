@@ -13,6 +13,7 @@ import { checkRunningBundleStaleness } from './bundle-staleness';
 import { getBuildIdentity } from './installed-client-runtime';
 import * as watcher from './watcher';
 import { summarizeUploadManifest } from './upload-manifest-summary';
+import { boundToolPayload } from './response-budget';
 export { summarizeUploadManifest } from './upload-manifest-summary';
 
 export const INSTALLED_TOOL_NAMES = [
@@ -162,6 +163,7 @@ async function hostedProjectQuery(projectPath: string, tool: string, args: Recor
   if (payload?.status === 'error') {
     throw new Error(`Klauro's hosted server reported an error for ${operation}. Target: ${redactUrl(url)}. Detail: ${payload.error || 'no detail provided'}.`);
   }
+  if (payload?.status !== 'ready' && payload?.status !== 'queryable') return payload;
   return payload.result;
 }
 
@@ -401,13 +403,29 @@ export function createServer(): McpServer {
     inputSchema: { path: z.string() },
   }, async ({ path }: any) => {
     const analysis = await hostedProjectGet(path, '/analysis') as any;
-    return json({ status: analysis.status, project_id: analysis.project_id, analysis_id: analysis.analysis_id, product_map: analysis.product_map });
+    const unavailable = analysis.status !== 'ready' || analysis.comprehension?.partial === true;
+    return json({
+      status: analysis.comprehension?.partial === true ? 'partial' : analysis.status,
+      project_id: analysis.project_id,
+      analysis_id: analysis.analysis_id,
+      ...(analysis.failed_layers ? { failed_layers: analysis.failed_layers } : {}),
+      ...(analysis.analysis_error ? { error: analysis.analysis_error } : {}),
+      ...(analysis.ai_enrichment_error ? { error: analysis.ai_enrichment_error } : {}),
+      ...(analysis.comprehension?.partial ? { error: analysis.comprehension.detail || 'Analysis comprehension is partial.' } : {}),
+      ...(unavailable ? {} : { product_map: analysis.product_map }),
+    });
   });
 
   register('get_conceptual_analysis', {
-    description: 'Retrieve hosted capability, flow, and step comprehension without downloading CAS.',
-    inputSchema: { path: z.string(), max_flows: z.number().optional() },
-  }, async ({ path, max_flows }: any) => json(await hostedProjectGet(path, '/conceptual', { max_flows })));
+    description: 'Retrieve bounded, paginated hosted capability, flow, and step comprehension without downloading CAS.',
+    inputSchema: {
+      path: z.string(), target: z.string().optional(), max_flows: z.number().optional(), offset: z.number().optional(),
+      capability_limit: z.number().optional(), capability_offset: z.number().optional(),
+    },
+  }, async ({ path, ...params }: any) => json(boundToolPayload(
+    await hostedProjectGet(path, '/conceptual', params),
+    { tool: 'get_conceptual_analysis', parameterNames: ['target', 'max_flows', 'offset', 'capability_limit', 'capability_offset'] },
+  )));
 
   register('get_data_entities', {
     description: 'Retrieve a paginated hosted domain-entity slice without downloading CAS.',
@@ -501,8 +519,11 @@ export function createServer(): McpServer {
   })));
 
   register('run_answer_pack', {
-    description: 'Answer the core codebase-understanding questions from the hosted CAS.',
-    inputSchema: { path: z.string(), pack: z.literal('mastery').optional() },
+    description: 'Retrieve a bounded answer-pack digest, then fetch any withheld answer by section id.',
+    inputSchema: {
+      path: z.string(), pack: z.literal('mastery').optional(),
+      section: z.enum(['overview', 'entry-points', 'representative-flow', 'change-impact', 'data', 'tests', 'external-boundaries', 'security', 'runtime-readiness']).optional(),
+    },
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'run_answer_pack', args)));
 
   register('get_agent_revision_tracks', {

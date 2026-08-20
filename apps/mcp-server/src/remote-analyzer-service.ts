@@ -56,6 +56,7 @@ import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { executeHostedProjectQuery, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse } from './analysis-response-readiness';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
 import {
@@ -2111,14 +2112,10 @@ async function linkAnalysisToAccountProject(
     console.error(`[Klauro] skip analysis attach by remote "${gitRemote}" (user ${userId}): ${detail}`);
   }
 }
-
 const casReadResponseCache = new ResponseCache(8);
-
 const CONCEPTUAL_DEFAULT_MAX_FLOWS = 25;
 const CONCEPTUAL_MAX_FLOWS_CEILING = 100;
-
 const CONCEPTUAL_DESCRIPTION_EXCERPT_CHARS = 280;
-
 function conceptualDescriptionFields(item: { description?: string; description_source?: string }): {
   description?: string;
   description_source?: string;
@@ -2394,7 +2391,6 @@ async function handleAccountApi(
     if (!project) throw new AccountHttpError(404, 'Project not found');
     return { statusCode: 200, body: { project } };
   }
-
   const projectQueryMatch = route.match(/^\/api\/projects\/([^/]+)\/query$/);
   if (projectQueryMatch && request.method === 'POST') {
     if (sharedToken) throw new AccountHttpError(403, 'A signed-in Klauro account is required for project intelligence queries');
@@ -2409,6 +2405,8 @@ async function handleAccountApi(
     try {
       const workspace = workspacePath(dataDir, project.analysis_id);
       const cas = await getAnalysis(workspace);
+      const unavailable = unavailableComprehensionResponse(cas, { project_id: project.id, analysis_id: project.analysis_id, analysis_timestamp: cas.analysis_timestamp, tool: body.tool }, body.tool);
+      if (unavailable) return { statusCode: 200, body: unavailable };
       const result = await executeHostedProjectQuery({
         cas,
         tool: body.tool,
@@ -2431,7 +2429,6 @@ async function handleAccountApi(
       throw error;
     }
   }
-
   const projectAnalysisStatusMatch = route.match(/^\/api\/projects\/([^/]+)\/analysis-status$/);
   if (projectAnalysisStatusMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -3034,7 +3031,6 @@ async function handleAccountApi(
       const url = new URL(request.url || '', 'http://localhost');
       const target = url.searchParams.get('target') || undefined;
       const include = url.searchParams.get('include') || undefined;
-
       const maxFlowsParamRaw = url.searchParams.get('max_flows');
       const maxFlowsParam = maxFlowsParamRaw !== null ? Number(maxFlowsParamRaw) : undefined;
       const maxFlows = maxFlowsParam !== undefined && Number.isFinite(maxFlowsParam) && maxFlowsParam > 0
@@ -3045,15 +3041,14 @@ async function handleAccountApi(
       const offset = offsetParam !== undefined && Number.isFinite(offsetParam) && offsetParam > 0
         ? Math.floor(offsetParam)
         : 0;
-
+      const catalogPage = parseConceptualCatalogPage(url.searchParams);
       const version = await storedAnalysisVersion(workspace);
       const cacheKey = version === null ? null : responseCacheKey({
         endpoint: 'conceptual',
         projectId: project.id,
         analysisId: project.analysis_id,
         version,
-
-        params: { target, include, maxFlows: String(maxFlows), offset: String(offset) },
+        params: { target, include, maxFlows: String(maxFlows), offset: String(offset), capabilityLimit: String(catalogPage.limit), capabilityOffset: String(catalogPage.offset) },
       });
       if (cacheKey) {
         const cached = casReadResponseCache.get(cacheKey);
@@ -3062,6 +3057,12 @@ async function handleAccountApi(
         }
       }
       const cas = await getAnalysis(workspace);
+      const unavailable = unavailableComprehensionResponse(cas, { project_id: project.id, analysis_id: project.analysis_id });
+      if (unavailable) {
+        const serializedBody = JSON.stringify(unavailable);
+        if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
+        return { statusCode: 200, body: unavailable, serializedBody };
+      }
 
       const runtimeMetrics = await (async () => {
         try {
@@ -3112,8 +3113,7 @@ async function handleAccountApi(
           flowEdgesByCapability.set(rel.capability_id, list);
         }
       }
-
-      const capabilities = (cas.capabilities || []).map(capability => ({
+      const allCapabilities = (cas.capabilities || []).map(capability => ({
         id: capability.id,
         name: capability.name,
         ...conceptualDescriptionFields(capability),
@@ -3123,25 +3123,25 @@ async function handleAccountApi(
           ? capability.related_flows
           : (flowEdgesByCapability.get(capability.id) || []),
       }));
-
-      const behaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
+      const allBehaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
         id: surface.id,
         name: surface.structural_label || surface.name,
         ...conceptualDescriptionFields(surface),
         category: surface.category,
         evidence_kind: surface.evidence_kind,
         entry_points: surface.operations?.length || 0,
-
         related_flows: (!target && surface.related_flows && surface.related_flows.length > 0)
           ? surface.related_flows
           : (flowEdgesByCapability.get(surface.id) || []),
       }));
+      const catalog = paginateConceptualCatalog(allCapabilities, allBehaviorSurfaces, catalogPage);
       const body = {
         status: 'ready',
         project_id: project.id,
         analysis_id: project.analysis_id,
-        capabilities,
-        ...(behaviorSurfaces.length ? { behavior_surfaces: behaviorSurfaces } : {}),
+        capabilities: catalog.capabilities.values, capability_page: catalog.capabilities.page,
+        behavior_surface_page: catalog.behavior_surfaces.page,
+        ...(catalog.behavior_surfaces.values.length ? { behavior_surfaces: catalog.behavior_surfaces.values } : {}),
         flows: flowConcepts,
         structural: {
           architectural,

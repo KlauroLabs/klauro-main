@@ -90,6 +90,26 @@ test('hosted query results match the canonical pure query functions', async () =
   );
 });
 
+test('hosted answer packs return a bounded digest and expose every section by id', async () => {
+  const fixture = cas();
+  const digest = await executeHostedProjectQuery({
+    cas: fixture, tool: 'run_answer_pack', args: {}, projectPath: '/hosted/orders',
+  }) as any;
+  assert.equal(digest.pack, 'mastery');
+  assert.equal(digest.answers.length <= digest.sections.length, true);
+  assert.deepEqual(digest.sections.map((section: any) => section.id), [
+    'overview', 'entry-points', 'representative-flow', 'change-impact', 'data', 'tests',
+    'external-boundaries', 'security', 'runtime-readiness',
+  ]);
+
+  const security = await executeHostedProjectQuery({
+    cas: fixture, tool: 'run_answer_pack', args: { section: 'security' }, projectPath: '/hosted/orders',
+  }) as any;
+  assert.equal(security.pack, 'mastery');
+  assert.equal(security.section.id, 'security');
+  assert.equal(security.answers, undefined);
+});
+
 test('hosted node search applies the exact repository-relative file filter before limiting results', async () => {
   const fixture = cas();
   fixture.nodes.push({

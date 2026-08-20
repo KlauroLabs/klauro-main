@@ -4,7 +4,7 @@ import * as agentAdoption from './agent-adoption';
 import * as idiomQuery from './idiom-query';
 import * as invariantValidation from './invariant-validation';
 import * as query from './query';
-import { runAnswerPack } from './product';
+import { buildAnswerPackDigest, runAnswerPack } from './product';
 import { boundToolPayload } from './response-budget';
 
 const taskSchema = z.object({
@@ -65,7 +65,10 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
     files: z.array(z.string()).max(5000), diff_text: z.string().max(2_000_000),
     limit: z.number().int().positive().max(200).optional(),
   }).strict(),
-  run_answer_pack: z.object({ pack: z.literal('mastery').optional() }).strict(),
+  run_answer_pack: z.object({
+    pack: z.literal('mastery').optional(),
+    section: z.enum(['overview', 'entry-points', 'representative-flow', 'change-impact', 'data', 'tests', 'external-boundaries', 'security', 'runtime-readiness']).optional(),
+  }).strict(),
   get_module_health: z.object({
     kind: z.enum(['size-outlier', 'change-concentration', 'fan-in-hotspot', 'mixed-concerns', 'danger-composite']).optional(),
     severity: z.enum(['info', 'warning', 'error']).optional(),
@@ -147,9 +150,23 @@ export async function executeHostedProjectQuery(input: {
         diffText: args.diff_text, includeWorkingTree: false, limit: args.limit,
       });
       break;
-    case 'run_answer_pack':
-      result = runAnswerPack(input.cas, input.projectPath, args.pack || 'mastery');
+    case 'run_answer_pack': {
+      const answerPack = runAnswerPack(input.cas, input.projectPath, args.pack || 'mastery');
+      if (args.section) {
+        const section = answerPack.answers.find(answer => answer.id === args.section);
+        if (!section) throw new Error(`Unknown answer pack section '${args.section}'`);
+        result = {
+          pack: answerPack.pack,
+          path: answerPack.path,
+          generated_at: answerPack.generated_at,
+          gaps: answerPack.gaps,
+          section,
+        };
+      } else {
+        result = buildAnswerPackDigest(answerPack);
+      }
       break;
+    }
     case 'get_module_health':
       result = query.getModuleHealth(input.cas, {
         kind: args.kind, severity: args.severity, limit: args.limit, offset: args.offset,
