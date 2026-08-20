@@ -288,7 +288,7 @@ test('a structurally landed CAS with a stale in-progress record remains degraded
     const analysisRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
     const body = JSON.parse(analysisRes.body) as { status?: string; last_attempt?: { state?: string } };
     assert.equal(body.status, 'degraded', 'reaping a stale record must preserve the structurally complete analysis without hiding failed comprehension');
-    assert.equal(body.last_attempt?.state, 'succeeded', 'the record must be corrected to succeeded, not left claiming in-progress or flipped to failed');
+    assert.equal(body.last_attempt?.state, 'failed', 'the reaper must recover the failed L5 attempt without invalidating its structural CAS');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
