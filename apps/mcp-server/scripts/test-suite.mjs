@@ -90,7 +90,7 @@ export function testWeight(source, file) {
 }
 
 export function requiresExclusiveExternalDaemon(source) {
-  return /codebaseMemory|codebase-memory-mcp|CODEBASE_MEMORY/.test(source);
+  return /codebasememory|codebase-memory-mcp|codebase_memory/i.test(source);
 }
 
 async function resolveLocalImport(importer, specifier) {
