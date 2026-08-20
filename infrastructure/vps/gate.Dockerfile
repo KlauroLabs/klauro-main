@@ -22,6 +22,8 @@ FROM ${BASE_IMAGE}
 
 ARG AST_GREP_VERSION=0.45.1
 ARG CODEBASE_MEMORY_VERSION=0.10.8
+ARG SCIP_VERSION=0.9.0
+ARG SCIP_SHA256=fc2e7273e110be9f35924da1066000183791e8bfdb0391355de6eaaa070fec75
 ARG SCIP_TYPESCRIPT_VERSION=0.4.0
 
 # git: required so git-shelling tests exercise real behavior instead of ENOENT.
@@ -37,6 +39,11 @@ RUN apt-get update \
     "@ast-grep/cli@${AST_GREP_VERSION}" \
     "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
     "codebase-memory-mcp@${CODEBASE_MEMORY_VERSION}" \
+  && curl -fsSL "https://github.com/scip-code/scip/releases/download/v${SCIP_VERSION}/scip-linux-amd64.tar.gz" -o /tmp/scip.tar.gz \
+  && echo "${SCIP_SHA256}  /tmp/scip.tar.gz" | sha256sum --check --strict \
+  && tar -xzf /tmp/scip.tar.gz -C /usr/local/bin scip \
+  && chmod 755 /usr/local/bin/scip \
+  && rm -f /tmp/scip.tar.gz \
   && rm -rf /var/lib/apt/lists/*
 
 # Non-root user so permission-bit assertions in the suite (e.g.

@@ -278,12 +278,13 @@ export function codebaseMemoryPath(): string | null {
 export function codebaseMemoryCallers(
   dir: string,
   className: string,
+  methodName: string,
 ): { files: string[]; ms: number } | null {
   const bin = codebaseMemoryPath();
   if (!bin) return null;
   const t0 = Date.now();
   try {
-    execFileSync(bin, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
+    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir], {
       stdio: 'ignore',
       timeout: 120_000,
     });
@@ -295,37 +296,35 @@ export function codebaseMemoryCallers(
 
 
   const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
+  const cypherString = (value: string): string => value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const qualifiedSuffix = `.${className}.${methodName}`;
+  const query = [
+    'MATCH (caller)-[:CALLS]->(callee)',
+    `WHERE callee.name = '${cypherString(methodName)}'`,
+    `AND callee.qualified_name ENDS WITH '${cypherString(qualifiedSuffix)}'`,
+    'RETURN caller.file_path AS caller_file',
+  ].join(' ');
   let out = '';
   try {
-    out = execFileSync(bin, ['cli', 'get_architecture', JSON.stringify({ project })], {
+    out = execFileSync(bin, ['cli', 'query_graph', '--project', project, '--query', query], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch {
     return null;
   }
-  const jsonLine = out.split('\n').find(l => l.trim().startsWith('{')) || '{}';
-  let arch: any;
-  try {
-    arch = JSON.parse(jsonLine);
-  } catch {
-    return null;
-  }
-  const callerPkgs: string[] = (arch.boundaries || [])
-    .filter((b: any) => b.to === className)
-    .map((b: any) => String(b.from));
-
-
-  let entries: string[] = [];
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-
-  }
   const files = new Set<string>();
-  for (const pkg of callerPkgs) {
-    const match = entries.find(f => f.replace(/\.[A-Za-z0-9]+$/, '') === pkg);
-    if (match) files.add(match);
+  let insideRows = false;
+  for (const line of out.split('\n')) {
+    if (line.startsWith('rows:')) {
+      insideRows = true;
+      continue;
+    }
+    if (line.startsWith('total:')) break;
+    if (insideRows && line.startsWith('  ')) {
+      const filePath = line.trim();
+      if (filePath) files.add(path.basename(filePath));
+    }
   }
   return { files: [...files], ms: Date.now() - t0 };
 }
@@ -347,7 +346,7 @@ export function codebaseMemoryNodesByLabel(
   if (!bin) return null;
   const t0 = Date.now();
   try {
-    execFileSync(bin, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
+    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir], {
       stdio: 'ignore',
       timeout: 120_000,
     });
@@ -357,7 +356,7 @@ export function codebaseMemoryNodesByLabel(
   const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
   let out = '';
   try {
-    out = execFileSync(bin, ['cli', 'search_graph', JSON.stringify({ project, label })], {
+    out = execFileSync(bin, ['cli', 'search_graph', '--project', project, '--label', label, '--format', 'json', '--limit', '100000'], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     });
@@ -371,7 +370,9 @@ export function codebaseMemoryNodesByLabel(
   } catch {
     return null;
   }
-  const names: string[] = (parsed.results || []).map((r: any) => String(r.name));
+  const names: string[] = (parsed.groups || []).flatMap((group: any) =>
+    (group.rows || []).map((row: any) => String(row[0])),
+  );
   return { names, ms: Date.now() - t0 };
 }
 

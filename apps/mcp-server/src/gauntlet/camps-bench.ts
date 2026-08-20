@@ -203,7 +203,7 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
     let competitorF1 = 0;
     if (available) {
       try {
-        const cm = codebaseMemoryCallers(TS_FIXTURE, 'Account');
+        const cm = codebaseMemoryCallers(TS_FIXTURE, 'Account', 'save');
         if (cm) {
           const truth = await fs.readJson(path.join(TS_FIXTURE, 'truth.json'));
           const trueFiles: string[] = truth.true_files || [];
@@ -227,7 +227,7 @@ async function buildHeadToHead(): Promise<{ campA: CampsReport['campA']; campB: 
       klauroTokens,
       competitorTokens: null,
       tokenSaving: null,
-      coverageNote: 'Co-equal on TS who-calls (ceiling tie). The decisive edge is out-of-category: it has no route/ORM/render/pattern facts (Camp C).',
+      coverageNote: 'LSP-backed graph contender measured on TS who-calls and out-of-category route/ORM/render/pattern facts (Camp C).',
     });
   }
 

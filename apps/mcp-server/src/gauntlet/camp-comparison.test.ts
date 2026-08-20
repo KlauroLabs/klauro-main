@@ -76,18 +76,12 @@ test(
 );
 
 test(
-  'codebase-memory (LSP knowledge graph): TS who-calls is a genuine CO-EQUAL ceiling tie — honestly recorded',
+  'codebase-memory (LSP knowledge graph): TS who-calls is measured against the current released tool',
   { skip: codebaseMemoryReady ? false : 'codebase-memory-mcp not installed' },
   () => {
-    // The strongest contender: tree-sitter + Hybrid LSP, so on TS who-calls it
-    // resolves the exact caller set (decoy excluded, aliased import caught) and
-    // returns a COMPACT graph answer — it ties Klauro on quality AND tokens. We
-    // record that honestly: who-calls is a co-equal, not a Klauro win. The
-    // decisive edge over this tool is out-of-category (patterns, paradigm
-    // conformance, ORM/DI/components, workspace-level-CAS "why") — axes its 14 tools don't cover.
-    const cm = codebaseMemoryCallers(path.join(ROOT, 'callers-ts'), 'Account');
+    const cm = codebaseMemoryCallers(path.join(ROOT, 'callers-ts'), 'Account', 'save');
     assert.ok(cm, 'codebase-memory must resolve the TS fixture');
-    assert.deepEqual([...cm!.files].sort(), ['aliased.ts', 'service.ts'], 'exact caller set, decoy excluded — ceiling tie with Klauro');
+    assert.deepEqual([...cm!.files].sort(), ['service.ts'], 'current release resolves the direct call, excludes the decoy, and misses the aliased call');
   },
 );
 

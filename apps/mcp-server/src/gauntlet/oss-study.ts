@@ -167,7 +167,7 @@ function codebaseMemoryNames(dir: string): string[] | null {
   const bin = codebaseMemoryPath();
   if (!bin) return null;
   try {
-    execFileSync(bin, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
+    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir], {
       stdio: 'ignore',
       timeout: 180_000,
     });
@@ -179,7 +179,7 @@ function codebaseMemoryNames(dir: string): string[] | null {
   try {
     out = execFileSync(
       bin,
-      ['cli', 'search_graph', JSON.stringify({ project, node_type: 'Function' })],
+      ['cli', 'search_graph', '--project', project, '--format', 'json', '--limit', '100000'],
       { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60_000 },
     );
   } catch {
@@ -207,17 +207,15 @@ function codebaseMemoryNames(dir: string): string[] | null {
 
 
 
-  const projPrefix = `${project}.`;
   const names = new Set<string>();
-  for (const r of parsed.results || []) {
-    const q = r.qualified_name || '';
-    const nm = r.name || '';
-    const label = r.label || '';
-    const filePath: string = r.file_path || '';
-    if (!nm || !q.startsWith(projPrefix)) continue;
-    if (label !== 'Function' && label !== 'Method') continue;
+  for (const group of parsed.groups || []) {
+    const filePath = String(group.file || '');
     if (isNonSourceFile(filePath)) continue;
-    names.add(nm);
+    for (const row of group.rows || []) {
+      const name = String(row[0] || '');
+      const label = String(row[1] || '');
+      if (name && (label === 'Function' || label === 'Method')) names.add(name);
+    }
   }
   return [...names];
 }
@@ -245,25 +243,46 @@ function isNonSourceFile(filePath: string): boolean {
 
 
 
+const CALLABLE_CTAG_KINDS = new Set([
+  'function',
+  'generator',
+  'method',
+  'procedure',
+  'prototype',
+  'subroutine',
+]);
+
+export function parseCallableCtags(output: string): string[] {
+  const names = new Set<string>();
+  for (const line of output.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let tag: Record<string, unknown>;
+    try {
+      tag = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const name = typeof tag.name === 'string' ? tag.name : '';
+    const kind = typeof tag.kind === 'string' ? tag.kind.toLowerCase() : '';
+    const filePath = typeof tag.path === 'string' ? tag.path : '';
+    if (name && CALLABLE_CTAG_KINDS.has(kind) && !isNonSourceFile(filePath)) names.add(name);
+  }
+  return [...names];
+}
+
 function ctagsNames(dir: string): string[] | null {
   if (!ctagsAvailable()) return null;
   let out = '';
   try {
     out = execFileSync(
       'ctags',
-      ['-R', '--fields=+n', '--kinds-all=*', '-f', '-', dir],
+      ['-R', '--output-format=json', '--fields=+K', '--kinds-all=*', '-f', '-', dir],
       { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60_000 },
     );
   } catch {
     return null;
   }
-  const names = new Set<string>();
-  for (const line of out.split('\n')) {
-    if (!line || line.startsWith('!')) continue;
-    const [name] = line.split('\t');
-    if (name) names.add(name);
-  }
-  return [...names];
+  return parseCallableCtags(out);
 }
 
 
@@ -306,22 +325,20 @@ function moderneArm(dir: string): OssCompetitorArm {
 
 
 function runCompetitorArm(dir: string): OssCompetitorArms {
-  let primary: OssCompetitorArm | null = null;
+  const all: OssCompetitorArm[] = [];
   const cbmNames = codebaseMemoryNames(dir);
   if (cbmNames !== null) {
-    primary = { arm: 'codebase-memory', available: cbmNames.length > 0, names: cbmNames };
-  } else {
-    const ctNames = ctagsNames(dir);
-    if (ctNames !== null) {
-      primary = { arm: 'ctags', available: ctNames.length > 0, names: ctNames };
-    }
+    all.push({ arm: 'codebase-memory', available: cbmNames.length > 0, names: cbmNames });
   }
-
-  const all: OssCompetitorArm[] = [];
-  if (primary) all.push(primary);
+  const ctNames = ctagsNames(dir);
+  if (ctNames !== null) {
+    all.push({ arm: 'ctags', available: ctNames.length > 0, names: ctNames });
+  }
   all.push(scipArm(dir));
   all.push(moderneArm(dir));
-
+  const primary = all.find(arm => arm.arm === 'codebase-memory')
+    || all.find(arm => arm.arm === 'ctags')
+    || null;
   return { primary, all };
 }
 
