@@ -38,6 +38,8 @@ export interface RemoteSyncOptions {
 
   wait?: boolean;
 
+  readinessRequirement?: 'complete' | 'structural';
+
 
 
 
@@ -226,7 +228,15 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
   );
   if (options.wait && (response.status === 'accepted' || incompleteCas)) {
     if (!response.analysis_id) throw new Error('Remote analyzer accepted source without an analysis_id');
-    const completed = await waitForRemoteAnalysis(serverUrl, analysisId, options.token, response.analysis_revision);
+    const completed = await waitForRemoteAnalysis(
+      serverUrl,
+      analysisId,
+      options.token,
+      response.analysis_revision,
+      undefined,
+      undefined,
+      options.readinessRequirement,
+    );
     Object.assign(response, {
       status: 'success',
       cas: completed,

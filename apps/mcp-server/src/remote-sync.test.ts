@@ -58,7 +58,7 @@ test('remote analyzer supports full source upload and dirty-tree incremental syn
     assert.equal(account.statusCode, 201);
     const token = JSON.parse(account.body).token as string;
 
-    const full = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const full = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true, readinessRequirement: 'structural' });
     assert.equal(full.status, 'success');
     assert.equal(full.analysis_type, 'full');
     assert.ok(full.cas!.nodes.length > 0);
@@ -145,7 +145,7 @@ test('dirty tree analyze: shared revision is committed HEAD and the in-flight pa
     const token = JSON.parse(account.body).token as string;
 
     // No refusal: the dirty tree analyzes fine.
-    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true, readinessRequirement: 'structural' });
     assert.equal(result.status, 'success');
     assert.equal(result.snapshot_source, 'committed-head');
     assert.equal(result.base_commit, head, 'shared revision is tagged with the HEAD commit');

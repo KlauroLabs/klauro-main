@@ -93,7 +93,7 @@ test('Change Activity feed: two landed analyses show ordered analysis_completed 
 
     // First landed analysis — one stored revision, no prior revision to diff
     // against, so its analysis_completed event carries no `deltas`.
-    const firstAnalyze = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'activity-fixture', wait: true });
+    const firstAnalyze = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'activity-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(firstAnalyze.status, 'success');
 
     const linkRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
@@ -123,7 +123,7 @@ test('Change Activity feed: two landed analyses show ordered analysis_completed 
     fs.writeFileSync(path.join(repo, 'more.py'), 'def another():\n    return 2\n\ndef yet_another():\n    return 3\n');
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'add more code']);
-    const secondAnalyze = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'activity-fixture', wait: true });
+    const secondAnalyze = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'activity-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(secondAnalyze.status, 'success');
     assert.equal(secondAnalyze.analysis_id, firstAnalyze.analysis_id, 'sanity: both pushes must land on the same stored analysis_id for this to be a revision history, not two unrelated projects');
 

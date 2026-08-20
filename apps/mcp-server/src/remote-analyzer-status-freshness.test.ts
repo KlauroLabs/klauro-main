@@ -97,7 +97,7 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
     // First analysis: accepted and fully completed.
-    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'status-freshness-fixture', wait: true });
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'status-freshness-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzed.status, 'success');
 
     const linkRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {

@@ -110,7 +110,7 @@ test('--force bypasses the snapshot reuse gate AND the AI cache, producing a gen
     assert.equal(registerRes.statusCode, 201);
     const token = JSON.parse(registerRes.body).token as string;
 
-    const first = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'force-flag-fixture', wait: true });
+    const first = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'force-flag-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(first.status, 'success');
     const firstTimestamp = first.cas?.analysis_timestamp;
     assert.ok(firstTimestamp, 'first run must produce a stamped analysis_timestamp');
@@ -124,7 +124,7 @@ test('--force bypasses the snapshot reuse gate AND the AI cache, producing a gen
     assert.equal(unforced.reuse_decision?.source, 'unchanged');
 
     // --- THE FIX: --force on the SAME unchanged snapshot must NOT reuse.
-    const forced = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'force-flag-fixture', force: true, wait: true });
+    const forced = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'force-flag-fixture', force: true, wait: true, readinessRequirement: 'structural' });
     assert.equal(forced.status, 'success');
     assert.notEqual(forced.reused, true, '--force must never come back reused:true — this was the P0: a documented flag that silently did nothing');
     assert.ok(forced.reuse_decision, 'the forced decision must be reported, not just implied by reused:false');

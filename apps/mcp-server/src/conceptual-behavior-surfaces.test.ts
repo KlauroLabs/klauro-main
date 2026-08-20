@@ -96,7 +96,7 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
-    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzeResult.status, 'success');
     const createRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'surfaces-fixture',

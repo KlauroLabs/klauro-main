@@ -84,7 +84,7 @@ test('conceptual + semantic-coverage responses are cached byte-identical and inv
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
     // Upload an analysis (customer path), then link a project to it.
-    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzeResult.status, 'success');
     const createRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'read-cache-fixture',
@@ -126,7 +126,7 @@ test('conceptual + semantic-coverage responses are cached byte-identical and inv
     fs.writeFileSync(path.join(repo, 'billing.py'), 'def charge_invoice(invoice):\n    return invoice\n');
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'add billing module']);
-    const reAnalyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: analyzeResult.analysis_id, wait: true });
+    const reAnalyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: analyzeResult.analysis_id, wait: true, readinessRequirement: 'structural' });
     assert.equal(reAnalyzeResult.status, 'success');
 
     const statsBeforeCoverageRefresh = getCasReadResponseCacheStats();

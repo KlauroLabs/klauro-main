@@ -166,8 +166,8 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     const repoA = makeRepo(root, 'repo-a', 'def handler_a():\n    return 1\n');
     const repoB = makeRepo(root, 'repo-b', 'def handler_b():\n    return 2\n');
 
-    const analyzeA = await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token, wait: true });
-    const analyzeB = await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token, wait: true });
+    const analyzeA = await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token, wait: true, readinessRequirement: 'structural' });
+    const analyzeB = await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token, wait: true, readinessRequirement: 'structural' });
 
     // Link both analyses to account projects in this workspace (the
     // `klauro init` reconnect shape: project.analysis_id set at creation).
@@ -188,8 +188,8 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     // Re-push both analyses (simulating a second analyze pass on each repo,
     // now that they're linked) within the debounce window — this is the
     // "5-repo batch push -> ~1 rebuild" scenario, scaled to 2 repos x 2 pushes.
-    await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token, analysisId: analyzeA.analysis_id, wait: true });
-    await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token, analysisId: analyzeB.analysis_id, wait: true });
+    await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token, analysisId: analyzeA.analysis_id, wait: true, readinessRequirement: 'structural' });
+    await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token, analysisId: analyzeB.analysis_id, wait: true, readinessRequirement: 'structural' });
 
     // Immediately after landing, before the debounce timer fires, the GET
     // must report 'pending' rather than silently serving nothing.
@@ -379,7 +379,7 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
 
     const repo = makeRepo(root, 'repo-reanalyze', "from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get('/totals')\ndef calculate_total():\n    return {'total': 1}\n");
     fs.writeFileSync(path.join(repo, 'requirements.txt'), 'fastapi==0.116.1\n');
-    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true, readinessRequirement: 'structural' });
     const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'repo-reanalyze',
       analysis_id: analyzed.analysis_id,
@@ -493,7 +493,7 @@ test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
     const repo = makeRepo(root, 'repo-sync-trigger', 'def handler():\n    return 1\n');
-    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true, readinessRequirement: 'structural' });
     const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'repo-sync-trigger',
       analysis_id: analyzed.analysis_id,
@@ -590,7 +590,7 @@ test('a short-circuited AI attempt persists an honest enrichment error, not a fa
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
     const repo = makeRepo(root, 'repo-honest-error', 'def handler():\n    return 1\n');
-    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true, readinessRequirement: 'structural' });
     const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'repo-honest-error',
       analysis_id: analyzed.analysis_id,

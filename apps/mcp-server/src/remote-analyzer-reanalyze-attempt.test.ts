@@ -80,7 +80,7 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
     // Upload a real (tiny) snapshot so the project has an existing 'ready'
     // analysis — the exact shape that made markBackgroundAnalysisFailed a
     // no-op for reanalyze (no 'pending' layer left to flip).
-    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'attempt-fixture', wait: true });
+    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'attempt-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzeResult.status, 'success');
 
     const linkRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {

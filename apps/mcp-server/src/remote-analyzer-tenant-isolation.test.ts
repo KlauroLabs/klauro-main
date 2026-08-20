@@ -168,7 +168,7 @@ test('TIER 1: two accounts analyzing repos at the IDENTICAL absolute path never 
       'def handler_two():\n    return 2\n',
       'def handler_three():\n    return 3\n',
     ].join('\n'));
-    const resultA = await analyzeCodebaseRemotely({ projectPath: sharedPath, serverUrl, token: accountA.token, wait: true });
+    const resultA = await analyzeCodebaseRemotely({ projectPath: sharedPath, serverUrl, token: accountA.token, wait: true, readinessRequirement: 'structural' });
     assert.equal(resultA.status, 'success');
     assert.ok(resultA.cas!.nodes.length > 0);
 
@@ -182,7 +182,7 @@ test('TIER 1: two accounts analyzing repos at the IDENTICAL absolute path never 
     // pushes its OWN much smaller fixture content to the same directory.
     fs.rmSync(sharedPath, { recursive: true, force: true });
     writeRepo(sharedPath, 'def tiny():\n    return 0\n');
-    const resultB = await analyzeCodebaseRemotely({ projectPath: sharedPath, serverUrl, token: accountB.token, wait: true });
+    const resultB = await analyzeCodebaseRemotely({ projectPath: sharedPath, serverUrl, token: accountB.token, wait: true, readinessRequirement: 'structural' });
     assert.equal(resultB.status, 'success');
     assert.ok(resultB.cas!.nodes.length > 0);
 
@@ -223,7 +223,7 @@ test('TIER 1: reanalyze on an unbound (bare-hash) project never resolves to anot
     const root = path.dirname(remoteData);
     const sharedPath = path.join(root, 'shared-reanalyze-path');
     writeRepo(sharedPath, 'def alpha():\n    return "account-a-secret-marker"\n');
-    const resultA = await analyzeCodebaseRemotely({ projectPath: sharedPath, serverUrl, token: accountA.token, wait: true });
+    const resultA = await analyzeCodebaseRemotely({ projectPath: sharedPath, serverUrl, token: accountA.token, wait: true, readinessRequirement: 'structural' });
     assert.equal(resultA.status, 'success');
 
     // Account B creates a project record in ITS OWN workspace and links it
@@ -384,6 +384,7 @@ test('SECURITY (task #120): POST /v1/analyze with a foreign prj_ id is refused s
       token: victim.token,
       analysisId: victimProject.id,
       wait: true,
+      readinessRequirement: 'structural',
     });
     assert.equal(legitPush.status, 'success');
     assert.ok(legitPush.cas!.nodes.length > 0);
@@ -423,6 +424,7 @@ test('SECURITY (task #120): POST /v1/analyze with a foreign prj_ id is refused s
       token: victim.token,
       analysisId: victimProject.id,
       wait: true,
+      readinessRequirement: 'structural',
     });
     assert.equal(followUpPush.status, 'success');
   });
@@ -441,7 +443,7 @@ test('SECURITY (task #120): POST /v1/sync and /v1/analyze-diff with a foreign pr
     }, victim.token);
     const victimProject = JSON.parse(victimProjectRes.body).project as { id: string };
     const legitPush = await analyzeCodebaseRemotely({
-      projectPath: victimRepo, serverUrl, token: victim.token, analysisId: victimProject.id, wait: true,
+      projectPath: victimRepo, serverUrl, token: victim.token, analysisId: victimProject.id, wait: true, readinessRequirement: 'structural',
     });
     assert.equal(legitPush.status, 'success');
 
@@ -484,7 +486,7 @@ test('STORAGE ADMISSION BOUND (task #120): an account cannot push unlimited dist
       for (let i = 0; i < 2; i++) {
         const repo = path.join(root, `quota-repo-${i}`);
         writeRepo(repo, `def entry_${i}():\n    return ${i}\n`);
-        const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: account.token, wait: true });
+        const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: account.token, wait: true, readinessRequirement: 'structural' });
         assert.equal(result.status, 'success', `push ${i} within the quota must succeed`);
       }
 
@@ -492,7 +494,7 @@ test('STORAGE ADMISSION BOUND (task #120): an account cannot push unlimited dist
       writeRepo(repoOverLimit, 'def over_limit():\n    return -1\n');
       let sawQuotaError = false;
       try {
-        await analyzeCodebaseRemotely({ projectPath: repoOverLimit, serverUrl, token: account.token, wait: true });
+        await analyzeCodebaseRemotely({ projectPath: repoOverLimit, serverUrl, token: account.token, wait: true, readinessRequirement: 'structural' });
       } catch (error) {
         sawQuotaError = /storage limit/i.test(error instanceof Error ? error.message : String(error));
       }

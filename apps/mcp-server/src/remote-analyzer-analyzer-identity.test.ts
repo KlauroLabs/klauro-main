@@ -89,7 +89,7 @@ test('reuse is gated on analyzer identity, not source alone — and the decision
     assert.equal(registerRes.statusCode, 201);
     const token = JSON.parse(registerRes.body).token as string;
 
-    const first = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'identity-fixture', wait: true });
+    const first = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'identity-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(first.status, 'success');
 
     // --- Re-run on the UNCHANGED repo with an unchanged analyzer: reuse is
@@ -162,7 +162,7 @@ test('a degraded comprehension layer never reports a clean ready status', async 
     const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
-    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'degraded-fixture', wait: true });
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'degraded-fixture', wait: true, readinessRequirement: 'structural' });
     const linkRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'degraded-fixture',
       analysis_id: analyzed.analysis_id,

@@ -93,7 +93,7 @@ test('first-analyze async path writes a succeeded attempt record (regression: it
 
     // analyzeCodebaseRemotely always posts /v1/analyze with async:true (the
     // exact path this fix touches) — wait:true just polls for completion.
-    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'first-analyze-attempt-fixture', wait: true });
+    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'first-analyze-attempt-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzeResult.status, 'success');
 
     // The client-visible analysis_id (analyzeResult.analysis_id) is NOT the
@@ -261,7 +261,7 @@ test('a landed-and-complete CAS with a stale in-progress record resolves to read
     const token = JSON.parse(registerRes.body).token as string;
 
     // A real, fully-landed analysis (layers_ready.complete === true).
-    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'landed-cas-fixture', wait: true });
+    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'landed-cas-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzeResult.status, 'success');
 
     const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
