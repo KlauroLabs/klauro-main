@@ -231,7 +231,7 @@ test('a fresh in-progress attempt record (recent heartbeat) is NOT reaped', asyn
   }
 });
 
-test('a landed-and-complete CAS with a stale in-progress record resolves to ready, never failed', async () => {
+test('a structurally landed CAS with a stale in-progress record remains degraded and queryable', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-stranded-reap-'));
   const repo = path.join(root, 'repo');
   const remoteData = path.join(root, 'remote-data');
@@ -260,7 +260,6 @@ test('a landed-and-complete CAS with a stale in-progress record resolves to read
     });
     const token = JSON.parse(registerRes.body).token as string;
 
-    // A real, fully-landed analysis (layers_ready.complete === true).
     const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'landed-cas-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzeResult.status, 'success');
 
@@ -288,7 +287,7 @@ test('a landed-and-complete CAS with a stale in-progress record resolves to read
 
     const analysisRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
     const body = JSON.parse(analysisRes.body) as { status?: string; last_attempt?: { state?: string } };
-    assert.equal(body.status, 'ready', 'reaping a stale record must never destroy a genuinely complete analysis');
+    assert.equal(body.status, 'degraded', 'reaping a stale record must preserve the structurally complete analysis without hiding failed comprehension');
     assert.equal(body.last_attempt?.state, 'succeeded', 'the record must be corrected to succeeded, not left claiming in-progress or flipped to failed');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

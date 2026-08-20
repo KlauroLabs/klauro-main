@@ -96,7 +96,6 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
-    // First analysis: accepted and fully completed.
     const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'status-freshness-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzed.status, 'success');
 
@@ -106,11 +105,10 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     }, token);
     const project = JSON.parse(linkRes.body).project as { id: string };
 
-    // Sanity: right after landing, both status routes agree it is ready.
-    const readyStatus = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token)).body);
-    assert.equal(readyStatus.status, 'ready');
-    const readyAnalysis = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token)).body);
-    assert.equal(readyAnalysis.status, 'ready');
+    const degradedStatus = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token)).body);
+    assert.equal(degradedStatus.status, 'degraded');
+    const degradedAnalysis = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token)).body);
+    assert.equal(degradedAnalysis.status, 'degraded');
 
     // Simulate a SECOND push that has been accepted (its attempt record is
     // 'in-progress') but has not yet overwritten the CAS on disk — the exact
@@ -159,7 +157,7 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
       duration_ms: 1200,
     }));
     const afterStatus = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token)).body);
-    assert.equal(afterStatus.status, 'ready');
+    assert.equal(afterStatus.status, 'degraded');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;

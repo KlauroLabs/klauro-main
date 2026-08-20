@@ -134,7 +134,7 @@ test('reanalyze re-runs on the last uploaded snapshot, never touching project.lo
       const analysisRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
       assert.equal(analysisRes.statusCode, 200);
       const analysisBody = JSON.parse(analysisRes.body) as { status?: string; summary?: { nodes?: number } };
-      if ((analysisBody.status === 'ready' || analysisBody.status === 'populating') && (analysisBody.summary?.nodes ?? 0) > 0) {
+      if (['ready', 'degraded', 'queryable'].includes(analysisBody.status || '') && (analysisBody.summary?.nodes ?? 0) > 0) {
         landed = true;
         break;
       }

@@ -77,9 +77,6 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
     const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
-    // Upload a real (tiny) snapshot so the project has an existing 'ready'
-    // analysis — the exact shape that made markBackgroundAnalysisFailed a
-    // no-op for reanalyze (no 'pending' layer left to flip).
     const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: 'attempt-fixture', wait: true, readinessRequirement: 'structural' });
     assert.equal(analyzeResult.status, 'success');
 
@@ -98,7 +95,7 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
     // server restart is reapable the same way a reanalyze always was.
     const beforeRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
     const beforeBody = JSON.parse(beforeRes.body) as { status?: string; last_attempt?: { state?: string; trigger?: string } };
-    assert.equal(beforeBody.status, 'ready');
+    assert.equal(beforeBody.status, 'degraded');
     assert.equal(beforeBody.last_attempt?.state, 'succeeded', 'the first-analyze itself now leaves a succeeded attempt record');
     assert.equal(beforeBody.last_attempt?.trigger, 'analyze');
 
@@ -131,11 +128,7 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
       await new Promise<void>(resolve => setTimeout(resolve, 100));
     }
     assert.ok(failedAttempt, 'poller must observe last_attempt.state=failed after the background reanalyze throws');
-    // This is the EXACT shape of defect #41: getAnalysis() serves the last
-    // good CAS from its in-process cache even though the on-disk workspace
-    // is now gone, so `status` alone still reads 'ready' with no signal that
-    // a fresher reanalyze attempt failed. last_attempt is what makes it VISIBLE.
-    assert.equal(failedAttempt!.status, 'ready', 'the OLD analysis keeps serving status:ready (cached) — last_attempt is the ONLY signal a fresher reanalyze failed');
+    assert.equal(failedAttempt!.status, 'degraded', 'the prior structural analysis remains queryable while the failed reanalyze stays visible');
     assert.match(failedAttempt!.last_attempt!.reason || '', /Project path does not exist/, 'the failure reason must be surfaced, not just a bare failed flag');
     assert.ok(failedAttempt!.last_attempt!.started_at, 'started_at must be recorded');
     assert.ok(failedAttempt!.last_attempt!.finished_at, 'finished_at must be recorded on a terminal state');

@@ -80,7 +80,7 @@ after(() => {
   fs.rmSync(workspaceRoot, { recursive: true, force: true });
 });
 
-test('layered job completes through the worker with phase messages, an honest enrichment tail, and a real persisted CAS', async () => {
+test('layered job persists structural layers and reports disabled comprehension honestly', async () => {
   const events: LayeredJobPhaseEvent[] = [];
   const summary = await runLayeredAnalysis(fixtureProject, {
     analysisFocus: 'full',
@@ -104,7 +104,16 @@ test('layered job completes through the worker with phase messages, an honest en
   // 275e9dc7-era sync routes do.
   const landed = await getAnalysis(fixtureProject);
   assert.ok(landed.nodes.length > 0);
-  assert.equal(landed.layers_ready?.complete, true, 'a completed layered run must report a complete layers_ready ladder');
+  assert.equal(landed.layers_ready?.complete, false);
+  assert.deepEqual(
+    landed.layers_ready?.layers.filter(layer => layer.status === 'error').map(layer => layer.layer),
+    ['L5'],
+  );
+  assert.ok(
+    landed.layers_ready?.layers
+      .filter(layer => layer.layer !== 'L5')
+      .every(layer => layer.status === 'ready'),
+  );
   assert.equal(landed.system.analysis_focus, 'full');
   assert.equal(landed.system.repo_facts?.contributor_count, 7);
 });
