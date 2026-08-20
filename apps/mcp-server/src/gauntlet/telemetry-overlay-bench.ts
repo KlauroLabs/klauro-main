@@ -29,6 +29,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import { codebaseMemoryPath } from './real-camp-arms';
 import { analyzeForBench } from './product-analysis';
 import { correlateRuntimeEvent, type RuntimeEventInput } from '../product';
 import { validateWin } from './win-validator';
@@ -93,14 +94,8 @@ export interface TelemetryOverlayBenchResult {
   decoy_handled_honestly: boolean;
 }
 
-const CBM_BIN = path.join(process.env.HOME || '', '.local/bin/codebase-memory-mcp');
-
 export function cbmAvailable(): boolean {
-  try {
-    return fs.existsSync(CBM_BIN);
-  } catch {
-    return false;
-  }
+  return codebaseMemoryPath() !== null;
 }
 
 function toTokens(bytes: number): number {
@@ -266,11 +261,11 @@ interface CbmOverlay {
 
 
 
-function cbmOverlay(dir: string, traces: OverlayTraces, truth: OverlayTruth): CbmOverlay {
+function cbmOverlay(bin: string, dir: string, traces: OverlayTraces, truth: OverlayTruth): CbmOverlay {
   const t0 = Date.now();
   const total = truth.correlations.length;
   try {
-    const idxRaw = execFileSync(CBM_BIN, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
+    const idxRaw = execFileSync(bin, ['cli', 'index_repository', JSON.stringify({ repo_path: dir })], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 120000,
     });
     const idx = JSON.parse(idxRaw.trim().split('\n').filter(l => l.startsWith('{')).pop() || '{}');
@@ -292,7 +287,7 @@ function cbmOverlay(dir: string, traces: OverlayTraces, truth: OverlayTruth): Cb
       count: s.count,
     }));
     const ingestRaw = execFileSync(
-      CBM_BIN,
+      bin,
       ['cli', 'ingest_traces', JSON.stringify({ project, traces: cbmTraces })],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 },
     );
@@ -343,9 +338,9 @@ export async function runTelemetryOverlayBench(fixtureDir: string, options: { wi
     { arm: 'klauro', correct: kl.correct, total: kl.total, f1: klF1, bytes: kl.bytes, can_answer: true },
   ];
 
-  const useCbm = options.withCbm !== false && cbmAvailable();
-  if (useCbm) {
-    const cbm = cbmOverlay(fixtureDir, traces, truth);
+  const cbmBin = options.withCbm === false ? null : codebaseMemoryPath();
+  if (cbmBin) {
+    const cbm = cbmOverlay(cbmBin, fixtureDir, traces, truth);
     const cbmF1 = cbm.total ? cbm.correct / cbm.total : 0;
     arms.push({
       arm_id: 'codebase-memory',

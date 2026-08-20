@@ -20,6 +20,10 @@
 ARG BASE_IMAGE=klauro/api:alpha
 FROM ${BASE_IMAGE}
 
+ARG AST_GREP_VERSION=0.45.1
+ARG CODEBASE_MEMORY_VERSION=0.10.8
+ARG SCIP_TYPESCRIPT_VERSION=0.4.0
+
 # git: required so git-shelling tests exercise real behavior instead of ENOENT.
 # procps (ps): several suite helpers/benches shell out to `ps` to check for
 #   stray child processes / kill leftover workers between test files; without
@@ -28,7 +32,11 @@ FROM ${BASE_IMAGE}
 #   inside the container (sync happens from the dev machine, see gate.sh),
 #   and adding it would be gold-plating with no probe backing it.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git procps \
+  && apt-get install -y --no-install-recommends ca-certificates curl git procps ripgrep universal-ctags \
+  && npm install --global \
+    "@ast-grep/cli@${AST_GREP_VERSION}" \
+    "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
+    "codebase-memory-mcp@${CODEBASE_MEMORY_VERSION}" \
   && rm -rf /var/lib/apt/lists/*
 
 # Non-root user so permission-bit assertions in the suite (e.g.
