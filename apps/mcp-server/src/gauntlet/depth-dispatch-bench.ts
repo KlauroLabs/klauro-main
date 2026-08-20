@@ -129,7 +129,8 @@ export interface DepthDispatchReport {
     wins: number;
     ties: number;
     losses: number;
-    winRate: number;
+    strictWinRate: number;
+    nonLossRate: number;
     meanKlauroF1: number;
     meanCbmF1: number;
     tokenSaving: number;
@@ -489,7 +490,8 @@ export async function buildDepthDispatchReport(): Promise<DepthDispatchReport> {
       wins,
       ties,
       losses,
-      winRate: cases ? (wins + ties) / cases : 0,
+      strictWinRate: cases ? wins / cases : 0,
+      nonLossRate: cases ? (wins + ties) / cases : 0,
       meanKlauroF1: mean(results.map(r => r.klauroF1)),
       meanCbmF1: mean(results.map(r => r.cbmF1)),
       tokenSaving: mean(results.map(r => r.tokenSaving)),

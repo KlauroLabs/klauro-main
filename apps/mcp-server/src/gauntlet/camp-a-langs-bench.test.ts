@@ -9,7 +9,7 @@ import { TOP_LANGS } from './camp-a-langs';
 // present) answers by cosine similarity and is pulled off the answer by the
 // same-name decoy. Klauro must never lose.
 
-test('camp-a-langs: covers >=40 top languages, Klauro structural F1 is high, and never loses to embeddings', async () => {
+test('camp-a-langs reports structural coverage and only claims comparisons when embeddings run', async () => {
   _resetCampALangsCache();
   const report = await buildCampALangsReport();
 
@@ -29,38 +29,40 @@ test('camp-a-langs: covers >=40 top languages, Klauro structural F1 is high, and
   );
   assert.ok(report.aggregate.meanKlauroF1 >= 0.9, `mean Klauro F1 must be >=0.9, got ${report.aggregate.meanKlauroF1}`);
 
-  // --- The win: for every language where the embedding arm ran, klauroF1 >= embeddingF1. ---
-  const ran = report.perLanguage.filter(r => r.embeddingModel !== '');
+  const ran = report.perLanguage.filter(r => r.available);
   for (const r of ran) {
     assert.ok(
-      r.klauroF1 >= r.embeddingF1,
+      r.klauroF1 + 1e-9 >= r.embeddingF1,
       `Klauro lost to ${r.embeddingModel} on ${r.lang}: klauroF1=${r.klauroF1} < embeddingF1=${r.embeddingF1}`,
     );
-    assert.ok(r.klauroWins, `klauroWins must be true for ${r.lang}`);
+    assert.notEqual(r.verdict, 'loss', `${r.lang} must not be a loss`);
   }
 
   if (report.available) {
-    // Ollama present: the head-to-head ran for real. Win-rate must be a clean sweep.
-    assert.equal(report.aggregate.klauroWinRate, 1, `Klauro must win every language it was compared on; got win-rate ${report.aggregate.klauroWinRate}`);
+    assert.equal(report.aggregate.losses, 0);
+    assert.equal(report.aggregate.nonLossRate, 1);
+    assert.ok(report.aggregate.strictWinRate !== null && report.aggregate.strictWinRate >= 0 && report.aggregate.strictWinRate <= 1);
     assert.ok(ran.length > 0, 'embedding arm reported available but no language ran');
   } else {
-    // Ollama absent: honest skip — assert Klauro-only coverage instead.
     assert.equal(ran.length, 0, 'no embedding model should run when ollama is absent');
     assert.equal(report.aggregate.comparedLanguages, 0);
-    assert.equal(report.aggregate.klauroWinRate, null);
+    assert.equal(report.aggregate.wins, 0);
+    assert.equal(report.aggregate.ceilingTies, 0);
+    assert.equal(report.aggregate.losses, 0);
+    assert.equal(report.aggregate.strictWinRate, null);
+    assert.equal(report.aggregate.nonLossRate, null);
     assert.equal(report.aggregate.meanEmbeddingF1, null);
-    assert.ok(report.perLanguage.every(r => !r.available && !r.klauroWins));
+    assert.ok(report.perLanguage.every(r => !r.available && r.verdict === 'unmeasured'));
     const klauroCovered = report.perLanguage.filter(r => r.klauroF1 >= 1).length;
     assert.ok(klauroCovered >= 40, `Klauro-only coverage must be >=40, got ${klauroCovered}`);
   }
 
-  // --- Printed summary line (the deliverable evidence). ---
   const a = report.aggregate;
-  // eslint-disable-next-line no-console
   console.log(
     `\nCAMP-A-LANGS SUMMARY: ${a.languages} languages, ` +
     `compared ${a.comparedLanguages}, ` +
-    `Klauro win-rate ${a.klauroWinRate === null ? 'N/A' : `${(a.klauroWinRate * 100).toFixed(0)}%`}, ` +
+    `strict win rate ${a.strictWinRate === null ? 'N/A' : `${(a.strictWinRate * 100).toFixed(0)}%`}, ` +
+    `non-loss rate ${a.nonLossRate === null ? 'N/A' : `${(a.nonLossRate * 100).toFixed(0)}%`}, ` +
     `meanKlauroF1 ${a.meanKlauroF1.toFixed(3)}, ` +
     `meanEmbeddingF1 ${a.meanEmbeddingF1 === null ? 'N/A' : a.meanEmbeddingF1.toFixed(3)} ` +
     `(embeddings ${report.available ? 'ran' : 'unavailable — Klauro-only'})`,

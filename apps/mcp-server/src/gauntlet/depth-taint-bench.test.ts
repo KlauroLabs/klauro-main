@@ -72,7 +72,8 @@ test('Depth-taint vs codebase-memory: Klauro proves cross-function source->sink,
   );
 
   // Aggregate: Klauro ties-or-wins every case; mean F1 high; cbm mean F1 zero.
-  assert.equal(report.aggregate.winRate, 1, `winRate ${report.aggregate.winRate} != 1`);
+  assert.equal(report.aggregate.nonLossRate, 1, `nonLossRate ${report.aggregate.nonLossRate} != 1`);
+  assert.equal(report.aggregate.strictWinRate, report.aggregate.klauroWins / report.aggregate.cases);
   assert.ok(
     report.aggregate.meanKlauroF1 >= 0.99,
     `mean Klauro F1 ${report.aggregate.meanKlauroF1.toFixed(3)} below 0.99`,

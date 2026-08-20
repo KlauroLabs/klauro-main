@@ -77,7 +77,8 @@ export interface CampCRoutesVsCbmReport {
     klauroWins: number;
     ties: number;
     losses: number;
-    winRate: number;
+    strictWinRate: number;
+    nonLossRate: number;
     meanKlauroF1: number;
     meanCbmF1: number;
     meanTokenSaving: number;
@@ -269,7 +270,8 @@ export async function buildCampCRoutesVsCbmReport(): Promise<CampCRoutesVsCbmRep
       ties,
       losses,
 
-      winRate: frameworks ? (klauroWins + ties) / frameworks : 0,
+      strictWinRate: frameworks ? klauroWins / frameworks : 0,
+      nonLossRate: frameworks ? (klauroWins + ties) / frameworks : 0,
       meanKlauroF1: mean(results.map(r => r.klauroF1)),
       meanCbmF1: mean(results.map(r => r.cbmF1)),
       meanTokenSaving: mean(results.map(r => r.tokenSaving)),

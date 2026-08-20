@@ -58,7 +58,8 @@ test('DEPTH-4 dispatch: Klauro never strictly loses to codebase-memory on impl r
 
   // Aggregate sanity.
   assert.equal(report.aggregate.losses, 0);
-  assert.ok(report.aggregate.winRate >= 0 && report.aggregate.winRate <= 1);
+  assert.ok(report.aggregate.strictWinRate >= 0 && report.aggregate.strictWinRate <= 1);
+  assert.equal(report.aggregate.nonLossRate, 1);
 });
 
 test('DEPTH-4 dispatch: Klauro excludes the same-named decoy on every case', async () => {

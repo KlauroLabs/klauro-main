@@ -42,7 +42,7 @@ export interface CampALangRow {
 
   embeddingF1: number;
 
-  klauroWins: boolean;
+  verdict: 'win' | 'ceiling-tie' | 'loss' | 'unmeasured';
 
   embeddingModel: string;
 
@@ -57,7 +57,11 @@ export interface CampALangsReport {
   aggregate: {
     languages: number;
     comparedLanguages: number;
-    klauroWinRate: number | null;
+    wins: number;
+    ceilingTies: number;
+    losses: number;
+    strictWinRate: number | null;
+    nonLossRate: number | null;
     meanKlauroF1: number;
     meanEmbeddingF1: number | null;
   };
@@ -71,6 +75,13 @@ function f1(produced: string[], truth: string[]): number {
   const precision = prod.length ? tp / prod.length : (truth.length ? 0 : 1);
   const recall = truth.length ? tp / truth.length : 1;
   return precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
+}
+
+function comparisonVerdict(ran: boolean, klauroF1: number, embeddingF1: number): CampALangRow['verdict'] {
+  if (!ran) return 'unmeasured';
+  if (klauroF1 > embeddingF1 + 1e-9) return 'win';
+  if (Math.abs(klauroF1 - embeddingF1) <= 1e-9) return 'ceiling-tie';
+  return 'loss';
 }
 
 
@@ -209,12 +220,13 @@ export async function buildCampALangsReport(): Promise<CampALangsReport> {
     }
 
     const ran = embeddingModel !== '';
+    const verdict = comparisonVerdict(ran, klauroF1, embeddingF1);
     perLanguage.push({
       lang: tl.lang,
       rank: tl.rank,
       klauroF1,
       embeddingF1,
-      klauroWins: ran && klauroF1 >= embeddingF1,
+      verdict,
       embeddingModel,
       available: langSupported(tl.lang) && ran,
     });
@@ -222,9 +234,13 @@ export async function buildCampALangsReport(): Promise<CampALangsReport> {
 
   const n = perLanguage.length;
   const ranRows = perLanguage.filter(r => r.available);
+  const wins = ranRows.filter(row => row.verdict === 'win').length;
+  const ceilingTies = ranRows.filter(row => row.verdict === 'ceiling-tie').length;
+  const losses = ranRows.filter(row => row.verdict === 'loss').length;
   const meanKlauroF1 = n ? perLanguage.reduce((a, r) => a + r.klauroF1, 0) / n : 0;
   const meanEmbeddingF1 = ranRows.length ? ranRows.reduce((a, r) => a + r.embeddingF1, 0) / ranRows.length : null;
-  const winRate = ranRows.length ? ranRows.filter(r => r.klauroWins).length / ranRows.length : null;
+  const strictWinRate = ranRows.length ? wins / ranRows.length : null;
+  const nonLossRate = ranRows.length ? (wins + ceilingTies) / ranRows.length : null;
 
   cache = {
     available: ranRows.length > 0,
@@ -232,12 +248,16 @@ export async function buildCampALangsReport(): Promise<CampALangsReport> {
     aggregate: {
       languages: n,
       comparedLanguages: ranRows.length,
-      klauroWinRate: winRate,
+      wins,
+      ceilingTies,
+      losses,
+      strictWinRate,
+      nonLossRate,
       meanKlauroF1,
       meanEmbeddingF1,
     },
     note: ranRows.length
-      ? `Klauro structurally out-qualifies local embeddings on who-calls across ${ranRows.length} measured languages (win-rate ${(winRate! * 100).toFixed(0)}%).`
+      ? `Klauro structurally matches or exceeds local embeddings on who-calls across ${ranRows.length} measured languages (strict win rate ${(strictWinRate! * 100).toFixed(0)}%, non-loss rate ${(nonLossRate! * 100).toFixed(0)}%).`
       : `Ollama / embedding models unavailable — Camp A skipped (honest). Klauro structural coverage proven on ${perLanguage.filter(r => r.klauroF1 > 0).length}/${n} languages.`,
   };
   return cache;

@@ -109,7 +109,8 @@ test('Depth-behavioral-diff vs codebase-memory: Klauro produces a behavioral del
 
   // Aggregate: Klauro ties-or-wins every case with perfect mean F1; cbm scores 0
   // on every behavioral case (its only non-zero F1 is the vacuous control match).
-  assert.equal(report.aggregate.winRate, 1, `winRate ${report.aggregate.winRate} != 1`);
+  assert.equal(report.aggregate.nonLossRate, 1, `nonLossRate ${report.aggregate.nonLossRate} != 1`);
+  assert.equal(report.aggregate.strictWinRate, report.aggregate.klauroWins / report.aggregate.cases);
   assert.equal(report.aggregate.meanKlauroF1, 1, `mean Klauro F1 ${report.aggregate.meanKlauroF1} != 1`);
   const behavioralCbmF1 = report.results.filter(r => !r.control).map(r => r.cbmF1);
   assert.ok(

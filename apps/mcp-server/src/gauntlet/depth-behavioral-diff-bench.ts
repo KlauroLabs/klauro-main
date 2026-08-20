@@ -124,7 +124,8 @@ export interface DepthBehavioralDiffReport {
     klauroWins: number;
     ties: number;
     losses: number;
-    winRate: number;
+    strictWinRate: number;
+    nonLossRate: number;
     meanKlauroF1: number;
     meanCbmF1: number;
     tokenSaving: number;
@@ -388,7 +389,8 @@ export async function buildDepthBehavioralDiffReport(): Promise<DepthBehavioralD
       klauroWins,
       ties,
       losses,
-      winRate: cases ? (klauroWins + ties) / cases : 0,
+      strictWinRate: cases ? klauroWins / cases : 0,
+      nonLossRate: cases ? (klauroWins + ties) / cases : 0,
       meanKlauroF1: mean(results.map(r => r.klauroF1)),
       meanCbmF1: mean(results.map(r => r.cbmF1)),
       tokenSaving: mean(results.map(r => r.tokenSaving)),

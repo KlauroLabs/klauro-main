@@ -39,6 +39,6 @@ test('Camp-C routes vs codebase-memory: Klauro never loses, ties-or-wins every f
     `mean Klauro route F1 ${report.aggregate.meanKlauroF1.toFixed(3)} below 0.95`,
   );
 
-  // winRate (ties-or-wins) is total.
-  assert.equal(report.aggregate.winRate, 1, `winRate ${report.aggregate.winRate} != 1`);
+  assert.equal(report.aggregate.nonLossRate, 1, `nonLossRate ${report.aggregate.nonLossRate} != 1`);
+  assert.equal(report.aggregate.strictWinRate, report.aggregate.klauroWins / report.aggregate.frameworks);
 });

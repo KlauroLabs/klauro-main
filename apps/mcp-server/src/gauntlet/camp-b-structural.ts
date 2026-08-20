@@ -200,7 +200,8 @@ export interface CampBStructuralReport {
     ceilingTies: number;
     losses: number;
 
-    winRate: number;
+    strictWinRate: number;
+    nonLossRate: number;
     meanKlauroTokens: number;
     meanCbmTokens: number;
 
@@ -429,7 +430,8 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
         klauroWins: 0,
         ceilingTies: 0,
         losses: 0,
-        winRate: 0,
+        strictWinRate: 0,
+        nonLossRate: 0,
         meanKlauroTokens: 0,
         meanCbmTokens: 0,
         tokenSavingMean: 0,
@@ -514,7 +516,8 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
   const klauroWins = rows.filter(r => r.verdict === 'win').length;
   const ceilingTies = rows.filter(r => r.verdict === 'tie-ceiling').length;
   const losses = rows.filter(r => r.verdict === 'loss').length;
-  const winRate = languages ? (klauroWins + ceilingTies) / languages : 0;
+  const strictWinRate = languages ? klauroWins / languages : 0;
+  const nonLossRate = languages ? (klauroWins + ceilingTies) / languages : 0;
   const cbmAvail = rows.filter(r => r.cbm.available);
   const meanKlauroTokens = cbmAvail.length
     ? cbmAvail.reduce((a, r) => a + r.klauro.tokens, 0) / cbmAvail.length
@@ -531,7 +534,8 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
       klauroWins,
       ceilingTies,
       losses,
-      winRate,
+      strictWinRate,
+      nonLossRate,
       meanKlauroTokens,
       meanCbmTokens,
       tokenSavingMean: meanCbmTokens - meanKlauroTokens,

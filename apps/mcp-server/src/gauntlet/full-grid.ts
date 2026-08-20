@@ -90,7 +90,8 @@ export interface FullGridReport {
     uncovered: number;
     losses: number;
 
-    winRate: number;
+    strictWinRate: number;
+    nonLossRate: number;
 
     coverage: number;
   };
@@ -345,7 +346,7 @@ export async function buildFullGrid(): Promise<FullGridReport> {
 
 
 
-    const verdict: GridVerdict = p.klauroWins ? 'win' : 'loss';
+    const verdict: GridVerdict = p.verdict === 'unmeasured' ? 'uncovered' : p.verdict;
     cells.push({
       row: p.lang,
       rowKind: 'language',
@@ -486,20 +487,23 @@ export async function buildFullGrid(): Promise<FullGridReport> {
   const losses = cells.filter(c => c.verdict === 'loss');
   const total = cells.length;
   const covered = total - uncovered;
-  const winRate = covered > 0 ? (won + ceilingTied) / covered : 0;
+  const strictWinRate = covered > 0 ? won / covered : 0;
+  const nonLossRate = covered > 0 ? (won + ceilingTied) / covered : 0;
   const coverage = total > 0 ? covered / total : 0;
 
   const rowKindStats = (kind: RowKind) => {
     const inKind = cells.filter(c => c.rowKind === kind);
+    const rows = new Set(inKind.map(cell => cell.row));
+    const coveredRows = new Set(inKind.filter(cell => cell.verdict !== 'uncovered').map(cell => cell.row));
     return {
-      total: inKind.length,
-      covered: inKind.filter(c => c.verdict !== 'uncovered').length,
+      total: rows.size,
+      covered: coveredRows.size,
     };
   };
 
   cache = {
     cells,
-    aggregate: { total, won, ceilingTied, uncovered, losses: losses.length, winRate, coverage },
+    aggregate: { total, won, ceilingTied, uncovered, losses: losses.length, strictWinRate, nonLossRate, coverage },
     rows: {
       languages: rowKindStats('language'),
       frameworks: rowKindStats('framework'),
