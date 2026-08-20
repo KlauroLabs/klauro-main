@@ -6,7 +6,8 @@ import {
   CASExitPoint,
   CASCallChain,
   CASDataEntity,
-  CASChangeRisk
+  CASChangeRisk,
+  FlowConcept
 } from '../../types/cas.types';
 
 function node(id: string, name: string, type: string): CASNode {
@@ -1877,6 +1878,134 @@ describe('buildUserJourneys summary by_kind over the discovered set', () => {
     // pure global criticality ranking would rank it below all 20 stronger
     // user-facing journeys.
     expect(journeys.some(j => j.journey_kind === 'system')).toBe(true);
+  });
+});
+
+describe('buildUserJourneys with partially materialized flows', () => {
+  const flow = (flowId: string, entryPoint: string, functionIds: string[], capabilityId?: string): FlowConcept => ({
+    flow_id: flowId,
+    name: `Flow ${flowId}`,
+    intent: `Trace ${flowId}`,
+    entry_point: entryPoint,
+    entities: [],
+    contract: {
+      input: [],
+      constraints: [],
+      logic: '',
+      output: [],
+      side_effects: { state_changes: [], external_integrations: [] },
+    },
+    steps: [{
+      step_id: `${flowId}_step`,
+      order: 0,
+      name: flowId,
+      description: flowId,
+      description_source: 'deterministic-label',
+      contract: {
+        input: [],
+        constraints: [],
+        logic: '',
+        output: [],
+        side_effects: { state_changes: [], external_integrations: [] },
+      },
+      functions: functionIds.map(function_id => ({ function_id })),
+      entities: [],
+    }],
+    ...(capabilityId ? {
+      capability_id: capabilityId,
+      capability_relationships: [{
+        capability_id: capabilityId,
+        role: 'primary',
+        rationale: 'The capability operation references this entry point.',
+        evidence: 'operation',
+      }],
+    } : {}),
+  } as FlowConcept);
+
+  it('keeps web, API, MCP, and system journeys when only parser CLI flows materialize', () => {
+    const surfaces = [
+      { id: 'ui', type: 'page', root: 'ui_route', next: 'ui_component' },
+      { id: 'api', type: 'http', root: 'api_route', next: 'api_service' },
+      { id: 'mcp', type: 'mcp-tool', root: 'mcp_handler', next: 'mcp_service' },
+      { id: 'parser_one', type: 'cli', root: 'parser_one_command', next: 'parser_one_service' },
+      { id: 'parser_two', type: 'cli', root: 'parser_two_command', next: 'parser_two_service' },
+    ];
+    const nodes = surfaces.flatMap(surface => [
+      node(surface.root, `${surface.id} entry`, surface.type === 'page' ? 'page' : 'handler'),
+      node(surface.next, `${surface.id} behavior`, 'service'),
+    ]);
+    const edges = surfaces.map(surface => edge(
+      `edge_${surface.id}`,
+      surface.root,
+      surface.next,
+      'calls'
+    ));
+    const entryPoints = surfaces.map(surface => ({
+      id: `entry_${surface.id}`,
+      source_node: surface.root,
+      type: surface.type,
+      name: `${surface.id} entry`,
+      handler: { node_id: surface.root, method_name: 'run' },
+    } as CASEntryPoint));
+    const callChains = surfaces.map(surface => chain(
+      `chain_${surface.id}`,
+      surface.root,
+      `entry_${surface.id}`,
+      [[surface.root, 0], [surface.next, 1]]
+    ));
+
+    const { journeys, summary } = buildUserJourneys({
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints: [],
+      callChains,
+      flows: [
+        flow('parser_one_flow', 'entry_parser_one', ['parser_one_command', 'parser_one_service']),
+        flow('parser_two_flow', 'entry_parser_two', ['parser_two_command', 'parser_two_service']),
+      ],
+    });
+
+    expect(summary.total_discovered).toBe(5);
+    expect(new Set(journeys.map(journey => journey.entry.type))).toEqual(
+      new Set(['page', 'http', 'mcp-tool', 'cli'])
+    );
+    expect(summary.by_kind.system).toBe(1);
+    expect(journeys.filter(journey => journey.entry.type === 'cli')).toHaveLength(2);
+  });
+
+  it('uses matching flows as capability evidence without excluding unmatched structural journeys', () => {
+    const nodes = [
+      node('workspace_route', 'workspace route', 'controller'),
+      node('workspace_service', 'workspace service', 'service'),
+      node('worker_entry', 'worker entry', 'handler'),
+      node('worker_service', 'worker service', 'service'),
+    ];
+    const entryPoints = [
+      { id: 'entry_workspace', source_node: 'workspace_route', type: 'http', name: 'workspace route' },
+      { id: 'entry_worker', source_node: 'worker_entry', type: 'message', name: 'worker event' },
+    ] as CASEntryPoint[];
+
+    const { journeys } = buildUserJourneys({
+      nodes,
+      edges: [
+        edge('workspace_edge', 'workspace_route', 'workspace_service', 'calls'),
+        edge('worker_edge', 'worker_entry', 'worker_service', 'calls'),
+      ],
+      entryPoints,
+      exitPoints: [],
+      callChains: [
+        chain('workspace_chain', 'workspace_route', 'entry_workspace', [['workspace_route', 0], ['workspace_service', 1]]),
+        chain('worker_chain', 'worker_entry', 'entry_worker', [['worker_entry', 0], ['worker_service', 1]]),
+      ],
+      flows: [flow('workspace_flow', 'entry_workspace', ['workspace_route', 'workspace_service'], 'capability_workspace')],
+    });
+
+    expect(journeys).toHaveLength(2);
+    expect(journeys.find(journey => journey.entry_point_id === 'entry_workspace')?.capability_relationships).toEqual([
+      expect.objectContaining({ capability_id: 'capability_workspace', role: 'primary', evidence: 'operation' }),
+    ]);
+    expect(journeys.find(journey => journey.entry_point_id === 'entry_worker')?.capability_relationships).toBeUndefined();
   });
 });
 

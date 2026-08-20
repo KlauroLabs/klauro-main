@@ -314,10 +314,6 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
         : 'system';
 
     const matchingFlows = input.flows ? flowsForEntryPoint(entryPoint) : undefined;
-    if (input.flows) {
-      if (matchingFlows!.length === 0) continue;
-      if (journeyKind !== 'user-facing') continue;
-    }
 
     const capabilityRelationships = matchingFlows?.length
       ? dedupeCapabilityRelationships(matchingFlows.flatMap(flow => flow.capability_relationships || []))
@@ -365,6 +361,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
   const journeys = built.map(item => item.journey);
   journeys.sort((a, b) =>
     CRITICALITY_ORDER[a.criticality] - CRITICALITY_ORDER[b.criticality] ||
+    (b.capability_relationships?.length || 0) - (a.capability_relationships?.length || 0) ||
     b.terminal_effects.entities_written.length - a.terminal_effects.entities_written.length ||
     b.terminal_entities.length - a.terminal_entities.length ||
     a.id.localeCompare(b.id)
@@ -393,30 +390,31 @@ function selectIncludedJourneys(sortedJourneys: CASUserJourney[], maxJourneys: n
   const rankById = new Map<string, number>();
   sortedJourneys.forEach((journey, index) => rankById.set(journey.id, index));
 
-  const byKind = new Map<CASUserJourney['journey_kind'], CASUserJourney[]>();
-  for (const journey of sortedJourneys) {
-    const list = byKind.get(journey.journey_kind) || [];
-    list.push(journey);
-    byKind.set(journey.journey_kind, list);
-  }
-
-  const kindsPresent = [...byKind.keys()];
-  const fairShare = Math.max(1, Math.floor(maxJourneys / kindsPresent.length));
-
   const includedIds = new Set<string>();
   const included: CASUserJourney[] = [];
-  for (const kind of kindsPresent) {
-    for (const journey of byKind.get(kind)!.slice(0, fairShare)) {
-      if (includedIds.has(journey.id)) continue;
-      includedIds.add(journey.id);
-      included.push(journey);
-    }
-  }
-  for (const journey of sortedJourneys) {
-    if (included.length >= maxJourneys) break;
-    if (includedIds.has(journey.id)) continue;
+  const include = (journey: CASUserJourney) => {
+    if (included.length >= maxJourneys || includedIds.has(journey.id)) return;
     includedIds.add(journey.id);
     included.push(journey);
+  };
+
+  const representedKinds = new Set<CASUserJourney['journey_kind']>();
+  for (const journey of sortedJourneys) {
+    if (representedKinds.has(journey.journey_kind)) continue;
+    representedKinds.add(journey.journey_kind);
+    include(journey);
+  }
+
+  const representedSurfaces = new Set<string>();
+  for (const journey of sortedJourneys) {
+    const surface = `${journey.journey_kind}:${journey.entry.type}`;
+    if (representedSurfaces.has(surface)) continue;
+    representedSurfaces.add(surface);
+    include(journey);
+  }
+
+  for (const journey of sortedJourneys) {
+    include(journey);
   }
 
   included.sort((a, b) => (rankById.get(a.id)! - rankById.get(b.id)!));
