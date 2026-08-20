@@ -678,7 +678,7 @@ export async function buildWorkingTreeChangeContext(projectPath: string): Promis
     base_commit: readGitHead(root),
     git_diff: loaded.config.upload.sendGitDiff ? readGitDiff(root) : undefined,
     changed_files: changedFiles.sort((left, right) => left.path.localeCompare(right.path)),
-    manifest: buildManifest(root, loaded, changedFiles.filter((file): file is RemoteChangedFile => file.status !== 'deleted')),
+    manifest: buildManifest(root, loaded, changedFiles.filter((file): file is RemoteChangedFile => file.status !== 'deleted'), 'dirty-tree'),
   };
 }
 
@@ -714,7 +714,7 @@ export async function buildStreamingWorkingTreeChanges(projectPath: string): Pro
     base_commit: readGitHead(root),
     readGitDiff: loaded.config.upload.sendGitDiff ? async () => readGitDiff(root) : undefined,
     changed_files: changedFiles,
-    manifest: buildManifestFromStats(root, loaded, sourceFiles),
+    manifest: buildManifestFromStats(root, loaded, sourceFiles, 'dirty-tree'),
   };
 }
 
@@ -1338,6 +1338,7 @@ function buildManifest(
   root: string,
   loaded: LoadedKlauroConfig,
   files: Array<{ path?: string; content: string; hash?: string }>,
+  mode: 'full' | 'dirty-tree' = 'full',
 ): SourceManifest {
   const gitRemote = readGitRemote(root);
   const remoteProvider = detectRemoteProvider(gitRemote);
@@ -1349,7 +1350,7 @@ function buildManifest(
     branch: readGitBranch(root),
     base_commit: readGitHead(root),
     dirty: listGitChanges(root).length > 0,
-    transfer_recommendation: recommendTransfer(loaded, remoteProvider, 'full'),
+    transfer_recommendation: recommendTransfer(loaded, remoteProvider, mode),
     file_count: files.length,
     total_bytes: files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0),
     snapshot_digest: sourceSnapshotDigest(files),

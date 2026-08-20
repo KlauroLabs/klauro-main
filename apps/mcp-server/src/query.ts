@@ -666,9 +666,10 @@ function isPrimaryProductNodeForQuery(node: CASNode): boolean {
 export function searchNodes(
   cas: CASOutput,
   query: string,
-  opts: { type?: string; category?: string; level?: number; limit?: number } = {}
+  opts: { type?: string; category?: string; level?: number; file?: string; limit?: number } = {}
 ) {
   const limit = opts.limit || 25;
+  const requestedFile = opts.file?.replace(/\\/g, '/').replace(/^\.\//, '');
   const queryLower = query.toLowerCase();
   const queryWords = queryLower.split(/\s+/).filter(Boolean);
   const isMultiWord = queryWords.length > 1;
@@ -683,6 +684,7 @@ export function searchNodes(
     if (opts.type && node.type !== opts.type) continue;
     if (opts.category && node.category !== opts.category) continue;
     if (opts.level !== undefined && node.level !== opts.level) continue;
+    if (requestedFile && node.source?.file?.replace(/\\/g, '/').replace(/^\.\//, '') !== requestedFile) continue;
 
     const directMatch = node.name.toLowerCase().includes(queryLower) ||
       (node.qualified_name && node.qualified_name.toLowerCase().includes(queryLower)) ||

@@ -89,3 +89,32 @@ test('hosted query results match the canonical pure query functions', async () =
     getProductMap(fixture)
   );
 });
+
+test('hosted node search applies the exact repository-relative file filter before limiting results', async () => {
+  const fixture = cas();
+  fixture.nodes.push({
+    id: 'orders-service-test',
+    name: 'OrdersService',
+    type: 'service',
+    source: { file: 'test/orders.service.ts', line: 4 },
+  } as any);
+  const result = await executeHostedProjectQuery({
+    cas: fixture,
+    tool: 'search_nodes',
+    args: { query: 'OrdersService', file: './src/orders.service.ts', limit: 1 },
+    projectPath: '/hosted/orders',
+  }) as Array<{ id: string; file: string }>;
+  assert.deepEqual(result, [{
+    id: 'orders-service',
+    name: 'OrdersService',
+    type: 'service',
+    qualified_name: undefined,
+    category: undefined,
+    level: undefined,
+    level_name: undefined,
+    file: 'src/orders.service.ts',
+    line: 4,
+    description: undefined,
+    tags: undefined,
+  }]);
+});

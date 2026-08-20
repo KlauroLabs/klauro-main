@@ -50,6 +50,7 @@ test('incremental stream preserves added, modified, deleted, diff, hashes, and m
     assert.deepEqual(parsed.changes.changed_files, legacy.changed_files);
     assert.equal(parsed.changes.git_diff, legacy.git_diff);
     assert.deepEqual(withoutTime(parsed.changes.manifest), withoutTime(legacy.manifest));
+    assert.equal(parsed.changes.manifest.transfer_recommendation.operation, 'prepare_local_working_copy_context');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

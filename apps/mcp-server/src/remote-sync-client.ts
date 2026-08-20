@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import { constants as bufferConstants } from 'node:buffer';
 import * as path from 'node:path';
 import { Readable } from 'node:stream';
+import { getHeapStatistics } from 'node:v8';
 import { gzipSync } from 'node:zlib';
 import pLimit from 'p-limit';
 import { saveAnalysis } from './storage';
@@ -21,7 +22,7 @@ import { connectorToken, findStoredAccountOwningProject, listStoredAccounts, req
 import { assessUploadScope } from './upload-scope-guard';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { fetch as undiciFetch } from 'undici';
-import { describeHttpFailure, describeTransportFailure, getHostedDispatcher, hostedFetch, isDeadConnectionError, resetHostedDispatcher } from './hosted-transport';
+import { describeHttpFailure, describeTransportFailure, getHostedDispatcher, getHostedUploadDispatcher, hostedFetch, isDeadConnectionError, resetHostedDispatcher, resetHostedUploadDispatcher } from './hosted-transport';
 import type { AnalysisFocus } from './analysis-focus';
 import { decodeCasExport, decodeCasExportStream } from './cas-export-decoder';
 import { CAS_SECTION_NAMES, hydrateCasSections, type CasSectionManifest, type CasSectionName } from './cas-sections';
@@ -281,6 +282,7 @@ export async function waitForRemoteAnalysis(
   const deadline = Date.now() + remoteCompletionTimeoutMs(completionTimeoutMs);
   let lastStatus = 'populating';
   let lastStatusTimingAt = 0;
+  let segmentedManifestPendingSince: number | undefined;
   while (Date.now() < deadline) {
     let statusResponse: Response;
     try {
@@ -300,6 +302,7 @@ export async function waitForRemoteAnalysis(
       error?: string;
       failed_layers?: Array<{ layer?: string; error?: string }>;
       last_attempt?: { error?: string; reason?: string };
+      summary?: { node_count?: number; edge_count?: number };
     };
     if (!statusResponse.ok) {
       const detail = statusPayload.error ? `: ${statusPayload.error}` : '';
@@ -343,9 +346,13 @@ export async function waitForRemoteAnalysis(
       );
       if (segmented) return segmented;
       if (segmented === null) {
-        lastStatus = 'segmented CAS is still populating';
-        await sleep(500);
-        continue;
+        segmentedManifestPendingSince ??= Date.now();
+        const pendingForMs = Date.now() - segmentedManifestPendingSince;
+        if (pendingForMs < 2_000 || !canHydrateWholeCasFallback(statusPayload.summary)) {
+          lastStatus = 'segmented CAS is still populating';
+          await sleep(500);
+          continue;
+        }
       }
       try {
         const exported = await withRemoteReadRetry(async () => {
@@ -384,6 +391,18 @@ export async function waitForRemoteAnalysis(
     await sleep(100);
   }
   throw new Error(`Timed out waiting for remote analysis ${analysisId}; server status remains ${lastStatus} and analysis continues remotely`);
+}
+
+function canHydrateWholeCasFallback(summary?: { node_count?: number; edge_count?: number }): boolean {
+  if (!summary || !Number.isFinite(summary.node_count) || !Number.isFinite(summary.edge_count)) return false;
+  const nodeCount = Math.max(0, summary.node_count || 0);
+  const edgeCount = Math.max(0, summary.edge_count || 0);
+  const estimatedHydratedBytes = 64 * 1024 + nodeCount * 2_048 + edgeCount * 768;
+  const configured = Number(process.env.KLAURO_WHOLE_CAS_FALLBACK_MAX_BYTES);
+  const budget = Number.isFinite(configured) && configured > 0
+    ? configured
+    : Math.floor(getHeapStatistics().heap_size_limit / 32);
+  return estimatedHydratedBytes <= budget;
 }
 
 async function fetchSegmentedRemoteCas(
@@ -537,6 +556,17 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
   await assertUploadTargetIsReachable(loaded, serverUrl, options);
   const changes = await buildStreamingWorkingTreeChanges(projectPath);
   const analysisId = resolveAnalysisId(loaded, defaultAnalysisId(projectPath), options.analysisId);
+  if (changes.changed_files.length === 0) {
+    return {
+      status: 'success',
+      analysis_id: analysisId,
+      analysis_type: 'unchanged',
+      reused: true,
+      base_commit: changes.base_commit,
+      manifest: changes.manifest,
+      in_flight: { status: 'skipped', changed_files: 0, detail: 'Working tree matches committed HEAD; use analyze_codebase to submit the committed snapshot.' },
+    };
+  }
   const requestId = options.requestId || crypto.randomUUID();
   const response = await postRemote(options, '/v1/sync', createIncrementalUploadRequest({
     request_id: requestId,
@@ -689,9 +719,10 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
 
 
 
+    const streaming = isStreamingJsonRequestBody(init.body);
     return await undiciFetch(url, {
-      ...init, signal: controller.signal, dispatcher: getHostedDispatcher(),
-      ...(isStreamingJsonRequestBody(init.body) ? { duplex: 'half' } : {}),
+      ...init, signal: controller.signal, dispatcher: streaming ? getHostedUploadDispatcher() : getHostedDispatcher(),
+      ...(streaming ? { duplex: 'half' } : {}),
     } as any) as unknown as Response;
   } finally {
     clearTimeout(timer);
@@ -803,7 +834,8 @@ async function postRemote(
 
 
 
-        if (isDeadConnectionError(error)) resetHostedDispatcher();
+        if (streaming) resetHostedUploadDispatcher();
+        else if (isDeadConnectionError(error)) resetHostedDispatcher();
         await sleep(REMOTE_RETRY_DELAYS_MS[attempt - 1]);
       }
     }

@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
-import { analyzeCodebaseRemotely, waitForRemoteAnalysis } from './remote-sync-client';
+import { analyzeCodebaseRemotely, syncWorkingTreeRemotely, waitForRemoteAnalysis } from './remote-sync-client';
 
 /**
  * Reproduces the live mcp.klauro.com bug: the CLI's remote upload path
@@ -63,6 +63,37 @@ function successPayload(analysisId: string) {
     cas: { system: { name: 'x' }, nodes: [], edges: [] },
   });
 }
+
+test('clean working-tree sync is an honest no-op without a network request', async (t) => {
+  disableConnectorAuth(t);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-clean-sync-test-'));
+  const repo = makeGitFixtureRepo(root);
+  let requestCount = 0;
+  const server = http.createServer((_req, res) => {
+    requestCount++;
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ status: 'error', error: 'unexpected request' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const serverUrl = `http://127.0.0.1:${address.port}`;
+
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const result = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, token: 'test-token' });
+  assert.equal(result.status, 'success');
+  assert.equal(result.analysis_type, 'unchanged');
+  assert.equal(result.reused, true);
+  assert.equal(result.in_flight?.status, 'skipped');
+  assert.equal(result.in_flight?.changed_files, 0);
+  assert.match(result.in_flight?.detail || '', /analyze_codebase/);
+  assert.equal(result.manifest?.transfer_recommendation?.operation, 'prepare_local_working_copy_context');
+  assert.equal(requestCount, 0);
+});
 
 const CLOUDFLARE_CHALLENGE_HTML = '<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked</body></html>';
 
@@ -476,6 +507,46 @@ test('segmented CAS retrieval waits for a current server manifest instead of fal
   assert.equal(cas.system.name, 'manifest-waited');
   assert.equal(manifestRequests, 3);
   assert.equal(wholeExportRequests, 0);
+});
+
+test('small analyses fall back to the authoritative export when segmented publication stalls', async (t) => {
+  const analysisId = 'segmented-publication-stalled';
+  let exportRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ready', analysis_id: analysisId, summary: { node_count: 20, edge_count: 30 } }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'error', error: 'Segmented analysis is not ready' }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/export`) {
+      exportRequests++;
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({ system: { name: 'authoritative-fallback' }, nodes: [], edges: [] }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+
+  const cas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    10_000,
+    ['identity'],
+  );
+
+  assert.equal(cas.system.name, 'authoritative-fallback');
+  assert.equal(exportRequests, 1);
 });
 
 test('segmented CAS retrieval uses bounded parallel section reads', async (t) => {

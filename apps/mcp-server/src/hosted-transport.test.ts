@@ -8,11 +8,13 @@ import {
   describeTransportFailure,
   findErrorCode,
   getHostedDispatcher,
+  getHostedUploadDispatcher,
   hostedFetch,
   isDeadConnectionError,
   isRetriableTransportError,
   redactUrl,
   resetHostedDispatcher,
+  resetHostedUploadDispatcher,
   unwrapCauseChain,
 } from './hosted-transport';
 import { isOpaqueErrorMessage, withTransparentErrors } from './installed-client-server';
@@ -223,6 +225,18 @@ test('resetHostedDispatcher discards the pooled dispatcher; getHostedDispatcher 
   resetHostedDispatcher();
   const second = getHostedDispatcher();
   assert.notEqual(second, first, 'after a dead-connection error, the next dispatcher must be a genuinely new instance, not the destroyed one');
+});
+
+test('streaming uploads use an isolated dispatcher that is rebuilt between retries', () => {
+  const reads = getHostedDispatcher();
+  const first = getHostedUploadDispatcher();
+  assert.notEqual(first, reads);
+  assert.equal(getHostedUploadDispatcher(), first);
+  resetHostedUploadDispatcher();
+  const second = getHostedUploadDispatcher();
+  assert.notEqual(second, first);
+  assert.equal(getHostedDispatcher(), reads);
+  resetHostedUploadDispatcher();
 });
 
 test('hostedFetch survives a connection dying mid-process and recovers on the next attempt, without a client restart', async () => {

@@ -42,10 +42,16 @@ import { probeHostedProjectBinding } from './klauro-config';
 
 
 let hostedDispatcher: Agent | undefined;
+let hostedUploadDispatcher: Agent | undefined;
 
 export function getHostedDispatcher(): Agent {
   if (!hostedDispatcher) hostedDispatcher = new Agent({ allowH2: true });
   return hostedDispatcher;
+}
+
+export function getHostedUploadDispatcher(): Agent {
+  if (!hostedUploadDispatcher) hostedUploadDispatcher = new Agent({ allowH2: false, pipelining: 1 });
+  return hostedUploadDispatcher;
 }
 
 
@@ -57,6 +63,12 @@ export function getHostedDispatcher(): Agent {
 export function resetHostedDispatcher(): void {
   const stale = hostedDispatcher;
   hostedDispatcher = undefined;
+  if (stale) stale.destroy().catch(() => {});
+}
+
+export function resetHostedUploadDispatcher(): void {
+  const stale = hostedUploadDispatcher;
+  hostedUploadDispatcher = undefined;
   if (stale) stale.destroy().catch(() => {});
 }
 

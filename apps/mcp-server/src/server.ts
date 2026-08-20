@@ -3962,13 +3962,14 @@ function registerTools(server: McpServer) {
         type: z.string().optional().describe('Filter by node type (e.g. class, function, module, service, controller)'),
         category: z.string().optional().describe('Filter by category'),
         level: z.number().optional().describe('Filter by hierarchy level'),
+        file: z.string().optional().describe('Filter by exact repository-relative file path'),
         limit: z.number().optional().describe('Max results (default 8 in compact detail, 25 in full)'),
         mode: z.enum(['lexical', 'semantic', 'hybrid']).optional().describe('Retrieval mode. hybrid (default) and semantic blend embedding similarity with structural re-ranking; lexical matches names and descriptions only.'),
         detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) returns a single final score per hit, drops graph_context, and lowers the default limit to 8; 'full' restores the semantic/lexical/structural score breakdown, graph_context, and the historical limit of 25."),
         scope: DAS_SCOPE_PARAM,
       } as any,
     } as any,
-    async ({ path, query: q, type, category, level, limit, mode, detail, scope }: any) => withErrorHandling(async () => {
+    async ({ path, query: q, type, category, level, file, limit, mode, detail, scope }: any) => withErrorHandling(async () => {
       const resolvedMode = mode || 'hybrid';
       const resolvedDetail = detail || 'compact';
       const scopedGetCas = async (p: string) => scopeCasToSubCasNode(
@@ -3984,9 +3985,9 @@ function registerTools(server: McpServer) {
 
         const cas = await scopedGetCas(path);
         const resolvedLimit = limit || (resolvedDetail === 'full' ? 25 : 8);
-        return json(query.searchNodes(cas, q, { type, category, level, limit: resolvedLimit }));
+        return json(query.searchNodes(cas, q, { type, category, level, file, limit: resolvedLimit }));
       }
-      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, limit, detail: resolvedDetail, getCas: scopedGetCas })));
+      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, files: file ? [file] : undefined, limit, detail: resolvedDetail, getCas: scopedGetCas })));
     })
   );
 
