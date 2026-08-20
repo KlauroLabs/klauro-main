@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { glob } from 'glob';
 
 const require = createRequire(import.meta.url);
+const typescript = require('typescript');
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cachePath = path.join(packageRoot, 'node_modules', '.cache', 'klauro-test-suite-plan.json');
 const artifactTestFiles = new Set([
@@ -88,27 +89,81 @@ export function testWeight(source, file) {
   return Buffer.byteLength(source) + testCount * 1_000 + expensiveOperations * 15_000 + gauntletWeight;
 }
 
+export function requiresExclusiveExternalDaemon(source) {
+  return /codebaseMemory|codebase-memory-mcp|CODEBASE_MEMORY/.test(source);
+}
+
+async function resolveLocalImport(importer, specifier) {
+  if (!specifier.startsWith('.')) return undefined;
+  const base = path.resolve(path.dirname(importer), specifier);
+  const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
+  const candidates = sourceExtensions.has(path.extname(base))
+    ? [base]
+    : [
+      base,
+      ...[...sourceExtensions].map(extension => `${base}${extension}`),
+      ...['index.ts', 'index.tsx', 'index.js', 'index.mjs'].map(file => path.join(base, file)),
+    ];
+  for (const candidate of candidates) {
+    try {
+      if ((await stat(candidate)).isFile()) return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+async function dependencyClosureRequiresExternalDaemon(entry, sourceCache, importCache) {
+  const pending = [entry];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (!file || visited.has(file)) continue;
+    visited.add(file);
+    let source = sourceCache.get(file);
+    if (source === undefined) {
+      source = await readFile(file, 'utf8');
+      sourceCache.set(file, source);
+    }
+    if (requiresExclusiveExternalDaemon(source)) return true;
+    let imports = importCache.get(file);
+    if (imports === undefined) {
+      const specifiers = typescript.preProcessFile(source, true, true).importedFiles.map(item => item.fileName);
+      imports = (await Promise.all(specifiers.map(specifier => resolveLocalImport(file, specifier)))).filter(Boolean);
+      importCache.set(file, imports);
+    }
+    pending.push(...imports);
+  }
+  return false;
+}
+
 export async function discoverTestPlan(group = 'all') {
   const accepts = TEST_GROUPS[group];
   if (!accepts) throw new Error(`Unknown test group "${group}". Expected one of: ${Object.keys(TEST_GROUPS).join(', ')}`);
 
   const files = (await glob('src/**/*.test.ts', { cwd: packageRoot, nodir: true })).sort();
   const cached = await loadPlanCache();
-  const nextCache = { version: 1, files: {} };
+  const nextCache = { version: 2, files: {} };
   const planned = [];
+  const sourceCache = new Map();
+  const importCache = new Map();
 
   for (const file of files) {
     const absolute = path.join(packageRoot, file);
     const metadata = await stat(absolute);
     const cachedEntry = cached?.files?.[file];
+    const source = await readFile(absolute, 'utf8');
+    sourceCache.set(absolute, source);
     let weight;
     if (cachedEntry?.mtime_ms === metadata.mtimeMs && cachedEntry?.size === metadata.size) {
       weight = cachedEntry.weight;
     } else {
-      weight = testWeight(await readFile(absolute, 'utf8'), file);
+      weight = testWeight(source, file);
     }
-    nextCache.files[file] = { mtime_ms: metadata.mtimeMs, size: metadata.size, weight };
-    if (accepts(file)) planned.push({ file, weight });
+    const exclusiveExternalDaemon = await dependencyClosureRequiresExternalDaemon(absolute, sourceCache, importCache);
+    nextCache.files[file] = { mtime_ms: metadata.mtimeMs, size: metadata.size, weight, exclusive_external_daemon: exclusiveExternalDaemon };
+    if (accepts(file)) planned.push({ file, weight, exclusiveExternalDaemon });
   }
 
   await mkdir(path.dirname(cachePath), { recursive: true });
@@ -185,21 +240,43 @@ async function main() {
       if (result.exitCode !== 0 && result.summary.tests === 0) totals.crashed += 1;
     };
     const exclusive = plan.filter(item => artifactTestFiles.has(item.file));
-    const parallel = plan.filter(item => !artifactTestFiles.has(item.file));
+    const remaining = plan.filter(item => !artifactTestFiles.has(item.file));
+    const externalDaemon = remaining.filter(item => item.exclusiveExternalDaemon);
+    const parallel = remaining.filter(item => !item.exclusiveExternalDaemon);
     if (exclusive.length > 0) {
       for (const item of exclusive) {
         await runBuildPrerequisite(item.file === 'src/gauntlet/grammar-packaging.test.ts');
         await record(item);
       }
     }
-    await Promise.all(Array.from({ length: Math.min(concurrency, parallel.length) }, async () => {
+    const externalLane = async () => {
+      for (const item of externalDaemon) {
+        if (interrupted) return;
+        await record(item);
+      }
+    };
+    const runParallelLane = async () => {
       while (true) {
         if (interrupted) return;
         const index = nextIndex++;
         if (index >= parallel.length) return;
         await record(parallel[index]);
       }
-    }));
+    };
+    if (externalDaemon.length > 0 && concurrency === 1) {
+      await externalLane();
+      await runParallelLane();
+    } else {
+      const parallelConcurrency = concurrency - (externalDaemon.length > 0 ? 1 : 0);
+      const parallelLanes = Array.from(
+        { length: Math.min(parallelConcurrency, parallel.length) },
+        runParallelLane,
+      );
+      await Promise.all([
+        ...(externalDaemon.length > 0 ? [externalLane()] : []),
+        ...parallelLanes,
+      ]);
+    }
   } finally {
     process.removeListener('SIGTERM', terminate);
     process.removeListener('SIGINT', terminate);
@@ -244,6 +321,7 @@ async function runTestFile(tsxCli, file, forwarded, runRoot, activeChildren) {
       XDG_CACHE_HOME: path.join(isolatedRoot, 'cache'),
       KLAURO_STORAGE_PATH: path.join(isolatedRoot, 'storage'),
       KLAURO_REMOTE_ANALYZER_DATA: path.join(isolatedRoot, 'remote-data'),
+      KLAURO_COORD_DIR: path.join(isolatedRoot, 'remote-data', 'coordination'),
       KLAURO_ANALYSIS_WORKER_IDLE_MS: process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS || '25',
       KLAURO_EMBEDDING_ENABLED: process.env.KLAURO_EMBEDDING_ENABLED || 'false',
     },
@@ -292,7 +370,7 @@ export function parseTapSummary(output) {
 async function loadPlanCache() {
   try {
     const parsed = JSON.parse(await readFile(cachePath, 'utf8'));
-    return parsed?.version === 1 ? parsed : undefined;
+    return parsed?.version === 2 ? parsed : undefined;
   } catch {
     return undefined;
   }

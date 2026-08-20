@@ -6,7 +6,7 @@ import test from 'node:test';
 interface Plan {
   group: string;
   concurrency: number;
-  files: Array<{ file: string; weight: number }>;
+  files: Array<{ file: string; weight: number; exclusiveExternalDaemon: boolean }>;
 }
 
 function plan(...args: string[]): Plan {
@@ -83,6 +83,20 @@ test('suite concurrency is bounded and explicitly configurable', () => {
   });
   assert.notEqual(invalid.status, 0);
   assert.match(invalid.stderr, /positive integer/);
+});
+
+test('suite derives exclusive external-daemon scheduling from test semantics', async () => {
+  const { requiresExclusiveExternalDaemon } = await import(path.resolve('scripts/test-suite.mjs')) as any;
+  assert.equal(requiresExclusiveExternalDaemon('runCodebaseMemoryJson(binary, tool, args)'), true);
+  assert.equal(requiresExclusiveExternalDaemon("execFile('codebase-memory-mcp')"), true);
+  assert.equal(requiresExclusiveExternalDaemon('analyzeForBench(repository)'), false);
+
+  const files = plan().files;
+  assert.ok(files.every(item => typeof item.exclusiveExternalDaemon === 'boolean'));
+  assert.ok(files.some(item => item.exclusiveExternalDaemon));
+  assert.ok(files.some(item => !item.exclusiveExternalDaemon));
+  assert.equal(files.find(item => item.file === 'src/gauntlet/camps-bench.test.ts')?.exclusiveExternalDaemon, true);
+  assert.equal(files.find(item => item.file === 'src/gauntlet/minhash-clone-detection.test.ts')?.exclusiveExternalDaemon, false);
 });
 
 test('suite can select an exact test file without changing group membership', () => {
