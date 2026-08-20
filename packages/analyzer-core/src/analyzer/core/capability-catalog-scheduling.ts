@@ -17,20 +17,32 @@ export type CapabilityDescriptionRepairOutcome =
 
 export function selectCapabilityCatalogPromptCandidates(
   rankedCandidates: SystemCapability[],
+  requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>> = [],
 ): SystemCapability[] {
   const behaviorCandidates = rankedCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface');
   const requiredBehaviorCandidates = behaviorCandidates.filter(candidate => candidate.category !== 'internal');
-  const structuralCandidates = rankedCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface');
-  const internalBehaviorCandidates = behaviorCandidates.filter(candidate => candidate.category === 'internal');
-  const windowSize = Math.min(64, Math.max(24, requiredBehaviorCandidates.length, Math.ceil(rankedCandidates.length / 6)));
-  const remainingSlots = Math.max(0, windowSize - requiredBehaviorCandidates.length);
+  const requiredEntityCandidates = requiredEntityCandidateGroups
+    .map(group => rankedCandidates.find(candidate => group.includes(candidate.id)))
+    .filter((candidate): candidate is SystemCapability => Boolean(candidate));
+  const requiredIds = new Set([...requiredBehaviorCandidates, ...requiredEntityCandidates].map(candidate => candidate.id));
+  const requiredCandidates = rankedCandidates.filter(candidate => requiredIds.has(candidate.id));
+  const structuralCandidates = rankedCandidates.filter(candidate =>
+    !requiredIds.has(candidate.id) && candidate.evidence_kind !== 'behavior-surface');
+  const internalBehaviorCandidates = behaviorCandidates.filter(candidate =>
+    !requiredIds.has(candidate.id) && candidate.category === 'internal');
+  const baselineWindowSize = Math.min(64, Math.max(24, requiredBehaviorCandidates.length, Math.ceil(rankedCandidates.length / 6)));
+  const windowSize = Math.max(
+    baselineWindowSize,
+    requiredCandidates.length + Math.min(24, Math.ceil(requiredEntityCandidates.length / 2)),
+  );
+  const remainingSlots = Math.max(0, windowSize - requiredCandidates.length);
   const structuralLimit = Math.min(structuralCandidates.length, Math.ceil(remainingSlots * 2 / 3));
   const internalLimit = Math.min(internalBehaviorCandidates.length, remainingSlots - structuralLimit);
   const unfilledSlots = remainingSlots - structuralLimit - internalLimit;
   const additionalStructural = Math.min(structuralCandidates.length - structuralLimit, unfilledSlots);
   const additionalInternal = Math.min(internalBehaviorCandidates.length - internalLimit, unfilledSlots - additionalStructural);
   return [
-    ...requiredBehaviorCandidates.slice(0, windowSize),
+    ...requiredCandidates,
     ...structuralCandidates.slice(0, structuralLimit + additionalStructural),
     ...internalBehaviorCandidates.slice(0, internalLimit + additionalInternal),
   ];

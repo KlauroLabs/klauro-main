@@ -12,14 +12,17 @@ function cas(): CASOutput {
     cas_version: '1.11.0',
     analysis_id: 'analysis-fixture',
     analysis_timestamp: '2026-01-01T00:00:00.000Z',
-    system: { name: 'Orders', root_path: '/customer/orders' } as any,
+    system: {
+      id: 'orders', name: 'Orders', type: 'service', root_path: '/customer/orders',
+      technologies: { languages: [{ name: 'TypeScript' }], frameworks: [], databases: [], external_services: [] },
+    } as any,
     nodes: [
       { id: 'orders-service', name: 'OrdersService', type: 'service', source: { file: 'src/orders.service.ts', line: 4 } },
     ],
     edges: [],
+    analyzer_contributions: [],
     entry_points: [],
     exit_points: [],
-    product_map: { schema_version: '1.0.0', generated_at: '2026-01-01T00:00:00.000Z' } as any,
   } as unknown as CASOutput;
 }
 

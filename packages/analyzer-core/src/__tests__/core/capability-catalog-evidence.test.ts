@@ -1,7 +1,9 @@
 import {
   capabilityCatalogAiPhaseStatus,
+  catalogCountBounds,
   catalogEntityCandidateGroups,
   catalogEvidenceCandidates,
+  catalogMinimumCapabilityCount,
   catalogRelatedEntityIds,
   hasFirstPartyCorroboratedCatalogOperations,
 } from '../../analyzer/core/capability-catalog-evidence';
@@ -107,6 +109,11 @@ describe('catalogEvidenceCandidates', () => {
 });
 
 describe('catalogEntityCandidateGroups', () => {
+  test('allows one authored capability to cover several related entity families', () => {
+    expect(catalogCountBounds(37, 0, 37)).toEqual({ min: 6, max: 20 });
+    expect(catalogMinimumCapabilityCount(37, 37)).toBe(6);
+  });
+
   test('groups candidates sharing an entity while preserving unrelated product families', () => {
     const parcelRead = candidate('parcel-read', 'Review parcels', 'core', ['Read']);
     parcelRead.related_entities = ['entity_parcel'];

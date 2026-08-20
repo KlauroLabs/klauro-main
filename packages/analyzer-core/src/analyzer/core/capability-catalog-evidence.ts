@@ -225,12 +225,19 @@ export function catalogCountBounds(
   entityFamilyCount: number,
 ): { min: number; max: number } {
   const max = Math.max(1, Math.min(20, Math.max(distinctFamilyCount, behaviorFamilyCount, entityFamilyCount)));
-  const min = Math.min(max, Math.max(1, Math.ceil(Math.log2(distinctFamilyCount + 1)), entityFamilyCount));
+  const min = Math.min(max, Math.max(
+    1,
+    Math.ceil(Math.log2(distinctFamilyCount + 1)),
+    Math.ceil(Math.log2(entityFamilyCount + 1)),
+  ));
   return { min, max };
 }
 
 export function catalogMinimumCapabilityCount(distinctFamilyCount: number, entityFamilyCount: number): number {
-  return Math.max(Math.ceil(Math.log2(distinctFamilyCount + 1)), entityFamilyCount);
+  return Math.max(
+    Math.ceil(Math.log2(distinctFamilyCount + 1)),
+    Math.ceil(Math.log2(entityFamilyCount + 1)),
+  );
 }
 
 export function catalogRelatedEntityIds(

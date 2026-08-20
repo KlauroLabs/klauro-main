@@ -46,16 +46,16 @@ function boundedTextArray(value: unknown, limit: number, maxLength: number): str
     .slice(0, limit);
 }
 
-function compactCandidate(value: unknown): Record<string, unknown> {
+function compactCandidate(value: unknown, required: boolean): Record<string, unknown> {
   const candidate = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
     candidate_id: boundedText(candidate.candidate_id, 180),
-    family: boundedText(candidate.family, 180),
-    operations: boundedTextArray(candidate.operations, 6, 240),
-    name: boundedText(candidate.name, 900),
+    family: boundedText(candidate.family, required ? 120 : 180),
+    operations: boundedTextArray(candidate.operations, required ? 3 : 6, required ? 120 : 240),
+    name: boundedText(candidate.name, required ? 320 : 900),
     entry_points: candidate.entry_points,
     entities: candidate.entities,
-    entity_names: boundedTextArray(candidate.entity_names, 8, 160),
+    entity_names: boundedTextArray(candidate.entity_names, required ? 4 : 8, required ? 100 : 160),
     terminality: candidate.terminality,
     distance_to_terminal: candidate.distance_to_terminal,
   };
@@ -103,14 +103,39 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     ...(contextWithoutFacts.task ? { task: boundedText(contextWithoutFacts.task, 8000) } : {}),
     ...(contextWithoutFacts.style ? { style: boundedText(contextWithoutFacts.style, 2400) } : {}),
   } as T;
-  const candidates = (Array.isArray(facts.candidate_route_areas) ? facts.candidate_route_areas : []).map(compactCandidate);
-  const requiredIds = new Set(boundedTextArray(facts.required_behavior_candidate_ids, candidates.length, 180));
+  const candidateValues = Array.isArray(facts.candidate_route_areas) ? facts.candidate_route_areas : [];
+  const candidateIds = candidateValues.map(candidate => boundedText(
+    candidate && typeof candidate === 'object' ? (candidate as Record<string, unknown>).candidate_id : '',
+    180,
+  ));
+  const candidateIdSet = new Set(candidateIds);
+  const requiredBehaviorIds = boundedTextArray(facts.required_behavior_candidate_ids, candidateValues.length, 180)
+    .filter(candidateId => candidateIdSet.has(candidateId));
+  const rawRequiredEntityGroups = Array.isArray(facts.required_entity_candidate_groups)
+    ? facts.required_entity_candidate_groups
+    : [];
+  const requiredEntityGroups = rawRequiredEntityGroups
+    .map(group => boundedTextArray(group, candidateValues.length, 180)
+      .filter(candidateId => candidateIdSet.has(candidateId))
+      .sort((left, right) => candidateIds.indexOf(left) - candidateIds.indexOf(right))
+      .slice(0, 1))
+    .filter(group => group.length > 0);
+  const requiredBehaviorIdSet = new Set(requiredBehaviorIds);
+  const requiredIds = new Set([...requiredBehaviorIds, ...requiredEntityGroups.flat()]);
+  const candidates = candidateValues.map(value => {
+    const candidateId = boundedText(
+      value && typeof value === 'object' ? (value as Record<string, unknown>).candidate_id : '',
+      180,
+    );
+    return compactCandidate(value, requiredIds.has(candidateId));
+  });
   const topDownSignals = compactTopDownSignals(facts.top_down_signals);
   const boundedFacts: Record<string, unknown> = {
     user_journeys: (Array.isArray(facts.user_journeys) ? facts.user_journeys : []).slice(0, 12).map(compactJourney),
     entities: (Array.isArray(facts.entities) ? facts.entities : []).slice(0, 18).map(compactEntity),
     candidate_route_areas: [] as Record<string, unknown>[],
     required_behavior_candidate_ids: [] as string[],
+    required_entity_candidate_groups: requiredEntityGroups,
     external_services: boundedTextArray(facts.external_services, 12, 180),
     ...(topDownSignals ? { top_down_signals: topDownSignals } : {}),
   };
@@ -125,10 +150,10 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
   for (const candidate of candidates) {
     includedCandidates.push(candidate);
     const candidateId = String(candidate.candidate_id || '');
-    if (requiredIds.has(candidateId)) includedRequiredIds.push(candidateId);
+    if (requiredBehaviorIdSet.has(candidateId)) includedRequiredIds.push(candidateId);
     if (byteLength(buildContext()) <= maxBytes) continue;
+    if (requiredIds.has(candidateId)) continue;
     includedCandidates.pop();
-    if (requiredIds.has(candidateId)) includedRequiredIds.pop();
     omittedCandidateIds.push(candidateId);
   }
   const shrinkableArrays = ['entities', 'user_journeys', 'external_services'] as const;
@@ -139,11 +164,13 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     if (!key) break;
     (boundedFacts[key] as unknown[]).pop();
   }
-  while (byteLength(buildContext()) > maxBytes && includedCandidates.length > 0) {
-    const removed = includedCandidates.pop()!;
+  while (byteLength(buildContext()) > maxBytes && includedCandidates.some(candidate => !requiredIds.has(String(candidate.candidate_id || '')))) {
+    let removableIndex = includedCandidates.length - 1;
+    while (removableIndex >= 0 && requiredIds.has(String(includedCandidates[removableIndex].candidate_id || ''))) {
+      removableIndex--;
+    }
+    const [removed] = includedCandidates.splice(removableIndex, 1);
     const candidateId = String(removed.candidate_id || '');
-    const requiredIndex = includedRequiredIds.indexOf(candidateId);
-    if (requiredIndex >= 0) includedRequiredIds.splice(requiredIndex, 1);
     omittedCandidateIds.unshift(candidateId);
   }
   const context = buildContext();

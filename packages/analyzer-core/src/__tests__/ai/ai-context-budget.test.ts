@@ -44,4 +44,37 @@ describe('AI context budgeting', () => {
   it('enforces a safe minimum context budget', () => {
     expect(resolveAIInputTokenBudget({ AI_MAX_CONTEXT_LENGTH: '512' } as NodeJS.ProcessEnv)).toBe(4096);
   });
+
+  it('retains a representable candidate for every required entity family in a large catalog', () => {
+    const candidates = Array.from({ length: 86 }, (_, index) => ({
+      candidate_id: `candidate-${index}`,
+      family: `Analyze software concern ${index}`,
+      operations: [`Inspect concern ${index}`, `Trace concern ${index}`, `Explain concern ${index}`],
+      name: `Inspect, trace, and explain software concern ${index}`,
+      entry_points: 3,
+      entities: 1,
+      entity_names: [`SourceModel${index}`],
+      terminality: index < 37 ? 'terminal' : 'upstream',
+      distance_to_terminal: index,
+    }));
+    const requiredGroups = candidates.slice(0, 37).map(candidate => [candidate.candidate_id]);
+    const result = fitCapabilityCatalogContext({
+      task: 'Return a complete PM-readable capability catalog and cite every required evidence family.',
+      style: 'Use product language without source type identifiers.',
+    }, {
+      user_journeys: [],
+      entities: [],
+      candidate_route_areas: candidates,
+      required_behavior_candidate_ids: [],
+      required_entity_candidate_groups: requiredGroups,
+      external_services: [],
+    }, { AI_MAX_CONTEXT_LENGTH: '8000' } as NodeJS.ProcessEnv);
+    const includedIds = new Set((result.context.facts.candidate_route_areas as Array<Record<string, unknown>>)
+      .map(candidate => String(candidate.candidate_id)));
+    const retainedGroups = result.context.facts.required_entity_candidate_groups as string[][];
+
+    expect(result.byteLength).toBeLessThanOrEqual(resolveAIInputByteBudget({ AI_MAX_CONTEXT_LENGTH: '8000' } as NodeJS.ProcessEnv));
+    expect(retainedGroups).toHaveLength(37);
+    expect(retainedGroups.every(group => group.some(candidateId => includedIds.has(candidateId)))).toBe(true);
+  });
 });

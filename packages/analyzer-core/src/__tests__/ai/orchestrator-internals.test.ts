@@ -9108,10 +9108,15 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
 
       const facts = captured[0]?.additionalContext?.facts;
       const areas: any[] = facts?.candidate_route_areas || [];
-      expect(areas).toHaveLength(24);
-      expect(areas.filter(area => String(area.candidate_id).startsWith('product_'))).toHaveLength(16);
-      expect(areas.filter(area => String(area.candidate_id).startsWith('surface_'))).toHaveLength(8);
+      const includedIds = new Set(areas.map(area => area.candidate_id));
+      expect(candidateCapabilities.every(candidate => includedIds.has(candidate.id))).toBe(true);
+      expect(facts?.required_entity_candidate_groups).toHaveLength(36);
+      expect(facts.required_entity_candidate_groups.every((group: string[]) =>
+        group.some(candidateId => includedIds.has(candidateId)))).toBe(true);
+      expect(areas.some(area => String(area.candidate_id).startsWith('surface_'))).toBe(true);
       expect(facts?.required_behavior_candidate_ids).toEqual([]);
+      expect(captured[0].additionalContext.task).toMatch(/one candidate_id from that group/);
+      expect(captured[0].additionalContext.task).toMatch(/must never expose class, interface, schema, or graph-model identifiers/);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

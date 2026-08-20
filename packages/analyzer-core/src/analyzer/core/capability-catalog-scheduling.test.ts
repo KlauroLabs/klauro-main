@@ -1,6 +1,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scheduleRejectedCapabilityDescriptions } from './capability-catalog-scheduling';
+import { scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates } from './capability-catalog-scheduling';
+
+test('prompt selection represents every required entity family beyond the baseline window', () => {
+  const productCandidates = Array.from({ length: 37 }, (_, index) => ({
+    id: `product-${index}`,
+    name: `Product ${index}`,
+    category: 'core',
+    evidence_kind: 'entity',
+  }));
+  const internalCandidates = Array.from({ length: 49 }, (_, index) => ({
+    id: `internal-${index}`,
+    name: `Internal ${index}`,
+    category: 'internal',
+    evidence_kind: 'behavior-surface',
+  }));
+  const requiredGroups = productCandidates.map(candidate => [candidate.id]);
+  const selected = selectCapabilityCatalogPromptCandidates(
+    [...productCandidates, ...internalCandidates] as any[],
+    requiredGroups,
+  );
+  const selectedIds = new Set(selected.map(candidate => candidate.id));
+
+  assert.equal(selected.length, 56);
+  assert.ok(requiredGroups.every(group => group.some(candidateId => selectedIds.has(candidateId))));
+  assert.equal(selected.filter(candidate => candidate.category === 'internal').length, 19);
+});
 
 test('description repair schedules only rejected capabilities on detached values', async () => {
   const capabilities = [
