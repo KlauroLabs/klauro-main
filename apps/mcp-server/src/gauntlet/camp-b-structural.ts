@@ -46,13 +46,12 @@
 
 
 
-import { execFileSync } from 'child_process';
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 
 import { extractStructure } from '../../../../packages/analyzer-core/src/analyzer/core/generic-tree-sitter-analyzer';
-import { codebaseMemoryPath, startCodebaseMemoryDaemon } from './real-camp-arms';
+import { codebaseMemoryPath, runCodebaseMemoryJson, startCodebaseMemoryDaemon } from './real-camp-arms';
 import { TOP_LANGS } from './camp-a-langs';
 
 
@@ -238,15 +237,6 @@ interface CbmStructuralCounts {
 }
 
 
-function cbmCli(bin: string, tool: string, args: object): { json: any; raw: string } {
-  const out = execFileSync(bin, ['cli', tool, JSON.stringify(args)], {
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  const line = out.split('\n').find(l => l.trim().startsWith('{')) || '';
-  if (!line) throw new Error(`codebase-memory ${tool} returned no JSON result`);
-  return { json: JSON.parse(line), raw: line };
-}
 
 
 
@@ -263,19 +253,15 @@ function cbmCli(bin: string, tool: string, args: object): { json: any; raw: stri
 
 function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
   const project = cbmProjectId(dir);
-  const idxOut = execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
-    encoding: 'utf8',
-    timeout: 120_000,
-  });
-  const indexLine = idxOut.split('\n').find(l => l.trim().startsWith('{')) || '';
-  const indexNodeTotal = indexLine ? Number(JSON.parse(indexLine).nodes) || 0 : 0;
+  const indexed: any = runCodebaseMemoryJson(bin, 'index_repository', ['--repo-path', dir, '--name', project]);
+  const indexNodeTotal = Number(indexed.nodes) || 0;
 
 
-  const schemaRes = cbmCli(bin, 'get_graph_schema', { project });
+  const schema: any = runCodebaseMemoryJson(bin, 'get_graph_schema', [JSON.stringify({ project })]);
   let schemaFns = 0, schemaCls = 0, calls = 0, imports = 0, schemaRaw = '';
-  schemaRaw = schemaRes.raw;
-  const labels: Array<{ label: string; count: number }> = schemaRes.json.node_labels || [];
-  const edges: Array<{ type: string; count: number }> = schemaRes.json.edge_types || [];
+  schemaRaw = JSON.stringify(schema);
+  const labels: Array<{ label: string; count: number }> = schema.node_labels || [];
+  const edges: Array<{ type: string; count: number }> = schema.edge_types || [];
   const lc = (n: string) => labels.filter(l => l.label === n).reduce((a, b) => a + (b.count || 0), 0);
   const ec = (n: string) => edges.filter(e => e.type === n).reduce((a, b) => a + (b.count || 0), 0);
   schemaFns = lc('Function') + lc('Method');
@@ -292,17 +278,22 @@ function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
 
   const fnNames = new Set<string>();
   const classNames = new Set<string>();
-  const projPrefix = `${project}.`;
-  const sgRes = cbmCli(bin, 'search_graph', { project, node_type: 'Function' });
-  const results: Array<{ label?: string; name?: string; qualified_name?: string }> =
-    sgRes.json.results || [];
-  for (const r of results) {
-    const q = r.qualified_name || '';
-    const nm = r.name || '';
-    if (!nm || !q.startsWith(projPrefix)) continue;
-    if (r.label === 'Function' || r.label === 'Method') fnNames.add(nm);
-    else if (r.label === 'Class' || r.label === 'Struct' || r.label === 'Interface')
-      classNames.add(nm);
+  const search: any = runCodebaseMemoryJson(bin, 'search_graph', [
+    '--project', project,
+    '--format', 'json',
+    '--limit', '100000',
+  ]);
+  const columns: string[] = search.cols || [];
+  const nameIndex = Math.max(0, columns.indexOf('name'));
+  const labelIndex = Math.max(0, columns.indexOf('label'));
+  for (const group of search.groups || []) {
+    for (const row of group.rows || []) {
+      const name = String(row[nameIndex] || '');
+      const label = String(row[labelIndex] || '');
+      if (!name) continue;
+      if (label === 'Function' || label === 'Method') fnNames.add(name);
+      else if (label === 'Class' || label === 'Struct' || label === 'Interface') classNames.add(name);
+    }
   }
 
 

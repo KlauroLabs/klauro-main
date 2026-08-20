@@ -42,10 +42,9 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
 import { analyzeForBench } from './product-analysis';
 import { getRouteTable } from '../query';
-import { codebaseMemoryPath, startCodebaseMemoryDaemon } from './real-camp-arms';
+import { codebaseMemoryPath, runCodebaseMemoryJson, startCodebaseMemoryDaemon } from './real-camp-arms';
 
 interface RouteTruth {
   task: 'route-facts';
@@ -136,58 +135,42 @@ async function klauroRoutes(dir: string): Promise<{ routes: string[]; bytes: num
 
 function cbmRoutes(bin: string, dir: string): { routes: string[]; bytes: number; source: string } {
   const project = dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
-  execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
-    stdio: 'ignore',
-    timeout: 120_000,
-  });
+  runCodebaseMemoryJson(bin, 'index_repository', ['--repo-path', dir, '--name', project]);
 
 
   let best: { routes: string[]; bytes: number; source: string } = { routes: [], bytes: 0, source: 'none' };
 
-  const trySearch = (params: Record<string, unknown>, src: string) => {
-    const out = execFileSync(bin, ['cli', 'search_graph', JSON.stringify({ project, ...params })], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 60_000,
-    });
-    const jsonLine = out.split('\n').find(l => l.trim().startsWith('{'));
-    if (!jsonLine) throw new Error(`codebase-memory ${src} returned no JSON result for ${project}`);
-    const parsed: any = JSON.parse(jsonLine);
-    const results: any[] = parsed.results || [];
-    const bytes = Buffer.byteLength(jsonLine, 'utf8');
+  const trySearch = (label: string, src: string) => {
+    const parsed: any = runCodebaseMemoryJson(bin, 'search_graph', [
+      '--project', project,
+      '--label', label,
+      '--format', 'json',
+      '--limit', '100000',
+    ]);
+    const bytes = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
     const routes: string[] = [];
-    for (const r of results) {
-      if (String(r.label) !== 'Route') continue;
-
-      let method = r.method ? String(r.method).toUpperCase() : '';
-      let rawPath = r.name != null ? String(r.name) : '';
-      const qn = String(r.qualified_name || '');
-      const m = qn.match(/__route__([A-Z]+)__(.*)$/);
-      if (!method && m) method = m[1];
-      if (!rawPath && m) rawPath = m[2];
-      if (!method || rawPath === '') continue;
-      routes.push(`${method} ${canonicalizePath(rawPath)}`);
+    const columns: string[] = parsed.cols || [];
+    const nameIndex = Math.max(0, columns.indexOf('name'));
+    for (const group of parsed.groups || []) {
+      for (const row of group.rows || []) {
+        const name = String(row[nameIndex] || '');
+        const match = name.match(/__route__([A-Z]+)__(.*)$/);
+        if (match) routes.push(`${match[1]} ${canonicalizePath(match[2])}`);
+      }
     }
     const uniq = [...new Set(routes)];
     if (uniq.length > best.routes.length) best = { routes: uniq, bytes, source: src };
   };
 
 
-  trySearch({ label: 'Route' }, 'search_graph{label:Route}');
-  trySearch({ node_type: 'Route' }, 'search_graph{node_type:Route}');
-  trySearch({ label: 'Endpoint' }, 'search_graph{label:Endpoint}');
-  trySearch({ label: 'HttpRoute' }, 'search_graph{label:HttpRoute}');
+  trySearch('Route', 'search_graph{label:Route}');
+  trySearch('Endpoint', 'search_graph{label:Endpoint}');
+  trySearch('HttpRoute', 'search_graph{label:HttpRoute}');
 
 
 
-  const arch = execFileSync(bin, ['cli', 'get_architecture', JSON.stringify({ project })], {
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: 60_000,
-  });
-  const jsonLine = arch.split('\n').find(l => l.trim().startsWith('{'));
-  if (!jsonLine) throw new Error(`codebase-memory get_architecture returned no JSON result for ${project}`);
-  const parsed: any = JSON.parse(jsonLine);
+  const parsed: any = runCodebaseMemoryJson(bin, 'get_architecture', [JSON.stringify({ project })]);
+  const architectureBytes = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
   const section: any[] = parsed.routes || parsed.endpoints || parsed.http || parsed.http_routes || [];
   const routes: string[] = [];
   for (const r of section) {
@@ -197,7 +180,7 @@ function cbmRoutes(bin: string, dir: string): { routes: string[]; bytes: number;
   }
   const uniq = [...new Set(routes)];
   if (uniq.length > best.routes.length) {
-    best = { routes: uniq, bytes: Buffer.byteLength(jsonLine, 'utf8'), source: 'get_architecture' };
+    best = { routes: uniq, bytes: architectureBytes, source: 'get_architecture' };
   }
 
   return best;

@@ -273,6 +273,27 @@ export interface CodebaseMemoryDaemonLease {
   close(): void;
 }
 
+interface CodebaseMemoryJsonEnvelope {
+  content?: Array<{ type?: string; text?: string }>;
+  structuredContent?: unknown;
+  isError?: boolean;
+}
+
+export function runCodebaseMemoryJson(bin: string, tool: string, args: string[]): any {
+  const output = execFileSync(bin, ['cli', '--json', tool, ...args], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const jsonLine = output.split('\n').find(line => line.trim().startsWith('{'));
+  if (!jsonLine) throw new Error(`codebase-memory ${tool} returned no JSON envelope`);
+  const envelope = JSON.parse(jsonLine) as CodebaseMemoryJsonEnvelope;
+  const text = envelope.content?.find(item => item.type === 'text')?.text;
+  if (envelope.isError) throw new Error(`codebase-memory ${tool} failed: ${text || jsonLine}`);
+  if (envelope.structuredContent !== undefined) return envelope.structuredContent;
+  if (!text) throw new Error(`codebase-memory ${tool} returned no structured result`);
+  return JSON.parse(text);
+}
+
 export function startCodebaseMemoryDaemon(bin = codebaseMemoryPath()): CodebaseMemoryDaemonLease | null {
   if (!bin) return null;
   const result = spawnSync(bin, ['daemon', 'start'], {
