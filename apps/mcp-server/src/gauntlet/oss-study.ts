@@ -166,15 +166,15 @@ function cbmProjectId(dir: string): string {
 function codebaseMemoryNames(dir: string): string[] | null {
   const bin = codebaseMemoryPath();
   if (!bin) return null;
+  const project = cbmProjectId(dir);
   try {
-    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir], {
+    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
       stdio: 'ignore',
       timeout: 180_000,
     });
   } catch {
     return null;
   }
-  const project = cbmProjectId(dir);
   let out = '';
   try {
     out = execFileSync(
@@ -210,7 +210,7 @@ function codebaseMemoryNames(dir: string): string[] | null {
   const names = new Set<string>();
   for (const group of parsed.groups || []) {
     const filePath = String(group.file || '');
-    if (isNonSourceFile(filePath)) continue;
+    if (!isRepositorySourceFile(dir, filePath)) continue;
     for (const row of group.rows || []) {
       const name = String(row[0] || '');
       const label = String(row[1] || '');
@@ -241,6 +241,14 @@ function isNonSourceFile(filePath: string): boolean {
   );
 }
 
+function isRepositorySourceFile(dir: string, filePath: string): boolean {
+  if (!filePath || isNonSourceFile(filePath)) return false;
+  const root = path.resolve(dir);
+  const resolvedFile = path.resolve(root, filePath);
+  if (!resolvedFile.startsWith(`${root}${path.sep}`)) return false;
+  return fs.statSync(resolvedFile, { throwIfNoEntry: false })?.isFile() === true;
+}
+
 
 
 const CALLABLE_CTAG_KINDS = new Set([
@@ -265,7 +273,17 @@ export function parseCallableCtags(output: string): string[] {
     const name = typeof tag.name === 'string' ? tag.name : '';
     const kind = typeof tag.kind === 'string' ? tag.kind.toLowerCase() : '';
     const filePath = typeof tag.path === 'string' ? tag.path : '';
-    if (name && CALLABLE_CTAG_KINDS.has(kind) && !isNonSourceFile(filePath)) names.add(name);
+    const extras = Array.isArray(tag.extras) ? tag.extras : String(tag.extras || '').split(',');
+    const pattern = typeof tag.pattern === 'string' ? tag.pattern.replace(/^\/\^?/, '').replace(/\$\/$/, '') : '';
+    const aliasesCallable = /=\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*;?$/.test(pattern)
+      && !/\bfunction\b|=>/.test(pattern);
+    if (
+      name
+      && CALLABLE_CTAG_KINDS.has(kind)
+      && !isNonSourceFile(filePath)
+      && !extras.includes('anonymous')
+      && !aliasesCallable
+    ) names.add(name);
   }
   return [...names];
 }
@@ -276,7 +294,7 @@ function ctagsNames(dir: string): string[] | null {
   try {
     out = execFileSync(
       'ctags',
-      ['-R', '--output-format=json', '--fields=+K', '--kinds-all=*', '-f', '-', dir],
+      ['-R', '--output-format=json', '--fields=+EK', '--kinds-all=*', '-f', '-', dir],
       { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60_000 },
     );
   } catch {
