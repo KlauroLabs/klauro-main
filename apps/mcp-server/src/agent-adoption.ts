@@ -52,7 +52,7 @@ import {
 } from './agent-small-context';
 import { adaptAgentStartContext } from './agent-start-context-budget';
 import { buildComprehensionGate, evaluateComprehensionReadiness, type ComprehensionReadiness } from './comprehension-readiness';
-
+import { buildOrientationExecutionBrief, buildOrientationValidationPlan, normalizeAgentToolSteps, orientationAnchorNodes, rankOrientationEntryPoints } from './agent-orientation';
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -169,14 +169,14 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
     target: task.target,
     limit: 6,
   });
-  const topNodes = mostConnectedNodes(cas).slice(0, 8).map(node => ({
+  const topNodes = orientationAnchorNodes(cas, mostConnectedNodes(cas), isNonProductAgentTarget).slice(0, 8).map(node => ({
     id: node.id,
     name: node.name,
     type: node.type,
     file: node.source?.file,
     line: node.source?.line,
   }));
-  const entryPoints = getEntryPoints(cas, { limit: 8 });
+  const entryPoints = getEntryPoints(cas, { limit: Math.max(8, cas.entry_points?.length || 0) });
   const exitPoints = getExitPoints(cas, { limit: 8 });
   const runtimeExcluded = resolveSectionFilter({ param: task.runtime, exclude_sections: task.exclude_sections }).isExcluded('runtime');
   const runtimeLinks = runtimeExcluded ? null : getRuntimeStaticLinks(cas, { limit: 8 });
@@ -225,7 +225,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       analysis_information: summary.information,
     },
     starting_points: {
-      entry_points: entryPoints.entry_points.map(entry => ({
+      entry_points: rankOrientationEntryPoints(cas, entryPoints.entry_points, entry => isNonProductEntryPoint(cas, entry)).slice(0, 8).map(entry => ({
         id: entry.id,
         name: entry.name,
         type: entry.type,
@@ -943,6 +943,8 @@ function buildAgentExecutionBrief(input: {
   capabilityMemory: any;
   riskContext: any;
 }) {
+  const orientationBrief = buildOrientationExecutionBrief(input.task, input.fileReadPlan);
+  if (orientationBrief) return orientationBrief;
   const editFiles = uniqueStrings([
     ...arrayOfStrings(input.validationPlan?.expected_changed_files),
     ...arrayOfStrings(input.validationPlan?.must_update_files),
@@ -3563,7 +3565,7 @@ export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: A
   const needsFlowTarget = task.task_type !== 'modify' && task.task_type !== 'review';
   const entryPoint = needsFlowTarget ? representativeEntryPoint(cas) : undefined;
   const chain = needsFlowTarget ? (cas.call_chains || [])[0] : undefined;
-  const steps = stepsForTask(input.path, task, target, nodeId, entryPoint?.id, chain?.id);
+  const steps = normalizeAgentToolSteps(stepsForTask(input.path, task, target, nodeId, entryPoint?.id, chain?.id), task);
 
   return {
     path: input.path,
@@ -3699,11 +3701,7 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
       })),
       gaps,
     };
-  } else {
-    selectedNode = representativeTarget(cas);
-    if (selectedNode) candidateNodes.set(selectedNode.id, selectedNode);
-    else gaps.push('target: no representative CAS node available');
-  }
+  } else return { query: null, selected_node_id: null, selected_node: null, candidates: [], gaps };
 
   return {
     query: target || null,
@@ -5163,6 +5161,8 @@ function buildValidationPlan(
   risk: ReturnType<typeof assessChangeRisk> | null,
   behavioralInvariants: ReturnType<typeof getBehavioralInvariants>
 ): AgentValidationPlan {
+  const orientationPlan = buildOrientationValidationPlan(task);
+  if (orientationPlan) return orientationPlan as unknown as AgentValidationPlan;
   const knownTestFiles = uniqueStrings([
     ...(tests.suites || []).map((suite: AgentTestSuiteRef) => suite.file_path).filter((file): file is string => Boolean(file)),
     ...fileReadPlan
@@ -5802,8 +5802,6 @@ function normalizeTask(task: AgentTask): Required<Pick<AgentTask, 'task_type'>> 
 function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>> & AgentTask, target: string, nodeId: string, entryPointId?: string, chainId?: string): AgentToolStep[] {
   const base: AgentToolStep[] = [
     step(1, 'get_agent_start_context', { path, task }, 'Load the CAS-backed default context and readiness status.', true),
-    step(2, 'open_agent_workbench', { path, task }, 'Load the product-level workbench: file-read plan, repo rules, evidence policy, validation plan, and stop conditions.', true),
-    step(3, 'get_agent_tool_plan', { path, task }, 'Select task-specific MCP calls before file reads.', true),
   ];
 
   if (task.task_type === 'modify') {
@@ -5888,10 +5886,11 @@ function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>>
 
   return [
     ...base,
-    step(3, 'run_answer_pack', { path, pack: 'mastery' }, 'Answer core codebase questions with evidence.', true),
-    step(4, 'get_summary', { path }, 'Read condensed architecture and capability summary.', true),
-    step(5, 'get_entry_points', { path, limit: 15 }, 'Inspect concrete inputs into the system.', false),
-    step(6, 'get_flow_graph', { path }, 'Inspect capability-level behavior and dependencies.', false),
+    step(2, 'get_summary', { path }, 'Read the system purpose and condensed capability summary.', true),
+    step(3, 'get_product_map', { path }, 'Read the product-level capability, deployable, data, and journey map.', true),
+    step(4, 'get_conceptual_analysis', { path }, 'Understand capabilities as flows and ordered behavior steps.', true),
+    step(5, 'get_user_journeys', { path, limit: 20 }, 'Inspect source-to-terminal user and system journeys.', true),
+    step(6, 'run_answer_pack', { path, pack: 'mastery' }, 'Answer core codebase questions with evidence.', true),
   ];
 }
 
@@ -6013,8 +6012,7 @@ function representativeTarget(cas: CASOutput): CASNode | undefined {
 }
 
 function representativeEntryPoint(cas: CASOutput): CASEntryPoint | undefined {
-  const entries = cas.entry_points || [];
-  return entries.find(entry => !isNonProductEntryPoint(cas, entry)) || entries[0];
+  return rankOrientationEntryPoints(cas, cas.entry_points || [], entry => isNonProductEntryPoint(cas, entry))[0];
 }
 
 function isNonProductEntryPoint(cas: CASOutput, entry: CASEntryPoint): boolean {

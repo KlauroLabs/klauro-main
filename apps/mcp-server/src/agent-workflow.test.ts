@@ -1711,6 +1711,79 @@ test('agent tool plan names the valid answer packs when a step runs one', async 
   });
 });
 
+test('broad orientation uses exposed comprehension tools in one unique order', async () => {
+  await withWorkspace(async workspace => {
+    const plan = getAgentToolPlan(fixtureCas(), {
+      path: workspace,
+      task: {
+        task_type: 'orient',
+        instructions: 'Understand the product, architecture, and major user journeys end to end.',
+      },
+    });
+    const exposed = new Set([
+      'get_agent_start_context',
+      'get_summary',
+      'get_product_map',
+      'get_conceptual_analysis',
+      'get_user_journeys',
+      'run_answer_pack',
+    ]);
+
+    assert.deepEqual(plan.steps.map(step => step.order), [1, 2, 3, 4, 5, 6]);
+    assert.equal(new Set(plan.steps.map(step => step.tool)).size, plan.steps.length);
+    assert.ok(plan.steps.every(step => exposed.has(step.tool)));
+    assert.ok(plan.steps.some(step => step.tool === 'get_product_map'));
+    assert.ok(plan.steps.some(step => step.tool === 'get_conceptual_analysis'));
+    assert.ok(plan.steps.some(step => step.tool === 'get_user_journeys'));
+    assert.ok(!plan.steps.some(step => step.tool === 'open_agent_workbench'));
+  });
+});
+
+test('broad orientation avoids arbitrary internal targets and edit-oriented plans', async () => {
+  await withWorkspace(async workspace => {
+    const cas = pillarFixtureCas();
+    cas.nodes.push(
+      node('internal-benchmark', 'runInFlightBenchmark', 'function', 'scripts/benchmarks/in-flight.ts', 1),
+      node('parser-main', 'main', 'function', 'native/parser/src/main.rs', 1),
+    );
+    for (let index = 0; index < 20; index += 1) {
+      cas.edges.push({
+        id: `edge-internal-${index}`,
+        source: 'internal-benchmark',
+        target: index % 2 === 0 ? 'users-service' : 'users-controller',
+        type: 'calls',
+      } as any);
+    }
+    cas.entry_points = [
+      {
+        id: 'entry-parser-cli',
+        name: 'main',
+        type: 'cli',
+        source_node: 'parser-main',
+        handler: { node_id: 'parser-main', method_name: 'main', file: 'native/parser/src/main.rs', line: 1 },
+      },
+      ...(cas.entry_points || []),
+    ];
+
+    const task = {
+      task_type: 'orient' as const,
+      instructions: 'Understand the product, architecture, and major user journeys end to end.',
+    };
+    const start = getAgentStartContext(cas, workspace, task) as any;
+    const context = await getAgentContext(cas, workspace, task) as any;
+
+    assert.equal(start.starting_points.entry_points[0].id, 'entry-users-create');
+    assert.ok(start.starting_points.connected_nodes.every((item: any) => item.id !== 'internal-benchmark'));
+    assert.equal(context.target_resolution.selected_node_id, null);
+    assert.equal(context.selected_node, null);
+    assert.deepEqual(context.execution_brief.edit_scope, []);
+    assert.deepEqual(context.execution_brief.validate, []);
+    assert.equal(context.validation_plan.strategy, 'comprehension-only');
+    assert.deepEqual(context.validation_plan.commands, []);
+    assert.ok(context.file_read_plan.every((item: any) => !String(item.file).includes('benchmarks')));
+  });
+});
+
 test('agent start context carries a one-line product orientation when a product map exists', async () => {
   await withWorkspace(async workspace => {
     const startContext = getAgentStartContext(pillarFixtureCas(), workspace, {});
