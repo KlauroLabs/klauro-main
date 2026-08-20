@@ -15,6 +15,27 @@ export type CapabilityDescriptionRepairOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
   | { status: 'rejected'; reason: unknown };
 
+export function selectCapabilityCatalogPromptCandidates(
+  rankedCandidates: SystemCapability[],
+): SystemCapability[] {
+  const behaviorCandidates = rankedCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface');
+  const requiredBehaviorCandidates = behaviorCandidates.filter(candidate => candidate.category !== 'internal');
+  const structuralCandidates = rankedCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface');
+  const internalBehaviorCandidates = behaviorCandidates.filter(candidate => candidate.category === 'internal');
+  const windowSize = Math.min(64, Math.max(24, requiredBehaviorCandidates.length, Math.ceil(rankedCandidates.length / 6)));
+  const remainingSlots = Math.max(0, windowSize - requiredBehaviorCandidates.length);
+  const structuralLimit = Math.min(structuralCandidates.length, Math.ceil(remainingSlots * 2 / 3));
+  const internalLimit = Math.min(internalBehaviorCandidates.length, remainingSlots - structuralLimit);
+  const unfilledSlots = remainingSlots - structuralLimit - internalLimit;
+  const additionalStructural = Math.min(structuralCandidates.length - structuralLimit, unfilledSlots);
+  const additionalInternal = Math.min(internalBehaviorCandidates.length - internalLimit, unfilledSlots - additionalStructural);
+  return [
+    ...requiredBehaviorCandidates.slice(0, windowSize),
+    ...structuralCandidates.slice(0, structuralLimit + additionalStructural),
+    ...internalBehaviorCandidates.slice(0, internalLimit + additionalInternal),
+  ];
+}
+
 export function scheduleRejectedCapabilityDescriptions(args: {
   capabilities: SystemCapability[];
   rejectedIds: ReadonlySet<string>;

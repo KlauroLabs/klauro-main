@@ -160,7 +160,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions } from './capability-catalog-scheduling';
+import { scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -9277,36 +9277,11 @@ export class AnalyzerOrchestrator {
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const behaviorCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind === 'behavior-surface');
     const requiredBehaviorCandidateAreas = behaviorCandidateAreas.filter(candidate => candidate.category !== 'internal');
-    const structuralCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind !== 'behavior-surface');
-    const internalBehaviorCandidateAreas = behaviorCandidateAreas.filter(candidate => candidate.category === 'internal');
+    const promptCandidateAreas = selectCapabilityCatalogPromptCandidates(rankedCandidateAreas);
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
     const catalogEntityById = new Map(input.dataEntities.map(entity => [entity.id, entity]));
-    const candidateWindowSize = Math.min(64, Math.max(24, requiredBehaviorCandidateAreas.length, Math.ceil(rankedCandidateAreas.length / 6)));
-    const remainingCandidateSlots = Math.max(0, candidateWindowSize - requiredBehaviorCandidateAreas.length);
-    const structuralCandidateLimit = Math.min(structuralCandidateAreas.length, Math.ceil(remainingCandidateSlots * 2 / 3));
-    const internalBehaviorCandidateLimit = Math.min(
-      internalBehaviorCandidateAreas.length,
-      remainingCandidateSlots - structuralCandidateLimit,
-    );
-    const unfilledCandidateSlots = remainingCandidateSlots - structuralCandidateLimit - internalBehaviorCandidateLimit;
-    const additionalStructuralCandidates = Math.min(
-      structuralCandidateAreas.length - structuralCandidateLimit,
-      unfilledCandidateSlots,
-    );
-    const additionalInternalBehaviorCandidates = Math.min(
-      internalBehaviorCandidateAreas.length - internalBehaviorCandidateLimit,
-      unfilledCandidateSlots - additionalStructuralCandidates,
-    );
-    const promptCandidateAreas = [
-      ...requiredBehaviorCandidateAreas.slice(0, candidateWindowSize),
-      ...structuralCandidateAreas.slice(0, structuralCandidateLimit + additionalStructuralCandidates),
-      ...internalBehaviorCandidateAreas.slice(0, internalBehaviorCandidateLimit + additionalInternalBehaviorCandidates),
-    ];
-    const candidateAreas = promptCandidateAreas
-      .map(capability => capability.name)
-      .slice(0, candidateWindowSize);
+    const candidateAreas = promptCandidateAreas.map(capability => capability.name);
     const candidateAreaFacts = promptCandidateAreas
-      .slice(0, candidateWindowSize)
       .map(capability => {
         const promptEvidence = projectCapabilityCatalogPromptEvidence(capability);
         const entityFacts = catalogCandidateEntityFacts(capability, catalogEntityById);
