@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'path';
 import { runCallersBench } from './primitive-bench';
@@ -12,6 +12,8 @@ import {
   codebaseMemoryCallers,
   codebaseMemoryRelatedNodeQualifiedNames,
   codebaseMemoryNodesByLabel,
+  startCodebaseMemoryDaemon,
+  type CodebaseMemoryDaemonLease,
 } from './real-camp-arms';
 import { runRouteFactsBench } from './framework-bench';
 
@@ -25,6 +27,15 @@ const ROOT = path.resolve(__dirname, '../../fixtures/primitive-bench');
 const scipReady = !!scipCliPath() && scipTypescriptAvailable();
 const stackGraphsReady = !!stackGraphsTsPath();
 const codebaseMemoryReady = !!codebaseMemoryPath();
+let codebaseMemoryDaemon: CodebaseMemoryDaemonLease | null = null;
+
+before(() => {
+  if (codebaseMemoryReady) codebaseMemoryDaemon = startCodebaseMemoryDaemon();
+});
+
+after(() => {
+  codebaseMemoryDaemon?.close();
+});
 
 test(
   'Camp B (scip-typescript): TS who-calls is a CEILING TIE on quality, a Klauro WIN on tokens',
