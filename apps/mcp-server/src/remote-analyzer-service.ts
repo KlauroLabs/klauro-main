@@ -114,6 +114,7 @@ interface RemoteAnalyzerServiceOptions {
   maxBodyBytes?: number;
   rateLimitPerMinute?: number;
   fabricRateLimitPerMinute?: number;
+  coordinationOnly?: boolean;
 
   deferAiEnrichment?: boolean;
 }
@@ -206,6 +207,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             ...(buildIdentity.dirty ? { head_sha: buildIdentity.head_sha ?? null } : {}),
           },
         });
+        return;
+      }
+
+      if (options.coordinationOnly && !route.startsWith('/v1/coordination/')) {
+        writeJson(response, 404, { status: 'error', error: 'This service accepts coordination routes only.' });
         return;
       }
 

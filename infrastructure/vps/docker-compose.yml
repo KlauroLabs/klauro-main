@@ -53,6 +53,39 @@ services:
       retries: 5
       start_period: 15s
 
+  fabric:
+    image: klauro/api:alpha
+    restart: unless-stopped
+    command: ["/app/node_modules/.bin/tsx", "src/fabric.ts"]
+    cpus: "1.5"
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    env_file:
+      - /opt/klauro/.env
+    environment:
+      KLAURO_SELF_TELEMETRY: "0"
+      KLAURO_COORD_DIR: /data/coordination
+      KLAURO_FABRIC_PORT: "8788"
+      KLAURO_TS_PARSE_WORKERS: "1"
+      KLAURO_ANALYSIS_CONCURRENCY: "1"
+      KLAURO_ANALYSIS_WORKER_IDLE_MS: "0"
+      NODE_OPTIONS: --max-old-space-size=1280
+    expose:
+      - "8788"
+    volumes:
+      - /opt/klauro/data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -82,6 +115,8 @@ services:
     restart: unless-stopped
     depends_on:
       api:
+        condition: service_healthy
+      fabric:
         condition: service_healthy
     ports:
       - "80:80"

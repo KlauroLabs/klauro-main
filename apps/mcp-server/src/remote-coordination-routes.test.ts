@@ -32,7 +32,7 @@ interface Booted {
   restoreEnv: () => void;
 }
 
-async function bootService(options: { rateLimitPerMinute?: number; fabricRateLimitPerMinute?: number } = {}): Promise<Booted> {
+async function bootService(options: { rateLimitPerMinute?: number; fabricRateLimitPerMinute?: number; coordinationOnly?: boolean } = {}): Promise<Booted> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-remote-coord-'));
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
@@ -53,6 +53,27 @@ async function bootService(options: { rateLimitPerMinute?: number; fabricRateLim
     },
   };
 }
+
+test('coordination-only service keeps health and Fabric routes but rejects analyzer/API work', async () => {
+  const boot = await bootService({ coordinationOnly: true });
+  try {
+    const health = await fetch(`${boot.baseUrl}/health`);
+    assert.equal(health.status, 200);
+
+    const analyzer = await fetch(`${boot.baseUrl}/api/workspaces`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    assert.equal(analyzer.status, 404);
+
+    const active = await fetch(`${boot.baseUrl}/v1/coordination/active?workspace=isolated`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    assert.equal(active.status, 200);
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
 
 test('coordination routes require the analyzer Bearer token', async () => {
   const boot = await bootService();

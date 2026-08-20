@@ -50,6 +50,18 @@ app.klauro.com {
 mcp.klauro.com {
 	encode gzip zstd
 
+	@fabric path /v1/coordination/*
+	handle @fabric {
+		reverse_proxy {
+			dynamic a {
+				name fabric
+				port 8788
+				resolvers 127.0.0.11
+				refresh 5s
+			}
+		}
+	}
+
 	# Defect #24: a plain `reverse_proxy api:8787` resolves the `api` hostname to
 	# a container IP ONCE (at config load / first dial) and then reuses that
 	# address+pooled connections. Every deploy recreates the `api` container
@@ -66,12 +78,14 @@ mcp.klauro.com {
 	# below instead of caching a single address for the process lifetime, so a
 	# container recreate is picked up within seconds instead of requiring a
 	# manual/blunt caddy restart.
-	reverse_proxy {
-		dynamic a {
-			name api
-			port 8787
-			resolvers 127.0.0.11
-			refresh 5s
+	handle {
+		reverse_proxy {
+			dynamic a {
+				name api
+				port 8787
+				resolvers 127.0.0.11
+				refresh 5s
+			}
 		}
 	}
 }
