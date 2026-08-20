@@ -1,4 +1,10 @@
-import { catalogEntityCandidateGroups, catalogEvidenceCandidates, catalogRelatedEntityIds } from '../../analyzer/core/capability-catalog-evidence';
+import {
+  capabilityCatalogAiPhaseStatus,
+  catalogEntityCandidateGroups,
+  catalogEvidenceCandidates,
+  catalogRelatedEntityIds,
+  hasFirstPartyCorroboratedCatalogOperations,
+} from '../../analyzer/core/capability-catalog-evidence';
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 
 function candidate(id: string, name: string, category: SystemCapability['category'], actions: string[]): SystemCapability {
@@ -137,5 +143,44 @@ describe('catalogRelatedEntityIds', () => {
 
   test('uses structural entity evidence when the authored catalog omits entity mapping', () => {
     expect(catalogRelatedEntityIds([], new Set(['entity_vehicle', 'entity_vehicle']))).toEqual(['entity_vehicle']);
+  });
+});
+
+describe('hasFirstPartyCorroboratedCatalogOperations', () => {
+  test('accepts cited operation evidence when first-party product text corroborates the authored outcome', () => {
+    const structural = candidate('fabric-surface', 'Fabric collaboration', 'internal', ['Claim', 'Coordinate']);
+    const authored = candidate('authored', 'Enable real-time collaboration through Fabric', 'core', ['Claim']);
+    authored.criticality_factors = ['catalog-candidate:fabric-surface'];
+
+    expect(hasFirstPartyCorroboratedCatalogOperations(
+      authored,
+      [structural],
+      { productDocSummary: 'Fabric enables real-time collaboration when teams work on overlapping concepts.' },
+    )).toBe(true);
+  });
+
+  test('rejects operation-only outcomes without both a valid citation and first-party corroboration', () => {
+    const structural = candidate('fallback-route', 'Fallback route', 'supporting', ['Handle']);
+    const authored = candidate('authored', 'Provide system fallback', 'supporting', ['Handle']);
+    authored.criticality_factors = ['catalog-candidate:fallback-route'];
+
+    expect(hasFirstPartyCorroboratedCatalogOperations(authored, [structural], {
+      productDocSummary: 'A parcel tracking application for dispatch teams.',
+    })).toBe(false);
+    expect(hasFirstPartyCorroboratedCatalogOperations({
+      ...authored,
+      criticality_factors: [],
+    }, [structural], {
+      productDocSummary: 'The system provides fallback routing for resilient operations.',
+    })).toBe(false);
+  });
+});
+
+describe('capabilityCatalogAiPhaseStatus', () => {
+  test('degrades the AI phase whenever required catalog evidence is not fully accepted', () => {
+    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'rejected' })).toBe('degraded');
+    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'partial' })).toBe('degraded');
+    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'accepted' })).toBe('complete');
+    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 0, status: 'unavailable' })).toBe('complete');
   });
 });

@@ -49,6 +49,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'dependency-roles.ts': 2,
   'paradigm-conformance.ts': 2,
   'node-roles.ts': 2,
+  'guard-relationships.ts': 2,
   // Re-tiered 3 -> 2 in the same commit that registered node-roles.ts: its
   // own imports are a single tier-1 TYPE (CASGuardKind) and it classifies a
   // wrapper NAME by structural convention (auth/rate-limit/validation

@@ -1297,7 +1297,7 @@ export async function analyzeProjectLayered(
   })();
 
   const restPromise = l0Promise.then(async () => {
-    const { buildLayersReady } = await import('./layered-analysis.js');
+    const { buildCompletedAnalysisLayersReady, buildLayersReady } = await import('./layered-analysis.js');
 
 
 
@@ -1320,8 +1320,12 @@ export async function analyzeProjectLayered(
         L1: { status: 'ready', completedAt: contentGeneratedAt },
         L2: { status: 'ready', completedAt: contentGeneratedAt },
         L3: { status: 'ready', completedAt: contentGeneratedAt },
-        L4: { status: 'ready', completedAt: contentGeneratedAt },
-        L5: { status: aiConfigured ? (output.ai_enrichment === 'ready' || output.ai_enrichment === 'synchronous' ? 'ready' : 'pending') : 'ready' },
+        L4: aiConfigured && output.ai_enrichment === 'pending'
+          ? { status: 'pending' }
+          : { status: 'ready', completedAt: contentGeneratedAt },
+        L5: output.ai_enrichment === 'disabled'
+          ? { status: 'error', error: 'AI comprehension is disabled; required product narrative and capability comprehension were not generated' }
+          : { status: aiConfigured ? (output.ai_enrichment === 'ready' || output.ai_enrichment === 'synchronous' ? 'ready' : 'pending') : 'ready' },
       }, { generatedAt: contentGeneratedAt });
     };
     let structuralCheckpointPrepared = false;
@@ -1372,40 +1376,10 @@ export async function analyzeProjectLayered(
 
 
     const enrichment = deferred.enrichment.then(async () => {
-      const priorL5Status = deferred.output.layers_ready?.layers.find(layer => layer.layer === 'L5')?.status;
-      const baseLayers = {
-        L0: { status: 'ready' as const }, L1: { status: 'ready' as const }, L2: { status: 'ready' as const },
-        L3: { status: 'ready' as const }, L4: { status: 'ready' as const },
-      };
-
-
-
-      const l5GeneratedAt = deferred.output.analysis_timestamp || new Date().toISOString();
-      if (deferred.output.ai_enrichment === 'ready') {
-        if (priorL5Status === 'ready') return;
-        deferred.output.layers_ready = buildLayersReady({
-          ...baseLayers,
-          L5: { status: 'ready', completedAt: new Date().toISOString() },
-        }, { generatedAt: l5GeneratedAt });
-      } else if (deferred.output.ai_enrichment === 'error') {
-        if (priorL5Status === 'error') return;
-
-
-
-
-
-        const l5Detail = deferred.output.ai_enrichment_error
-          ? `AI comprehension pass failed (comprehension is AI-only, no deterministic fallback): ${deferred.output.ai_enrichment_error}`
-          : 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)';
-        deferred.output.layers_ready = buildLayersReady({
-          ...baseLayers,
-          L5: { status: 'error', completedAt: new Date().toISOString(), error: l5Detail },
-        }, { generatedAt: l5GeneratedAt });
-      } else {
-
-
-        return;
-      }
+      if (deferred.output.ai_enrichment !== 'ready' && deferred.output.ai_enrichment !== 'error') return;
+      const nextLayers = buildCompletedAnalysisLayersReady(deferred.output);
+      if (JSON.stringify(deferred.output.layers_ready) === JSON.stringify(nextLayers)) return;
+      deferred.output.layers_ready = nextLayers;
       await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
       clearFreshnessSummaryCache();
     }).catch((error: unknown) => {

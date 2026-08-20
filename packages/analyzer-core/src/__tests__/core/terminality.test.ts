@@ -66,6 +66,19 @@ describe('buildCasTerminality', () => {
     })),
   });
 
+  const assignFlowNode = (targetFlow: FlowConcept, nodeId: string): void => {
+    targetFlow.steps = [{
+      step_id: `step-${targetFlow.flow_id}`,
+      order: 1,
+      name: targetFlow.name,
+      description: targetFlow.intent,
+      description_source: 'deterministic-label',
+      contract: {} as FlowConcept['steps'][number]['contract'],
+      functions: [{ function_id: nodeId }],
+      entities: [],
+    }];
+  };
+
   it('distinguishes prerequisite authentication from a terminal product outcome', () => {
     const cas = {
       nodes: [],
@@ -137,18 +150,46 @@ describe('buildCasTerminality', () => {
     expect(flowById.get('sign-in-request')?.proximal_terminal).toBe(true);
   });
 
-  it('projects authentication guards onto flows without explicit capability dependencies', () => {
+  it('projects graph-owned enforcement mechanisms onto protected flows', () => {
+    const policyFlow = flow('evaluate-policy');
+    const operationFlow = flow('perform-operation');
+    assignFlowNode(policyFlow, 'policy-node');
+    assignFlowNode(operationFlow, 'operation-node');
     const cas = {
-      nodes: [], edges: [], entities: [], capabilities: [],
-      entry_points: [
-        { id: 'entry-sign-in', source_node: 'sign-in', type: 'event', name: 'ACTION Authenticate' },
-        { id: 'entry-place-order', source_node: 'place-order', type: 'http', name: 'POST /orders', security: { guards: ['SessionAuthGuard'] } },
+      nodes: [
+        { id: 'policy-node', name: 'AccessPolicy', type: 'guard' },
+        { id: 'operation-node', name: 'PerformOperation', type: 'method' },
       ],
-      flows: [flow('sign-in'), flow('place-order')],
+      edges: [{ id: 'policy-edge', source: 'operation-node', target: 'policy-node', type: 'protected_by' }],
+      entities: [],
+      capabilities: [],
+      flows: [policyFlow, operationFlow],
     } as unknown as CASOutput;
     const result = buildCasTerminality(cas);
     const flowById = new Map(result.flows.map(member => [member.id, member]));
-    expect(flowById.get('place-order')).toMatchObject({ terminal: true, distance_to_terminal: 0 });
-    expect(flowById.get('sign-in')).toMatchObject({ proximal_terminal: true, distance_to_terminal: 1 });
+    expect(flowById.get('perform-operation')).toMatchObject({ terminal: true, distance_to_terminal: 0 });
+    expect(flowById.get('evaluate-policy')).toMatchObject({ proximal_terminal: true, distance_to_terminal: 1 });
+  });
+
+  it('does not infer provider flows from product vocabulary', () => {
+    const identityProductFlow = flow('issue-token');
+    const administrationFlow = flow('manage-admin-settings');
+    assignFlowNode(identityProductFlow, 'token-issuer');
+    assignFlowNode(administrationFlow, 'admin-handler');
+    const cas = {
+      nodes: [
+        { id: 'token-issuer', name: 'IssueToken', type: 'method' },
+        { id: 'admin-handler', name: 'ManageAdminSettings', type: 'method' },
+        { id: 'admin-guard', name: 'AdminGuard', type: 'guard' },
+      ],
+      edges: [{ id: 'admin-edge', source: 'admin-handler', target: 'admin-guard', type: 'protected_by' }],
+      entities: [],
+      capabilities: [],
+      flows: [identityProductFlow, administrationFlow],
+    } as unknown as CASOutput;
+    const result = buildCasTerminality(cas);
+    const flowById = new Map(result.flows.map(member => [member.id, member]));
+    expect(flowById.get('issue-token')).toMatchObject({ terminal: true, distance_to_terminal: 0 });
+    expect(flowById.get('manage-admin-settings')).toMatchObject({ terminal: true, distance_to_terminal: 0 });
   });
 });

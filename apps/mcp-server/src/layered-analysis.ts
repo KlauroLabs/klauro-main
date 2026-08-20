@@ -177,6 +177,18 @@ export function buildLayersReady(
 export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersReady {
   const generatedAt = output.analysis_timestamp || new Date().toISOString();
   const ready = { status: 'ready' as const, completedAt: generatedAt };
+  const catalogCoverage = output.enhanced_system_purpose?.capability_catalog_coverage;
+  const catalogIncomplete = Boolean(
+    catalogCoverage &&
+    catalogCoverage.evidence_families > 0 &&
+    catalogCoverage.status !== 'accepted'
+  );
+  const catalogError = catalogIncomplete
+    ? `Capability comprehension is ${catalogCoverage?.status}: ${catalogCoverage?.reason || `${catalogCoverage?.published_capabilities || 0} of at least ${catalogCoverage?.minimum_published_capabilities || 0} required capabilities were published`}`
+    : undefined;
+  const l4 = catalogError
+    ? { status: 'error' as const, completedAt: generatedAt, error: catalogError }
+    : ready;
   const l5 = output.ai_enrichment === 'pending'
     ? { status: 'pending' as const }
     : output.ai_enrichment === 'error'
@@ -187,14 +199,26 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
             ? `AI comprehension pass failed (comprehension is AI-only, no deterministic fallback): ${output.ai_enrichment_error}`
             : 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
         }
-      : ready;
+      : output.ai_enrichment === 'disabled'
+        ? {
+            status: 'error' as const,
+            completedAt: generatedAt,
+            error: 'AI comprehension is disabled; required product narrative and capability comprehension were not generated',
+          }
+        : catalogError || output.enhanced_system_purpose?.ai_phase_status === 'degraded'
+          ? {
+              status: 'error' as const,
+              completedAt: generatedAt,
+              error: catalogError || 'AI comprehension completed with rejected required output',
+            }
+          : ready;
 
   return buildLayersReady({
     L0: ready,
     L1: ready,
     L2: ready,
     L3: ready,
-    L4: ready,
+    L4: l4,
     L5: l5,
   }, { generatedAt });
 }

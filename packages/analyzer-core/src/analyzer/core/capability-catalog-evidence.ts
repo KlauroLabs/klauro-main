@@ -1,4 +1,4 @@
-import { CASDataEntity, SystemCapability } from '../../types/cas.types';
+import { CASDataEntity, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { analyzeTerminality } from './terminality';
 
@@ -15,6 +15,31 @@ export interface CapabilityCatalogEntityFact {
   name: string;
 }
 
+export function capabilityCatalogAiPhaseStatus(
+  coverage?: { evidence_families: number; status: 'accepted' | 'partial' | 'rejected' | 'unavailable' },
+): 'complete' | 'degraded' {
+  return coverage && coverage.evidence_families > 0 && coverage.status !== 'accepted' ? 'degraded' : 'complete';
+}
+
+export function synchronizeCapabilityCatalogCoverage(
+  purpose: EnhancedSystemPurpose,
+  publishedCapabilities: number,
+  excludedCapabilities: number,
+): void {
+  const coverage = purpose.capability_catalog_coverage;
+  if (!coverage) return;
+  coverage.published_capabilities = publishedCapabilities;
+  if (excludedCapabilities > 0 && coverage.status === 'accepted') {
+    coverage.status = 'partial';
+    coverage.reason = `${excludedCapabilities} catalog capability ${excludedCapabilities === 1 ? 'was' : 'were'} excluded during final publishability validation`;
+  }
+  if (publishedCapabilities < coverage.minimum_published_capabilities) {
+    coverage.status = 'rejected';
+    coverage.reason = `final catalog published ${publishedCapabilities} of at least ${coverage.minimum_published_capabilities} required capabilities`;
+  }
+  purpose.ai_phase_status = capabilityCatalogAiPhaseStatus(coverage);
+}
+
 function normalizedSubjectTokens(value: string): Set<string> {
   const scaffolding = new Set(['management', 'capability', 'workflow', 'handling', 'operation', 'operations']);
   return new Set(String(value || '')
@@ -25,7 +50,7 @@ function normalizedSubjectTokens(value: string): Set<string> {
     .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token));
 }
 
-function productTextCorroborates(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
+export function productTextCorroboratesCapability(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
   if (!signal) return false;
   const productTokens = normalizedSubjectTokens([
     ...(signal.concepts || []),
@@ -42,8 +67,22 @@ function productTextCorroborates(candidate: SystemCapability, signal?: Capabilit
 function isCorroboratedInternalBehavior(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
   const operations = candidate.operations || [];
   if (operations.length < 2 || !operations.every(operation => operation.entry_point_type === 'internal')) return false;
-  if (!productTextCorroborates(candidate, signal)) return false;
+  if (!productTextCorroboratesCapability(candidate, signal)) return false;
   return candidate.category === 'core' || operations.some(operation => !/^(?:coordinate|handle|process)$/i.test(operation.action || ''));
+}
+
+export function hasFirstPartyCorroboratedCatalogOperations(
+  capability: SystemCapability,
+  candidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
+): boolean {
+  if (!productTextCorroboratesCapability(capability, signal)) return false;
+  const citedCandidateIds = new Set((capability.criticality_factors || [])
+    .filter(factor => factor.startsWith('catalog-candidate:'))
+    .map(factor => factor.slice('catalog-candidate:'.length)));
+  return candidates.some(candidate =>
+    citedCandidateIds.has(candidate.id) && (candidate.operations || []).length > 0
+  );
 }
 
 function hasLifecycleEvidence(entity: CASDataEntity): boolean {

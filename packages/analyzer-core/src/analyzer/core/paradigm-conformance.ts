@@ -6,6 +6,7 @@ import {
   CASParadigmConformance,
   CASParadigmDeviation
 } from '../../types/cas.types';
+import { isGuardEnforcementEdge, resolveGuardEnforcementRelationship } from './guard-relationships';
 
 export interface ParadigmConformanceInput {
   nodes: CASNode[];
@@ -23,7 +24,6 @@ const MAX_EVIDENCE_FILES = 5;
 const CALL_EDGE_TYPES = new Set(['calls', 'invokes', 'executes', 'uses', 'depends_on', 'injects', 'queries']);
 const WRITE_EDGE_TYPES = new Set(['writes', 'creates', 'updates', 'deletes', 'persists', 'saves', 'mutates']);
 const CONTAINMENT_EDGE_TYPES = new Set(['contains', 'has_method', 'declares']);
-const GUARD_EDGE_TYPES = new Set(['guarded_by', 'protected_by', 'guards', 'authorizes', 'middleware', 'intercepts', 'before_action']);
 
 const ENTRY_LAYER_TYPE = /(^|[_\s])(controller|gateway|resolver|handler|api_route|endpoint)([_\s]|$)/;
 const SERVICE_LAYER_TYPE = /(^|[_\s])(service|use_case|usecase|interactor|application_service|workflow)([_\s]|$)/;
@@ -143,8 +143,9 @@ function buildIndex(input: ParadigmConformanceInput): GraphIndex {
       containedBySource.set(edge.source, list);
       if (!ownerByChild.has(edge.target)) ownerByChild.set(edge.target, edge.source);
     }
-    if (GUARD_EDGE_TYPES.has(edge.type)) {
-      guardedNodeIds.add(edge.source);
+    if (isGuardEnforcementEdge(edge)) {
+      const relationship = resolveGuardEnforcementRelationship(edge, nodesById);
+      if (relationship) guardedNodeIds.add(relationship.protected_node_id);
     }
   }
 

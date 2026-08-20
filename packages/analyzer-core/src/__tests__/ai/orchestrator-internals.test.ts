@@ -6480,6 +6480,37 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(out.map((c: any) => c.name)).toContain('Provide system fallback');
   });
 
+  it('PURPOSE GATE: keeps entity-free operations when cited evidence and first-party product text establish the authored outcome', async () => {
+    const nodes = [realNode('fabric_claim_handler')];
+    const entryPoints = [entryPoint('entry_fabric_claim', 'fabric_claim_handler', 'message')];
+    const evidenceCandidate = cap({
+      id: 'fabric-surface',
+      name: 'Fabric collaboration surface',
+      evidence_kind: 'behavior-surface',
+      category: 'internal',
+      operations: [{ entry_point_id: 'entry_fabric_claim', entry_point_type: 'message', action: 'Claim' }],
+    });
+    const cataloged = [cap({
+      name: 'Enable real-time collaboration through Fabric',
+      category: 'core',
+      operations: [{ entry_point_id: 'entry_fabric_claim', entry_point_type: 'message', action: 'Claim' }],
+      criticality_factors: ['catalog-candidate:fabric-surface'],
+    })];
+
+    const out = orch.reconcileCatalogedCapabilities(
+      cataloged,
+      [evidenceCandidate],
+      [],
+      entryPoints,
+      nodes,
+      undefined,
+      [],
+      { concepts: ['Fabric', 'real-time collaboration'], evidence: [] },
+    );
+
+    expect(out.map((c: any) => c.name)).toContain('Enable real-time collaboration through Fabric');
+  });
+
   it('PURPOSE GATE (R8-B): name fallback only applies when there is no resolvable entity OR operation anchor at all', async () => {
     // No entities, no entry-point/node maps supplied at all (operations
     // reference an entry_point_id but there's nothing to resolve it against)
@@ -9392,6 +9423,50 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const snapshot = JSON.parse(JSON.stringify(systemCapabilities));
     orch.finalizeSystemCapabilityNames(systemCapabilities);
     expect(systemCapabilities).toEqual(snapshot);
+  });
+
+  it('makes catalog coverage match the final publishable capability set', () => {
+    const purpose: any = {
+      capability_catalog_coverage: {
+        evidence_families: 3,
+        published_capabilities: 2,
+        minimum_published_capabilities: 2,
+        status: 'accepted',
+      },
+      ai_phase_status: 'complete',
+    };
+    const systemCapabilities: any[] = [
+      {
+        id: 'cap_published',
+        name: 'Review account activity',
+        name_source: 'ai',
+        description: 'Account activity shows the events available for review.',
+        description_source: 'ai',
+        related_entities: ['entity_activity'],
+        related_domains: [],
+        operations: [],
+        criticality_factors: [],
+      },
+      {
+        id: 'cap_rejected',
+        name: 'Export account activity',
+        name_source: 'ai',
+        related_entities: ['entity_activity'],
+        related_domains: [],
+        operations: [],
+        criticality_factors: [],
+      },
+    ];
+
+    orch.finalizeSystemCapabilityNames(systemCapabilities, [], purpose);
+
+    expect(systemCapabilities.map(capability => capability.id)).toEqual(['cap_published']);
+    expect(purpose.capability_catalog_coverage).toMatchObject({
+      published_capabilities: 1,
+      status: 'rejected',
+      reason: 'final catalog published 1 of at least 2 required capabilities',
+    });
+    expect(purpose.ai_phase_status).toBe('degraded');
   });
 
   it('end-to-end: bare-noun placeholders never enter canonical capabilities', async () => {

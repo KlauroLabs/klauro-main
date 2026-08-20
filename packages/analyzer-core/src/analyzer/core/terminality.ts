@@ -5,7 +5,7 @@ import type {
   CASTerminalityMember,
   FlowConcept,
 } from '../../types/cas.types';
-import { classifyGuardKind } from './guard-classification';
+import { resolveGuardEnforcementRelationship } from './guard-relationships';
 
 function uniqueIds(ids: Iterable<string>): string[] {
   return [...new Set([...ids].filter(Boolean))].sort();
@@ -146,6 +146,59 @@ function primaryCapabilityIds(flow: FlowConcept): string[] {
   ]);
 }
 
+function structuralNodeIdsByFlow(cas: CASOutput, flows: FlowConcept[]): Map<string, Set<string>> {
+  const entryPoints = new Map((cas.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
+  const ownerByChild = new Map<string, string>();
+  for (const edge of cas.edges) {
+    if (!['contains', 'has_method', 'declares'].includes(edge.type) || ownerByChild.has(edge.target)) continue;
+    ownerByChild.set(edge.target, edge.source);
+  }
+  const result = new Map<string, Set<string>>();
+  for (const flow of flows) {
+    const entryPoint = entryPoints.get(flow.entry_point);
+    const nodeIds = new Set<string>([
+      entryPoint?.source_node,
+      entryPoint?.handler?.node_id,
+      flow.terminus?.node_id,
+      ...flow.steps.flatMap(step => step.functions.map(member => member.function_id)),
+    ].filter((id): id is string => Boolean(id)));
+    for (const nodeId of [...nodeIds]) {
+      let owner = ownerByChild.get(nodeId);
+      while (owner && !nodeIds.has(owner)) {
+        nodeIds.add(owner);
+        owner = ownerByChild.get(owner);
+      }
+    }
+    result.set(flow.flow_id, nodeIds);
+  }
+  return result;
+}
+
+function structuralGuardFlowEdges(cas: CASOutput, flows: FlowConcept[]): CASTerminalityEdge[] {
+  const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
+  const flowIdsByNode = new Map<string, string[]>();
+  for (const [flowId, nodeIds] of structuralNodeIdsByFlow(cas, flows)) {
+    for (const nodeId of nodeIds) {
+      const owners = flowIdsByNode.get(nodeId) || [];
+      owners.push(flowId);
+      flowIdsByNode.set(nodeId, owners);
+    }
+  }
+  const edges: CASTerminalityEdge[] = [];
+  for (const edge of cas.edges) {
+    const relationship = resolveGuardEnforcementRelationship(edge, nodesById);
+    if (!relationship) continue;
+    const providers = flowIdsByNode.get(relationship.guard_node_id) || [];
+    const consumers = flowIdsByNode.get(relationship.protected_node_id) || [];
+    for (const provider of providers) {
+      for (const consumer of consumers) {
+        if (provider !== consumer) edges.push({ source: provider, target: consumer });
+      }
+    }
+  }
+  return edges;
+}
+
 function flowEdges(cas: CASOutput): CASTerminalityEdge[] {
   const flows = cas.flows || [];
   const flowIds = new Set(flows.map(flow => flow.flow_id));
@@ -158,27 +211,7 @@ function flowEdges(cas: CASOutput): CASTerminalityEdge[] {
       if (flowIds.has(predecessor)) edges.push({ source: predecessor, target: flow.flow_id });
     }
   }
-  const entryPoints = new Map((cas.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
-  const authenticationProviders = flows.filter(flow => {
-    const entryPoint = entryPoints.get(flow.entry_point);
-    const providerEvidence = [
-      flow.name,
-      flow.intent,
-      entryPoint?.name,
-      flow.terminus?.produces,
-      ...flow.steps.map(step => step.name),
-    ].filter(Boolean).join(' ');
-    return classifyGuardKind(providerEvidence) === 'authentication';
-  });
-  for (const flow of flows) {
-    const entryPoint = entryPoints.get(flow.entry_point);
-    const authenticationRequired = Boolean(entryPoint?.security?.authenticated)
-      || (entryPoint?.security?.guards || []).some(guard => classifyGuardKind(guard) === 'authentication');
-    if (!authenticationRequired) continue;
-    for (const provider of authenticationProviders) {
-      if (provider.flow_id !== flow.flow_id) edges.push({ source: provider.flow_id, target: flow.flow_id });
-    }
-  }
+  edges.push(...structuralGuardFlowEdges(cas, flows));
 
   const primaryFlowsByCapability = new Map<string, string[]>();
   for (const flow of flows) {

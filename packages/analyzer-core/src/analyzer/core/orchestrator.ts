@@ -152,7 +152,9 @@ import {
   catalogCountBounds, catalogEntityCandidateGroups, catalogEvidenceCoverageFailure,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
   catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
-  firstPartySupportsIdentityProduct as supportsIdentityProduct,
+  capabilityCatalogAiPhaseStatus, firstPartySupportsIdentityProduct as supportsIdentityProduct,
+  hasFirstPartyCorroboratedCatalogOperations,
+  synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
@@ -9928,10 +9930,10 @@ export class AnalyzerOrchestrator {
       if (sourceNode?.type) nodeTypeByEntryPointId.set(ep.id, sourceNode.type);
     }
 
-    const purposeGated = result.filter(capability => {
-      if (!this.isInfrastructureOnlyCapability(capability, entityById, nodeTypeByEntryPointId)) return true;
-      return false;
-    });
+    const purposeGated = result.filter(capability => !this.isInfrastructureOnlyCapability(
+      capability, entityById, nodeTypeByEntryPointId,
+      hasFirstPartyCorroboratedCatalogOperations(capability, candidates, projectTextSignal),
+    ));
     const gated = purposeGated;
 
     const audienceEvaluation = evaluateCapabilityCatalogAudience(
@@ -10093,6 +10095,7 @@ export class AnalyzerOrchestrator {
     capability: SystemCapability,
     entityById: Map<string, CASDataEntity>,
     nodeTypeByEntryPointId?: Map<string, string>,
+    operationOnlyProductEvidence = false,
   ): boolean {
     if (this.isInfrastructureMachineryName(capability.name, true)) return true;
     const anchors = (capability.related_entities || [])
@@ -10111,7 +10114,7 @@ export class AnalyzerOrchestrator {
       if (operationNodeTypes.length === 0) {
         return this.isInfrastructureMachineryName(capability.name);
       }
-      return true;
+      return operationsAllDistributionOrCi || !operationOnlyProductEvidence;
     }
     if (hasRealOperationAnchor) return false;
     const entityAnchorsAllInfra = anchors.every(entity => {
@@ -10569,6 +10572,7 @@ export class AnalyzerOrchestrator {
         un_enriched: excluded.length,
         path_derived_rejected: excluded.filter(capability => isPathDerivedCapabilityName(capability.name)).length,
       };
+      synchronizeCapabilityCatalogCoverage(purpose, deduped.length, excluded.length);
     }
     if (excluded.length > 0) {
       recordSemanticDecision({
@@ -11331,7 +11335,7 @@ export class AnalyzerOrchestrator {
       stopped_reason: dataEntities.length > 0 ? 'manual-trigger-only' : undefined,
     };
 
-    enhancedSystemPurpose.ai_phase_status = 'complete';
+    enhancedSystemPurpose.ai_phase_status = capabilityCatalogAiPhaseStatus(enhancedSystemPurpose.capability_catalog_coverage);
     enhancedSystemPurpose.ai_input_fingerprint = aiInputFingerprint;
 
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);

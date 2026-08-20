@@ -11,6 +11,7 @@ import {
   CASUserJourneySummary,
   CASUserJourneyTerminalEntity
 } from '../../types/cas.types';
+import { isGuardEnforcementEdge } from './guard-relationships';
 import { classifyGuardKind } from './guard-classification';
 import { dedupeAdjacentWords } from './flow-concepts';
 import type { FlowConcept } from './flow-concepts';
@@ -41,7 +42,6 @@ const WALK_MAX_DEPTH = 8;
 const WALK_MAX_NODES = 30;
 const SEED_EXPANSION_LIMIT = 15;
 
-const GUARD_EDGE_TYPES = new Set(['guarded_by', 'protected_by', 'guards', 'authorizes', 'middleware', 'intercepts', 'before_action']);
 const TEST_EDGE_TYPES = new Set(['tests', 'covers']);
 const TRAVERSAL_EDGE_TYPES = new Set([
   'calls', 'invokes', 'executes', 'triggers', 'routes_to', 'handled_by',
@@ -450,7 +450,7 @@ function buildJourneyGraph(input: UserJourneyInput): JourneyGraph {
       list.push(edge);
       relationsBySource.set(edge.source, list);
     }
-    if (GUARD_EDGE_TYPES.has(edge.type)) {
+    if (isGuardEnforcementEdge(edge)) {
       for (const endpoint of [edge.source, edge.target]) {
         const list = guardEdgesByNode.get(endpoint) || [];
         list.push(edge);

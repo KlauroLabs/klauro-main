@@ -4132,7 +4132,7 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
 
   entity_description_coverage?: CASEntityDescriptionCoverage;
 
-  ai_phase_status?: 'complete';
+  ai_phase_status?: 'complete' | 'degraded';
 }
 
 export interface CASCapability {
