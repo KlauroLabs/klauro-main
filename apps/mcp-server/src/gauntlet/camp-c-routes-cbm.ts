@@ -169,20 +169,6 @@ function cbmRoutes(bin: string, dir: string): { routes: string[]; bytes: number;
 
 
 
-  const parsed: any = runCodebaseMemoryJson(bin, 'get_architecture', [JSON.stringify({ project })]);
-  const architectureBytes = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
-  const section: any[] = parsed.routes || parsed.endpoints || parsed.http || parsed.http_routes || [];
-  const routes: string[] = [];
-  for (const r of section) {
-    const method = String(r.method || r.verb || '').toUpperCase();
-    const p = String(r.path || r.name || '');
-    if (method && p) routes.push(`${method} ${canonicalizePath(p)}`);
-  }
-  const uniq = [...new Set(routes)];
-  if (uniq.length > best.routes.length) {
-    best = { routes: uniq, bytes: architectureBytes, source: 'get_architecture' };
-  }
-
   return best;
 }
 

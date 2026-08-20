@@ -283,6 +283,7 @@ export function runCodebaseMemoryJson(bin: string, tool: string, args: string[])
   const output = execFileSync(bin, ['cli', '--json', tool, ...args], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
+    timeout: 300_000,
   });
   const jsonLine = output.split('\n').find(line => line.trim().startsWith('{'));
   if (!jsonLine) throw new Error(`codebase-memory ${tool} returned no JSON envelope`);

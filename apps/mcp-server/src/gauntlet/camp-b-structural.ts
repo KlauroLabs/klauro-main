@@ -50,7 +50,10 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 
-import { extractStructure } from '../../../../packages/analyzer-core/src/analyzer/core/generic-tree-sitter-analyzer';
+import {
+  extractStructure,
+  type StructuralExtract,
+} from '../../../../packages/analyzer-core/src/analyzer/core/generic-tree-sitter-analyzer';
 import { codebaseMemoryPath, runCodebaseMemoryJson, startCodebaseMemoryDaemon } from './real-camp-arms';
 import { TOP_LANGS } from './camp-a-langs';
 
@@ -172,8 +175,10 @@ export interface CampBSide {
   tokens: number;
 }
 
-export interface CampBCbmSide extends CampBSide {
-
+export interface CampBCbmSide {
+  functions: number;
+  classes: number;
+  tokens: number;
   available: boolean;
 }
 
@@ -217,21 +222,10 @@ function cbmProjectId(dir: string): string {
 }
 
 interface CbmStructuralCounts {
-
   functions: number;
   classes: number;
-
-
-  calls: number;
-  imports: number;
-
-
-
-
-
   fnNames: Set<string>;
   classNames: Set<string>;
-
   schemaRaw: string;
   available: boolean;
 }
@@ -251,63 +245,69 @@ interface CbmStructuralCounts {
 
 
 
-function cbmStructural(bin: string, dir: string): CbmStructuralCounts {
+function cbmStructuralCorpus(bin: string, dir: string): Map<string, CbmStructuralCounts> {
   const project = cbmProjectId(dir);
-  const indexed: any = runCodebaseMemoryJson(bin, 'index_repository', ['--repo-path', dir, '--name', project]);
-  const indexNodeTotal = Number(indexed.nodes) || 0;
-
-
-  const schema: any = runCodebaseMemoryJson(bin, 'get_graph_schema', [JSON.stringify({ project })]);
-  let schemaFns = 0, schemaCls = 0, calls = 0, imports = 0, schemaRaw = '';
-  schemaRaw = JSON.stringify(schema);
-  const labels: Array<{ label: string; count: number }> = schema.node_labels || [];
-  const edges: Array<{ type: string; count: number }> = schema.edge_types || [];
-  const lc = (n: string) => labels.filter(l => l.label === n).reduce((a, b) => a + (b.count || 0), 0);
-  const ec = (n: string) => edges.filter(e => e.type === n).reduce((a, b) => a + (b.count || 0), 0);
-  schemaFns = lc('Function') + lc('Method');
-  schemaCls = lc('Class') + lc('Struct') + lc('Interface');
-  calls = ec('CALLS');
-  imports = ec('IMPORTS');
-
-
-
-
-
-
-
-
-  const fnNames = new Set<string>();
-  const classNames = new Set<string>();
+  runCodebaseMemoryJson(bin, 'index_repository', ['--repo-path', dir, '--name', project]);
   const search: any = runCodebaseMemoryJson(bin, 'search_graph', [
     '--project', project,
     '--format', 'json',
     '--limit', '100000',
   ]);
   const columns: string[] = search.cols || [];
-  const nameIndex = Math.max(0, columns.indexOf('name'));
-  const labelIndex = Math.max(0, columns.indexOf('label'));
-  for (const group of search.groups || []) {
-    for (const row of group.rows || []) {
-      const name = String(row[nameIndex] || '');
-      const label = String(row[labelIndex] || '');
-      if (!name) continue;
-      if (label === 'Function' || label === 'Method') fnNames.add(name);
-      else if (label === 'Class' || label === 'Struct' || label === 'Interface') classNames.add(name);
-    }
+  const nameIndex = columns.indexOf('name');
+  const labelIndex = columns.indexOf('label');
+  if (nameIndex < 0 || labelIndex < 0) {
+    throw new Error(`codebase-memory search_graph omitted required columns: ${columns.join(', ')}`);
   }
+  const groupsByFile = new Map<string, any[]>();
+  for (const group of search.groups || []) {
+    const file = path.basename(String(group.file || ''));
+    if (!file) continue;
+    const groups = groupsByFile.get(file) || [];
+    groups.push(group);
+    groupsByFile.set(file, groups);
+  }
+  const byFile = new Map<string, CbmStructuralCounts>();
+  for (const [file, groups] of groupsByFile) {
+    const fnNames = new Set<string>();
+    const classNames = new Set<string>();
+    for (const group of groups) {
+      for (const row of group.rows || []) {
+        const name = String(row[nameIndex] || '');
+        const label = String(row[labelIndex] || '');
+        if (!name) continue;
+        if (label === 'Function' || label === 'Method') fnNames.add(name);
+        else if (label === 'Class' || label === 'Struct' || label === 'Interface') classNames.add(name);
+      }
+    }
+    byFile.set(file, {
+      functions: fnNames.size,
+      classes: classNames.size,
+      fnNames,
+      classNames,
+      schemaRaw: JSON.stringify({ cols: columns, groups }),
+      available: fnNames.size + classNames.size > 0,
+    });
+  }
+  return byFile;
+}
 
+interface PendingStructuralComparison {
+  lang: string;
+  fileName: string;
+  klauroExtract: StructuralExtract;
+  klauro: CampBSide;
+}
 
-
-
-
-
-  const functions = Math.max(schemaFns, fnNames.size);
-  const classes = Math.max(schemaCls, classNames.size);
-
-
-  const available = functions + classes > 0 || indexNodeTotal > 5;
-
-  return { functions, classes, calls, imports, fnNames, classNames, schemaRaw, available };
+function unavailableCbmStructuralCounts(): CbmStructuralCounts {
+  return {
+    functions: 0,
+    classes: 0,
+    fnNames: new Set(),
+    classNames: new Set(),
+    schemaRaw: '',
+    available: false,
+  };
 }
 
 interface SymbolNames {
@@ -449,6 +449,7 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
   const rows: CampBStructuralRow[] = [];
 
   try {
+    const pending: PendingStructuralComparison[] = [];
     for (const [lang, sample] of samples) {
       const ext = LANG_EXT[lang];
       if (!ext) continue;
@@ -474,16 +475,18 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
         imports: kExtract.imports.length,
         tokens: tokensOf(klauroPayload),
       };
+      const fileName = `sample-${lang.replace(/[^A-Za-z0-9_-]+/g, '-')}.${ext}`;
+      fs.writeFileSync(path.join(root, fileName), sample);
+      pending.push({ lang, fileName, klauroExtract: kExtract, klauro });
+    }
 
-
-      const dir = fs.mkdtempSync(path.join(root, `${lang}-`));
-      fs.writeFileSync(path.join(dir, `sample.${ext}`), sample);
-      const cbmCounts = cbmStructural(bin, dir);
+    const cbmByFile = cbmStructuralCorpus(bin, root);
+    for (const comparison of pending) {
+      const { lang, fileName, klauroExtract: kExtract, klauro } = comparison;
+      const cbmCounts = cbmByFile.get(fileName) || unavailableCbmStructuralCounts();
       const cbm: CampBCbmSide = {
         functions: cbmCounts.functions,
         classes: cbmCounts.classes,
-        calls: cbmCounts.calls,
-        imports: cbmCounts.imports,
         tokens: cbmCounts.available ? tokensOf(cbmCounts.schemaRaw) : 0,
         available: cbmCounts.available,
       };
@@ -512,11 +515,10 @@ export async function buildCampBStructuralReport(): Promise<CampBStructuralRepor
   const ceilingTies = rows.filter(r => r.verdict === 'tie-ceiling').length;
   const losses = rows.filter(r => r.verdict === 'loss').length;
   const winRate = languages ? (klauroWins + ceilingTies) / languages : 0;
-  const meanKlauroTokens = languages
-    ? rows.reduce((a, r) => a + r.klauro.tokens, 0) / languages
-    : 0;
-
   const cbmAvail = rows.filter(r => r.cbm.available);
+  const meanKlauroTokens = cbmAvail.length
+    ? cbmAvail.reduce((a, r) => a + r.klauro.tokens, 0) / cbmAvail.length
+    : 0;
   const meanCbmTokens = cbmAvail.length
     ? cbmAvail.reduce((a, r) => a + r.cbm.tokens, 0) / cbmAvail.length
     : 0;
