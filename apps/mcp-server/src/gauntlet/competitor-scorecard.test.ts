@@ -38,7 +38,7 @@ const stubRunners: Partial<ScorecardRunners> = {
     row({ camp: 'A', scenario: 'depth-behavioral-diff-vs-cbm: auth-removed', best_competitor: 'codebase-memory', best_competitor_score: 0.0, verdict: 'win' }),
   ],
   primitiveCallers: async () => [
-    row({ camp: 'B', scenario: 'primitive-who-calls: callers-py', best_competitor: 'ripgrep', best_competitor_score: 0.5, verdict: 'win' }),
+    row({ camp: 'B', scenario: 'primitive-who-calls: callers-py', best_competitor: 'cursor-proxy', best_competitor_score: 0.5, verdict: 'win' }),
   ],
   wasCrossRepo: async () => [
     row({ camp: 'B', scenario: 'was-cross-repo: ui-api-worker', best_competitor: 'scip-typescript', best_competitor_score: 0.0, verdict: 'win' }),
@@ -86,7 +86,7 @@ test('normalizes injected runner rows into A/B/C camps with correct counts', asy
   assert.equal(report.endpoint, 'https://mcp.klauro.com');
 });
 
-test('renderScorecardMarkdown emits per-camp tables + the zero-losses summary', async () => {
+test('renderScorecardMarkdown separates measured, proxy, and unopposed evidence', async () => {
   const report = await generateCompetitorScorecard({
     runners: stubRunners,
     timestamp: '2026-07-01T00:00:00.000Z',
@@ -101,13 +101,17 @@ test('renderScorecardMarkdown emits per-camp tables + the zero-losses summary', 
   assert.match(md, /## Camp A — vs codebase-memory/);
   assert.match(md, /## Camp B — vs structural indexers/);
   assert.match(md, /## Camp C — comprehension/);
-  assert.match(md, /\| Scenario \| Metric \| Klauro \| Best competitor \| Verdict \|/);
+  assert.match(md, /\| Scenario \| Metric \| Klauro \| Best competitor \| Evidence \| Verdict \|/);
   // A specific normalized row rendered.
   assert.match(md, /camp-c-routes-vs-cbm: express-routes .* WIN/);
   // Out-of-category competitor rendered as n/a (no score).
   assert.match(md, /none \(n\/a\)/);
-  assert.match(md, /\*\*Zero losses\*\*/);
-  assert.match(md, /Total: 7 win \/ 2 tie \/ 0 loss across 9 scenarios/);
+  assert.match(md, /none \(n\/a\) \| unopposed \| CAPABILITY/);
+  assert.match(md, /cursor-proxy 0\.50 \| proxy \| PROXY WIN/);
+  assert.match(md, /\*\*No measured losses\*\*/);
+  assert.match(md, /Evidence: 5 named head-to-head \/ 1 proxy \/ 3 unopposed/);
+  assert.match(md, /Proxy and unopposed rows .* do not establish competitor wins/);
+  assert.match(md, /Raw outcomes across all evidence kinds: 7 win \/ 2 tie \/ 0 loss across 9 scenarios/);
 });
 
 test('runner errors make the scorecard incomplete and suppress the zero-loss claim', async () => {

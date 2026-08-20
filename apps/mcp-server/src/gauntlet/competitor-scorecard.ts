@@ -86,7 +86,15 @@ export interface CompetitorScorecard {
   complete: boolean;
   runner_failures: Array<{ runner: keyof ScorecardRunners; error: string }>;
   camps: CampSummary[];
-  totals: { wins: number; ties: number; losses: number; scenarios: number };
+  totals: {
+    wins: number;
+    ties: number;
+    losses: number;
+    scenarios: number;
+    head_to_head_scenarios: number;
+    proxy_scenarios: number;
+    unopposed_scenarios: number;
+  };
 
   zeroLosses: boolean;
 }
@@ -299,9 +307,15 @@ export interface GenerateScorecardOptions {
 
 const CAMP_META: Record<Camp, { label: string; target: string }> = {
   A: { label: 'Camp A — vs codebase-memory (DeusData)', target: 'tie-or-beat (Klauro never loses)' },
-  B: { label: 'Camp B — vs structural indexers (ripgrep / ast-grep / ctags / scip / stack-graphs / embeddings)', target: 'win' },
-  C: { label: 'Camp C — comprehension / out-of-category (routes, ORM, component tree, comprehension facts)', target: 'always win' },
+  B: { label: 'Camp B — vs structural indexers (ripgrep / ast-grep / ctags / scip / stack-graphs / embeddings)', target: 'win on measured head-to-head rows' },
+  C: { label: 'Camp C — comprehension / out-of-category (routes, ORM, component tree, comprehension facts)', target: 'capability coverage; a win requires a named measured competitor' },
 };
+
+function evidenceKind(row: ScorecardRow): 'head-to-head' | 'proxy' | 'unopposed' {
+  if (row.best_competitor_score === null || row.best_competitor === 'none') return 'unopposed';
+  if (/proxy/i.test(row.best_competitor)) return 'proxy';
+  return 'head-to-head';
+}
 
 export async function generateCompetitorScorecard(
   opts: GenerateScorecardOptions = {},
@@ -346,11 +360,14 @@ export async function generateCompetitorScorecard(
     ties: camps.reduce((a, c) => a + c.ties, 0),
     losses: camps.reduce((a, c) => a + c.losses, 0),
     scenarios: rows.length,
+    head_to_head_scenarios: rows.filter(row => evidenceKind(row) === 'head-to-head').length,
+    proxy_scenarios: rows.filter(row => evidenceKind(row) === 'proxy').length,
+    unopposed_scenarios: rows.filter(row => evidenceKind(row) === 'unopposed').length,
   };
 
   const complete = runnerFailures.length === 0 &&
     camps.every(camp => camp.rows.length > 0) &&
-    camps.filter(camp => camp.camp !== 'C').every(camp => camp.rows.some(row => row.best_competitor_score !== null));
+    camps.filter(camp => camp.camp !== 'C').every(camp => camp.rows.every(row => evidenceKind(row) !== 'unopposed'));
 
   return {
     endpoint,
@@ -359,7 +376,7 @@ export async function generateCompetitorScorecard(
     runner_failures: runnerFailures,
     camps,
     totals,
-    zeroLosses: complete && totals.losses === 0,
+    zeroLosses: complete && totals.losses === 0 && totals.head_to_head_scenarios > 0,
   };
 }
 
@@ -371,8 +388,11 @@ function fmtScore(s: number | null): string {
   return s == null ? '—' : s.toFixed(2);
 }
 
-function verdictBadge(v: Verdict): string {
-  return v === 'win' ? 'WIN' : v === 'tie' ? 'TIE' : 'LOSS';
+function verdictBadge(row: ScorecardRow): string {
+  const kind = evidenceKind(row);
+  if (kind === 'unopposed') return row.verdict === 'loss' ? 'CAPABILITY GAP' : 'CAPABILITY';
+  const verdict = row.verdict === 'win' ? 'WIN' : row.verdict === 'tie' ? 'TIE' : 'LOSS';
+  return kind === 'proxy' ? `PROXY ${verdict}` : verdict;
 }
 
 export function renderScorecardMarkdown(report: CompetitorScorecard): string {
@@ -392,23 +412,27 @@ export function renderScorecardMarkdown(report: CompetitorScorecard): string {
   }
 
   for (const camp of report.camps) {
+    const campHeadToHead = camp.rows.filter(row => evidenceKind(row) === 'head-to-head').length;
+    const campProxy = camp.rows.filter(row => evidenceKind(row) === 'proxy').length;
+    const campUnopposed = camp.rows.filter(row => evidenceKind(row) === 'unopposed').length;
     lines.push(`## ${camp.label}`);
     lines.push('');
-    lines.push(`Target: ${camp.target} — ${camp.wins} win / ${camp.ties} tie / ${camp.losses} loss`);
+    lines.push(`Target: ${camp.target}`);
+    lines.push(`Recorded outcomes: ${camp.wins} win / ${camp.ties} tie / ${camp.losses} loss; evidence: ${campHeadToHead} head-to-head / ${campProxy} proxy / ${campUnopposed} unopposed.`);
     lines.push('');
     if (camp.rows.length === 0) {
       lines.push('_No scenarios recorded._');
       lines.push('');
       continue;
     }
-    lines.push('| Scenario | Metric | Klauro | Best competitor | Verdict |');
-    lines.push('| --- | --- | --- | --- | --- |');
+    lines.push('| Scenario | Metric | Klauro | Best competitor | Evidence | Verdict |');
+    lines.push('| --- | --- | --- | --- | --- | --- |');
     for (const r of camp.rows) {
       const comp = r.best_competitor_score == null
         ? `${r.best_competitor} (n/a)`
         : `${r.best_competitor} ${fmtScore(r.best_competitor_score)}`;
       lines.push(
-        `| ${r.scenario} | ${r.metric} | ${fmtScore(r.klauro_score)} | ${comp} | ${verdictBadge(r.verdict)} |`,
+        `| ${r.scenario} | ${r.metric} | ${fmtScore(r.klauro_score)} | ${comp} | ${evidenceKind(r)} | ${verdictBadge(r)} |`,
       );
     }
     lines.push('');
@@ -417,11 +441,12 @@ export function renderScorecardMarkdown(report: CompetitorScorecard): string {
   const t = report.totals;
   lines.push('## Summary');
   lines.push('');
-  lines.push(`Total: ${t.wins} win / ${t.ties} tie / ${t.losses} loss across ${t.scenarios} scenarios.`);
+  lines.push(`Raw outcomes across all evidence kinds: ${t.wins} win / ${t.ties} tie / ${t.losses} loss across ${t.scenarios} scenarios.`);
+  lines.push(`Evidence: ${t.head_to_head_scenarios} named head-to-head / ${t.proxy_scenarios} proxy / ${t.unopposed_scenarios} unopposed.`);
   lines.push('');
   lines.push(
     report.zeroLosses
-      ? '**Zero losses** — Klauro ties-or-beats every competitor in every camp.'
+      ? `**No measured losses** — Klauro tied or beat named competitors in ${t.head_to_head_scenarios} head-to-head scenario(s). Proxy and unopposed rows are reported separately and do not establish competitor wins.`
       : !report.complete
         ? '**Incomplete evidence** — runner failures, missing camp coverage, or unmeasured competitors prevent a win claim.'
         : `**${t.losses} loss(es)** — a Klauro bug to fix; surfaced, never hidden.`,

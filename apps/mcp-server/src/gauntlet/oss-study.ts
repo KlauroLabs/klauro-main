@@ -130,6 +130,9 @@ export interface OssStudySummary {
   strictWinRate: number | null;
   nonLossRate: number | null;
   avgKlauroToCompetitorTokenRatio: number | null;
+  tokenRatioComparedPairs: number;
+  tokenRatioExcludedPairs: number;
+  tokenRatioNote: string;
   reason?: string;
 }
 
@@ -445,12 +448,32 @@ export function summarizeOssStudy(rows: OssRepoResult[]): OssStudySummary {
   const wins = compared.filter(row => row.verdict === 'win').length;
   const ties = compared.filter(row => row.verdict === 'tie-ceiling').length;
   const losses = compared.filter(row => row.verdict === 'loss').length;
-  const ratios: number[] = [];
+  const ratiosByRepo: number[] = [];
+  let tokenRatioComparedPairs = 0;
+  let tokenRatioExcludedPairs = 0;
   for (const row of compared) {
+    const rowRatios: number[] = [];
+    const klauroNames = [...new Set(row.klauro.fnNames)].sort();
+    const klauroPayload = JSON.stringify(klauroNames);
     for (const arm of row.competitor_arms) {
       if (!arm.available) continue;
-      const competitorTokens = tokensOf(JSON.stringify([...new Set(arm.names)].sort()));
-      if (competitorTokens > 0) ratios.push(row.klauro.tokens / competitorTokens);
+      const competitorNames = [...new Set(arm.names)].sort();
+      if (
+        klauroNames.length !== competitorNames.length
+        || klauroNames.some((name, index) => name !== competitorNames[index])
+      ) {
+        tokenRatioExcludedPairs++;
+        continue;
+      }
+      const klauroTokens = tokensOf(klauroPayload);
+      const competitorTokens = tokensOf(JSON.stringify(competitorNames));
+      if (klauroTokens > 0 && competitorTokens > 0) {
+        rowRatios.push(klauroTokens / competitorTokens);
+        tokenRatioComparedPairs++;
+      }
+    }
+    if (rowRatios.length) {
+      ratiosByRepo.push(rowRatios.reduce((left, right) => left + right, 0) / rowRatios.length);
     }
   }
   return {
@@ -461,7 +484,12 @@ export function summarizeOssStudy(rows: OssRepoResult[]): OssStudySummary {
     losses,
     strictWinRate: compared.length ? wins / compared.length : null,
     nonLossRate: compared.length ? (wins + ties) / compared.length : null,
-    avgKlauroToCompetitorTokenRatio: ratios.length ? ratios.reduce((left, right) => left + right, 0) / ratios.length : null,
+    avgKlauroToCompetitorTokenRatio: ratiosByRepo.length
+      ? ratiosByRepo.reduce((left, right) => left + right, 0) / ratiosByRepo.length
+      : null,
+    tokenRatioComparedPairs,
+    tokenRatioExcludedPairs,
+    tokenRatioNote: 'Token ratios include only arms returning the exact same normalized symbol set; differing coverage is excluded rather than presented as payload efficiency.',
   };
 }
 

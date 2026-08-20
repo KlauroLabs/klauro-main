@@ -44,5 +44,36 @@ test('OSS study summary distinguishes strict wins, ties, and unmeasured rows on 
   assert.equal(summary.unmeasured, 1);
   assert.equal(summary.strictWinRate, 0.5);
   assert.equal(summary.nonLossRate, 1);
-  assert.ok(summary.avgKlauroToCompetitorTokenRatio !== null);
+  assert.equal(summary.avgKlauroToCompetitorTokenRatio, 1);
+  assert.equal(summary.tokenRatioComparedPairs, 1);
+  assert.equal(summary.tokenRatioExcludedPairs, 1);
+  assert.match(summary.tokenRatioNote, /exact same normalized symbol set/);
+});
+
+test('OSS token ratio excludes incomplete and broader symbol sets from efficiency evidence', () => {
+  const row = (verdict: OssRepoResult['verdict'], klauroNames: string[], competitorNames: string[]): OssRepoResult => ({
+    repo: verdict,
+    cloned: true,
+    clone_source: 'network',
+    klauro: {
+      nodes: klauroNames.length,
+      functions: klauroNames.length,
+      classes: 0,
+      tokens: Math.round(Buffer.byteLength(JSON.stringify(klauroNames), 'utf8') / 4),
+      fnNames: klauroNames,
+    },
+    competitor: null,
+    competitor_arms: [{ arm: 'ctags', available: true, names: competitorNames }],
+    verdict,
+    note: verdict,
+  });
+
+  const summary = summarizeOssStudy([
+    row('loss', ['one'], ['one', 'two']),
+    row('win', ['one', 'two'], ['one']),
+  ]);
+
+  assert.equal(summary.avgKlauroToCompetitorTokenRatio, null);
+  assert.equal(summary.tokenRatioComparedPairs, 0);
+  assert.equal(summary.tokenRatioExcludedPairs, 2);
 });

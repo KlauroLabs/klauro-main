@@ -74,5 +74,5 @@ test('OSS study: Klauro vs real competitors on untuned real OSS repos', { timeou
     assert.notEqual(r.verdict, 'loss', `${r.repo} must not be a loss`);
   }
 
-  console.log(`[oss-study] compared=${report.summary.compared} unmeasured=${report.summary.unmeasured} wins=${report.summary.wins} ties=${report.summary.ties} losses=${report.summary.losses} strictWinRate=${report.summary.strictWinRate?.toFixed(2) ?? 'N/A'} nonLossRate=${report.summary.nonLossRate?.toFixed(2) ?? 'N/A'} avgKlauroToCompetitorTokenRatio=${report.summary.avgKlauroToCompetitorTokenRatio?.toFixed(2) ?? 'N/A'}`);
+  console.log(`[oss-study] compared=${report.summary.compared} unmeasured=${report.summary.unmeasured} wins=${report.summary.wins} ties=${report.summary.ties} losses=${report.summary.losses} strictWinRate=${report.summary.strictWinRate?.toFixed(2) ?? 'N/A'} nonLossRate=${report.summary.nonLossRate?.toFixed(2) ?? 'N/A'} comparableTokenPairs=${report.summary.tokenRatioComparedPairs} excludedTokenPairs=${report.summary.tokenRatioExcludedPairs} avgKlauroToCompetitorTokenRatio=${report.summary.avgKlauroToCompetitorTokenRatio?.toFixed(2) ?? 'N/A'} note=${report.summary.tokenRatioNote}`);
 });
