@@ -34,7 +34,6 @@ function searchIndex() {
     hot: {
       textChunkNodes: encoded.textChunkNodes,
       descriptionOffsets: encoded.descriptionOffsets,
-      auxiliaryTextOffsets: encoded.auxiliaryTextOffsets,
     },
     readPostings: async (keys: readonly string[]) => new Map(keys.flatMap(key => encoded.postings.has(key) ? [[key, encoded.postings.get(key)!] as const] : [])),
     readSearchText: async (denseIds: readonly number[]) => new Map(denseIds.map(denseId => [
@@ -43,10 +42,6 @@ function searchIndex() {
         description: decoder.decode(encoded.descriptionBytes.subarray(
           encoded.descriptionOffsets[denseId],
           encoded.descriptionOffsets[denseId + 1],
-        )),
-        auxiliaryText: decoder.decode(encoded.auxiliaryTextBytes.subarray(
-          encoded.auxiliaryTextOffsets[denseId],
-          encoded.auxiliaryTextOffsets[denseId + 1],
         )),
       },
     ])),
@@ -58,6 +53,7 @@ for (const [query, options] of [
   ['xy', {}],
   ['payment service', {}],
   ['retention', {}],
+  ['retention policy', {}],
   ['payment', { file: 'src/first.ts' }],
   ['policy', { type: 'function' }],
 ] as const) {

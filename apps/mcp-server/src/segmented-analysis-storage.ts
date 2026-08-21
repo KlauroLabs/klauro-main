@@ -240,7 +240,6 @@ async function writeSegmentedAnalysisUnlocked(
     const compactSearch = encodeCompactCASSearchText(output, compactGraph);
     const searchColumns: NonNullable<CasSectionManifest['compact_search']>['columns'] = {};
     await writeCompactColumn(searchColumns, 'search', 'description.offsets', compactSearch.descriptionOffsets);
-    await writeCompactColumn(searchColumns, 'search', 'auxiliaryText.offsets', compactSearch.auxiliaryTextOffsets);
     for (let start = 0; start < compactGraph.nodeCount; start += COMPACT_CAS_SEARCH_CHUNK_NODES) {
       const end = Math.min(start + COMPACT_CAS_SEARCH_CHUNK_NODES, compactGraph.nodeCount);
       const byteStart = compactSearch.descriptionOffsets[start];
@@ -251,20 +250,12 @@ async function writeSegmentedAnalysisUnlocked(
         `description.chunks.${Math.floor(start / COMPACT_CAS_SEARCH_CHUNK_NODES)}`,
         compactSearch.descriptionBytes.subarray(byteStart, byteEnd),
       );
-      const auxiliaryByteStart = compactSearch.auxiliaryTextOffsets[start];
-      const auxiliaryByteEnd = compactSearch.auxiliaryTextOffsets[end];
-      await writeCompactColumn(
-        searchColumns,
-        'search',
-        `auxiliaryText.chunks.${Math.floor(start / COMPACT_CAS_SEARCH_CHUNK_NODES)}`,
-        compactSearch.auxiliaryTextBytes.subarray(auxiliaryByteStart, auxiliaryByteEnd),
-      );
     }
     const postingArtifacts = await buildCompactCASPostingArtifacts(output, compactGraph, tmpDir);
     Object.assign(searchColumns, postingArtifacts.columns);
     manifest.compact_search = {
       format: 'klauro-compact-cas-search',
-      version: 2,
+      version: 3,
       node_count: compactGraph.nodeCount,
       description_chunk_nodes: COMPACT_CAS_SEARCH_CHUNK_NODES,
       shard_count: postingArtifacts.shardCount,
@@ -586,7 +577,7 @@ export async function loadCompactCASSearch(filePath: string): Promise<LoadedComp
   const segmented = await resolveSegmentedAnalysis(filePath);
   const descriptor = segmented?.manifest.compact_search;
   if (!segmented || !descriptor) return null;
-  if (descriptor.format !== 'klauro-compact-cas-search' || descriptor.version !== 2) {
+  if (descriptor.format !== 'klauro-compact-cas-search' || ![2, 3].includes(descriptor.version)) {
     throw new Error('Compact CAS search format or version is unsupported');
   }
   const graph = await loadCompactCASGraphFromGeneration(segmented);
@@ -596,10 +587,7 @@ export async function loadCompactCASSearch(filePath: string): Promise<LoadedComp
     throw new Error('Compact CAS search description chunk size is invalid');
   }
   const loaded = new Map<string, Uint8Array | Uint32Array>();
-  for (const name of [
-    'description.offsets',
-    'auxiliaryText.offsets',
-  ]) {
+  for (const name of ['description.offsets']) {
     const column = descriptor.columns[name];
     if (!column) throw new Error(`Compact CAS search column '${name}' is missing from the manifest`);
     loaded.set(name, await readRawColumn(segmented.directory, name, column, 'search'));
@@ -608,7 +596,6 @@ export async function loadCompactCASSearch(filePath: string): Promise<LoadedComp
   const index: CompactCASSearchHotIndex = {
     textChunkNodes: descriptor.description_chunk_nodes,
     descriptionOffsets: u32('description.offsets'),
-    auxiliaryTextOffsets: u32('auxiliaryText.offsets'),
   };
   validateCompactCASSearchLayout(index, graph.nodeCount);
   if (!Number.isSafeInteger(descriptor.shard_count) || descriptor.shard_count < 1 || descriptor.shard_count > 65_536) {
@@ -634,10 +621,7 @@ export async function loadCompactCASSearch(filePath: string): Promise<LoadedComp
   for (let start = 0; start < graph.nodeCount; start += descriptor.description_chunk_nodes) {
     const end = Math.min(start + descriptor.description_chunk_nodes, graph.nodeCount);
     const chunk = Math.floor(start / descriptor.description_chunk_nodes);
-    for (const [prefix, offsets] of [
-      ['description', index.descriptionOffsets],
-      ['auxiliaryText', index.auxiliaryTextOffsets],
-    ] as const) {
+    for (const [prefix, offsets] of [['description', index.descriptionOffsets]] as const) {
       const name = `${prefix}.chunks.${chunk}`;
       const column = descriptor.columns[name];
       if (!column || column.encoding !== 'uint8') throw new Error(`Compact CAS search column '${name}' is missing or has the wrong encoding`);
@@ -699,11 +683,12 @@ async function readSearchTextChunks(
     entries.push(denseId);
     byChunk.set(chunk, entries);
   }
-  const descriptions = new Map<number, { description: string; auxiliaryText: string }>();
+  const descriptions = new Map<number, { description: string }>();
   const decoder = new TextDecoder();
   for (const [chunk, ordinals] of byChunk) {
     const firstDenseId = chunk * descriptor.description_chunk_nodes;
-    const loadChunk = async (prefix: 'description' | 'auxiliaryText'): Promise<{ bytes: Uint8Array; offsets: Uint32Array }> => {
+    const loadChunk = async (): Promise<{ bytes: Uint8Array; offsets: Uint32Array }> => {
+      const prefix = 'description';
       const name = `${prefix}.chunks.${chunk}`;
       const column = descriptor.columns[name];
       if (!column) throw new Error(`Compact CAS search column '${name}' is missing from the manifest`);
@@ -711,10 +696,9 @@ async function readSearchTextChunks(
       if (!(bytes instanceof Uint8Array) || bytes instanceof Uint32Array) {
         throw new Error(`Compact CAS search column '${name}' has the wrong encoding`);
       }
-      return { bytes, offsets: prefix === 'description' ? index.descriptionOffsets : index.auxiliaryTextOffsets };
+      return { bytes, offsets: index.descriptionOffsets };
     };
-    const descriptionChunk = await loadChunk('description');
-    const auxiliaryTextChunk = await loadChunk('auxiliaryText');
+    const descriptionChunk = await loadChunk();
     for (const denseId of ordinals) {
       const decode = (chunkData: { bytes: Uint8Array; offsets: Uint32Array }): string => {
         const chunkByteStart = chunkData.offsets[firstDenseId];
@@ -725,7 +709,6 @@ async function readSearchTextChunks(
       };
       descriptions.set(denseId, {
         description: decode(descriptionChunk),
-        auxiliaryText: decode(auxiliaryTextChunk),
       });
     }
   }

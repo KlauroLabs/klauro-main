@@ -157,6 +157,10 @@ test('segmented storage publishes a checksummed compact graph alongside authorit
     const project = '/tmp/compact-graph-project';
     const cas = casFixture('compact-graph');
     cas.nodes[0].description = 'Executes xy transitions';
+    cas.nodes[0].documentation = {
+      raw: 'Retention policy coordinator '.repeat(2_000),
+      location: { start_line: 1, end_line: 1 },
+    };
     await saveAnalysis(project, cas);
     const graph = await loadCompactAnalysisGraph(project);
     assert.ok(graph);
@@ -173,9 +177,18 @@ test('segmented storage publishes a checksummed compact graph alongside authorit
       search.readPostings,
       search.readSearchText,
     )).map(node => node.id), ['compact-graph-node']);
+    assert.deepEqual((await searchCompactCAS(
+      search.graph,
+      search.index,
+      'retention',
+      search.readPostings,
+      search.readSearchText,
+    )).map(node => node.id), ['compact-graph-node']);
 
     const manifest = await loadAnalysisSectionManifest(project);
     assert.ok(manifest!.compact_search);
+    assert.equal(manifest!.compact_search!.version, 3);
+    assert.equal(Object.keys(manifest!.compact_search!.columns).some(name => name.startsWith('auxiliaryText.')), false);
     const firstColumn = Object.values(manifest!.compact_graph!.columns)[0];
     const sectionRoot = (await fs.readdir(storagePath)).find(name => name.endsWith('.sections'))!;
     const pointer = await fs.readJson(path.join(storagePath, sectionRoot, 'current.json'));
@@ -193,11 +206,36 @@ test('compact search rejects internally corrupt checksummed postings and support
     await fs.writeJson(path.join(sectionRoot, 'current.json'), { manifest_version: 1, revision: pointer.current || pointer.revision });
     const manifestPath = path.join(sectionRoot, pointer.current || pointer.revision, 'manifest.json');
     const manifest = await fs.readJson(manifestPath);
-    const searchVersion = manifest.compact_search.version;
+    const generationPath = path.dirname(manifestPath);
+    const auxiliaryText = Buffer.from('legacy auxiliary documentation');
+    const auxiliaryOffsets = Buffer.alloc(8);
+    auxiliaryOffsets.writeUInt32LE(0, 0);
+    auxiliaryOffsets.writeUInt32LE(auxiliaryText.byteLength, 4);
+    await fs.writeFile(path.join(generationPath, 'search.auxiliaryText.offsets.bin'), auxiliaryOffsets);
+    await fs.writeFile(path.join(generationPath, 'search.auxiliaryText.chunks.0.bin'), auxiliaryText);
+    manifest.compact_search.version = 2;
+    manifest.compact_search.columns['auxiliaryText.offsets'] = {
+      file: 'search.auxiliaryText.offsets.bin', encoding: 'uint32-le', length: 2, bytes: 8,
+      sha256: crypto.createHash('sha256').update(auxiliaryOffsets).digest('hex'),
+    };
+    manifest.compact_search.columns['auxiliaryText.chunks.0'] = {
+      file: 'search.auxiliaryText.chunks.0.bin', encoding: 'uint8', length: auxiliaryText.byteLength, bytes: auxiliaryText.byteLength,
+      sha256: crypto.createHash('sha256').update(auxiliaryText).digest('hex'),
+    };
+    await fs.writeJson(manifestPath, manifest);
+    const legacySearch = await loadCompactAnalysisSearch(project);
+    assert.ok(legacySearch);
+    assert.deepEqual((await searchCompactCAS(
+      legacySearch.graph,
+      legacySearch.index,
+      'run',
+      legacySearch.readPostings,
+      legacySearch.readSearchText,
+    )).map(node => node.id), ['compact-search-corruption-node']);
     manifest.compact_search.version = 999;
     await fs.writeJson(manifestPath, manifest);
     await assert.rejects(loadCompactAnalysisSearch(project), /format or version is unsupported|checksum-valid generation|pointer or generation is unreadable/);
-    manifest.compact_search.version = searchVersion;
+    manifest.compact_search.version = 2;
     await fs.writeJson(manifestPath, manifest);
     const shard = manifest.compact_search.nonempty_shards[0];
     const column = manifest.compact_search.columns[`postings.shard.${shard}`];

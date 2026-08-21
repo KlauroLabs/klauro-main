@@ -1,27 +1,24 @@
-import type { CASNode, CASOutput } from '../../types/cas.types';
+import type { CASOutput } from '../../types/cas.types';
 import type { CompactCASGraph } from './compact-cas-graph';
 
 const encoder = new TextEncoder();
+const EMPTY_POSTING = new Uint32Array(0);
 export const COMPACT_CAS_SEARCH_CHUNK_NODES = 1024;
 
 export interface CompactCASSearchIndex {
   textChunkNodes: number;
   descriptionBytes: Uint8Array;
   descriptionOffsets: Uint32Array;
-  auxiliaryTextBytes: Uint8Array;
-  auxiliaryTextOffsets: Uint32Array;
   postings: Map<string, Uint32Array>;
 }
 
 export interface CompactCASSearchHotIndex {
   textChunkNodes: number;
   descriptionOffsets: Uint32Array;
-  auxiliaryTextOffsets: Uint32Array;
 }
 
 export interface CompactCASSearchText {
   description: string;
-  auxiliaryText: string;
 }
 
 export interface CompactCASSearchOptions {
@@ -63,15 +60,6 @@ const SEARCH_TYPE_PRIORITY: Record<string, number> = {
   import: 4,
 };
 
-function searchTokens(text: string): string[] {
-  return text
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_\-./]/g, ' ')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-}
-
 function splitCamelCase(value: string): string[] {
   return value
     .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -85,10 +73,6 @@ function splitCamelCase(value: string): string[] {
 function matchesWordBoundary(value: string, queryWords: string[]): boolean {
   const words = splitCamelCase(value);
   return queryWords.every(queryWord => words.some(word => word.includes(queryWord)));
-}
-
-function nodeAuxiliaryText(node: CASNode): string {
-  return [node.documentation?.raw ?? '', (node.comments ?? []).map(comment => comment.text).join(' ')].join(' ');
 }
 
 function* iterateSearchTokens(value: string): Generator<string> {
@@ -169,34 +153,25 @@ export function encodeCompactCASSearchText(
   graph: CompactCASGraph,
 ): Omit<CompactCASSearchIndex, 'postings'> {
   const descriptionOffsets = new Uint32Array(graph.nodeCount + 1);
-  const auxiliaryTextOffsets = new Uint32Array(graph.nodeCount + 1);
   let descriptionByteLength = 0;
-  let auxiliaryTextByteLength = 0;
   for (let denseId = 0; denseId < graph.nodeCount; denseId += 1) {
     const node = cas.nodes[graph.nodes.originalOrdinal[denseId]];
     descriptionOffsets[denseId] = descriptionByteLength;
     descriptionByteLength += encoder.encode(node.description ?? '').byteLength;
-    auxiliaryTextOffsets[denseId] = auxiliaryTextByteLength;
-    auxiliaryTextByteLength += encoder.encode(nodeAuxiliaryText(node)).byteLength;
-    if (descriptionByteLength >= 0xffffffff || auxiliaryTextByteLength >= 0xffffffff) {
+    if (descriptionByteLength >= 0xffffffff) {
       throw new RangeError('Compact CAS search text exceeds uint32 storage');
     }
   }
   descriptionOffsets[graph.nodeCount] = descriptionByteLength;
-  auxiliaryTextOffsets[graph.nodeCount] = auxiliaryTextByteLength;
   const descriptionBytes = new Uint8Array(descriptionByteLength);
-  const auxiliaryTextBytes = new Uint8Array(auxiliaryTextByteLength);
   for (let denseId = 0; denseId < graph.nodeCount; denseId += 1) {
     const node = cas.nodes[graph.nodes.originalOrdinal[denseId]];
     encoder.encodeInto(node.description ?? '', descriptionBytes.subarray(descriptionOffsets[denseId], descriptionOffsets[denseId + 1]));
-    encoder.encodeInto(nodeAuxiliaryText(node), auxiliaryTextBytes.subarray(auxiliaryTextOffsets[denseId], auxiliaryTextOffsets[denseId + 1]));
   }
   return {
     textChunkNodes: COMPACT_CAS_SEARCH_CHUNK_NODES,
     descriptionBytes,
     descriptionOffsets,
-    auxiliaryTextBytes,
-    auxiliaryTextOffsets,
   };
 }
 
@@ -215,11 +190,7 @@ export function validateCompactCASSearchLayout(index: CompactCASSearchIndex | Co
   if (index.descriptionOffsets.length !== nodeCount + 1) {
     throw new Error(`Compact CAS search description offsets length ${index.descriptionOffsets.length} does not match ${nodeCount + 1}`);
   }
-  if (index.auxiliaryTextOffsets.length !== nodeCount + 1) {
-    throw new Error(`Compact CAS search auxiliary text offsets length ${index.auxiliaryTextOffsets.length} does not match ${nodeCount + 1}`);
-  }
   validateOffsets('description offsets', index.descriptionOffsets, 'descriptionBytes' in index ? index.descriptionBytes.byteLength : index.descriptionOffsets[nodeCount]);
-  validateOffsets('auxiliary text offsets', index.auxiliaryTextOffsets, 'auxiliaryTextBytes' in index ? index.auxiliaryTextBytes.byteLength : index.auxiliaryTextOffsets[nodeCount]);
   if ('postings' in index) {
     for (const [key, ordinals] of index.postings) validatePosting(key, ordinals, nodeCount);
   }
@@ -233,6 +204,19 @@ export function validatePosting(key: string, ordinals: Uint32Array, nodeCount: n
     if (ordinal <= previous) throw new Error(`Compact CAS search posting '${key}' is not strictly ordered at ${index}`);
     previous = ordinal;
   }
+}
+
+function postingIncludes(ordinals: Uint32Array, denseId: number): boolean {
+  let low = 0;
+  let high = ordinals.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = ordinals[middle];
+    if (candidate === denseId) return true;
+    if (candidate < denseId) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
 }
 
 function validateOffsets(name: string, offsets: Uint32Array, terminal: number): void {
@@ -331,6 +315,7 @@ export async function searchCompactCAS(
   const filteredGroups = groups.map(group => [...group, ...filterKeys]);
   const keys = [...new Set(filteredGroups.flat())];
   const postings = await readPostings(keys);
+  const contentPostings = contentWords.map(word => postings.get(`t:${word}`) || EMPTY_POSTING);
   const candidates = unionPostings(filteredGroups.map(group => intersectPostings(group.map(key => postings.get(key) || new Uint32Array(0)))));
   const requestedFile = options.file ? normalizeFile(options.file) : undefined;
   type Ranked = { denseId: number; score: number; typeRank: number; originalOrdinal: number; description: string };
@@ -353,7 +338,7 @@ export async function searchCompactCAS(
       if (options.category && node.category !== options.category) continue;
       if (options.level !== undefined && node.level !== options.level) continue;
       if (requestedFile && (!node.sourceFile || normalizeFile(node.sourceFile) !== requestedFile)) continue;
-      const searchText = texts.get(denseId) ?? { description: '', auxiliaryText: '' };
+      const searchText = texts.get(denseId) ?? { description: '' };
       const nameLower = node.name.toLowerCase();
       const qualifiedLower = node.qualifiedName?.toLowerCase();
       const direct = nameLower.includes(queryLower) || Boolean(qualifiedLower?.includes(queryLower)) || searchText.description.toLowerCase().includes(queryLower);
@@ -363,9 +348,8 @@ export async function searchCompactCAS(
         const rank = nameLower === queryLower || qualifiedLower === queryLower ? 0 : nameLower.startsWith(queryLower) ? 1 : nameLower.includes(queryLower) ? 2 : 3;
         retain(exact, { denseId, score: rank, typeRank, originalOrdinal: node.originalOrdinal, description: searchText.description }, exactOrder);
       } else if (contentWords.length > 0) {
-        const tokens = new Set(searchTokens([node.name, node.qualifiedName ?? '', searchText.description, searchText.auxiliaryText].join(' ')));
         let overlap = 0;
-        for (const word of contentWords) if (tokens.has(word)) overlap += 1;
+        for (const ordinals of contentPostings) if (postingIncludes(ordinals, denseId)) overlap += 1;
         if (overlap > 0) retain(overlapping, { denseId, score: overlap, typeRank, originalOrdinal: node.originalOrdinal, description: searchText.description }, overlapOrder);
       }
     }

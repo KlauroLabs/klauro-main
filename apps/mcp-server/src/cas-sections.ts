@@ -56,7 +56,7 @@ export interface CasSectionManifest {
   };
   compact_search?: {
     format: 'klauro-compact-cas-search';
-    version: 2;
+    version: 2 | 3;
     node_count: number;
     description_chunk_nodes: number;
     shard_count: number;
