@@ -96,7 +96,11 @@ test('POST /v1/analyze rejects work beyond the bounded queue and exposes retry m
     assert.ok(second.body.retry_after_ms > 0);
     assert.equal(fs.existsSync(path.join(dataDir, 'workspaces', 'admission-rejected')), false);
 
-    const status = await request(address.port, 'GET', '/v1/analyses/admission-first/status', undefined, token);
+    let status = await request(address.port, 'GET', '/v1/analyses/admission-first/status', undefined, token);
+    for (let attempt = 0; attempt < 20 && !status.body.last_attempt; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      status = await request(address.port, 'GET', '/v1/analyses/admission-first/status', undefined, token);
+    }
     assert.equal(status.statusCode, 200);
     assert.equal(status.body.status, 'populating');
     assert.ok(status.body.last_attempt, JSON.stringify(status.body));
