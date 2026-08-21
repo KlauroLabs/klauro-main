@@ -12,7 +12,9 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import type { CasRawColumnDescriptor } from './cas-sections';
 
-const RUN_RECORD_LIMIT = 1_000_000;
+const DEFAULT_RUN_BYTES = 64 * 1024 * 1024;
+const MIN_RUN_BYTES = 1024 * 1024;
+const MAX_RUN_BYTES = 128 * 1024 * 1024;
 const IO_BUFFER_BYTES = 256 * 1024;
 const MAGIC = Buffer.from('KCSPST02');
 
@@ -279,15 +281,19 @@ export async function buildCompactCASPostingArtifacts(
   graph: CompactCASGraph,
   directory: string,
   shardCount = COMPACT_CAS_SEARCH_SHARDS,
-  runRecordLimit = RUN_RECORD_LIMIT,
+  runByteLimit = Number(process.env.KLAURO_COMPACT_POSTING_RUN_BYTES) || DEFAULT_RUN_BYTES,
 ): Promise<CompactCASPostingArtifacts> {
-  if (!Number.isSafeInteger(runRecordLimit) || runRecordLimit < 1) throw new RangeError('Compact CAS posting run limit is invalid');
+  if (!Number.isSafeInteger(runByteLimit) || runByteLimit < 1 || runByteLimit > MAX_RUN_BYTES) {
+    throw new RangeError(`Compact CAS posting run byte limit must be from 1 through ${MAX_RUN_BYTES}`);
+  }
+  if (runByteLimit === DEFAULT_RUN_BYTES) runByteLimit = Math.max(MIN_RUN_BYTES, Math.min(MAX_RUN_BYTES, runByteLimit));
   const startedAt = Date.now();
   const runDir = path.join(directory, 'search-posting-runs');
   await fs.ensureDir(runDir);
   const runPaths: string[] = [];
   let postings = Array.from({ length: shardCount }, () => new Map<string, number[]>());
   let bufferedRecords = 0;
+  let bufferedBytes = 0;
   let recordCount = 0;
   const flushRun = async (): Promise<void> => {
     if (bufferedRecords === 0) return;
@@ -296,15 +302,18 @@ export async function buildCompactCASPostingArtifacts(
     runPaths.push(runPath);
     postings = Array.from({ length: shardCount }, () => new Map<string, number[]>());
     bufferedRecords = 0;
+    bufferedBytes = 0;
   };
   for (const [key, denseId] of iterateCompactCASSearchPostings(cas, graph)) {
     const shard = compactCASPostingShard(key, shardCount);
     const ordinals = postings[shard].get(key) || [];
+    if (ordinals.length === 0) bufferedBytes += Buffer.byteLength(key, 'utf8') + 64;
     ordinals.push(denseId);
     postings[shard].set(key, ordinals);
     bufferedRecords += 1;
+    bufferedBytes += 8;
     recordCount += 1;
-    if (bufferedRecords >= runRecordLimit) await flushRun();
+    if (bufferedBytes >= runByteLimit) await flushRun();
   }
   await flushRun();
   process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_emitted', records: recordCount, runs: runPaths.length, ...phaseSnapshot(startedAt) })}\n`);

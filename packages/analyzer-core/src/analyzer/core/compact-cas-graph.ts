@@ -136,8 +136,8 @@ const DEFAULT_LIMITS: CompactCASGraphLimits = {
   maxNodes: 10_000_000,
   maxVertices: 20_000_000,
   maxEdges: 100_000_000,
-  maxStrings: 100_000_000,
-  maxStringBytes: 0xfffffffe,
+  maxStrings: 1_000_000,
+  maxStringBytes: 128 * 1024 * 1024,
   maxPageSize: 10_000,
   maxTraversalNodes: 100_000,
   maxTraversalEdges: 1_000_000,
@@ -216,7 +216,7 @@ function canonicalizeEdges(
   return canonical;
 }
 
-function collectStrings(nodes: CASNode[], edges: CanonicalEdge[], limits: CompactCASGraphLimits): string[] {
+function collectStrings(nodes: CASNode[], edges: CanonicalEdge[], limits: CompactCASGraphLimits, extraValues: readonly string[] = []): string[] {
   const values = new Set<string>();
   for (const node of nodes) {
     values.add(node.id);
@@ -235,6 +235,7 @@ function collectStrings(nodes: CASNode[], edges: CanonicalEdge[], limits: Compac
     values.add(edge.type);
     if (edge.category !== undefined) values.add(edge.category);
   }
+  for (const value of extraValues) values.add(value);
   assertCount('string count', values.size, limits.maxStrings);
   return [...values].sort(compareStrings);
 }
@@ -243,8 +244,7 @@ function buildDictionary(values: string[], limits: CompactCASGraphLimits): {
   dictionary: CompactStringDictionary;
   indexByValue: Map<string, number>;
 } {
-  const encoded = values.map(value => encoder.encode(value));
-  const byteLength = encoded.reduce((total, value) => total + value.byteLength, 0);
+  const byteLength = values.reduce((total, value) => total + encoder.encode(value).byteLength, 0);
   assertCount('dictionary byte count', byteLength, limits.maxStringBytes);
   const bytes = new Uint8Array(byteLength);
   const offsets = new Uint32Array(values.length + 1);
@@ -252,8 +252,9 @@ function buildDictionary(values: string[], limits: CompactCASGraphLimits): {
   let offset = 0;
   for (let index = 0; index < values.length; index += 1) {
     offsets[index] = offset;
-    bytes.set(encoded[index], offset);
-    offset += encoded[index].byteLength;
+    const encoded = bytes.subarray(offset);
+    const result = encoder.encodeInto(values[index], encoded);
+    offset += result.written;
     indexByValue.set(values[index], index);
   }
   offsets[values.length] = offset;
@@ -724,7 +725,7 @@ export function encodeCompactCASGraph(
   const vertexById = new Map(vertexIds.map((id, vertex) => [id, vertex]));
   const denseById = new Map(nodes.map((node, denseId) => [node.id, denseId]));
   const edges = canonicalizeEdges(cas.edges, vertexById, limits);
-  const strings = [...new Set([...collectStrings(nodes, edges, limits), ...vertexIds])].sort(compareStrings);
+  const strings = collectStrings(nodes, edges, limits, vertexIds);
   assertCount('string count', strings.length, limits.maxStrings);
   const { dictionary, indexByValue } = buildDictionary(strings, limits);
   const nodeColumns: CompactNodeColumns = {

@@ -25,10 +25,20 @@ import {
   type CasSectionManifest,
   type CasSectionName,
 } from './cas-sections';
-import { materializeDeployableCasTree } from './deployable-analysis';
+import { iterateDeployableChildCas, materializeDeployableCasTree, prepareDeployableCasProjection } from './deployable-analysis';
 import { readZstdJson } from './zstd-json';
 import { describeAnalysisVersion, type AnalysisVersionInfo } from './analysis-version';
-import { loadCompactCASGraph, loadCompactCASSearch, resolveSegmentedAnalysis, segmentedAnalysisRoot, writeSegmentedAnalysis } from './segmented-analysis-storage';
+import {
+  acquireSegmentedAnalysisLease,
+  loadCompactCASGraph,
+  loadCompactCASSearch,
+  resolveSegmentedAnalysis,
+  segmentedAnalysisRoot,
+  segmentedLegacyExportPath,
+  type ResolvedSegmentedAnalysis,
+  writeSegmentedAnalysis,
+  writeSegmentedLegacyExport,
+} from './segmented-analysis-storage';
 import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import type { LoadedCompactCASSearch } from './segmented-analysis-storage';
 import {
@@ -69,6 +79,7 @@ export interface AnalysisEntry {
   edge_count: number;
   cas_version?: string;
   layers_ready?: CASOutput['layers_ready'];
+  storage_format?: 'whole-json' | 'segmented-v2';
 
   track?: AnalysisTrack;
 
@@ -661,7 +672,7 @@ export async function saveAnalysis(
   projectPath: string,
   output: CASOutput,
   track: AnalysisTrack = 'main',
-  options: { deferSegmentedWrite?: boolean; segmentedWriteDelayMs?: number; writeSegmentedAnalysis?: boolean } = {},
+  options: { deferSegmentedWrite?: boolean; segmentedWriteDelayMs?: number; writeSegmentedAnalysis?: boolean; canonicalSegmented?: boolean } = {},
 ): Promise<AnalysisEntry> {
   const storagePath = await ensureStorageDir();
   const fileName = `${projectSlug(projectPath)}${trackSuffix(track)}.json${compressedJsonExtension()}`;
@@ -673,44 +684,61 @@ export async function saveAnalysis(
     layersReady.layers.some(candidate => candidate.layer === layer && candidate.status === 'ready')
   );
   const segmentsWorthWriting = structurallyQueryable && options.writeSegmentedAnalysis !== false;
-  const persistedOutput = completedOutput ? materializeDeployableCasTree(output) : output;
+  const canonicalSegmented = segmentsWorthWriting && (options.canonicalSegmented
+    ?? process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE === '1');
+  const canonicalProjection = prepareDeployableCasProjection(output);
+  const canonicalOutput = canonicalProjection.root;
+  const persistedOutput = canonicalSegmented
+    ? canonicalOutput
+    : completedOutput ? materializeDeployableCasTree(output) : output;
   const segmentedGeneration = beginSegmentedWriteGeneration(filePath);
-  await fs.remove(path.join(segmentedAnalysisRoot(filePath), 'current.json')).catch(() => undefined);
-
   const wholeStartedAt = Date.now();
-  await writeCompressedJsonAtomic(filePath, persistedOutput, { spaces: 0 });
-  const wholeMs = Date.now() - wholeStartedAt;
+  if (!canonicalSegmented) await writeCompressedJsonAtomic(filePath, persistedOutput, { spaces: 0 });
+  const wholeMs = canonicalSegmented ? null : Date.now() - wholeStartedAt;
 
   const segmentedStartedAt = Date.now();
-  if (segmentsWorthWriting && !options.deferSegmentedWrite) {
-    try {
+  if (segmentsWorthWriting && (canonicalSegmented || !options.deferSegmentedWrite)) {
+    if (canonicalSegmented) {
       await writeSegmentedAnalysis(
         filePath,
-        persistedOutput,
+        canonicalOutput,
         compressedJsonExtension(),
         writeCompressedJsonAtomic,
         writeJsonAtomic,
         () => isSegmentedWriteCurrent(filePath, segmentedGeneration),
+        { rootOnlyTree: true, childProjections: iterateDeployableChildCas(output, canonicalProjection) },
       );
-    } catch (error) {
-      console.warn(`[Klauro] segmented analysis write failed for ${projectPath}; authoritative analysis remains available: ${error instanceof Error ? error.message : String(error)}`);
+      await fs.remove(filePath);
+    } else {
+      try {
+        await writeSegmentedAnalysis(
+          filePath,
+          persistedOutput,
+          compressedJsonExtension(),
+          writeCompressedJsonAtomic,
+          writeJsonAtomic,
+          () => isSegmentedWriteCurrent(filePath, segmentedGeneration),
+        );
+      } catch (error) {
+        console.warn(`[Klauro] segmented analysis write failed for ${projectPath}; authoritative analysis remains available: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
   const segmentedMs = Date.now() - segmentedStartedAt;
 
-  if (wholeMs + segmentedMs >= 1000) {
+  if ((wholeMs ?? 0) + segmentedMs >= 1000) {
     process.stderr.write(`${JSON.stringify({
       event: 'analysis_save_slow',
       track,
       whole_ms: wholeMs,
       segmented_ms: segmentsWorthWriting ? segmentedMs : null,
-      nodes: (persistedOutput.nodes || []).length,
-      edges: (persistedOutput.edges || []).length,
+      nodes: (canonicalOutput.nodes || []).length,
+      edges: (canonicalOutput.edges || []).length,
     })}\n`);
   }
 
   if (track === 'main') {
-    await rememberLoadedAnalysis(projectPath, filePath, persistedOutput);
+    if (!canonicalSegmented) await rememberLoadedAnalysis(projectPath, filePath, persistedOutput);
   }
 
   const frameworks = persistedOutput.system.technologies?.frameworks?.map(f => f.name) || [];
@@ -726,6 +754,7 @@ export async function saveAnalysis(
     edge_count: persistedOutput.edges.length,
     cas_version: persistedOutput.cas_version,
     ...(persistedOutput.layers_ready ? { layers_ready: persistedOutput.layers_ready } : {}),
+    storage_format: canonicalSegmented ? 'segmented-v2' : 'whole-json',
     track,
     ...(persistedOutput.base_commit ? { base_commit: persistedOutput.base_commit } : {}),
     ...(persistedOutput.branch ? { branch: persistedOutput.branch } : {}),
@@ -737,7 +766,7 @@ export async function saveAnalysis(
     await saveIndex(index);
   });
 
-  if (segmentsWorthWriting && options.deferSegmentedWrite) {
+  if (segmentsWorthWriting && options.deferSegmentedWrite && !canonicalSegmented) {
     scheduleSegmentedAnalysisWrite(
       filePath,
       persistedOutput,
@@ -766,6 +795,8 @@ async function resolveAnalysisFileForLoad(
   const filePath = path.join(storagePath, entry.file);
   let resolved = await resolveJsonStoragePath(filePath);
 
+  if (!resolved && await fs.pathExists(path.join(segmentedAnalysisRoot(filePath), 'current.json'))) resolved = filePath;
+
   if (!resolved && track === 'main') {
     const legacyName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
     resolved = await resolveJsonStoragePath(path.join(storagePath, legacyName));
@@ -789,23 +820,32 @@ export async function loadAnalysisSectionManifest(
 export async function loadAnalysisSections(
   projectPath: string,
   sections: readonly CasSectionName[],
-  options?: { track?: AnalysisTrack },
+  options?: { track?: AnalysisTrack; pinned?: { filePath: string; segmented: ResolvedSegmentedAnalysis } },
 ): Promise<Partial<CASOutput> | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = options?.pinned?.filePath || await resolveAnalysisFileForLoad(projectPath, options?.track);
   if (!resolved) return null;
   const requested = [...new Set<CasSectionName>(['identity', ...sections])];
-  const cached = await getValidCachedAnalysis(projectPath, resolved);
+  const cached = options?.pinned ? null : await getValidCachedAnalysis(projectPath, resolved);
   if (cached) return selectCasSections(cached, requested);
-  const segmented = await resolveSegmentedAnalysis(resolved);
+  const segmented = options?.pinned?.segmented || await resolveSegmentedAnalysis(resolved);
   if (!segmented) {
     const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
     const parts = requested.map(section => selectExactCasSection(legacy, section));
     return hydrateCasSections(parts);
   }
   const descriptorByName = new Map(segmented.manifest.sections.map(section => [section.name, section]));
-  const requestedCompressedBytes = requested.reduce((sum, section) => sum + (descriptorByName.get(section)?.bytes || 0), 0);
-  const memoryBoundRead = requestedCompressedBytes > 16 * 1024 * 1024;
-  const readSection = pLimit(memoryBoundRead ? 1 : 4);
+  const expansion = Math.max(1, Number(process.env.KLAURO_SECTION_PARSE_EXPANSION) || 24);
+  const configuredBudgetMb = Number(process.env.KLAURO_SECTION_PARSE_BUDGET_MB);
+  const parsedSectionBudget = Number.isFinite(configuredBudgetMb) && configuredBudgetMb > 0
+    ? configuredBudgetMb * 1024 * 1024
+    : getHeapStatistics().heap_size_limit / 8;
+  const largestEstimatedSection = requested.reduce(
+    (maximum, section) => Math.max(maximum, (descriptorByName.get(section)?.bytes || 0) * expansion),
+    1,
+  );
+  const sectionConcurrency = Math.max(1, Math.min(4, Math.floor(parsedSectionBudget / largestEstimatedSection)));
+  const memoryBoundRead = sectionConcurrency === 1;
+  const readSection = pLimit(sectionConcurrency);
   const readOne = async (section: CasSectionName): Promise<Partial<CASOutput> | undefined> => readSection(async () => {
     const descriptor = descriptorByName.get(section);
     if (!descriptor) return undefined;
@@ -815,6 +855,11 @@ export async function loadAnalysisSections(
     const sectionPath = path.join(segmented.directory, descriptor.file);
     let sectionData: Partial<CASOutput>;
     try {
+      if (descriptor.sha256) {
+        const hash = crypto.createHash('sha256');
+        for await (const chunk of fs.createReadStream(sectionPath)) hash.update(chunk as Buffer);
+        if (hash.digest('hex') !== descriptor.sha256) throw new Error('checksum mismatch');
+      }
       sectionData = await readJsonMaybeCompressed(sectionPath, {
         maxBufferedZstdBytes: memoryBoundRead ? 0 : undefined,
       }) as Partial<CASOutput>;
@@ -852,13 +897,16 @@ export async function loadCompleteAnalysisFromSections(
   projectPath: string,
   options?: { track?: AnalysisTrack },
 ): Promise<CASOutput | null> {
-  const manifest = await loadAnalysisSectionManifest(projectPath, options);
-  if (!manifest) return null;
-  return await loadAnalysisSections(
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  const segmented = await resolveSegmentedAnalysis(resolved);
+  if (!segmented) return loadAnalysis(projectPath, { ...options, preferAuthoritative: true });
+  const output = await loadAnalysisSections(
     projectPath,
-    manifest.sections.map(section => section.name),
-    options,
+    segmented.manifest.sections.map(section => section.name),
+    { ...options, pinned: { filePath: resolved, segmented } },
   ) as CASOutput | null;
+  return output ? materializeDeployableCasTree(output) : null;
 }
 
 export interface AnalysisExportArtifact {
@@ -898,9 +946,42 @@ export async function resolveAnalysisExportArtifact(
 ): Promise<AnalysisExportArtifact | null> {
   const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
   if (!resolved) return null;
+  const segmented = await resolveSegmentedAnalysis(resolved);
+  if (segmented) {
+    const exportPath = segmentedLegacyExportPath(resolved, path.basename(segmented.directory));
+    const exportStat = await fs.stat(exportPath).catch(() => null);
+    if (!exportStat) {
+      const { runIsolatedAnalysisExport } = await import('./analysis-export-process');
+      return runIsolatedAnalysisExport(projectPath, options);
+    }
+    return { filePath: exportPath, codec: compressionCodecForPath(exportPath), bytes: exportStat.size };
+  }
   const stat = await fs.stat(resolved).catch(() => null);
-  if (!stat) return null;
-  return { filePath: resolved, codec: compressionCodecForPath(resolved), bytes: stat.size };
+  return stat ? { filePath: resolved, codec: compressionCodecForPath(resolved), bytes: stat.size } : null;
+}
+
+export async function materializeAnalysisExportArtifact(
+  projectPath: string,
+  options?: { track?: AnalysisTrack },
+): Promise<AnalysisExportArtifact | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  const lease = await acquireSegmentedAnalysisLease(resolved);
+  if (lease) {
+    try {
+      const exportPath = segmentedLegacyExportPath(resolved, path.basename(lease.segmented.directory));
+      let stat = await fs.stat(exportPath).catch(() => null);
+      if (!stat) {
+        await writeSegmentedLegacyExport(resolved, exportPath, lease.segmented);
+        stat = await fs.stat(exportPath).catch(() => null);
+      }
+      return stat ? { filePath: exportPath, codec: compressionCodecForPath(exportPath), bytes: stat.size } : null;
+    } finally {
+      await lease.release();
+    }
+  }
+  const stat = await fs.stat(resolved).catch(() => null);
+  return stat ? { filePath: resolved, codec: compressionCodecForPath(resolved), bytes: stat.size } : null;
 }
 
 export async function getAnalysisFileFingerprint(
@@ -910,7 +991,8 @@ export async function getAnalysisFileFingerprint(
   const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
   if (!resolved) return null;
   try {
-    const stat = await fs.stat(resolved);
+    const pointer = path.join(segmentedAnalysisRoot(resolved), 'current.json');
+    const stat = await fs.stat(await fs.pathExists(pointer) ? pointer : resolved);
     return `${stat.mtimeMs}:${stat.size}`;
   } catch {
     return null;
@@ -947,11 +1029,12 @@ async function loadCompleteAnalysis(
   const segmented = preferAuthoritative ? null : await resolveSegmentedAnalysis(resolved);
   if (segmented) {
     try {
-      return await loadAnalysisSections(
+      const output = await loadAnalysisSections(
         projectPath,
         segmented.manifest.sections.map(section => section.name),
-      track ? { track } : undefined,
+        { ...(track ? { track } : {}), pinned: { filePath: resolved, segmented } },
       ) as CASOutput | null;
+      return output ? materializeDeployableCasTree(output) : null;
     } catch (error) {
       console.warn(`[Klauro] segmented analysis read failed for ${projectPath}; using authoritative analysis: ${error instanceof Error ? error.message : String(error)}`);
     }

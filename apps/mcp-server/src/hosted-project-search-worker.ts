@@ -21,6 +21,13 @@ async function analysisFile(workspace: string): Promise<string | null> {
   return entry?.file ? path.join(root, entry.file) : null;
 }
 
+async function analysisFingerprint(file: string): Promise<string> {
+  const pointer = `${file}.sections/current.json`;
+  const target = await fs.promises.access(pointer).then(() => pointer, () => file);
+  const stat = await fs.promises.stat(target);
+  return `${stat.mtimeMs}:${stat.size}`;
+}
+
 if (!process.send) {
   process.stderr.write('hosted-project-search-worker must be started through child_process.fork.\n');
   process.exit(1);
@@ -50,8 +57,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
     try {
       const file = await analysisFile(request.workspace);
       if (!file) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
-      const stat = await fs.promises.stat(file);
-      const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+      const fingerprint = await analysisFingerprint(file);
       if (!cachedSearch || cachedFile !== file || cachedFingerprint !== fingerprint) {
         cachedSearch = await loadCompactCASSearch(file);
         cachedFile = file;

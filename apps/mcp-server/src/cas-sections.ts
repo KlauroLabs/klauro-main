@@ -20,6 +20,7 @@ export interface CasSectionDescriptor {
   fields: string[];
   file?: string;
   bytes?: number;
+  sha256?: string;
 }
 
 export interface CasSectionManifest {
@@ -29,6 +30,11 @@ export interface CasSectionManifest {
   analysis_timestamp: string;
   sections: CasSectionDescriptor[];
   logical_fields: string[];
+  tree_projection?: {
+    format: 'derived-deployable-references';
+    version: 1;
+    children: Array<{ id: string; file: string; bytes: number; sha256: string }>;
+  };
   compact_graph?: {
     format: 'klauro-compact-cas-graph';
     version: 1;

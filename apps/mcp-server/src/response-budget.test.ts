@@ -126,6 +126,7 @@ test('buildAnswerPackDigest withholds oversized sections and reports per-section
   assert.deepEqual(security!.fetch_with, { tool: 'run_answer_pack', args: { path: '/tmp/example', pack: 'mastery', section: 'security' } });
   assert.deepEqual(digest.answers.map(answer => answer.id), ['overview']);
   assert.ok(digest.continuation.includes('run_answer_pack'));
+  assert.equal(digest.full_size_bytes, digest.computed_size_bytes);
 });
 
 test('buildAnswerPackDigest includes everything when the pack is small', () => {

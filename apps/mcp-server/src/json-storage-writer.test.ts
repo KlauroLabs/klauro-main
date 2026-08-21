@@ -6,7 +6,7 @@ import test from 'node:test';
 import * as zlib from 'node:zlib';
 import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeCompressedJsonAtomic, writeJsonAtomic } from './json-storage-writer';
+import { writeCompressedChunksAtomic, writeCompressedJsonAtomic, writeJsonAtomic } from './json-storage-writer';
 
 const brotliDecompress = promisify(zlib.brotliDecompress);
 const execFileAsync = promisify(execFile);
@@ -55,6 +55,23 @@ test('streaming JSON rejects cycles and removes its atomic temp file', async () 
   try {
     await fs.writeFile(file, 'existing');
     await assert.rejects(writeCompressedJsonAtomic(file, value, { spaces: 0 }), /circular structure/i);
+    assert.equal(await fs.readFile(file, 'utf8'), 'existing');
+    assert.deepEqual(await fs.readdir(directory), ['analysis.json.br']);
+  } finally {
+    await fs.remove(directory);
+  }
+});
+
+test('chunk-stream failure preserves the destination and removes temporary output', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-chunk-writer-'));
+  const file = path.join(directory, 'analysis.json.br');
+  async function* failedChunks() {
+    yield '{"partial":';
+    throw new Error('source failed');
+  }
+  try {
+    await fs.writeFile(file, 'existing');
+    await assert.rejects(writeCompressedChunksAtomic(file, failedChunks()), /source failed/);
     assert.equal(await fs.readFile(file, 'utf8'), 'existing');
     assert.deepEqual(await fs.readdir(directory), ['analysis.json.br']);
   } finally {

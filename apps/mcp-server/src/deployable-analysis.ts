@@ -63,11 +63,6 @@ function isTier1ShipDeclaration(e: DeployableEvidence): boolean {
 
 
 
-
-
-
-
-
 function isBuildTargetDeclaration(e: DeployableEvidence): boolean {
   return e.tier === 2 && e.kind === 'bin';
 }
@@ -1243,6 +1238,24 @@ function buildDeployableChildCas(parent: CASOutput, unit: SubCasNodeSlice): CASO
 }
 
 export function materializeDeployableCasTree(cas: CASOutput, id = rootCasId(cas)): CASOutput {
+  const projection = prepareDeployableCasProjection(cas, id);
+  const root = projection.root;
+  const children = [...iterateDeployableChildCas(cas, projection)];
+  if (children.length > 0) root.children = children;
+  assertValidCasTree(root);
+  return root;
+}
+
+export function materializeDeployableCasRoot(cas: CASOutput, id = rootCasId(cas)): CASOutput {
+  return prepareDeployableCasProjection(cas, id).root;
+}
+
+export interface PreparedDeployableCasProjection {
+  root: CASOutput;
+  analysis: BuildDeployableAnalysesResult;
+}
+
+export function prepareDeployableCasProjection(cas: CASOutput, id = rootCasId(cas)): PreparedDeployableCasProjection {
   const { children: _children, composition_mode: _compositionMode, ...base } = cas;
   const root: CASOutput = {
     ...base,
@@ -1252,26 +1265,17 @@ export function materializeDeployableCasTree(cas: CASOutput, id = rootCasId(cas)
   };
   const result = getCachedDeployableAnalyses(root);
   if (!result.promoted) {
-    assertValidCasTree(root);
-    return root;
+    return { root, analysis: result };
   }
-  root.children = result.units.map(unit => buildDeployableChildCas(root, unit));
   root.composition_mode = 'derived';
-  assertValidCasTree(root);
-  return root;
+  return { root, analysis: result };
 }
 
-
-
-
-
-
-
-
-
-
-
-
+export function* iterateDeployableChildCas(cas: CASOutput, prepared?: PreparedDeployableCasProjection): Generator<CASOutput> {
+  const { root, analysis: result } = prepared || prepareDeployableCasProjection(cas);
+  if (!result.promoted) return;
+  for (const unit of result.units) yield buildDeployableChildCas(root, unit);
+}
 export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEvidence): SubCasNodeSlice {
   const allEvidence = cas.deployable_evidence || [];
   const allRoots = deployableRootsByEvidenceOrder(allEvidence);

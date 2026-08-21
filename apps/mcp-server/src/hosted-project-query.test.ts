@@ -6,6 +6,7 @@ import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { executeHostedProjectQuery, hostedProjectQuerySections, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
 import { getProductMap, searchNodes } from './query';
+import { HOSTED_SEARCH_NODES_SCHEMA } from './hosted-project-query-schema';
 
 function cas(): CASOutput {
   return {
@@ -33,6 +34,12 @@ test('hosted project query exposes only the explicit read-only allowlist', () =>
     'get_coding_context', 'get_module_health', 'get_product_map', 'get_user_journeys', 'run_answer_pack', 'search_nodes',
     'validate_behavioral_invariants', 'validate_codebase_idioms',
   ]);
+});
+
+test('hosted search schema bounds character and UTF-8 byte amplification', () => {
+  assert.equal(HOSTED_SEARCH_NODES_SCHEMA.safeParse({ query: 'a'.repeat(1025) }).success, false);
+  assert.equal(HOSTED_SEARCH_NODES_SCHEMA.safeParse({ query: '\u{1f600}'.repeat(1024) }).success, false);
+  assert.equal(HOSTED_SEARCH_NODES_SCHEMA.safeParse({ query: 'valid search' }).success, true);
 });
 
 test('hosted query tools load only the CAS sections they consume', () => {
@@ -160,6 +167,8 @@ test('hosted answer packs return a bounded digest and expose every section by id
     'entry-points', 'data', 'tests', 'external-boundaries', 'runtime-readiness',
   ]);
   assert.equal(digest.size_scope, 'computed-sections');
+  assert.equal(digest.full_size_bytes, undefined);
+  assert.ok(digest.computed_size_bytes > 0);
   assert.ok(digest.gaps.some((gap: string) => gap.startsWith('overview: not computed')));
   assert.equal(digest.sections.find((section: any) => section.id === 'security').included, false);
 

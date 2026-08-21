@@ -80,6 +80,18 @@ test('compact postings preserve a pathological long description without embeddin
   assert.equal(encoded.descriptionBytes.byteLength, Buffer.byteLength(description));
 });
 
+test('compact graph dictionary enforces configured cardinality and byte budgets', () => {
+  const fixture = {
+    nodes: [
+      { id: 'node-a', name: 'Alpha', type: 'function' },
+      { id: 'node-b', name: 'Beta', type: 'function' },
+    ],
+    edges: [],
+  } as unknown as CASOutput;
+  assert.throws(() => encodeCompactCASGraph(fixture, { maxStrings: 3 }), /string count/);
+  assert.throws(() => encodeCompactCASGraph(fixture, { maxStringBytes: 4 }), /dictionary byte count/);
+});
+
 test('binary posting runs deduplicate repeated text across run boundaries', async () => {
   const repeatedCas = {
     nodes: [
@@ -91,7 +103,7 @@ test('binary posting runs deduplicate repeated text across run boundaries', asyn
   const graph = encodeCompactCASGraph(repeatedCas);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-postings-'));
   try {
-    const artifacts = await buildCompactCASPostingArtifacts(repeatedCas, graph, directory, 4, 2);
+    const artifacts = await buildCompactCASPostingArtifacts(repeatedCas, graph, directory, 4, 128);
     assert.ok(artifacts.runCount > 1);
     const key = 't:repeated';
     const shard = compactCASPostingShard(key, artifacts.shardCount);
@@ -105,4 +117,37 @@ test('binary posting runs deduplicate repeated text across run boundaries', asyn
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('posting run memory is bounded by bytes under high key cardinality', async () => {
+  const highCardinalityCas = {
+    nodes: Array.from({ length: 200 }, (_, index) => ({
+      id: `node-${index}`,
+      name: `UniqueNode${index}`,
+      type: 'function',
+      description: `alpha${index} beta${index} gamma${index} delta${index}`,
+    })),
+    edges: [],
+  } as unknown as CASOutput;
+  const graph = encodeCompactCASGraph(highCardinalityCas);
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-postings-cardinality-'));
+  try {
+    const first = await buildCompactCASPostingArtifacts(highCardinalityCas, graph, directory, 8, 4096);
+    assert.ok(first.runCount > 1);
+    assert.ok(first.recordCount > highCardinalityCas.nodes.length);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('compact search rejects character and UTF-8 byte amplification', async () => {
+  const { graph, hot, readPostings, readSearchText } = searchIndex();
+  await assert.rejects(
+    searchCompactCAS(graph, hot, 'a'.repeat(1025), readPostings, readSearchText),
+    /4096-byte limit/,
+  );
+  await assert.rejects(
+    searchCompactCAS(graph, hot, '\u{1f600}'.repeat(1024), readPostings, readSearchText),
+    /4096-byte limit/,
+  );
 });

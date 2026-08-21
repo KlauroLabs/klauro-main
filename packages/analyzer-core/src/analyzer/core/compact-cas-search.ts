@@ -304,6 +304,9 @@ export async function searchCompactCAS(
   readSearchText: (denseIds: readonly number[]) => Promise<Map<number, CompactCASSearchText>>,
   options: CompactCASSearchOptions = {},
 ): Promise<CompactCASSearchResult[]> {
+  if (query.length > 1024 || new TextEncoder().encode(query).byteLength > 4096) {
+    throw new RangeError('Compact CAS search query exceeds its 4096-byte limit');
+  }
   validateCompactCASSearchLayout(index, graph.nodeCount);
   const limit = options.limit || 25;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > graph.limits.maxPageSize) {

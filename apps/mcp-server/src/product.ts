@@ -72,7 +72,8 @@ export interface AnswerPackDigest {
   path: string;
   generated_at: string;
   gaps: string[];
-  full_size_bytes: number;
+  full_size_bytes?: number;
+  computed_size_bytes: number;
   size_scope?: 'complete-pack' | 'computed-sections';
   truncated: boolean;
   sections: Array<{
@@ -121,7 +122,8 @@ export function buildAnswerPackDigest(
       ...result.gaps,
       ...uncomputed.map(question => `${question.id}: not computed in the lightweight digest; fetch this section explicitly.`),
     ],
-    full_size_bytes: fullSize,
+    ...(uncomputed.length === 0 ? { full_size_bytes: fullSize } : {}),
+    computed_size_bytes: fullSize,
     size_scope: uncomputed.length > 0 ? 'computed-sections' : 'complete-pack',
     truncated: included.size < catalog.length,
     sections: catalog.map(question => {

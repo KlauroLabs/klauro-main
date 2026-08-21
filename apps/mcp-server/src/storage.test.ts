@@ -4,6 +4,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'node:crypto';
+import * as zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
@@ -25,6 +26,7 @@ import {
 } from './storage';
 import { materializeDeployableCasTree } from './deployable-analysis';
 import { compactCASPostingShard, searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
+import { writeSegmentedLegacyExport } from './segmented-analysis-storage';
 
 function casFixture(id: string): CASOutput {
   return {
@@ -61,6 +63,12 @@ async function withStoragePath<T>(fn: (storagePath: string) => Promise<T>): Prom
     }
     await fs.remove(storagePath);
   }
+}
+
+async function readExportArtifact(filePath: string): Promise<CASOutput> {
+  if (filePath.endsWith('.zst')) return JSON.parse(execFileSync('zstd', ['-q', '-d', '-c', filePath], { encoding: 'utf8' }));
+  if (filePath.endsWith('.br')) return JSON.parse(zlib.brotliDecompressSync(await fs.readFile(filePath)).toString('utf8'));
+  return fs.readJson(filePath) as Promise<CASOutput>;
 }
 
 test('lists workspace analyses from metadata without parsing the full graph file', async () => {
@@ -171,7 +179,7 @@ test('segmented storage publishes a checksummed compact graph alongside authorit
     const firstColumn = Object.values(manifest!.compact_graph!.columns)[0];
     const sectionRoot = (await fs.readdir(storagePath)).find(name => name.endsWith('.sections'))!;
     const pointer = await fs.readJson(path.join(storagePath, sectionRoot, 'current.json'));
-    await fs.writeFile(path.join(storagePath, sectionRoot, pointer.revision, firstColumn.file), 'corrupt');
+    await fs.writeFile(path.join(storagePath, sectionRoot, pointer.current || pointer.revision, firstColumn.file), 'corrupt');
     await assert.rejects(loadCompactAnalysisGraph(project), /checksum mismatch|invalid byte length|byte length .* does not match/);
   });
 });
@@ -182,17 +190,18 @@ test('compact search rejects internally corrupt checksummed postings and support
     await saveAnalysis(project, casFixture('compact-search-corruption'));
     const sectionRoot = path.join(storagePath, (await fs.readdir(storagePath)).find(name => name.endsWith('.sections'))!);
     const pointer = await fs.readJson(path.join(sectionRoot, 'current.json'));
-    const manifestPath = path.join(sectionRoot, pointer.revision, 'manifest.json');
+    await fs.writeJson(path.join(sectionRoot, 'current.json'), { manifest_version: 1, revision: pointer.current || pointer.revision });
+    const manifestPath = path.join(sectionRoot, pointer.current || pointer.revision, 'manifest.json');
     const manifest = await fs.readJson(manifestPath);
     const searchVersion = manifest.compact_search.version;
     manifest.compact_search.version = 999;
     await fs.writeJson(manifestPath, manifest);
-    await assert.rejects(loadCompactAnalysisSearch(project), /format or version is unsupported/);
+    await assert.rejects(loadCompactAnalysisSearch(project), /format or version is unsupported|checksum-valid generation|pointer or generation is unreadable/);
     manifest.compact_search.version = searchVersion;
     await fs.writeJson(manifestPath, manifest);
     const shard = manifest.compact_search.nonempty_shards[0];
     const column = manifest.compact_search.columns[`postings.shard.${shard}`];
-    const columnPath = path.join(sectionRoot, pointer.revision, column.file);
+    const columnPath = path.join(sectionRoot, pointer.current || pointer.revision, column.file);
     const bytes = await fs.readFile(columnPath);
     bytes[0] ^= 0xff;
     column.sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
@@ -268,7 +277,7 @@ test('a missing/corrupt segmented section file fails loudly, naming the section,
     // `<file>.sections/<revision>/`) and corrupt the graph section's file.
     const sectionsRoot = path.join(storagePath, `${entry.file}.sections`);
     const pointer = await fs.readJson(path.join(sectionsRoot, 'current.json'));
-    const sectionPath = path.join(sectionsRoot, pointer.revision, graphDescriptor!.file!);
+    const sectionPath = path.join(sectionsRoot, pointer.current || pointer.revision, graphDescriptor!.file!);
     await fs.writeFile(sectionPath, 'not valid json{{{');
     clearLoadedAnalysisCache();
 
@@ -294,7 +303,7 @@ test('section reads project a valid parsed CAS cache without reopening segmented
 
     const sectionsRoot = path.join(storagePath, `${entry.file}.sections`);
     const pointer = await fs.readJson(path.join(sectionsRoot, 'current.json'));
-    const sectionPath = path.join(sectionsRoot, pointer.revision, graphDescriptor.file);
+    const sectionPath = path.join(sectionsRoot, pointer.current || pointer.revision, graphDescriptor.file);
     await fs.writeFile(sectionPath, 'not valid json{{{');
 
     const graph = await loadAnalysisSections(project, ['graph']);
@@ -480,5 +489,143 @@ test('a CAS with no layers_ready keeps the previous always-write behaviour', asy
     // silently lose their sidecar.
     await saveAnalysis('/tmp/legacy-project', casFixture('legacy-cas'));
     assert.equal(await savedSectionsExist(storagePath, '/tmp/legacy-project'), true);
+  });
+});
+
+test('canonical segmented storage publishes a hashed generation without a whole-CAS write and materializes legacy export on demand', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/canonical-segmented-project';
+    const cas = casFixture('canonical-segmented');
+    (cas as unknown as { capabilities?: unknown }).capabilities = undefined;
+    const entry = await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file);
+    assert.equal(entry.storage_format, 'segmented-v2');
+    assert.equal(await fs.pathExists(wholePath), false);
+    const pointer = await fs.readJson(`${wholePath}.sections/current.json`);
+    assert.equal(pointer.manifest_version, 2);
+    assert.match(pointer.current, /^gen-[a-f0-9]{64}$/);
+    const manifest = await loadAnalysisSectionManifest(project);
+    assert.deepEqual(manifest?.tree_projection, { format: 'derived-deployable-references', version: 1, children: [] });
+    assert.equal((await loadAnalysisSections(project, ['tree']))?.children, undefined);
+    clearLoadedAnalysisCache();
+    const expectedExport = JSON.parse(JSON.stringify(materializeDeployableCasTree(cas)));
+    assert.deepEqual(await loadAnalysis(project), expectedExport);
+
+    await fs.writeFile(wholePath, 'stale legacy bytes that must never be served');
+    const previousReserve = process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB;
+    process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB = '128';
+    const exportArtifact = await resolveAnalysisExportArtifact(project).finally(() => {
+      if (previousReserve === undefined) delete process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB;
+      else process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB = previousReserve;
+    });
+    assert.match(exportArtifact?.filePath || '', /\.export-gen-[a-f0-9]{64}\.json(?:\.zst|\.br)?$/);
+    assert.notEqual(exportArtifact?.filePath, wholePath);
+    assert.deepEqual(await readExportArtifact(exportArtifact!.filePath), expectedExport);
+  });
+});
+
+test('canonical legacy export reconstructs multiple referenced deployable children exactly', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/canonical-child-export-project';
+    const cas = casFixture('canonical-child-export');
+    cas.system = { ...cas.system, type: 'monorepo', root_path: '.' };
+    cas.nodes = [
+      { id: 'api', name: 'api', type: 'function', source: { file: 'apps/api/main.ts', line: 1 } },
+      { id: 'worker', name: 'worker', type: 'function', source: { file: 'apps/worker/main.ts', line: 1 } },
+      { id: 'shared', name: 'shared', type: 'function', source: { file: 'libs/shared.ts', line: 1 } },
+    ];
+    cas.edges = [
+      { id: 'api-shared', source: 'api', target: 'shared', type: 'calls' },
+      { id: 'worker-shared', source: 'worker', target: 'shared', type: 'calls' },
+    ];
+    cas.entry_points = [
+      { id: 'api-entry', name: 'api', type: 'http', source_node: 'api', handler: { node_id: 'api', method_name: 'api', file: 'apps/api/main.ts' } },
+      { id: 'worker-entry', name: 'worker', type: 'event', source_node: 'worker', handler: { node_id: 'worker', method_name: 'worker', file: 'apps/worker/main.ts' } },
+    ] as any;
+    cas.deployable_evidence = [
+      { root_path: 'apps/api', name: 'api', tier: 1, kind: 'compose-service', evidence: ['compose:api'] },
+      { root_path: 'apps/worker', name: 'worker', tier: 1, kind: 'compose-service', evidence: ['compose:worker'] },
+    ];
+    const entry = await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const expected = materializeDeployableCasTree(cas);
+    assert.equal(expected.children?.length, 2);
+    const manifest = await loadAnalysisSectionManifest(project);
+    assert.equal(manifest?.tree_projection?.children.length, 2);
+    assert.ok(manifest?.tree_projection?.children.every(child => child.file.startsWith('tree.child.')));
+    assert.equal(await fs.pathExists(path.join(storagePath, entry.file)), false);
+    const previousReserve = process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB;
+    process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB = '128';
+    const artifact = await resolveAnalysisExportArtifact(project).finally(() => {
+      if (previousReserve === undefined) delete process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB;
+      else process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB = previousReserve;
+    });
+    assert.deepEqual(await readExportArtifact(artifact!.filePath), expected);
+  });
+});
+
+test('canonical segmented storage recovers only to the previous checksum-valid generation', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/canonical-recovery-project';
+    const first = casFixture('canonical-first');
+    await saveAnalysis(project, first, 'main', { canonicalSegmented: true });
+    const second = casFixture('canonical-second');
+    second.analysis_timestamp = '2026-07-23T00:00:00.000Z';
+    const entry = await saveAnalysis(project, second, 'main', { canonicalSegmented: true });
+    await saveAnalysis(project, second, 'main', { canonicalSegmented: true });
+    const root = path.join(storagePath, `${entry.file}.sections`);
+    const pointer = await fs.readJson(path.join(root, 'current.json'));
+    assert.match(pointer.previous, /^gen-[a-f0-9]{64}$/);
+    await fs.writeFile(path.join(root, pointer.current, 'manifest.json'), '{"corrupt":true}\n');
+    clearLoadedAnalysisCache();
+    assert.equal((await loadAnalysis(project))?.analysis_id, first.analysis_id);
+  });
+});
+
+test('canonical generations retain a reader grace window and concurrent publishers leave a valid lineage', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/canonical-concurrent-project';
+    for (const id of ['grace-first', 'grace-second', 'grace-third']) {
+      const cas = casFixture(id);
+      cas.analysis_timestamp = `2026-07-2${id === 'grace-first' ? 1 : id === 'grace-second' ? 2 : 3}T00:00:00.000Z`;
+      await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    }
+    const entry = JSON.parse(await fs.readFile(path.join(storagePath, 'index.json'), 'utf8')).analyses[project];
+    const root = path.join(storagePath, `${entry.file}.sections`);
+    assert.equal((await fs.readdir(root)).filter(name => name.startsWith('gen-')).length, 3);
+
+    await Promise.all(['concurrent-a', 'concurrent-b'].map(async id => {
+      const cas = casFixture(id);
+      cas.analysis_timestamp = id === 'concurrent-a' ? '2026-07-24T00:00:00.000Z' : '2026-07-25T00:00:00.000Z';
+      await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    }));
+    const pointer = await fs.readJson(path.join(root, 'current.json'));
+    assert.match(pointer.current, /^gen-[a-f0-9]{64}$/);
+    if (pointer.previous) assert.notEqual(pointer.previous, pointer.current);
+    assert.ok(['concurrent-a', 'concurrent-b'].includes((await loadAnalysis(project))!.analysis_id));
+  });
+});
+
+test('legacy export stays on one immutable generation across concurrent pointer flips', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/canonical-pinned-export-project';
+    const first = casFixture('pinned-first');
+    first.nodes[0].description = 'x'.repeat(2 * 1024 * 1024);
+    const entry = await saveAnalysis(project, first, 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file);
+    const exportPath = path.join(storagePath, 'pinned-export.json');
+
+    const exporting = writeSegmentedLegacyExport(wholePath, exportPath);
+    await Promise.all(['pinned-second', 'pinned-third'].map(async (id, index) => {
+      const cas = casFixture(id);
+      cas.analysis_timestamp = `2026-07-${24 + index}T00:00:00.000Z`;
+      await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    }));
+    await exporting;
+
+    const exported = await fs.readJson(exportPath) as CASOutput;
+    assert.equal(exported.analysis_id, 'pinned-first');
+    assert.equal(exported.nodes[0].id, 'pinned-first-node');
+    const root = `${wholePath}.sections`;
+    assert.ok((await fs.readdir(root)).filter(name => name.startsWith('gen-')).length >= 2);
   });
 });

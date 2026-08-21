@@ -3,6 +3,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import { execFile, spawn, spawnSync } from 'child_process';
+import { open } from 'node:fs/promises';
 import type { Writable } from 'stream';
 import { finished, pipeline } from 'stream/promises';
 import { promisify } from 'util';
@@ -27,7 +28,7 @@ export async function writeJsonAtomic(filePath: string, value: unknown, options:
       if (!isJsonStringTooLargeError(error)) throw error;
       await writeJsonStreamed(tmpPath, value, options.spaces);
     }
-    await fs.move(tmpPath, filePath, { overwrite: true });
+    await replaceFileAtomic(tmpPath, filePath);
   } catch (error) {
     await fs.remove(tmpPath).catch(() => undefined);
     throw error;
@@ -45,9 +46,80 @@ export async function writeCompressedJsonAtomic(filePath: string, value: unknown
   const compressedTmpPath = atomicTempPath(filePath, 'compressed.tmp');
   try {
     await writeCompressedJsonStreamed(compressedTmpPath, value, codec, options.spaces);
-    await fs.move(compressedTmpPath, filePath, { overwrite: true });
+    await replaceFileAtomic(compressedTmpPath, filePath);
   } finally {
     await fs.remove(compressedTmpPath).catch(() => undefined);
+  }
+}
+
+export async function writeCompressedChunksAtomic(
+  filePath: string,
+  chunks: AsyncIterable<Buffer | string>,
+): Promise<void> {
+  const codec = compressionCodecForPath(filePath);
+  await fs.ensureDir(path.dirname(filePath));
+  const tmpPath = atomicTempPath(filePath, 'compressed.tmp');
+  try {
+    if (codec === 'none') {
+      const output = fs.createWriteStream(tmpPath);
+      const completion = finished(output, { cleanup: true });
+      try {
+        await writeChunksToStream(output, chunks);
+        output.end();
+        await completion;
+      } catch (error) {
+        output.destroy();
+        await completion.catch(() => undefined);
+        throw error;
+      }
+    } else {
+      await writeCompressedSource(tmpPath, codec, stream => writeChunksToStream(stream, chunks));
+    }
+    await replaceFileAtomic(tmpPath, filePath);
+  } finally {
+    await fs.remove(tmpPath).catch(() => undefined);
+  }
+}
+
+async function replaceFileAtomic(tmpPath: string, filePath: string): Promise<void> {
+  const tmpHandle = await open(tmpPath, 'r');
+  try {
+    await tmpHandle.sync();
+  } finally {
+    await tmpHandle.close();
+  }
+  try {
+    await fs.rename(tmpPath, filePath);
+    await syncDirectory(path.dirname(filePath));
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform !== 'win32' || !['EEXIST', 'EPERM'].includes(code || '')) throw error;
+  }
+  const backupPath = atomicTempPath(filePath, 'backup.tmp');
+  const hadDestination = await fs.pathExists(filePath);
+  if (hadDestination) await fs.rename(filePath, backupPath);
+  try {
+    await fs.rename(tmpPath, filePath);
+    await syncDirectory(path.dirname(filePath));
+    await fs.remove(backupPath).catch(() => undefined);
+  } catch (error) {
+    if (hadDestination && await fs.pathExists(backupPath)) {
+      await fs.remove(filePath).catch(() => undefined);
+      await fs.rename(backupPath, filePath);
+      await syncDirectory(path.dirname(filePath));
+    }
+    throw error;
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(directory, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 
@@ -155,6 +227,14 @@ async function writeJsonStreamed(filePath: string, value: unknown, spaces = 0): 
 }
 
 async function writeCompressedJsonStreamed(filePath: string, value: unknown, codec: Exclude<JsonStorageCodec, 'none'>, spaces = 0): Promise<void> {
+  await writeCompressedSource(filePath, codec, stream => writeJsonToStream(stream, value, spaces));
+}
+
+async function writeCompressedSource(
+  filePath: string,
+  codec: Exclude<JsonStorageCodec, 'none'>,
+  produce: (stream: Writable) => Promise<void>,
+): Promise<void> {
   if (codec === 'zstd') {
     const child = spawn('zstd', ['-q', '-3', '-T1', '-f', '-o', filePath]);
     const stderr: Buffer[] = [];
@@ -173,7 +253,7 @@ async function writeCompressedJsonStreamed(filePath: string, value: unknown, cod
     });
     child.stdin.on('error', () => undefined);
     try {
-      await writeJsonToStream(child.stdin, value, spaces);
+      await produce(child.stdin);
       child.stdin.end();
       await Promise.all([finished(child.stdin, { cleanup: true }), exited]);
     } catch (error) {
@@ -191,7 +271,7 @@ async function writeCompressedJsonStreamed(filePath: string, value: unknown, cod
   const compressed = pipeline(compressor, output);
   void compressed.catch(() => undefined);
   try {
-    await writeJsonToStream(compressor, value, spaces);
+    await produce(compressor);
     compressor.end();
     await compressed;
   } catch (error) {
@@ -202,15 +282,21 @@ async function writeCompressedJsonStreamed(filePath: string, value: unknown, cod
   }
 }
 
+async function writeChunksToStream(stream: Writable, chunks: AsyncIterable<Buffer | string>): Promise<void> {
+  for await (const chunk of chunks) {
+    if (stream.write(chunk)) continue;
+    await new Promise<void>((resolve, reject) => {
+      const onDrain = () => { stream.off('error', onError); resolve(); };
+      const onError = (error: Error) => { stream.off('drain', onDrain); reject(error); };
+      stream.once('drain', onDrain);
+      stream.once('error', onError);
+    });
+  }
+}
+
 async function writeJsonToStream(stream: Writable, value: unknown, spaces = 0): Promise<void> {
-  let bufferedChunks: string[] = [];
-  let bufferedCharacters = 0;
-  const flush = async (): Promise<void> => {
-    if (bufferedCharacters === 0) return;
-    const chunk = bufferedChunks.length === 1 ? bufferedChunks[0] : bufferedChunks.join('');
-    bufferedChunks = [];
-    bufferedCharacters = 0;
-    if (stream.write(chunk)) return undefined;
+  const write = async (chunk: string): Promise<void> => {
+    if (stream.write(chunk)) return;
     await new Promise<void>((resolve, reject) => {
       const onDrain = () => {
         stream.off('error', onError);
@@ -224,15 +310,8 @@ async function writeJsonToStream(stream: Writable, value: unknown, spaces = 0): 
       stream.once('error', onError);
     });
   };
-  const write = async (chunk: string): Promise<void> => {
-    bufferedChunks.push(chunk);
-    bufferedCharacters += chunk.length;
-    if (bufferedCharacters >= STREAM_WRITE_BUFFER_CHARS) await flush();
-  };
-
   const indent = ' '.repeat(Math.min(10, Math.max(0, Math.trunc(spaces))));
   const pretty = indent.length > 0;
-  const newline = async (depth: number): Promise<void> => write(`\n${indent.repeat(depth)}`);
   const ancestors = new Set<object>();
   const normalize = (current: unknown, key: string): unknown => current !== null
     && typeof current === 'object'
@@ -242,11 +321,11 @@ async function writeJsonToStream(stream: Writable, value: unknown, spaces = 0): 
   const unsupported = (current: unknown): boolean => current === undefined
     || typeof current === 'function'
     || typeof current === 'symbol';
-  const writeValue = async (input: unknown, key: string, depth: number, arrayElement = false, normalized = false): Promise<void> => {
+  function* serializeValue(input: unknown, key: string, depth: number, arrayElement = false, normalized = false): Generator<string> {
     const current = normalized ? input : normalize(input, key);
     if (unsupported(current)) {
       if (arrayElement) {
-        await write('null');
+        yield 'null';
         return;
       }
       throw new TypeError('Value is not JSON serializable');
@@ -254,45 +333,50 @@ async function writeJsonToStream(stream: Writable, value: unknown, spaces = 0): 
     if (current === null || typeof current !== 'object') {
       const serialized = JSON.stringify(current);
       if (serialized === undefined) throw new TypeError('Value is not JSON serializable');
-      await write(serialized);
+      yield serialized;
       return;
     }
     if (current instanceof Number || current instanceof String || current instanceof Boolean) {
-      await write(JSON.stringify(current));
+      yield JSON.stringify(current);
       return;
     }
     if (ancestors.has(current as object)) throw new TypeError('Converting circular structure to JSON');
     ancestors.add(current as object);
     if (Array.isArray(current)) {
-      await write('[');
+      yield '[';
       for (let index = 0; index < current.length; index++) {
-        if (index > 0) await write(',');
-        if (pretty) await newline(depth + 1);
-        await writeValue(current[index], String(index), depth + 1, true);
+        if (index > 0) yield ',';
+        if (pretty) yield `\n${indent.repeat(depth + 1)}`;
+        yield* serializeValue(current[index], String(index), depth + 1, true);
       }
-      if (pretty && current.length > 0) await newline(depth);
-      await write(']');
+      if (pretty && current.length > 0) yield `\n${indent.repeat(depth)}`;
+      yield ']';
       ancestors.delete(current);
       return;
     }
-    await write('{');
+    yield '{';
     let first = true;
     for (const [key, rawChild] of Object.entries(current as Record<string, unknown>)) {
       const child = normalize(rawChild, key);
       if (unsupported(child)) continue;
-      if (!first) await write(',');
-      if (pretty) await newline(depth + 1);
+      if (!first) yield ',';
+      if (pretty) yield `\n${indent.repeat(depth + 1)}`;
       first = false;
-      await write(JSON.stringify(key));
-      await write(pretty ? ': ' : ':');
-      await writeValue(child, key, depth + 1, false, true);
+      yield JSON.stringify(key);
+      yield pretty ? ': ' : ':';
+      yield* serializeValue(child, key, depth + 1, false, true);
     }
-    if (pretty && !first) await newline(depth);
-    await write('}');
+    if (pretty && !first) yield `\n${indent.repeat(depth)}`;
+    yield '}';
     ancestors.delete(current as object);
-  };
+  }
 
-  await writeValue(value, '', 0);
-  await write('\n');
-  await flush();
+  let buffered = '';
+  for (const token of serializeValue(value, '', 0)) {
+    buffered += token;
+    if (buffered.length < STREAM_WRITE_BUFFER_CHARS) continue;
+    await write(buffered);
+    buffered = '';
+  }
+  await write(`${buffered}\n`);
 }

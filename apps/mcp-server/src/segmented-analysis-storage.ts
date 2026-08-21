@@ -2,6 +2,9 @@ import * as crypto from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
+import { open, rename } from 'node:fs/promises';
+import * as zlib from 'node:zlib';
+import { spawn } from 'node:child_process';
 import pLimit from 'p-limit';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
@@ -26,17 +29,38 @@ import {
   type CompactCASSearchText,
 } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import { buildCompactCASPostingArtifacts, decodeCompactCASPostingShard } from './compact-cas-search-storage';
+import { compressionCodecForPath, writeCompressedChunksAtomic } from './json-storage-writer';
 
-interface SegmentedAnalysisPointer {
+interface SegmentedAnalysisPointerV1 {
   manifest_version: 1;
   revision: string;
 }
+
+interface SegmentedAnalysisPointerV2 {
+  manifest_version: 2;
+  current: string;
+  previous?: string;
+}
+
+type SegmentedAnalysisPointer = SegmentedAnalysisPointerV1 | SegmentedAnalysisPointerV2;
 
 type JsonWriter = (
   filePath: string,
   value: unknown,
   options?: { spaces?: number },
 ) => Promise<void>;
+
+const segmentedWriteLocks = new Map<string, Promise<void>>();
+const DEFAULT_SEGMENT_WRITE_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_SEGMENT_WRITE_LOCK_STALE_MS = 15 * 60 * 1000;
+const DEFAULT_SEGMENT_GENERATION_GRACE_MS = 15 * 60 * 1000;
+
+function generationGraceMs(): number {
+  const configured = Number(process.env.KLAURO_SEGMENT_GENERATION_GRACE_MS);
+  return Number.isFinite(configured) && configured >= DEFAULT_SEGMENT_GENERATION_GRACE_MS
+    ? configured
+    : DEFAULT_SEGMENT_GENERATION_GRACE_MS;
+}
 
 export function segmentedAnalysisRoot(filePath: string): string {
   return `${filePath}.sections`;
@@ -49,24 +73,127 @@ export async function writeSegmentedAnalysis(
   writeCompressedJson: JsonWriter,
   writeJson: JsonWriter,
   isCurrent: () => boolean = () => true,
+  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput> } = {},
+): Promise<void> {
+  const root = segmentedAnalysisRoot(filePath);
+  const previous = segmentedWriteLocks.get(root) || Promise.resolve();
+  let release!: () => void;
+  const active = new Promise<void>(resolve => { release = resolve; });
+  const queued = previous.then(() => active);
+  segmentedWriteLocks.set(root, queued);
+  await previous;
+  let releaseFileLock: (() => Promise<void>) | undefined;
+  try {
+    releaseFileLock = await acquireSegmentedWriteLock(root);
+    await writeSegmentedAnalysisUnlocked(filePath, output, extension, writeCompressedJson, writeJson, isCurrent, options);
+  } finally {
+    if (releaseFileLock) await releaseFileLock();
+    release();
+    if (segmentedWriteLocks.get(root) === queued) segmentedWriteLocks.delete(root);
+  }
+}
+
+async function acquireSegmentedWriteLock(root: string): Promise<() => Promise<void>> {
+  await fs.ensureDir(root);
+  const lockPath = path.join(root, '.write-lock');
+  const configuredTimeout = Number(process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS);
+  const configuredStale = Number(process.env.KLAURO_SEGMENT_WRITE_LOCK_STALE_MS);
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? configuredTimeout
+    : DEFAULT_SEGMENT_WRITE_LOCK_TIMEOUT_MS;
+  const staleMs = Number.isFinite(configuredStale) && configuredStale > 0
+    ? configuredStale
+    : DEFAULT_SEGMENT_WRITE_LOCK_STALE_MS;
+  const deadline = Date.now() + timeoutMs;
+  const token = `${process.pid}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+  while (true) {
+    try {
+      await fs.mkdir(lockPath);
+      await fs.writeFile(path.join(lockPath, 'owner'), token);
+      await syncDirectory(root);
+      const heartbeat = setInterval(() => {
+        const now = new Date();
+        void fs.utimes(lockPath, now, now).catch(() => undefined);
+      }, Math.max(1_000, Math.min(30_000, Math.floor(staleMs / 3))));
+      heartbeat.unref();
+      return async () => {
+        clearInterval(heartbeat);
+        const owner = await fs.readFile(path.join(lockPath, 'owner'), 'utf8').catch(() => null);
+        if (owner === token) await fs.remove(lockPath).catch(() => undefined);
+        await syncDirectory(root).catch(() => undefined);
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const stat = await fs.stat(lockPath).catch(() => null);
+      if (stat && stat.mtimeMs < Date.now() - staleMs) {
+        await fs.remove(lockPath).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for segmented analysis writer lock at ${lockPath}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+}
+
+async function syncGenerationFiles(directory: string): Promise<void> {
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const handle = await open(path.join(directory, entry.name), 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+}
+
+async function writeSegmentedAnalysisUnlocked(
+  filePath: string,
+  output: CASOutput,
+  extension: string,
+  writeCompressedJson: JsonWriter,
+  writeJson: JsonWriter,
+  isCurrent: () => boolean,
+  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput> },
 ): Promise<void> {
   if (!isCurrent()) return;
   const root = segmentedAnalysisRoot(filePath);
-  const revision = `rev-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
-  const revisionDir = path.join(root, revision);
-  const tmpDir = `${revisionDir}.tmp`;
+  const staging = `staging-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+  const tmpDir = path.join(root, staging);
   const manifest = createCasSectionManifest(output);
+  if (options.rootOnlyTree) manifest.tree_projection = { format: 'derived-deployable-references', version: 1, children: [] };
   try {
     await fs.ensureDir(tmpDir);
-    const writeSection = pLimit(2);
+    const sectionMetrics: Array<{ name: string; duration_ms: number; bytes: number }> = [];
+    const writeSection = pLimit(4);
     await Promise.all(manifest.sections.map(descriptor => writeSection(async () => {
+      const startedAt = Date.now();
       const sectionFile = `${descriptor.name}.json${extension}`;
       const sectionPath = path.join(tmpDir, sectionFile);
       await writeCompressedJson(sectionPath, selectExactCasSection(output, descriptor.name), { spaces: 0 });
       const stat = await fs.stat(sectionPath);
       descriptor.file = sectionFile;
       descriptor.bytes = stat.size;
+      descriptor.sha256 = await checksumFile(sectionPath);
+      sectionMetrics.push({ name: descriptor.name, duration_ms: Date.now() - startedAt, bytes: stat.size });
     })));
+    let childOrdinal = 0;
+    for (const child of options.childProjections || []) {
+      const childStartedAt = Date.now();
+      const childFile = `tree.child.${childOrdinal}.json${extension}`;
+      const childPath = path.join(tmpDir, childFile);
+      await writeCompressedJson(childPath, child, { spaces: 0 });
+      const stat = await fs.stat(childPath);
+      manifest.tree_projection!.children.push({
+        id: child.id || child.analysis_id,
+        file: childFile,
+        bytes: stat.size,
+        sha256: await checksumFile(childPath),
+      });
+      sectionMetrics.push({ name: `tree.child.${childOrdinal}`, duration_ms: Date.now() - childStartedAt, bytes: stat.size });
+      childOrdinal += 1;
+    }
+    process.stderr.write(`${JSON.stringify({ event: 'segmented_cas_sections_written', sections: sectionMetrics.sort((left, right) => left.name.localeCompare(right.name)) })}\n`);
     const compactStartedAt = Date.now();
     const compactGraph = encodeCompactCASGraph(output);
     const parity = validateCompactCASParity(compactGraph, output);
@@ -159,39 +286,233 @@ export async function writeSegmentedAnalysis(
         max_rss_mb: Math.round(process.resourceUsage().maxRSS / 1024),
       })}\n`);
     }
-    await writeJson(path.join(tmpDir, 'manifest.json'), manifest, { spaces: 2 });
+    const manifestPath = path.join(tmpDir, 'manifest.json');
+    await writeJson(manifestPath, manifest, { spaces: 2 });
     if (!isCurrent()) return;
     await fs.ensureDir(root);
-    await fs.move(tmpDir, revisionDir, { overwrite: false });
+    const manifestHash = crypto.createHash('sha256').update(await fs.readFile(manifestPath)).digest('hex');
+    const generation = `gen-${manifestHash}`;
+    const generationDir = path.join(root, generation);
+    if (await fs.pathExists(generationDir)) await fs.remove(tmpDir);
+    else {
+      await syncGenerationFiles(tmpDir);
+      await syncDirectory(tmpDir);
+      await rename(tmpDir, generationDir);
+      await syncDirectory(root);
+    }
     if (!isCurrent()) {
-      await fs.remove(revisionDir).catch(() => undefined);
       return;
     }
+    const prior = await fs.readJson(path.join(root, 'current.json')).catch(() => null) as SegmentedAnalysisPointer | null;
+    const previous = prior?.manifest_version === 2
+      ? prior.current === generation ? prior.previous : prior.current
+      : prior?.manifest_version === 1 ? prior.revision : undefined;
     await writeJson(path.join(root, 'current.json'), {
-      manifest_version: 1,
-      revision,
-    } satisfies SegmentedAnalysisPointer, { spaces: 2 });
+      manifest_version: 2,
+      current: generation,
+      ...(previous && previous !== generation ? { previous } : {}),
+    } satisfies SegmentedAnalysisPointerV2, { spaces: 2 });
     if (!isCurrent()) {
       const currentPath = path.join(root, 'current.json');
       const current = await fs.readJson(currentPath).catch(() => null) as SegmentedAnalysisPointer | null;
-      if (current?.revision === revision) await fs.remove(currentPath).catch(() => undefined);
-      await fs.remove(revisionDir).catch(() => undefined);
+      if (current?.manifest_version === 2 && current.current === generation) {
+        if (prior) await writeJson(currentPath, prior, { spaces: 2 });
+        else await fs.remove(currentPath).catch(() => undefined);
+      }
       return;
     }
-    const revisions = (await fs.readdir(root).catch(() => []))
-      .filter(name => name.startsWith('rev-') && !name.endsWith('.tmp'))
-      .sort()
-      .reverse();
-    for (const stale of revisions.slice(2)) await fs.remove(path.join(root, stale)).catch(() => undefined);
+    const retained = new Set([generation, previous].filter((value): value is string => Boolean(value)));
+    const graceMs = generationGraceMs();
+    const reclaimBefore = Date.now() - graceMs;
+    for (const candidate of await fs.readdir(root).catch(() => [])) {
+      if ((!candidate.startsWith('gen-') && !candidate.startsWith('rev-')) || retained.has(candidate)) continue;
+      if (await generationHasActiveLease(root, candidate, reclaimBefore)) continue;
+      const candidatePath = path.join(root, candidate);
+      const stat = await fs.stat(candidatePath).catch(() => null);
+      if (stat && stat.mtimeMs < reclaimBefore) {
+        await fs.remove(candidatePath).catch(() => undefined);
+        await fs.remove(segmentedLegacyExportPath(filePath, candidate)).catch(() => undefined);
+      }
+    }
   } finally {
     await fs.remove(tmpDir).catch(() => undefined);
   }
+}
+
+async function generationHasActiveLease(root: string, generation: string, reclaimBefore: number): Promise<boolean> {
+  const directory = path.join(root, '.read-leases', generation);
+  let active = false;
+  for (const file of await fs.readdir(directory).catch(() => [])) {
+    const lease = path.join(directory, file);
+    const stat = await fs.stat(lease).catch(() => null);
+    if (stat && stat.mtimeMs >= reclaimBefore) active = true;
+    else await fs.remove(lease).catch(() => undefined);
+  }
+  if (!active) await fs.rmdir(directory).catch(() => undefined);
+  return active;
 }
 
 function encodeUint32LittleEndian(values: Uint32Array): Buffer {
   const bytes = Buffer.allocUnsafe(values.length * 4);
   for (let index = 0; index < values.length; index += 1) bytes.writeUInt32LE(values[index], index * 4);
   return bytes;
+}
+
+async function checksumFile(filePath: string): Promise<string> {
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk as Buffer);
+  return hash.digest('hex');
+}
+
+async function* decodedFile(filePath: string): AsyncGenerator<Buffer> {
+  const codec = compressionCodecForPath(filePath);
+  if (codec === 'none') {
+    for await (const chunk of fs.createReadStream(filePath)) yield chunk as Buffer;
+    return;
+  }
+  if (codec === 'brotli') {
+    const stream = fs.createReadStream(filePath).pipe(zlib.createBrotliDecompress());
+    for await (const chunk of stream) yield chunk as Buffer;
+    return;
+  }
+  const child = spawn('zstd', ['-q', '-d', '-c', filePath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const stderr: Buffer[] = [];
+  let stderrBytes = 0;
+  child.stderr.on('data', chunk => {
+    if (stderrBytes >= 1024 * 1024) return;
+    const bytes = chunk as Buffer;
+    stderr.push(bytes);
+    stderrBytes += bytes.length;
+  });
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+  let completed = false;
+  try {
+    for await (const chunk of child.stdout) yield chunk as Buffer;
+    const result = await exited;
+    completed = true;
+    if (result.code !== 0) throw new Error(`zstd decode failed ${result.signal ? `with ${result.signal}` : `with code ${result.code}`}: ${Buffer.concat(stderr).toString('utf8')}`);
+  } finally {
+    if (!completed) {
+      child.kill('SIGTERM');
+      await exited.catch(() => undefined);
+    }
+  }
+}
+
+async function validateArtifact(
+  directory: string,
+  descriptor: { file: string; bytes?: number; sha256?: string },
+  label: string,
+): Promise<string> {
+  if (path.basename(descriptor.file) !== descriptor.file) throw new Error(`${label} has an invalid path`);
+  const filePath = path.join(directory, descriptor.file);
+  const stat = await fs.stat(filePath);
+  if (descriptor.bytes !== undefined && stat.size !== descriptor.bytes) throw new Error(`${label} byte length mismatch`);
+  if (descriptor.sha256 && await checksumFile(filePath) !== descriptor.sha256) throw new Error(`${label} checksum mismatch`);
+  return filePath;
+}
+
+async function* jsonObjectInterior(filePath: string): AsyncGenerator<Buffer> {
+  let carry: Buffer = Buffer.alloc(0);
+  let opened = false;
+  for await (const chunk of decodedFile(filePath)) {
+    let bytes = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+    if (!opened) {
+      let offset = 0;
+      while (offset < bytes.length && /\s/.test(String.fromCharCode(bytes[offset]))) offset += 1;
+      if (offset === bytes.length) {
+        carry = bytes;
+        continue;
+      }
+      if (bytes[offset] !== 0x7b) throw new Error(`Segmented JSON object ${filePath} does not start with '{'`);
+      bytes = bytes.subarray(offset + 1);
+      opened = true;
+    }
+    if (bytes.length <= 64) {
+      carry = Buffer.from(bytes);
+      continue;
+    }
+    yield bytes.subarray(0, bytes.length - 64);
+    carry = Buffer.from(bytes.subarray(bytes.length - 64));
+  }
+  if (!opened) throw new Error(`Segmented JSON object ${filePath} is empty`);
+  let end = carry.length;
+  while (end > 0 && /\s/.test(String.fromCharCode(carry[end - 1]))) end -= 1;
+  if (end === 0 || carry[end - 1] !== 0x7d) throw new Error(`Segmented JSON object ${filePath} does not end with '}'`);
+  if (end > 1) yield carry.subarray(0, end - 1);
+}
+
+export function segmentedLegacyExportPath(filePath: string, generation: string): string {
+  const suffix = filePath.endsWith('.json.zst') ? '.json.zst' : filePath.endsWith('.json.br') ? '.json.br' : '.json';
+  return `${filePath.slice(0, -suffix.length)}.export-${generation}${suffix}`;
+}
+
+export async function writeSegmentedLegacyExport(
+  filePath: string,
+  targetPath: string,
+  pinned?: ResolvedSegmentedAnalysis,
+): Promise<void> {
+  const lease = pinned ? null : await acquireSegmentedAnalysisLease(filePath);
+  const segmented = pinned || lease?.segmented;
+  if (!segmented) throw new Error('Canonical segmented analysis is unavailable for legacy export');
+  try {
+    const chunks = (async function* (): AsyncGenerator<Buffer | string> {
+      yield '{';
+      let first = true;
+      for (const descriptor of segmented.manifest.sections) {
+        if (!descriptor.file) throw new Error(`Segmented CAS section '${descriptor.name}' has no artifact`);
+        const sectionPath = await validateArtifact(
+          segmented.directory,
+          { ...descriptor, file: descriptor.file },
+          `Segmented CAS section '${descriptor.name}'`,
+        );
+        const interior = jsonObjectInterior(sectionPath)[Symbol.asyncIterator]();
+        const head = await interior.next();
+        if (head.done) continue;
+        if (!first) yield ',';
+        yield head.value;
+        while (true) {
+          const next = await interior.next();
+          if (next.done) break;
+          yield next.value;
+        }
+        first = false;
+      }
+      const projection = segmented.manifest.tree_projection;
+      if (projection && (projection.format !== 'derived-deployable-references' || projection.version !== 1)) {
+        throw new Error('Deployable tree projection format or version is unsupported');
+      }
+      const children = projection?.children || [];
+      if (children.length > 0) {
+        if (!first) yield ',';
+        yield '"children":[';
+        for (let index = 0; index < children.length; index += 1) {
+          const child = children[index];
+          const childPath = await validateArtifact(segmented.directory, child, `Deployable child '${child.id}'`);
+          if (index > 0) yield ',';
+          yield* decodedFile(childPath);
+        }
+        yield ']';
+      }
+      yield '}\n';
+    })();
+    await writeCompressedChunksAtomic(targetPath, chunks);
+  } finally {
+    await lease?.release();
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(directory, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 function decodeUint32LittleEndian(bytes: Buffer, length: number, field: string): Uint32Array {
@@ -206,6 +527,12 @@ function decodeUint32LittleEndian(bytes: Buffer, length: number, field: string):
 
 export async function loadCompactCASGraph(filePath: string): Promise<CompactCASGraph | null> {
   const segmented = await resolveSegmentedAnalysis(filePath);
+  return segmented ? loadCompactCASGraphFromGeneration(segmented) : null;
+}
+
+async function loadCompactCASGraphFromGeneration(
+  segmented: { directory: string; manifest: CasSectionManifest },
+): Promise<CompactCASGraph | null> {
   const descriptor = segmented?.manifest.compact_graph;
   if (!segmented || !descriptor) return null;
   if (descriptor.format !== 'klauro-compact-cas-graph' || descriptor.version !== 1) {
@@ -250,6 +577,11 @@ export interface LoadedCompactCASSearch {
   readSearchText(denseIds: readonly number[]): Promise<Map<number, CompactCASSearchText>>;
 }
 
+export interface ResolvedSegmentedAnalysis {
+  directory: string;
+  manifest: CasSectionManifest;
+}
+
 export async function loadCompactCASSearch(filePath: string): Promise<LoadedCompactCASSearch | null> {
   const segmented = await resolveSegmentedAnalysis(filePath);
   const descriptor = segmented?.manifest.compact_search;
@@ -257,7 +589,7 @@ export async function loadCompactCASSearch(filePath: string): Promise<LoadedComp
   if (descriptor.format !== 'klauro-compact-cas-search' || descriptor.version !== 2) {
     throw new Error('Compact CAS search format or version is unsupported');
   }
-  const graph = await loadCompactCASGraph(filePath);
+  const graph = await loadCompactCASGraphFromGeneration(segmented);
   if (!graph) throw new Error('Compact CAS search exists without its compact graph');
   if (descriptor.node_count !== graph.nodeCount) throw new Error('Compact CAS search cardinality does not match its graph');
   if (!Number.isSafeInteger(descriptor.description_chunk_nodes) || descriptor.description_chunk_nodes < 1) {
@@ -436,16 +768,69 @@ function requiredColumn<T extends Uint8Array | Uint32Array>(
 
 export async function resolveSegmentedAnalysis(
   filePath: string,
-): Promise<{ directory: string; manifest: CasSectionManifest } | null> {
+): Promise<ResolvedSegmentedAnalysis | null> {
   const root = segmentedAnalysisRoot(filePath);
+  let pointer: SegmentedAnalysisPointer;
   try {
-    const pointer = await fs.readJson(path.join(root, 'current.json')) as SegmentedAnalysisPointer;
-    if (pointer.manifest_version !== 1 || !pointer.revision) return null;
-    const directory = path.join(root, pointer.revision);
-    const manifest = await fs.readJson(path.join(directory, 'manifest.json')) as CasSectionManifest;
-    if (manifest.manifest_version !== 1) return null;
-    return { directory, manifest };
-  } catch {
-    return null;
+    pointer = await fs.readJson(path.join(root, 'current.json')) as SegmentedAnalysisPointer;
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code || '')) return null;
+    throw new Error(`Segmented analysis pointer is unreadable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const generations = pointer.manifest_version === 2
+    ? [pointer.current, pointer.previous].filter((value): value is string => Boolean(value))
+    : pointer.manifest_version === 1 && pointer.revision ? [pointer.revision] : [];
+  let lastError: unknown;
+  for (const generation of generations) {
+    try {
+      if (path.basename(generation) !== generation) throw new Error('generation name is invalid');
+      if (pointer.manifest_version === 2 && !/^gen-[a-f0-9]{64}$/.test(generation)) {
+        throw new Error('content-addressed generation name is invalid');
+      }
+      const directory = path.join(root, generation);
+      const manifestBytes = await fs.readFile(path.join(directory, 'manifest.json'));
+      if (pointer.manifest_version === 2) {
+        const expected = generation.slice(4);
+        const actual = crypto.createHash('sha256').update(manifestBytes).digest('hex');
+        if (actual !== expected) throw new Error('generation manifest checksum mismatch');
+      }
+      const manifest = JSON.parse(manifestBytes.toString('utf8')) as CasSectionManifest;
+      if (manifest.manifest_version !== 1) throw new Error('generation manifest version is unsupported');
+      return { directory, manifest };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`Segmented analysis pointer has no checksum-valid generation${lastError instanceof Error ? `: ${lastError.message}` : ''}`);
+}
+
+export async function acquireSegmentedAnalysisLease(
+  filePath: string,
+): Promise<{ segmented: ResolvedSegmentedAnalysis; release: () => Promise<void> } | null> {
+  const root = segmentedAnalysisRoot(filePath);
+  const releaseWriterLock = await acquireSegmentedWriteLock(root);
+  try {
+    const segmented = await resolveSegmentedAnalysis(filePath);
+    if (!segmented) return null;
+    const generation = path.basename(segmented.directory);
+    const leaseDirectory = path.join(root, '.read-leases', generation);
+    const leasePath = path.join(leaseDirectory, `${process.pid}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`);
+    await fs.ensureDir(leaseDirectory);
+    await fs.writeFile(leasePath, '');
+    const heartbeat = setInterval(() => {
+      const now = new Date();
+      void fs.utimes(leasePath, now, now).catch(() => undefined);
+    }, Math.max(1_000, Math.min(30_000, Math.floor(generationGraceMs() / 3))));
+    heartbeat.unref();
+    return {
+      segmented,
+      release: async () => {
+        clearInterval(heartbeat);
+        await fs.remove(leasePath).catch(() => undefined);
+        await fs.rmdir(leaseDirectory).catch(() => undefined);
+      },
+    };
+  } finally {
+    await releaseWriterLock();
   }
 }
