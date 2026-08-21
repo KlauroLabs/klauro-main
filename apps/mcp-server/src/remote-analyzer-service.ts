@@ -57,6 +57,8 @@ import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-te
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type HostedProjectQueryTool } from './hosted-project-query';
 import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker, warmHostedProjectAnalysisWorker, warmHostedProjectQueryWorker } from './hosted-project-query-process';
+
+export { prewarmHostedProjectQueryWorker };
 import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse } from './analysis-response-readiness';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';

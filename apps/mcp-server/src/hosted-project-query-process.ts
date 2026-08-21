@@ -37,7 +37,7 @@ interface PendingQuery {
 }
 
 const DEFAULT_QUERY_HEAP_MB = 3072;
-const DEFAULT_IDLE_MS = 120_000;
+const DEFAULT_IDLE_MS = 300_000;
 let child: ChildProcess | undefined;
 let nextRequestId = 1;
 let idleTimer: NodeJS.Timeout | undefined;

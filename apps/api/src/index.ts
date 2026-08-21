@@ -1,10 +1,9 @@
 import { restrictProcessFileCreation } from '../../mcp-server/src/hosted-storage-security.js';
-import { prewarmHostedProjectQueryWorker } from '../../mcp-server/src/hosted-project-query-process.js';
 
 async function main(): Promise<void> {
   restrictProcessFileCreation();
+  const { createRemoteAnalyzerHttpServer, prewarmHostedProjectQueryWorker } = await import('../../mcp-server/src/remote-analyzer-service.js');
   if (process.env.KLAURO_STORAGE_PATH) prewarmHostedProjectQueryWorker();
-  const { createRemoteAnalyzerHttpServer } = await import('../../mcp-server/src/remote-analyzer-service.js');
   const port = Number(process.env.PORT || process.env.KLAURO_API_PORT || process.env.KLAURO_ANALYZER_PORT || 8787);
   const server = createRemoteAnalyzerHttpServer();
 
