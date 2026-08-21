@@ -94,9 +94,9 @@ test('resolveAnalysisHeapMb uses the default heap on machines with enough RAM', 
   assert.strictEqual(resolution.source, 'default');
 });
 
-test('resolveAnalysisHeapMb caps the default to half of total RAM', () => {
-  const resolution = resolveAnalysisHeapMb({}, 8 * GB);
-  assert.strictEqual(resolution.heapMb, 4096);
+test('resolveAnalysisHeapMb caps the default to half of constrained RAM', () => {
+  const resolution = resolveAnalysisHeapMb({}, 1 * GB);
+  assert.strictEqual(resolution.heapMb, 512);
   assert.strictEqual(resolution.source, 'default-capped');
   assert.match(describeAnalysisHeap(resolution), /capped/);
 });

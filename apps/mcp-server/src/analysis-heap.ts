@@ -1,6 +1,6 @@
 import * as os from 'os';
 
-export const DEFAULT_ANALYSIS_HEAP_MB = 8192;
+export const DEFAULT_ANALYSIS_HEAP_MB = 1024;
 export const MINIMUM_ANALYSIS_HEAP_MB = 256;
 export const DEFAULT_HEAP_TOTAL_RAM_FRACTION = 0.5;
 
