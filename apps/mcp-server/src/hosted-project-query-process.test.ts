@@ -24,8 +24,10 @@ process.on('message', request => {
 `);
   const previousEntry = process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
   const previousIdle = process.env.KLAURO_HOSTED_QUERY_IDLE_MS;
+  const previousBackgroundGrace = process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS;
   process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = worker;
   process.env.KLAURO_HOSTED_QUERY_IDLE_MS = '60000';
+  process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS = '0';
   const request = {
     workspace: directory,
     tool: 'search_nodes',
@@ -49,6 +51,8 @@ process.on('message', request => {
     else process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = previousEntry;
     if (previousIdle === undefined) delete process.env.KLAURO_HOSTED_QUERY_IDLE_MS;
     else process.env.KLAURO_HOSTED_QUERY_IDLE_MS = previousIdle;
+    if (previousBackgroundGrace === undefined) delete process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS;
+    else process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS = previousBackgroundGrace;
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });

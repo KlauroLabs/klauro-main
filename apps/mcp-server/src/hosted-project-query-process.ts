@@ -38,9 +38,11 @@ interface PendingQuery {
 
 const DEFAULT_QUERY_HEAP_MB = 3072;
 const DEFAULT_IDLE_MS = 300_000;
+const DEFAULT_BACKGROUND_GRACE_MS = 10_000;
 let child: ChildProcess | undefined;
 let nextRequestId = 1;
 let idleTimer: NodeJS.Timeout | undefined;
+let lastActivityAt = 0;
 const pending = new Map<number, PendingQuery>();
 const warmedVersions = new Map<string, string>();
 const warmingVersions = new Map<string, { version: string; promise: Promise<void> }>();
@@ -90,10 +92,20 @@ function stopWorker(reason = 'Hosted query worker stopped.'): void {
   pending.clear();
   warmedVersions.clear();
   warmingVersions.clear();
+  lastActivityAt = 0;
 }
 
-async function stopIdleWorkerForBackground(): Promise<void> {
+async function stopIdleWorkerForBackground(force = false): Promise<void> {
   if (!child || pending.size > 0) return;
+  if (!force && lastActivityAt > 0) {
+    const configured = Number(process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS);
+    const graceMs = Number.isFinite(configured) && configured >= 0
+      ? Math.floor(configured)
+      : DEFAULT_BACKGROUND_GRACE_MS;
+    const remainingMs = graceMs - (Date.now() - lastActivityAt);
+    if (remainingMs > 0) await new Promise(resolve => setTimeout(resolve, remainingMs));
+    if (!child || pending.size > 0) return;
+  }
   const running = child;
   const exited = new Promise<void>((resolve, reject) => {
     running.once('exit', () => resolve());
@@ -132,6 +144,7 @@ function getWorker(): ChildProcess {
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
+    lastActivityAt = Date.now();
     if (message.type === 'error') request.reject(new Error(message.error || 'Hosted query worker failed.'));
     else request.resolve({
       analysisTimestamp: message.analysisTimestamp || '',
@@ -168,6 +181,7 @@ function dispatchWorkerRequest(
   request: Omit<HostedProjectQueryWorkerRequest, 'id'>,
 ): Promise<HostedProjectQueryResult> {
   return new Promise((resolve, reject) => {
+    lastActivityAt = Date.now();
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = undefined;
     const id = nextRequestId++;

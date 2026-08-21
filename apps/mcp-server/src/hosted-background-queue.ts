@@ -2,7 +2,7 @@ let backgroundWork: Promise<void> = Promise.resolve();
 let memoryHeavyWork: Promise<void> = Promise.resolve();
 let foregroundWork = 0;
 let resolveForegroundIdle: (() => void) | undefined;
-const backgroundPreflights = new Set<() => void | Promise<void>>();
+const backgroundPreflights = new Set<(force?: boolean) => void | Promise<void>>();
 let cancelMemoryHeavyWork: (() => void) | undefined;
 
 function waitForForegroundIdle(): Promise<void> {
@@ -16,7 +16,7 @@ function waitForForegroundIdle(): Promise<void> {
   });
 }
 
-export function registerHostedBackgroundPreflight(preflight: () => void | Promise<void>): () => void {
+export function registerHostedBackgroundPreflight(preflight: (force?: boolean) => void | Promise<void>): () => void {
   backgroundPreflights.add(preflight);
   return () => backgroundPreflights.delete(preflight);
 }
@@ -51,12 +51,12 @@ export function withHostedBackgroundPermit<T>(
   const result = backgroundWork.then(async () => {
     await waitForForegroundIdle();
     if (options.releaseForegroundMemory) {
-      for (const preflight of backgroundPreflights) await preflight();
+      for (const preflight of backgroundPreflights) await preflight(false);
       await waitForForegroundIdle();
       let releaseMemoryHeavy!: () => void;
       memoryHeavyWork = new Promise<void>(resolve => { releaseMemoryHeavy = resolve; });
       try {
-        for (const preflight of backgroundPreflights) await preflight();
+        for (const preflight of backgroundPreflights) await preflight(true);
         return await run();
       } finally {
         releaseMemoryHeavy();
