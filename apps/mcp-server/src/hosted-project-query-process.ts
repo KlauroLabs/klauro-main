@@ -4,6 +4,9 @@ import * as path from 'node:path';
 import { resolveAnalysisHeapMb } from './analysis-heap';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
 
+export { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+export type { HostedProjectQueryTool } from './hosted-project-query';
+
 export interface HostedProjectQueryWorkerRequest {
   type: 'query';
   id: number;
