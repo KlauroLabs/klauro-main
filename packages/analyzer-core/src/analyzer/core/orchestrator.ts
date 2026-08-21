@@ -160,7 +160,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, uncoveredCapabilityCatalogCandidateIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, capabilitySemanticEvidenceOverlap, capabilityTitlesShareOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, uncoveredCapabilityCatalogCandidateIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -18329,7 +18329,7 @@ export class AnalyzerOrchestrator {
       existing.criticality_factors = Array.from(new Set([
         ...existing.criticality_factors,
         ...capability.criticality_factors,
-      ])).slice(0, 8);
+      ]));
       existing.category = existing.category === 'core' || capability.category !== 'core'
         ? existing.category
         : capability.category;
@@ -18378,7 +18378,7 @@ export class AnalyzerOrchestrator {
       winner.criticality_factors = Array.from(new Set([
         ...winner.criticality_factors,
         ...loser.criticality_factors,
-      ])).slice(0, 8);
+      ]));
       if (winner.category !== 'core' && loser.category === 'core') {
         winner.category = loser.category;
       }
@@ -18428,7 +18428,6 @@ export class AnalyzerOrchestrator {
         mergeInto(existing, capability);
       }
     }
-
     const anchored = [...bySetKey.values()];
     for (const capability of anchored) {
       if (removed.has(capability)) continue;
@@ -18464,6 +18463,8 @@ export class AnalyzerOrchestrator {
       const ownOperationKeys = new Set(capability.operations.map(operationKey));
       const opSuperset = opSurvivors.find(other => {
         if (other === capability || removed.has(other)) return false;
+        if (capabilitySemanticEvidenceOverlap(capability, other)) return true;
+        if (capabilityTitlesShareOutcome(capability, other)) return true;
         if (!subjectsSemanticallyOverlap(capability, other)) return false;
         const otherOperationKeys = new Set(other.operations.map(operationKey));
         if (otherOperationKeys.size < ownOperationKeys.size) return false;

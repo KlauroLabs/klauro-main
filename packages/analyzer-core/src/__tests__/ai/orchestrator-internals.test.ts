@@ -6225,6 +6225,48 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(merged[0].name).toBe('Manages user economy transactions');
   });
 
+  it('merges same-action semantic overlaps while preserving their evidence', async () => {
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({
+        name: 'Correlate static analysis with runtime evidence',
+        related_entities: ['AnalysisResult'],
+        operations: [{ entry_point_id: 'analysis', entry_point_type: 'internal', action: 'correlate' }],
+        criticality_factors: ['catalog-candidate:analysis'],
+      }),
+      capFixture({
+        name: 'Correlate static code structure with runtime evidence',
+        related_entities: ['RuntimeObservation'],
+        operations: [{ entry_point_id: 'runtime', entry_point_type: 'internal', action: 'correlate' }],
+        criticality_factors: ['catalog-candidate:runtime'],
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].operations).toHaveLength(2);
+    expect(merged[0].criticality_factors).toEqual(expect.arrayContaining([
+      'catalog-candidate:analysis',
+      'catalog-candidate:runtime',
+    ]));
+  });
+
+  it('folds internal implementation evidence into its overlapping product capability', async () => {
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({
+        name: 'Preview codebase iteration',
+        related_entities: ['Workspace'],
+        operations: [{ entry_point_id: 'preview', entry_point_type: 'message', action: 'preview' }],
+      }),
+      capFixture({
+        name: 'Propose codebase changes',
+        related_entities: ['Proposal'],
+        operations: [{ entry_point_id: 'render', entry_point_type: 'internal', action: 'render', path_or_command: 'product/codebase-proposal-preview.ts' }],
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].operations).toHaveLength(2);
+  });
+
   it('keeps a subset-entity capability that carries distinct operations', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       capFixture({ name: 'Manages orders', related_entities: ['Order', 'OrderLine'] }),

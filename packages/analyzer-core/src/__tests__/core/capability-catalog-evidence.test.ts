@@ -64,7 +64,7 @@ describe('catalogEvidenceCandidates', () => {
     expect(selected).toEqual([]);
   });
 
-  test('keeps operation-backed domain entities as distinct product evidence', () => {
+  test('requires lifecycle evidence for internally operated domain shapes', () => {
     const parcel = candidate('parcel', 'Track parcels', 'core', ['Track']);
     parcel.related_entities = ['entity_parcel'];
     const inspection = candidate('inspection', 'Record inspections', 'supporting', ['Record']);
@@ -80,7 +80,7 @@ describe('catalogEvidenceCandidates', () => {
       'app',
     );
 
-    expect(selected.map(item => item.id)).toEqual(['parcel', 'inspection']);
+    expect(selected.map(item => item.id)).toEqual(['inspection']);
   });
 
   test('does not turn request contracts, unperformed models, or unrelated internal shapes into product evidence', () => {

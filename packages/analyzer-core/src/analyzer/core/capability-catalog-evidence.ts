@@ -102,7 +102,7 @@ function domainEntitySupportsCandidate(entity: CASDataEntity, candidate: SystemC
     ...(candidate.evidence_examples || []),
   ].filter(Boolean).join(' '));
   return [...entityTokens].some(token => candidateTokens.has(token)) &&
-    (hasLifecycleEvidence(entity) || candidate.category === 'core' || candidate.category === 'supporting');
+    hasLifecycleEvidence(entity);
 }
 
 function candidateHasProductEntity(candidate: SystemCapability, entityById: Map<string, CASDataEntity>): boolean {
