@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import { resolveAnalysisHeapMb } from './analysis-heap';
-import { withHostedBackgroundPermit } from './hosted-background-queue';
+import { registerHostedMemoryHeavyCancellation, withHostedBackgroundPermit } from './hosted-background-queue';
 
 interface WorkspaceAnalysisWorkerResponse {
   type: 'result' | 'error';
@@ -17,7 +17,9 @@ export interface WorkspaceAnalysisWorkerRequest {
   env: Record<string, string>;
 }
 
-const DEFAULT_WORKSPACE_ANALYSIS_HEAP_MB = 1536;
+const DEFAULT_WORKSPACE_ANALYSIS_HEAP_MB = 2560;
+
+export class WorkspaceAnalysisPreemptedError extends Error {}
 
 export function resolveWorkspaceAnalysisHeapMb(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.KLAURO_WORKSPACE_ANALYSIS_HEAP_MB);
@@ -28,8 +30,12 @@ export function resolveWorkspaceAnalysisHeapMb(env: NodeJS.ProcessEnv = process.
 function resolveWorkerEntryPath(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.KLAURO_WORKSPACE_ANALYSIS_WORKER_ENTRY?.trim();
   if (override) return path.resolve(override);
-  for (const candidate of ['account-workspace-analysis-worker.cjs', 'account-workspace-analysis-worker.ts']) {
-    const candidatePath = path.join(__dirname, candidate);
+  const candidates = [
+    path.join(__dirname, 'account-workspace-analysis-worker.cjs'),
+    path.join(__dirname, '..', 'dist-hosted', 'account-workspace-analysis-worker.cjs'),
+    path.join(__dirname, 'account-workspace-analysis-worker.ts'),
+  ];
+  for (const candidatePath of candidates) {
     if (fs.existsSync(candidatePath)) return candidatePath;
   }
   throw new Error(`Workspace analysis worker entry not found next to ${__dirname}; rebuild the hosted bundle.`);
@@ -89,27 +95,33 @@ export async function runAccountWorkspaceAnalysisWorker(
     };
 
     await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const finish = (error?: Error): void => {
-      if (settled) return;
-      settled = true;
-      terminate(child);
-      if (error) reject(error);
-      else resolve();
-    };
-    child.once('message', (message: WorkspaceAnalysisWorkerResponse) => {
-      if (message?.type === 'result') finish();
-      else finish(new Error(message?.error || `Workspace analysis worker failed for ${workspaceId}.`));
-    });
-    child.once('error', error => finish(error));
-    child.once('exit', (code, signal) => {
-      if (!settled) finish(new Error(
-        `Workspace analysis worker for ${workspaceId} ${signal ? `was killed by ${signal}` : `exited with code ${code}`}.`,
-      ));
-    });
-    child.send(request, error => {
-      if (error) finish(new Error(`Failed to dispatch workspace analysis for ${workspaceId}: ${error.message}`));
-    });
+      let settled = false;
+      let preempted = false;
+      const unregisterCancellation = registerHostedMemoryHeavyCancellation(() => {
+        preempted = true;
+        terminate(child);
+      });
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        unregisterCancellation();
+        terminate(child);
+        if (error) reject(error);
+        else resolve();
+      };
+      child.once('message', (message: WorkspaceAnalysisWorkerResponse) => {
+        if (message?.type === 'result') finish();
+        else finish(new Error(message?.error || `Workspace analysis worker failed for ${workspaceId}.`));
+      });
+      child.once('error', error => finish(error));
+      child.once('exit', (code, signal) => {
+        if (!settled) finish(preempted
+          ? new WorkspaceAnalysisPreemptedError(`Workspace analysis worker for ${workspaceId} yielded to a hosted query.`)
+          : new Error(`Workspace analysis worker for ${workspaceId} ${signal ? `was killed by ${signal}` : `exited with code ${code}`}.`));
+      });
+      child.send(request, error => {
+        if (error) finish(new Error(`Failed to dispatch workspace analysis for ${workspaceId}: ${error.message}`));
+      });
     });
   }, { releaseForegroundMemory: true });
 }

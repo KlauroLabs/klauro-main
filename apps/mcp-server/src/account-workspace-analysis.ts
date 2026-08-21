@@ -1,13 +1,12 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { getAnalysis } from './analyzer';
-import { writeJsonAtomic } from './storage';
+import { loadAnalysis, writeJsonAtomic } from './storage';
 import { enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import type { AccountStore } from './account-store';
 import { waitForForegroundAnalysisIdle } from './foreground-analysis';
-import { runAccountWorkspaceAnalysisWorker } from './account-workspace-analysis-process';
+import { runAccountWorkspaceAnalysisWorker, WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
 
 
 
@@ -184,6 +183,9 @@ export class AccountWorkspaceAnalysisScheduler {
     this.inFlight.set(workspaceId, run);
     try {
       await run;
+    } catch (error) {
+      if (!(error instanceof WorkspaceAnalysisPreemptedError)) throw error;
+      this.dirty.add(workspaceId);
     } finally {
       this.inFlight.delete(workspaceId);
     }
@@ -216,7 +218,8 @@ export class AccountWorkspaceAnalysisScheduler {
     for (const project of projects) {
       if (!project.analysis_id) continue;
       try {
-        const cas = await getAnalysis(this.workspacePathFor(project.analysis_id));
+        const cas = await loadAnalysis(this.workspacePathFor(project.analysis_id), { preferAuthoritative: true });
+        if (!cas) continue;
         inputs.push({ path: `account-project:${project.id}`, name: project.name, cas });
         memberIds.push(project.id);
         memberNames.push(project.name);

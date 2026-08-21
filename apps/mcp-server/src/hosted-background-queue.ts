@@ -3,6 +3,7 @@ let memoryHeavyWork: Promise<void> = Promise.resolve();
 let foregroundWork = 0;
 let resolveForegroundIdle: (() => void) | undefined;
 const backgroundPreflights = new Set<() => void | Promise<void>>();
+let cancelMemoryHeavyWork: (() => void) | undefined;
 
 function waitForForegroundIdle(): Promise<void> {
   if (foregroundWork === 0) return Promise.resolve();
@@ -20,7 +21,15 @@ export function registerHostedBackgroundPreflight(preflight: () => void | Promis
   return () => backgroundPreflights.delete(preflight);
 }
 
+export function registerHostedMemoryHeavyCancellation(cancel: () => void): () => void {
+  cancelMemoryHeavyWork = cancel;
+  return () => {
+    if (cancelMemoryHeavyWork === cancel) cancelMemoryHeavyWork = undefined;
+  };
+}
+
 export async function withHostedForegroundPermit<T>(run: () => Promise<T>): Promise<T> {
+  cancelMemoryHeavyWork?.();
   await memoryHeavyWork;
   foregroundWork += 1;
   try {
@@ -43,10 +52,16 @@ export function withHostedBackgroundPermit<T>(
     await waitForForegroundIdle();
     if (options.releaseForegroundMemory) {
       for (const preflight of backgroundPreflights) await preflight();
+      let releaseMemoryHeavy!: () => void;
+      memoryHeavyWork = new Promise<void>(resolve => { releaseMemoryHeavy = resolve; });
+      try {
+        return await run();
+      } finally {
+        releaseMemoryHeavy();
+      }
     }
     return run();
   });
   backgroundWork = result.then(() => undefined, () => undefined);
-  if (options.releaseForegroundMemory) memoryHeavyWork = backgroundWork;
   return result;
 }

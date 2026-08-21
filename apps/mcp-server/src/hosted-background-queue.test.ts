@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   registerHostedBackgroundPreflight,
+  registerHostedMemoryHeavyCancellation,
   withHostedBackgroundPermit,
   withHostedForegroundPermit,
 } from './hosted-background-queue';
@@ -20,6 +21,42 @@ test('hosted memory-heavy background work is globally serialized after failures'
   const results = await Promise.allSettled([run(), run(true), run()]);
   assert.equal(peak, 1);
   assert.deepEqual(results.map(result => result.status), ['fulfilled', 'rejected', 'fulfilled']);
+});
+
+test('foreground queries can run while memory-heavy work waits in preflight', async () => {
+  let releasePreflight!: () => void;
+  let foregroundRan = false;
+  const unregister = registerHostedBackgroundPreflight(() => new Promise<void>(resolve => { releasePreflight = resolve; }));
+  try {
+    const background = withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
+    await new Promise(resolve => setImmediate(resolve));
+    await withHostedForegroundPermit(async () => { foregroundRan = true; });
+    assert.equal(foregroundRan, true);
+    releasePreflight();
+    await background;
+  } finally {
+    unregister();
+  }
+});
+
+test('foreground queries cancel active memory-heavy work before proceeding', async () => {
+  let releaseBackground!: () => void;
+  let cancelled = false;
+  const background = withHostedBackgroundPermit(async () => {
+    const unregister = registerHostedMemoryHeavyCancellation(() => {
+      cancelled = true;
+      releaseBackground();
+    });
+    try {
+      await new Promise<void>(resolve => { releaseBackground = resolve; });
+    } finally {
+      unregister();
+    }
+  }, { releaseForegroundMemory: true });
+  await new Promise(resolve => setImmediate(resolve));
+  await withHostedForegroundPermit(async () => undefined);
+  await background;
+  assert.equal(cancelled, true);
 });
 
 test('background work waits for foreground queries and runs their memory-release preflight', async () => {

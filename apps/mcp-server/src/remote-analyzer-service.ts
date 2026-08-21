@@ -170,6 +170,18 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
     if (!analysisId) return;
     try {
       const projects = await accounts.findProjectsByAnalysisId(analysisId);
+      const analysisWorkspace = workspacePath(dataDir, analysisId);
+      const version = await getAnalysisFileFingerprint(analysisWorkspace);
+      if (version) {
+        for (const project of projects) {
+          beginHostedProjectQueryWarm({
+            workspace: analysisWorkspace,
+            projectId: project.id,
+            analysisId,
+            version,
+          });
+        }
+      }
       const workspaceIds = new Set(projects.map(project => project.workspace_id));
       for (const workspaceId of workspaceIds) workspaceAnalyses.notifyProjectAnalysisLanded(workspaceId);
     } catch (error) {
@@ -2452,7 +2464,7 @@ async function handleAccountApi(
           workspace: analysisWorkspace,
           projectId: project.id,
           analysisId: project.analysis_id,
-          version: entry!.analyzed_at,
+          version: await getAnalysisFileFingerprint(analysisWorkspace) || entry!.analyzed_at,
         });
         if (!queryReady) return {
           statusCode: 200,
@@ -2521,7 +2533,7 @@ async function handleAccountApi(
           workspace: analysisWorkspace,
           projectId: project.id,
           analysisId: project.analysis_id,
-          version: entry.analyzed_at,
+          version: await getAnalysisFileFingerprint(analysisWorkspace) || entry.analyzed_at,
       });
       if (!queryReady) return {
         statusCode: 200,

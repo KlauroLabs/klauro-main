@@ -10,6 +10,7 @@ import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { AccountWorkspaceAnalysisScheduler, isCasComprehensionSettled, workspaceInputSignature } from './account-workspace-analysis';
 import { beginForegroundAnalysis } from './foreground-analysis';
+import { WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
 
 process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS = '1';
 
@@ -174,6 +175,30 @@ test('isolated workspace rebuild waits for foreground analysis and coalesces not
     assert.equal(runs, 1, 'the notification received while waiting is covered by the rebuild that starts afterward');
   } finally {
     endForeground();
+    scheduler.close();
+    if (previousInProcess === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+    else process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS = previousInProcess;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a workspace worker preempted by a hosted query is retried once query priority clears', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-preempted-'));
+  const previousInProcess = process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+  delete process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+  let runs = 0;
+  const scheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any, {
+    debounceMs: 0,
+    settleMs: 0,
+    runIsolated: async () => {
+      runs += 1;
+      if (runs === 1) throw new WorkspaceAnalysisPreemptedError('query priority');
+    },
+  });
+  try {
+    await scheduler.rebuild('workspace-preempted');
+    assert.equal(runs, 2);
+  } finally {
     scheduler.close();
     if (previousInProcess === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
     else process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS = previousInProcess;

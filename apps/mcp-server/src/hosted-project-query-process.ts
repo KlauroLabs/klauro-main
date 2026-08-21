@@ -37,13 +37,14 @@ interface PendingQuery {
 }
 
 const DEFAULT_QUERY_HEAP_MB = 3072;
-const DEFAULT_IDLE_MS = 15_000;
+const DEFAULT_IDLE_MS = 120_000;
 let child: ChildProcess | undefined;
 let nextRequestId = 1;
 let idleTimer: NodeJS.Timeout | undefined;
 const pending = new Map<number, PendingQuery>();
 const warmedVersions = new Map<string, string>();
 const warmingVersions = new Map<string, { version: string; promise: Promise<void> }>();
+const idleWaiters = new Set<() => void>();
 
 export function resolveHostedQueryHeapMb(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.KLAURO_HOSTED_QUERY_HEAP_MB);
@@ -90,6 +91,8 @@ function stopWorker(reason = 'Hosted query worker stopped.'): void {
   pending.clear();
   warmedVersions.clear();
   warmingVersions.clear();
+  for (const resolve of idleWaiters) resolve();
+  idleWaiters.clear();
 }
 
 function scheduleIdleStop(): void {
@@ -146,7 +149,9 @@ export function prewarmHostedProjectQueryWorker(): void {
 }
 
 registerHostedBackgroundPreflight(() => {
-  if (pending.size === 0) stopWorker('Hosted query worker yielded to background analysis.');
+  if (!child) return;
+  if (pending.size === 0) scheduleIdleStop();
+  return new Promise<void>(resolve => idleWaiters.add(resolve));
 });
 
 export async function runHostedProjectQueryWorker(
@@ -213,7 +218,10 @@ export function beginHostedProjectQueryWarm(input: {
   analysisId: string;
   version: string;
 }): boolean {
-  if (warmedVersions.get(input.workspace) === input.version) return true;
+  if (warmedVersions.get(input.workspace) === input.version) {
+    scheduleIdleStop();
+    return true;
+  }
   if (warmingVersions.get(input.workspace)?.version === input.version) return false;
   const promise = warmHostedProjectQueryWorker(input).then(() => {
     warmedVersions.set(input.workspace, input.version);
