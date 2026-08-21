@@ -138,8 +138,9 @@ export function catalogBehaviorSurfaceCandidates(surfaces: SystemCapability[]): 
     const eligible = entryCount >= 15 || (surface.evidence_kind === 'behavior-surface' && cohesiveFamily && entryCount >= 2);
     const operations = surface.operations || [];
     if (!eligible || operations.every(operation => operation.entry_point_type === 'external')) return false;
-    return operations.length === 0 || !operations.every(operation =>
+    const presentationOnly = operations.length > 0 && operations.every(operation =>
       operation.entry_point_type === 'page' || operation.entry_point_type === 'route');
+    return !presentationOnly || cohesiveFamily;
   });
 }
 
@@ -279,7 +280,11 @@ export function catalogEvidenceCandidates(
           USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as never) ||
           /^(?:message|event|schedule|queue)$/i.test(operation.entry_point_type || ''));
         const pageOnly = operations.length > 0 && operations.every(operation => /^(?:page|route)$/i.test(operation.entry_point_type || ''));
-        return (!pageOnly && userFacingOperation) || hasProductEntity || isCorroboratedInternalBehavior(candidate, projectTextSignal);
+        const commandOnly = operations.length > 0 && operations.every(operation =>
+          /^(?:cli|command)$/i.test(operation.entry_point_type || ''));
+        const commandProductEvidence = !commandOnly || productTextCorroboratesCapability(candidate, projectTextSignal);
+        return (((!pageOnly && userFacingOperation) || hasProductEntity) && commandProductEvidence) ||
+          isCorroboratedInternalBehavior(candidate, projectTextSignal);
       });
   const result = [...scopeCandidates];
   const ids = new Set(scopeCandidates.map(candidate => candidate.id).filter(Boolean));

@@ -6249,7 +6249,7 @@ describe('capability hygiene: entity-set dedup', () => {
     ]));
   });
 
-  it('folds internal implementation evidence into its overlapping product capability', async () => {
+  it('preserves distinct terminal outcomes even when implementation filenames share product words', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       capFixture({
         name: 'Preview codebase iteration',
@@ -6263,8 +6263,8 @@ describe('capability hygiene: entity-set dedup', () => {
       }),
     ]);
 
-    expect(merged).toHaveLength(1);
-    expect(merged[0].operations).toHaveLength(2);
+    expect(merged).toHaveLength(2);
+    expect(merged.flatMap((capability: any) => capability.operations)).toHaveLength(2);
   });
 
   it('keeps a subset-entity capability that carries distinct operations', async () => {

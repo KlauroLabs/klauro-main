@@ -154,4 +154,51 @@ describe('capability catalog audience evaluation', () => {
     expect(verdict.reasons).toContain('identifier-vocabulary');
     expect(verdict.flaggedTokens).toContain('CreateCompanyRequest');
   });
+
+  it('rejects a many-family aggregate named after one source entity', () => {
+    const subject = capability(
+      'Analyze machine repository',
+      'The analysis platform explains software structure and behavior for people and connected coding agents.',
+    );
+    subject.related_entities = ['entity_machine_repository', 'entity_behavior_graph', 'entity_analysis_history'];
+    subject.criticality_factors = ['catalog-candidate:analysis', 'catalog-candidate:graph', 'catalog-candidate:history'];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject],
+      [
+        dataEntity('entity_machine_repository', 'MachineRepository', 'domain-shape'),
+        dataEntity('entity_behavior_graph', 'BehaviorGraph', 'domain-shape'),
+        dataEntity('entity_analysis_history', 'AnalysisHistory', 'domain-shape'),
+      ],
+      [],
+      ['software analysis', 'behavior graph', 'analysis history'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      target: 'name',
+      reasons: ['aggregate-name-narrows-to-entity'],
+      flaggedTokens: ['MachineRepository'],
+    }));
+  });
+
+  it('rejects unsupported exclusivity semantics from advisory coordination evidence', () => {
+    const subject = capability(
+      'Coordinate overlapping work',
+      'The coordination service detects conflicts, claims work areas, and releases locked areas after contributors finish.',
+    );
+    subject.operations = [
+      { entry_point_id: 'claim', entry_point_type: 'message', action: 'Claim work' },
+      { entry_point_id: 'detect', entry_point_type: 'message', action: 'Detect conflicts' },
+      { entry_point_id: 'release', entry_point_type: 'message', action: 'Release work' },
+    ];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject], [], [], ['advisory coordination', 'parallel work'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0].reasons).toContain('unsupported-exclusivity-claim');
+    expect(evaluation.descriptionRepairCandidates).toHaveLength(1);
+  });
 });

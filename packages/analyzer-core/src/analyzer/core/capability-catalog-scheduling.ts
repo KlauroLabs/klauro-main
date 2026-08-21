@@ -86,19 +86,6 @@ export function uncoveredCapabilityCatalogCandidateIds(
   ])];
 }
 
-export function capabilitySemanticEvidenceOverlap(left: SystemCapability, right: SystemCapability): boolean {
-  const internalOnly = (capability: SystemCapability) => capability.operations.length > 0 &&
-    capability.operations.every(operation => operation.entry_point_type === 'internal');
-  if (internalOnly(left) === internalOnly(right)) return false;
-  const tokens = (capability: SystemCapability) => new Set([
-    capability.name,
-    ...capability.operations.map(operation => (operation.path_or_command || '').split(/[\\/]/).pop() || ''),
-  ].join(' ').toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length >= 4));
-  const leftTokens = tokens(left);
-  const rightTokens = tokens(right);
-  return [...leftTokens].filter(token => rightTokens.has(token)).length >= 2;
-}
-
 export function capabilityTitlesShareOutcome(left: SystemCapability, right: SystemCapability): boolean {
   const tokens = (name: string) => name.toLowerCase()
     .replace(/^(?:lets|allows|enables)\s+users\s+(?:to\s+)?/, '')

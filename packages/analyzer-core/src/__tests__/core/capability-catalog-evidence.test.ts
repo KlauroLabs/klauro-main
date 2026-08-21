@@ -64,6 +64,32 @@ describe('catalogEvidenceCandidates', () => {
     expect(selected).toEqual([]);
   });
 
+  test('keeps cohesive presentation surfaces while excluding uncorroborated delivery commands', () => {
+    const interfaceSurface = candidate('workspace-ui', 'Workspace review surface', 'core', ['View', 'Compare']);
+    interfaceSurface.evidence_kind = 'behavior-surface';
+    interfaceSurface.operations.forEach(operation => { operation.entry_point_type = 'page'; });
+    interfaceSurface.criticality_factors = ["2 page entry points form one cohesive behavior family ('workspace')"];
+    const delivery = candidate('delivery', 'Artifact delivery', 'supporting', ['Deploy', 'Verify']);
+    delivery.operations.forEach(operation => { operation.entry_point_type = 'cli'; });
+
+    expect(catalogEvidenceCandidates(
+      [delivery],
+      [interfaceSurface],
+      [],
+      'app',
+      { productDocSummary: 'A platform for reviewing and understanding software workspaces.' },
+    ).map(item => item.id)).toEqual(['workspace-ui']);
+  });
+
+  test('keeps a command surface when first-party text establishes it as the product', () => {
+    const formatter = candidate('formatter', 'Format documents', 'core', ['Format', 'Write']);
+    formatter.operations.forEach(operation => { operation.entry_point_type = 'cli'; });
+
+    expect(catalogEvidenceCandidates(
+      [formatter], [], [], 'app', { manifestDescription: 'A product to format documents through commands.' },
+    ).map(item => item.id)).toEqual(['formatter']);
+  });
+
   test('requires lifecycle evidence for internally operated domain shapes', () => {
     const parcel = candidate('parcel', 'Track parcels', 'core', ['Track']);
     parcel.related_entities = ['entity_parcel'];

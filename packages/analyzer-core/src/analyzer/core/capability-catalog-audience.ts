@@ -54,6 +54,26 @@ function unrelatedEntityReferences(
     .map(entity => entity.name);
 }
 
+function aggregateNameEntityNarrowing(capability: SystemCapability, entityNamesById: Map<string, string>): string[] {
+  const citedCandidates = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:'));
+  const relatedNames = (capability.related_entities || [])
+    .map(entityId => entityNamesById.get(entityId))
+    .filter((name): name is string => Boolean(name));
+  if (citedCandidates.length < 2 || relatedNames.length < 3) return [];
+  const normalizedName = ` ${normalizedEntityPhrase(capability.name)} `;
+  return relatedNames.filter(name => {
+    const phrase = normalizedEntityPhrase(name);
+    return phrase.length >= 5 && normalizedName.includes(` ${phrase} `);
+  });
+}
+
+function unsupportedExclusivityClaims(description: string, evidenceTerms: string[]): string[] {
+  const claims = description.match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? concurrent)\b/gi) || [];
+  const evidence = normalizedEntityPhrase(evidenceTerms.join(' '));
+  const evidenceIsAdvisory = /\b(?:advisory|non locking|non exclusive|never block)\b/.test(evidence);
+  return claims.filter(claim => evidenceIsAdvisory || !evidence.includes(normalizedEntityPhrase(claim)));
+}
+
 export function capabilityCatalogProductTerms(
   purpose: EnhancedSystemPurpose | undefined,
   productText: CapabilityCatalogProductText,
@@ -111,6 +131,17 @@ export function evaluateCapabilityCatalogAudience(
       .map(entityId => entityNamesById.get(entityId))
       .filter((value): value is string => Boolean(value));
     const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
+    const narrowingEntities = aggregateNameEntityNarrowing(capability, entityNamesById);
+    if (narrowingEntities.length > 0) {
+      rejections.push({
+        name: capability.name,
+        description: capability.description,
+        target: 'name',
+        reasons: ['aggregate-name-narrows-to-entity'],
+        flaggedTokens: narrowingEntities,
+      });
+      continue;
+    }
     const unrelatedNameEntities = unrelatedEntityReferences(capability.name, relatedEntityIds, dataEntities);
     if (unrelatedNameEntities.length > 0) {
       rejections.push({
@@ -149,6 +180,12 @@ export function evaluateCapabilityCatalogAudience(
       dataEntities,
       [...capabilityProductTerms, capability.name],
     );
+    const unsupportedExclusivity = unsupportedExclusivityClaims(capability.description, capabilityProductTerms);
+    if (unsupportedExclusivity.length > 0) {
+      descriptionVerdict.failsAudienceTest = true;
+      descriptionVerdict.reasons.push('unsupported-exclusivity-claim');
+      descriptionVerdict.flaggedTokens.push(...unsupportedExclusivity);
+    }
     const unrelatedDescriptionEntities = unrelatedEntityReferences(capability.description, relatedEntityIds, dataEntities);
     if (unrelatedDescriptionEntities.length > 0) {
       descriptionVerdict.failsAudienceTest = true;
