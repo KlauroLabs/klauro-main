@@ -56,7 +56,7 @@ import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type HostedProjectQueryTool } from './hosted-project-query';
-import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker, warmHostedProjectAnalysisWorker } from './hosted-project-query-process';
+import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker, warmHostedProjectAnalysisWorker, warmHostedProjectQueryWorker } from './hosted-project-query-process';
 import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse } from './analysis-response-readiness';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -2509,7 +2509,14 @@ async function handleAccountApi(
         : l5Errored
           ? 'degraded'
           : 'ready';
-    if (status === 'ready' || status === 'degraded') {
+    if (status === 'degraded') {
+      await warmHostedProjectQueryWorker({
+        workspace: analysisWorkspace,
+        projectId: project.id,
+        analysisId: project.analysis_id,
+      });
+    }
+    if (status === 'ready') {
       const queryReady = beginHostedProjectQueryWarm({
           workspace: analysisWorkspace,
           projectId: project.id,
