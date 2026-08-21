@@ -28,7 +28,9 @@ import {
 import { materializeDeployableCasTree } from './deployable-analysis';
 import { readZstdJson } from './zstd-json';
 import { describeAnalysisVersion, type AnalysisVersionInfo } from './analysis-version';
-import { resolveSegmentedAnalysis, segmentedAnalysisRoot, writeSegmentedAnalysis } from './segmented-analysis-storage';
+import { loadCompactCASGraph, loadCompactCASSearch, resolveSegmentedAnalysis, segmentedAnalysisRoot, writeSegmentedAnalysis } from './segmented-analysis-storage';
+import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
+import type { LoadedCompactCASSearch } from './segmented-analysis-storage';
 import {
   compressLegacyJsonArtifact,
   compressedJsonExtension,
@@ -834,6 +836,16 @@ export async function loadAnalysisSections(
     parts.push(...(await Promise.all(requested.map(readOne))).filter((part): part is Partial<CASOutput> => Boolean(part)));
   }
   return hydrateCasSections(parts);
+}
+
+export async function loadCompactAnalysisGraph(projectPath: string): Promise<CompactCASGraph | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, 'main');
+  return resolved ? loadCompactCASGraph(resolved) : null;
+}
+
+export async function loadCompactAnalysisSearch(projectPath: string): Promise<LoadedCompactCASSearch | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, 'main');
+  return resolved ? loadCompactCASSearch(resolved) : null;
 }
 
 export async function loadCompleteAnalysisFromSections(

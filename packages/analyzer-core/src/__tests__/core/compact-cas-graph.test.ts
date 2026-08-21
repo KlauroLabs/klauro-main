@@ -1,5 +1,6 @@
 import type { CASEdge, CASNode } from '../../types/cas.types';
 import {
+  CompactCASGraph,
   encodeCompactCASGraph,
   validateCompactCASParity,
 } from '../../analyzer/core/compact-cas-graph';
@@ -11,7 +12,7 @@ function cas(nodes: CASNode[], edges: CASEdge[]): { nodes: CASNode[]; edges: CAS
 describe('compact CAS graph', () => {
   const nodes: CASNode[] = [
     { id: 'node-c', name: 'Shared', type: 'function' },
-    { id: 'node-a', name: 'Shared', type: 'service', source: { file: 'src/a.ts', line: 7 } },
+    { id: 'node-a', name: 'Shared', type: 'service', level: 2, level_name: 'Operation', tags: ['public'], source: { file: 'src/a.ts', line: 7 }, metadata: { is_test: true } },
     { id: 'node-b', name: 'Middle', type: 'function', qualified_name: 'Example.Middle', category: 'code' },
     { id: 'node-d', name: 'Disconnected', type: 'module' },
   ];
@@ -21,12 +22,26 @@ describe('compact CAS graph', () => {
     { id: 'edge-1', source: 'node-a', target: 'node-b', type: 'imports' },
     { id: 'edge-4', source: 'node-c', target: 'node-a', type: 'calls' },
   ];
+  const corruptLayouts: Array<[string, (graph: CompactCASGraph) => void, string]> = [
+    ['node column length', graph => { graph.nodes.name = graph.nodes.name.slice(1); }, 'node column name length'],
+    ['edge column length', graph => { graph.edges.category = graph.edges.category.slice(1); }, 'edge column category length'],
+    ['dictionary offsets', graph => { graph.dictionary.offsets[1] = graph.dictionary.bytes.length + 1; }, 'dictionary offsets must be monotone'],
+    ['tag offsets', graph => { graph.nodes.tagOffsets[graph.nodeCount] = 0; }, 'node tag offsets must be monotone'],
+    ['original ordinal permutation', graph => { graph.nodes.originalOrdinal[0] = graph.nodes.originalOrdinal[1]; }, 'original ordinal'],
+    ['adjacency offsets', graph => { graph.outgoing.offsets[graph.nodeCount] = 0; }, 'outgoing offsets must be monotone'],
+    ['edge ordinal', graph => { graph.incoming.edgeOrdinals[0] = graph.edgeCount; }, 'incoming edge ordinal[0]'],
+    ['duplicate adjacency ordinal', graph => { graph.outgoing.edgeOrdinals[0] = graph.outgoing.edgeOrdinals[1]; }, 'outgoing edge ordinal'],
+    ['misbucketed adjacency ordinal', graph => { graph.outgoing.edgeOrdinals[0] = 2; }, 'stored under vertex'],
+    ['edge endpoint', graph => { graph.edges.source[0] = graph.nodeCount; }, 'edge source[0]'],
+    ['optional string reference', graph => { graph.nodes.category[0] = graph.dictionary.offsets.length; }, 'nodes.category[0] string reference'],
+    ['required string reference', graph => { graph.nodes.id[0] = 0xffffffff; }, 'nodes.id[0] string reference'],
+  ];
 
   test('assigns stable dense ids and preserves duplicate names, disconnected nodes, and absent fields', () => {
     const graph = encodeCompactCASGraph(cas(nodes, edges));
     expect(Array.from({ length: graph.nodeCount }, (_, denseId) => graph.nodeAt(denseId).id))
       .toEqual(['node-a', 'node-b', 'node-c', 'node-d']);
-    expect(graph.nodeById('node-a')).toMatchObject({ denseId: 0, name: 'Shared', sourceLine: 7 });
+    expect(graph.nodeById('node-a')).toMatchObject({ denseId: 0, name: 'Shared', sourceLine: 7, level: 2, levelName: 'Operation', tags: ['public'], isTest: true, isGenerated: false });
     expect(graph.nodeById('node-c')).toMatchObject({ denseId: 2, name: 'Shared' });
     expect(graph.nodeAt(2).qualifiedName).toBeUndefined();
     expect(graph.nodeAt(2).sourceFile).toBeUndefined();
@@ -54,6 +69,7 @@ describe('compact CAS graph', () => {
       graph.dictionary.bytes,
       graph.dictionary.offsets,
       ...Object.values(graph.nodes),
+      ...Object.values(graph.vertices),
       ...Object.values(graph.edges),
       graph.outgoing.offsets,
       graph.outgoing.edgeOrdinals,
@@ -81,12 +97,55 @@ describe('compact CAS graph', () => {
     ]))).toThrow('CAS edge dangling has unresolved target missing');
   });
 
+  test('preserves node, entry, exit, and shared endpoint vertices without exposing them as searchable nodes', () => {
+    const structural = {
+      nodes: [{ id: 'node', name: 'Node', type: 'function' }],
+      entry_points: [{ id: 'entry-only' }, { id: 'shared-boundary' }],
+      exit_points: [{ id: 'exit-only' }, { id: 'shared-boundary' }],
+      edges: [
+        { id: 'from-entry', source: 'entry-only', target: 'node', type: 'invokes' },
+        { id: 'to-exit', source: 'node', target: 'exit-only', type: 'returns' },
+        { id: 'shared-a', source: 'shared-boundary', target: 'node', type: 'invokes' },
+        { id: 'shared-b', source: 'shared-boundary', target: 'node', type: 'observes' },
+      ],
+    } as any;
+    const graph = encodeCompactCASGraph(structural);
+    const vertices = Array.from({ length: graph.vertexCount }, (_, vertex) => ({
+      id: graph.decodeString(graph.vertices.id[vertex]),
+      kind: graph.vertices.kind[vertex],
+    }));
+    expect(graph.nodeCount).toBe(1);
+    expect(graph.vertexCount).toBe(4);
+    expect(vertices).toEqual([
+      { id: 'entry-only', kind: 2 },
+      { id: 'exit-only', kind: 4 },
+      { id: 'node', kind: 1 },
+      { id: 'shared-boundary', kind: 6 },
+    ]);
+    expect(graph.outgoingEdges(0, { limit: 10 }).items.map(edge => edge.id)).toEqual(['to-exit']);
+    expect(validateCompactCASParity(graph, structural)).toEqual({ ok: true, errors: [] });
+  });
+
   test('reports structural parity failures', () => {
     const graph = encodeCompactCASGraph(cas(nodes, edges));
     graph.edges.target[0] = 3;
     const parity = validateCompactCASParity(graph, cas(nodes, edges));
     expect(parity.ok).toBe(false);
-    expect(parity.errors).toContain('edges.target[0] 3 does not match 1');
+    expect(parity.errors.some(error => error.includes('stored under vertex') || error.includes('edges.target[0]'))).toBe(true);
+  });
+
+  test.each(corruptLayouts)('rejects an invalid %s before queries execute', (_name, corrupt, expected) => {
+    const graph = encodeCompactCASGraph(cas(nodes, edges));
+    corrupt(graph);
+    expect(() => new CompactCASGraph(
+      graph.dictionary,
+      graph.nodes,
+      graph.vertices,
+      graph.edges,
+      graph.outgoing,
+      graph.incoming,
+      graph.limits,
+    )).toThrow(expected);
   });
 
   test('bounds pages and traversal while returning exact edge ordinals', () => {

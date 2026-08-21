@@ -79,6 +79,8 @@ if (hostedBuild) {
   await build({ ...shared, entryPoints: ['src/analysis-worker.ts'], outfile: 'dist-hosted/analysis-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/account-workspace-analysis-worker.ts'], outfile: 'dist-hosted/account-workspace-analysis-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/self-telemetry-worker.ts'], outfile: 'dist-hosted/self-telemetry-worker.cjs', plugins: [nativeExternals] });
+  await build({ ...shared, entryPoints: ['src/hosted-project-query.ts'], outfile: 'dist-hosted/hosted-project-query-runtime.cjs', plugins: [nativeExternals] });
+  await build({ ...shared, entryPoints: ['src/hosted-project-search-worker.ts'], outfile: 'dist-hosted/hosted-project-search-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/hosted-project-query-worker.ts'], outfile: 'dist-hosted/hosted-project-query-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['../../packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts'], outfile: 'dist-hosted/tree-sitter-ts-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/remote-analyzer-service.ts'], outfile: 'dist-hosted/analyzer-service.cjs', plugins: [nativeExternals] });

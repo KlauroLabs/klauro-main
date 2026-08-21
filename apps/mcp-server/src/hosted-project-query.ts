@@ -7,6 +7,7 @@ import * as query from './query';
 import { buildAnswerPackDigest, runAnswerPack } from './product';
 import { boundToolPayload } from './response-budget';
 import type { CasSectionName } from './cas-sections';
+import { HOSTED_SEARCH_NODES_SCHEMA } from './hosted-project-query-schema';
 
 const taskSchema = z.object({
   task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
@@ -24,10 +25,7 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
   get_agent_start_context: z.object({ task: taskSchema.optional() }).strict(),
   get_agent_tool_plan: z.object({ task: taskSchema.optional() }).strict(),
   get_agent_context: z.object({ task: taskSchema.optional() }).strict(),
-  search_nodes: z.object({
-    query: z.string().min(1), type: z.string().optional(), file: z.string().optional(),
-    limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
-  }).strict(),
+  search_nodes: HOSTED_SEARCH_NODES_SCHEMA,
   get_coding_context: z.object({
     target: z.string().min(1), task_type: z.enum(['add', 'modify', 'delete', 'refactor']).optional(),
     include: z.array(z.string()).optional(), caller_limit: z.number().int().positive().max(500).optional(),
@@ -85,24 +83,48 @@ export const HOSTED_PROJECT_QUERY_TOOL_NAMES = Object.freeze(
 const ORIENTATION_SECTIONS: readonly CasSectionName[] = [
   'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
 ];
+const LIGHTWEIGHT_ANSWER_SECTIONS = [
+  'entry-points', 'data', 'tests', 'external-boundaries', 'runtime-readiness',
+] as const;
 
-export function hostedProjectQuerySections(tool: string): readonly CasSectionName[] {
+interface HostedQuerySectionArgs {
+  node_id?: unknown;
+  section?: unknown;
+  task?: { task_type?: unknown; target?: unknown; related_paths?: unknown[] };
+}
+
+export function hostedProjectQuerySections(tool: string, args: HostedQuerySectionArgs = {}): readonly CasSectionName[] {
   switch (tool) {
-    case 'search_nodes': return ['graph'];
+    case 'search_nodes': return [];
     case 'get_product_map': return ['facts', 'comprehension', 'runtime', 'quality', 'supplemental'];
     case 'get_user_journeys': return ['comprehension'];
-    case 'get_module_health': return ['graph', 'quality'];
+    case 'get_module_health': return ['quality'];
     case 'get_codebase_idioms':
     case 'get_behavioral_invariants':
     case 'validate_codebase_idioms':
     case 'validate_behavioral_invariants': return ['quality'];
-    case 'find_tests': return ['graph', 'calls', 'tests'];
+    case 'find_tests': return args.node_id ? ['graph', 'tests'] : ['tests'];
     case 'assess_change_risk': return ['graph', 'calls', 'tests', 'quality'];
     case 'get_coding_context': return ['graph', 'calls', 'facts', 'comprehension', 'tests', 'quality', 'supplemental'];
     case 'get_agent_start_context':
     case 'get_agent_tool_plan': return ORIENTATION_SECTIONS;
-    case 'get_agent_context':
-    case 'run_answer_pack': return ['graph', 'calls', ...ORIENTATION_SECTIONS];
+    case 'get_agent_context': return !args.task?.target && !args.task?.related_paths?.length
+      ? ORIENTATION_SECTIONS
+      : ['graph', 'calls', ...ORIENTATION_SECTIONS];
+    case 'run_answer_pack': {
+      switch (args.section) {
+        case 'representative-flow': return ['graph', 'calls', 'comprehension', 'supplemental'];
+        case 'change-impact': return ['graph', 'calls', ...ORIENTATION_SECTIONS];
+        case 'security': return ['graph', 'quality'];
+        case 'overview': return ['graph', ...ORIENTATION_SECTIONS];
+        case 'entry-points':
+        case 'external-boundaries': return ['supplemental'];
+        case 'data': return ['comprehension', 'quality', 'supplemental'];
+        case 'tests': return ['comprehension', 'tests', 'quality'];
+        case 'runtime-readiness': return ['facts', 'runtime'];
+        default: return ORIENTATION_SECTIONS;
+      }
+    }
     default: throw new Error(`Unsupported hosted query tool: ${tool}`);
   }
 }
@@ -177,7 +199,12 @@ export async function executeHostedProjectQuery(input: {
       });
       break;
     case 'run_answer_pack': {
-      const answerPack = runAnswerPack(input.cas, input.projectPath, args.pack || 'mastery');
+      const answerPack = runAnswerPack(
+        input.cas,
+        input.projectPath,
+        args.pack || 'mastery',
+        args.section ? [args.section] : LIGHTWEIGHT_ANSWER_SECTIONS,
+      );
       if (args.section) {
         const section = answerPack.answers.find(answer => answer.id === args.section);
         if (!section) throw new Error(`Unknown answer pack section '${args.section}'`);
@@ -189,7 +216,7 @@ export async function executeHostedProjectQuery(input: {
           section,
         };
       } else {
-        result = buildAnswerPackDigest(answerPack);
+        result = buildAnswerPackDigest(answerPack, undefined, true);
       }
       break;
     }
@@ -200,6 +227,10 @@ export async function executeHostedProjectQuery(input: {
       break;
   }
 
+  return boundHostedProjectQueryResult(tool, args, result);
+}
+
+export function boundHostedProjectQueryResult(tool: HostedProjectQueryTool, args: Record<string, unknown>, result: unknown): unknown {
   return boundToolPayload(result, {
     tool,
     parameterNames: Object.keys(args),

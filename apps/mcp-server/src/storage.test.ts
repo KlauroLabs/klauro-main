@@ -3,12 +3,15 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   clearLoadedAnalysisCache,
   getLoadedAnalysisCacheStats,
   listCrossCodebaseSystemGraphs,
+  loadCompactAnalysisGraph,
+  loadCompactAnalysisSearch,
   loadAnalysisSectionManifest,
   loadAnalysisSections,
   loadCompleteAnalysisFromSections,
@@ -21,6 +24,7 @@ import {
   writeJsonAtomic,
 } from './storage';
 import { materializeDeployableCasTree } from './deployable-analysis';
+import { compactCASPostingShard, searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
 function casFixture(id: string): CASOutput {
   return {
@@ -137,6 +141,74 @@ test('segmented storage hydrates exact CAS and targeted reads omit unrequested d
     await fs.writeFile(artifact!.filePath, 'invalid authoritative payload');
     clearLoadedAnalysisCache();
     assert.deepEqual(await loadAnalysis(project), materializeDeployableCasTree(cas));
+  });
+});
+
+test('segmented storage publishes a checksummed compact graph alongside authoritative sections', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/compact-graph-project';
+    const cas = casFixture('compact-graph');
+    cas.nodes[0].description = 'Executes xy transitions';
+    await saveAnalysis(project, cas);
+    const graph = await loadCompactAnalysisGraph(project);
+    assert.ok(graph);
+    assert.equal(graph.nodeCount, 1);
+    assert.equal(graph.nodeAt(0).id, 'compact-graph-node');
+    assert.equal(new TextDecoder().decode(graph.dictionary.bytes).includes('Executes xy transitions'), false);
+
+    const search = await loadCompactAnalysisSearch(project);
+    assert.ok(search);
+    assert.deepEqual((await searchCompactCAS(
+      search.graph,
+      search.index,
+      'xy',
+      search.readPostings,
+      search.readSearchText,
+    )).map(node => node.id), ['compact-graph-node']);
+
+    const manifest = await loadAnalysisSectionManifest(project);
+    assert.ok(manifest!.compact_search);
+    const firstColumn = Object.values(manifest!.compact_graph!.columns)[0];
+    const sectionRoot = (await fs.readdir(storagePath)).find(name => name.endsWith('.sections'))!;
+    const pointer = await fs.readJson(path.join(storagePath, sectionRoot, 'current.json'));
+    await fs.writeFile(path.join(storagePath, sectionRoot, pointer.revision, firstColumn.file), 'corrupt');
+    await assert.rejects(loadCompactAnalysisGraph(project), /checksum mismatch|invalid byte length|byte length .* does not match/);
+  });
+});
+
+test('compact search rejects internally corrupt checksummed postings and supports migration without a sidecar', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/compact-search-corruption-project';
+    await saveAnalysis(project, casFixture('compact-search-corruption'));
+    const sectionRoot = path.join(storagePath, (await fs.readdir(storagePath)).find(name => name.endsWith('.sections'))!);
+    const pointer = await fs.readJson(path.join(sectionRoot, 'current.json'));
+    const manifestPath = path.join(sectionRoot, pointer.revision, 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    const searchVersion = manifest.compact_search.version;
+    manifest.compact_search.version = 999;
+    await fs.writeJson(manifestPath, manifest);
+    await assert.rejects(loadCompactAnalysisSearch(project), /format or version is unsupported/);
+    manifest.compact_search.version = searchVersion;
+    await fs.writeJson(manifestPath, manifest);
+    const shard = manifest.compact_search.nonempty_shards[0];
+    const column = manifest.compact_search.columns[`postings.shard.${shard}`];
+    const columnPath = path.join(sectionRoot, pointer.revision, column.file);
+    const bytes = await fs.readFile(columnPath);
+    bytes[0] ^= 0xff;
+    column.sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    await fs.writeFile(columnPath, bytes);
+    await fs.writeJson(manifestPath, manifest);
+    const search = await loadCompactAnalysisSearch(project);
+    assert.ok(search);
+    let requestedKey = 't:corrupt';
+    for (let index = 0; compactCASPostingShard(requestedKey, manifest.compact_search.shard_count) !== shard; index += 1) requestedKey = `t:corrupt${index}`;
+    await assert.rejects(search.readPostings([requestedKey]), /invalid format or version/);
+
+    delete manifest.compact_search;
+    await fs.writeJson(manifestPath, manifest);
+    assert.equal(await loadCompactAnalysisSearch(project), null);
+    const graph = await loadAnalysisSections(project, ['graph']);
+    assert.ok(graph?.nodes && graph.nodes.length > 0);
   });
 });
 

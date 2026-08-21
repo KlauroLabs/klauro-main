@@ -9,7 +9,7 @@ import { withHostedBackgroundPermit } from './hosted-background-queue';
 test('hosted query heap is independently bounded with an explicit override', () => {
   assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' }), 3072);
   assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '2048' }), 2048);
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '128' }), 3072);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '128' }), 1024);
 });
 
 test('hosted queries reuse one worker until background analysis requests memory', async () => {
@@ -53,6 +53,36 @@ process.on('message', request => {
     else process.env.KLAURO_HOSTED_QUERY_IDLE_MS = previousIdle;
     if (previousBackgroundGrace === undefined) delete process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS;
     else process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS = previousBackgroundGrace;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('search queries use the compact worker and fall back once to the authoritative worker', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-hosted-search-worker-'));
+  const searchWorker = path.join(directory, 'search.cjs');
+  const fullWorker = path.join(directory, 'full.cjs');
+  fs.writeFileSync(searchWorker, `process.on('message', request => process.send({ type: 'fallback', id: request.id }));`);
+  fs.writeFileSync(fullWorker, `process.on('message', request => process.send({ type: 'result', id: request.id, analysisTimestamp: 'authoritative', result: { pid: process.pid } }));`);
+  const previousQueryEntry = process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
+  const previousSearchEntry = process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY;
+  process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = fullWorker;
+  process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY = searchWorker;
+  try {
+    const response = await runHostedProjectQueryWorker({
+      workspace: directory,
+      tool: 'search_nodes',
+      args: { query: 'fixture' },
+      projectId: 'project',
+      analysisId: 'analysis',
+    });
+    assert.equal(response.analysisTimestamp, 'authoritative');
+    assert.equal(response.compactFallback, false);
+  } finally {
+    await withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
+    if (previousQueryEntry === undefined) delete process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
+    else process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = previousQueryEntry;
+    if (previousSearchEntry === undefined) delete process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY;
+    else process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY = previousSearchEntry;
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });

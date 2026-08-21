@@ -73,12 +73,14 @@ export interface AnswerPackDigest {
   generated_at: string;
   gaps: string[];
   full_size_bytes: number;
+  size_scope?: 'complete-pack' | 'computed-sections';
   truncated: boolean;
   sections: Array<{
     id: string;
     question: string;
     confidence: number;
     size_bytes: number;
+    computed?: boolean;
     included: boolean;
     fetch_with?: { tool: 'run_answer_pack'; args: { path: string; pack: string; section: string } };
   }>;
@@ -86,7 +88,11 @@ export interface AnswerPackDigest {
   continuation: string;
 }
 
-export function buildAnswerPackDigest(result: AnswerPackResult, budgetBytes = RESPONSE_BUDGET_BYTES): AnswerPackDigest {
+export function buildAnswerPackDigest(
+  result: AnswerPackResult,
+  budgetBytes = RESPONSE_BUDGET_BYTES,
+  includeCatalog = false,
+): AnswerPackDigest {
   const sized = result.answers.map(item => ({
     item,
     size: Buffer.byteLength(JSON.stringify(item), 'utf8'),
@@ -100,26 +106,41 @@ export function buildAnswerPackDigest(result: AnswerPackResult, budgetBytes = RE
     included.add(entry.item.id);
     used += entry.size;
   }
+  const catalog = includeCatalog ? answerQuestions() : result.answers.map(item => ({
+    id: item.id,
+    question: item.question,
+    required_tools: item.follow_up_tools,
+  }));
+  const computedIds = new Set(result.answers.map(answer => answer.id));
+  const uncomputed = catalog.filter(question => !computedIds.has(question.id));
   return {
     pack: result.pack,
     path: result.path,
     generated_at: result.generated_at,
-    gaps: result.gaps,
+    gaps: [
+      ...result.gaps,
+      ...uncomputed.map(question => `${question.id}: not computed in the lightweight digest; fetch this section explicitly.`),
+    ],
     full_size_bytes: fullSize,
-    truncated: included.size < result.answers.length,
-    sections: sized.map(({ item, size }) => ({
-      id: item.id,
-      question: item.question,
-      confidence: item.confidence,
-      size_bytes: size,
-      included: included.has(item.id),
-      ...(included.has(item.id)
-        ? {}
-        : { fetch_with: { tool: 'run_answer_pack' as const, args: { path: result.path, pack: result.pack, section: item.id } } }),
-    })),
+    size_scope: uncomputed.length > 0 ? 'computed-sections' : 'complete-pack',
+    truncated: included.size < catalog.length,
+    sections: catalog.map(question => {
+      const sizedAnswer = sized.find(entry => entry.item.id === question.id);
+      return {
+        id: question.id,
+        question: question.question,
+        confidence: sizedAnswer?.item.confidence ?? 0,
+        size_bytes: sizedAnswer?.size ?? 0,
+        computed: Boolean(sizedAnswer),
+        included: included.has(question.id),
+        ...(included.has(question.id)
+          ? {}
+          : { fetch_with: { tool: 'run_answer_pack' as const, args: { path: result.path, pack: result.pack, section: question.id } } }),
+      };
+    }),
     answers: result.answers.filter(item => included.has(item.id)),
-    continuation: included.size < result.answers.length
-      ? "Sections with included=false were withheld to stay within the response budget. Fetch each one in full with run_answer_pack { path, pack, section: '<id>' }; never request the whole pack expecting unbounded output."
+    continuation: included.size < catalog.length
+      ? "Sections with included=false were not computed or were withheld to stay within the response budget. Fetch each one in full with run_answer_pack { path, pack, section: '<id>' }; never request the whole pack expecting unbounded output."
       : 'All sections fit within the response budget.',
   };
 }
@@ -280,7 +301,12 @@ export function describeAnswerPackCatalog(): string {
     .join('; ');
 }
 
-export function runAnswerPack(cas: CASOutput, path: string, pack = 'mastery'): AnswerPackResult {
+export function runAnswerPack(
+  cas: CASOutput,
+  path: string,
+  pack = 'mastery',
+  requestedSections?: readonly string[],
+): AnswerPackResult {
   if (pack !== 'mastery') {
     return {
       pack,
@@ -295,17 +321,23 @@ export function runAnswerPack(cas: CASOutput, path: string, pack = 'mastery'): A
 
   const gaps: string[] = [];
   const profile = classifyAnalysisProfile(cas, path);
-  const answers = [
-    answerOverview(cas),
-    answerEntryPoints(cas),
-    answerRepresentativeFlow(cas),
-    answerImpact(cas),
-    answerData(cas),
-    answerTests(cas),
-    answerExternalBoundaries(cas),
-    answerSecurity(cas),
-    answerRuntimeReadiness(cas),
-  ];
+  const answerBuilders: Record<string, () => AnswerPackResult['answers'][number]> = {
+    overview: () => answerOverview(cas),
+    'entry-points': () => answerEntryPoints(cas),
+    'representative-flow': () => answerRepresentativeFlow(cas),
+    'change-impact': () => answerImpact(cas),
+    data: () => answerData(cas),
+    tests: () => answerTests(cas),
+    'external-boundaries': () => answerExternalBoundaries(cas),
+    security: () => answerSecurity(cas),
+    'runtime-readiness': () => answerRuntimeReadiness(cas),
+  };
+  const selectedSections = requestedSections || answerQuestions().map(question => question.id);
+  const answers = selectedSections.map(section => {
+    const build = answerBuilders[section];
+    if (!build) throw new Error(`Unknown answer pack section '${section}'`);
+    return build();
+  });
 
   for (const answer of answers) {
     if (answer.confidence < 0.8 && !shouldSuppressAnswerGap(profile, answer.id)) {

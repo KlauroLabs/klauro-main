@@ -29,6 +29,44 @@ export interface CasSectionManifest {
   analysis_timestamp: string;
   sections: CasSectionDescriptor[];
   logical_fields: string[];
+  compact_graph?: {
+    format: 'klauro-compact-cas-graph';
+    version: 1;
+    node_count: number;
+    vertex_count: number;
+    edge_count: number;
+    limits: {
+      maxNodes: number;
+      maxVertices: number;
+      maxEdges: number;
+      maxStrings: number;
+      maxStringBytes: number;
+      maxPageSize: number;
+      maxTraversalNodes: number;
+      maxTraversalEdges: number;
+      maxTraversalDepth: number;
+    };
+    columns: Record<string, CasRawColumnDescriptor>;
+  };
+  compact_search?: {
+    format: 'klauro-compact-cas-search';
+    version: 2;
+    node_count: number;
+    description_chunk_nodes: number;
+    shard_count: number;
+    nonempty_shards: number[];
+    posting_records: number;
+    posting_runs: number;
+    columns: Record<string, CasRawColumnDescriptor>;
+  };
+}
+
+export interface CasRawColumnDescriptor {
+  file: string;
+  encoding: 'uint8' | 'uint32-le';
+  length: number;
+  bytes: number;
+  sha256: string;
 }
 
 const IDENTITY_FIELDS = new Set([

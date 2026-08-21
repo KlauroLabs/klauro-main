@@ -118,6 +118,34 @@ test('builds outer graph with http, sdk, message, passive data, and unmatched in
   assert.ok(graph.terminality.flows.length === graph.flows.length);
 });
 
+test('workspace composition preserves normalized contracts without member graph arrays', () => {
+  const provider = cas({
+    analysis_id: 'provider-analysis',
+    system: { id: 'provider', name: 'provider', type: 'service', root_path: '/tmp/provider' },
+    entry_points: [{
+      id: 'entry:health', source_node: '', type: 'http', name: 'GET /health', trigger: { method: 'GET', path: '/health' },
+    }],
+  });
+  const consumer = cas({
+    analysis_id: 'consumer-analysis',
+    system: { id: 'consumer', name: 'consumer', type: 'application', root_path: '/tmp/consumer' },
+    exit_points: [{
+      id: 'exit:health', source_node: '', type: 'api', name: 'fetch health', target: { endpoint: 'http://provider/health', service_id: 'provider' }, operation: { method: 'GET' },
+    }],
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('compact-system', [
+    { path: '/tmp/provider', cas: provider },
+    { path: '/tmp/consumer', cas: consumer },
+  ]);
+
+  assert.ok(graph.links.some(link => link.kind === 'http-call'));
+  assert.deepEqual(graph.children.map(child => ({ analysis_id: child.analysis_id, nodes: child.nodes.length, edges: child.edges.length })), [
+    { analysis_id: 'provider-analysis', nodes: 0, edges: 0 },
+    { analysis_id: 'consumer-analysis', nodes: 0, edges: 0 },
+  ]);
+});
+
 test('shared data links preserve writer-to-reader direction from entity lifecycle evidence', () => {
   const writer = cas({
     system: { id: 'writer', name: 'order-writer', type: 'service', root_path: '/tmp/order-writer' },

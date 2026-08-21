@@ -15,7 +15,7 @@ export interface HostedProjectQueryWorkerRequest {
 }
 
 interface HostedProjectQueryWorkerResponse {
-  type: 'ready' | 'result' | 'error';
+  type: 'ready' | 'result' | 'error' | 'fallback';
   id?: number;
   analysisTimestamp?: string;
   unavailable?: unknown;
@@ -29,6 +29,7 @@ export interface HostedProjectQueryResult {
   unavailable?: unknown;
   result?: unknown;
   analysisStatus?: Record<string, unknown>;
+  compactFallback?: boolean;
 }
 
 interface PendingQuery {
@@ -37,12 +38,14 @@ interface PendingQuery {
 }
 
 const DEFAULT_QUERY_HEAP_MB = 3072;
-const DEFAULT_IDLE_MS = 300_000;
+const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_BACKGROUND_GRACE_MS = 10_000;
 let child: ChildProcess | undefined;
+let childKind: 'full' | 'search' | undefined;
 let nextRequestId = 1;
 let idleTimer: NodeJS.Timeout | undefined;
 let lastActivityAt = 0;
+let dispatchWork: Promise<void> = Promise.resolve();
 const pending = new Map<number, PendingQuery>();
 const warmedVersions = new Map<string, string>();
 const warmingVersions = new Map<string, { version: string; promise: Promise<void> }>();
@@ -53,13 +56,14 @@ export function resolveHostedQueryHeapMb(env: NodeJS.ProcessEnv = process.env): 
   return Math.min(resolveAnalysisHeapMb(env).heapMb, DEFAULT_QUERY_HEAP_MB);
 }
 
-function resolveWorkerEntryPath(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.KLAURO_HOSTED_QUERY_WORKER_ENTRY?.trim();
+function resolveWorkerEntryPath(kind: 'full' | 'search', env: NodeJS.ProcessEnv = process.env): string {
+  const override = (kind === 'search' ? env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY : undefined)?.trim()
+    || env.KLAURO_HOSTED_QUERY_WORKER_ENTRY?.trim();
   if (override) return path.resolve(override);
   const candidates = [
-    path.join(__dirname, 'hosted-project-query-worker.cjs'),
-    path.join(__dirname, '..', 'dist-hosted', 'hosted-project-query-worker.cjs'),
-    path.join(__dirname, 'hosted-project-query-worker.ts'),
+    path.join(__dirname, kind === 'search' ? 'hosted-project-search-worker.cjs' : 'hosted-project-query-worker.cjs'),
+    path.join(__dirname, '..', 'dist-hosted', kind === 'search' ? 'hosted-project-search-worker.cjs' : 'hosted-project-query-worker.cjs'),
+    path.join(__dirname, kind === 'search' ? 'hosted-project-search-worker.ts' : 'hosted-project-query-worker.ts'),
   ];
   for (const candidatePath of candidates) {
     if (fs.existsSync(candidatePath)) return candidatePath;
@@ -86,6 +90,7 @@ function stopWorker(reason = 'Hosted query worker stopped.'): void {
   idleTimer = undefined;
   const running = child;
   child = undefined;
+  childKind = undefined;
   if (running?.connected) running.disconnect();
   if (running && running.exitCode === null && running.signalCode === null) running.kill('SIGTERM');
   for (const request of pending.values()) request.reject(new Error(reason));
@@ -125,21 +130,26 @@ function scheduleIdleStop(): void {
   idleTimer.unref();
 }
 
-function getWorker(): ChildProcess {
-  if (child?.connected) return child;
-  const spawned = fork(resolveWorkerEntryPath(), [], {
+function getWorker(kind: 'full' | 'search'): ChildProcess {
+  if (child?.connected && childKind === kind) return child;
+  if (child?.connected) {
+    if (pending.size > 0) throw new Error('Hosted query worker profile cannot change while requests are active.');
+    stopWorker('Hosted query worker changed its memory profile.');
+  }
+  const spawned = fork(resolveWorkerEntryPath(kind), [], {
     execArgv: [...workerExecArgv(process.execArgv), `--max-old-space-size=${resolveHostedQueryHeapMb()}`],
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     env: process.env,
   });
   child = spawned;
+  childKind = kind;
   spawned.on('message', (message: HostedProjectQueryWorkerResponse) => {
     if (!message) return;
     if (message.type === 'ready') {
       if (pending.size === 0) scheduleIdleStop();
       return;
     }
-    if (message.type !== 'result' && message.type !== 'error') return;
+    if (!['result', 'error', 'fallback'].includes(message.type)) return;
     if (message.id === undefined) return;
     const request = pending.get(message.id);
     if (!request) return;
@@ -151,6 +161,7 @@ function getWorker(): ChildProcess {
       unavailable: message.unavailable,
       result: message.result,
       analysisStatus: message.analysisStatus,
+      compactFallback: message.type === 'fallback',
     });
     if (pending.size === 0) scheduleIdleStop();
   });
@@ -162,10 +173,11 @@ function getWorker(): ChildProcess {
 }
 
 export function prewarmHostedProjectQueryWorker(): void {
+  if (pending.size > 0) return;
   const alreadyRunning = Boolean(child?.connected);
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = undefined;
-  getWorker();
+  getWorker('full');
   if (alreadyRunning && pending.size === 0) scheduleIdleStop();
 }
 
@@ -174,26 +186,37 @@ registerHostedBackgroundPreflight(stopIdleWorkerForBackground);
 export async function runHostedProjectQueryWorker(
   request: Omit<HostedProjectQueryWorkerRequest, 'type' | 'id'>,
 ): Promise<HostedProjectQueryResult> {
-  return withHostedForegroundPermit(() => dispatchWorkerRequest({ type: 'query', ...request }));
+  return withHostedForegroundPermit(() => enqueueDispatch(async () => {
+    const response = await dispatchWorkerRequest({ type: 'query', ...request });
+    return response.compactFallback
+      ? dispatchWorkerRequest({ type: 'query', ...request }, 'full')
+      : response;
+  }));
+}
+
+function enqueueDispatch<T>(run: () => Promise<T>): Promise<T> {
+  const result = dispatchWork.then(run);
+  dispatchWork = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 function dispatchWorkerRequest(
   request: Omit<HostedProjectQueryWorkerRequest, 'id'>,
+  forcedKind?: 'full' | 'search',
 ): Promise<HostedProjectQueryResult> {
   return new Promise((resolve, reject) => {
     lastActivityAt = Date.now();
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = undefined;
-    const id = nextRequestId++;
-    pending.set(id, { resolve, reject });
     let worker: ChildProcess;
     try {
-      worker = getWorker();
+      worker = getWorker(forcedKind || (request.type === 'query' && request.tool === 'search_nodes' ? 'search' : 'full'));
     } catch (error) {
-      pending.delete(id);
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
+    const id = nextRequestId++;
+    pending.set(id, { resolve, reject });
     worker.send({ id, ...request } satisfies HostedProjectQueryWorkerRequest, error => {
       if (!error) return;
       pending.delete(id);
@@ -207,12 +230,12 @@ export async function warmHostedProjectAnalysisWorker(input: {
   projectId: string;
   analysisId: string;
 }): Promise<Record<string, unknown>> {
-  const response = await withHostedForegroundPermit(() => dispatchWorkerRequest({
+  const response = await withHostedForegroundPermit(() => enqueueDispatch(() => dispatchWorkerRequest({
     type: 'analysis-status',
     tool: '',
     args: undefined,
     ...input,
-  }));
+  })));
   if (!response.analysisStatus) throw new Error('Hosted query worker returned no analysis status.');
   return response.analysisStatus;
 }
@@ -222,12 +245,12 @@ export async function warmHostedProjectQueryWorker(input: {
   projectId: string;
   analysisId: string;
 }): Promise<void> {
-  await withHostedForegroundPermit(() => dispatchWorkerRequest({
+  await withHostedForegroundPermit(() => enqueueDispatch(() => dispatchWorkerRequest({
     type: 'warm',
     tool: '',
     args: undefined,
     ...input,
-  }));
+  })));
 }
 
 export function beginHostedProjectQueryWarm(input: {

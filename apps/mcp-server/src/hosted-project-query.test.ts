@@ -36,15 +36,24 @@ test('hosted project query exposes only the explicit read-only allowlist', () =>
 });
 
 test('hosted query tools load only the CAS sections they consume', () => {
-  assert.deepEqual(hostedProjectQuerySections('search_nodes'), ['graph']);
+  assert.deepEqual(hostedProjectQuerySections('search_nodes'), []);
   assert.deepEqual(hostedProjectQuerySections('get_product_map'), [
     'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
   ]);
   assert.deepEqual(hostedProjectQuerySections('get_agent_start_context'), [
     'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
   ]);
-  assert.deepEqual(hostedProjectQuerySections('find_tests'), ['graph', 'calls', 'tests']);
+  assert.deepEqual(hostedProjectQuerySections('get_agent_context', { task: { task_type: 'orient' } }), [
+    'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
+  ]);
+  assert.deepEqual(hostedProjectQuerySections('find_tests'), ['tests']);
+  assert.deepEqual(hostedProjectQuerySections('find_tests', { node_id: 'node' }), ['graph', 'tests']);
   assert.deepEqual(hostedProjectQuerySections('assess_change_risk'), ['graph', 'calls', 'tests', 'quality']);
+  assert.deepEqual(hostedProjectQuerySections('run_answer_pack'), [
+    'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
+  ]);
+  assert.deepEqual(hostedProjectQuerySections('run_answer_pack', { section: 'security' }), ['graph', 'quality']);
+  assert.deepEqual(hostedProjectQuerySections('run_answer_pack', { section: 'external-boundaries' }), ['supplemental']);
   assert.equal(hostedProjectQuerySections('get_product_map').includes('graph'), false);
   assert.equal(hostedProjectQuerySections('get_agent_start_context').includes('calls'), false);
 });
@@ -147,6 +156,12 @@ test('hosted answer packs return a bounded digest and expose every section by id
     'overview', 'entry-points', 'representative-flow', 'change-impact', 'data', 'tests',
     'external-boundaries', 'security', 'runtime-readiness',
   ]);
+  assert.deepEqual(digest.answers.map((answer: any) => answer.id), [
+    'entry-points', 'data', 'tests', 'external-boundaries', 'runtime-readiness',
+  ]);
+  assert.equal(digest.size_scope, 'computed-sections');
+  assert.ok(digest.gaps.some((gap: string) => gap.startsWith('overview: not computed')));
+  assert.equal(digest.sections.find((section: any) => section.id === 'security').included, false);
 
   const security = await executeHostedProjectQuery({
     cas: fixture, tool: 'run_answer_pack', args: { section: 'security' }, projectPath: '/hosted/orders',
