@@ -32,6 +32,16 @@ test('prompt selection represents every required entity family beyond the baseli
   assert.equal(selected.filter(candidate => candidate.category === 'internal').length, 19);
 });
 
+test('prompt selection retains nonmandatory supporting and verification surfaces as context', () => {
+  const selected = selectCapabilityCatalogPromptCandidates([
+    { id: 'required', name: 'Review work', category: 'core', evidence_kind: 'behavior-surface', evidence_role: 'product-outcome' },
+    { id: 'support', name: 'Coordinate transport', category: 'supporting', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism' },
+    { id: 'proof', name: 'Exercise proof', category: 'supporting', evidence_kind: 'behavior-surface', evidence_role: 'verification-harness' },
+  ] as any[]);
+
+  assert.deepEqual(selected.map(candidate => candidate.id), ['required', 'support', 'proof']);
+});
+
 test('description repair schedules only rejected capabilities on detached values', async () => {
   const capabilities = [
     { id: 'accepted', name: 'Accepted', description: 'Already accepted' },

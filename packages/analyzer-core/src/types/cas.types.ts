@@ -3684,14 +3684,9 @@ export interface SystemCapability {
 
 
 
-
-
-
-
-
-
-
   evidence_kind?: 'behavior-surface' | 'infrastructure';
+  evidence_role?: 'product-outcome' | 'supporting-mechanism' | 'verification-harness' | 'unresolved';
+  evidence_role_reasons?: string[];
 
 
 
@@ -4079,6 +4074,11 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
   };
   capability_catalog_coverage?: {
     evidence_families: number;
+    product_evidence_candidates?: number;
+    supporting_evidence_candidates?: number;
+    verification_evidence_candidates?: number;
+    unresolved_evidence_candidates?: number;
+    candidate_dispositions?: Array<{ candidate_id: string; role: NonNullable<SystemCapability['evidence_role']>; reasons: string[] }>;
     published_capabilities: number;
     minimum_published_capabilities: number;
     status: 'accepted' | 'partial' | 'rejected' | 'unavailable';

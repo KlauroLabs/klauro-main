@@ -1,6 +1,22 @@
-import { CASDataEntity, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
+import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { isScaffoldOrTestPath } from './scaffold-paths';
 import { analyzeTerminality } from './terminality';
+
+export type CapabilityEvidenceRole = NonNullable<SystemCapability['evidence_role']>;
+
+export interface CapabilityEvidenceContext {
+  entryPoints?: CASEntryPoint[];
+  nodes?: CASNode[];
+  userJourneys?: CASUserJourney[];
+}
+
+export interface CapabilityEvidenceRoleSummary {
+  product: number;
+  supporting: number;
+  verification: number;
+  unresolved: number;
+}
 
 export interface CapabilityCatalogProjectSignal {
   concepts?: string[];
@@ -64,13 +80,6 @@ export function productTextCorroboratesCapability(candidate: SystemCapability, s
   return subjectTokens.size > 0 && matches >= Math.min(2, subjectTokens.size);
 }
 
-function isCorroboratedInternalBehavior(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
-  const operations = candidate.operations || [];
-  if (operations.length < 2 || !operations.every(operation => operation.entry_point_type === 'internal')) return false;
-  if (!productTextCorroboratesCapability(candidate, signal)) return false;
-  return candidate.category === 'core' || operations.some(operation => !/^(?:coordinate|handle|process)$/i.test(operation.action || ''));
-}
-
 export function hasFirstPartyCorroboratedCatalogOperations(
   capability: SystemCapability,
   candidates: SystemCapability[],
@@ -112,6 +121,141 @@ function candidateHasProductEntity(candidate: SystemCapability, entityById: Map<
     if (!entity.kind || entity.kind === 'persisted-entity' || entity.kind === 'api-response') return true;
     return domainEntitySupportsCandidate(entity, candidate);
   });
+}
+
+function capabilityIsVerificationHarness(
+  capability: SystemCapability,
+  entryPointById: Map<string, CASEntryPoint>,
+  nodeById: Map<string, CASNode>,
+): boolean {
+  if ((capability.operations || []).length === 0) return false;
+  for (const operation of capability.operations || []) {
+    const anchors: boolean[] = [];
+    if (operation.path_or_command) anchors.push(isScaffoldOrTestPath(operation.path_or_command));
+    const entryPoint = entryPointById.get(operation.entry_point_id);
+    if (entryPoint?.handler?.file) anchors.push(isScaffoldOrTestPath(entryPoint.handler.file));
+    const nodeIds = new Set<string>();
+    if (entryPoint?.source_node) nodeIds.add(entryPoint.source_node);
+    if (entryPoint?.handler?.node_id) nodeIds.add(entryPoint.handler.node_id);
+    if (operation.entry_point_id.startsWith('node:')) nodeIds.add(operation.entry_point_id.slice('node:'.length));
+    for (const nodeId of nodeIds) {
+      const node = nodeById.get(nodeId);
+      if (node) anchors.push(node.metadata?.is_test === true || isScaffoldOrTestPath(node.source?.file || ''));
+    }
+    if (anchors.length === 0 || anchors.some(anchor => !anchor)) return false;
+  }
+  return true;
+}
+
+function capabilityHasExternalReach(
+  capability: SystemCapability,
+  entryPointById: Map<string, CASEntryPoint>,
+): boolean {
+  return (capability.operations || []).some(operation => {
+    const entryPoint = entryPointById.get(operation.entry_point_id);
+    if (entryPoint?.interaction_reach === 'external') return true;
+    if (entryPoint?.interaction_reach === 'internal') return false;
+    return operation.entry_point_type === 'external' ||
+      USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as never);
+  });
+}
+
+function capabilityHasPotentialUserSurface(capability: SystemCapability): boolean {
+  return (capability.operations || []).some(operation =>
+    !/^(?:internal|message|event|schedule|queue|ipc|external)$/i.test(operation.entry_point_type || '')
+  );
+}
+
+function capabilityHasUserOutcomeJourney(
+  capability: SystemCapability,
+  journeys: CASUserJourney[],
+): boolean {
+  const operationIds = new Set((capability.operations || []).map(operation => operation.entry_point_id));
+  return journeys.some(journey => operationIds.has(journey.entry_point_id) &&
+    journey.journey_kind === 'user-facing' &&
+    (journey.terminal_entities.length > 0 ||
+      Object.values(journey.terminal_effects).some(values => values.length > 0)));
+}
+
+export function classifyCapabilityEvidence(
+  candidates: SystemCapability[],
+  dataEntities: CASDataEntity[] = [],
+  projectTextSignal?: CapabilityCatalogProjectSignal,
+  context: CapabilityEvidenceContext = {},
+): SystemCapability[] {
+  const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
+  const entryPointById = new Map((context.entryPoints || []).map(entryPoint => [entryPoint.id, entryPoint]));
+  const nodeById = new Map((context.nodes || []).map(node => [node.id, node]));
+  return candidates.map(candidate => {
+    let evidenceRole: CapabilityEvidenceRole;
+    const reasons: string[] = [];
+    if (capabilityIsVerificationHarness(candidate, entryPointById, nodeById)) {
+      evidenceRole = 'verification-harness';
+      reasons.push('all-resolved-operation-anchors-are-test-or-scaffold');
+    } else {
+      const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
+      const externalReach = capabilityHasExternalReach(candidate, entryPointById);
+      const productEntity = candidateHasProductEntity(candidate, entityById);
+      const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []);
+      if (firstParty || userOutcomeJourney || (externalReach && productEntity)) {
+        evidenceRole = 'product-outcome';
+        if (firstParty) reasons.push('first-party-product-text');
+        if (userOutcomeJourney) reasons.push('user-facing-terminal-journey');
+        if (externalReach && productEntity) reasons.push('external-reach-with-product-entity');
+      } else if ((candidate.operations || []).length > 0 || (candidate.related_entities || []).length > 0) {
+        const potentiallyProductSignificant = productEntity || (externalReach && capabilityHasPotentialUserSurface(candidate));
+        evidenceRole = potentiallyProductSignificant ? 'unresolved' : 'supporting-mechanism';
+        reasons.push(potentiallyProductSignificant
+          ? 'potential-user-outcome-requires-catalog-resolution'
+          : 'structural-evidence-without-product-outcome');
+      } else {
+        evidenceRole = 'unresolved';
+        reasons.push('missing-structural-anchor');
+      }
+    }
+    return { ...candidate, evidence_role: evidenceRole, evidence_role_reasons: reasons };
+  });
+}
+
+export function catalogRequiredEvidenceCandidates(candidates: SystemCapability[]): SystemCapability[] {
+  return candidates.filter(candidate =>
+    candidate.evidence_role === undefined ||
+    candidate.evidence_role === 'product-outcome' ||
+    candidate.evidence_role === 'unresolved'
+  );
+}
+
+export function capabilityCitesRequiredEvidence(
+  capability: SystemCapability,
+  candidates: SystemCapability[],
+): boolean {
+  return capabilityEvidencePublicationFailure(capability, candidates) === undefined;
+}
+
+export function capabilityEvidencePublicationFailure(
+  capability: SystemCapability,
+  candidates: SystemCapability[],
+): 'uncited-candidate-evidence' | 'supporting-or-verification-evidence-only' | undefined {
+  const roleById = new Map(candidates.map(candidate => [candidate.id, candidate.evidence_role]));
+  const citedIds = (capability.criticality_factors || [])
+    .filter(factor => factor.startsWith('catalog-candidate:'))
+    .map(factor => factor.slice('catalog-candidate:'.length));
+  if (citedIds.length === 0) return 'uncited-candidate-evidence';
+  const required = citedIds.some(id => {
+    const role = roleById.get(id);
+    return role === undefined || role === 'product-outcome' || role === 'unresolved';
+  });
+  return required ? undefined : 'supporting-or-verification-evidence-only';
+}
+
+export function summarizeCapabilityEvidenceRoles(candidates: SystemCapability[]): CapabilityEvidenceRoleSummary {
+  return candidates.reduce<CapabilityEvidenceRoleSummary>((summary, candidate) => {
+    if (candidate.evidence_role === 'product-outcome') summary.product++;
+    else if (candidate.evidence_role === 'supporting-mechanism') summary.supporting++;
+    else if (candidate.evidence_role === 'verification-harness') summary.verification++;
+    else summary.unresolved++;
+    return summary;
+  }, { product: 0, supporting: 0, verification: 0, unresolved: 0 });
 }
 
 export function catalogCandidateTerminality(candidates: SystemCapability[]) {
@@ -265,27 +409,10 @@ export function catalogEvidenceCandidates(
   dataEntities?: CASDataEntity[],
   artifactType = 'app',
   projectTextSignal?: CapabilityCatalogProjectSignal,
+  context: CapabilityEvidenceContext = {},
 ): SystemCapability[] {
-  const entityById = new Map((dataEntities || []).map(entity => [entity.id, entity]));
-  const scopeCandidates = dataEntities === undefined || ['library', 'client-sdk', 'infrastructure'].includes(artifactType)
-    ? candidates
-    : candidates.filter(candidate => {
-        const operations = candidate.operations || [];
-        const hasProductEntity = candidateHasProductEntity(candidate, entityById);
-        const presentationOnly = operations.length > 0 &&
-          operations.some(operation => /^(?:page|route)$/i.test(operation.entry_point_type || '')) &&
-          operations.every(operation => /^(?:page|route|event)$/i.test(operation.entry_point_type || ''));
-        if (presentationOnly && !hasProductEntity) return false;
-        const userFacingOperation = operations.some(operation =>
-          USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as never) ||
-          /^(?:message|event|schedule|queue)$/i.test(operation.entry_point_type || ''));
-        const pageOnly = operations.length > 0 && operations.every(operation => /^(?:page|route)$/i.test(operation.entry_point_type || ''));
-        const commandOnly = operations.length > 0 && operations.every(operation =>
-          /^(?:cli|command)$/i.test(operation.entry_point_type || ''));
-        const commandProductEvidence = !commandOnly || productTextCorroboratesCapability(candidate, projectTextSignal);
-        return (((!pageOnly && userFacingOperation) || hasProductEntity) && commandProductEvidence) ||
-          isCorroboratedInternalBehavior(candidate, projectTextSignal);
-      });
+  void artifactType;
+  const scopeCandidates = candidates;
   const result = [...scopeCandidates];
   const ids = new Set(scopeCandidates.map(candidate => candidate.id).filter(Boolean));
   const eligibleSurfaces = catalogBehaviorSurfaceCandidates(behaviorSurfaces);
@@ -321,7 +448,5 @@ export function catalogEvidenceCandidates(
     result.push(surface);
     if (surface.id) ids.add(surface.id);
   }
-  if (artifactType !== 'app' || !projectTextSignal || firstPartySupportsIdentityProduct(projectTextSignal)) return result;
-  return result.filter(candidate => !/\b(?:auth|authentication|authorization|identity|permissions?|sessions?|access[ -]?control)\b/i
-    .test([candidate.name, ...(candidate.evidence_examples || [])].join(' ')));
+  return classifyCapabilityEvidence(result, dataEntities || [], projectTextSignal, context);
 }

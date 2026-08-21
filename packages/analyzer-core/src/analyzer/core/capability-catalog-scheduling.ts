@@ -20,7 +20,9 @@ export function selectCapabilityCatalogPromptCandidates(
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>> = [],
 ): SystemCapability[] {
   const behaviorCandidates = rankedCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface');
-  const requiredBehaviorCandidates = behaviorCandidates.filter(candidate => candidate.category !== 'internal');
+  const requiredBehaviorCandidates = behaviorCandidates.filter(candidate =>
+    candidate.category !== 'internal' &&
+    (candidate.evidence_role === undefined || candidate.evidence_role === 'product-outcome' || candidate.evidence_role === 'unresolved'));
   const requiredEntityCandidates = requiredEntityCandidateGroups
     .map(group => rankedCandidates.find(candidate => group.includes(candidate.id)))
     .filter((candidate): candidate is SystemCapability => Boolean(candidate));
@@ -29,7 +31,7 @@ export function selectCapabilityCatalogPromptCandidates(
   const structuralCandidates = rankedCandidates.filter(candidate =>
     !requiredIds.has(candidate.id) && candidate.evidence_kind !== 'behavior-surface');
   const internalBehaviorCandidates = behaviorCandidates.filter(candidate =>
-    !requiredIds.has(candidate.id) && candidate.category === 'internal');
+    !requiredIds.has(candidate.id));
   const baselineWindowSize = Math.min(64, Math.max(24, requiredBehaviorCandidates.length, Math.ceil(rankedCandidates.length / 6)));
   const windowSize = Math.max(
     baselineWindowSize,

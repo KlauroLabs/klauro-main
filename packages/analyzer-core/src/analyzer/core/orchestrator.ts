@@ -161,12 +161,15 @@ import { buildCasTerminality } from './terminality';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
+  capabilityEvidencePublicationFailure,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogCountBounds, catalogEntityCandidateGroups, catalogEvidenceCoverageFailure,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
+  catalogRequiredEvidenceCandidates,
   catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
   capabilityCatalogAiPhaseStatus, firstPartySupportsIdentityProduct as supportsIdentityProduct,
   hasFirstPartyCorroboratedCatalogOperations,
+  summarizeCapabilityEvidenceRoles,
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
@@ -9039,11 +9042,15 @@ export class AnalyzerOrchestrator {
       const externalOps = (candidate.operations || [])
         .filter(operation => operation.entry_point_type && operation.entry_point_type !== 'internal').length;
       const categoryRank = this.catalogCandidateCategoryRank(candidate.category);
+      const evidenceRoleRank = candidate.evidence_role === 'product-outcome' ? 0
+        : candidate.evidence_role === 'unresolved' || candidate.evidence_role === undefined ? 1
+          : candidate.evidence_role === 'supporting-mechanism' ? 2 : 3;
       const distanceToTerminal = terminality.get(candidate.id)?.distance_to_terminal ?? Number.MAX_SAFE_INTEGER;
-      return { candidate, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, distanceToTerminal, entityCount, journeyCorroboration, categoryRank, externalOps };
+      return { candidate, evidenceRoleRank, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, distanceToTerminal, entityCount, journeyCorroboration, categoryRank, externalOps };
     });
     return scored
       .sort((a, b) =>
+        a.evidenceRoleRank - b.evidenceRoleRank ||
         a.grounded - b.grounded ||
         a.distanceToTerminal - b.distanceToTerminal ||
         b.entityCount - a.entityCount ||
@@ -9072,8 +9079,9 @@ export class AnalyzerOrchestrator {
     dataEntities?: CASDataEntity[],
     artifactType = 'app',
     projectTextSignal?: ProjectTextSignal,
+    context: { entryPoints?: CASEntryPoint[]; nodes?: CASNode[]; userJourneys?: CASUserJourney[] } = {},
   ): SystemCapability[] {
-    return selectCatalogEvidenceCandidates(candidates, behaviorSurfaces, dataEntities, artifactType, projectTextSignal);
+    return selectCatalogEvidenceCandidates(candidates, behaviorSurfaces, dataEntities, artifactType, projectTextSignal, context);
   }
   private async awaitAiBoundedThenUncapped<T>(
     attemptFactory: (attemptIndex: number, signal?: AbortSignal) => Promise<T>,
@@ -9177,6 +9185,8 @@ export class AnalyzerOrchestrator {
     qualityNudge?: string;
     hardDeadlineAt?: number;
     onResponse?: (raw: string) => void;
+    entryPoints?: CASEntryPoint[];
+    nodes?: CASNode[];
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
     const journeys = (input.userJourneys || [])
@@ -9195,12 +9205,15 @@ export class AnalyzerOrchestrator {
       input.dataEntities,
       artifactType,
       input.projectTextSignal,
+      { entryPoints: input.entryPoints, nodes: input.nodes, userJourneys: input.userJourneys },
     );
+    const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking);
     const entities = catalogPromptEntities(input.dataEntities || [], candidatePoolForRanking);
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const behaviorCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind === 'behavior-surface');
-    const requiredBehaviorCandidateAreas = behaviorCandidateAreas.filter(candidate => candidate.category !== 'internal');
-    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(candidatePoolForRanking);
+    const requiredBehaviorCandidateAreas = requiredCandidatePool
+      .filter(candidate => candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'internal');
+    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredCandidatePool);
     const promptCandidateAreas = selectCapabilityCatalogPromptCandidates(rankedCandidateAreas, requiredEntityCandidateGroups);
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
     const catalogEntityById = new Map(input.dataEntities.map(entity => [entity.id, entity]));
@@ -9222,10 +9235,12 @@ export class AnalyzerOrchestrator {
             : candidateTerminality.get(capability.id)?.proximal_terminal ? 'proximal-terminal'
               : 'upstream',
           distance_to_terminal: candidateTerminality.get(capability.id)?.distance_to_terminal,
+          evidence_role: capability.evidence_role,
+          evidence_role_reasons: capability.evidence_role_reasons,
         };
       });
     const services = (input.externalServices || []).slice(0, 12);
-    const promptFamilyCount = this.catalogDistinctFamilyCount(candidatePoolForRanking);
+    const promptFamilyCount = this.catalogDistinctFamilyCount(requiredCandidatePool);
     const { min: catalogCountMin, max: catalogCountMax } = catalogCountBounds(
       promptFamilyCount, behaviorCandidateAreas.length, requiredEntityCandidateGroups.length,
     );
@@ -9282,7 +9297,7 @@ export class AnalyzerOrchestrator {
         requestTimeoutMs: 65000,
         requestRetries: 0,
         ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
-        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. A result may cite several groups only when their operations support the same product outcome.` : ''} Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Coordinate, Handle, Process, or Manage.`,
+        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. A result may cite several groups only when their operations support the same product outcome.` : ''} Evidence roles are authoritative constraints: product-outcome and unresolved facts require coverage; supporting-mechanism facts may support or merge into a product outcome but must not become standalone capabilities; verification-harness facts must never become product capabilities. Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Coordinate, Handle, Process, or Manage.`,
         style: 'Write like a product engineer or PM. Plain language. No markdown. Begin each description with its concrete product subject, never an actor scaffold. Prefer precise behavior verbs such as tracks, surfaces, exposes, manages, monitors, secures, settles, and enforces. No CRUD inventory, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports and adds evidence-specific information beyond the capability name.',
         product: {
           name: input.systemName, domain: purpose.primary_domain,
@@ -9850,7 +9865,16 @@ export class AnalyzerOrchestrator {
       capability, entityById, nodeTypeByEntryPointId,
       hasFirstPartyCorroboratedCatalogOperations(capability, candidates, projectTextSignal),
     ));
-    const gated = purposeGated;
+    const hasClassifiedEvidence = candidates.some(candidate => candidate.evidence_role !== undefined);
+    const gated = hasClassifiedEvidence
+      ? purposeGated.map(capability => {
+          const failure = capabilityEvidencePublicationFailure(capability, candidates);
+          return failure ? {
+            ...capability,
+            criticality_factors: [...(capability.criticality_factors || []), `catalog-evidence-rejected:${failure}`],
+          } : capability;
+        })
+      : purposeGated;
 
     const audienceEvaluation = evaluateCapabilityCatalogAudience(
       gated,
@@ -10193,6 +10217,11 @@ export class AnalyzerOrchestrator {
       requiredEntityCandidateGroups,
     );
     if (evidenceCoverageFailure) return evidenceCoverageFailure;
+    const evidenceRejected = reconciled.filter(capability =>
+      (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-evidence-rejected:')));
+    if (evidenceRejected.length > 0) {
+      return `catalog contains ${evidenceRejected.length} authored capability ${evidenceRejected.length === 1 ? 'claim' : 'claims'} without product-outcome evidence: ${evidenceRejected.slice(0, 3).map(capability => capability.name).join(', ')}`;
+    }
     const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length);
     if (reconciled.length < minimumCapabilities) {
       return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families; at least ${minimumCapabilities} independently expressed outcomes are required`;
@@ -10332,12 +10361,15 @@ export class AnalyzerOrchestrator {
       args.dataEntities,
       String(args.enhancedSystemPurpose.artifact_type || 'app'),
       args.projectTextSignal,
+      { entryPoints: args.entryPoints, nodes: args.nodes, userJourneys: args.userJourneys },
     );
-    const distinctFamilyCount = this.catalogDistinctFamilyCount(evidenceCandidates);
-    const requiredBehaviorCandidateIds = evidenceCandidates
+    const requiredEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates);
+    const evidenceRoleSummary = summarizeCapabilityEvidenceRoles(evidenceCandidates);
+    const distinctFamilyCount = this.catalogDistinctFamilyCount(requiredEvidenceCandidates);
+    const requiredBehaviorCandidateIds = requiredEvidenceCandidates
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'internal' && candidate.id)
       .map(candidate => candidate.id);
-    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(evidenceCandidates);
+    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates);
     const entityNamesById = new Map(args.dataEntities.map(entity => [entity.id, entity.name]));
     const entityFieldsById = new Map(args.dataEntities.map(entity => [entity.id, (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`)]));
     let reconciled: SystemCapability[] = [];
@@ -10376,6 +10408,8 @@ export class AnalyzerOrchestrator {
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
           hardDeadlineAt: args.hardDeadlineAt,
+          entryPoints: args.entryPoints,
+          nodes: args.nodes,
           onResponse: raw => { extractionRaw = raw; },
           ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
         });
@@ -10471,6 +10505,11 @@ export class AnalyzerOrchestrator {
     });
     args.enhancedSystemPurpose.capability_catalog_coverage = {
       evidence_families: distinctFamilyCount,
+      product_evidence_candidates: evidenceRoleSummary.product,
+      supporting_evidence_candidates: evidenceRoleSummary.supporting,
+      verification_evidence_candidates: evidenceRoleSummary.verification,
+      unresolved_evidence_candidates: evidenceRoleSummary.unresolved,
+      candidate_dispositions: evidenceCandidates.map(candidate => ({ candidate_id: candidate.id, role: candidate.evidence_role || 'unresolved', reasons: candidate.evidence_role_reasons || [] })),
       published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? reconciled.length : 0,
       minimum_published_capabilities: Math.ceil(Math.log2(distinctFamilyCount + 1)),
       status: publishGroundedPartial ? 'partial' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',

@@ -11403,13 +11403,13 @@ describe('enterprise AI semantic guards', () => {
       { id: 'entity_order', name: 'Order', kind: 'persisted-entity' },
     ];
 
-    expect(orch.catalogEvidenceCandidates(candidates, [], entities, 'app').map((candidate: any) => candidate.id))
-      .toEqual(['orders']);
+    expect(orch.catalogEvidenceCandidates(candidates, [], entities, 'app').map((candidate: any) => [candidate.id, candidate.evidence_role]))
+      .toEqual([['internal-sweep', 'supporting-mechanism'], ['orders', 'product-outcome']]);
     expect(orch.catalogEvidenceCandidates(candidates, [], entities, 'library').map((candidate: any) => candidate.id))
       .toEqual(['internal-sweep', 'orders']);
   });
 
-  it('keeps entity-free presentation mechanics out of application product evidence without relying on their names', () => {
+  it('keeps entity-free presentation mechanics as nonmandatory supporting evidence without relying on their names', () => {
     const candidates = [{
       id: 'auth-change',
       name: 'Customer Preference Surface',
@@ -11420,7 +11420,9 @@ describe('enterprise AI semantic guards', () => {
       ],
     }];
 
-    expect(orch.catalogEvidenceCandidates(candidates, [], [], 'app')).toEqual([]);
+    expect(orch.catalogEvidenceCandidates(candidates, [], [], 'app')).toMatchObject([
+      { id: 'auth-change', evidence_role: 'unresolved' },
+    ]);
   });
 
   it('rejects an unsupported expansion of an abbreviated operation family even when entities are cited', async () => {

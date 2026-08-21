@@ -1,8 +1,12 @@
 import {
   capabilityCatalogAiPhaseStatus,
+  capabilityCitesRequiredEvidence,
+  capabilityEvidencePublicationFailure,
   catalogCountBounds,
   catalogEntityCandidateGroups,
   catalogEvidenceCandidates,
+  catalogRequiredEvidenceCandidates,
+  classifyCapabilityEvidence,
   catalogMinimumCapabilityCount,
   catalogRelatedEntityIds,
   hasFirstPartyCorroboratedCatalogOperations,
@@ -52,7 +56,13 @@ describe('catalogEvidenceCandidates', () => {
       candidate('widths', 'Widths', 'supporting', ['Read', 'Generate']),
     ], [], [], 'app', { concepts: ['product', 'cart', 'storefront'] });
 
-    expect(selected.map(item => item.id)).toEqual(['product', 'cart']);
+    expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
+      ['product', 'product-outcome'],
+      ['cart', 'product-outcome'],
+      ['cart-notification', 'supporting-mechanism'],
+      ['placeholder', 'supporting-mechanism'],
+      ['widths', 'supporting-mechanism'],
+    ]);
   });
 
   test('does not promote a single internal occurrence or uncorroborated implementation family', () => {
@@ -61,7 +71,10 @@ describe('catalogEvidenceCandidates', () => {
       candidate('renderer', 'Renderer', 'core', ['Generate', 'Generate']),
     ], [], [], 'app', { concepts: ['quantity', 'commerce'] });
 
-    expect(selected).toEqual([]);
+    expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
+      ['quantity', 'product-outcome'],
+      ['renderer', 'supporting-mechanism'],
+    ]);
   });
 
   test('keeps cohesive presentation surfaces while excluding uncorroborated delivery commands', () => {
@@ -78,7 +91,10 @@ describe('catalogEvidenceCandidates', () => {
       [],
       'app',
       { productDocSummary: 'A platform for reviewing and understanding software workspaces.' },
-    ).map(item => item.id)).toEqual(['workspace-ui']);
+    ).map(item => [item.id, item.evidence_role])).toEqual([
+      ['delivery', 'unresolved'],
+      ['workspace-ui', 'unresolved'],
+    ]);
   });
 
   test('keeps a command surface when first-party text establishes it as the product', () => {
@@ -106,7 +122,10 @@ describe('catalogEvidenceCandidates', () => {
       'app',
     );
 
-    expect(selected.map(item => item.id)).toEqual(['inspection']);
+    expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
+      ['parcel', 'supporting-mechanism'],
+      ['inspection', 'unresolved'],
+    ]);
   });
 
   test('does not turn request contracts, unperformed models, or unrelated internal shapes into product evidence', () => {
@@ -130,7 +149,102 @@ describe('catalogEvidenceCandidates', () => {
       'app',
     );
 
-    expect(selected).toEqual([]);
+    expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
+      ['request', 'supporting-mechanism'],
+      ['dormant', 'supporting-mechanism'],
+      ['unrelated', 'supporting-mechanism'],
+      ['internal', 'supporting-mechanism'],
+    ]);
+  });
+});
+
+describe('capability evidence roles', () => {
+  test('keeps verification and supporting evidence auditable without making either a mandatory product family', () => {
+    const verification = candidate('proof', 'Exercise analysis proof', 'supporting', ['Run']);
+    verification.operations[0].entry_point_id = 'proof-entry';
+    const support = candidate('cache', 'Warm result cache', 'supporting', ['Warm']);
+    const product = candidate('review', 'Review software behavior', 'core', ['Review']);
+    product.operations[0].entry_point_id = 'review-entry';
+    product.related_entities = ['entity_analysis'];
+
+    const classified = classifyCapabilityEvidence(
+      [verification, support, product],
+      [entity('entity_analysis', 'Analysis', 'persisted-entity', true)],
+      undefined,
+      {
+        entryPoints: [
+          { id: 'proof-entry', source_node: 'proof-node', type: 'cli', name: 'proof', interaction_reach: 'external' },
+          { id: 'review-entry', source_node: 'review-node', type: 'page', name: 'review', interaction_reach: 'external' },
+        ],
+        nodes: [
+          { id: 'proof-node', name: 'proof', type: 'function', level: 3, source: { file: 'src/__tests__/proof.test.ts' }, metadata: { is_test: true } } as any,
+          { id: 'review-node', name: 'review', type: 'page', level: 2, source: { file: 'src/review.ts' } } as any,
+        ],
+      },
+    );
+
+    expect(classified.map(item => [item.id, item.evidence_role])).toEqual([
+      ['proof', 'verification-harness'],
+      ['cache', 'supporting-mechanism'],
+      ['review', 'product-outcome'],
+    ]);
+    expect(catalogRequiredEvidenceCandidates(classified).map(item => item.id)).toEqual(['review']);
+  });
+
+  test('keeps ambiguous product-entity evidence mandatory instead of silently dropping it', () => {
+    const ambiguous = candidate('history', 'Inspect recorded history', 'supporting', ['Read']);
+    ambiguous.related_entities = ['entity_history'];
+    const [classified] = classifyCapabilityEvidence(
+      [ambiguous],
+      [entity('entity_history', 'History', 'persisted-entity', true)],
+    );
+
+    expect(classified.evidence_role).toBe('unresolved');
+    expect(catalogRequiredEvidenceCandidates([classified])).toEqual([classified]);
+  });
+
+  test('does not call a mixed resolved-test and unresolved operation family a verification harness', () => {
+    const mixed = candidate('mixed', 'Exercise and publish analysis', 'supporting', ['Exercise', 'Publish']);
+    mixed.operations[0].entry_point_id = 'proof-entry';
+    mixed.operations[1].entry_point_id = 'unresolved-production-entry';
+    const [classified] = classifyCapabilityEvidence([mixed], [], undefined, {
+      entryPoints: [{ id: 'proof-entry', source_node: 'proof-node', type: 'test', name: 'proof' }],
+      nodes: [{ id: 'proof-node', name: 'proof', type: 'function', level: 3, metadata: { is_test: true } } as any],
+    });
+
+    expect(classified.evidence_role).toBe('supporting-mechanism');
+  });
+
+  test('uses a terminal user journey as product evidence without relying on capability vocabulary', () => {
+    const outcome = candidate('outcome', 'Present workspace changes', 'core', ['Present']);
+    outcome.operations[0].entry_point_id = 'workspace-page';
+    const [classified] = classifyCapabilityEvidence([outcome], [], undefined, {
+      userJourneys: [{
+        id: 'journey', name: 'Review changes', journey_kind: 'user-facing', entry_point_id: 'workspace-page',
+        entry: { type: 'page', name: 'workspace' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: ['Workspace'], external_services: [], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high', call_chain_ids: [], exit_point_ids: [],
+      }],
+    });
+
+    expect(classified.evidence_role).toBe('product-outcome');
+  });
+
+  test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {
+    const authored = candidate('authored', 'Expose product result', 'core', ['Expose']);
+    const supporting = { ...candidate('support', 'Warm cache', 'supporting', ['Warm']), evidence_role: 'supporting-mechanism' as const };
+    const verification = { ...candidate('proof', 'Exercise proof', 'supporting', ['Run']), evidence_role: 'verification-harness' as const };
+    const product = { ...candidate('product', 'Review result', 'core', ['Review']), evidence_role: 'product-outcome' as const };
+
+    authored.criticality_factors = ['catalog-candidate:support', 'catalog-candidate:proof'];
+    expect(capabilityCitesRequiredEvidence(authored, [supporting, verification, product])).toBe(false);
+    expect(capabilityEvidencePublicationFailure(authored, [supporting, verification, product]))
+      .toBe('supporting-or-verification-evidence-only');
+    authored.criticality_factors.push('catalog-candidate:product');
+    expect(capabilityCitesRequiredEvidence(authored, [supporting, verification, product])).toBe(true);
+    authored.criticality_factors = [];
+    expect(capabilityEvidencePublicationFailure(authored, [supporting, verification, product]))
+      .toBe('uncited-candidate-evidence');
   });
 });
 

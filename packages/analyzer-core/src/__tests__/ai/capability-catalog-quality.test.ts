@@ -461,6 +461,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
   it('retries when a passing-size catalog omits a behavior family citation', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['concurrent work'], evidence: [] };
     args.behaviorSurfaces = [{
       id: 'fabric',
       name: 'Concurrent Work Tool Surface',
@@ -491,6 +492,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('fabric');
     expect(calls[1].qualityNudge).toContain('claim_work');
     expect(out).toEqual(covered);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.candidate_dispositions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ candidate_id: 'fabric', role: 'product-outcome' })]),
+    );
   });
 
   it('publishes grounded authored capabilities with partial coverage when retries omit a behavior family', async () => {
@@ -562,6 +566,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
   it('retains the quality reason associated with the best grounded catalog when a later retry is empty', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['notebook execution'], evidence: [] };
     args.behaviorSurfaces = [{
       id: 'notebook-execution',
       name: 'Notebook Execution Surface',
