@@ -62,6 +62,16 @@ test('boundToolPayload truncates oversized arrays with envelope metadata under t
   assert.ok(byteLength(serializeToolResponse(bounded)) <= RESPONSE_BUDGET_BYTES + SIZE_SLACK_BYTES);
 });
 
+test('continuation recognizes named catalog and flow pagination parameters', () => {
+  const data = { values: Array.from({ length: 200 }, (_, index) => ({ index, value: 'x'.repeat(500) })) };
+  const bounded = boundToolPayload(data, {
+    tool: 'get_conceptual_analysis',
+    parameterNames: ['path', 'max_flows', 'flow_offset', 'catalog_limit', 'catalog_offset'],
+  }) as BoundedEnvelope;
+  assert.equal(bounded.truncated, true);
+  assert.ok(bounded.continuation.some(line => line.includes('flow_offset') && line.includes('catalog_offset')));
+});
+
 test('boundToolPayload truncates oversized nested strings', () => {
   const data = { report: { body: 'x'.repeat(120_000) }, status: 'ok' };
   const bounded = boundToolPayload(data, { tool: 'get_agent_doctor' }) as BoundedEnvelope;

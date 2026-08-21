@@ -182,7 +182,9 @@ export function buildContinuation(options: BoundOptions, truncatedPaths: Truncat
     `Response exceeded the ${budget}-byte budget; large collections under 'data' were truncated in place.`,
   ];
   const parameterNames = (options.parameterNames ?? []).filter(name => name !== 'path');
-  const pagingParameters = parameterNames.filter(name => ['limit', 'offset', 'cursor', 'page'].includes(name));
+  const pagingParameters = parameterNames.filter(name =>
+    ['limit', 'offset', 'cursor', 'page'].includes(name) || name.endsWith('_limit') || name.endsWith('_offset')
+  );
   if (pagingParameters.length > 0) {
     lines.push(`Page through the full data by re-running '${options.tool}' with ${pagingParameters.join(' and ')} (e.g. smaller limit plus increasing offset).`);
   }

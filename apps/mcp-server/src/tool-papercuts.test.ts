@@ -242,6 +242,9 @@ function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
       name: `Handle request ${key}`,
       intent: `handle /handler${key}`,
       entry_point: `ep_handler_${key}`,
+      capability_relationships: [{
+        capability_id: 'capability_0', role: 'primary', rationale: 'operation entry point', evidence: 'operation',
+      }],
       entities: [],
       steps: [{
         step_id: `step::ep_handler_${key}`,
@@ -265,6 +268,18 @@ function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
     edges: [],
     analyzer_contributions: [],
     entry_points: entryPoints,
+    capabilities: Array.from({ length: 12 }, (_, index) => ({
+      id: `capability_${index}`,
+      name: `Capability ${index}`,
+      description: `Capability ${index} description`,
+      category: 'core',
+      criticality: 'medium',
+      related_flows: index === 0
+        ? flows.map(flow => ({ flow_id: flow.flow_id, role: 'primary', rationale: 'operation entry point' }))
+        : [],
+      operations: [],
+      related_entities: [],
+    })),
     flows,
     flow_graph: {
       capability_candidates: [], dependencies: [], flows: flowRefs,
@@ -333,6 +348,10 @@ test('/conceptual honors a max_flows query param (bounded) and its gap text refl
     assert.ok(/offset=\d+/.test(defaultTruncationGap), `gap text must name the offset that reaches the next page, got: ${defaultTruncationGap}`);
     assert.equal(defaultBody.flows.total_available, 40, 'total_available must be the exact flow count');
     assert.equal(defaultBody.flows.next_offset, 25);
+    assert.equal(defaultBody.capabilities.length, 5, 'the default catalog page must remain compact');
+    assert.deepEqual(defaultBody.capability_page, {
+      total: 12, offset: 0, limit: 5, returned: 5, has_more: true, next_offset: 5,
+    });
 
     // Explicit max_flows=30 must actually return more flows than the default 25.
     const explicitRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=30`, undefined, token);
@@ -360,6 +379,32 @@ test('/conceptual honors a max_flows query param (bounded) and its gap text refl
       new Set([...defaultFlows.map((f: any) => f.flow_id), ...pageTwo.flows.map((f: any) => f.flow_id)]).size, 40,
       'the union of the pages must be the whole flow set',
     );
+
+    const namedPageRes = await httpRequest(
+      port,
+      'GET',
+      `/api/projects/${project.id}/conceptual?max_flows=1&flow_offset=25&catalog_limit=1&catalog_offset=5`,
+      undefined,
+      token,
+    );
+    const namedPage = JSON.parse(namedPageRes.body);
+    assert.equal(namedPage.flows.offset, 25);
+    assert.equal(namedPage.flows.returned, 1);
+    assert.equal(namedPage.capability_page.offset, 5);
+    assert.equal(namedPage.capability_page.limit, 1);
+    assert.equal(namedPage.capabilities[0].id, 'capability_5');
+
+    const relationshipPageRes = await httpRequest(
+      port,
+      'GET',
+      `/api/projects/${project.id}/conceptual?max_flows=1&catalog_limit=1`,
+      undefined,
+      token,
+    );
+    const relationshipPage = JSON.parse(relationshipPageRes.body);
+    assert.equal(relationshipPage.capabilities[0].related_flow_total, 40);
+    assert.equal(relationshipPage.capabilities[0].related_flows.length, 1);
+    assert.ok(Buffer.byteLength(relationshipPageRes.body, 'utf8') < 20_000);
 
     // max_flows is bounded — an oversized ask is clamped, not honored verbatim.
     // The ceiling bounds a PAGE, not what is reachable: offset reaches the rest.

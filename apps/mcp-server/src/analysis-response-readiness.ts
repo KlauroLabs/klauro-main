@@ -28,7 +28,7 @@ export interface ConceptualCatalogPage {
   offset: number;
 }
 
-const DEFAULT_CONCEPTUAL_CATALOG_LIMIT = 25;
+const DEFAULT_CONCEPTUAL_CATALOG_LIMIT = 5;
 const MAX_CONCEPTUAL_CATALOG_LIMIT = 100;
 
 export function comprehensionResponseReadiness(cas: CASOutput): AnalysisResponseReadiness {
@@ -88,8 +88,8 @@ export function unavailableComprehensionResponse(
 }
 
 export function parseConceptualCatalogPage(searchParams: URLSearchParams): ConceptualCatalogPage {
-  const requestedLimit = Number(searchParams.get('capability_limit'));
-  const requestedOffset = Number(searchParams.get('capability_offset'));
+  const requestedLimit = Number(searchParams.get('catalog_limit') ?? searchParams.get('capability_limit'));
+  const requestedOffset = Number(searchParams.get('catalog_offset') ?? searchParams.get('capability_offset'));
   return {
     limit: Number.isFinite(requestedLimit) && requestedLimit > 0
       ? Math.min(Math.floor(requestedLimit), MAX_CONCEPTUAL_CATALOG_LIMIT)

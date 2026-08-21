@@ -18,8 +18,11 @@ export interface ComprehensionGateResult {
 }
 
 function canonicalCapabilityCount(cas: CASOutput): number {
+  const canonicalCatalog = (cas.capabilities || []).length > 0
+    ? cas.capabilities || []
+    : cas.product_map?.capabilities || [];
   const identities = new Set<string>();
-  for (const capability of [...(cas.capabilities || []), ...(cas.product_map?.capabilities || [])]) {
+  for (const capability of canonicalCatalog) {
     const identity = String(('id' in capability ? capability.id : undefined) || capability.name || '').trim().toLowerCase();
     if (identity) identities.add(identity);
   }

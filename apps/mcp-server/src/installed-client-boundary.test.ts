@@ -5,7 +5,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import { isRegisteredSourceExtension } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
-import { collectExplicitWorkingChanges, INSTALLED_TOOL_NAMES } from './installed-client-server';
+import {
+  collectExplicitWorkingChanges,
+  INSTALLED_TOOL_NAMES,
+  normalizeConceptualAnalysisParams,
+} from './installed-client-server';
 
 const root = path.resolve(__dirname, '..');
 const dist = path.join(root, 'dist');
@@ -81,6 +85,32 @@ test('installed MCP advertises uploads, hosted intelligence, revision, and watch
   for (const forbidden of ['run_cross_codebase_analysis', 'preview_codebase_iteration', 'preview_greenfield_codebase', 'semantic_search', 'query_graph']) {
     assert.equal(installedNames.has(forbidden), false, forbidden);
   }
+});
+
+test('installed conceptual pagination aliases translate to the legacy hosted query contract', () => {
+  assert.deepEqual(normalizeConceptualAnalysisParams({
+    max_flows: 1,
+    flow_offset: 12,
+    catalog_limit: 3,
+    catalog_offset: 6,
+  }), {
+    max_flows: 1,
+    flow_offset: 12,
+    catalog_limit: 3,
+    catalog_offset: 6,
+    offset: 12,
+    capability_limit: 3,
+    capability_offset: 6,
+  });
+  assert.deepEqual(normalizeConceptualAnalysisParams({
+    offset: 9,
+    capability_limit: 4,
+    capability_offset: 8,
+  }), {
+    offset: 9,
+    capability_limit: 4,
+    capability_offset: 8,
+  });
 });
 
 test('installed source selection recognizes filenames using the hosted registry contract', () => {

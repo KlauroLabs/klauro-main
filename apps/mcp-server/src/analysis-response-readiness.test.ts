@@ -8,6 +8,7 @@ import {
   parseConceptualCatalogPage,
   unavailableComprehensionResponse,
 } from './analysis-response-readiness';
+import { evaluateComprehensionReadiness } from './comprehension-readiness';
 
 function cas(overrides: Record<string, unknown> = {}): CASOutput {
   return {
@@ -113,4 +114,39 @@ test('conceptual catalog pages are bounded and disclose exact continuation offse
   assert.deepEqual(catalog.behavior_surfaces.page, {
     total: 101, offset: 100, limit: 100, returned: 1, has_more: false, next_offset: null,
   });
+});
+
+test('conceptual catalog paging accepts explicit names while preserving legacy aliases', () => {
+  assert.deepEqual(parseConceptualCatalogPage(new URLSearchParams()), { limit: 5, offset: 0 });
+  assert.deepEqual(
+    parseConceptualCatalogPage(new URLSearchParams('catalog_limit=7&catalog_offset=14')),
+    { limit: 7, offset: 14 },
+  );
+  assert.deepEqual(
+    parseConceptualCatalogPage(new URLSearchParams('capability_limit=8&capability_offset=16')),
+    { limit: 8, offset: 16 },
+  );
+});
+
+test('readiness counts the authoritative capability catalog instead of summing duplicate views', () => {
+  const capabilities = Array.from({ length: 15 }, (_, index) => ({
+    id: `capability_${index}`,
+    name: `Capability ${index}`,
+  }));
+  const readiness = evaluateComprehensionReadiness(cas({
+    capabilities,
+    product_map: {
+      capabilities: capabilities.map((capability, index) => ({
+        ...capability,
+        id: `product_${index}`,
+      })),
+    },
+    ai_enrichment: 'ready',
+    enhanced_system_purpose: {
+      capability_catalog_coverage: { status: 'accepted', minimum_published_capabilities: 1 },
+    },
+  }));
+
+  assert.equal(readiness.canonical_capabilities, 15);
+  assert.equal(readiness.reason, '15 canonical product capabilities passed catalog coverage');
 });

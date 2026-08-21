@@ -3038,7 +3038,7 @@ async function handleAccountApi(
       const maxFlows = maxFlowsParam !== undefined && Number.isFinite(maxFlowsParam) && maxFlowsParam > 0
         ? Math.min(Math.floor(maxFlowsParam), CONCEPTUAL_MAX_FLOWS_CEILING)
         : CONCEPTUAL_DEFAULT_MAX_FLOWS;
-      const offsetParamRaw = url.searchParams.get('offset');
+      const offsetParamRaw = url.searchParams.get('flow_offset') ?? url.searchParams.get('offset');
       const offsetParam = offsetParamRaw !== null ? Number(offsetParamRaw) : undefined;
       const offset = offsetParam !== undefined && Number.isFinite(offsetParam) && offsetParam > 0
         ? Math.floor(offsetParam)
@@ -3121,9 +3121,8 @@ async function handleAccountApi(
         ...conceptualDescriptionFields(capability),
         category: capability.category,
         criticality: capability.criticality,
-        related_flows: (!target && capability.related_flows && capability.related_flows.length > 0)
-          ? capability.related_flows
-          : (flowEdgesByCapability.get(capability.id) || []),
+        related_flow_total: capability.related_flows?.length || flowEdgesByCapability.get(capability.id)?.length || 0,
+        related_flows: flowEdgesByCapability.get(capability.id) || [],
       }));
       const allBehaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
         id: surface.id,
@@ -3132,9 +3131,8 @@ async function handleAccountApi(
         category: surface.category,
         evidence_kind: surface.evidence_kind,
         entry_points: surface.operations?.length || 0,
-        related_flows: (!target && surface.related_flows && surface.related_flows.length > 0)
-          ? surface.related_flows
-          : (flowEdgesByCapability.get(surface.id) || []),
+        related_flow_total: surface.related_flows?.length || flowEdgesByCapability.get(surface.id)?.length || 0,
+        related_flows: flowEdgesByCapability.get(surface.id) || [],
       }));
       const catalog = paginateConceptualCatalog(allCapabilities, allBehaviorSurfaces, catalogPage);
       const body = {

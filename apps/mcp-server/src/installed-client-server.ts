@@ -311,6 +311,15 @@ export function withTransparentErrors<T extends (...args: any[]) => any>(registe
     })) as unknown as T;
 }
 
+export function normalizeConceptualAnalysisParams(params: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...params,
+    offset: params.flow_offset ?? params.offset,
+    capability_limit: params.catalog_limit ?? params.capability_limit,
+    capability_offset: params.catalog_offset ?? params.capability_offset,
+  };
+}
+
 export function createServer(): McpServer {
   const server = new McpServer({ name: 'klauro', version: getBuildIdentity().version }, {
     instructions: 'Klauro installed client. Upload source and diffs for hosted analysis, query hosted slices, and watch in-flight changes. No analysis, CAS construction at any level, graph construction, proposal materialization, or embeddings execute on this machine.',
@@ -402,13 +411,17 @@ export function createServer(): McpServer {
   register('get_conceptual_analysis', {
     description: 'Retrieve bounded, paginated hosted capability, flow, and step comprehension without downloading CAS.',
     inputSchema: {
-      path: z.string(), target: z.string().optional(), max_flows: z.number().optional(), offset: z.number().optional(),
-      capability_limit: z.number().optional(), capability_offset: z.number().optional(),
+      path: z.string(), target: z.string().optional(), max_flows: z.number().optional(),
+      flow_offset: z.number().optional(), catalog_limit: z.number().optional(), catalog_offset: z.number().optional(),
+      offset: z.number().optional(), capability_limit: z.number().optional(), capability_offset: z.number().optional(),
     },
-  }, async ({ path, ...params }: any) => json(boundToolPayload(
-    await hostedProjectGet(path, '/conceptual', params),
-    { tool: 'get_conceptual_analysis', parameterNames: ['target', 'max_flows', 'offset', 'capability_limit', 'capability_offset'] },
-  )));
+  }, async ({ path, ...params }: any) => {
+    const compatibleParams = normalizeConceptualAnalysisParams(params);
+    return json(boundToolPayload(
+      await hostedProjectGet(path, '/conceptual', compatibleParams),
+      { tool: 'get_conceptual_analysis', parameterNames: ['target', 'max_flows', 'flow_offset', 'catalog_limit', 'catalog_offset'] },
+    ));
+  });
 
   register('get_data_entities', {
     description: 'Retrieve a paginated hosted domain-entity slice without downloading CAS.',
