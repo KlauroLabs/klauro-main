@@ -85,7 +85,7 @@ function workerExecArgv(execArgv: readonly string[]): string[] {
   return safe;
 }
 
-function stopWorker(reason = 'Hosted query worker stopped.'): void {
+function stopWorker(reason = 'Hosted query worker stopped.', invalidateValidatedVersions = false): void {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = undefined;
   const running = child;
@@ -95,7 +95,7 @@ function stopWorker(reason = 'Hosted query worker stopped.'): void {
   if (running && running.exitCode === null && running.signalCode === null) running.kill('SIGTERM');
   for (const request of pending.values()) request.reject(new Error(reason));
   pending.clear();
-  warmedVersions.clear();
+  if (invalidateValidatedVersions) warmedVersions.clear();
   warmingVersions.clear();
   lastActivityAt = 0;
 }
@@ -165,9 +165,9 @@ function getWorker(kind: 'full' | 'search'): ChildProcess {
     });
     if (pending.size === 0) scheduleIdleStop();
   });
-  spawned.once('error', error => stopWorker(error.message));
+  spawned.once('error', error => stopWorker(error.message, true));
   spawned.once('exit', (code, signal) => {
-    if (child === spawned) stopWorker(`Hosted query worker ${signal ? `was killed by ${signal}` : `exited with code ${code}`}.`);
+    if (child === spawned) stopWorker(`Hosted query worker ${signal ? `was killed by ${signal}` : `exited with code ${code}`}.`, true);
   });
   return spawned;
 }

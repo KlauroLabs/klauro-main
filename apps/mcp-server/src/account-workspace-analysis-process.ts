@@ -18,6 +18,7 @@ export interface WorkspaceAnalysisWorkerRequest {
 }
 
 const DEFAULT_WORKSPACE_ANALYSIS_HEAP_MB = 1024;
+const PREVIOUS_RECORD_HEAP_FRACTION = 8;
 
 export class WorkspaceAnalysisPreemptedError extends Error {}
 
@@ -25,6 +26,12 @@ export function resolveWorkspaceAnalysisHeapMb(env: NodeJS.ProcessEnv = process.
   const configured = Number(env.KLAURO_WORKSPACE_ANALYSIS_HEAP_MB);
   if (Number.isFinite(configured) && configured >= 256) return Math.floor(configured);
   return Math.min(resolveAnalysisHeapMb(env).heapMb, DEFAULT_WORKSPACE_ANALYSIS_HEAP_MB);
+}
+
+export function resolveWorkspacePreviousRecordMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.KLAURO_WORKSPACE_PREVIOUS_RECORD_MAX_BYTES);
+  if (Number.isFinite(configured) && configured >= 0) return Math.floor(configured);
+  return Math.floor(resolveWorkspaceAnalysisHeapMb(env) * 1024 * 1024 / PREVIOUS_RECORD_HEAP_FRACTION);
 }
 
 function resolveWorkerEntryPath(env: NodeJS.ProcessEnv = process.env): string {

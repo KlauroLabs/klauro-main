@@ -104,6 +104,28 @@ test('workspace input signature is order-independent and changes when a member c
   assert.notEqual(a, settled);
 });
 
+test('oversized previous workspace state falls back to a complete rebuild instead of parsing into the worker heap', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-reuse-budget-'));
+  const previousLimit = process.env.KLAURO_WORKSPACE_PREVIOUS_RECORD_MAX_BYTES;
+  const scheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any);
+  const workspaceId = 'workspace-large-previous';
+  const recordDir = path.join(root, 'workspace-analyses');
+  const recordPath = path.join(recordDir, `${workspaceId}.json`);
+  try {
+    fs.mkdirSync(recordDir, { recursive: true });
+    fs.writeFileSync(recordPath, JSON.stringify({ workspace_id: workspaceId, graph: { nodes: [] } }));
+    process.env.KLAURO_WORKSPACE_PREVIOUS_RECORD_MAX_BYTES = '1';
+    assert.equal(await (scheduler as any).loadPreviousForIncrementalRebuild(workspaceId), null);
+    process.env.KLAURO_WORKSPACE_PREVIOUS_RECORD_MAX_BYTES = '4096';
+    assert.equal((await (scheduler as any).loadPreviousForIncrementalRebuild(workspaceId))?.workspace_id, workspaceId);
+  } finally {
+    scheduler.close();
+    if (previousLimit === undefined) delete process.env.KLAURO_WORKSPACE_PREVIOUS_RECORD_MAX_BYTES;
+    else process.env.KLAURO_WORKSPACE_PREVIOUS_RECORD_MAX_BYTES = previousLimit;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('workspace scheduler drains a project notification that arrives during an in-flight rebuild', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-dirty-drain-'));
   try {

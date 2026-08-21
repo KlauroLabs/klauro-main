@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { runHostedProjectQueryWorker, resolveHostedQueryHeapMb } from './hosted-project-query-process';
+import { beginHostedProjectQueryWarm, runHostedProjectQueryWorker, resolveHostedQueryHeapMb } from './hosted-project-query-process';
 import { withHostedBackgroundPermit } from './hosted-background-queue';
 
 test('hosted query heap is independently bounded with an explicit override', () => {
@@ -83,6 +83,34 @@ test('search queries use the compact worker and fall back once to the authoritat
     else process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = previousQueryEntry;
     if (previousSearchEntry === undefined) delete process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY;
     else process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY = previousSearchEntry;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a validated analysis stays ready after its idle query worker yields memory', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-hosted-query-readiness-'));
+  const worker = path.join(directory, 'worker.cjs');
+  fs.writeFileSync(worker, `process.on('message', request => process.send({ type: 'result', id: request.id, analysisTimestamp: 'fixture' }));`);
+  const previousEntry = process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
+  const previousGrace = process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS;
+  process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = worker;
+  process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS = '0';
+  const input = { workspace: directory, projectId: 'project', analysisId: 'analysis', version: 'version-1' };
+  try {
+    assert.equal(beginHostedProjectQueryWarm(input), false);
+    for (let attempt = 0; attempt < 100 && !beginHostedProjectQueryWarm(input); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(beginHostedProjectQueryWarm(input), true);
+    await withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
+    assert.equal(beginHostedProjectQueryWarm(input), true);
+    assert.equal(beginHostedProjectQueryWarm({ ...input, version: 'version-2' }), false);
+  } finally {
+    await withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
+    if (previousEntry === undefined) delete process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
+    else process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = previousEntry;
+    if (previousGrace === undefined) delete process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS;
+    else process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS = previousGrace;
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });

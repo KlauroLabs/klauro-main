@@ -6,7 +6,7 @@ import { enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type Cr
 import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import type { AccountStore } from './account-store';
 import { waitForForegroundAnalysisIdle } from './foreground-analysis';
-import { runAccountWorkspaceAnalysisWorker, WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
+import { resolveWorkspacePreviousRecordMaxBytes, runAccountWorkspaceAnalysisWorker, WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CasSectionName } from './cas-sections';
 
@@ -150,6 +150,22 @@ export class AccountWorkspaceAnalysisScheduler {
     }
   }
 
+  private async loadPreviousForIncrementalRebuild(workspaceId: string): Promise<WorkspaceAnalysisRecord | null> {
+    const file = this.recordPath(workspaceId);
+    try {
+      const stat = await fs.stat(file);
+      const maxBytes = resolveWorkspacePreviousRecordMaxBytes();
+      if (stat.size > maxBytes) {
+        console.error(`[Klauro] workspace analysis ${workspaceId} will rebuild from complete member inputs because its ${stat.size}-byte previous record exceeds the ${maxBytes}-byte incremental reuse budget.`);
+        return null;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    return this.load(workspaceId);
+  }
+
 
 
 
@@ -250,7 +266,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
     const name = workspace?.name || workspaceId;
     const inputSignature = workspaceInputSignature(inputs, memberIds);
-    const previous = await this.load(workspaceId);
+    const previous = await this.loadPreviousForIncrementalRebuild(workspaceId);
     if (!force && previous?.input_signature === inputSignature) return;
     const graph = buildIncrementalCrossCodebaseSystemGraph({
       name,
