@@ -8,8 +8,15 @@ import type { AccountStore } from './account-store';
 import { waitForForegroundAnalysisIdle } from './foreground-analysis';
 import { runAccountWorkspaceAnalysisWorker, WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CasSectionName } from './cas-sections';
 
+export const WORKSPACE_MEMBER_SECTIONS = [
+  'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
+] as const satisfies readonly CasSectionName[];
 
+export function compactWorkspaceMemberCas(cas: Partial<CASOutput>): CASOutput {
+  return { ...cas, nodes: [], edges: [], analyzer_contributions: cas.analyzer_contributions || [] } as CASOutput;
+}
 
 
 
@@ -219,11 +226,13 @@ export class AccountWorkspaceAnalysisScheduler {
     for (const project of projects) {
       if (!project.analysis_id) continue;
       try {
-        const cas = await loadAnalysisSections(this.workspacePathFor(project.analysis_id), [
-          'graph', 'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
-        ]);
+        const cas = await loadAnalysisSections(this.workspacePathFor(project.analysis_id), WORKSPACE_MEMBER_SECTIONS);
         if (!cas) continue;
-        inputs.push({ path: `account-project:${project.id}`, name: project.name, cas: cas as CASOutput });
+        inputs.push({
+          path: `account-project:${project.id}`,
+          name: project.name,
+          cas: compactWorkspaceMemberCas(cas),
+        });
         memberIds.push(project.id);
         memberNames.push(project.name);
         memberComprehensionSettled = memberComprehensionSettled && isCasComprehensionSettled(cas);

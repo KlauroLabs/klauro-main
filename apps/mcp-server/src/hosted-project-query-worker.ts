@@ -33,48 +33,51 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const requiredSections = request.type === 'query'
         ? hostedProjectQuerySections(request.tool)
         : ['comprehension', 'tests', 'runtime', 'quality', 'supplemental'] satisfies CasSectionName[];
-      const missingSections = requiredSections.filter(section => !cachedSections.has(section));
-      if (!cachedCas || missingSections.length > 0) {
+      const sameProfile = cachedSections.size === requiredSections.length
+        && requiredSections.every(section => cachedSections.has(section));
+      if (!cachedCas || !sameProfile) {
         const loadStartedAt = Date.now();
-        const loaded = await loadAnalysisSections(request.workspace, missingSections);
+        const loaded = await loadAnalysisSections(request.workspace, requiredSections);
         if (!loaded) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
-        cachedCas = { ...cachedCas, ...loaded } as CASOutput;
-        for (const section of missingSections) cachedSections.add(section);
+        cachedCas = loaded as CASOutput;
+        cachedSections = new Set(requiredSections);
         cachedWorkspace = request.workspace;
         cachedFingerprint = fingerprint;
         process.stderr.write(`${JSON.stringify({
           event: 'hosted_query_cas_loaded',
           duration_ms: Date.now() - loadStartedAt,
-          sections: missingSections,
+          sections: requiredSections,
           worker_uptime_ms: Math.round(process.uptime() * 1000),
           rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
         })}\n`);
       }
+      const activeCas = cachedCas;
+      if (!activeCas) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
       if (request.type === 'warm') {
-        process.send!({ type: 'result', id: request.id, analysisTimestamp: cachedCas.analysis_timestamp });
+        process.send!({ type: 'result', id: request.id, analysisTimestamp: activeCas.analysis_timestamp });
         return;
       }
       if (request.type === 'analysis-status') {
-        const analysisStatus = buildHostedProjectAnalysisStatus(cachedCas, request.projectId, request.analysisId);
+        const analysisStatus = buildHostedProjectAnalysisStatus(activeCas, request.projectId, request.analysisId);
         if (Date.now() - startedAt >= 1_000) {
           process.stderr.write(`${JSON.stringify({ event: 'hosted_query_warm_slow', duration_ms: Date.now() - startedAt })}\n`);
         }
         process.send!({
           type: 'result',
           id: request.id,
-          analysisTimestamp: cachedCas.analysis_timestamp,
+          analysisTimestamp: activeCas.analysis_timestamp,
           analysisStatus,
         });
         return;
       }
-      const unavailable = unavailableComprehensionResponse(cachedCas, {
+      const unavailable = unavailableComprehensionResponse(activeCas, {
         project_id: request.projectId,
         analysis_id: request.analysisId,
-        analysis_timestamp: cachedCas.analysis_timestamp,
+        analysis_timestamp: activeCas.analysis_timestamp,
         tool: request.tool,
       }, request.tool);
       const result = unavailable ? undefined : await executeHostedProjectQuery({
-        cas: cachedCas,
+        cas: activeCas,
         tool: request.tool,
         args: request.args,
         projectPath: request.workspace,
@@ -82,7 +85,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       process.send!({
         type: 'result',
         id: request.id,
-        analysisTimestamp: cachedCas.analysis_timestamp,
+        analysisTimestamp: activeCas.analysis_timestamp,
         unavailable,
         result,
       });

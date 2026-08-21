@@ -2,7 +2,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { CAS_VERSION, type CASDataEntity, type CASEdge, type CASEntryPoint, type CASExitPoint, type CASNode, type CASOutput, type CASProgressiveLevels, type CASSystem, type CASTemporalStability, type CASTerminality, type FlowConcept, type FlowStep, type SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { composeCas, type CASCompositionRelation, type CASComprehension } from '../../../packages/analyzer-core/src/analyzer/core/cas-composition';
-import { namespaceCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type {
@@ -15,10 +14,11 @@ import { aiService, isProviderUnavailableFailure } from '../../../packages/analy
 import { recordSemanticDecision } from '../../../packages/analyzer-core/src/ai/semantic-dataset';
 import { ungroundedMarketingMatches } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import { describeConfiguredAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
-import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './deployable-analysis';
+import { getCachedDeployableAnalyses } from './deployable-analysis';
 import { estimatedJsonTokens } from './json-size';
 import { isRuntimeEndpointSemanticName } from './semantic-roles';
 import { buildPassiveDataLinks, passiveDataLifecycleRole, passiveDataOperationRole } from './workspace-passive-data';
+import { workspaceMemberReference } from './workspace-member-reference';
 export { estimatedJsonTokens } from './json-size';
 
 export type SystemInterfaceKind =
@@ -1327,10 +1327,7 @@ export function buildCrossCodebaseSystemGraph(
   options: { id?: string; generatedAt?: string; diagnostics?: CrossCodebaseBuildDiagnostics } = {}
 ): CrossCodebaseSystemGraph {
   const generatedAt = options.generatedAt || new Date().toISOString();
-  const repositories = repositoryInputs.map(repository => ({
-    ...repository,
-    cas: materializeDeployableCasTree(repository.cas),
-  }));
+  const repositories = repositoryInputs;
   const lookupIndexes = buildCrossCodebaseLookupIndexes(repositories, options.diagnostics);
   const codebases = repositories.map(toSystemCodebase);
   const interfaces = repositories.flatMap(repository => extractInterfaces(repository, codebaseId(repository.path), lookupIndexes.get(repository.cas)!));
@@ -1386,7 +1383,7 @@ export function buildCrossCodebaseSystemGraph(
   repositories.forEach((repository, index) => {
     const codebase = codebases[index];
     if (!codebase) return;
-    childrenByCodebase.set(codebase.id, namespaceCasTree(repository.cas, `workspace:${codebase.id}`));
+    childrenByCodebase.set(codebase.id, workspaceMemberReference(repository, codebase.id));
   });
   const relations: CASCompositionRelation[] = links.flatMap(link => {
     const source = childrenByCodebase.get(link.source_codebase_id);

@@ -108,6 +108,8 @@ test('builds outer graph with http, sdk, message, passive data, and unmatched in
   assert.equal(validateCasTree(graph as unknown as CASOutput).valid, true);
   assert.equal(graph.children.length, graph.codebase_count);
   assert.ok(graph.children.every(child => child.parent_id === graph.id));
+  assert.ok(graph.children.every(child => child.nodes.length === 0 && child.edges.length === 0));
+  assert.ok(graph.children.every(child => child.analysis_id === 'analysis'));
   assert.ok(graph.edges.every(edge => graph.children.some(child => child.id === edge.source)));
   assert.ok(graph.edges.every(edge => graph.children.some(child => child.id === edge.target)));
   assert.ok(graph.flows.length > 0);
