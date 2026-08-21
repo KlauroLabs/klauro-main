@@ -58,10 +58,28 @@ describe('catalogEvidenceCandidates', () => {
 
     expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
       ['product', 'product-outcome'],
-      ['cart', 'product-outcome'],
+      ['cart', 'supporting-mechanism'],
       ['cart-notification', 'supporting-mechanism'],
       ['placeholder', 'supporting-mechanism'],
       ['widths', 'supporting-mechanism'],
+    ]);
+  });
+
+  test('does not promote an internal supporting aggregate through a generic product-text overlap', () => {
+    const analysis = candidate('analysis', 'Analysis', 'supporting', ['Read', 'Coordinate']);
+    analysis.structural_label = 'Analysis';
+    analysis.related_entities = ['entity_analysis_comparison'];
+
+    const selected = catalogEvidenceCandidates(
+      [analysis],
+      [],
+      [entity('entity_analysis_comparison', 'AnalysisComparison', 'domain-shape')],
+      'app',
+      { concepts: ['analysis', 'codebase', 'graph'] },
+    );
+
+    expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
+      ['analysis', 'supporting-mechanism'],
     ]);
   });
 

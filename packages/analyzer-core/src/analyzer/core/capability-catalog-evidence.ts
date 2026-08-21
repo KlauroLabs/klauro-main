@@ -197,9 +197,10 @@ export function classifyCapabilityEvidence(
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);
       const productEntity = candidateHasProductEntity(candidate, entityById);
       const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []);
-      if (firstParty || userOutcomeJourney || (externalReach && productEntity)) {
+      const firstPartyCoreOutcome = firstParty && candidate.category === 'core';
+      if (firstPartyCoreOutcome || userOutcomeJourney || (externalReach && productEntity)) {
         evidenceRole = 'product-outcome';
-        if (firstParty) reasons.push('first-party-product-text');
+        if (firstPartyCoreOutcome) reasons.push('first-party-product-text');
         if (userOutcomeJourney) reasons.push('user-facing-terminal-journey');
         if (externalReach && productEntity) reasons.push('external-reach-with-product-entity');
       } else if ((candidate.operations || []).length > 0 || (candidate.related_entities || []).length > 0) {
