@@ -78,6 +78,7 @@ if (hostedBuild) {
   mkdirSync(output, { recursive: true });
   await build({ ...shared, entryPoints: ['src/analysis-worker.ts'], outfile: 'dist-hosted/analysis-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/account-workspace-analysis-worker.ts'], outfile: 'dist-hosted/account-workspace-analysis-worker.cjs', plugins: [nativeExternals] });
+  await build({ ...shared, entryPoints: ['src/self-telemetry-worker.ts'], outfile: 'dist-hosted/self-telemetry-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['../../packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts'], outfile: 'dist-hosted/tree-sitter-ts-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/remote-analyzer-service.ts'], outfile: 'dist-hosted/analyzer-service.cjs', plugins: [nativeExternals] });
   writeFileSync(path.join(output, 'stage-fingerprints.json'), JSON.stringify(stageFingerprints, null, 2));

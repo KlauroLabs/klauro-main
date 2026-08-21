@@ -521,8 +521,14 @@ function parsedAnalysisCacheMaxEntries(): number {
 }
 
 function parsedAnalysisCacheMaxBytes(): number {
-  const heapBound = Math.floor(getHeapStatistics().heap_size_limit / 4);
+  const heapBound = defaultParsedAnalysisCacheMaxBytes();
   return parsePositiveIntegerEnv('KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES', heapBound);
+}
+
+const MAX_DEFAULT_PARSED_ANALYSIS_CACHE_BYTES = 256 * 1024 * 1024;
+
+export function defaultParsedAnalysisCacheMaxBytes(heapLimit = getHeapStatistics().heap_size_limit): number {
+  return Math.min(MAX_DEFAULT_PARSED_ANALYSIS_CACHE_BYTES, Math.floor(heapLimit / 8));
 }
 
 export function estimateParsedAnalysisBytes(output: CASOutput): number {

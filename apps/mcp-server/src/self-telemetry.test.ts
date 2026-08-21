@@ -250,6 +250,35 @@ test('self telemetry waits for foreground analysis before persisting', async () 
   });
 });
 
+test('self telemetry persistence runs outside the API event loop', async () => {
+  await withTempStorage(async () => {
+    const root = await fsExtra.mkdtemp(nodePath.join(os.tmpdir(), 'klauro-self-worker-'));
+    const entry = nodePath.join(root, 'worker.cjs');
+    const previousEntry = process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY;
+    fs.writeFileSync(entry, `
+process.once('message', () => {
+  const started = Date.now();
+  while (Date.now() - started < 300) {}
+  process.send({ type: 'result' });
+});
+`);
+    process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY = entry;
+    const { enqueueSelfTelemetryEvents, waitForSelfTelemetryIngest } = await REQUIRE();
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 10);
+    try {
+      enqueueSelfTelemetryEvents('/tmp/klauro-self-isolated', [{ kind: 'request', route: '/health', status: 200 }]);
+      await waitForSelfTelemetryIngest();
+      assert.ok(ticks >= 10, `API event loop advanced only ${ticks} times during isolated telemetry work`);
+    } finally {
+      clearInterval(timer);
+      if (previousEntry === undefined) delete process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY;
+      else process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY = previousEntry;
+      await fsExtra.remove(root);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // mapSdkEvent — direct CAS-id passthrough (Tier 4 join input boundary).
 //

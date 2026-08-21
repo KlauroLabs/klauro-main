@@ -159,6 +159,7 @@ test('isolated workspace rebuild waits for foreground analysis and coalesces not
   let runs = 0;
   const scheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any, {
     debounceMs: 10,
+    settleMs: 10,
     runIsolated: async () => { runs += 1; },
   });
   const endForeground = beginForegroundAnalysis();

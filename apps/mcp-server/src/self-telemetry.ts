@@ -31,6 +31,7 @@ import { klauroHttp } from '../../../packages/klauro-sdk-js/src/middleware/http'
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { ingestTelemetryBatch, type TelemetryEvent } from './telemetry-ingestion';
 import { waitForForegroundAnalysisIdle } from './foreground-analysis';
+import { persistSelfTelemetryInWorker } from './self-telemetry-process';
 
 const SERVICE_NAME = 'klauro-mcp-server';
 const SELF_LOOP_NAME = 'klauro-self';
@@ -259,16 +260,15 @@ async function flushSelfTelemetryEvents(): Promise<void> {
       events.push(item.event);
       batches.set(item.projectPath, events);
     }
-    for (const [projectPath, events] of batches) {
-      const ingestStartedAt = Date.now();
-      await ingestTelemetryBatch(null, projectPath, events, { persist: true });
-      const ingestElapsedMs = Date.now() - ingestStartedAt;
-      if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
-        process.stdout.write(
-          `Klauro self-telemetry: local ingest of ${events.length} event(s) for ${projectPath} took ${ingestElapsedMs}ms.\n`,
-        );
-      }
-      await mirrorToCanonicalBucket(projectPath, events);
+    const ingestStartedAt = Date.now();
+    const grouped = [...batches].map(([projectPath, events]) => ({ projectPath, events }));
+    await persistSelfTelemetryInWorker(grouped, selfCanonicalProjectPath() || undefined);
+    const ingestElapsedMs = Date.now() - ingestStartedAt;
+    if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
+      const eventCount = grouped.reduce((sum, batch) => sum + batch.events.length, 0);
+      process.stdout.write(
+        `Klauro self-telemetry: isolated ingest of ${eventCount} event(s) across ${grouped.length} project(s) took ${ingestElapsedMs}ms.\n`,
+      );
     }
   }
 }

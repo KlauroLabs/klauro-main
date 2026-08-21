@@ -318,6 +318,12 @@ test('parsed CAS cache evicts by entry budget and refuses an object over the mem
   }
 });
 
+test('default parsed CAS cache cannot retain a multi-gigabyte fraction of the API heap', async () => {
+  const { defaultParsedAnalysisCacheMaxBytes } = await import('./storage');
+  assert.equal(defaultParsedAnalysisCacheMaxBytes(4 * 1024 * 1024 * 1024), 256 * 1024 * 1024);
+  assert.equal(defaultParsedAnalysisCacheMaxBytes(1024 * 1024 * 1024), 128 * 1024 * 1024);
+});
+
 // Measured on prod (2026-08-11, 92,586 nodes / 135,974 edges): FIVE saveAnalysis
 // calls per analysis, each rebuilding the segmented sidecar from scratch —
 // 34.9s of the run's 68.2s total serialization, where only the final rebuild is

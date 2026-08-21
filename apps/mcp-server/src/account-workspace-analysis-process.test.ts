@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { runAccountWorkspaceAnalysisWorker } from './account-workspace-analysis-process';
+import { resolveWorkspaceAnalysisHeapMb, runAccountWorkspaceAnalysisWorker } from './account-workspace-analysis-process';
+
+test('workspace analysis uses its own bounded heap budget', () => {
+  assert.equal(resolveWorkspaceAnalysisHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' } as NodeJS.ProcessEnv), 1536);
+  assert.equal(resolveWorkspaceAnalysisHeapMb({ KLAURO_WORKSPACE_ANALYSIS_HEAP_MB: '2048' } as NodeJS.ProcessEnv), 2048);
+});
 
 test('workspace analysis CPU and heap work stays outside the API event loop', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-workspace-worker-'));

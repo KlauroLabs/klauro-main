@@ -82,14 +82,16 @@ export class AccountWorkspaceAnalysisScheduler {
   constructor(
     private readonly dataDir: string,
     private readonly accounts: AccountStore,
-    options: { debounceMs?: number; runIsolated?: typeof runAccountWorkspaceAnalysisWorker } = {},
+    options: { debounceMs?: number; settleMs?: number; runIsolated?: typeof runAccountWorkspaceAnalysisWorker } = {},
   ) {
     this.storeDir = path.join(dataDir, 'workspace-analyses');
     this.debounceMs = options.debounceMs ?? resolveDebounceMs();
+    this.settleMs = options.settleMs ?? this.debounceMs;
     this.runIsolated = options.runIsolated ?? runAccountWorkspaceAnalysisWorker;
   }
 
   private readonly runIsolated: typeof runAccountWorkspaceAnalysisWorker;
+  private readonly settleMs: number;
 
 
 
@@ -101,6 +103,7 @@ export class AccountWorkspaceAnalysisScheduler {
   notifyProjectAnalysisLanded(workspaceId: string): void {
     if (!workspaceId || this.closed) return;
     this.dirty.add(workspaceId);
+    if (this.inFlight.has(workspaceId)) return;
     const existing = this.pending.get(workspaceId);
     if (existing) clearTimeout(existing.timer);
     const timer = setTimeout(() => {
@@ -193,7 +196,13 @@ export class AccountWorkspaceAnalysisScheduler {
 
   private async doRebuild(workspaceId: string, force = false): Promise<void> {
     if (process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS !== '1') {
-      await waitForForegroundAnalysisIdle();
+      await waitForForegroundAnalysisIdle(0);
+      while (this.settleMs > 0) {
+        this.dirty.delete(workspaceId);
+        await new Promise(resolve => setTimeout(resolve, this.settleMs));
+        await waitForForegroundAnalysisIdle(0);
+        if (!this.dirty.has(workspaceId)) break;
+      }
       this.dirty.delete(workspaceId);
       await this.runIsolated(this.dataDir, workspaceId, force);
       return;
