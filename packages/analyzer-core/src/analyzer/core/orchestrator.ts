@@ -116,6 +116,15 @@ import {
   remapIncrementalNodeReferences, resolveImportedFileReferences,
 } from './incremental-impact';
 import {
+  createIncrementalPropagationWorklist,
+  incrementalEdgeFingerprint,
+  incrementalEntryPointFingerprint,
+  incrementalExitPointFingerprint,
+  incrementalFileSurfacesMatch,
+  incrementalNodeFingerprint,
+  sameIncrementalFingerprints,
+} from './incremental-propagation';
+import {
   filterInvalidIncrementalEndpoints,
   createIncrementalGraphAccumulator,
   createIncrementalAnalysisSnapshot,
@@ -2455,9 +2464,14 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    const filesToAnalyze = filesRequiringIncrementalAnalysis(changeSet);
+    const directFilesToAnalyze = filesRequiringIncrementalAnalysis(changeSet);
+    const possibleFilesToAnalyze = [...new Set([
+      ...directFilesToAnalyze,
+      ...changeSet.deleted,
+      ...(changeSet.affectedFiles || []),
+    ])].sort();
     const candidateIncrementalAnalyzers = incrementalAnalyzers.filter(registration =>
-      filesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
+      possibleFilesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
     );
     debugIncrementalPhase('select-candidate-analyzers');
     await yieldToEventLoop();
@@ -2469,7 +2483,7 @@ export class AnalyzerOrchestrator {
     const matchingAnalyzerPlansByFile = new Map<string, Array<{ registration: AnalyzerRegistration; relevantFiles: Set<string> }>>();
     const filesNeedingRelevanceScan: string[] = [];
 
-    for (const relativePath of filesToAnalyze) {
+    for (const relativePath of possibleFilesToAnalyze) {
       const expectedAnalyzerIds = this.expectedIncrementalAnalyzerIdsForFile(
         relativePath,
         previousState,
@@ -2507,21 +2521,22 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('relevance-scan');
     await yieldToEventLoop();
 
-    const unsupportedFiles = filesToAnalyze.filter(relativePath => {
+    const unsupportedFiles = new Set(possibleFilesToAnalyze.filter(relativePath => {
       const existingPlans = matchingAnalyzerPlansByFile.get(relativePath);
       if (existingPlans?.length) return false;
 
       const matchingPlans = analyzerPlans.filter(plan => plan.relevantFiles.has(relativePath));
       matchingAnalyzerPlansByFile.set(relativePath, matchingPlans);
       return matchingPlans.length === 0;
-    });
-    if (unsupportedFiles.length > 0) {
+    }));
+    const unsupportedDirectFiles = directFilesToAnalyze.filter(filePath => unsupportedFiles.has(filePath));
+    if (unsupportedDirectFiles.length > 0) {
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       return {
         output,
         fileResults: new Map(),
         wasFullRebuild: true,
-        fullRebuildReason: `Changed files are not supported by single-file incremental analyzers: ${unsupportedFiles.slice(0, 5).join(', ')}`
+        fullRebuildReason: `Changed files are not supported by single-file incremental analyzers: ${unsupportedDirectFiles.slice(0, 5).join(', ')}`
       };
     }
 
@@ -2531,69 +2546,13 @@ export class AnalyzerOrchestrator {
     const promotedProjectAnalyzerIds = await selectPromotedIncrementalAnalyzers(
       projectPath,
       candidateIncrementalAnalyzers,
-      matchingAnalyzerPlansByFile,
+      new Map([...matchingAnalyzerPlansByFile].filter(([filePath]) => directFilesToAnalyze.includes(filePath))),
       scannedRelevantFilesByAnalyzer
     );
 
     const projectScopedAnalyzerIds = new Set(promotedProjectAnalyzerIds);
     const directlyChangedFiles = new Set([...changeSet.added, ...changeSet.modified]);
     const registeredAnalyzerIds = new Set(detectedAnalyzers.map(registration => registration.id));
-    const filesWithUnsupportedDerivedFacts = filesToAnalyze.filter(relativePath => {
-      const projectScopedPlans = (matchingAnalyzerPlansByFile.get(relativePath) || [])
-        .filter(plan =>
-          plan.registration.analyzer.incrementalContributionScope() === 'project' ||
-          promotedProjectAnalyzerIds.has(plan.registration.id)
-        );
-      const isDirectChange = directlyChangedFiles.has(relativePath);
-      if (isDirectChange) for (const plan of projectScopedPlans) projectScopedAnalyzerIds.add(plan.registration.id);
-      const record = previousState.files[relativePath];
-      if (!record) return projectScopedPlans.length > 0;
-
-      const coveredAnalyzers = new Set(
-        (matchingAnalyzerPlansByFile.get(relativePath) || []).map(plan => plan.registration.id)
-      );
-
-      let unsupported = isDirectChange && projectScopedPlans.length > 0;
-      for (const nodeId of record.nodeIds) {
-        const node = previousNodesById.get(nodeId);
-        if (!node) continue;
-
-        const nodeAnalyzers = new Set([
-          ...(node.analyzers || []),
-          ...(node.primaryAnalyzer ? [node.primaryAnalyzer] : [])
-        ]);
-
-        for (const analyzerId of nodeAnalyzers) {
-          if (isDirectChange && analyzerId && !coveredAnalyzers.has(analyzerId)) {
-            projectScopedAnalyzerIds.add(analyzerId);
-            unsupported = true;
-          }
-        }
-      }
-
-      const graphItems = [
-        ...record.edgeIds.map(id => previousEdgesById.get(id)),
-        ...record.entryPointIds.map(id => previousEntryPointsById.get(id)),
-        ...record.exitPointIds.map(id => previousExitPointsById.get(id)),
-      ].filter((item): item is CASEdge | CASEntryPoint | CASExitPoint => Boolean(item));
-      for (const item of graphItems) {
-        for (const analyzerId of graphItemAnalyzers(item)) {
-          if (!isDirectChange || !registeredAnalyzerIds.has(analyzerId) || coveredAnalyzers.has(analyzerId)) continue;
-          projectScopedAnalyzerIds.add(analyzerId);
-          unsupported = true;
-        }
-      }
-
-      return unsupported;
-    });
-    debugIncrementalPhase('unsupported-derived-fact-check');
-    await yieldToEventLoop();
-    const trackedFileCount = Object.keys(previousState.files).length;
-    if (shouldPreferFullRebuildForFanout(filesToAnalyze.length, trackedFileCount, projectScopedAnalyzerIds.size)) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      const fullRebuildReason = `Affected dependency closure spans ${filesToAnalyze.length} of ${trackedFileCount} tracked files while ${projectScopedAnalyzerIds.size} project-scoped analyzers require refresh`;
-      return { output, fileResults: new Map(), wasFullRebuild: true, fullRebuildReason };
-    }
     const allNodes = [...previousOutput.nodes];
     const allEdges = [...previousOutput.edges];
     const allEntryPoints = [...(previousOutput.entry_points || [])];
@@ -2627,21 +2586,10 @@ export class AnalyzerOrchestrator {
     const filteredEdges = allEdges.filter(e => !deletedEdgeIds.has(e.id));
     const filteredEntryPoints = allEntryPoints.filter(ep => !deletedEntryPointIds.has(ep.id));
     const filteredExitPoints = allExitPoints.filter(ex => !deletedExitPointIds.has(ex.id));
-    const fileScopedRemovals: Array<{ record: FileAnalysisRecord; analyzerIds: ReadonlySet<string> }> = [];
-    for (const affectedFile of changeSet.affectedFiles || []) {
-      const record = previousState.files[affectedFile];
-      if (!record || directlyChangedFiles.has(affectedFile)) continue;
-      const analyzerIds = new Set((matchingAnalyzerPlansByFile.get(affectedFile) || [])
-        .filter(plan => plan.registration.analyzer.incrementalContributionScope() === 'file')
-        .map(plan => plan.registration.id));
-      fileScopedRemovals.push({ record, analyzerIds });
-    }
     const filteredGraph = { nodes: filteredNodes, edges: filteredEdges, entryPoints: filteredEntryPoints, exitPoints: filteredExitPoints };
-    removeFileScopedGraphItemsBatch(filteredGraph, fileScopedRemovals);
     debugIncrementalPhase('filter-previous-graph');
     await yieldToEventLoop();
     const fileResults = new Map<string, FileAnalysisResult>();
-    const appendFileResult = createIncrementalGraphAccumulator({ nodes: filteredNodes, edges: filteredEdges, entryPoints: filteredEntryPoints, exitPoints: filteredExitPoints });
     const failedFiles: string[] = [];
     const BATCH_SIZE = 8;
     const previousSnapshot: CASContribution = {
@@ -2660,9 +2608,45 @@ export class AnalyzerOrchestrator {
         contributed_exit_points: previousOutput.exit_points?.length || 0
       }
     };
+    const trackedFileCount = Object.keys(previousState.files).length;
+    const configuredPropagationDepth = previousState.config?.maxPropagationDepth;
+    const defaultPropagationDepth = Math.max(8, Math.ceil(Math.log2(trackedFileCount + 1)) * 2);
+    const maxPropagationDepth = typeof configuredPropagationDepth === 'number' &&
+      Number.isSafeInteger(configuredPropagationDepth) && configuredPropagationDepth >= 0
+      ? configuredPropagationDepth
+      : defaultPropagationDepth;
+    const propagation = createIncrementalPropagationWorklist({
+      projectPath,
+      files: previousState.files,
+      nodes: previousOutput.nodes,
+      edges: previousOutput.edges,
+      changedFiles: directFilesToAnalyze,
+      deletedFiles: changeSet.deleted,
+      maxDepth: maxPropagationDepth,
+    });
 
-    for (let i = 0; i < filesToAnalyze.length; i += BATCH_SIZE) {
-      const batch = filesToAnalyze.slice(i, i + BATCH_SIZE);
+    while (true) {
+      const batch = propagation.takeBatch(BATCH_SIZE).map(item => item.filePath);
+      if (batch.length === 0) break;
+      const unsupportedBatch = batch.filter(filePath => unsupportedFiles.has(filePath));
+      if (unsupportedBatch.length > 0) {
+        const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+        return {
+          output,
+          fileResults: new Map(),
+          wasFullRebuild: true,
+          fullRebuildReason: `Propagated files are not supported by single-file incremental analyzers: ${unsupportedBatch.slice(0, 5).join(', ')}`,
+        };
+      }
+      removeFileScopedGraphItemsBatch(filteredGraph, batch.flatMap(filePath => {
+        const record = previousState.files[filePath];
+        if (!record || directlyChangedFiles.has(filePath)) return [];
+        const analyzerIds = new Set((matchingAnalyzerPlansByFile.get(filePath) || [])
+          .filter(plan => plan.registration.analyzer.incrementalContributionScope() === 'file')
+          .map(plan => plan.registration.id));
+        return [{ record, analyzerIds }];
+      }));
+      const appendFileResult = createIncrementalGraphAccumulator(filteredGraph);
       const batchResults = await Promise.all(
         batch.map(async (relativePath) => {
           const fullPath = path.join(projectPath, relativePath);
@@ -2769,11 +2753,28 @@ export class AnalyzerOrchestrator {
         if (success && result) {
           fileResults.set(relativePath, result);
           appendFileResult(result);
+          propagation.complete(relativePath, !incrementalFileSurfacesMatch({
+            filePath: relativePath,
+            previousState,
+            current: result,
+            previousNodesById,
+            previousEdgesById,
+            previousEntryPointsById,
+            previousExitPointsById,
+          }));
         } else {
           failedFiles.push(relativePath);
         }
       }
+      const propagationFailure = propagation.fallbackReason();
+      if (propagationFailure) {
+        const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+        return { output, fileResults: new Map(), wasFullRebuild: true, fullRebuildReason: propagationFailure };
+      }
     }
+    const analyzedFiles = propagation.scheduledFiles();
+    const directFileSet = new Set([...directFilesToAnalyze, ...changeSet.deleted]);
+    changeSet.affectedFiles = analyzedFiles.filter(filePath => !directFileSet.has(filePath));
     const incrementalMergeWarnings: CASAnalysisError[] = [];
     this.dedupeGraphItemsInPlace(filteredEntryPoints, 'entry point', 'incremental', incrementalMergeWarnings);
     this.dedupeGraphItemsInPlace(filteredExitPoints, 'exit point', 'incremental', incrementalMergeWarnings);
@@ -2787,9 +2788,9 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('analyze-changed-files');
     await yieldToEventLoop();
 
-    if (failedFiles.length > 0 || fileResults.size !== filesToAnalyze.length) {
+    if (failedFiles.length > 0 || fileResults.size !== analyzedFiles.length) {
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      const incompleteFiles = filesToAnalyze.filter(file => !fileResults.has(file));
+      const incompleteFiles = analyzedFiles.filter(file => !fileResults.has(file));
       return {
         output,
         fileResults: new Map(),
@@ -2807,6 +2808,48 @@ export class AnalyzerOrchestrator {
     );
     debugIncrementalPhase('retain-stable-missing-facts');
     await yieldToEventLoop();
+
+    const filesWithUnsupportedDerivedFacts = propagation.changedSurfaceFiles().filter(relativePath => {
+      const plans = matchingAnalyzerPlansByFile.get(relativePath) || [];
+      const projectScopedPlans = plans.filter(plan =>
+        plan.registration.analyzer.incrementalContributionScope() === 'project' ||
+        promotedProjectAnalyzerIds.has(plan.registration.id)
+      );
+      for (const plan of projectScopedPlans) projectScopedAnalyzerIds.add(plan.registration.id);
+      const record = previousState.files[relativePath];
+      if (!record) return projectScopedPlans.length > 0;
+      const coveredAnalyzers = new Set(plans.map(plan => plan.registration.id));
+      let unsupported = projectScopedPlans.length > 0;
+      for (const nodeId of record.nodeIds) {
+        const node = previousNodesById.get(nodeId);
+        if (!node) continue;
+        for (const analyzerId of [...(node.analyzers || []), ...(node.primaryAnalyzer ? [node.primaryAnalyzer] : [])]) {
+          if (!analyzerId || !registeredAnalyzerIds.has(analyzerId) || coveredAnalyzers.has(analyzerId)) continue;
+          projectScopedAnalyzerIds.add(analyzerId);
+          unsupported = true;
+        }
+      }
+      const graphItems = [
+        ...record.edgeIds.map(id => previousEdgesById.get(id)),
+        ...record.entryPointIds.map(id => previousEntryPointsById.get(id)),
+        ...record.exitPointIds.map(id => previousExitPointsById.get(id)),
+      ].filter((item): item is CASEdge | CASEntryPoint | CASExitPoint => Boolean(item));
+      for (const item of graphItems) {
+        for (const analyzerId of graphItemAnalyzers(item)) {
+          if (!registeredAnalyzerIds.has(analyzerId) || coveredAnalyzers.has(analyzerId)) continue;
+          projectScopedAnalyzerIds.add(analyzerId);
+          unsupported = true;
+        }
+      }
+      return unsupported;
+    });
+    debugIncrementalPhase('unsupported-derived-fact-check');
+    await yieldToEventLoop();
+    if (shouldPreferFullRebuildForFanout(analyzedFiles.length, trackedFileCount, projectScopedAnalyzerIds.size)) {
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+      const fullRebuildReason = `Affected dependency closure spans ${analyzedFiles.length} of ${trackedFileCount} tracked files while ${projectScopedAnalyzerIds.size} project-scoped analyzers require refresh`;
+      return { output, fileResults: new Map(), wasFullRebuild: true, fullRebuildReason };
+    }
 
     const localizedEligibility = changeSet.added.length === 0 && changeSet.deleted.length === 0
       ? this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults)
@@ -3789,7 +3832,7 @@ export class AnalyzerOrchestrator {
       const currentNodeIds = new Set(result.nodes.map(node => node.id));
       const retainedPreviousNodes = previousNodes.filter(node => currentNodeIds.has(node.id));
       const retainedCurrentNodes = result.nodes.filter(node => previousNodeIds.has(node.id));
-      if (!this.sameFingerprint(retainedPreviousNodes, retainedCurrentNodes, localizedNodeFingerprint)) return { allowed: false, reason: `node fingerprint changed for ${filePath}` };
+      if (!sameIncrementalFingerprints(retainedPreviousNodes, retainedCurrentNodes, localizedNodeFingerprint)) return { allowed: false, reason: `node fingerprint changed for ${filePath}` };
       const missingPreviousNodes = previousNodes.filter(node => !currentNodeIds.has(node.id));
       if (missingPreviousNodes.length > 0) {
         return { allowed: false, reason: `nodes disappeared for ${filePath}: ${missingPreviousNodes.slice(0, 5).map(node => `${node.type}:${node.name}`).join(', ')}` };
@@ -3814,14 +3857,14 @@ export class AnalyzerOrchestrator {
       const previousEntryPoints = record.entryPointIds
         .map(id => previousEntryPointsById.get(id))
         .filter((entryPoint): entryPoint is CASEntryPoint => Boolean(entryPoint));
-      if (!this.sameFingerprint(previousEntryPoints, result.entryPoints, entryPoint => this.entryPointFingerprint(entryPoint))) {
+      if (!sameIncrementalFingerprints(previousEntryPoints, result.entryPoints, incrementalEntryPointFingerprint)) {
         return { allowed: false, reason: `entry point fingerprint changed for ${filePath}` };
       }
 
       const previousExitPoints = record.exitPointIds
         .map(id => previousExitPointsById.get(id))
         .filter((exitPoint): exitPoint is CASExitPoint => Boolean(exitPoint));
-      if (!this.sameFingerprint(previousExitPoints, result.exitPoints, exitPoint => this.exitPointFingerprint(exitPoint))) {
+      if (!sameIncrementalFingerprints(previousExitPoints, result.exitPoints, incrementalExitPointFingerprint)) {
         return { allowed: false, reason: `exit point fingerprint changed for ${filePath}` };
       }
 
@@ -3830,13 +3873,8 @@ export class AnalyzerOrchestrator {
         .filter((edge): edge is CASEdge => Boolean(edge))
         .filter(edge => this.isBehavioralIncrementalEdge(edge));
       const currentBehavioralEdges = result.edges.filter(edge => this.isBehavioralIncrementalEdge(edge));
-      const novelBehavioralEdges = this.novelFingerprintIds(
-        previousBehavioralEdges,
-        currentBehavioralEdges,
-        edge => this.edgeFingerprint(edge)
-      );
-      if (novelBehavioralEdges.length > 0) {
-        return { allowed: false, reason: `behavioral edge fingerprint changed for ${filePath}: ${novelBehavioralEdges.slice(0, 5).join(', ')}` };
+      if (!sameIncrementalFingerprints(previousBehavioralEdges, currentBehavioralEdges, incrementalEdgeFingerprint)) {
+        return { allowed: false, reason: `behavioral edge fingerprint changed for ${filePath}` };
       }
     }
 
@@ -3921,122 +3959,32 @@ export class AnalyzerOrchestrator {
       const result = fileResults.get(filePath);
       if (!record || !result) return false;
 
-      if (!this.sameFingerprint(
+      if (!sameIncrementalFingerprints(
         record.nodeIds.map(id => previousNodesById.get(id)).filter((node): node is CASNode => Boolean(node)),
         result.nodes,
-        node => this.nodeFingerprint(node)
+        incrementalNodeFingerprint
       )) return false;
 
-      if (!this.sameFingerprint(
+      if (!sameIncrementalFingerprints(
         record.edgeIds.map(id => previousEdgesById.get(id)).filter((edge): edge is CASEdge => Boolean(edge)),
         result.edges,
-        edge => this.edgeFingerprint(edge)
+        incrementalEdgeFingerprint
       )) return false;
 
-      if (!this.sameFingerprint(
+      if (!sameIncrementalFingerprints(
         record.entryPointIds.map(id => previousEntryPointsById.get(id)).filter((entryPoint): entryPoint is CASEntryPoint => Boolean(entryPoint)),
         result.entryPoints,
-        entryPoint => this.entryPointFingerprint(entryPoint)
+        incrementalEntryPointFingerprint
       )) return false;
 
-      if (!this.sameFingerprint(
+      if (!sameIncrementalFingerprints(
         record.exitPointIds.map(id => previousExitPointsById.get(id)).filter((exitPoint): exitPoint is CASExitPoint => Boolean(exitPoint)),
         result.exitPoints,
-        exitPoint => this.exitPointFingerprint(exitPoint)
+        incrementalExitPointFingerprint
       )) return false;
     }
 
     return true;
-  }
-
-  private sameFingerprint<T extends { id: string }>(
-    previousItems: T[],
-    currentItems: T[],
-    fingerprint: (item: T) => unknown
-  ): boolean {
-    if (previousItems.length !== currentItems.length) return false;
-
-    const previous = previousItems
-      .map(item => JSON.stringify(fingerprint(item)))
-      .sort();
-    const current = currentItems
-      .map(item => JSON.stringify(fingerprint(item)))
-      .sort();
-
-    return previous.every((value, index) => value === current[index]);
-  }
-
-  private novelFingerprintIds<T extends { id: string }>(
-    previousItems: T[],
-    currentItems: T[],
-    fingerprint: (item: T) => unknown
-  ): string[] {
-    const previous = new Set(previousItems.map(item => JSON.stringify(fingerprint(item))));
-    return currentItems
-      .filter(item => !previous.has(JSON.stringify(fingerprint(item))))
-      .map(item => item.id);
-  }
-
-  private nodeFingerprint(node: CASNode): unknown {
-    return {
-      id: node.id,
-      name: node.name,
-      type: node.type,
-      parent: node.parent,
-      children: node.children,
-      category: node.category,
-      subcategories: node.subcategories,
-      level: node.level,
-      level_name: node.level_name,
-      analyzers: node.analyzers,
-      primaryAnalyzer: node.primaryAnalyzer,
-      source: node.source ? {
-        file: node.source.file,
-        line: node.source.line,
-        column: node.source.column,
-        end_column: node.source.end_column
-      } : undefined,
-      metadata: node.metadata,
-      signature: node.signature,
-      implementation: node.implementation,
-      description: node.description
-    };
-  }
-
-  private edgeFingerprint(edge: CASEdge): unknown {
-    return {
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      type: edge.type,
-      category: edge.category,
-      metadata: edge.metadata
-    };
-  }
-
-  private entryPointFingerprint(entryPoint: CASEntryPoint): unknown {
-    return {
-      id: entryPoint.id,
-      source_node: entryPoint.source_node,
-      type: entryPoint.type,
-      name: entryPoint.name,
-      trigger: entryPoint.trigger,
-      handler: entryPoint.handler,
-      security: entryPoint.security,
-      metadata: entryPoint.metadata
-    };
-  }
-
-  private exitPointFingerprint(exitPoint: CASExitPoint): unknown {
-    return {
-      id: exitPoint.id,
-      source_node: exitPoint.source_node,
-      type: exitPoint.type,
-      name: exitPoint.name,
-      target: exitPoint.target,
-      operation: exitPoint.operation,
-      metadata: exitPoint.metadata
-    };
   }
 
   private analyzerIdForFilePath(filePath: string): string {

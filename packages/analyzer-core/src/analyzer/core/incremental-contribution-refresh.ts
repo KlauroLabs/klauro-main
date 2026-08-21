@@ -466,6 +466,12 @@ export function canReplaceAnalyzerContributions(
       merged.some(candidate => !analyzerIds.has(candidate))) return false;
   }
 
+  const attachedItems = [...graph.edges, ...graph.entryPoints, ...graph.exitPoints]
+    .filter(item => 'source_node' in item
+      ? ownedNodeIds.has(item.source_node)
+      : ownedNodeIds.has(item.source) || ownedNodeIds.has(item.target));
+  if (attachedItems.some(item => graphItemAnalyzers(item).length === 0)) return false;
+
   return true;
 }
 

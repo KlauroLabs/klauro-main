@@ -21,6 +21,10 @@ const GRAPH_DEPENDENCY_EDGE_TYPES = new Set([
   'authenticates', 'authorizes',
 ]);
 
+export function isGraphDependencyEdge(edge: CASEdge): boolean {
+  return GRAPH_DEPENDENCY_EDGE_TYPES.has(edge.type);
+}
+
 function normalizeProjectPath(filePath: string): string {
   return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
 }
@@ -84,7 +88,7 @@ export function computeGraphAffectedFileClosure(input: {
   const reverseDependencies = new Map<string, Set<string>>();
 
   for (const edge of input.edges) {
-    if (!GRAPH_DEPENDENCY_EDGE_TYPES.has(edge.type)) continue;
+    if (!isGraphDependencyEdge(edge)) continue;
     const dependentFile = fileByNode.get(edge.source) || '';
     const dependencyFile = fileByNode.get(edge.target) || '';
     if (!dependentFile || !dependencyFile || dependentFile === dependencyFile) continue;

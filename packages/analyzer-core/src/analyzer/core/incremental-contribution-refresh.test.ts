@@ -108,6 +108,54 @@ test('merged endpoint ownership remains atomic', () => {
   assert.equal(canReplaceAnalyzerContributions(graph, new Set(['framework'])), false);
 });
 
+test('project refresh fails closed when attached graph facts have unknown ownership', () => {
+  const graph = {
+    nodes: [node('owned', ['framework']), node('retained', ['language'])],
+    edges: [{ id: 'unknown', source: 'owned', target: 'retained', type: 'calls' } as CASEdge],
+    entryPoints: [],
+    exitPoints: [],
+  };
+
+  assert.equal(canReplaceAnalyzerContributions(graph, new Set(['framework'])), false);
+});
+
+test('project refresh never runs after complete replaceability cannot be proven', async () => {
+  let analyzeCalls = 0;
+  const graph = {
+    nodes: [node('owned', ['framework']), node('retained', ['language'])],
+    edges: [{ id: 'unknown', source: 'owned', target: 'retained', type: 'calls' } as CASEdge],
+    entryPoints: [],
+    exitPoints: [],
+  };
+  const refreshed = await refreshProjectScopedContributions({
+    projectPath: '/workspace',
+    registrations: [{
+      id: 'framework', type: 'framework', analyzer: { analyze: async () => {
+        analyzeCalls += 1;
+        return {
+          nodes: [], edges: [], entry_points: [], exit_points: [],
+          analyzer_metadata: {
+            analyzer_id: 'framework', analyzer_name: 'Framework', version: '1',
+            contribution_type: 'framework', nodes_contributed: 0, edges_contributed: 0,
+            contributed_entry_points: 0, contributed_exit_points: 0,
+          },
+        };
+      } },
+    }],
+    analyzerIds: new Set(['framework']),
+    graph,
+    ownershipGraph: graph,
+    analyzerRoot: () => '/workspace',
+    analysisFilters: [],
+    scopeFilters: () => [],
+    normalizeContribution: () => undefined,
+    mergeContribution: async current => current,
+  });
+
+  assert.equal(refreshed, null);
+  assert.equal(analyzeCalls, 0);
+});
+
 test('project refresh preserves base analysis filters and analyzer scope filters', async () => {
   const observedFilters: string[][] = [];
   const graph = { nodes: [node('owned', ['language'])], edges: [], entryPoints: [], exitPoints: [] };

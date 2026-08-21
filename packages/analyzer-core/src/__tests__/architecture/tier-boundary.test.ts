@@ -112,6 +112,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'incremental-impact.ts': 1,
   'incremental-language-resolution.ts': 1,
   'incremental-locality.ts': 1,
+  'incremental-propagation.ts': 1,
   'incremental-scope.ts': 1,
   'incremental-state-refresh.ts': 1,
   'javascript-static-call.ts': 1,
