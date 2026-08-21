@@ -9,7 +9,7 @@ import {
   CASUserJourney,
   CASUserJourneyStep,
   CASUserJourneySummary,
-  CASUserJourneyTerminalEntity
+  CASUserJourneyTerminalEntity, ENTRY_POINT_TYPES, ENTRY_POINT_TYPE_REACH,
 } from '../../types/cas.types';
 import { isGuardEnforcementEdge } from './guard-relationships';
 import { classifyGuardKind } from './guard-classification';
@@ -65,7 +65,7 @@ const JUNK_CALL_TARGET_NAMES = new Set([
 ]);
 const METHOD_NAME_POPULARITY_LIMIT = 3;
 const METHOD_LIKE_TYPES = /(^|[_\s])(method|function|action)([_\s]|$)/;
-export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route', 'api', 'rpc', 'graphql', 'ipc', 'command', 'train', 'notebook-cell']);
+export const USER_FACING_ENTRY_TYPES = new Set<CASEntryPoint['type']>(ENTRY_POINT_TYPES.filter(type => ENTRY_POINT_TYPE_REACH[type] === 'external'));
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
 const CRON_LINKABLE_ENTRY_TYPES = new Set(['cli']);

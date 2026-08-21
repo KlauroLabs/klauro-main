@@ -1,4 +1,4 @@
-
+import { ENTRY_POINT_TYPE_REACH, type CASEntryPointType } from '../../types/cas.types';
 
 
 
@@ -355,10 +355,6 @@ export function attachCapability<T extends EntryPointLike>(
 
 
 
-const EXTERNALLY_REACHABLE_TYPES = new Set(['http', 'webhook', 'graphql', 'websocket']);
-const INTERNALLY_TRIGGERED_TYPES = new Set(['event', 'message', 'schedule']);
-
-
 function seamReferencesNode(seam: CommunicationSeamLike, nodeIds: string[]): boolean {
   const haystacks = [seam.evidence, seam.source, seam.target];
   return nodeIds.some(
@@ -403,9 +399,10 @@ export function attachInteractionReach<T extends EntryPointLike>(
     }
 
     if (reach === 'unknown' && ep.type) {
-      if (EXTERNALLY_REACHABLE_TYPES.has(ep.type) && ep.trigger) {
+      const typeReach = ENTRY_POINT_TYPE_REACH[ep.type as CASEntryPointType];
+      if (typeReach === 'external' && ep.trigger) {
         reach = 'external';
-      } else if (INTERNALLY_TRIGGERED_TYPES.has(ep.type)) {
+      } else if (typeReach === 'internal') {
         reach = 'internal';
       }
     }

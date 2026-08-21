@@ -162,13 +162,13 @@ describe('attachInteractionReach', () => {
     expect(result.interaction_reach).toBe('external');
   });
 
-  it('marks an internally-triggered message entry point as internal', () => {
+  it('leaves a message entry unknown without structural reach evidence', () => {
     const eps = [ep({ id: 'entry_msg', type: 'message' })];
     const seams: CommunicationSeamsLike = { seams: [] };
 
     const [result] = attachInteractionReach(eps, seams);
 
-    expect(result.interaction_reach).toBe('internal');
+    expect(result.interaction_reach).toBe('unknown');
   });
 
   it('falls back to unknown when there is no type or seam evidence', () => {
