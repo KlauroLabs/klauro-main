@@ -99,6 +99,7 @@ test('POST /v1/analyze rejects work beyond the bounded queue and exposes retry m
     const status = await request(address.port, 'GET', '/v1/analyses/admission-first/status', undefined, token);
     assert.equal(status.statusCode, 200);
     assert.equal(status.body.status, 'populating');
+    assert.ok(status.body.last_attempt, JSON.stringify(status.body));
     assert.equal(status.body.last_attempt.queue_position, 0);
     assert.equal(status.body.last_attempt.estimated_wait_ms, 0);
   } finally {
