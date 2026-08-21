@@ -55,7 +55,8 @@ import { ResponseCache, responseCacheKey } from './response-cache';
 import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
-import { executeHostedProjectQuery, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type HostedProjectQueryTool } from './hosted-project-query';
+import { runHostedProjectQueryWorker } from './hosted-project-query-process';
 import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse } from './analysis-response-readiness';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -2404,24 +2405,25 @@ async function handleAccountApi(
     }
     try {
       const workspace = workspacePath(dataDir, project.analysis_id);
-      const cas = await getAnalysis(workspace);
-      const unavailable = unavailableComprehensionResponse(cas, { project_id: project.id, analysis_id: project.analysis_id, analysis_timestamp: cas.analysis_timestamp, tool: body.tool }, body.tool);
-      if (unavailable) return { statusCode: 200, body: unavailable };
-      const result = await executeHostedProjectQuery({
-        cas,
-        tool: body.tool,
-        args: body.args,
-        projectPath: workspace,
+      const tool = body.tool as HostedProjectQueryTool;
+      const args = HOSTED_PROJECT_QUERY_SCHEMAS[tool].parse(body.args ?? {});
+      const query = await runHostedProjectQueryWorker({
+        workspace,
+        tool,
+        args,
+        projectId: project.id,
+        analysisId: project.analysis_id,
       });
+      if (query.unavailable) return { statusCode: 200, body: query.unavailable };
       return {
         statusCode: 200,
         body: {
           status: 'ready',
           project_id: project.id,
           analysis_id: project.analysis_id,
-          analysis_timestamp: cas.analysis_timestamp,
+          analysis_timestamp: query.analysisTimestamp,
           tool: body.tool,
-          result,
+          result: query.result,
         },
       };
     } catch (error) {

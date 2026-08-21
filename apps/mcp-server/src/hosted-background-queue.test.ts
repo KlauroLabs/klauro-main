@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withHostedBackgroundPermit } from './hosted-background-queue';
+import {
+  registerHostedBackgroundPreflight,
+  withHostedBackgroundPermit,
+  withHostedForegroundPermit,
+} from './hosted-background-queue';
 
 test('hosted memory-heavy background work is globally serialized after failures', async () => {
   let active = 0;
@@ -16,4 +20,26 @@ test('hosted memory-heavy background work is globally serialized after failures'
   const results = await Promise.allSettled([run(), run(true), run()]);
   assert.equal(peak, 1);
   assert.deepEqual(results.map(result => result.status), ['fulfilled', 'rejected', 'fulfilled']);
+});
+
+test('background work waits for foreground queries and runs their memory-release preflight', async () => {
+  const order: string[] = [];
+  let releaseForeground!: () => void;
+  const unregister = registerHostedBackgroundPreflight(() => { order.push('preflight'); });
+  try {
+    const foreground = withHostedForegroundPermit(async () => {
+      order.push('foreground-start');
+      await new Promise<void>(resolve => { releaseForeground = resolve; });
+      order.push('foreground-end');
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    const background = withHostedBackgroundPermit(async () => { order.push('background'); });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(order, ['foreground-start']);
+    releaseForeground();
+    await Promise.all([foreground, background]);
+    assert.deepEqual(order, ['foreground-start', 'foreground-end', 'preflight', 'background']);
+  } finally {
+    unregister();
+  }
 });
