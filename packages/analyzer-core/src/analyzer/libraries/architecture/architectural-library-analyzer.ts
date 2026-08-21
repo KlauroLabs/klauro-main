@@ -863,7 +863,7 @@ export interface ArchitectureLibraryAnalyzerDefinition {
   name: string;
   category: ArchitectureLibraryCategory;
   dependencies: string[];
-  analyzer: ArchitecturalLibraryAnalyzer;
+  createAnalyzer: () => ArchitecturalLibraryAnalyzer;
 }
 
 export function architectureLibraryAnalyzerDefinitions(categories?: ArchitectureLibraryCategory[]): ArchitectureLibraryAnalyzerDefinition[] {
@@ -872,7 +872,7 @@ export function architectureLibraryAnalyzerDefinitions(categories?: Architecture
     name: `${rule.displayName} Analyzer`,
     category: rule.category,
     dependencies: [...rule.packages],
-    analyzer: new ArchitecturalLibraryAnalyzer({
+    createAnalyzer: () => new ArchitecturalLibraryAnalyzer({
       id: `architecture-${thisSafeRuleId(rule.name)}-library`,
       displayName: `${rule.displayName} Analyzer`,
       ruleNames: [rule.name],

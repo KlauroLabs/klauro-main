@@ -264,6 +264,8 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   { id: 'tablegen', extensions: ['td'], manifests: [] },
 
   { id: 'proto', extensions: ['proto'], manifests: [] },
+  { id: 'configuration', extensions: ['yaml', 'yml', 'conf', 'cfg'], manifests: [] },
+  { id: 'soap-contract', extensions: ['wsdl', 'xsd'], manifests: [] },
   { id: 'thrift', extensions: ['thrift'], manifests: [] },
   { id: 'graphql', extensions: ['graphql', 'gql', 'graphqls'], manifests: [] },
   { id: 'smithy', extensions: ['smithy'], manifests: [] },

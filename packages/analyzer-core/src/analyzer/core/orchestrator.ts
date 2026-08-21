@@ -321,6 +321,8 @@ export interface AnalyzerRegistration {
   enhances?: string[];
   consumesExistingAnalysis?: boolean;
   incremental?: boolean;
+  discoversNestedRoots?: boolean;
+  acceptsLocalPackGlobs?: boolean;
   analyzer: BaseAnalyzer;
 }
 interface AnalysisMergeTarget {
@@ -477,7 +479,6 @@ export class AnalyzerOrchestrator {
   private elementDescriptionArtifactType?: string;
 
   private deferredAiEnrichments: WeakMap<CASOutput, () => Promise<void>> = new WeakMap();
-
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
   }
@@ -502,12 +503,11 @@ export class AnalyzerOrchestrator {
           files: dp.files,
           content: (dp.content || []).map(c => (c instanceof RegExp ? c.source : String(c))),
         },
-        incremental: reg.incremental ?? Boolean(reg.analyzer?.supportsIncrementalAnalysis?.()),
+        incremental: Boolean(reg.incremental),
       });
     }
     return out.sort((a, b) => a.type.localeCompare(b.type) || a.id.localeCompare(b.id));
   }
-
   configureEmbedding(config: EmbeddingPhaseConfig | null): void {
     this.embeddingPhaseConfig = config;
   }
@@ -517,7 +517,6 @@ export class AnalyzerOrchestrator {
       ? new PersistentAnalyzerContributionCache({ rootPath })
       : undefined;
   }
-
   private async applyEmbeddingPhase(output: CASOutput, projectPath: string): Promise<void> {
     if (this.embeddingPhaseConfig) {
       const phase = new EmbeddingPhase(this.embeddingPhaseConfig);
@@ -943,6 +942,7 @@ export class AnalyzerOrchestrator {
 
   private applyLocalPackGlobs(globs: string[]): void {
     for (const registration of this.analyzers.values()) {
+      if (!registration.acceptsLocalPackGlobs) continue;
       const analyzer = registration.analyzer as unknown as { localPackGlobs?: string[] };
       if (Array.isArray(analyzer.localPackGlobs)) {
         analyzer.localPackGlobs = [...globs];
@@ -3546,10 +3546,12 @@ export class AnalyzerOrchestrator {
       detectPatterns: registration.detectPatterns,
       requires: [...(registration.requires || [])].sort(),
       enhances: [...(registration.enhances || [])].sort(),
+      incremental: registration.incremental,
+      discoversNestedRoots: registration.discoversNestedRoots,
+      acceptsLocalPackGlobs: registration.acceptsLocalPackGlobs,
     })).sort((left, right) => left.id.localeCompare(right.id));
     return crypto.createHash('sha256').update(stableAnalyzerCacheIdentity(registry)).digest('hex');
   }
-
   private updateIncrementalState(
     previousState: IncrementalState,
     result: { output: CASOutput; fileResults: Map<string, FileAnalysisResult> },
@@ -4765,7 +4767,7 @@ export class AnalyzerOrchestrator {
         return true;
       }
 
-      if ((registration.type === 'framework' || registration.type === 'library') && !registration.analyzer.discoversNestedRoots) {
+      if ((registration.type === 'framework' || registration.type === 'library') && !registration.discoversNestedRoots) {
         const nestedRoots = this.projectRoots
           .filter(root => root !== projectPath)
           .sort((a, b) => b.length - a.length);
@@ -4797,7 +4799,6 @@ export class AnalyzerOrchestrator {
       return false;
     }
   }
-
   private async hasLanguageSignal(projectPath: string, analyzerId: string): Promise<boolean> {
     const inventory = await this.getSourceFileInventory(projectPath);
     const hasExtension = (...extensions: string[]) => extensions.some(extension =>
@@ -4806,7 +4807,6 @@ export class AnalyzerOrchestrator {
     const hasBasename = (...basenames: string[]) => basenames.some(basename =>
       (inventory.basenames.get(basename.toLowerCase()) || []).length > 0
     );
-
     switch (analyzerId) {
       case 'typescript-javascript':
         return hasExtension('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs');
@@ -4830,11 +4830,14 @@ export class AnalyzerOrchestrator {
         return hasExtension('.tf', '.tfvars');
       default: {
         const registration = this.analyzers.get(analyzerId);
-        return registration ? registration.analyzer.canAnalyze(projectPath) : false;
+        if (!registration) return false;
+        const patterns = registration.detectPatterns || {};
+        if (patterns.files?.length && await this.hasFileSignal(projectPath, patterns.files, patterns.content || [], false)) return true;
+        if (patterns.content?.some(pattern => inventory.files.some(file => { pattern.lastIndex = 0; return pattern.test(file); }))) return true;
+        return patterns.content?.length ? this.hasContentPathSignal(projectPath, patterns.content) : false;
       }
     }
   }
-
   private async hasAnalyzerSignal(projectPath: string, registration: AnalyzerRegistration): Promise<boolean> {
     if (registration.type === 'language') {
       return true;
@@ -4863,7 +4866,6 @@ export class AnalyzerOrchestrator {
 
     return false;
   }
-
   private async manifestDeclaresRuntimeDependency(projectPath: string, packageNames: string[]): Promise<boolean> {
     if (!projectPath) return false;
     const wanted = new Set(packageNames.map(name => name.toLowerCase()));
@@ -5009,7 +5011,6 @@ export class AnalyzerOrchestrator {
 
     return false;
   }
-
   private async findInventoryMatches(projectPath: string, pattern: string): Promise<string[]> {
     const normalizedPattern = pattern.replace(/\\/g, '/');
     const inventory = await this.getSourceFileInventory(projectPath);

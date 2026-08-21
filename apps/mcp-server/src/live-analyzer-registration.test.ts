@@ -119,7 +119,7 @@ test('every concrete analyzer class is wired into the live createOrchestrator() 
   const silentlyDead: DiscoveredAnalyzerClass[] = [];
   for (const { className, file } of discovered) {
     if (INDIRECTLY_REGISTERED_VIA_ARCHITECTURE_DEFINITIONS.has(className)) continue;
-    const instantiated = new RegExp(`\\bnew ${className}\\s*\\(`).test(liveSource);
+    const instantiated = new RegExp(`(?:\\bnew\\s+${className}\\s*\\(|\\.${className}\\)\\s*\\(\\))`).test(liveSource);
     if (!instantiated) {
       silentlyDead.push({ className, file });
     }
@@ -173,15 +173,16 @@ test('inline registration ids equal the analyzer instance self-id (no id drift)'
   }
 
   // Match inline registration objects: capture the string id and the class of
-  // the no-arg `analyzer: new ClassName()`. (Indirect registrations via
+  // the no-arg eager or lazy constructor. (Indirect registrations via
   // architectureLibraryAnalyzerDefinitions() already share one id source and are
   // out of scope here.)
-  const inlineRe = /\{\s*id:\s*'([^']+)'[\s\S]*?analyzer:\s*new\s+([A-Za-z0-9_]+)\s*\(\s*\)/g;
+  const inlineRe = /\{\s*id:\s*'([^']+)'[\s\S]*?(?:analyzer:\s*new\s+([A-Za-z0-9_]+)\s*\(\s*\)|require\([^)]*\)\.([A-Za-z0-9_]+)\)\(\))/g;
   const mismatches: Array<{ registrationId: string; className: string; selfId: string }> = [];
   let m: RegExpExecArray | null;
   let checked = 0;
   while ((m = inlineRe.exec(liveSource)) !== null) {
-    const [, registrationId, className] = m;
+    const registrationId = m[1];
+    const className = m[2] || m[3];
     const file = classFile.get(className);
     if (!file) continue; // not a BaseAnalyzer class discovered on disk
     const mod = await import(file);

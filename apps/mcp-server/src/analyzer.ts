@@ -8,133 +8,8 @@ import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 import { beginForegroundAnalysis } from './foreground-analysis';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
-import { ShellAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/shell-analyzer';
-import { CliAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/cli-analyzer';
-import { SolidityAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/solidity-analyzer';
-import { CCppAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/c-cpp-analyzer';
-import { ElixirAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/elixir-analyzer';
-import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer';
-import { CloudFormationAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/cloudformation-analyzer';
-import { SqlSchemaAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/sql-schema-analyzer';
-import { JsonFileStoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/json-file-store-analyzer';
-import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer';
-import { AnsibleAnalyzer, PulumiAnalyzer, HelmAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer';
-import { CaddyAnalyzer, NginxAnalyzer, ApacheAnalyzer, HAProxyAnalyzer, TraefikAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer';
-import { DistributionArtifactAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer';
-import { GenericTreeSitterLanguageAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/generic-tree-sitter-language-analyzer';
-import {
-  NestJSAnalyzer,
-  SpringBootAnalyzer,
-  SpringCloudGatewayAnalyzer,
-  DjangoAnalyzer,
-  FlaskAnalyzer,
-  FastAPIAnalyzer,
-  AiohttpAnalyzer,
-  SanicAnalyzer,
-  TornadoAnalyzer,
-  StarletteAnalyzer,
-  ExpressAnalyzer,
-  FastifyAnalyzer,
-  NodeHttpAnalyzer,
-  ReactAnalyzer, VueAnalyzer,
-  AngularAnalyzer, AngularJsAnalyzer,
-  LaravelAnalyzer,
-  SymfonyAnalyzer,
-  RailsAnalyzer,
-  NextJSAnalyzer,
-  SinatraAnalyzer,
-  SlimAnalyzer,
-} from '../../../packages/analyzer-core/src/analyzer/frameworks/web';
-import { CronAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/cron-analyzer';
-import { JestAnalyzer, CypressAnalyzer, TestFrameworkAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/testing';
-import { AirflowAnalyzer, DagsterAnalyzer, PrefectAnalyzer, LuigiAnalyzer, JupyterNotebookAnalyzer, MLTrainingAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dataml';
-import { CiPipelineAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/ci';
-import { WPFAnalyzer, AspNetCoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet';
-import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust';
-import { GinAnalyzer, EchoAnalyzer, FiberAnalyzer, ChiAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/go';
-import { WarpAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust/warp-analyzer';
-import { TonicAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust/tonic-analyzer';
-import { DrogonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/cpp/drogon-analyzer';
-import { CrowAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/cpp/crow-analyzer';
-import { VaporAnalyzer, SwiftPlatformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/swift';
-import { GoRouterAnalyzer, ShelfAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dart';
-import { Http4sAnalyzer, PlayAnalyzer, AkkaHttpAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/scala';
-import { KemalAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/crystal';
-import { GenieAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/julia';
-import { CompojureAnalyzer, ReititAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/clojure';
-import { DreamAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/ocaml';
-import { ApexRestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/apex';
-import { MojoliciousAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/perl';
-import { SvelteAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/svelte-analyzer';
-import { AstroAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/javascript/astro-analyzer';
-import { HonoAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/javascript/hono-analyzer';
-import { AnchorAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust/anchor-analyzer';
-import { PhoenixAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/elixir/phoenix-analyzer';
-import { NuxtAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/nuxt-analyzer';
-import { RemixAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/remix-analyzer';
-import { ReactNativeAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/react-native-analyzer';
-import { KtorAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/kotlin/ktor-analyzer';
-import { ComposeAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/kotlin/compose-analyzer';
-import { SoliditySecurityAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/solidity/security-analyzer';
-import { WordPressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/php/wordpress-analyzer';
-import { BlazorAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet/blazor-analyzer';
-import { UnityAnalyzer, UnrealAnalyzer, GodotAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/game';
-import { EmbeddedCAnalyzer, ArduinoAnalyzer, LinuxKernelModuleAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/embedded';
-import { QuarkusAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/quarkus-analyzer';
-import { MicronautAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/micronaut-analyzer';
-import { JaxRsAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/jaxrs-analyzer';
-import { VertxAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/vertx-analyzer';
-import { SolidStartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/solidstart-analyzer';
-import { QwikAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/qwik-analyzer';
-import { OpenAPIAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/openapi-analyzer';
-import { EFCoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/efcore-analyzer';
-import { ElectronAnalyzer, TauriAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/desktop';
-import {
-  PrismaAnalyzer,
-  SocketIOAnalyzer,
-  ReactRouterAnalyzer,
-  ReduxAnalyzer,
-  ZustandAnalyzer,
-  TanStackQueryAnalyzer,
-  ReactiveStreamsAnalyzer,
-  FrontendStateAnalyzer,
-  ReqwestAnalyzer,
-  OutboundHttpClientAnalyzer,
-  ValidationSchemaAnalyzer,
-  architectureLibraryAnalyzerDefinitions,
-  McpToolRegistrationAnalyzer,
-  AuthAnalyzer
-} from '../../../packages/analyzer-core/src/analyzer/libraries';
-import { MessagingAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/messaging';
-import { ObservabilityAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/observability';
-import { TRPCAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/trpc-analyzer';
-import { GraphQLAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/graphql-analyzer';
-import { GrpcHandlerAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/api';
-import { AIStackAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/ai-stack-analyzer';
-import { WorkflowAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/workflow-analyzer';
-import { MediatorCqrsAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/mediator-cqrs-analyzer';
-import { SQLAlchemyPydanticAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/sqlalchemy-pydantic-analyzer';
-import { DiContainerBindingAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/architecture/di-container-analyzer';
-import { MockingLibraryAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/testing';
-import {
-  DrizzleAnalyzer,
-  TypeORMAnalyzer,
-  MongooseAnalyzer,
-  SequelizeAnalyzer,
-  KnexAnalyzer,
-  ObjectionAnalyzer,
-  DieselAnalyzer,
-  SeaOrmAnalyzer,
-  GormAnalyzer,
-  SqlxAnalyzer,
-  EntAnalyzer,
-  DapperAnalyzer,
-  DoctrineAnalyzer,
-} from '../../../packages/analyzer-core/src/analyzer/libraries/orm';
-import { ProtobufAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/protobuf-analyzer';
-import { SoapWsdlAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/soap-wsdl-analyzer';
+import { architectureLibraryAnalyzerDefinitions } from '../../../packages/analyzer-core/src/analyzer/libraries/architecture';
 import type { AnalyzerRegistration } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
-import { PackAnalyzer } from '../../../packages/analyzer-core/src/analyzer/packs';
 import * as fs from 'fs-extra';
 import * as nodeFs from 'fs';
 import * as path from 'path';
@@ -187,15 +62,20 @@ import { TEST_FRAMEWORK_DETECTION_FILES } from './test-framework-detection';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
-function lazyAnalyzerRegistration(load: () => BaseAnalyzer, incremental: boolean): Pick<AnalyzerRegistration, 'analyzer' | 'incremental'> {
+function lazyAnalyzerRegistration(load: () => BaseAnalyzer, incremental: boolean, discoversNestedRoots = false): Pick<AnalyzerRegistration, 'analyzer' | 'incremental' | 'discoversNestedRoots'> {
   let analyzer: BaseAnalyzer | undefined;
   return {
     incremental,
+    discoversNestedRoots,
     analyzer: new Proxy({} as BaseAnalyzer, {
       get(_target, property) {
         analyzer ??= load();
         const value = Reflect.get(analyzer, property, analyzer);
         return typeof value === 'function' ? value.bind(analyzer) : value;
+      },
+      set(_target, property, value) {
+        analyzer ??= load();
+        return Reflect.set(analyzer, property, value, analyzer);
       },
     }),
   };
@@ -303,7 +183,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: [],
         content: [/\.(sh|bash|zsh|ksh)$/],
       },
-      consumesExistingAnalysis: false, analyzer: new ShellAnalyzer(),
+      consumesExistingAnalysis: false, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/shell-analyzer').ShellAnalyzer)(), true),
     },
     {
       id: 'solidity',
@@ -314,7 +194,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: [],
         content: [/\.sol$/],
       },
-      analyzer: new SolidityAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/solidity-analyzer').SolidityAnalyzer)(), true),
     },
     {
       id: 'c-cpp',
@@ -325,7 +205,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: [],
         content: [/\.(c|h|cpp|cc|cxx|hpp|hh|hxx)$/i],
       },
-      analyzer: new CCppAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/c-cpp-analyzer').CCppAnalyzer)(), true),
     },
     {
       id: 'swift',
@@ -358,7 +238,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['mix.exs'],
         content: [/\.(ex|exs)$/],
       },
-      analyzer: new ElixirAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/elixir-analyzer').ElixirAnalyzer)(), true),
     },
     {
       id: 'protobuf',
@@ -369,7 +249,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: [],
         content: [/\.proto$/],
       },
-      analyzer: new ProtobufAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/protobuf-analyzer').ProtobufAnalyzer)(), true),
     },
     {
       id: 'soap-wsdl',
@@ -377,10 +257,10 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       type: 'language',
       version: '1.0.0',
       detectPatterns: {
-        files: [],
+        files: ['**/*.wsdl', '**/*.xsd'],
         content: [/\.wsdl$/i, /\.xsd$/i, /from\s+['"](?:soap|strong-soap)['"]/, /import\s+(?:zeep|suds)\b/, /@(WebServiceClient|WebService)\b/, /System\.ServiceModel/, /Savon\.client\b/],
       },
-      consumesExistingAnalysis: false, analyzer: new SoapWsdlAnalyzer(),
+      consumesExistingAnalysis: false, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/soap-wsdl-analyzer').SoapWsdlAnalyzer)(), true),
     },
     {
       id: 'dart',
@@ -402,7 +282,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['*.tf', '*.tfvars'],
         content: [/\.tf$/, /\.tfvars$/],
       },
-      analyzer: new TerraformAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer').TerraformAnalyzer)(), true),
     },
     {
       id: 'cloudformation',
@@ -413,7 +293,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['**/*.template', '**/*.yaml', '**/*.yml', '**/*.json'],
         content: [/AWSTemplateFormatVersion/, /Resources:\s*[\s\S]*Type:\s*AWS::/, /"Resources"\s*:\s*\{[\s\S]*"Type"\s*:\s*"AWS::/],
       },
-      analyzer: new CloudFormationAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/cloudformation-analyzer').CloudFormationAnalyzer)(), true),
     },
     {
       id: 'sql-schema',
@@ -424,7 +304,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['**/*.sql', '**/*.ddl'],
         content: [/CREATE\s+(?:GLOBAL\s+|LOCAL\s+)?(?:TEMP(?:ORARY)?\s+|UNLOGGED\s+)?TABLE/i],
       },
-      analyzer: new SqlSchemaAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/sql-schema-analyzer').SqlSchemaAnalyzer)(), true),
     },
     {
       id: 'json-file-store',
@@ -435,7 +315,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['**/*.js', '**/*.mjs', '**/*.cjs', '**/*.ts', '**/*.mts', '**/*.cts'],
         content: [/write(?:File|Json)(?:Sync)?\s*\(/],
       },
-      analyzer: new JsonFileStoreAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/json-file-store-analyzer').JsonFileStoreAnalyzer)(), true),
     },
     {
       id: 'dockerfile',
@@ -446,7 +326,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['Dockerfile', 'Dockerfile.*', '*.Dockerfile'],
         content: [/^FROM\s+/m],
       },
-      consumesExistingAnalysis: false, analyzer: new DockerfileAnalyzer(),
+      consumesExistingAnalysis: false, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer').DockerfileAnalyzer)(), true),
     },
     {
       id: 'docker-compose',
@@ -457,7 +337,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['compose.yml', 'compose.yaml', 'docker-compose.yml', 'docker-compose.yaml', 'docker-compose.*.yml', 'docker-compose.*.yaml'],
         content: [/^services:\s*$/m],
       },
-      consumesExistingAnalysis: false, analyzer: new DockerComposeAnalyzer(),
+      consumesExistingAnalysis: false, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer').DockerComposeAnalyzer)(), true),
     },
     {
       id: 'kubernetes-manifest',
@@ -468,7 +348,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['k8s/**/*.yaml', 'k8s/**/*.yml', 'kubernetes/**/*.yaml', 'kubernetes/**/*.yml', 'deploy/**/*.yaml', 'deploy/**/*.yml'],
         content: [/^apiVersion:\s+/m, /^kind:\s+(Deployment|Service|Ingress|StatefulSet|Job|CronJob|ConfigMap|Secret)/m],
       },
-      consumesExistingAnalysis: false, analyzer: new KubernetesManifestAnalyzer(),
+      consumesExistingAnalysis: false, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer').KubernetesManifestAnalyzer)(), true),
     },
     {
       id: 'ansible',
@@ -479,7 +359,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['**/playbook*.yml', '**/playbook*.yaml', '**/site.yml', '**/site.yaml', '**/roles/*/tasks/*.yml', '**/roles/*/tasks/*.yaml', '**/ansible.cfg'],
         content: [/^\s*-\s*hosts:\s*/m],
       },
-      analyzer: new AnsibleAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer').AnsibleAnalyzer)(), true),
     },
     {
       id: 'pulumi',
@@ -490,7 +370,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['**/Pulumi.yaml', '**/Pulumi.yml'],
         content: [/^runtime:\s*(nodejs|python|go|dotnet)/m],
       },
-      analyzer: new PulumiAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer').PulumiAnalyzer)(), true),
     },
     {
       id: 'helm',
@@ -501,7 +381,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['**/Chart.yaml', '**/Chart.yml'],
         content: [/^apiVersion:\s*v[12]\s*$/m],
       },
-      analyzer: new HelmAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer').HelmAnalyzer)(), true),
     },
     {
       id: 'caddy',
@@ -512,7 +392,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['Caddyfile', '**/Caddyfile', '*.Caddyfile', '**/*.Caddyfile'],
         content: [/^\s*reverse_proxy\s+/m, /^\s*file_server\b/m, /^\s*handle(_path)?\s+/m],
       },
-      analyzer: new CaddyAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer').CaddyAnalyzer)(), true),
     },
     {
       id: 'nginx',
@@ -523,7 +403,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['nginx.conf', '**/nginx.conf', '**/sites-available/*', '**/sites-enabled/*', '**/conf.d/*.conf'],
         content: [/^\s*(server|upstream|location)\b[^;]*\{/m, /\bproxy_pass\s+/m],
       },
-      analyzer: new NginxAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer').NginxAnalyzer)(), true),
     },
     {
       id: 'apache-httpd',
@@ -534,7 +414,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['httpd.conf', 'apache2.conf', '**/httpd.conf', '**/apache2.conf', '**/sites-available/*.conf', '**/.htaccess'],
         content: [/<VirtualHost\b/i, /^\s*ProxyPass\b/im, /^\s*RewriteRule\b/im],
       },
-      analyzer: new ApacheAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer').ApacheAnalyzer)(), true),
     },
     {
       id: 'haproxy',
@@ -545,7 +425,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['haproxy.cfg', '**/haproxy.cfg', '**/haproxy/*.cfg'],
         content: [/^\s*(frontend|backend|listen)\s+/m, /^\s*(use_backend|default_backend)\s+/m],
       },
-      analyzer: new HAProxyAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer').HAProxyAnalyzer)(), true),
     },
     {
       id: 'traefik',
@@ -556,7 +436,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['traefik.yml', 'traefik.yaml', '**/traefik.yml', '**/traefik.yaml', '**/traefik/*.yml', '**/traefik/*.yaml', '**/dynamic/*.yml', '**/dynamic/*.yaml'],
         content: [/\brouters:\s*$/m, /\bloadBalancer:\s*$/m, /\brule:\s*.*(Host|PathPrefix)\(/m],
       },
-      analyzer: new TraefikAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer').TraefikAnalyzer)(), true),
     },
     {
       id: 'distribution-artifacts',
@@ -567,7 +447,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['*.sh', '*.bash', '*.zsh', '*.ps1', '*.psm1', '*.bat', '*.cmd', '*.nsi', '*.wxs', '*.desktop', '*.service'],
         content: [/systemctl|launchctl|makensis|msiexec|pkgbuild|create-dmg|SERVICE_NAME|BINARY_NAME|DOWNLOAD_PREFIX|manifest\.json/i],
       },
-      analyzer: new DistributionArtifactAnalyzer(),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer').DistributionArtifactAnalyzer)(), true),
     },
     {
       id: 'cli-frameworks',
@@ -586,7 +466,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
           /class\s+\w+\s*<\s*Thor\b/,
         ],
       },
-      consumesExistingAnalysis: false, analyzer: new CliAnalyzer(),
+      consumesExistingAnalysis: false, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/cli-analyzer').CliAnalyzer)(), true),
     },
     {
       id: 'generic-tree-sitter',
@@ -596,154 +476,155 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       detectPatterns: {
         content: [/\.(zig|hs|lua|ml|erl|ex|exs|clj|jl|nim|f90|ada|d|cr|nix)$/i],
       },
-      consumesExistingAnalysis: false, analyzer: new GenericTreeSitterLanguageAnalyzer(),
+      consumesExistingAnalysis: false,
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/generic-tree-sitter-language-analyzer').GenericTreeSitterLanguageAnalyzer)(), false),
     },
   ];
 
   const frameworkRegistrations: AnalyzerRegistration[] = [
-    { id: 'nestjs', name: 'NestJS Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@nestjs/core', '@nestjs/common'] }, requires: ['typescript-javascript'], analyzer: new NestJSAnalyzer() },
-    { id: 'spring-boot', name: 'Spring Boot Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['spring-boot-starter', 'org.springframework.boot'], files: ['pom.xml', 'build.gradle'] }, requires: ['java'], analyzer: new SpringBootAnalyzer() },
-    { id: 'spring-cloud-gateway', name: 'Spring Cloud Gateway Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['spring-cloud-starter-gateway', 'spring-cloud-gateway', 'org.springframework.cloud.gateway'], files: ['**/src/main/resources/application*.yml', '**/src/main/resources/application*.yaml', '**/src/main/resources/bootstrap*.yml', '**/src/main/resources/bootstrap*.yaml'], content: [/spring:\s*[\s\S]*?cloud:\s*[\s\S]*?gateway:/, /\buri:\s*(?:lb:)?\/\//] }, analyzer: new SpringCloudGatewayAnalyzer() },
-    { id: 'django', name: 'Django Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Django', 'django'], files: ['manage.py', 'requirements.txt'] }, requires: ['python'], analyzer: new DjangoAnalyzer() },
-    { id: 'flask', name: 'Flask Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Flask', 'flask'], files: ['requirements.txt'] }, requires: ['python'], analyzer: new FlaskAnalyzer() },
-    { id: 'fastapi', name: 'FastAPI Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastapi', 'FastAPI'], files: ['requirements.txt'] }, requires: ['python'], analyzer: new FastAPIAnalyzer() },
-    { id: 'aiohttp', name: 'aiohttp Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['aiohttp'], files: ['requirements.txt'], content: [/\bfrom\s+aiohttp\b/, /\bimport\s+aiohttp\b/] }, requires: ['python'], analyzer: new AiohttpAnalyzer() },
-    { id: 'sanic', name: 'Sanic Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['sanic'], files: ['requirements.txt'], content: [/\bfrom\s+sanic\b/, /\bimport\s+sanic\b/, /\bSanic\s*\(/] }, requires: ['python'], analyzer: new SanicAnalyzer() },
-    { id: 'tornado', name: 'Tornado Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['tornado'], files: ['requirements.txt'], content: [/\bfrom\s+tornado\b/, /\bimport\s+tornado\b/, /tornado\.web/] }, requires: ['python'], analyzer: new TornadoAnalyzer() },
-    { id: 'starlette', name: 'Starlette Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['starlette'], files: ['requirements.txt'], content: [/\bfrom\s+starlette\b/, /\bimport\s+starlette\b/] }, requires: ['python'], analyzer: new StarletteAnalyzer() },
-    { id: 'laravel', name: 'Laravel Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['artisan', 'composer.json'], dependencies: ['laravel/framework'] }, requires: ['php'], analyzer: new LaravelAnalyzer() },
-    { id: 'symfony', name: 'Symfony Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['bin/console', 'composer.json'], dependencies: ['symfony/framework-bundle'] }, requires: ['php'], analyzer: new SymfonyAnalyzer() },
-    { id: 'rails', name: 'Rails Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Gemfile', 'config/routes.rb'], dependencies: ['rails'] }, requires: ['ruby'], analyzer: new RailsAnalyzer() },
-    { id: 'express', name: 'Express.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['express'], files: ['package.json'] }, requires: ['typescript-javascript'], analyzer: new ExpressAnalyzer() },
-    { id: 'fastify', name: 'Fastify Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastify', '@fastify/cors', '@fastify/jwt', '@fastify/cookie', '@fastify/multipart', '@fastify/swagger', '@fastify/type-provider-typebox'], files: ['package.json'] }, requires: ['typescript-javascript'], analyzer: new FastifyAnalyzer() },
-    { id: 'node-http', name: 'Node.js Raw HTTP Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.{js,ts,mjs,cjs}'], content: [/\b(?:http|https)\.createServer\s*\(/, /(?<![.\w])createServer\s*\(/] }, requires: ['typescript-javascript'], analyzer: new NodeHttpAnalyzer() },
-    { id: 'react', name: 'React Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['react', 'react-dom'], files: ['package.json'], content: [/\.jsx$/, /\.tsx$/] }, requires: ['typescript-javascript'], analyzer: new ReactAnalyzer() },
-    { id: 'angular', name: 'Angular Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@angular/core', '@angular/common'], files: ['angular.json', 'package.json'], content: [/\.component\.ts$/] }, requires: ['typescript-javascript'], analyzer: new AngularAnalyzer() },
-    { id: 'angularjs', name: 'AngularJS Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['angular'], files: ['package.json', 'bower.json'], content: [/\bangular\.module\s*\(/] }, requires: ['typescript-javascript'], analyzer: new AngularJsAnalyzer() },
-    { id: 'vue', name: 'Vue.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vue', 'vue@'], files: ['package.json'], content: [/\.vue$/] }, requires: ['typescript-javascript'], analyzer: new VueAnalyzer() },
-    { id: 'jest', name: 'Jest Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['jest', '@jest/core'], files: ['jest.config.js', 'jest.config.ts'], content: [/\.test\.(js|ts|jsx|tsx)$/, /\.spec\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], analyzer: new JestAnalyzer() },
-    { id: 'cypress', name: 'Cypress Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['cypress'], files: ['cypress.json', 'cypress.config.js', 'cypress.config.ts'], content: [/\.cy\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], analyzer: new CypressAnalyzer() },
-    { id: 'test-framework', name: 'Cross-Language Test Framework Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vitest', 'mocha', 'jasmine', '@playwright/test', 'selenium-webdriver'], files: TEST_FRAMEWORK_DETECTION_FILES, content: [/from\s+['"`]vitest['"`]/, /from\s+['"`]@playwright\/test['"`]/, /import\s+pytest/, /testing\.T\b/, /#\[(?:tokio::)?test\]/, /@Test\b/, /RSpec\.describe/, /PHPUnit\\Framework\\TestCase/] }, analyzer: new TestFrameworkAnalyzer() },
-    { id: 'ci-pipeline', name: 'CI/CD Pipeline Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml', 'Jenkinsfile', 'azure-pipelines.yml', 'azure-pipelines.yaml', '.travis.yml', '.drone.yml', '.drone.yaml', '.buildkite/pipeline.yml', '.buildkite/pipeline.yaml', 'bitbucket-pipelines.yml', 'bitbucket-pipelines.yaml', '.teamcity/**/*.kt', '.teamcity/**/*.kts'] }, analyzer: new CiPipelineAnalyzer() },
-    { id: 'airflow', name: 'Apache Airflow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['apache-airflow'], files: ['requirements.txt', '**/dags/**/*.py'], content: [/from\s+airflow\b/, /import\s+airflow\b/, /@dag\b/, /@task\b/] }, requires: ['python'], analyzer: new AirflowAnalyzer() },
-    { id: 'dagster', name: 'Dagster Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['dagster'], files: ['requirements.txt'], content: [/from\s+dagster\b/, /import\s+dagster\b/, /@asset\b/, /@op\b/] }, requires: ['python'], analyzer: new DagsterAnalyzer() },
-    { id: 'prefect', name: 'Prefect Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['prefect'], files: ['requirements.txt'], content: [/from\s+prefect\b/, /import\s+prefect\b/, /@flow\b/, /@task\b/] }, requires: ['python'], analyzer: new PrefectAnalyzer() },
-    { id: 'luigi', name: 'Luigi Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['luigi'], files: ['requirements.txt'], content: [/import\s+luigi\b/, /luigi\.Task\b/] }, requires: ['python'], analyzer: new LuigiAnalyzer() },
-    { id: 'jupyter-notebook', name: 'Jupyter Notebook Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.ipynb'] }, analyzer: new JupyterNotebookAnalyzer() },
-    { id: 'ml-training', name: 'ML Training Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['torch', 'tensorflow', 'keras'], files: ['requirements.txt', 'pyproject.toml'], content: [/import\s+torch\b/, /from\s+torch\b/, /import\s+tensorflow\b/, /\.fit\s*\(/] }, requires: ['python'], analyzer: new MLTrainingAnalyzer() },
-    { id: 'wpf', name: 'WPF Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.xaml', '**/*.csproj'], content: [/PresentationFramework/, /System\.Windows/, /<UseWPF>true<\/UseWPF>/] }, requires: ['csharp'], analyzer: new WPFAnalyzer() },
-    { id: 'electron', name: 'Electron Desktop Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['electron'], files: ['package.json'], content: [/\bipcMain\.(handle|on)\s*\(/, /\bipcRenderer\.(invoke|send)\s*\(/, /\bcontextBridge\.exposeInMainWorld\s*\(/, /new\s+BrowserWindow\s*\(/] }, requires: ['typescript-javascript'], analyzer: new ElectronAnalyzer() },
-    { id: 'tauri', name: 'Tauri Desktop Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@tauri-apps/api', '@tauri-apps/cli'], files: ['src-tauri/Cargo.toml', 'Cargo.toml'], content: [/#\[tauri::command\]/, /tauri::generate_handler!/, /\binvoke\s*\(\s*['"`]/] }, analyzer: new TauriAnalyzer() },
-    { id: 'aspnet-core', name: 'ASP.NET Core Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.csproj'], content: [/Microsoft\.AspNetCore/, /Microsoft\.NET\.Sdk\.Web/] }, requires: ['csharp'], analyzer: new AspNetCoreAnalyzer() },
-    { id: 'nextjs', name: 'Next.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['next'], files: ['next.config.js', 'next.config.mjs', 'next.config.ts'] }, requires: ['typescript-javascript'], analyzer: new NextJSAnalyzer() },
-    { id: 'actix-web', name: 'Actix-web Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['actix-web', 'actix_web'], files: ['Cargo.toml'], content: [/actix_web::/, /#\[(get|post|put|delete|patch)\("/, /HttpServer::/] }, requires: ['rust'], analyzer: new ActixAnalyzer() },
-    { id: 'rocket', name: 'Rocket Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['rocket', 'rocket_dyn_templates', 'rocket_sync'], files: ['Cargo.toml'], content: [/rocket::/, /#\[(get|post|put|delete|patch)\("/, /rocket::build/] }, requires: ['rust'], analyzer: new RocketAnalyzer() },
-    { id: 'axum', name: 'Axum Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['axum'], files: ['Cargo.toml'], content: [/axum::/, /Router::new\s*\(/, /\.route\s*\(\s*"/] }, requires: ['rust'], analyzer: new AxumAnalyzer() },
-    { id: 'warp', name: 'Warp Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['warp'], files: ['Cargo.toml'], content: [/warp::path\s*[!(]/, /\.and\s*\(\s*warp::(get|post|put|patch|delete)/] }, requires: ['rust'], analyzer: new WarpAnalyzer() },
-    { id: 'tonic', name: 'Tonic gRPC Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['tonic'], files: ['Cargo.toml'], content: [/tonic::async_trait/, /tonic::(Request|Response)/] }, requires: ['rust'], analyzer: new TonicAnalyzer() },
-    { id: 'drogon', name: 'Drogon Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]drogon\//, /ADD_METHOD_TO\s*\(/, /app\s*\(\s*\)\s*\.\s*registerHandler\s*\(/] }, requires: ['c-cpp'], analyzer: new DrogonAnalyzer() },
-    { id: 'crow', name: 'Crow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]crow(?:\.h|\/[^">]*)?[>"]/, /CROW_ROUTE\s*\(/] }, requires: ['c-cpp'], analyzer: new CrowAnalyzer() },
-    { id: 'vapor', name: 'Vapor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vapor'], files: ['Package.swift', '**/*.swift'], content: [/import\s+Vapor/, /\.grouped\s*\(/, /\.(get|post|put|delete|patch)\s*\(/] }, requires: ['swift'], analyzer: new VaporAnalyzer() },
-    { id: 'swift-platform', name: 'Swift Platform Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Package.swift', '**/*.swift'], content: [/import\s+SwiftUI/, /import\s+AppKit/, /import\s+UIKit/, /platforms\s*:\s*\[/] }, requires: ['swift'], analyzer: new SwiftPlatformAnalyzer() },
-    { id: 'mojolicious', name: 'Mojolicious Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Mojolicious'], files: ['cpanfile', 'Makefile.PL', '**/*.pl', '**/*.pm'], content: [/use\s+Mojolicious/, /^\s*(get|post|put|patch|del|options|any)\s+['"]/m, /->(get|post|put|patch|del|options|any|under)\s*\(/] }, requires: ['perl'], analyzer: new MojoliciousAnalyzer() },
-    { id: 'gorouter', name: 'GoRouter Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['go_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/GoRouter\s*\(/, /GoRoute\s*\(/, /package:go_router/] }, requires: ['dart'], analyzer: new GoRouterAnalyzer() },
-    { id: 'shelf', name: 'Shelf/shelf_router Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['shelf', 'shelf_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/package:shelf_router\//, /package:shelf\//, /Router\s*\(\s*\)/] }, requires: ['dart'], analyzer: new ShelfAnalyzer() },
-    { id: 'http4s', name: 'http4s Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['http4s', 'http4s-dsl'], files: ['build.sbt', '**/*.scala'], content: [/org\.http4s/, /HttpRoutes\.of/, /AuthedRoutes\.of/] }, requires: ['scala'], analyzer: new Http4sAnalyzer() },
-    { id: 'play', name: 'Play Framework Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['com.typesafe.play'], files: ['conf/routes', 'conf/*.routes', 'build.sbt'], content: [/^\s*(GET|POST|PUT|DELETE|PATCH)\s+\/\S*\s+[\w.]+\.\w+\(/m] }, requires: ['scala'], analyzer: new PlayAnalyzer() },
-    { id: 'akka-http', name: 'Akka HTTP / Pekko HTTP Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['akka-http', 'pekko-http'], files: ['build.sbt', '**/*.scala'], content: [/import\s+akka\.http/, /import\s+org\.apache\.pekko\.http/, /\bpathPrefix\s*\(/] }, requires: ['scala'], analyzer: new AkkaHttpAnalyzer() },
-    { id: 'kemal', name: 'Kemal Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['kemal'], files: ['shard.yml', '**/*.cr'], content: [/require\s+"kemal"/, /^\s*(get|post|put|patch|delete|options|head|ws)\s+"/m] }, requires: ['crystal'], analyzer: new KemalAnalyzer() },
-    { id: 'genie', name: 'Genie Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Genie'], files: ['Project.toml', '**/*.jl'], content: [/Genie/, /\broute\s*\(/, /@(get|post|put|patch|delete)\s*\(/] }, requires: ['julia'], analyzer: new GenieAnalyzer() },
-    { id: 'compojure', name: 'Compojure Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['compojure'], files: ['deps.edn', 'project.clj', '**/*.clj', '**/*.cljs', '**/*.cljc'], content: [/compojure\.core/, /\(defroutes\b/, /\(context\b/, /\((?:GET|POST|PUT|DELETE|PATCH|ANY)\s+"/] }, requires: ['clojure'], analyzer: new CompojureAnalyzer() },
-    { id: 'reitit', name: 'Reitit/Ring Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['reitit', 'ring/ring-core', 'ring/ring-jetty-adapter'], files: ['deps.edn', 'project.clj', '**/*.clj', '**/*.cljs', '**/*.cljc'], content: [/reitit\.(ring|core)/, /ring\.adapter/, /\(:handler\b/] }, requires: ['clojure'], analyzer: new ReititAnalyzer() },
-    { id: 'sinatra', name: 'Sinatra Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['sinatra'], files: ['Gemfile', '**/*.rb'], content: [/require\s+['"]sinatra['"]/, /class\s+\w+\s*<\s*Sinatra::Base/] }, requires: ['ruby'], analyzer: new SinatraAnalyzer() },
-    { id: 'slim', name: 'Slim/CodeIgniter Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['slim/slim', 'codeigniter4/framework', 'codeigniter/framework'], files: ['composer.json', '**/*.php'], content: [/AppFactory::create\(\)/, /new\s+\\?Slim\\App\(/, /\$routes->(get|post|put|patch|delete)\s*\(/] }, requires: ['php'], analyzer: new SlimAnalyzer() },
-    { id: 'dream', name: 'Dream Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['dream'], files: ['dune-project', 'dune', '**/*.ml'], content: [/Dream\.router/, /Dream\.(get|post|put|patch|delete|options|head)\s+"/, /Dream\.scope/] }, requires: ['ocaml'], analyzer: new DreamAnalyzer() },
-    { id: 'apexrest', name: 'Apex REST Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: [], files: ['sfdx-project.json', '**/*.cls'], content: [/@RestResource\b/, /@Http(Get|Post|Put|Patch|Delete)\b/] }, requires: ['apex'], analyzer: new ApexRestAnalyzer() },
-    { id: 'svelte', name: 'Svelte/SvelteKit Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['svelte', '@sveltejs/kit'], content: [/\.svelte$/] }, requires: ['typescript-javascript'], analyzer: new SvelteAnalyzer() },
-    { id: 'astro', name: 'Astro Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['astro'], files: ['astro.config.mjs', 'astro.config.ts'], content: [/\.astro$/] }, requires: ['typescript-javascript'], analyzer: new AstroAnalyzer() },
-    { id: 'hono', name: 'Hono Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['hono'] }, requires: ['typescript-javascript'], analyzer: new HonoAnalyzer() },
-    { id: 'anchor', name: 'Anchor (Solana) Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['anchor-lang'], files: ['Anchor.toml'], content: [/#\[program\]/, /use anchor_lang/] }, requires: ['rust'], analyzer: new AnchorAnalyzer() },
-    { id: 'phoenix', name: 'Phoenix Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['phoenix'], files: ['mix.exs'], content: [/use Phoenix\.Router/, /use Phoenix\.LiveView/] }, requires: ['elixir'], analyzer: new PhoenixAnalyzer() },
-    { id: 'nuxt', name: 'Nuxt Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['nuxt'], files: ['nuxt.config.ts', 'nuxt.config.js', 'nuxt.config.mjs'] }, requires: ['typescript-javascript'], analyzer: new NuxtAnalyzer() },
-    { id: 'remix', name: 'Remix Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@remix-run/react', '@remix-run/node'], files: ['remix.config.js'] }, requires: ['typescript-javascript'], analyzer: new RemixAnalyzer() },
-    { id: 'react-native', name: 'React Native / Expo Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['react-native', 'expo'], files: ['app.json', 'app.config.js', 'app.config.ts'] }, requires: ['typescript-javascript'], analyzer: new ReactNativeAnalyzer() },
-    { id: 'ktor', name: 'Ktor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.ktor', 'ktor-server-core'], files: ['build.gradle.kts', 'build.gradle'], content: [/io\.ktor/, /routing\s*\{/, /embeddedServer\(/] }, requires: ['kotlin'], analyzer: new KtorAnalyzer() },
-    { id: 'jetpack-compose', name: 'Jetpack Compose Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['androidx.compose', 'androidx.compose.runtime', 'compose.runtime'], files: ['build.gradle.kts', 'build.gradle'], content: [/@Composable/, /androidx\.compose/] }, requires: ['kotlin'], analyzer: new ComposeAnalyzer() },
-    { id: 'solidity-security', name: 'Solidity Security Facts Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@openzeppelin/contracts', 'openzeppelin-solidity'], files: ['foundry.toml', 'hardhat.config.js', 'hardhat.config.ts', 'truffle-config.js'], content: [/onlyOwner/, /nonReentrant/] }, requires: ['solidity'], analyzer: new SoliditySecurityAnalyzer() },
-    { id: 'wordpress', name: 'WordPress Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['wp-config.php', 'style.css'], content: [/add_action\s*\(/, /add_filter\s*\(/, /register_post_type\s*\(/, /Plugin Name:/, /Theme Name:/] }, requires: ['php'], analyzer: new WordPressAnalyzer() },
-    { id: 'blazor', name: 'Blazor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.razor'], content: [/Microsoft\.AspNetCore\.Components/, /@page\s/, /@code\b/] }, requires: ['csharp'], analyzer: new BlazorAnalyzer() },
-    { id: 'quarkus', name: 'Quarkus Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.quarkus'], files: ['pom.xml', 'build.gradle'], content: [/quarkus\./, /jakarta\.ws\.rs/, /javax\.ws\.rs/] }, requires: ['java'], analyzer: new QuarkusAnalyzer() },
-    { id: 'micronaut', name: 'Micronaut Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.micronaut'], files: ['pom.xml', 'build.gradle'], content: [/io\.micronaut/, /@Controller/] }, requires: ['java'], analyzer: new MicronautAnalyzer() },
-    { id: 'jaxrs', name: 'JAX-RS / Jersey Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['jersey-server', 'jersey-core', 'jakarta.ws.rs-api', 'javax.ws.rs-api', 'resteasy'], files: ['pom.xml', 'build.gradle'], content: [/import\s+(?:jakarta|javax)\.ws\.rs/, /@Path\s*\(/] }, requires: ['java'], analyzer: new JaxRsAnalyzer() },
-    { id: 'vertx', name: 'Vert.x Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.vertx', 'vertx-web', 'vertx-core'], files: ['pom.xml', 'build.gradle', 'build.gradle.kts'], content: [/import\s+io\.vertx/, /Router\.router\s*\(/] }, requires: ['java'], analyzer: new VertxAnalyzer() },
-    { id: 'solidstart', name: 'SolidStart Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['solid-start', '@solidjs/start'] }, requires: ['typescript-javascript'], analyzer: new SolidStartAnalyzer() },
-    { id: 'qwik', name: 'Qwik Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@builder.io/qwik', '@builder.io/qwik-city'] }, requires: ['typescript-javascript'], analyzer: new QwikAnalyzer() },
-    { id: 'gin', name: 'Gin Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/gin-gonic/gin'], files: ['go.mod'], content: [/"github\.com\/gin-gonic\/gin"/, /gin\.(Default|New)\s*\(/, /\.(GET|POST|PUT|PATCH|DELETE)\s*\(\s*"/] }, requires: ['go'], analyzer: new GinAnalyzer() },
-    { id: 'echo', name: 'Echo Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/labstack/echo'], files: ['go.mod'], content: [/"github\.com\/labstack\/echo(\/v4)?"/, /echo\.New\s*\(/] }, requires: ['go'], analyzer: new EchoAnalyzer() },
-    { id: 'fiber', name: 'Fiber Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/gofiber/fiber'], files: ['go.mod'], content: [/"github\.com\/gofiber\/fiber\/v?\d*"/, /fiber\.New\s*\(/] }, requires: ['go'], analyzer: new FiberAnalyzer() },
-    { id: 'chi', name: 'Chi Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/go-chi/chi'], files: ['go.mod'], content: [/"github\.com\/go-chi\/chi(\/v\d+)?"/, /chi\.NewRouter\s*\(/] }, requires: ['go'], analyzer: new ChiAnalyzer() },
-    { id: 'unity', name: 'Unity Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['ProjectSettings/ProjectVersion.txt', '**/*.unity', '**/*.meta', '**/*.cs'], content: [/^\s*using\s+UnityEngine\s*;/m] }, requires: ['csharp'], analyzer: new UnityAnalyzer() },
-    { id: 'unreal', name: 'Unreal Engine Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.uproject', '**/*.cpp', '**/*.h'], content: [/GENERATED_BODY\s*\(\s*\)/, /#include\s*"CoreMinimal\.h"/] }, requires: ['c-cpp'], analyzer: new UnrealAnalyzer() },
-    { id: 'godot', name: 'Godot Engine Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['project.godot', '**/*.tscn', '**/*.gd'], content: [/\bfunc\s+_ready\s*\(/, /\bfunc\s+_process\s*\(/] }, analyzer: new GodotAnalyzer() },
-    { id: 'embedded-c', name: 'Embedded C Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.c', '**/*.h', '**/*.ld'], content: [/#include\s*[<"]avr\/(io|interrupt)\.h[>"]/, /\bISR\s*\(/, /__attribute__\s*\(\s*\(\s*interrupt/] }, requires: ['c-cpp'], analyzer: new EmbeddedCAnalyzer() },
-    { id: 'arduino', name: 'Arduino Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.ino', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]Arduino\.h[>"]/, /\bvoid\s+setup\s*\(/, /\bvoid\s+loop\s*\(/] }, analyzer: new ArduinoAnalyzer() },
-    { id: 'linux-kernel-module', name: 'Linux Kernel Module Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.c', 'Kbuild', 'Makefile'], content: [/#include\s*[<"]linux\/module\.h[>"]/, /\bmodule_init\s*\(/, /\bmodule_exit\s*\(/] }, requires: ['c-cpp'], analyzer: new LinuxKernelModuleAnalyzer() },
+    { id: 'nestjs', name: 'NestJS Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@nestjs/core', '@nestjs/common'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer').NestJSAnalyzer)(), false) },
+    { id: 'spring-boot', name: 'Spring Boot Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['spring-boot-starter', 'org.springframework.boot'], files: ['pom.xml', 'build.gradle'] }, requires: ['java'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/spring-boot-analyzer').SpringBootAnalyzer)(), false) },
+    { id: 'spring-cloud-gateway', name: 'Spring Cloud Gateway Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['spring-cloud-starter-gateway', 'spring-cloud-gateway', 'org.springframework.cloud.gateway'], files: ['**/src/main/resources/application*.yml', '**/src/main/resources/application*.yaml', '**/src/main/resources/bootstrap*.yml', '**/src/main/resources/bootstrap*.yaml'], content: [/spring:\s*[\s\S]*?cloud:\s*[\s\S]*?gateway:/, /\buri:\s*(?:lb:)?\/\//] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/spring-cloud-gateway-analyzer').SpringCloudGatewayAnalyzer)(), false) },
+    { id: 'django', name: 'Django Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Django', 'django'], files: ['manage.py', 'requirements.txt'] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer').DjangoAnalyzer)(), false, true) },
+    { id: 'flask', name: 'Flask Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Flask', 'flask'], files: ['requirements.txt'] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/flask-analyzer').FlaskAnalyzer)(), true) },
+    { id: 'fastapi', name: 'FastAPI Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastapi', 'FastAPI'], files: ['requirements.txt'] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/fastapi-analyzer').FastAPIAnalyzer)(), true) },
+    { id: 'aiohttp', name: 'aiohttp Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['aiohttp'], files: ['requirements.txt'], content: [/\bfrom\s+aiohttp\b/, /\bimport\s+aiohttp\b/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/aiohttp-analyzer').AiohttpAnalyzer)(), true) },
+    { id: 'sanic', name: 'Sanic Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['sanic'], files: ['requirements.txt'], content: [/\bfrom\s+sanic\b/, /\bimport\s+sanic\b/, /\bSanic\s*\(/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/sanic-analyzer').SanicAnalyzer)(), true) },
+    { id: 'tornado', name: 'Tornado Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['tornado'], files: ['requirements.txt'], content: [/\bfrom\s+tornado\b/, /\bimport\s+tornado\b/, /tornado\.web/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/tornado-analyzer').TornadoAnalyzer)(), true) },
+    { id: 'starlette', name: 'Starlette Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['starlette'], files: ['requirements.txt'], content: [/\bfrom\s+starlette\b/, /\bimport\s+starlette\b/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/starlette-analyzer').StarletteAnalyzer)(), true) },
+    { id: 'laravel', name: 'Laravel Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['artisan', 'composer.json'], dependencies: ['laravel/framework'] }, requires: ['php'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/laravel-analyzer').LaravelAnalyzer)(), false) },
+    { id: 'symfony', name: 'Symfony Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['bin/console', 'composer.json'], dependencies: ['symfony/framework-bundle'] }, requires: ['php'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/symfony-analyzer').SymfonyAnalyzer)(), false) },
+    { id: 'rails', name: 'Rails Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Gemfile', 'config/routes.rb'], dependencies: ['rails'] }, requires: ['ruby'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/rails-analyzer').RailsAnalyzer)(), false, true) },
+    { id: 'express', name: 'Express.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['express'], files: ['package.json'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/express-analyzer').ExpressAnalyzer)(), false) },
+    { id: 'fastify', name: 'Fastify Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastify', '@fastify/cors', '@fastify/jwt', '@fastify/cookie', '@fastify/multipart', '@fastify/swagger', '@fastify/type-provider-typebox'], files: ['package.json'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/fastify-analyzer').FastifyAnalyzer)(), false) },
+    { id: 'node-http', name: 'Node.js Raw HTTP Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.{js,ts,mjs,cjs}'], content: [/\b(?:http|https)\.createServer\s*\(/, /(?<![.\w])createServer\s*\(/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/node-http-analyzer').NodeHttpAnalyzer)(), false) },
+    { id: 'react', name: 'React Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['react', 'react-dom'], files: ['package.json'], content: [/\.jsx$/, /\.tsx$/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/react-analyzer').ReactAnalyzer)(), true) },
+    { id: 'angular', name: 'Angular Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@angular/core', '@angular/common'], files: ['angular.json', 'package.json'], content: [/\.component\.ts$/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/angular-analyzer').AngularAnalyzer)(), false) },
+    { id: 'angularjs', name: 'AngularJS Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['angular'], files: ['package.json', 'bower.json'], content: [/\bangular\.module\s*\(/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/angularjs-analyzer').AngularJsAnalyzer)(), false) },
+    { id: 'vue', name: 'Vue.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vue', 'vue@'], files: ['package.json'], content: [/\.vue$/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/vue-analyzer').VueAnalyzer)(), false) },
+    { id: 'jest', name: 'Jest Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['jest', '@jest/core'], files: ['jest.config.js', 'jest.config.ts'], content: [/\.test\.(js|ts|jsx|tsx)$/, /\.spec\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/testing').JestAnalyzer)(), false) },
+    { id: 'cypress', name: 'Cypress Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['cypress'], files: ['cypress.json', 'cypress.config.js', 'cypress.config.ts'], content: [/\.cy\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/testing').CypressAnalyzer)(), false) },
+    { id: 'test-framework', name: 'Cross-Language Test Framework Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vitest', 'mocha', 'jasmine', '@playwright/test', 'selenium-webdriver'], files: TEST_FRAMEWORK_DETECTION_FILES, content: [/from\s+['"`]vitest['"`]/, /from\s+['"`]@playwright\/test['"`]/, /import\s+pytest/, /testing\.T\b/, /#\[(?:tokio::)?test\]/, /@Test\b/, /RSpec\.describe/, /PHPUnit\\Framework\\TestCase/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/testing').TestFrameworkAnalyzer)(), false) },
+    { id: 'ci-pipeline', name: 'CI/CD Pipeline Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml', 'Jenkinsfile', 'azure-pipelines.yml', 'azure-pipelines.yaml', '.travis.yml', '.drone.yml', '.drone.yaml', '.buildkite/pipeline.yml', '.buildkite/pipeline.yaml', 'bitbucket-pipelines.yml', 'bitbucket-pipelines.yaml', '.teamcity/**/*.kt', '.teamcity/**/*.kts'] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/ci').CiPipelineAnalyzer)(), false) },
+    { id: 'airflow', name: 'Apache Airflow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['apache-airflow'], files: ['requirements.txt', '**/dags/**/*.py'], content: [/from\s+airflow\b/, /import\s+airflow\b/, /@dag\b/, /@task\b/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dataml/airflow-analyzer').AirflowAnalyzer)(), false) },
+    { id: 'dagster', name: 'Dagster Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['dagster'], files: ['requirements.txt'], content: [/from\s+dagster\b/, /import\s+dagster\b/, /@asset\b/, /@op\b/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dataml/dagster-analyzer').DagsterAnalyzer)(), false) },
+    { id: 'prefect', name: 'Prefect Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['prefect'], files: ['requirements.txt'], content: [/from\s+prefect\b/, /import\s+prefect\b/, /@flow\b/, /@task\b/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dataml/prefect-analyzer').PrefectAnalyzer)(), false) },
+    { id: 'luigi', name: 'Luigi Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['luigi'], files: ['requirements.txt'], content: [/import\s+luigi\b/, /luigi\.Task\b/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dataml/luigi-analyzer').LuigiAnalyzer)(), false) },
+    { id: 'jupyter-notebook', name: 'Jupyter Notebook Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.ipynb'] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dataml/jupyter-notebook-analyzer').JupyterNotebookAnalyzer)(), true) },
+    { id: 'ml-training', name: 'ML Training Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['torch', 'tensorflow', 'keras'], files: ['requirements.txt', 'pyproject.toml'], content: [/import\s+torch\b/, /from\s+torch\b/, /import\s+tensorflow\b/, /\.fit\s*\(/] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dataml/ml-training-analyzer').MLTrainingAnalyzer)(), false) },
+    { id: 'wpf', name: 'WPF Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.xaml', '**/*.csproj'], content: [/PresentationFramework/, /System\.Windows/, /<UseWPF>true<\/UseWPF>/] }, requires: ['csharp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dotnet').WPFAnalyzer)(), false) },
+    { id: 'electron', name: 'Electron Desktop Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['electron'], files: ['package.json'], content: [/\bipcMain\.(handle|on)\s*\(/, /\bipcRenderer\.(invoke|send)\s*\(/, /\bcontextBridge\.exposeInMainWorld\s*\(/, /new\s+BrowserWindow\s*\(/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/desktop').ElectronAnalyzer)(), false) },
+    { id: 'tauri', name: 'Tauri Desktop Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@tauri-apps/api', '@tauri-apps/cli'], files: ['src-tauri/Cargo.toml', 'Cargo.toml'], content: [/#\[tauri::command\]/, /tauri::generate_handler!/, /\binvoke\s*\(\s*['"`]/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/desktop').TauriAnalyzer)(), false) },
+    { id: 'aspnet-core', name: 'ASP.NET Core Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.csproj'], content: [/Microsoft\.AspNetCore/, /Microsoft\.NET\.Sdk\.Web/] }, requires: ['csharp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dotnet').AspNetCoreAnalyzer)(), false) },
+    { id: 'nextjs', name: 'Next.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['next'], files: ['next.config.js', 'next.config.mjs', 'next.config.ts'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/nextjs-analyzer').NextJSAnalyzer)(), false) },
+    { id: 'actix-web', name: 'Actix-web Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['actix-web', 'actix_web'], files: ['Cargo.toml'], content: [/actix_web::/, /#\[(get|post|put|delete|patch)\("/, /HttpServer::/] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/rust').ActixAnalyzer)(), false) },
+    { id: 'rocket', name: 'Rocket Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['rocket', 'rocket_dyn_templates', 'rocket_sync'], files: ['Cargo.toml'], content: [/rocket::/, /#\[(get|post|put|delete|patch)\("/, /rocket::build/] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/rust').RocketAnalyzer)(), false) },
+    { id: 'axum', name: 'Axum Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['axum'], files: ['Cargo.toml'], content: [/axum::/, /Router::new\s*\(/, /\.route\s*\(\s*"/] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/rust').AxumAnalyzer)(), false) },
+    { id: 'warp', name: 'Warp Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['warp'], files: ['Cargo.toml'], content: [/warp::path\s*[!(]/, /\.and\s*\(\s*warp::(get|post|put|patch|delete)/] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/rust/warp-analyzer').WarpAnalyzer)(), false) },
+    { id: 'tonic', name: 'Tonic gRPC Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['tonic'], files: ['Cargo.toml'], content: [/tonic::async_trait/, /tonic::(Request|Response)/] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/rust/tonic-analyzer').TonicAnalyzer)(), false) },
+    { id: 'drogon', name: 'Drogon Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]drogon\//, /ADD_METHOD_TO\s*\(/, /app\s*\(\s*\)\s*\.\s*registerHandler\s*\(/] }, requires: ['c-cpp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/cpp/drogon-analyzer').DrogonAnalyzer)(), false) },
+    { id: 'crow', name: 'Crow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]crow(?:\.h|\/[^">]*)?[>"]/, /CROW_ROUTE\s*\(/] }, requires: ['c-cpp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/cpp/crow-analyzer').CrowAnalyzer)(), false) },
+    { id: 'vapor', name: 'Vapor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vapor'], files: ['Package.swift', '**/*.swift'], content: [/import\s+Vapor/, /\.grouped\s*\(/, /\.(get|post|put|delete|patch)\s*\(/] }, requires: ['swift'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/swift').VaporAnalyzer)(), false) },
+    { id: 'swift-platform', name: 'Swift Platform Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Package.swift', '**/*.swift'], content: [/import\s+SwiftUI/, /import\s+AppKit/, /import\s+UIKit/, /platforms\s*:\s*\[/] }, requires: ['swift'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/swift').SwiftPlatformAnalyzer)(), false) },
+    { id: 'mojolicious', name: 'Mojolicious Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Mojolicious'], files: ['cpanfile', 'Makefile.PL', '**/*.pl', '**/*.pm'], content: [/use\s+Mojolicious/, /^\s*(get|post|put|patch|del|options|any)\s+['"]/m, /->(get|post|put|patch|del|options|any|under)\s*\(/] }, requires: ['perl'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/perl').MojoliciousAnalyzer)(), false) },
+    { id: 'gorouter', name: 'GoRouter Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['go_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/GoRouter\s*\(/, /GoRoute\s*\(/, /package:go_router/] }, requires: ['dart'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dart').GoRouterAnalyzer)(), false) },
+    { id: 'shelf', name: 'Shelf/shelf_router Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['shelf', 'shelf_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/package:shelf_router\//, /package:shelf\//, /Router\s*\(\s*\)/] }, requires: ['dart'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dart').ShelfAnalyzer)(), false) },
+    { id: 'http4s', name: 'http4s Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['http4s', 'http4s-dsl'], files: ['build.sbt', '**/*.scala'], content: [/org\.http4s/, /HttpRoutes\.of/, /AuthedRoutes\.of/] }, requires: ['scala'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/scala').Http4sAnalyzer)(), false) },
+    { id: 'play', name: 'Play Framework Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['com.typesafe.play'], files: ['conf/routes', 'conf/*.routes', 'build.sbt'], content: [/^\s*(GET|POST|PUT|DELETE|PATCH)\s+\/\S*\s+[\w.]+\.\w+\(/m] }, requires: ['scala'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/scala').PlayAnalyzer)(), false) },
+    { id: 'akka-http', name: 'Akka HTTP / Pekko HTTP Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['akka-http', 'pekko-http'], files: ['build.sbt', '**/*.scala'], content: [/import\s+akka\.http/, /import\s+org\.apache\.pekko\.http/, /\bpathPrefix\s*\(/] }, requires: ['scala'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/scala').AkkaHttpAnalyzer)(), true) },
+    { id: 'kemal', name: 'Kemal Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['kemal'], files: ['shard.yml', '**/*.cr'], content: [/require\s+"kemal"/, /^\s*(get|post|put|patch|delete|options|head|ws)\s+"/m] }, requires: ['crystal'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/crystal').KemalAnalyzer)(), false) },
+    { id: 'genie', name: 'Genie Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Genie'], files: ['Project.toml', '**/*.jl'], content: [/Genie/, /\broute\s*\(/, /@(get|post|put|patch|delete)\s*\(/] }, requires: ['julia'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/julia').GenieAnalyzer)(), false) },
+    { id: 'compojure', name: 'Compojure Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['compojure'], files: ['deps.edn', 'project.clj', '**/*.clj', '**/*.cljs', '**/*.cljc'], content: [/compojure\.core/, /\(defroutes\b/, /\(context\b/, /\((?:GET|POST|PUT|DELETE|PATCH|ANY)\s+"/] }, requires: ['clojure'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/clojure').CompojureAnalyzer)(), false) },
+    { id: 'reitit', name: 'Reitit/Ring Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['reitit', 'ring/ring-core', 'ring/ring-jetty-adapter'], files: ['deps.edn', 'project.clj', '**/*.clj', '**/*.cljs', '**/*.cljc'], content: [/reitit\.(ring|core)/, /ring\.adapter/, /\(:handler\b/] }, requires: ['clojure'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/clojure').ReititAnalyzer)(), false) },
+    { id: 'sinatra', name: 'Sinatra Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['sinatra'], files: ['Gemfile', '**/*.rb'], content: [/require\s+['"]sinatra['"]/, /class\s+\w+\s*<\s*Sinatra::Base/] }, requires: ['ruby'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/sinatra-analyzer').SinatraAnalyzer)(), false) },
+    { id: 'slim', name: 'Slim/CodeIgniter Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['slim/slim', 'codeigniter4/framework', 'codeigniter/framework'], files: ['composer.json', '**/*.php'], content: [/AppFactory::create\(\)/, /new\s+\\?Slim\\App\(/, /\$routes->(get|post|put|patch|delete)\s*\(/] }, requires: ['php'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/slim-analyzer').SlimAnalyzer)(), false) },
+    { id: 'dream', name: 'Dream Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['dream'], files: ['dune-project', 'dune', '**/*.ml'], content: [/Dream\.router/, /Dream\.(get|post|put|patch|delete|options|head)\s+"/, /Dream\.scope/] }, requires: ['ocaml'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/ocaml').DreamAnalyzer)(), false) },
+    { id: 'apexrest', name: 'Apex REST Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: [], files: ['sfdx-project.json', '**/*.cls'], content: [/@RestResource\b/, /@Http(Get|Post|Put|Patch|Delete)\b/] }, requires: ['apex'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/apex').ApexRestAnalyzer)(), false) },
+    { id: 'svelte', name: 'Svelte/SvelteKit Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['svelte', '@sveltejs/kit'], content: [/\.svelte$/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/svelte-analyzer').SvelteAnalyzer)(), false) },
+    { id: 'astro', name: 'Astro Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['astro'], files: ['astro.config.mjs', 'astro.config.ts'], content: [/\.astro$/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/javascript/astro-analyzer').AstroAnalyzer)(), false) },
+    { id: 'hono', name: 'Hono Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['hono'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/javascript/hono-analyzer').HonoAnalyzer)(), false) },
+    { id: 'anchor', name: 'Anchor (Solana) Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['anchor-lang'], files: ['Anchor.toml'], content: [/#\[program\]/, /use anchor_lang/] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/rust/anchor-analyzer').AnchorAnalyzer)(), false) },
+    { id: 'phoenix', name: 'Phoenix Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['phoenix'], files: ['mix.exs'], content: [/use Phoenix\.Router/, /use Phoenix\.LiveView/] }, requires: ['elixir'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/elixir/phoenix-analyzer').PhoenixAnalyzer)(), false) },
+    { id: 'nuxt', name: 'Nuxt Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['nuxt'], files: ['nuxt.config.ts', 'nuxt.config.js', 'nuxt.config.mjs'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/nuxt-analyzer').NuxtAnalyzer)(), true) },
+    { id: 'remix', name: 'Remix Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@remix-run/react', '@remix-run/node'], files: ['remix.config.js'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/remix-analyzer').RemixAnalyzer)(), true) },
+    { id: 'react-native', name: 'React Native / Expo Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['react-native', 'expo'], files: ['app.json', 'app.config.js', 'app.config.ts'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/react-native-analyzer').ReactNativeAnalyzer)(), true) },
+    { id: 'ktor', name: 'Ktor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.ktor', 'ktor-server-core'], files: ['build.gradle.kts', 'build.gradle'], content: [/io\.ktor/, /routing\s*\{/, /embeddedServer\(/] }, requires: ['kotlin'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/kotlin/ktor-analyzer').KtorAnalyzer)(), true) },
+    { id: 'jetpack-compose', name: 'Jetpack Compose Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['androidx.compose', 'androidx.compose.runtime', 'compose.runtime'], files: ['build.gradle.kts', 'build.gradle'], content: [/@Composable/, /androidx\.compose/] }, requires: ['kotlin'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/kotlin/compose-analyzer').ComposeAnalyzer)(), false) },
+    { id: 'solidity-security', name: 'Solidity Security Facts Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@openzeppelin/contracts', 'openzeppelin-solidity'], files: ['foundry.toml', 'hardhat.config.js', 'hardhat.config.ts', 'truffle-config.js'], content: [/onlyOwner/, /nonReentrant/] }, requires: ['solidity'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/solidity/security-analyzer').SoliditySecurityAnalyzer)(), false) },
+    { id: 'wordpress', name: 'WordPress Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['wp-config.php', 'style.css'], content: [/add_action\s*\(/, /add_filter\s*\(/, /register_post_type\s*\(/, /Plugin Name:/, /Theme Name:/] }, requires: ['php'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/php/wordpress-analyzer').WordPressAnalyzer)(), true) },
+    { id: 'blazor', name: 'Blazor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.razor'], content: [/Microsoft\.AspNetCore\.Components/, /@page\s/, /@code\b/] }, requires: ['csharp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/dotnet/blazor-analyzer').BlazorAnalyzer)(), true) },
+    { id: 'quarkus', name: 'Quarkus Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.quarkus'], files: ['pom.xml', 'build.gradle'], content: [/quarkus\./, /jakarta\.ws\.rs/, /javax\.ws\.rs/] }, requires: ['java'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/java/quarkus-analyzer').QuarkusAnalyzer)(), true) },
+    { id: 'micronaut', name: 'Micronaut Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.micronaut'], files: ['pom.xml', 'build.gradle'], content: [/io\.micronaut/, /@Controller/] }, requires: ['java'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/java/micronaut-analyzer').MicronautAnalyzer)(), true) },
+    { id: 'jaxrs', name: 'JAX-RS / Jersey Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['jersey-server', 'jersey-core', 'jakarta.ws.rs-api', 'javax.ws.rs-api', 'resteasy'], files: ['pom.xml', 'build.gradle'], content: [/import\s+(?:jakarta|javax)\.ws\.rs/, /@Path\s*\(/] }, requires: ['java'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/java/jaxrs-analyzer').JaxRsAnalyzer)(), true) },
+    { id: 'vertx', name: 'Vert.x Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.vertx', 'vertx-web', 'vertx-core'], files: ['pom.xml', 'build.gradle', 'build.gradle.kts'], content: [/import\s+io\.vertx/, /Router\.router\s*\(/] }, requires: ['java'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/java/vertx-analyzer').VertxAnalyzer)(), true) },
+    { id: 'solidstart', name: 'SolidStart Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['solid-start', '@solidjs/start'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/solidstart-analyzer').SolidStartAnalyzer)(), true) },
+    { id: 'qwik', name: 'Qwik Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@builder.io/qwik', '@builder.io/qwik-city'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/web/qwik-analyzer').QwikAnalyzer)(), true) },
+    { id: 'gin', name: 'Gin Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/gin-gonic/gin'], files: ['go.mod'], content: [/"github\.com\/gin-gonic\/gin"/, /gin\.(Default|New)\s*\(/, /\.(GET|POST|PUT|PATCH|DELETE)\s*\(\s*"/] }, requires: ['go'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/go').GinAnalyzer)(), false) },
+    { id: 'echo', name: 'Echo Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/labstack/echo'], files: ['go.mod'], content: [/"github\.com\/labstack\/echo(\/v4)?"/, /echo\.New\s*\(/] }, requires: ['go'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/go').EchoAnalyzer)(), false) },
+    { id: 'fiber', name: 'Fiber Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/gofiber/fiber'], files: ['go.mod'], content: [/"github\.com\/gofiber\/fiber\/v?\d*"/, /fiber\.New\s*\(/] }, requires: ['go'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/go').FiberAnalyzer)(), false) },
+    { id: 'chi', name: 'Chi Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/go-chi/chi'], files: ['go.mod'], content: [/"github\.com\/go-chi\/chi(\/v\d+)?"/, /chi\.NewRouter\s*\(/] }, requires: ['go'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/go').ChiAnalyzer)(), false) },
+    { id: 'unity', name: 'Unity Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['ProjectSettings/ProjectVersion.txt', '**/*.unity', '**/*.meta', '**/*.cs'], content: [/^\s*using\s+UnityEngine\s*;/m] }, requires: ['csharp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/game').UnityAnalyzer)(), false) },
+    { id: 'unreal', name: 'Unreal Engine Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.uproject', '**/*.cpp', '**/*.h'], content: [/GENERATED_BODY\s*\(\s*\)/, /#include\s*"CoreMinimal\.h"/] }, requires: ['c-cpp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/game').UnrealAnalyzer)(), false) },
+    { id: 'godot', name: 'Godot Engine Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['project.godot', '**/*.tscn', '**/*.gd'], content: [/\bfunc\s+_ready\s*\(/, /\bfunc\s+_process\s*\(/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/game').GodotAnalyzer)(), false) },
+    { id: 'embedded-c', name: 'Embedded C Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.c', '**/*.h', '**/*.ld'], content: [/#include\s*[<"]avr\/(io|interrupt)\.h[>"]/, /\bISR\s*\(/, /__attribute__\s*\(\s*\(\s*interrupt/] }, requires: ['c-cpp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/embedded').EmbeddedCAnalyzer)(), false) },
+    { id: 'arduino', name: 'Arduino Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.ino', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]Arduino\.h[>"]/, /\bvoid\s+setup\s*\(/, /\bvoid\s+loop\s*\(/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/embedded').ArduinoAnalyzer)(), false) },
+    { id: 'linux-kernel-module', name: 'Linux Kernel Module Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.c', 'Kbuild', 'Makefile'], content: [/#include\s*[<"]linux\/module\.h[>"]/, /\bmodule_init\s*\(/, /\bmodule_exit\s*\(/] }, requires: ['c-cpp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/frameworks/embedded').LinuxKernelModuleAnalyzer)(), false) },
   ];
 
   const libraryRegistrations: AnalyzerRegistration[] = [
-    { id: 'prisma', name: 'Prisma ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['prisma', '@prisma/client'], files: ['prisma/schema.prisma'] }, requires: ['typescript-javascript'], analyzer: new PrismaAnalyzer() },
-    { id: 'socketio', name: 'Socket.io Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['socket.io', 'socket.io-client'] }, requires: ['typescript-javascript'], analyzer: new SocketIOAnalyzer() },
-    { id: 'react-router', name: 'React Router Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['react-router-dom', 'react-router'] }, requires: ['typescript-javascript'], analyzer: new ReactRouterAnalyzer() },
-    { id: 'redux', name: 'Redux/RTK Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@reduxjs/toolkit', 'redux'] }, requires: ['typescript-javascript'], analyzer: new ReduxAnalyzer() },
-    { id: 'zustand', name: 'Zustand Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zustand'] }, requires: ['typescript-javascript'], analyzer: new ZustandAnalyzer() },
-    { id: 'tanstack-query', name: 'TanStack Query Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@tanstack/react-query', 'react-query', '@tanstack/vue-query', '@tanstack/svelte-query'] }, requires: ['typescript-javascript'], analyzer: new TanStackQueryAnalyzer() },
-    { id: 'reactive-streams', name: 'Reactive Streams Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['rxjs'], content: [/import\s+reactor\.core\.publisher\.(Mono|Flux)/, /import\s+io\.reactivex[^;]*\.(Observable|Flowable|Single|Maybe|Completable)/, /import\s+Combine\b/] }, analyzer: new ReactiveStreamsAnalyzer() },
-    { id: 'frontend-state', name: 'Frontend State Management Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['mobx', 'mobx-react', 'mobx-react-lite', 'recoil', 'jotai', 'valtio', 'pinia', '@ngrx/store', '@ngrx/effects'] }, requires: ['typescript-javascript'], analyzer: new FrontendStateAnalyzer() },
-    { id: 'reqwest', name: 'Reqwest HTTP Client Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['reqwest'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new ReqwestAnalyzer() },
-    { id: 'outbound-http-client', name: 'Outbound HTTP Client Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['axios', 'got', 'ky', 'node-fetch', '@apollo/client', 'urql', 'requests', 'httpx', 'aiohttp', 'spring-web', 'spring-webflux', 'okhttp', 'feign-core', 'spring-cloud-starter-openfeign', 'github.com/go-resty/resty'], content: [/\bfetch\s*\(\s*['"`]https?:\/\//, /@FeignClient\b/, /\bhttp\.(Get|Post|NewRequest)/] }, analyzer: new OutboundHttpClientAnalyzer() },
-    { id: 'validation-schema-contracts', name: 'Validation Schema Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zod', 'yup', 'class-validator', 'joi', '@hapi/joi', 'ajv', 'marshmallow', 'cerberus'], content: [/\bz\.object\s*\(/, /\byup\.object\b/, /\bJoi\.[a-z]+\s*\(/, /(?:from\s*|require\s*\(\s*)['"](?:joi|@hapi\/joi)['"]/, /\bnew\s+Ajv\b/, /@Is[A-Za-z]+\s*\(/, /\bfields\.[A-Za-z]+\s*\(/, /\bValidator\s*\(/] }, analyzer: new ValidationSchemaAnalyzer() },
-    { id: 'trpc', name: 'tRPC API Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@trpc/server', '@trpc/client'] }, requires: ['typescript-javascript'], analyzer: new TRPCAnalyzer() },
-    { id: 'graphql', name: 'GraphQL API Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['graphql', '@apollo/server', 'type-graphql', 'graphql-yoga', 'nexus', 'strawberry-graphql', 'graphene', 'ariadne', 'gqlgen', 'spring-graphql', 'graphql-java'], files: ['**/*.graphql', '**/*.gql'] }, requires: ['typescript-javascript'], analyzer: new GraphQLAnalyzer() },
-    { id: 'grpc-handler', name: 'gRPC Handler Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@grpc/grpc-js', 'grpc', 'nice-grpc', '@nestjs/microservices', 'grpcio'], files: ['**/*_pb2_grpc.py'], content: [/\.addService\s*\(/, /@GrpcMethod\b/, /add_\w+Servicer_to_server/] }, analyzer: new GrpcHandlerAnalyzer() },
-    { id: 'drizzle', name: 'Drizzle ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['drizzle-orm'] }, requires: ['typescript-javascript'], analyzer: new DrizzleAnalyzer() },
-    { id: 'typeorm', name: 'TypeORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['typeorm'] }, requires: ['typescript-javascript'], analyzer: new TypeORMAnalyzer() },
-    { id: 'mongoose', name: 'Mongoose Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['mongoose'] }, requires: ['typescript-javascript'], analyzer: new MongooseAnalyzer() },
-    { id: 'sqlalchemy-pydantic', name: 'SQLAlchemy/Pydantic Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sqlalchemy', 'pydantic', 'SQLAlchemy', 'sqlmodel'], files: ['requirements.txt', 'pyproject.toml', 'Pipfile'] }, requires: ['python'], analyzer: new SQLAlchemyPydanticAnalyzer() },
-    { id: 'sequelize', name: 'Sequelize Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sequelize'] }, requires: ['typescript-javascript'], analyzer: new SequelizeAnalyzer() },
-    { id: 'knex', name: 'Knex Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['knex'] }, requires: ['typescript-javascript'], analyzer: new KnexAnalyzer() },
-    { id: 'objection', name: 'Objection.js Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['objection'] }, requires: ['typescript-javascript'], analyzer: new ObjectionAnalyzer() },
-    { id: 'diesel', name: 'Diesel Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['diesel'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new DieselAnalyzer() },
-    { id: 'sea-orm', name: 'SeaORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sea-orm'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new SeaOrmAnalyzer() },
-    { id: 'gorm', name: 'GORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['gorm.io/gorm'], files: ['go.mod'] }, requires: ['go'], analyzer: new GormAnalyzer() },
-    { id: 'sqlx', name: 'sqlx Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sqlx'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new SqlxAnalyzer() },
-    { id: 'ent', name: 'ent Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['entgo.io/ent'], files: ['go.mod'] }, requires: ['go'], analyzer: new EntAnalyzer() },
-    { id: 'dapper', name: 'Dapper Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Dapper'] }, requires: ['csharp'], analyzer: new DapperAnalyzer() },
-    { id: 'doctrine', name: 'Doctrine ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { files: ['composer.json'], dependencies: ['doctrine/orm', 'doctrine/doctrine-bundle', 'doctrine/persistence', 'doctrine/annotations'], content: [/ORM\\Entity\b/, /@ORM\\Entity\b/] }, requires: ['php'], analyzer: new DoctrineAnalyzer() },
-    { id: 'ai-stack', name: 'AI/LLM Stack Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['langchain', '@langchain/core', 'llamaindex', 'ai', '@ai-sdk/openai', 'openai', '@anthropic-ai/sdk', '@modelcontextprotocol/sdk', 'langgraph', 'crewai', '@pinecone-database/pinecone', 'weaviate-ts-client', 'chromadb', 'qdrant'] }, requires: ['typescript-javascript'], analyzer: new AIStackAnalyzer() },
-    { id: 'workflow', name: 'Workflow/Queue Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@temporalio/client', '@temporalio/worker', 'celery', 'sidekiq', 'bullmq', 'bull', 'kafkajs', 'amqplib', 'nats', 'kafka-python', 'confluent-kafka', 'kafka-go', 'nats.go', 'rdkafka', 'async-nats', 'spring-kafka', 'Confluent.Kafka'] }, requires: ['typescript-javascript'], analyzer: new WorkflowAnalyzer() },
-    { id: 'async-messaging', name: 'Async Messaging Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['kafkajs', 'node-rdkafka', 'amqplib', 'amqp-connection-manager', '@nestjs/microservices', 'nats', 'ioredis', 'redis', 'bullmq', 'bee-queue', '@aws-sdk/client-sqs', '@aws-sdk/client-sns', 'confluent-kafka', 'kafka-python', 'pika', 'celery', 'spring-kafka', 'spring-rabbit', 'sidekiq', 'github.com/segmentio/kafka-go', 'github.com/nats-io/nats.go'], content: [/producer\.send\s*\(\s*\{[\s\S]{0,200}?topic\s*:/, /\.sendToQueue\s*\(/, /\.publish\s*\(\s*['"`][^'"`]+['"`]/, /@KafkaListener|@RabbitListener/, /@MessagePattern|@EventPattern/, /Sidekiq::Worker/] }, analyzer: new MessagingAnalyzer() },
-    { id: 'observability-instrumentation', name: 'Observability Instrumentation Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@opentelemetry/api', '@opentelemetry/sdk-node', '@sentry/node', '@sentry/nextjs', '@sentry/browser', 'dd-trace', '@datadog/browser-logs', '@datadog/browser-rum', '@datadog/mobile-react-native', 'rollbar', '@bugsnag/js', '@bugsnag/node', 'prom-client', 'hot-shots', 'node-statsd', 'winston', 'pino', 'bunyan', 'sentry-sdk', 'structlog', 'opentelemetry-api', 'opentelemetry-sdk', 'io.opentelemetry', 'io.micrometer', 'micrometer-core', 'org.slf4j', 'log4j', 'logback-classic', 'go.uber.org/zap', 'github.com/rs/zerolog'], content: [/trace\.getTracer|startSpan\s*\(|@WithSpan/, /Sentry\.captureException|capture_exception\s*\(/, /new\s+(?:Counter|Gauge|Histogram)\s*\(/, /createLogger\s*\(|pino\s*\(|structlog\.get_logger|LoggerFactory\.getLogger/, /datadogRum\.init|datadogLogs\.init|DdSdkReactNative/] }, analyzer: new ObservabilityAnalyzer() },
-    { id: 'mediator-cqrs-messaging', name: 'Mediator/CQRS Messaging Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['MediatR', 'MassTransit', 'NServiceBus', '@nestjs/cqrs', 'nestjs-cqrs', '@aws-sdk/client-sqs', 'aws-lambda', 'boto3'], content: [/IRequestHandler|INotificationHandler|IMediator/, /IConsumer<|IHandleMessages</, /@CommandHandler|@QueryHandler|@EventsHandler/, /SQSEvent|event\.Records|eventSourceARN/] }, analyzer: new MediatorCqrsAnalyzer() },
-    { id: 'openapi', name: 'OpenAPI/Swagger Analyzer', type: 'library', version: '1.0.0', detectPatterns: { files: ['openapi.json', 'openapi.yaml', 'openapi.yml', 'swagger.json', 'swagger.yaml'], content: [/openapi\s*:/, /"openapi"\s*:/, /swagger\s*:/] }, analyzer: new OpenAPIAnalyzer() },
-    { id: 'efcore', name: 'EF Core Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Microsoft.EntityFrameworkCore'], content: [/:\s*DbContext/, /DbSet</] }, requires: ['csharp'], analyzer: new EFCoreAnalyzer() },
-    { id: 'cron', name: 'Scheduled Job (Cron) Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['cron', 'node-cron', '@nestjs/schedule'] }, requires: ['typescript-javascript'], analyzer: new CronAnalyzer() },
-    { id: 'mcp-tool-registration', name: 'MCP Tool Registration Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@modelcontextprotocol/sdk'], content: [/\.registerTool\s*\(/, /\.setRequestHandler\s*\(/] }, requires: ['typescript-javascript'], analyzer: new McpToolRegistrationAnalyzer() },
-    { id: 'di-container-bindings', name: 'DI Container Binding Graph Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['inversify', 'tsyringe', 'Ninject', 'Autofac', 'Microsoft.Extensions.DependencyInjection', 'dagger', 'com.google.dagger', 'com.google.inject', 'guice', 'io.insert-koin', 'symfony/dependency-injection', 'php-di/php-di', 'dependency_injector', 'dependency-injector'] }, analyzer: new DiContainerBindingAnalyzer() },
+    { id: 'prisma', name: 'Prisma ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['prisma', '@prisma/client'], files: ['prisma/schema.prisma'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/prisma-analyzer').PrismaAnalyzer)(), false) },
+    { id: 'socketio', name: 'Socket.io Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['socket.io', 'socket.io-client'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/realtime/socketio-analyzer').SocketIOAnalyzer)(), false) },
+    { id: 'react-router', name: 'React Router Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['react-router-dom', 'react-router'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/routing/react-router-analyzer').ReactRouterAnalyzer)(), true) },
+    { id: 'redux', name: 'Redux/RTK Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@reduxjs/toolkit', 'redux'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/state/redux-analyzer').ReduxAnalyzer)(), false) },
+    { id: 'zustand', name: 'Zustand Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zustand'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/state/zustand-analyzer').ZustandAnalyzer)(), false) },
+    { id: 'tanstack-query', name: 'TanStack Query Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@tanstack/react-query', 'react-query', '@tanstack/vue-query', '@tanstack/svelte-query'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/data-fetching/tanstack-query-analyzer').TanStackQueryAnalyzer)(), false) },
+    { id: 'reactive-streams', name: 'Reactive Streams Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['rxjs'], content: [/import\s+reactor\.core\.publisher\.(Mono|Flux)/, /import\s+io\.reactivex[^;]*\.(Observable|Flowable|Single|Maybe|Completable)/, /import\s+Combine\b/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/state/reactive-streams-analyzer').ReactiveStreamsAnalyzer)(), true) },
+    { id: 'frontend-state', name: 'Frontend State Management Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['mobx', 'mobx-react', 'mobx-react-lite', 'recoil', 'jotai', 'valtio', 'pinia', '@ngrx/store', '@ngrx/effects'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/state/frontend-state-analyzer').FrontendStateAnalyzer)(), true) },
+    { id: 'reqwest', name: 'Reqwest HTTP Client Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['reqwest'], files: ['Cargo.toml'] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/http/reqwest-analyzer').ReqwestAnalyzer)(), false) },
+    { id: 'outbound-http-client', name: 'Outbound HTTP Client Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['axios', 'got', 'ky', 'node-fetch', '@apollo/client', 'urql', 'requests', 'httpx', 'aiohttp', 'spring-web', 'spring-webflux', 'okhttp', 'feign-core', 'spring-cloud-starter-openfeign', 'github.com/go-resty/resty'], content: [/\bfetch\s*\(\s*['"`]https?:\/\//, /@FeignClient\b/, /\bhttp\.(Get|Post|NewRequest)/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/http/outbound-http-client-analyzer').OutboundHttpClientAnalyzer)(), false) },
+    { id: 'validation-schema-contracts', name: 'Validation Schema Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zod', 'yup', 'class-validator', 'joi', '@hapi/joi', 'ajv', 'marshmallow', 'cerberus'], content: [/\bz\.object\s*\(/, /\byup\.object\b/, /\bJoi\.[a-z]+\s*\(/, /(?:from\s*|require\s*\(\s*)['"](?:joi|@hapi\/joi)['"]/, /\bnew\s+Ajv\b/, /@Is[A-Za-z]+\s*\(/, /\bfields\.[A-Za-z]+\s*\(/, /\bValidator\s*\(/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/architecture/validation-schema-analyzer').ValidationSchemaAnalyzer)(), true) },
+    { id: 'trpc', name: 'tRPC API Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@trpc/server', '@trpc/client'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/trpc-analyzer').TRPCAnalyzer)(), true) },
+    { id: 'graphql', name: 'GraphQL API Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['graphql', '@apollo/server', 'type-graphql', 'graphql-yoga', 'nexus', 'strawberry-graphql', 'graphene', 'ariadne', 'gqlgen', 'spring-graphql', 'graphql-java'], files: ['**/*.graphql', '**/*.gql'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/graphql-analyzer').GraphQLAnalyzer)(), true) },
+    { id: 'grpc-handler', name: 'gRPC Handler Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@grpc/grpc-js', 'grpc', 'nice-grpc', '@nestjs/microservices', 'grpcio'], files: ['**/*_pb2_grpc.py'], content: [/\.addService\s*\(/, /@GrpcMethod\b/, /add_\w+Servicer_to_server/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/api').GrpcHandlerAnalyzer)(), true) },
+    { id: 'drizzle', name: 'Drizzle ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['drizzle-orm'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/drizzle-analyzer').DrizzleAnalyzer)(), true) },
+    { id: 'typeorm', name: 'TypeORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['typeorm'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/typeorm-analyzer').TypeORMAnalyzer)(), true) },
+    { id: 'mongoose', name: 'Mongoose Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['mongoose'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/mongoose-analyzer').MongooseAnalyzer)(), true) },
+    { id: 'sqlalchemy-pydantic', name: 'SQLAlchemy/Pydantic Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sqlalchemy', 'pydantic', 'SQLAlchemy', 'sqlmodel'], files: ['requirements.txt', 'pyproject.toml', 'Pipfile'] }, requires: ['python'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/sqlalchemy-pydantic-analyzer').SQLAlchemyPydanticAnalyzer)(), true) },
+    { id: 'sequelize', name: 'Sequelize Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sequelize'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/sequelize-analyzer').SequelizeAnalyzer)(), true) },
+    { id: 'knex', name: 'Knex Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['knex'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/knex-analyzer').KnexAnalyzer)(), true) },
+    { id: 'objection', name: 'Objection.js Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['objection'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/objection-analyzer').ObjectionAnalyzer)(), true) },
+    { id: 'diesel', name: 'Diesel Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['diesel'], files: ['Cargo.toml'] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/diesel-analyzer').DieselAnalyzer)(), true) },
+    { id: 'sea-orm', name: 'SeaORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sea-orm'], files: ['Cargo.toml'] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/seaorm-analyzer').SeaOrmAnalyzer)(), true) },
+    { id: 'gorm', name: 'GORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['gorm.io/gorm'], files: ['go.mod'] }, requires: ['go'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/gorm-analyzer').GormAnalyzer)(), true) },
+    { id: 'sqlx', name: 'sqlx Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sqlx'], files: ['Cargo.toml'] }, requires: ['rust'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/sqlx-analyzer').SqlxAnalyzer)(), true) },
+    { id: 'ent', name: 'ent Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['entgo.io/ent'], files: ['go.mod'] }, requires: ['go'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/ent-analyzer').EntAnalyzer)(), true) },
+    { id: 'dapper', name: 'Dapper Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Dapper'] }, requires: ['csharp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/dapper-analyzer').DapperAnalyzer)(), true) },
+    { id: 'doctrine', name: 'Doctrine ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { files: ['composer.json'], dependencies: ['doctrine/orm', 'doctrine/doctrine-bundle', 'doctrine/persistence', 'doctrine/annotations'], content: [/ORM\\Entity\b/, /@ORM\\Entity\b/] }, requires: ['php'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/orm/doctrine-analyzer').DoctrineAnalyzer)(), true) },
+    { id: 'ai-stack', name: 'AI/LLM Stack Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['langchain', '@langchain/core', 'llamaindex', 'ai', '@ai-sdk/openai', 'openai', '@anthropic-ai/sdk', '@modelcontextprotocol/sdk', 'langgraph', 'crewai', '@pinecone-database/pinecone', 'weaviate-ts-client', 'chromadb', 'qdrant'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/ai-stack-analyzer').AIStackAnalyzer)(), true) },
+    { id: 'workflow', name: 'Workflow/Queue Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@temporalio/client', '@temporalio/worker', 'celery', 'sidekiq', 'bullmq', 'bull', 'kafkajs', 'amqplib', 'nats', 'kafka-python', 'confluent-kafka', 'kafka-go', 'nats.go', 'rdkafka', 'async-nats', 'spring-kafka', 'Confluent.Kafka'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/workflow-analyzer').WorkflowAnalyzer)(), true) },
+    { id: 'async-messaging', name: 'Async Messaging Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['kafkajs', 'node-rdkafka', 'amqplib', 'amqp-connection-manager', '@nestjs/microservices', 'nats', 'ioredis', 'redis', 'bullmq', 'bee-queue', '@aws-sdk/client-sqs', '@aws-sdk/client-sns', 'confluent-kafka', 'kafka-python', 'pika', 'celery', 'spring-kafka', 'spring-rabbit', 'sidekiq', 'github.com/segmentio/kafka-go', 'github.com/nats-io/nats.go'], content: [/producer\.send\s*\(\s*\{[\s\S]{0,200}?topic\s*:/, /\.sendToQueue\s*\(/, /\.publish\s*\(\s*['"`][^'"`]+['"`]/, /@KafkaListener|@RabbitListener/, /@MessagePattern|@EventPattern/, /Sidekiq::Worker/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/messaging').MessagingAnalyzer)(), true) },
+    { id: 'observability-instrumentation', name: 'Observability Instrumentation Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@opentelemetry/api', '@opentelemetry/sdk-node', '@sentry/node', '@sentry/nextjs', '@sentry/browser', 'dd-trace', '@datadog/browser-logs', '@datadog/browser-rum', '@datadog/mobile-react-native', 'rollbar', '@bugsnag/js', '@bugsnag/node', 'prom-client', 'hot-shots', 'node-statsd', 'winston', 'pino', 'bunyan', 'sentry-sdk', 'structlog', 'opentelemetry-api', 'opentelemetry-sdk', 'io.opentelemetry', 'io.micrometer', 'micrometer-core', 'org.slf4j', 'log4j', 'logback-classic', 'go.uber.org/zap', 'github.com/rs/zerolog'], content: [/trace\.getTracer|startSpan\s*\(|@WithSpan/, /Sentry\.captureException|capture_exception\s*\(/, /new\s+(?:Counter|Gauge|Histogram)\s*\(/, /createLogger\s*\(|pino\s*\(|structlog\.get_logger|LoggerFactory\.getLogger/, /datadogRum\.init|datadogLogs\.init|DdSdkReactNative/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/observability').ObservabilityAnalyzer)(), true) },
+    { id: 'mediator-cqrs-messaging', name: 'Mediator/CQRS Messaging Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['MediatR', 'MassTransit', 'NServiceBus', '@nestjs/cqrs', 'nestjs-cqrs', '@aws-sdk/client-sqs', 'aws-lambda', 'boto3'], content: [/IRequestHandler|INotificationHandler|IMediator/, /IConsumer<|IHandleMessages</, /@CommandHandler|@QueryHandler|@EventsHandler/, /SQSEvent|event\.Records|eventSourceARN/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/mediator-cqrs-analyzer').MediatorCqrsAnalyzer)(), true) },
+    { id: 'openapi', name: 'OpenAPI/Swagger Analyzer', type: 'library', version: '1.0.0', detectPatterns: { files: ['openapi.json', 'openapi.yaml', 'openapi.yml', 'swagger.json', 'swagger.yaml'], content: [/openapi\s*:/, /"openapi"\s*:/, /swagger\s*:/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/openapi-analyzer').OpenAPIAnalyzer)(), true) },
+    { id: 'efcore', name: 'EF Core Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Microsoft.EntityFrameworkCore'], content: [/:\s*DbContext/, /DbSet</] }, requires: ['csharp'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/efcore-analyzer').EFCoreAnalyzer)(), true) },
+    { id: 'cron', name: 'Scheduled Job (Cron) Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['cron', 'node-cron', '@nestjs/schedule'] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/cron-analyzer').CronAnalyzer)(), false) },
+    { id: 'mcp-tool-registration', name: 'MCP Tool Registration Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@modelcontextprotocol/sdk'], content: [/\.registerTool\s*\(/, /\.setRequestHandler\s*\(/] }, requires: ['typescript-javascript'], ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/mcp-tool-registration-analyzer').McpToolRegistrationAnalyzer)(), true) },
+    { id: 'di-container-bindings', name: 'DI Container Binding Graph Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['inversify', 'tsyringe', 'Ninject', 'Autofac', 'Microsoft.Extensions.DependencyInjection', 'dagger', 'com.google.dagger', 'com.google.inject', 'guice', 'io.insert-koin', 'symfony/dependency-injection', 'php-di/php-di', 'dependency_injector', 'dependency-injector'] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/architecture/di-container-analyzer').DiContainerBindingAnalyzer)(), true) },
 
 
 
 
 
 
-    { id: 'mocking-test-double-fixtures', name: 'Mocking, Test Double and Fixture Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sinon', 'jest', '@jest/globals', 'vitest', 'testdouble', 'responses', 'requests-mock', 'org.mockito:mockito-core', 'mockito-core', 'org.easymock:easymock', 'github.com/golang/mock', 'go.uber.org/mock', 'github.com/stretchr/testify', 'Moq', 'NSubstitute', 'rspec-mocks', 'fishery', 'factory-boy', '@faker-js/faker', 'factory_bot', 'factory_bot_rails'], content: [/\b(?:jest|vi)\.(?:mock|fn|spyOn)\s*\(/, /\bsinon\.(?:stub|spy|mock|fake)\s*\(/, /@Mock\b/, /\bNewMock[A-Z]/, /\bSubstitute\.For</, /\bMock\.Of</, /\bpatch\s*\(\s*['"]/, /\bmonkeypatch\./, /\bFactory\.define\b/, /\binstance_double\s*\(/] }, analyzer: new MockingLibraryAnalyzer() },
-    { id: 'auth', name: 'Authentication and Authorization Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['passport', '@nestjs/passport', '@nestjs/jwt', 'passport-jwt', 'next-auth', '@auth/core', '@auth0/nextjs-auth0', '@auth0/auth0-react', 'auth0', 'express-oauth2-jwt-bearer', '@clerk/nextjs', '@clerk/clerk-react', '@clerk/clerk-sdk-node', '@clerk/express', 'firebase-admin', 'firebase', 'lucia', 'jsonwebtoken', 'express-jwt', 'spring-security', 'spring-boot-starter-security', 'Django', 'djangorestframework', 'Flask-Login', 'flask-login', 'PyJWT', 'Authlib', 'authlib', 'devise', 'pundit', 'cancancan', 'casbin', 'node-casbin', '@casl/ability', 'oso'], files: ['**/*.rego'], content: [/passport\.authenticate\s*\(/, /@(PreAuthorize|Secured|RolesAllowed)\b/, /\bpermission_classes\b/, /@login_required\b/, /\bauthorize!?\b/] }, analyzer: new AuthAnalyzer() },
+    { id: 'mocking-test-double-fixtures', name: 'Mocking, Test Double and Fixture Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sinon', 'jest', '@jest/globals', 'vitest', 'testdouble', 'responses', 'requests-mock', 'org.mockito:mockito-core', 'mockito-core', 'org.easymock:easymock', 'github.com/golang/mock', 'go.uber.org/mock', 'github.com/stretchr/testify', 'Moq', 'NSubstitute', 'rspec-mocks', 'fishery', 'factory-boy', '@faker-js/faker', 'factory_bot', 'factory_bot_rails'], content: [/\b(?:jest|vi)\.(?:mock|fn|spyOn)\s*\(/, /\bsinon\.(?:stub|spy|mock|fake)\s*\(/, /@Mock\b/, /\bNewMock[A-Z]/, /\bSubstitute\.For</, /\bMock\.Of</, /\bpatch\s*\(\s*['"]/, /\bmonkeypatch\./, /\bFactory\.define\b/, /\binstance_double\s*\(/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/testing').MockingLibraryAnalyzer)(), true) },
+    { id: 'auth', name: 'Authentication and Authorization Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['passport', '@nestjs/passport', '@nestjs/jwt', 'passport-jwt', 'next-auth', '@auth/core', '@auth0/nextjs-auth0', '@auth0/auth0-react', 'auth0', 'express-oauth2-jwt-bearer', '@clerk/nextjs', '@clerk/clerk-react', '@clerk/clerk-sdk-node', '@clerk/express', 'firebase-admin', 'firebase', 'lucia', 'jsonwebtoken', 'express-jwt', 'spring-security', 'spring-boot-starter-security', 'Django', 'djangorestframework', 'Flask-Login', 'flask-login', 'PyJWT', 'Authlib', 'authlib', 'devise', 'pundit', 'cancancan', 'casbin', 'node-casbin', '@casl/ability', 'oso'], files: ['**/*.rego'], content: [/passport\.authenticate\s*\(/, /@(PreAuthorize|Secured|RolesAllowed)\b/, /\bpermission_classes\b/, /@login_required\b/, /\bauthorize!?\b/] }, ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/libraries/auth/auth-analyzer').AuthAnalyzer)(), true) },
     ...architectureLibraryAnalyzerDefinitions().map(definition => ({
       id: definition.id,
       name: definition.name,
       type: 'library' as const,
       version: '1.0.0',
       detectPatterns: { dependencies: definition.dependencies },
-      analyzer: definition.analyzer,
+      ...lazyAnalyzerRegistration(definition.createAnalyzer, true),
     })),
   ];
 
@@ -765,7 +646,8 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       type: 'pattern',
       version: '0.1.0',
       detectPatterns: {},
-      analyzer: new PackAnalyzer(),
+      acceptsLocalPackGlobs: true,
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/packs').PackAnalyzer)(), false),
     },
   ];
 
