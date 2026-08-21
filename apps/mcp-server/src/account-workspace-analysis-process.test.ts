@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { resolveWorkspaceAnalysisHeapMb, runAccountWorkspaceAnalysisWorker } from './account-workspace-analysis-process';
 
 test('workspace analysis uses its own bounded heap budget', () => {
-  assert.equal(resolveWorkspaceAnalysisHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' } as NodeJS.ProcessEnv), 2560);
+  assert.equal(resolveWorkspaceAnalysisHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' } as NodeJS.ProcessEnv), 4096);
   assert.equal(resolveWorkspaceAnalysisHeapMb({ KLAURO_WORKSPACE_ANALYSIS_HEAP_MB: '2048' } as NodeJS.ProcessEnv), 2048);
 });
 

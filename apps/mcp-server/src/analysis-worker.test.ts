@@ -19,6 +19,7 @@ import {
   shutdownAnalysisWorker,
 } from './analyzer';
 import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
+import { withHostedBackgroundPermit } from './hosted-background-queue';
 
 const GB = 1024 * 1024 * 1024;
 
@@ -176,12 +177,15 @@ test('idle hosted worker exits after its warm reuse window', async () => {
   }
 });
 
-test('persistent hosted worker remains available after a completed analysis', async () => {
+test('persistent hosted worker is released before memory-heavy background work', async () => {
   process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS = '-1';
   try {
     await runAnalysis(fixtureProject);
     await new Promise(resolve => setTimeout(resolve, 25));
     assert.strictEqual(__analysisWorkerRunningForTests(), true);
+    await withHostedBackgroundPermit(async () => {
+      assert.strictEqual(__analysisWorkerRunningForTests(), false);
+    }, { releaseForegroundMemory: true });
   } finally {
     delete process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
     shutdownAnalysisWorker();

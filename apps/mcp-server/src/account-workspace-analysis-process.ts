@@ -17,7 +17,7 @@ export interface WorkspaceAnalysisWorkerRequest {
   env: Record<string, string>;
 }
 
-const DEFAULT_WORKSPACE_ANALYSIS_HEAP_MB = 2560;
+const DEFAULT_WORKSPACE_ANALYSIS_HEAP_MB = 4096;
 
 export class WorkspaceAnalysisPreemptedError extends Error {}
 

@@ -44,7 +44,6 @@ let idleTimer: NodeJS.Timeout | undefined;
 const pending = new Map<number, PendingQuery>();
 const warmedVersions = new Map<string, string>();
 const warmingVersions = new Map<string, { version: string; promise: Promise<void> }>();
-const idleWaiters = new Set<() => void>();
 
 export function resolveHostedQueryHeapMb(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.KLAURO_HOSTED_QUERY_HEAP_MB);
@@ -91,8 +90,17 @@ function stopWorker(reason = 'Hosted query worker stopped.'): void {
   pending.clear();
   warmedVersions.clear();
   warmingVersions.clear();
-  for (const resolve of idleWaiters) resolve();
-  idleWaiters.clear();
+}
+
+async function stopIdleWorkerForBackground(): Promise<void> {
+  if (!child || pending.size > 0) return;
+  const running = child;
+  const exited = new Promise<void>((resolve, reject) => {
+    running.once('exit', () => resolve());
+    running.once('error', reject);
+  });
+  stopWorker('Hosted query worker yielded to background analysis.');
+  await exited;
 }
 
 function scheduleIdleStop(): void {
@@ -148,11 +156,7 @@ export function prewarmHostedProjectQueryWorker(): void {
   if (alreadyRunning && pending.size === 0) scheduleIdleStop();
 }
 
-registerHostedBackgroundPreflight(() => {
-  if (!child) return;
-  if (pending.size === 0) scheduleIdleStop();
-  return new Promise<void>(resolve => idleWaiters.add(resolve));
-});
+registerHostedBackgroundPreflight(stopIdleWorkerForBackground);
 
 export async function runHostedProjectQueryWorker(
   request: Omit<HostedProjectQueryWorkerRequest, 'type' | 'id'>,

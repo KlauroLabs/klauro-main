@@ -25,8 +25,12 @@ test('hosted memory-heavy background work is globally serialized after failures'
 
 test('foreground queries can run while memory-heavy work waits in preflight', async () => {
   let releasePreflight!: () => void;
+  let preflightRuns = 0;
   let foregroundRan = false;
-  const unregister = registerHostedBackgroundPreflight(() => new Promise<void>(resolve => { releasePreflight = resolve; }));
+  const unregister = registerHostedBackgroundPreflight(() => {
+    preflightRuns += 1;
+    if (preflightRuns === 1) return new Promise<void>(resolve => { releasePreflight = resolve; });
+  });
   try {
     const background = withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
     await new Promise(resolve => setImmediate(resolve));
@@ -34,6 +38,7 @@ test('foreground queries can run while memory-heavy work waits in preflight', as
     assert.equal(foregroundRan, true);
     releasePreflight();
     await background;
+    assert.equal(preflightRuns, 2, 'retained workers are checked again after foreground activity drains');
   } finally {
     unregister();
   }
@@ -78,7 +83,7 @@ test('background work waits for foreground queries and runs their memory-release
     assert.deepEqual(order, ['foreground-start']);
     releaseForeground();
     await Promise.all([foreground, background]);
-    assert.deepEqual(order, ['foreground-start', 'foreground-end', 'preflight', 'background']);
+    assert.deepEqual(order, ['foreground-start', 'foreground-end', 'preflight', 'preflight', 'background']);
   } finally {
     unregister();
   }

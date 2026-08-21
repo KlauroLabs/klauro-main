@@ -52,9 +52,11 @@ export function withHostedBackgroundPermit<T>(
     await waitForForegroundIdle();
     if (options.releaseForegroundMemory) {
       for (const preflight of backgroundPreflights) await preflight();
+      await waitForForegroundIdle();
       let releaseMemoryHeavy!: () => void;
       memoryHeavyWork = new Promise<void>(resolve => { releaseMemoryHeavy = resolve; });
       try {
+        for (const preflight of backgroundPreflights) await preflight();
         return await run();
       } finally {
         releaseMemoryHeavy();

@@ -6,6 +6,7 @@ import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } fr
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 import { beginForegroundAnalysis } from './foreground-analysis';
+import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
 import { TypeScriptJavaScriptAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/python-analyzer';
 import { JavaAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/java-analyzer';
@@ -2886,6 +2887,22 @@ export function shutdownAnalysisWorker(): void {
   failPendingWorkerJobs(handle, null, 'SIGTERM', 'was shut down while a job was running');
 }
 
+async function stopIdleAnalysisWorkerForBackground(): Promise<void> {
+  const handle = workerHandle;
+  if (!handle || handle.pending.size > 0) return;
+  workerHandle = null;
+  clearWorkerIdleTimer(handle);
+  const exited = new Promise<void>((resolve, reject) => {
+    handle.child.once('exit', () => resolve());
+    handle.child.once('error', reject);
+  });
+  if (handle.child.connected) handle.child.disconnect();
+  if (handle.child.exitCode === null && handle.child.signalCode === null) handle.child.kill('SIGTERM');
+  await exited;
+}
+
+registerHostedBackgroundPreflight(stopIdleAnalysisWorkerForBackground);
+
 export function __analysisWorkerRunningForTests(): boolean {
   return workerHandle !== null;
 }
@@ -3063,7 +3080,7 @@ function queueWorkerJob<T>(
   dispatch: () => Promise<T>,
 ): Promise<T> {
   const queuedAt = Date.now();
-  const run = workerJobChain.then(() => {
+  const run = workerJobChain.then(() => withHostedForegroundPermit(async () => {
     const queueWaitMs = Date.now() - queuedAt;
     const dispatchedAt = Date.now();
     const endForegroundAnalysis = beginForegroundAnalysis();
@@ -3079,7 +3096,7 @@ function queueWorkerJob<T>(
 
       error => { report('FAILED'); throw error; },
     ).finally(endForegroundAnalysis);
-  });
+  }));
   workerJobChain = run.catch(() => undefined);
   return run;
 }
