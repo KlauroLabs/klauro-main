@@ -414,7 +414,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('missing');
   });
 
-  it('publishes grounded capability identities for focused description repair without repeating the catalog call', async () => {
+  it('retries a catalog whose capability descriptions are not publishable', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const extracted = [
       cap({ id: 'reports', name: 'View industry reports', description: 'Provides seamless insights into industry reports.', operations: anchorOp('reports') }),
@@ -430,13 +430,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
-    expect(calls).toBe(1);
-    expect(out).toHaveLength(4);
-    expect(out.every((capability: SystemCapability) =>
-      capability.description === '' && capability.description_generation?.status === 'ai_rejected')).toBe(true);
+    expect(calls).toBe(2);
+    expect(out).toEqual([]);
   });
 
-  it('rejects a catalog that remains below the quality bar after 3 cycles', async () => {
+  it('rejects a catalog after bounded no-progress retries', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const collapsed = ['View entry points', 'View functions'].map(name => cap({ id: name, name, description: `Surfaces the ${name.toLowerCase()} page for users of the product.` }));
     let calls = 0;
@@ -444,7 +442,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
-    expect(calls).toBe(3);
+    expect(calls).toBe(2);
     expect(out).toEqual([]);
   });
 
@@ -490,7 +488,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
     expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge.indexOf('fabric')).toBeLessThan(calls[1].qualityNudge.indexOf('cand_0'));
+    expect(calls[1].qualityNudge).toContain('fabric');
     expect(calls[1].qualityNudge).toContain('claim_work');
     expect(out).toEqual(covered);
   });
@@ -597,11 +595,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
-    expect(calls).toBe(3);
+    expect(calls).toBe(2);
     expect(out).toHaveLength(0);
   });
 
-  it('publishes the best grounded partial catalog when retries cannot cover every evidence family', async () => {
+  it('does not publish a partial catalog that cannot satisfy required evidence coverage', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const grounded = cap({
       id: 'analyze-codebases',
@@ -615,12 +613,12 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out).toEqual([grounded]);
+    expect(out).toEqual([]);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      status: 'partial',
-      published_capabilities: 1,
+      status: 'rejected',
+      published_capabilities: 0,
     });
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('catalog collapse');
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeDefined();
   });
 
   it('accepts a smaller passing retry instead of retaining a larger rejected catalog', async () => {

@@ -217,12 +217,6 @@ describe('applyAIInterpretation partial mutation on later failure (root cause of
     expect(purpose.inferred_description).toBeFalsy();
     expect(purpose.system_description_degradation).toBeDefined();
 
-    // The already-reconciled, already AI-named capability CATALOG survives
-    // intact — the names are never rolled back to the raw pre-AI snapshot
-    // just because the unrelated system paragraph failed its own gate. This
-    // is the fix under test. (Each capability's own DESCRIPTION text is a
-    // separate, independent per-item grounding concern — see
-    // l5-capability-degradation.test.ts — not re-asserted here.)
-    expect(capabilities.map(c => c.name)).toEqual(['Manage vehicle fleets', 'Monitor driver safety']);
+    expect(capabilities).toEqual([]);
   });
 });

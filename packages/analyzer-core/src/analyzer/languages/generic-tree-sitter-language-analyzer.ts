@@ -107,10 +107,8 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
         extract = await extractStructure(file.grammar, source);
       } catch (error) {
         this.addAnalysisWarning(`${file.relativePath}: ${file.grammar} walk failed: ${(error as Error).message}`);
-        continue;
       }
-      if (!extract) continue;
-      languagesSeen.add(file.grammar);
+      if (extract) languagesSeen.add(file.grammar);
 
       const lineCount = source.split('\n').length;
       const fileId = this.fileId(file.relativePath);
@@ -122,14 +120,15 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
           language: file.grammar,
           attributes: {
             extension: path.extname(file.relativePath) || '(none)',
-            functionCount: extract.functions.length,
-            classCount: extract.classes.length,
-            importCount: extract.imports.length,
+            functionCount: extract?.functions.length || 0,
+            classCount: extract?.classes.length || 0,
+            importCount: extract?.imports.length || 0,
           },
         })
         .build());
       const scriptEntryPoint = genericScriptEntryPoint(fileId, file.relativePath, file.grammar);
       if (scriptEntryPoint) entryPoints.push(scriptEntryPoint);
+      if (!extract) continue;
 
       const funcs: FuncDecl[] = [];
       for (const fn of extract.functions) {

@@ -68,7 +68,7 @@ function aggregateNameEntityNarrowing(capability: SystemCapability, entityNamesB
 }
 
 function unsupportedExclusivityClaims(description: string, evidenceTerms: string[]): string[] {
-  const claims = description.match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? concurrent)\b/gi) || [];
+  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? concurrent)\b/gi) || [];
   const evidence = normalizedEntityPhrase(evidenceTerms.join(' '));
   const evidenceIsAdvisory = /\b(?:advisory|non locking|non exclusive|never block)\b/.test(evidence);
   return claims.filter(claim => evidenceIsAdvisory || !evidence.includes(normalizedEntityPhrase(claim)));
