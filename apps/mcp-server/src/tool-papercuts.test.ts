@@ -217,7 +217,7 @@ function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
   // persists for every derived flow. Without it the route has no stable global
   // order to page through and honestly says so.
   const flowRefs = [];
-  const flows = [];
+  const flows: Array<{ flow_id: string; [key: string]: unknown }> = [];
   for (let i = 0; i < count; i++) {
     const nodeId = `n_handler_${i}`;
     const key = String(i).padStart(3, '0');
