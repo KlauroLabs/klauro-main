@@ -33,7 +33,7 @@ import { planIntentMerge, planIntentMergeFromSubstrate, type MergePlan } from '.
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
-import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
+import { getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
 import {
   getAnalysisEntry,
@@ -55,7 +55,8 @@ import { ResponseCache, responseCacheKey } from './response-cache';
 import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
-import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, runHostedProjectQueryWorker, type HostedProjectQueryTool } from './hosted-project-query-process';
+import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type HostedProjectQueryTool } from './hosted-project-query';
+import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker, warmHostedProjectAnalysisWorker } from './hosted-project-query-process';
 import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse } from './analysis-response-readiness';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -2444,9 +2445,19 @@ async function handleAccountApi(
     const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
 
     if (lastAttempt?.state === 'in-progress') {
+      prewarmHostedProjectQueryWorker();
       const structural = structuralReadinessDuringAttempt(entry, lastAttempt);
       if (structural) {
-
+        const queryReady = beginHostedProjectQueryWarm({
+          workspace: analysisWorkspace,
+          projectId: project.id,
+          analysisId: project.analysis_id,
+          version: entry!.analyzed_at,
+        });
+        if (!queryReady) return {
+          statusCode: 200,
+          body: { status: 'populating', project_id: project.id, analysis_id: project.analysis_id, last_attempt: lastAttempt },
+        };
         return {
           statusCode: 200,
           body: {
@@ -2454,7 +2465,14 @@ async function handleAccountApi(
             project_id: project.id,
             analysis_id: project.analysis_id,
             last_attempt: lastAttempt,
-            summary: await buildQueryableSummary(analysisWorkspace, entry!),
+            summary: {
+              name: entry!.name,
+              analysis_timestamp: entry!.analyzed_at,
+              node_count: entry!.node_count,
+              edge_count: entry!.edge_count,
+              cas_version: entry!.cas_version,
+              layers_ready: entry!.layers_ready,
+            },
           },
         };
       }
@@ -2491,6 +2509,31 @@ async function handleAccountApi(
         : l5Errored
           ? 'degraded'
           : 'ready';
+    if (status === 'ready' || status === 'degraded') {
+      const queryReady = beginHostedProjectQueryWarm({
+          workspace: analysisWorkspace,
+          projectId: project.id,
+          analysisId: project.analysis_id,
+          version: entry.analyzed_at,
+      });
+      if (!queryReady) return {
+        statusCode: 200,
+        body: {
+          status: 'populating',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
+          summary: {
+            name: entry.name,
+            analysis_timestamp: entry.analyzed_at,
+            node_count: entry.node_count,
+            edge_count: entry.edge_count,
+            cas_version: entry.cas_version,
+            layers_ready: entry.layers_ready,
+          },
+        },
+      };
+    }
     return {
       statusCode: 200,
       body: {
@@ -2526,10 +2569,16 @@ async function handleAccountApi(
 
     const earlyLastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
     if (earlyLastAttempt?.state === 'in-progress') {
+      prewarmHostedProjectQueryWorker();
 
       const earlyEntry = await getAnalysisEntry(analysisWorkspace).catch(() => null);
       const structural = structuralReadinessDuringAttempt(earlyEntry, earlyLastAttempt);
       if (structural) {
+        const warmed = await warmHostedProjectAnalysisWorker({
+          workspace: analysisWorkspace,
+          projectId: project.id,
+          analysisId: project.analysis_id,
+        });
         return {
           statusCode: 200,
           body: {
@@ -2537,7 +2586,7 @@ async function handleAccountApi(
             project_id: project.id,
             analysis_id: project.analysis_id,
             last_attempt: earlyLastAttempt,
-            summary: await buildQueryableSummary(analysisWorkspace, earlyEntry!),
+            summary: { ...(warmed.summary as Record<string, unknown>), layers_ready: earlyEntry!.layers_ready },
           },
         };
       }
@@ -2547,109 +2596,17 @@ async function handleAccountApi(
       };
     }
     try {
-      const cas = await getAnalysis(analysisWorkspace);
-      const summary = buildSummary(cas, { detail: 'compact' });
-
-      const das = getCachedDeployableAnalyses(cas);
-      (summary as Record<string, unknown>).sub_cas_nodes = das.sub_cas_nodes;
-      const productMap = getProductMap(cas);
-
-      const ladderLayers = cas.layers_ready?.layers || [];
-      const hasPendingLayer = ladderLayers.some(layer => layer.status === 'pending');
-      const erroredLayers = ladderLayers.filter(layer => layer.status === 'error');
-
-      const structuralErrors = erroredLayers.filter(layer => layer.layer !== 'L5');
-      const aiDegraded = cas.ai_enrichment === 'error'
-        || (erroredLayers.some(layer => layer.layer === 'L5') && !hasPendingLayer);
-
-      const naming = cas.enhanced_system_purpose?.capability_naming_coverage;
-      const nameDegradations = cas.enhanced_system_purpose?.capability_name_degradations || [];
-      const descriptionDegradations = cas.enhanced_system_purpose?.capability_description_degradations || [];
-
-      const comprehensionAttempted = cas.ai_enrichment === 'ready'
-        || cas.ai_enrichment === 'synchronous'
-        || cas.ai_enrichment === 'error';
-
-      const { comprehensionFailed, comprehensionPartial } = classifyComprehensionOutcome({
-        aiDegraded,
-        comprehensionAttempted,
-        namingTotal: naming?.total,
-        namingAuthored: naming?.authored,
-        nameDegradationCount: nameDegradations.length,
-        descriptionDegradationCount: descriptionDegradations.length,
+      const analysisStatus = await warmHostedProjectAnalysisWorker({
+        workspace: analysisWorkspace,
+        projectId: project.id,
+        analysisId: project.analysis_id,
       });
-      const comprehensionDegraded = comprehensionFailed || comprehensionPartial;
-
-      const isEnriched = (source: string | undefined): boolean =>
-        source === 'ai' || source === 'manual' || source === 'reused';
-      const unenrichedCapabilityDetails = comprehensionPartial
-        ? (cas.capabilities || [])
-            .map(capability => {
-              const nameShort = !isEnriched(capability.name_source);
-              const descriptionShort = !isEnriched(capability.description_source);
-              if (!nameShort && !descriptionShort) return undefined;
-              const missing = nameShort && descriptionShort ? 'name and description'
-                : nameShort ? 'name' : 'description';
-              return capability.name ? { name: capability.name, missing } : undefined;
-            })
-            .filter((entry): entry is { name: string; missing: string } => Boolean(entry))
-        : [];
-      const status = structuralErrors.length > 0
-        ? 'failed'
-        : cas.layers_ready && !cas.layers_ready.complete && hasPendingLayer
-          ? 'populating'
-          : comprehensionFailed
-            ? 'degraded'
-            : 'ready';
-
       const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
       return {
         statusCode: 200,
         body: {
-          status,
+          ...analysisStatus,
           ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
-          ...(structuralErrors.length > 0
-            ? {
-                analysis_error:
-                  structuralErrors.find(layer => layer.error)?.error ||
-                  'The analysis failed before structure could be produced.',
-                failed_layers: structuralErrors.map(layer => layer.layer),
-              }
-            : {}),
-          ...(comprehensionFailed
-            ? {
-                ai_enrichment: 'error',
-                ai_enrichment_error:
-                  cas.ai_enrichment_error ||
-                  erroredLayers.find(layer => layer.layer === 'L5' && layer.error)?.error ||
-                  'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
-              }
-            : {}),
-          ...(comprehensionDegraded
-            ? {
-                comprehension: {
-
-                  degraded: comprehensionFailed,
-                  partial: comprehensionPartial,
-                  ...(naming ? { capability_naming_coverage: naming } : {}),
-                  capability_name_degradations: nameDegradations.length,
-                  capability_description_degradations: descriptionDegradations.length,
-
-                  ...(unenrichedCapabilityDetails.length > 0
-                    ? { unenriched_capabilities: unenrichedCapabilityDetails }
-                    : {}),
-                  detail: comprehensionFailed
-                    ? 'The AI comprehension pass failed; capability names and descriptions are un-enriched deterministic facts.'
-                    : unenrichedCapabilityDetails.length > 0
-                      ? `${unenrichedCapabilityDetails.length} of ${naming?.total ?? '?'} capabilities fell short of full AI enrichment (${unenrichedCapabilityDetails.map(e => `${e.name}: ${e.missing}`).join('; ')}); those fields carry deterministic evidence text, not authored comprehension. The analysis is otherwise complete and fully queryable.`
-                      : 'Part of the capability catalog could not be AI-enriched; those entries carry deterministic evidence text, not authored comprehension.',
-                },
-              }
-            : {}),
-          project_id: project.id,
-          analysis_id: project.analysis_id,
-          summary,
-          ...(unavailableComprehensionResponse(cas, { project_id: project.id, analysis_id: project.analysis_id }) ? {} : { product_map: productMap }),
         },
       };
     } catch (error) {
@@ -4061,26 +4018,6 @@ function safeDestination(workspace: string, relativePath: string): string {
 
 function workspacePath(dataDir: string, analysisId: string): string {
   return path.join(dataDir, 'workspaces', safeName(analysisId));
-}
-
-async function buildQueryableSummary(
-  analysisWorkspace: string,
-  entry: { name: string; analyzed_at: string; node_count: number; edge_count: number; cas_version?: string; layers_ready?: unknown },
-): Promise<Record<string, unknown>> {
-  try {
-    const cas = await getAnalysis(analysisWorkspace);
-    const summary = buildSummary(cas, { detail: 'compact' }) as Record<string, unknown>;
-    return { ...summary, layers_ready: entry.layers_ready };
-  } catch {
-    return {
-      name: entry.name,
-      analysis_timestamp: entry.analyzed_at,
-      node_count: entry.node_count,
-      edge_count: entry.edge_count,
-      cas_version: entry.cas_version,
-      layers_ready: entry.layers_ready,
-    };
-  }
 }
 
 export function classifyComprehensionOutcome(input: {

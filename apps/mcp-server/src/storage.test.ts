@@ -204,6 +204,10 @@ test('a missing/corrupt segmented section file fails loudly, naming the section,
       () => loadAnalysisSections(project, ['graph']),
       /section 'graph'/,
     );
+    assert.deepEqual(
+      await loadAnalysis(project, { preferAuthoritative: true }),
+      materializeDeployableCasTree(cas),
+    );
   });
 });
 

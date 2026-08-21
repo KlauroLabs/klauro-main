@@ -894,7 +894,7 @@ export async function getAnalysisFileFingerprint(
 
 export async function loadAnalysis(
   projectPath: string,
-  options?: { preferCache?: boolean; track?: AnalysisTrack }
+  options?: { preferCache?: boolean; track?: AnalysisTrack; preferAuthoritative?: boolean }
 ): Promise<CASOutput | null> {
   const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
   if (!resolved) return null;
@@ -902,14 +902,14 @@ export async function loadAnalysis(
   if (options?.preferCache) {
     const cached = await getValidCachedAnalysis(projectPath, resolved);
     if (cached) return tagAnalysisVersion(cached);
-    const output = await loadCompleteAnalysis(projectPath, resolved, options.track);
+    const output = await loadCompleteAnalysis(projectPath, resolved, options.track, options.preferAuthoritative);
     if (output) {
       await rememberLoadedAnalysis(projectPath, resolved, output);
     }
     return output ? tagAnalysisVersion(output) : output;
   }
 
-  const output = await loadCompleteAnalysis(projectPath, resolved, options?.track);
+  const output = await loadCompleteAnalysis(projectPath, resolved, options?.track, options?.preferAuthoritative);
   return output ? tagAnalysisVersion(output) : output;
 }
 
@@ -917,14 +917,15 @@ async function loadCompleteAnalysis(
   projectPath: string,
   resolved: string,
   track?: AnalysisTrack,
+  preferAuthoritative = false,
 ): Promise<CASOutput | null> {
-  const segmented = await resolveSegmentedAnalysis(resolved);
+  const segmented = preferAuthoritative ? null : await resolveSegmentedAnalysis(resolved);
   if (segmented) {
     try {
       return await loadAnalysisSections(
         projectPath,
         segmented.manifest.sections.map(section => section.name),
-        track ? { track } : undefined,
+      track ? { track } : undefined,
       ) as CASOutput | null;
     } catch (error) {
       console.warn(`[Klauro] segmented analysis read failed for ${projectPath}; using authoritative analysis: ${error instanceof Error ? error.message : String(error)}`);

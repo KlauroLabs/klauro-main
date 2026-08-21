@@ -46,3 +46,17 @@ test('background work waits for foreground queries and runs their memory-release
     unregister();
   }
 });
+
+test('lightweight telemetry persistence never queues a foreground query', async () => {
+  let releaseBackground!: () => void;
+  let foregroundRan = false;
+  const background = withHostedBackgroundPermit(async () => {
+    await new Promise<void>(resolve => { releaseBackground = resolve; });
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const foreground = withHostedForegroundPermit(async () => { foregroundRan = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(foregroundRan, true);
+  releaseBackground();
+  await Promise.all([background, foreground]);
+});

@@ -1,4 +1,5 @@
 let backgroundWork: Promise<void> = Promise.resolve();
+let memoryHeavyWork: Promise<void> = Promise.resolve();
 let foregroundWork = 0;
 let resolveForegroundIdle: (() => void) | undefined;
 const backgroundPreflights = new Set<() => void | Promise<void>>();
@@ -20,7 +21,7 @@ export function registerHostedBackgroundPreflight(preflight: () => void | Promis
 }
 
 export async function withHostedForegroundPermit<T>(run: () => Promise<T>): Promise<T> {
-  await backgroundWork;
+  await memoryHeavyWork;
   foregroundWork += 1;
   try {
     return await run();
@@ -46,5 +47,6 @@ export function withHostedBackgroundPermit<T>(
     return run();
   });
   backgroundWork = result.then(() => undefined, () => undefined);
+  if (options.releaseForegroundMemory) memoryHeavyWork = backgroundWork;
   return result;
 }

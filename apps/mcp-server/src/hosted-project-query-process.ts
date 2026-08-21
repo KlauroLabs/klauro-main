@@ -4,11 +4,8 @@ import * as path from 'node:path';
 import { resolveAnalysisHeapMb } from './analysis-heap';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
 
-export { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
-export type { HostedProjectQueryTool } from './hosted-project-query';
-
 export interface HostedProjectQueryWorkerRequest {
-  type: 'query';
+  type: 'query' | 'warm' | 'analysis-status';
   id: number;
   workspace: string;
   tool: string;
@@ -18,11 +15,12 @@ export interface HostedProjectQueryWorkerRequest {
 }
 
 interface HostedProjectQueryWorkerResponse {
-  type: 'result' | 'error';
-  id: number;
+  type: 'ready' | 'result' | 'error';
+  id?: number;
   analysisTimestamp?: string;
   unavailable?: unknown;
   result?: unknown;
+  analysisStatus?: Record<string, unknown>;
   error?: string;
 }
 
@@ -30,6 +28,7 @@ export interface HostedProjectQueryResult {
   analysisTimestamp: string;
   unavailable?: unknown;
   result?: unknown;
+  analysisStatus?: Record<string, unknown>;
 }
 
 interface PendingQuery {
@@ -43,6 +42,8 @@ let child: ChildProcess | undefined;
 let nextRequestId = 1;
 let idleTimer: NodeJS.Timeout | undefined;
 const pending = new Map<number, PendingQuery>();
+const warmedVersions = new Map<string, string>();
+const warmingVersions = new Map<string, { version: string; promise: Promise<void> }>();
 
 export function resolveHostedQueryHeapMb(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.KLAURO_HOSTED_QUERY_HEAP_MB);
@@ -53,8 +54,12 @@ export function resolveHostedQueryHeapMb(env: NodeJS.ProcessEnv = process.env): 
 function resolveWorkerEntryPath(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.KLAURO_HOSTED_QUERY_WORKER_ENTRY?.trim();
   if (override) return path.resolve(override);
-  for (const candidate of ['hosted-project-query-worker.cjs', 'hosted-project-query-worker.ts']) {
-    const candidatePath = path.join(__dirname, candidate);
+  const candidates = [
+    path.join(__dirname, 'hosted-project-query-worker.cjs'),
+    path.join(__dirname, '..', 'dist-hosted', 'hosted-project-query-worker.cjs'),
+    path.join(__dirname, 'hosted-project-query-worker.ts'),
+  ];
+  for (const candidatePath of candidates) {
     if (fs.existsSync(candidatePath)) return candidatePath;
   }
   throw new Error(`Hosted query worker entry not found next to ${__dirname}; rebuild the hosted bundle.`);
@@ -83,6 +88,8 @@ function stopWorker(reason = 'Hosted query worker stopped.'): void {
   if (running && running.exitCode === null && running.signalCode === null) running.kill('SIGTERM');
   for (const request of pending.values()) request.reject(new Error(reason));
   pending.clear();
+  warmedVersions.clear();
+  warmingVersions.clear();
 }
 
 function scheduleIdleStop(): void {
@@ -104,7 +111,13 @@ function getWorker(): ChildProcess {
   });
   child = spawned;
   spawned.on('message', (message: HostedProjectQueryWorkerResponse) => {
-    if (!message || (message.type !== 'result' && message.type !== 'error')) return;
+    if (!message) return;
+    if (message.type === 'ready') {
+      if (pending.size === 0) scheduleIdleStop();
+      return;
+    }
+    if (message.type !== 'result' && message.type !== 'error') return;
+    if (message.id === undefined) return;
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
@@ -113,6 +126,7 @@ function getWorker(): ChildProcess {
       analysisTimestamp: message.analysisTimestamp || '',
       unavailable: message.unavailable,
       result: message.result,
+      analysisStatus: message.analysisStatus,
     });
     if (pending.size === 0) scheduleIdleStop();
   });
@@ -123,6 +137,14 @@ function getWorker(): ChildProcess {
   return spawned;
 }
 
+export function prewarmHostedProjectQueryWorker(): void {
+  const alreadyRunning = Boolean(child?.connected);
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = undefined;
+  getWorker();
+  if (alreadyRunning && pending.size === 0) scheduleIdleStop();
+}
+
 registerHostedBackgroundPreflight(() => {
   if (pending.size === 0) stopWorker('Hosted query worker yielded to background analysis.');
 });
@@ -130,7 +152,13 @@ registerHostedBackgroundPreflight(() => {
 export async function runHostedProjectQueryWorker(
   request: Omit<HostedProjectQueryWorkerRequest, 'type' | 'id'>,
 ): Promise<HostedProjectQueryResult> {
-  return withHostedForegroundPermit(() => new Promise((resolve, reject) => {
+  return withHostedForegroundPermit(() => dispatchWorkerRequest({ type: 'query', ...request }));
+}
+
+function dispatchWorkerRequest(
+  request: Omit<HostedProjectQueryWorkerRequest, 'id'>,
+): Promise<HostedProjectQueryResult> {
+  return new Promise((resolve, reject) => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = undefined;
     const id = nextRequestId++;
@@ -143,10 +171,57 @@ export async function runHostedProjectQueryWorker(
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
-    worker.send({ type: 'query', id, ...request } satisfies HostedProjectQueryWorkerRequest, error => {
+    worker.send({ id, ...request } satisfies HostedProjectQueryWorkerRequest, error => {
       if (!error) return;
       pending.delete(id);
       reject(new Error(`Failed to dispatch hosted query: ${error.message}`));
     });
+  });
+}
+
+export async function warmHostedProjectAnalysisWorker(input: {
+  workspace: string;
+  projectId: string;
+  analysisId: string;
+}): Promise<Record<string, unknown>> {
+  const response = await withHostedForegroundPermit(() => dispatchWorkerRequest({
+    type: 'analysis-status',
+    tool: '',
+    args: undefined,
+    ...input,
   }));
+  if (!response.analysisStatus) throw new Error('Hosted query worker returned no analysis status.');
+  return response.analysisStatus;
+}
+
+export async function warmHostedProjectQueryWorker(input: {
+  workspace: string;
+  projectId: string;
+  analysisId: string;
+}): Promise<void> {
+  await withHostedForegroundPermit(() => dispatchWorkerRequest({
+    type: 'warm',
+    tool: '',
+    args: undefined,
+    ...input,
+  }));
+}
+
+export function beginHostedProjectQueryWarm(input: {
+  workspace: string;
+  projectId: string;
+  analysisId: string;
+  version: string;
+}): boolean {
+  if (warmedVersions.get(input.workspace) === input.version) return true;
+  if (warmingVersions.get(input.workspace)?.version === input.version) return false;
+  const promise = warmHostedProjectQueryWorker(input).then(() => {
+    warmedVersions.set(input.workspace, input.version);
+  }).catch(error => {
+    process.stderr.write(`[Klauro] hosted query warm failed for ${input.analysisId}: ${error instanceof Error ? error.message : String(error)}\n`);
+  }).finally(() => {
+    if (warmingVersions.get(input.workspace)?.promise === promise) warmingVersions.delete(input.workspace);
+  });
+  warmingVersions.set(input.workspace, { version: input.version, promise });
+  return false;
 }
