@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ExpressAnalyzer } from '../../analyzer/frameworks/web/express-analyzer';
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import { checkEdgeReferentialIntegrity } from '../../analyzer/core/graph-referential-integrity';
 import {
   deriveLocalPackageImportContext,
   LOCAL_PACKAGE_IMPORT_CONTEXT_PATH,
@@ -286,5 +287,71 @@ describe('ExpressAnalyzer finite controller route generation', () => {
 
     const detected = await orchestrator.detectAnalyzers(transported);
     expect(detected.map(registration => registration.id)).toContain('express');
+  });
+});
+
+describe('ExpressAnalyzer controller dependency integrity', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-express-controller-integrity-'));
+    await fs.writeJson(path.join(root, 'package.json'), {
+      name: 'express-controller-integrity',
+      dependencies: { express: '^4.18.2' },
+    });
+    await fs.outputFile(path.join(root, 'src/server.js'), [
+      "const express = require('express');",
+      'const app = express();',
+      'app.listen(3000);',
+    ].join('\n'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('links only relative dependencies that resolve to a discovered service node', async () => {
+    await fs.outputFile(path.join(root, 'src/controllers/orders.controller.js'), [
+      "const crypto = require('crypto');",
+      "const { v4 } = require('uuid');",
+      "const orders = require('../services/orders.service');",
+      'class OrdersController {',
+      '  list(req, res) { return res.json(orders.list(req.query)); }',
+      '}',
+      'module.exports = OrdersController;',
+    ].join('\n'));
+    await fs.outputFile(path.join(root, 'src/services/orders.service.js'), [
+      'exports.list = function(query) { return [query]; };',
+    ].join('\n'));
+
+    const contribution = await new ExpressAnalyzer().analyze({ projectPath: root, files: [], config: {} } as any);
+    const dependencyEdges = (contribution.edges || []).filter(edge => edge.type === 'depends_on');
+
+    expect(dependencyEdges).toEqual([
+      expect.objectContaining({
+        source: 'controller_OrdersController',
+        target: 'service_orders_service',
+      }),
+    ]);
+    expect(checkEdgeReferentialIntegrity(contribution.edges, contribution).dangling_edges).toBe(0);
+  });
+
+  it('ignores comment and string evidence and excludes __tests__ sources', async () => {
+    await fs.outputFile(path.join(root, 'src/express-analyzer.ts'), [
+      'class ExpressAnalyzer {}',
+      "const sample = \"exports.run = function(req, res) {}; require('express')\";",
+    ].join('\n'));
+    await fs.outputFile(path.join(root, 'src/__tests__/tree-sitter-baseline.ts'), [
+      '// class field with exports.push(req, res)',
+      "const Parser = require('tree-sitter');",
+      "const JavaScript = require('tree-sitter-javascript');",
+      "const TypeScript = require('tree-sitter-typescript');",
+    ].join('\n'));
+
+    const contribution = await new ExpressAnalyzer().analyze({ projectPath: root, files: [], config: {} } as any);
+
+    expect((contribution.nodes || []).some(node => node.id === 'controller_ExpressAnalyzer' || node.id === 'controller_field')).toBe(false);
+    expect((contribution.edges || []).some(edge => edge.target.startsWith('service_express') || edge.target.startsWith('service_tree_sitter'))).toBe(false);
+    expect(checkEdgeReferentialIntegrity(contribution.edges, contribution).dangling_edges).toBe(0);
   });
 });
