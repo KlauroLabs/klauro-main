@@ -49,14 +49,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private exitPointIds = new Set<string>();
   private callTargetResolutionCache = new Map<string, string | undefined>();
 
-  constructor() {
-    super(
-      'typescript-javascript',
-      'TypeScript/JavaScript AST Analyzer',
-      '1.0.0',
-      'language'
-    );
-  }
+  constructor() { super('typescript-javascript', 'TypeScript/JavaScript AST Analyzer', '1.0.0', 'language'); }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
@@ -320,7 +313,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         `TypeScript/JavaScript analysis failed: ${(error as Error).message}`,
         'TYPESCRIPT_ANALYSIS_ERROR'
       );
+    } finally {
+      this.releaseAnalysisState();
     }
+  }
+
+  private releaseAnalysisState(): void {
+    const collections = [this.astCache, this.importSourceMap, this.importAliasMap, this.importsByConsumerFile, this.classFieldTypes, this.repositoryPropertyTypes, this.prismaModelsByName, this.nodeById, this.nodesByName, this.methodsByParent, this.callEdgeIds, this.exitPointIds, this.callTargetResolutionCache];
+    for (const collection of collections) collection.clear();
+    this.currentProjectPath = '';
   }
 
   private async preloadFilesWithTreeSitter(

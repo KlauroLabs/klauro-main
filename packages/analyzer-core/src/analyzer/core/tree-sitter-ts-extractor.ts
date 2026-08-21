@@ -393,41 +393,45 @@ export class TreeSitterTSExtractor {
     const parser = this.getParser(filePath);
     const forParse = sanitizeTaggedTemplateTypeArguments(sanitizeAbstractPropertyKeyword(sanitizeForTreeSitterParse(content)));
     const tree = parser.parse(forParse);
-    const root = getRootNode(tree);
+    try {
+      const root = getRootNode(tree);
 
-    const traversal = this.buildTraversalIndex(root);
-    const hasSyntaxErrors = treeHasSyntaxErrors(root);
+      const traversal = this.buildTraversalIndex(root);
+      const hasSyntaxErrors = treeHasSyntaxErrors(root);
 
-    const result: TSFileExtraction = {
-      imports: this.extractImports(root, traversal.imports),
-      functions: [],
-      classes: [],
-      variables: [],
-      exports: [],
-      comments: traversal.comments,
-      hasSyntaxErrors,
-      syntaxErrorLocations: hasSyntaxErrors
-        ? collectSyntaxErrorLocations(root, content.split('\n'))
-        : undefined
-    };
+      const result: TSFileExtraction = {
+        imports: this.extractImports(root, traversal.imports),
+        functions: [],
+        classes: [],
+        variables: [],
+        exports: [],
+        comments: traversal.comments,
+        hasSyntaxErrors,
+        syntaxErrorLocations: hasSyntaxErrors
+          ? collectSyntaxErrorLocations(root, content.split('\n'))
+          : undefined
+      };
 
-    const functions = this.extractStandaloneFunctions(traversal);
-    const classes = this.extractClasses(root, traversal.classes, traversal);
+      const functions = this.extractStandaloneFunctions(traversal);
+      const classes = this.extractClasses(root, traversal.classes, traversal);
 
-    for (const cls of classes) {
-      result.classes.push(cls);
-    }
-
-    for (const fn of functions) {
-      if (!fn.className) {
-        result.functions.push(fn);
+      for (const cls of classes) {
+        result.classes.push(cls);
       }
+
+      for (const fn of functions) {
+        if (!fn.className) {
+          result.functions.push(fn);
+        }
+      }
+
+      result.variables = this.extractVariables(root, traversal.variables, true);
+      result.exports = this.extractExports(root, traversal.exports);
+
+      return result;
+    } finally {
+      tree.delete?.();
     }
-
-    result.variables = this.extractVariables(root, traversal.variables, true);
-    result.exports = this.extractExports(root, traversal.exports);
-
-    return result;
   }
 
   extractFromFile(filePath: string): TSFileExtraction | null {

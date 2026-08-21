@@ -219,6 +219,7 @@ import { GitAnalyzer } from './git-analyzer';
 import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
+import { captureAnalysisMemorySample } from './analysis-memory-profile';
 import { semanticPackIdentityForProject } from '../packs/pack-loader';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService, isProviderUnavailableFailure } from '../../ai/ai-service';
@@ -464,8 +465,7 @@ export class AnalyzerOrchestrator {
   private activeSemanticPackIdentity: readonly string[] = [];
   private nestedRepoIgnoreCache: Map<string, string[]> = new Map();
   private sourceFileInventoryCache: Map<string, SourceFileInventory> = new Map();
-  private nodeLookupSource: CASNode[] | null = null;
-  private nodeLookupById: Map<string, CASNode> = new Map();
+  private nodeLookups = new WeakMap<CASNode[], Map<string, CASNode>>();
   private embeddingPhaseConfig: EmbeddingPhaseConfig | null = null;
   private activeAnalysisProjectPath?: string;
   private activeTerminalSignal: TerminalSignal | null = null;
@@ -1002,9 +1002,7 @@ export class AnalyzerOrchestrator {
     const runLog = new AnalysisRunLog(projectPath, analysisId, CAS_VERSION);
     const globRun = beginGlobRun();
     try {
-      return await withAnalyzerFileReadCache(
-        () => this.executeAnalysis(projectPath, analysisId, runLog, options)
-      );
+      return await this.executeAnalysis(projectPath, analysisId, runLog, options);
     } catch (error) {
       runLog.fail(error);
       throw error;
@@ -1148,6 +1146,7 @@ export class AnalyzerOrchestrator {
       if (process.env.KLAURO_DEBUG_ANALYZER_PHASES === '1') {
         writeAnalyzerStatus(`[Klauro] phase ${phase} completed in ${timings[phase]}ms`);
       }
+      if (process.env.KLAURO_DEBUG_ANALYZER_MEMORY === '1') writeAnalyzerStatus('[Klauro] analyzer-memory', captureAnalysisMemorySample(phase));
     };
 
     this.applyLocalPackGlobs(options?.packGlobs ?? []);
@@ -1862,7 +1861,6 @@ export class AnalyzerOrchestrator {
       runtime
     );
     await yieldToEventLoop();
-    const validation = buildGraphValidation(allNodes, allEdges, allEntryPoints, allExitPoints, runtimeStaticLinks, analysisFacts);
     logTiming('pp_traceability', phaseStart);
     await yieldToEventLoop();
 
@@ -2020,7 +2018,6 @@ export class AnalyzerOrchestrator {
       idiom_examples: idiomDetection.examples.length > 0 ? idiomDetection.examples : undefined,
       idiom_violations: idiomDetection.violations.length > 0 ? idiomDetection.violations : undefined,
       analysis_errors: analysisErrors,
-      validation,
       test_suites: testSuites,
       mocks: mocks,
       fixtures: fixtures,
@@ -24608,11 +24605,11 @@ export class AnalyzerOrchestrator {
   }
 
   private getNodeLookup(nodes: CASNode[]): Map<string, CASNode> {
-    if (this.nodeLookupSource !== nodes) {
-      this.nodeLookupSource = nodes;
-      this.nodeLookupById = new Map(nodes.map(node => [node.id, node]));
-    }
-    return this.nodeLookupById;
+    const cached = this.nodeLookups.get(nodes);
+    if (cached) return cached;
+    const lookup = new Map(nodes.map(node => [node.id, node]));
+    this.nodeLookups.set(nodes, lookup);
+    return lookup;
   }
 
   private readonly maxNodeCallGraphReferences = 50;
