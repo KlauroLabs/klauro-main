@@ -5,6 +5,7 @@ import {
   clearEstreeParseCache,
   getEstreeParseCacheRetention,
   getEstreeParseCacheStats,
+  withEstreeParseCacheLifecycle,
 } from './estree-parse-cache';
 
 test('reuses a live syntax tree without retaining ownership of it', () => {
@@ -34,4 +35,15 @@ test('strong syntax tree retention stays within its heap-scaled budget', () => {
   const retention = getEstreeParseCacheRetention();
   assert.ok(retention.estimatedBytes > 0);
   assert.ok(retention.estimatedBytes <= retention.limitBytes);
+  assert.ok(retention.limitBytes <= 8 * 1024 * 1024);
+});
+
+test('analysis lifecycle clears syntax trees after failures', async () => {
+  clearEstreeParseCache();
+  await assert.rejects(withEstreeParseCacheLifecycle(async () => {
+    cachedEstreeParse('export const retained = true;', { loc: true });
+    throw new Error('analysis failed');
+  }), /analysis failed/);
+  assert.deepEqual(getEstreeParseCacheStats(), { hits: 0, misses: 0, size: 0 });
+  assert.equal(getEstreeParseCacheRetention().estimatedBytes, 0);
 });

@@ -20,6 +20,17 @@ function normalizedValues(values: readonly unknown[]): string[] {
   return values.map(value => JSON.stringify(value) ?? 'undefined').sort();
 }
 
+export function incrementalSurfaceFingerprint(surface: IncrementalSurface): string {
+  return JSON.stringify({
+    imports: normalizedValues(surface.imports),
+    exports: normalizedValues(surface.exports),
+    nodes: normalizedValues(surface.nodes),
+    edges: normalizedValues(surface.edges),
+    entryPoints: normalizedValues(surface.entryPoints),
+    exitPoints: normalizedValues(surface.exitPoints),
+  });
+}
+
 export function incrementalSurfacesMatch(
   previous: IncrementalSurface,
   current: IncrementalSurface
@@ -54,6 +65,17 @@ export function incrementalNodeFingerprint(node: CASNode): unknown {
     } : undefined,
     metadata: node.metadata, signature: node.signature, implementation: node.implementation,
     description: node.description,
+  };
+}
+
+export function incrementalPropagationNodeFingerprint(node: CASNode): unknown {
+  const localized = localizedNodeFingerprint(node) as Record<string, unknown>;
+  const source = localized.source as Record<string, unknown> | undefined;
+  return {
+    ...localized,
+    source: source ? { file: source.file } : undefined,
+    implementation: undefined,
+    description: undefined,
   };
 }
 
@@ -95,14 +117,14 @@ export function incrementalFileSurfacesMatch(input: {
   return incrementalSurfacesMatch({
     imports: record.importedFiles || [],
     exports: record.exportedSymbols || [],
-    nodes: record.nodeIds.map(id => input.previousNodesById.get(id)).filter(defined).map(localizedNodeFingerprint),
+    nodes: record.nodeIds.map(id => input.previousNodesById.get(id)).filter(defined).map(incrementalPropagationNodeFingerprint),
     edges: record.edgeIds.map(id => input.previousEdgesById.get(id)).filter(defined).map(incrementalEdgeFingerprint),
     entryPoints: record.entryPointIds.map(id => input.previousEntryPointsById.get(id)).filter(defined).map(incrementalEntryPointFingerprint),
     exitPoints: record.exitPointIds.map(id => input.previousExitPointsById.get(id)).filter(defined).map(incrementalExitPointFingerprint),
   }, {
     imports: resolveImportedFileReferences(input.filePath, input.current.imports || [], new Set(Object.keys(input.previousState.files))),
     exports: input.current.exports || [],
-    nodes: input.current.nodes.map(localizedNodeFingerprint),
+    nodes: input.current.nodes.map(incrementalPropagationNodeFingerprint),
     edges: input.current.edges.map(incrementalEdgeFingerprint),
     entryPoints: input.current.entryPoints.map(incrementalEntryPointFingerprint),
     exitPoints: input.current.exitPoints.map(incrementalExitPointFingerprint),
@@ -111,7 +133,7 @@ export function incrementalFileSurfacesMatch(input: {
 
 export interface IncrementalPropagationWorklist {
   takeBatch(limit: number): Array<{ filePath: string; depth: number }>;
-  complete(filePath: string, surfaceChanged: boolean): void;
+  complete(filePath: string, surfaceChanged: boolean, surfaceFingerprint?: string): void;
   fallbackReason(): string | undefined;
   scheduledFiles(): string[];
   changedSurfaceFiles(): string[];
@@ -132,6 +154,14 @@ export function createIncrementalPropagationWorklist(input: {
     const filePath = normalizeFilePath(rawFilePath);
     if (records.has(filePath)) fallback ||= `ambiguous incremental ownership for ${filePath}`;
     records.set(filePath, record);
+  }
+  const ownerByNodeId = new Map<string, string>();
+  for (const [filePath, record] of records) {
+    for (const nodeId of record.nodeIds) {
+      const owner = ownerByNodeId.get(nodeId);
+      if (owner && owner !== filePath) fallback ||= `ambiguous incremental ownership for node ${nodeId}`;
+      ownerByNodeId.set(nodeId, filePath);
+    }
   }
   const normalizeSource = (filePath?: string): string => {
     if (!filePath) return '';
@@ -167,12 +197,14 @@ export function createIncrementalPropagationWorklist(input: {
 
   const deleted = new Set([...(input.deletedFiles || [])].map(normalizeFilePath));
   const depths = new Map<string, number>();
-  const pending: string[] = [];
-  const completed = new Set<string>();
+  const pending: Array<{ filePath: string; depth: number }> = [];
+  const queued = new Set<string>();
+  const activeDepths = new Map<string, number>();
+  const completedFingerprints = new Map<string, string>();
   const changedSurfaces = new Set<string>();
   const schedule = (filePath: string, depth: number) => {
     const normalized = normalizeFilePath(filePath);
-    if (deleted.has(normalized) || completed.has(normalized) || depths.has(normalized)) return;
+    if (deleted.has(normalized) || queued.has(normalized)) return;
     if (depth > input.maxDepth) {
       fallback ||= `incremental propagation exceeded depth ${input.maxDepth} at ${normalized}`;
       return;
@@ -181,8 +213,10 @@ export function createIncrementalPropagationWorklist(input: {
       fallback ||= `incremental propagation reached untracked file ${normalized}`;
       return;
     }
-    depths.set(normalized, depth);
-    pending.push(normalized);
+    const priorDepth = depths.get(normalized);
+    depths.set(normalized, priorDepth === undefined ? depth : Math.min(priorDepth, depth));
+    queued.add(normalized);
+    pending.push({ filePath: normalized, depth });
   };
   for (const filePath of input.changedFiles) {
     const normalized = normalizeFilePath(filePath);
@@ -190,8 +224,7 @@ export function createIncrementalPropagationWorklist(input: {
     schedule(normalized, 0);
   }
 
-  const propagate = (filePath: string) => {
-    const depth = depths.get(filePath) || 0;
+  const propagate = (filePath: string, depth = depths.get(filePath) ?? 0) => {
     for (const dependent of [...(dependents.get(filePath) || [])].sort()) schedule(dependent, depth + 1);
   };
   for (const filePath of deleted) {
@@ -200,16 +233,22 @@ export function createIncrementalPropagationWorklist(input: {
   }
 
   return {
-    takeBatch: limit => pending.splice(0, Math.max(1, limit)).map(filePath => ({
-      filePath,
-      depth: depths.get(filePath) || 0,
-    })),
-    complete: (rawFilePath, surfaceChanged) => {
+    takeBatch: limit => pending.splice(0, Math.max(1, limit)).map(item => {
+      activeDepths.set(item.filePath, item.depth);
+      return item;
+    }),
+    complete: (rawFilePath, surfaceChanged, surfaceFingerprint) => {
       const filePath = normalizeFilePath(rawFilePath);
-      completed.add(filePath);
+      const activeDepth = activeDepths.get(filePath);
+      activeDepths.delete(filePath);
+      queued.delete(filePath);
       if (!surfaceChanged) return;
+      if (surfaceFingerprint !== undefined) {
+        if (completedFingerprints.get(filePath) === surfaceFingerprint) return;
+        completedFingerprints.set(filePath, surfaceFingerprint);
+      }
       changedSurfaces.add(filePath);
-      propagate(filePath);
+      propagate(filePath, activeDepth ?? depths.get(filePath) ?? 0);
     },
     fallbackReason: () => fallback,
     scheduledFiles: () => [...depths.keys()].sort(),

@@ -23,13 +23,11 @@ export function linkHttpTestCoverage(
   entryPoints: CASEntryPoint[],
 ): number {
   const existing = new Set(edges.map(edge => `${edge.source}\0${edge.target}\0${edge.type}`));
-  const httpEntries = entryPoints.filter(entryPoint =>
-    entryPoint.type === 'http' &&
+  const httpEntries = entryPoints.filter(entryPoint => entryPoint.type === 'http' &&
     typeof entryPoint.trigger?.method === 'string' &&
     typeof entryPoint.trigger?.path === 'string'
   );
-  const routeNodes = nodes.filter(node =>
-    node.type === 'route' &&
+  const routeNodes = nodes.filter(node => node.type === 'route' &&
     typeof node.metadata?.attributes?.method === 'string' &&
     typeof node.metadata?.attributes?.path === 'string'
   );
@@ -70,6 +68,8 @@ export function linkHttpTestCoverage(
           metadata: {
             confidence: 1,
             attributes: {
+              source_analyzer: 'orchestrator',
+              contribution_scope: 'derived-rebuild',
               evidence: 'http-request-literal',
               exact: true,
               method: request.method.toUpperCase(),

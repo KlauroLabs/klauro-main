@@ -249,6 +249,13 @@ class RecordResourceTest {
       mergedEdges.find(edge => edge.type === 'tests')?.metadata?.attributes?.evidence,
       'http-request-literal'
     );
+    const derivedCoverage = mergedEdges.filter(edge =>
+      edge.metadata?.attributes?.source_analyzer === 'orchestrator'
+    );
+    assert.ok(derivedCoverage.length > 0);
+    assert.ok(derivedCoverage.every(edge =>
+      edge.metadata?.attributes?.contribution_scope === 'derived-rebuild'
+    ));
   } finally {
     await fs.remove(root);
   }

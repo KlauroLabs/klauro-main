@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { isRefreshableContribution } from '../core/incremental-contribution-refresh';
 import { RustAnalyzer } from './rust-analyzer';
 
-test('Rust project analysis returns a replaceable analyzer contribution without CAS envelope fields', async () => {
+test('Rust project analysis returns non-graph fields that require a full rebuild when refreshed', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-rust-contribution-'));
   try {
     await fs.ensureDir(path.join(root, 'src'));
@@ -17,7 +17,8 @@ test('Rust project analysis returns a replaceable analyzer contribution without 
     assert.equal('analysis_id' in contribution, false);
     assert.equal('analysis_timestamp' in contribution, false);
     assert.equal('analyzer_contributions' in contribution, false);
-    assert.equal(isRefreshableContribution(contribution), true);
+    assert.ok((contribution.perspectives || []).length > 0);
+    assert.equal(isRefreshableContribution(contribution), false);
   } finally {
     await fs.remove(root);
   }

@@ -56,7 +56,7 @@ describe('incremental contribution refresh', () => {
     expect(result.nodes!.map(node => node.id)).toEqual(['current', 'existing']);
   });
 
-  it('builds one copy-on-write snapshot and appends later contributions', () => {
+  it('builds immutable snapshots and appends later contributions in order', () => {
     const previous = {
       nodes: [{ id: 'existing', name: 'Existing', type: 'function' as const }],
       edges: [],
@@ -81,7 +81,7 @@ describe('incremental contribution refresh', () => {
     const second = emptyFileResult();
     second.nodes.push({ id: 'second', name: 'Second', type: 'function' });
     snapshot.append(second);
-    expect(snapshot.current()).toBe(copied);
+    expect(snapshot.current()).not.toBe(copied);
     expect(snapshot.current().nodes!.map(node => node.id)).toEqual(['first', 'existing', 'second']);
   });
 });

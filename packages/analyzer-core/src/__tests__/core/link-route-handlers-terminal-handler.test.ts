@@ -93,6 +93,10 @@ describe('linkRouteHandlers: terminal-handler resolution through a middleware ch
     expect(callsEdges).toHaveLength(1);
     expect(callsEdges[0].target).toBe(terminalHandlerNode.id);
     expect((callsEdges[0].metadata as any)?.attributes?.relationship).toBe('route_handler');
+    expect((callsEdges[0].metadata as any)?.attributes).toMatchObject({
+      source_analyzer: 'orchestrator',
+      contribution_scope: 'derived-rebuild',
+    });
 
     // Never lands on the guard or the cross-file decoy.
     expect(entryPoint.handler!.node_id).not.toBe(guardNode.id);

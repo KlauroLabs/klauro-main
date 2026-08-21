@@ -28,10 +28,11 @@ import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
 type ParseOptions = Parameters<typeof parse>[1] & Record<string, unknown>;
 
 const MAX_ENTRIES = 4000;
-const ESTIMATED_AST_BYTES_PER_SOURCE_BYTE = 32;
+const ESTIMATED_AST_BYTES_PER_SOURCE_BYTE = 64;
+const HARD_MAX_STRONG_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_STRONG_CACHE_BYTES = Math.max(
   2 * 1024 * 1024,
-  Math.min(8 * 1024 * 1024, Math.floor(getHeapStatistics().heap_size_limit / 128)),
+  Math.min(HARD_MAX_STRONG_CACHE_BYTES, Math.floor(getHeapStatistics().heap_size_limit / 128)),
 );
 interface WeakReference<T extends object> {
   deref(): T | undefined;
@@ -120,4 +121,12 @@ export function clearEstreeParseCache(): void {
   strongCacheBytes = 0;
   hits = 0;
   misses = 0;
+}
+
+export async function withEstreeParseCacheLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } finally {
+    clearEstreeParseCache();
+  }
 }

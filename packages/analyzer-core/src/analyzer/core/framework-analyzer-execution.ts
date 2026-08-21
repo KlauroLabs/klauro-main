@@ -26,7 +26,8 @@ interface FrameworkExecutionOptions<Registration extends FrameworkExecutionRegis
 export async function executeFrameworkAnalyzers<Registration extends FrameworkExecutionRegistration>(
   options: FrameworkExecutionOptions<Registration>,
 ): Promise<void> {
-  for (const registration of options.registrations) {
+  const registrations = [...options.registrations].sort((left, right) => left.id.localeCompare(right.id));
+  for (const registration of registrations) {
     options.onExecutionEvent?.({ registration, stage: 'before-analysis' });
     const startedAt = Date.now();
     let result: CASContribution;

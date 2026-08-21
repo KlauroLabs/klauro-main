@@ -50,7 +50,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private callTargetResolutionCache = new Map<string, string | undefined>();
 
   constructor() { super('typescript-javascript', 'TypeScript/JavaScript AST Analyzer', '1.0.0', 'language'); }
-
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
@@ -66,6 +65,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   supportsIncrementalAnalysis(): boolean { return true; }
   incrementalContributionScope(): 'project' { return 'project'; }
+  incrementalSourceInvariantContributionFields(): readonly (keyof CASContribution)[] { return ['categories']; }
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
       cwd: projectPath,

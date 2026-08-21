@@ -160,7 +160,12 @@ describe('linkInfraTopology', () => {
     expect(routesTo.length).toBeGreaterThanOrEqual(1);
     expect(routesTo[0].target).toBe('fn_orders');
     // Every edge carries a concrete join_key (verifiable, not fabricated).
-    for (const e of result.edges) expect((e.metadata?.attributes as any)?.join_key).toBeTruthy();
+    for (const e of result.edges) {
+      expect((e.metadata?.attributes as any)?.join_key).toBeTruthy();
+      expect(e.metadata?.attributes).toMatchObject({
+        source_analyzer: 'orchestrator', contribution_scope: 'derived-rebuild',
+      });
+    }
   });
 
   test('(b) DEPLOYS edge deployable attribute is the clean deployable NAME, never a display label', () => {

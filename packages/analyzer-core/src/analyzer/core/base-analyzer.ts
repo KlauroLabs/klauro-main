@@ -199,8 +199,8 @@ export abstract class BaseAnalyzer {
   abstract analyze(context: AnalysisContext): Promise<CASContribution>;
 
   supportsIncrementalAnalysis(): boolean { return false; }
-
   incrementalContributionScope(): 'file' | 'project' { return 'file'; }
+  incrementalSourceInvariantContributionFields(): readonly (keyof CASContribution)[] { return []; }
 
   protected sourceLineForIndex(content: string, index: number): number {
     return sourceLineForIndex(content, index);

@@ -259,7 +259,7 @@ function edge(
     category: 'runtime',
     metadata: {
       confidence: 0.9,
-      attributes: { topology_link: true, join_key: joinKey, ...extra },
+      attributes: { source_analyzer: 'orchestrator', contribution_scope: 'derived-rebuild', topology_link: true, join_key: joinKey, ...extra },
     },
   };
 }

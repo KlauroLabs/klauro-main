@@ -4,12 +4,14 @@ import type { CASEdge, CASEntryPoint, CASNode, CASOutput, FileAnalysisRecord, Fi
 import {
   analyzerOwnershipClosure,
   canReplaceAnalyzerContributions,
+  createIncrementalAnalysisSnapshot,
   createIncrementalGraphAccumulator,
   refreshProjectScopedContributions,
   isRefreshableContribution,
   removeAnalyzerContributions,
   removeFileScopedGraphItems,
   removeFileScopedGraphItemsBatch,
+  removeReplaceableFileScopedGraphItems,
   projectScopedFileAnalysisSnapshot,
   shouldPromoteIncrementalAnalyzerRefresh,
   shouldPreferFullRebuildForFanout,
@@ -48,10 +50,17 @@ function entry(source: string, analyzer: string, merged: string[] = []): CASEntr
 }
 
 test('derived graph items attached to replaced nodes do not expand analyzer ownership', () => {
+  const derivedEdge = edge('derived_edge', 'owned', 'retained', 'orchestrator');
+  derivedEdge.metadata!.attributes!.contribution_scope = 'derived-rebuild';
+  const derivedEntry = entry('owned', 'orchestrator');
+  derivedEntry.metadata = {
+    ...derivedEntry.metadata,
+    attributes: { source_analyzer: 'orchestrator', contribution_scope: 'derived-rebuild' },
+  };
   const graph = {
     nodes: [node('owned', ['framework']), node('retained', ['language'])],
-    edges: [edge('derived_edge', 'owned', 'retained', 'orchestrator')],
-    entryPoints: [entry('owned', 'orchestrator')],
+    edges: [derivedEdge],
+    entryPoints: [derivedEntry],
     exitPoints: [],
   };
 
@@ -64,6 +73,17 @@ test('derived graph items attached to replaced nodes do not expand analyzer owne
     entryPoints: [],
     exitPoints: [],
   });
+});
+
+test('unmarked non-registered graph ownership still fails closed', () => {
+  const graph = {
+    nodes: [node('owned', ['framework']), node('retained', ['language'])],
+    edges: [edge('unmarked', 'owned', 'retained', 'postprocessor')],
+    entryPoints: [],
+    exitPoints: [],
+  };
+
+  assert.equal(canReplaceAnalyzerContributions(graph, new Set(['framework'])), false);
 });
 
 test('shared node ownership still expands the replaceable analyzer closure', () => {
@@ -216,7 +236,7 @@ test('prefers a full rebuild only when project-scoped refresh duplicates a broad
   assert.equal(shouldPreferFullRebuildForFanout(1, 0, 1), false);
 });
 
-test('accepts supplemental analyzer facts during a graph refresh', () => {
+test('rejects non-graph analyzer facts that cannot be transactionally replaced', () => {
   assert.equal(isRefreshableContribution({
     nodes: [],
     libraries: [{ id: 'lib', name: 'Library' }],
@@ -225,7 +245,148 @@ test('accepts supplemental analyzer facts during a graph refresh', () => {
       analyzer_name: 'Library',
       contribution_type: 'library',
     },
-  }), true);
+  }), false);
+});
+
+test('project refresh fails closed when non-graph facts lack an explicit retention contract', async () => {
+  let analyzeCalls = 0;
+  const graph = { nodes: [node('owned', ['framework'])], edges: [], entryPoints: [], exitPoints: [] };
+  const refreshed = await refreshProjectScopedContributions({
+    projectPath: '/workspace',
+    registrations: [{
+      id: 'framework', type: 'framework', analyzer: { analyze: async () => {
+        analyzeCalls += 1;
+        return { nodes: [], edges: [], entry_points: [], exit_points: [], categories: { '1': {} } };
+      } },
+    }],
+    analyzerIds: new Set(['framework']), graph, ownershipGraph: graph,
+    analyzerRoot: () => '/workspace', analysisFilters: [], scopeFilters: () => [],
+    retainedContribution: { categories: { '1': {} } },
+    normalizeContribution: () => undefined, mergeContribution: async current => current,
+  });
+
+  assert.equal(refreshed, null);
+  assert.equal(analyzeCalls, 1);
+  assert.deepEqual(graph.nodes.map(item => item.id), ['owned']);
+});
+
+test('project refresh accepts declared retained facts only when they match persisted values', async () => {
+  const graph = { nodes: [node('owned', ['framework'])], edges: [], entryPoints: [], exitPoints: [] };
+  const run = (description: string) => refreshProjectScopedContributions({
+    projectPath: '/workspace',
+    registrations: [{
+      id: 'framework', type: 'framework', analyzer: {
+        incrementalSourceInvariantContributionFields: () => ['categories'] as const,
+        analyze: async () => ({
+          nodes: [node('replacement', ['framework'])], edges: [], entry_points: [], exit_points: [],
+          categories: { '1': { modules: { name: 'Modules', types: ['file'], description } } },
+        }),
+      },
+    }],
+    analyzerIds: new Set(['framework']), graph, ownershipGraph: graph,
+    analyzerRoot: () => '/workspace', analysisFilters: [], scopeFilters: () => [],
+    retainedContribution: {
+      categories: { '1': { modules: { name: 'Modules', types: ['file'], description: 'stable' } } },
+    },
+    normalizeContribution: () => undefined,
+    mergeContribution: async (current, contribution) => ({
+      ...current,
+      nodes: [...current.nodes, ...(contribution.nodes || [])],
+    }),
+  });
+
+  assert.ok(await run('stable'));
+  assert.equal(await run('changed'), null);
+});
+
+test('file replacement removes prior same-id facts before adding changed facts', () => {
+  const previous = node('same', ['language']);
+  previous.name = 'old';
+  const graph = { nodes: [previous], edges: [], entryPoints: [], exitPoints: [] };
+  const record = {
+    filePath: 'source.ts', contentHash: 'old', mtimeMs: 1, lastAnalyzed: 'before', analyzerId: 'language',
+    nodeIds: ['same'], edgeIds: [], entryPointIds: [], exitPointIds: [], importedFiles: [], exportedSymbols: [],
+  } satisfies FileAnalysisRecord;
+
+  assert.equal(removeReplaceableFileScopedGraphItems(graph, record, new Set(['language'])), true);
+  createIncrementalGraphAccumulator(graph)({
+    filePath: 'source.ts', contentHash: 'new', mtimeMs: 2,
+    nodes: [{ ...previous, name: 'new' }], edges: [], entryPoints: [], exitPoints: [], imports: [], exports: [],
+  });
+  assert.deepEqual(graph.nodes.map(item => item.name), ['new']);
+});
+
+test('file replacement fails closed when node fields have shared analyzer ownership', () => {
+  const graph = { nodes: [node('shared', ['language', 'framework'])], edges: [], entryPoints: [], exitPoints: [] };
+  const record = {
+    filePath: 'source.ts', contentHash: 'old', mtimeMs: 1, lastAnalyzed: 'before', analyzerId: 'language',
+    nodeIds: ['shared'], edgeIds: [], entryPointIds: [], exitPointIds: [], importedFiles: [], exportedSymbols: [],
+  } satisfies FileAnalysisRecord;
+
+  assert.equal(removeReplaceableFileScopedGraphItems(graph, record, new Set(['language'])), false);
+  assert.equal(graph.nodes.length, 1);
+});
+
+test('project refresh is sequential, canonical, and transactional on analyzer failure', async () => {
+  const calls: string[] = [];
+  let active = 0;
+  let maximumActive = 0;
+  const graph = { nodes: [node('owned', ['zeta', 'alpha'])], edges: [], entryPoints: [], exitPoints: [] };
+  const registrations = ['zeta', 'alpha'].map(id => ({
+    id,
+    type: 'framework' as const,
+    analyzer: {
+      analyze: async () => {
+        active++;
+        maximumActive = Math.max(maximumActive, active);
+        calls.push(id);
+        active--;
+        if (id === 'zeta') throw new Error('failed');
+        return { nodes: [], edges: [], entry_points: [], exit_points: [] };
+      },
+    },
+  }));
+  const refreshed = await refreshProjectScopedContributions({
+    projectPath: '/workspace', registrations, analyzerIds: new Set(['zeta', 'alpha']), graph,
+    ownershipGraph: graph, analyzerRoot: () => '/workspace', analysisFilters: [], scopeFilters: () => [],
+    normalizeContribution: () => undefined, mergeContribution: async current => current,
+  });
+
+  assert.equal(refreshed, null);
+  assert.deepEqual(calls, ['alpha', 'zeta']);
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(graph.nodes.map(item => item.id), ['owned']);
+});
+
+test('project refresh returns the untouched graph boundary when merge fails', async () => {
+  const graph = { nodes: [node('owned', ['framework'])], edges: [], entryPoints: [], exitPoints: [] };
+  const refreshed = await refreshProjectScopedContributions({
+    projectPath: '/workspace',
+    registrations: [{
+      id: 'framework', type: 'framework', analyzer: {
+        analyze: async () => ({ nodes: [node('replacement', ['framework'])], edges: [] }),
+      },
+    }],
+    analyzerIds: new Set(['framework']), graph, ownershipGraph: graph,
+    analyzerRoot: () => '/workspace', analysisFilters: [], scopeFilters: () => [],
+    normalizeContribution: () => undefined,
+    mergeContribution: async () => { throw new Error('merge failed'); },
+  });
+
+  assert.equal(refreshed, null);
+  assert.deepEqual(graph.nodes.map(item => item.id), ['owned']);
+});
+
+test('incremental snapshots replace same-id facts for subsequent analyzers', () => {
+  const oldNode = node('same', ['language']);
+  oldNode.name = 'old';
+  const snapshot = createIncrementalAnalysisSnapshot({ nodes: [oldNode], edges: [] });
+  snapshot.append({
+    filePath: 'source.ts', contentHash: 'new', mtimeMs: 2,
+    nodes: [{ ...oldNode, name: 'new' }], edges: [], entryPoints: [], exitPoints: [], imports: [], exports: [],
+  });
+
+  assert.deepEqual(snapshot.current().nodes?.map(item => item.name), ['new']);
 });
 
 test('reanalysis of an unchanged dependent removes only file-scoped analyzer graph items', () => {

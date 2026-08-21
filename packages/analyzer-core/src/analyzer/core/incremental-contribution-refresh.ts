@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type {
   CASContribution,
   CASEdge,
@@ -16,6 +17,7 @@ interface RefreshRegistration {
   type: 'language' | 'framework' | 'library' | 'pattern';
   analyzer: {
     analyze(context: AnalysisContext): Promise<CASContribution>;
+    incrementalSourceInvariantContributionFields?(): readonly (keyof CASContribution)[];
   };
 }
 
@@ -168,6 +170,31 @@ export function removeFileScopedGraphItems(
   removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }]);
 }
 
+export function removeReplaceableFileScopedGraphItems(
+  graph: IncrementalGraph,
+  record: FileAnalysisRecord,
+  analyzerIds: ReadonlySet<string>
+): boolean {
+  const ownedNodeIds = new Set(record.nodeIds);
+  for (const node of graph.nodes) {
+    if (!ownedNodeIds.has(node.id)) continue;
+    const analyzers = nodeAnalyzers(node);
+    if (analyzers.length === 0 || !analyzers.some(analyzer => analyzerIds.has(analyzer)) ||
+      analyzers.some(analyzer => !analyzerIds.has(analyzer))) return false;
+  }
+  removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }]);
+  const removedNodeIds = new Set(graph.nodes
+    .filter(node => ownedNodeIds.has(node.id) && nodeAnalyzers(node).some(analyzer => analyzerIds.has(analyzer)))
+    .map(node => node.id));
+  replaceArrayContents(graph.nodes, graph.nodes.filter(node => !removedNodeIds.has(node.id)));
+  replaceArrayContents(graph.edges, graph.edges.filter(edge =>
+    !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target)
+  ));
+  replaceArrayContents(graph.entryPoints, graph.entryPoints.filter(item => !removedNodeIds.has(item.source_node)));
+  replaceArrayContents(graph.exitPoints, graph.exitPoints.filter(item => !removedNodeIds.has(item.source_node)));
+  return true;
+}
+
 export function removeFileScopedGraphItemsBatch(
   graph: IncrementalGraph,
   removals: Iterable<{ record: FileAnalysisRecord; analyzerIds: ReadonlySet<string> }>
@@ -309,23 +336,28 @@ export function createIncrementalAnalysisSnapshot(previous: CASContribution): {
   append: (result: FileAnalysisResult) => void;
 } {
   let current = previous;
-  let appendCurrent: ReturnType<typeof createIncrementalGraphAccumulator> | undefined;
   return {
     current: () => current,
     append: result => {
       if (current === previous) {
-        const overlay = overlayIncrementalSnapshot(previous, result);
-        if (overlay === previous) return;
-        current = overlay;
-        appendCurrent = createIncrementalGraphAccumulator({
-          nodes: current.nodes || [],
-          edges: current.edges || [],
-          entryPoints: current.entry_points || [],
-          exitPoints: current.exit_points || [],
-        });
+        current = overlayIncrementalSnapshot(previous, result);
         return;
       }
-      appendCurrent?.(result);
+      const append = <T extends { id: string }>(existing: T[] | undefined, added: T[]): T[] => {
+        const addedById = new Map(added.map(item => [item.id, item]));
+        const existingIds = new Set((existing || []).map(item => item.id));
+        return [
+          ...(existing || []).map(item => addedById.get(item.id) || item),
+          ...added.filter(item => !existingIds.has(item.id)),
+        ];
+      };
+      current = {
+        ...current,
+        nodes: append(current.nodes, result.nodes),
+        edges: append(current.edges, result.edges),
+        entry_points: append(current.entry_points, result.entryPoints),
+        exit_points: append(current.exit_points, result.exitPoints),
+      };
     },
   };
 }
@@ -470,7 +502,14 @@ export function canReplaceAnalyzerContributions(
     .filter(item => 'source_node' in item
       ? ownedNodeIds.has(item.source_node)
       : ownedNodeIds.has(item.source) || ownedNodeIds.has(item.target));
-  if (attachedItems.some(item => graphItemAnalyzers(item).length === 0)) return false;
+  if (attachedItems.some(item => {
+    const analyzers = graphItemAnalyzers(item);
+    if (analyzers.length === 0) return true;
+    if (analyzers.every(analyzer => analyzerIds.has(analyzer))) return false;
+    const attributes = item.metadata?.attributes as Record<string, unknown> | undefined;
+    return attributes?.source_analyzer !== 'orchestrator' ||
+      attributes?.contribution_scope !== 'derived-rebuild';
+  })) return false;
 
   return true;
 }
@@ -505,28 +544,59 @@ export function removeAnalyzerContributions(
   };
 }
 
-export function isRefreshableContribution(contribution: CASContribution): boolean {
+export function isRefreshableContribution(
+  contribution: CASContribution,
+  retainedFields: ReadonlySet<keyof CASContribution> = new Set()
+): boolean {
   const allowed = new Set([
     'nodes',
     'edges',
     'entry_points',
     'exit_points',
-    'behaviors',
-    'patterns',
-    'libraries',
-    'external_services',
-    'test_coverage',
     'analyzer_metadata',
-    'categories',
-    'tags',
-    'perspectives',
-    'provided_perspectives',
-    'method_calls',
-    'call_chains',
   ]);
   return Object.entries(contribution).every(([key, value]) =>
-    allowed.has(key) || value === undefined || (Array.isArray(value) && value.length === 0)
+    allowed.has(key) || retainedFields.has(key as keyof CASContribution) ||
+      value === undefined || (Array.isArray(value) && value.length === 0)
   );
+}
+
+export function retainedContributionFieldsMatch(
+  contribution: CASContribution,
+  retained: Partial<CASContribution>,
+  fields: ReadonlySet<keyof CASContribution>
+): boolean {
+  for (const field of fields) {
+    const current = contribution[field];
+    if (current === undefined) continue;
+    if (field === 'provided_perspectives') {
+      const perspectiveIds = new Set((contribution.perspectives || []).map(item => item.id));
+      if (!(current as string[]).every(id => perspectiveIds.has(id))) return false;
+      continue;
+    }
+    const previous = retained[field];
+    if (Array.isArray(current)) {
+      if (!Array.isArray(previous)) return current.length === 0;
+      const previousById = new Map<string, unknown>();
+      for (const item of previous as unknown[]) {
+        if (!item || typeof item !== 'object' || !('id' in item)) continue;
+        previousById.set(String((item as { id: unknown }).id), item);
+      }
+      if (!current.every(item => {
+        if (!item || typeof item !== 'object' || !('id' in item)) return false;
+        return isDeepStrictEqual(previousById.get(String((item as { id: unknown }).id)), item);
+      })) return false;
+      continue;
+    }
+    if (field === 'categories' && current && typeof current === 'object') {
+      const previousCategories = previous as Record<string, unknown> | undefined;
+      if (!previousCategories || !Object.entries(current).every(([key, value]) =>
+        isDeepStrictEqual(previousCategories[key], value))) return false;
+      continue;
+    }
+    if (!isDeepStrictEqual(previous, current)) return false;
+  }
+  return true;
 }
 
 export function analyzerOwnershipClosure(
@@ -621,6 +691,7 @@ export async function refreshProjectScopedContributions(options: {
   analyzerRoot: (analyzerId: string) => string;
   analysisFilters: string[];
   scopeFilters: (registration: RefreshRegistration, analyzerRoot: string) => string[];
+  retainedContribution?: Partial<CASContribution>;
   normalizeContribution: (contribution: CASContribution, analyzerRoot: string) => void;
   mergeContribution: (
     graph: IncrementalGraph,
@@ -628,62 +699,63 @@ export async function refreshProjectScopedContributions(options: {
     analyzerId: string
   ) => Promise<IncrementalGraph>;
 }): Promise<IncrementalGraph | null> {
-  const availableAnalyzerIds = new Set(options.registrations.map(registration => registration.id));
-  const analyzerIds = analyzerOwnershipClosure(options.ownershipGraph, options.analyzerIds, availableAnalyzerIds);
-  const selected = options.registrations.filter(registration => analyzerIds.has(registration.id));
-  if (selected.length !== analyzerIds.size || !canReplaceAnalyzerContributions(options.ownershipGraph, analyzerIds)) return null;
+  try {
+    const availableAnalyzerIds = new Set(options.registrations.map(registration => registration.id));
+    const analyzerIds = analyzerOwnershipClosure(options.ownershipGraph, options.analyzerIds, availableAnalyzerIds);
+    const selected = options.registrations.filter(registration => analyzerIds.has(registration.id));
+    if (selected.length !== analyzerIds.size || !canReplaceAnalyzerContributions(options.ownershipGraph, analyzerIds)) return null;
 
-  let graph = removeAnalyzerContributions(options.graph, analyzerIds);
-  const analyze = async (
-    registration: RefreshRegistration,
-    existingAnalysis: CASContribution
-  ): Promise<CASContribution | null> => {
-    const startedAt = Date.now();
-    const analyzerRoot = options.analyzerRoot(registration.id);
-    const contribution = await registration.analyzer.analyze({
-      projectPath: analyzerRoot,
-      analysisRootPath: options.projectPath,
-      filters: [...options.analysisFilters, ...options.scopeFilters(registration, analyzerRoot)],
-      existingAnalysis: [existingAnalysis],
-    });
-    if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1') {
-      process.stderr.write(`[Klauro] incremental project analyzer ${registration.id}: ${Date.now() - startedAt}ms\n`);
+    let graph = removeAnalyzerContributions(options.graph, analyzerIds);
+    const analyze = async (
+      registration: RefreshRegistration,
+      existingAnalysis: CASContribution
+    ): Promise<CASContribution | null> => {
+      const startedAt = Date.now();
+      const analyzerRoot = options.analyzerRoot(registration.id);
+      const contribution = await registration.analyzer.analyze({
+        projectPath: analyzerRoot,
+        analysisRootPath: options.projectPath,
+        filters: [...options.analysisFilters, ...options.scopeFilters(registration, analyzerRoot)],
+        existingAnalysis: [existingAnalysis],
+      });
+      if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1') {
+        process.stderr.write(`[Klauro] incremental project analyzer ${registration.id}: ${Date.now() - startedAt}ms\n`);
+      }
+      const retainedFields = new Set(registration.analyzer.incrementalSourceInvariantContributionFields?.() || []);
+      if (!isRefreshableContribution(contribution, retainedFields) ||
+        !retainedContributionFieldsMatch(contribution, options.retainedContribution || {}, retainedFields)) return null;
+      options.normalizeContribution(contribution, analyzerRoot);
+      return contribution;
+    };
+
+    const languageAnalyzerIds = new Set(
+      options.registrations
+        .filter(registration => registration.type === 'language')
+        .map(registration => registration.id)
+    );
+    for (const registration of selected.filter(candidate => candidate.type === 'language')) {
+      const contribution = await analyze(registration, analysisSnapshot(graph, languageAnalyzerIds));
+      if (!contribution) return null;
+      graph = await options.mergeContribution(graph, contribution, registration.id);
     }
-    if (!isRefreshableContribution(contribution)) return null;
-    options.normalizeContribution(contribution, analyzerRoot);
-    return contribution;
-  };
 
-  const languageAnalyzerIds = new Set(
-    options.registrations
-      .filter(registration => registration.type === 'language')
-      .map(registration => registration.id)
-  );
-  for (const registration of selected.filter(candidate => candidate.type === 'language')) {
-    const contribution = await analyze(registration, analysisSnapshot(graph, languageAnalyzerIds));
-    if (!contribution) return null;
-    graph = await options.mergeContribution(graph, contribution, registration.id);
-  }
-
-  const languageSnapshot = analysisSnapshot(graph, languageAnalyzerIds);
-  const parallelResults = await Promise.all(
-    selected
+    const languageSnapshot = analysisSnapshot(graph, languageAnalyzerIds);
+    const frameworkRegistrations = selected
       .filter(registration => registration.type === 'framework' || registration.type === 'library')
-      .map(async registration => ({
-        registration,
-        contribution: await analyze(registration, languageSnapshot),
-      }))
-  );
-  parallelResults.sort((left, right) => left.registration.id.localeCompare(right.registration.id));
-  for (const { registration, contribution } of parallelResults) {
-    if (!contribution) return null;
-    graph = await options.mergeContribution(graph, contribution, registration.id);
-  }
+      .sort((left, right) => left.id.localeCompare(right.id));
+    for (const registration of frameworkRegistrations) {
+      const contribution = await analyze(registration, languageSnapshot);
+      if (!contribution) return null;
+      graph = await options.mergeContribution(graph, contribution, registration.id);
+    }
 
-  for (const registration of selected.filter(candidate => candidate.type === 'pattern')) {
-    const contribution = await analyze(registration, analysisSnapshot(graph));
-    if (!contribution) return null;
-    graph = await options.mergeContribution(graph, contribution, registration.id);
+    for (const registration of selected.filter(candidate => candidate.type === 'pattern')) {
+      const contribution = await analyze(registration, analysisSnapshot(graph));
+      if (!contribution) return null;
+      graph = await options.mergeContribution(graph, contribution, registration.id);
+    }
+    return graph;
+  } catch {
+    return null;
   }
-  return graph;
 }
