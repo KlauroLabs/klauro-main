@@ -1572,9 +1572,9 @@ export class AnalyzerOrchestrator {
     );
     logTiming('pp_flowGraph', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
-    const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints); callGraphBuilder.release();
+    const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
+    callGraphBuilder.release();
     this.stampChainCriticalityFromStructuralImportance(callChains, allNodes, allEntryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
     logTiming('pp_enhanceRisks', phaseStart);
