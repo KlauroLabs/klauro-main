@@ -1,9 +1,10 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { unavailableComprehensionResponse } from './analysis-response-readiness';
 import { buildHostedProjectAnalysisStatus } from './hosted-project-analysis-status';
-import { executeHostedProjectQuery } from './hosted-project-query';
+import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
 import type { HostedProjectQueryWorkerRequest } from './hosted-project-query-process';
-import { getAnalysisFileFingerprint, loadAnalysis } from './storage';
+import { getAnalysisFileFingerprint, loadAnalysisSections } from './storage';
+import type { CasSectionName } from './cas-sections';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -13,6 +14,7 @@ if (!process.send) {
 let cachedWorkspace = '';
 let cachedFingerprint = '';
 let cachedCas: CASOutput | undefined;
+let cachedSections = new Set<CasSectionName>();
 let work = Promise.resolve();
 
 process.send!({ type: 'ready' });
@@ -24,16 +26,26 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
     try {
       const fingerprint = await getAnalysisFileFingerprint(request.workspace);
       if (!fingerprint) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
-      if (!cachedCas || cachedWorkspace !== request.workspace || cachedFingerprint !== fingerprint) {
+      if (cachedWorkspace !== request.workspace || cachedFingerprint !== fingerprint) {
+        cachedCas = undefined;
+        cachedSections = new Set<CasSectionName>();
+      }
+      const requiredSections = request.type === 'query'
+        ? hostedProjectQuerySections(request.tool)
+        : ['comprehension', 'tests', 'runtime', 'quality', 'supplemental'] satisfies CasSectionName[];
+      const missingSections = requiredSections.filter(section => !cachedSections.has(section));
+      if (!cachedCas || missingSections.length > 0) {
         const loadStartedAt = Date.now();
-        const loaded = await loadAnalysis(request.workspace, { preferAuthoritative: true });
+        const loaded = await loadAnalysisSections(request.workspace, missingSections);
         if (!loaded) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
-        cachedCas = loaded;
+        cachedCas = { ...cachedCas, ...loaded } as CASOutput;
+        for (const section of missingSections) cachedSections.add(section);
         cachedWorkspace = request.workspace;
         cachedFingerprint = fingerprint;
         process.stderr.write(`${JSON.stringify({
           event: 'hosted_query_cas_loaded',
           duration_ms: Date.now() - loadStartedAt,
+          sections: missingSections,
           worker_uptime_ms: Math.round(process.uptime() * 1000),
           rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
         })}\n`);

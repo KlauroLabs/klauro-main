@@ -666,7 +666,11 @@ export async function saveAnalysis(
   const filePath = path.join(storagePath, fileName);
   const layersReady = output.layers_ready;
   const completedOutput = !layersReady || layersReady.complete === true;
-  const segmentsWorthWriting = completedOutput && options.writeSegmentedAnalysis !== false;
+  const structuralLayers = ['L0', 'L1', 'L2', 'L3', 'L4'];
+  const structurallyQueryable = !layersReady || layersReady.complete === true || structuralLayers.every(layer =>
+    layersReady.layers.some(candidate => candidate.layer === layer && candidate.status === 'ready')
+  );
+  const segmentsWorthWriting = structurallyQueryable && options.writeSegmentedAnalysis !== false;
   const persistedOutput = completedOutput ? materializeDeployableCasTree(output) : output;
   const segmentedGeneration = beginSegmentedWriteGeneration(filePath);
   await fs.remove(path.join(segmentedAnalysisRoot(filePath), 'current.json')).catch(() => undefined);
@@ -800,7 +804,7 @@ export async function loadAnalysisSections(
   const requestedCompressedBytes = requested.reduce((sum, section) => sum + (descriptorByName.get(section)?.bytes || 0), 0);
   const memoryBoundRead = requestedCompressedBytes > 16 * 1024 * 1024;
   const readSection = pLimit(memoryBoundRead ? 1 : 4);
-  const parts = (await Promise.all(requested.map(section => readSection(async () => {
+  const readOne = async (section: CasSectionName): Promise<Partial<CASOutput> | undefined> => readSection(async () => {
     const descriptor = descriptorByName.get(section);
     if (!descriptor) return undefined;
     if (!descriptor.file) {
@@ -819,7 +823,16 @@ export async function loadAnalysisSections(
       throw new Error(`Segmented CAS section '${section}' (${sectionPath}) is missing or empty on disk`);
     }
     return sectionData;
-  })))).filter((part): part is Partial<CASOutput> => Boolean(part));
+  });
+  const parts: Partial<CASOutput>[] = [];
+  if (memoryBoundRead) {
+    for (const section of requested) {
+      const part = await readOne(section);
+      if (part) parts.push(part);
+    }
+  } else {
+    parts.push(...(await Promise.all(requested.map(readOne))).filter((part): part is Partial<CASOutput> => Boolean(part)));
+  }
   return hydrateCasSections(parts);
 }
 

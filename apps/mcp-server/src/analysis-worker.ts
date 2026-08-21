@@ -11,7 +11,7 @@ import {
 } from './analyzer';
 import { AnalysisRunLog } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { applyAnalysisFocus, type AnalysisFocus } from './analysis-focus';
-import { saveAnalysis } from './storage';
+import { saveAnalysis, waitForPendingSegmentedWrites } from './storage';
 import type { RepoFacts } from './remote-source';
 import { applyLayeredAnalysisMetadata } from './layered-analysis-metadata';
 
@@ -173,6 +173,7 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
   if ((request.repoFacts || request.repoFactsUnavailable) && !enrichmentPersistsOutput) {
     await saveAnalysis(request.projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
   }
+  await waitForPendingSegmentedWrites();
   const aiEnrichment = deferred.output.ai_enrichment;
   sendPhase(
     request.id,

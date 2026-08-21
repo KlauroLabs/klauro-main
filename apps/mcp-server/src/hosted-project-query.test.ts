@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { executeHostedProjectQuery, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+import { executeHostedProjectQuery, hostedProjectQuerySections, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
 import { getProductMap, searchNodes } from './query';
 
 function cas(): CASOutput {
@@ -33,6 +33,20 @@ test('hosted project query exposes only the explicit read-only allowlist', () =>
     'get_coding_context', 'get_module_health', 'get_product_map', 'get_user_journeys', 'run_answer_pack', 'search_nodes',
     'validate_behavioral_invariants', 'validate_codebase_idioms',
   ]);
+});
+
+test('hosted query tools load only the CAS sections they consume', () => {
+  assert.deepEqual(hostedProjectQuerySections('search_nodes'), ['graph']);
+  assert.deepEqual(hostedProjectQuerySections('get_product_map'), [
+    'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
+  ]);
+  assert.deepEqual(hostedProjectQuerySections('get_agent_start_context'), [
+    'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
+  ]);
+  assert.deepEqual(hostedProjectQuerySections('find_tests'), ['graph', 'calls', 'tests']);
+  assert.deepEqual(hostedProjectQuerySections('assess_change_risk'), ['graph', 'calls', 'tests', 'quality']);
+  assert.equal(hostedProjectQuerySections('get_product_map').includes('graph'), false);
+  assert.equal(hostedProjectQuerySections('get_agent_start_context').includes('calls'), false);
 });
 
 test('hosted validation accepts explicit evidence but rejects working-tree controls', async () => {

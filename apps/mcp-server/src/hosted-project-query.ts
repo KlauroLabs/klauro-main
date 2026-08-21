@@ -6,6 +6,7 @@ import * as invariantValidation from './invariant-validation';
 import * as query from './query';
 import { buildAnswerPackDigest, runAnswerPack } from './product';
 import { boundToolPayload } from './response-budget';
+import type { CasSectionName } from './cas-sections';
 
 const taskSchema = z.object({
   task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
@@ -80,6 +81,31 @@ export type HostedProjectQueryTool = keyof typeof HOSTED_PROJECT_QUERY_SCHEMAS;
 export const HOSTED_PROJECT_QUERY_TOOL_NAMES = Object.freeze(
   Object.keys(HOSTED_PROJECT_QUERY_SCHEMAS) as HostedProjectQueryTool[]
 );
+
+const ORIENTATION_SECTIONS: readonly CasSectionName[] = [
+  'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
+];
+
+export function hostedProjectQuerySections(tool: string): readonly CasSectionName[] {
+  switch (tool) {
+    case 'search_nodes': return ['graph'];
+    case 'get_product_map': return ['facts', 'comprehension', 'runtime', 'quality', 'supplemental'];
+    case 'get_user_journeys': return ['comprehension'];
+    case 'get_module_health': return ['graph', 'quality'];
+    case 'get_codebase_idioms':
+    case 'get_behavioral_invariants':
+    case 'validate_codebase_idioms':
+    case 'validate_behavioral_invariants': return ['quality'];
+    case 'find_tests': return ['graph', 'calls', 'tests'];
+    case 'assess_change_risk': return ['graph', 'calls', 'tests', 'quality'];
+    case 'get_coding_context': return ['graph', 'calls', 'facts', 'comprehension', 'tests', 'quality', 'supplemental'];
+    case 'get_agent_start_context':
+    case 'get_agent_tool_plan': return ORIENTATION_SECTIONS;
+    case 'get_agent_context':
+    case 'run_answer_pack': return ['graph', 'calls', ...ORIENTATION_SECTIONS];
+    default: throw new Error(`Unsupported hosted query tool: ${tool}`);
+  }
+}
 
 export async function executeHostedProjectQuery(input: {
   cas: CASOutput;

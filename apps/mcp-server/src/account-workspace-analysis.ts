@@ -1,12 +1,13 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadAnalysis, writeJsonAtomic } from './storage';
+import { loadAnalysisSections, writeJsonAtomic } from './storage';
 import { enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import type { AccountStore } from './account-store';
 import { waitForForegroundAnalysisIdle } from './foreground-analysis';
 import { runAccountWorkspaceAnalysisWorker, WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 
 
@@ -218,9 +219,11 @@ export class AccountWorkspaceAnalysisScheduler {
     for (const project of projects) {
       if (!project.analysis_id) continue;
       try {
-        const cas = await loadAnalysis(this.workspacePathFor(project.analysis_id), { preferAuthoritative: true });
+        const cas = await loadAnalysisSections(this.workspacePathFor(project.analysis_id), [
+          'graph', 'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
+        ]);
         if (!cas) continue;
-        inputs.push({ path: `account-project:${project.id}`, name: project.name, cas });
+        inputs.push({ path: `account-project:${project.id}`, name: project.name, cas: cas as CASOutput });
         memberIds.push(project.id);
         memberNames.push(project.name);
         memberComprehensionSettled = memberComprehensionSettled && isCasComprehensionSettled(cas);

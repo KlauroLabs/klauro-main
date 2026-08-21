@@ -371,6 +371,25 @@ test('an INCOMPLETE layered CAS skips the sidecar but stays fully readable', asy
   });
 });
 
+test('a structurally queryable CAS writes sections when enrichment is incomplete', async () => {
+  await withStoragePath(async storagePath => {
+    const cas = casFixture('structurally-queryable-cas');
+    (cas as unknown as { layers_ready: unknown }).layers_ready = {
+      complete: false,
+      layers: [
+        { layer: 'L0', status: 'ready' },
+        { layer: 'L1', status: 'ready' },
+        { layer: 'L2', status: 'ready' },
+        { layer: 'L3', status: 'ready' },
+        { layer: 'L4', status: 'ready' },
+        { layer: 'L5', status: 'error' },
+      ],
+    };
+    await saveAnalysis('/tmp/structurally-queryable-project', cas);
+    assert.equal(await savedSectionsExist(storagePath, '/tmp/structurally-queryable-project'), true);
+  });
+});
+
 test('authoritative-only persistence stays readable without writing segmented sections', async () => {
   await withStoragePath(async storagePath => {
     const project = '/tmp/authoritative-only-project';
