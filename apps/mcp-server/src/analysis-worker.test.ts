@@ -130,11 +130,11 @@ test('prewarmAnalysisWorker starts the isolated worker before the first analysis
   assert.strictEqual(__analysisWorkerRunningForTests(), true);
 });
 
-test('analysis worker idle policy supports bounded reuse and persistent hosted residency', () => {
-  assert.strictEqual(resolveAnalysisWorkerIdleMs({}), 60_000);
+test('analysis worker idle policy defaults to per-job recycling and permits explicit reuse', () => {
+  assert.strictEqual(resolveAnalysisWorkerIdleMs({}), 0);
   assert.strictEqual(resolveAnalysisWorkerIdleMs({ KLAURO_ANALYSIS_WORKER_IDLE_MS: '2500' }), 2500);
   assert.strictEqual(resolveAnalysisWorkerIdleMs({ KLAURO_ANALYSIS_WORKER_IDLE_MS: '-1' }), null);
-  assert.strictEqual(resolveAnalysisWorkerIdleMs({ KLAURO_ANALYSIS_WORKER_IDLE_MS: 'invalid' }), 60_000);
+  assert.strictEqual(resolveAnalysisWorkerIdleMs({ KLAURO_ANALYSIS_WORKER_IDLE_MS: 'invalid' }), 0);
 });
 
 test('analysis worker removes parent eval payloads while preserving runtime loaders', () => {

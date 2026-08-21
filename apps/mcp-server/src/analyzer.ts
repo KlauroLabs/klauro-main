@@ -2628,7 +2628,7 @@ const WORKER_STDERR_TAIL_CHARS = 4096;
 let workerHandle: WorkerHandle | null = null;
 let nextWorkerJobId = 1;
 
-const DEFAULT_ANALYSIS_WORKER_IDLE_MS = 60_000;
+const DEFAULT_ANALYSIS_WORKER_IDLE_MS = 0;
 
 export function resolveAnalysisWorkerIdleMs(env: NodeJS.ProcessEnv = process.env): number | null {
   const raw = env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
