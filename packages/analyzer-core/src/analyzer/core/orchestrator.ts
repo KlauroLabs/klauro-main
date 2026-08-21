@@ -160,7 +160,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, capabilityTitlesShareOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, uncoveredCapabilityCatalogCandidateIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, capabilityTitlesShareOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, uncoveredCapabilityCatalogCandidateIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10403,13 +10403,9 @@ export class AnalyzerOrchestrator {
     hardDeadlineAt?: number;
     onInterpretationAccepted?: (raw: string) => void;
   }): Promise<SystemCapability[]> {
-    const catalogCandidates = mergeCapabilityCatalogFlowEvidence(
-      args.candidateSnapshot,
-      args.flowGraph.capability_candidates || [],
-    );
+    const catalogCandidates = mergeCapabilityCatalogFlowEvidence(args.candidateSnapshot, args.flowGraph.capability_candidates || []);
     const evidenceCandidates = this.catalogEvidenceCandidates(
-      catalogCandidates,
-      args.behaviorSurfaces,
+      catalogCandidates, args.behaviorSurfaces,
       args.dataEntities,
       String(args.enhancedSystemPurpose.artifact_type || 'app'),
       args.projectTextSignal,
@@ -10428,10 +10424,11 @@ export class AnalyzerOrchestrator {
     let cyclesRun = 0;
     let deadlineExceeded = false;
     let retainedInterpretationRaw = '';
-    for (let cycle = 1; cycle <= 3; cycle++) {
+    const repairProgress = trackCapabilityCatalogRepair(distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups);
+    for (let cycle = 1; cycle <= repairProgress.maxCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
-        console.warn(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
+        console.warn(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/${repairProgress.maxCycles}; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
         break;
       }
       cyclesRun = cycle;
@@ -10462,7 +10459,7 @@ export class AnalyzerOrchestrator {
       } catch (error) {
         if (isAiCatalogHardDeadlineExceeded(error)) {
           deadlineExceeded = true;
-          console.warn(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
+          console.warn(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/${repairProgress.maxCycles}; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
           break;
         }
         throw error;
@@ -10496,7 +10493,7 @@ export class AnalyzerOrchestrator {
         requiredEntityCandidateGroups,
       );
       writeAnalyzerStatus(
-        `[Klauro] capability catalog cycle ${cycle}/3${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${combinedReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
+        `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${combinedReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
       );
       if (!cycleQualityFailure) {
         reconciled = combinedReconciled;
@@ -10505,12 +10502,17 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = undefined;
         break;
       }
+      const progress = repairProgress.observe(combinedReconciled);
       if (targetedRepair || combinedReconciled.length > reconciled.length) {
         reconciled = combinedReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         retainedQualityFailure = cycleQualityFailure;
       }
       qualityFailure = cycleQualityFailure;
+      if (progress.stop) {
+        writeAnalyzerStatus(`[Klauro] capability catalog repair stopped after ${progress.noProgressCycles} no-progress cycle(s) with ${progress.uncoveredCount} uncovered candidate reference(s)`);
+        break;
+      }
     }
     if (qualityFailure) qualityFailure = retainedQualityFailure || qualityFailure;
     const catalogPath = deadlineExceeded

@@ -47,9 +47,9 @@ test('catalog quality repair targets and retains independently omitted evidence 
     requested.push(input.candidateCapabilities.map((candidate: any) => candidate.id));
     cycle++;
     if (cycle === 1) return candidates.slice(0, 20).map(candidate => authored(candidate));
-    if (cycle === 2) return input.candidateCapabilities
+    if (cycle < 5) return input.candidateCapabilities
       .filter((_: any, index: number) => index % 2 === 0)
-      .map((candidate: any) => authored(candidate, candidate.id === 'family-20' ? 'Collaboration improves productivity.' : undefined));
+      .map((candidate: any) => authored(candidate));
     return input.candidateCapabilities.map((candidate: any) => authored(candidate));
   });
   jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
@@ -75,9 +75,63 @@ test('catalog quality repair targets and retains independently omitted evidence 
     budgetMs: 30000,
   });
 
-  expect(requested.map(ids => ids.length)).toEqual([37, 17, 9]);
+  expect(requested.map(ids => ids.length)).toEqual([37, 17, 8, 4, 2]);
   expect(result).toHaveLength(37);
   expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+});
+
+test('catalog repair stops after bounded no-progress retries', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidates = Array.from({ length: 6 }, (_, index) => ({
+    id: `stalled-${index}`,
+    name: `Product family ${index}`,
+    category: 'core',
+    related_entities: [`entity-stalled-${index}`],
+    related_domains: [],
+    operations: [{ entry_point_id: `entry-stalled-${index}`, entry_point_type: 'http', action: 'review' }],
+    criticality: 'medium',
+    criticality_factors: [],
+  }));
+  let requests = 0;
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async () => {
+    requests++;
+    if (requests > 1) return [];
+    return [{
+      ...candidates[0],
+      name: 'Review product family zero',
+      name_source: 'ai',
+      description: 'Product family zero presents grounded activity for operator review before proposed updates.',
+      description_source: 'ai',
+      criticality_factors: ['catalog-candidate:stalled-0'],
+    }];
+  });
+  jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
+  const purpose: any = { primary_domain: 'product-review', core_concepts: [] };
+
+  const result = await localOrch.runCapabilityCatalogWithQualityGate({
+    systemName: 'stalled-repair-fixture',
+    enhancedSystemPurpose: purpose,
+    frameworks: [],
+    userJourneys: [],
+    dataEntities: candidates.map((candidate, index) => ({
+      id: candidate.related_entities[0],
+      name: `ProductFamily${index}`,
+      lifecycle: { created_by: [], read_by: [candidate.operations[0].entry_point_id], updated_by: [], deleted_by: [] },
+    })),
+    candidateSnapshot: candidates,
+    behaviorSurfaces: [],
+    externalServices: [],
+    flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: [], evidence: [] },
+    entryPoints: [],
+    nodes: [],
+    budgetMs: 30000,
+  });
+
+  expect(requests).toBe(3);
+  expect(result).toHaveLength(1);
+  expect(purpose.capability_catalog_coverage.status).toBe('partial');
+  expect(purpose.capability_catalog_coverage.reason).toMatch(/omitted 5 product-entity evidence families/);
 });
 
 describe('AI task model routing', () => {

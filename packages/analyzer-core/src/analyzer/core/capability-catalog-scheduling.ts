@@ -86,6 +86,45 @@ export function uncoveredCapabilityCatalogCandidateIds(
   ])];
 }
 
+function capabilityCatalogRepairBudget(requiredFamilyCount: number): {
+  maxCycles: number;
+  noProgressRetries: number;
+} {
+  const families = Math.max(0, Math.floor(requiredFamilyCount));
+  const noProgressRetries = families > 0 ? 2 : 0;
+  return {
+    maxCycles: 1 + families + noProgressRetries,
+    noProgressRetries,
+  };
+}
+
+export function trackCapabilityCatalogRepair(
+  distinctFamilyCount: number,
+  requiredBehaviorCandidateIds: readonly string[],
+  requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
+) {
+  const requiredFamilyCount = Math.max(
+    distinctFamilyCount,
+    requiredBehaviorCandidateIds.length + requiredEntityCandidateGroups.length,
+  );
+  const budget = capabilityCatalogRepairBudget(requiredFamilyCount);
+  let previousUncoveredCount = uncoveredCapabilityCatalogCandidateIds(
+    [], requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
+  ).length;
+  let noProgressCycles = 0;
+  return {
+    maxCycles: budget.maxCycles,
+    observe(capabilities: SystemCapability[]) {
+      const uncoveredCount = uncoveredCapabilityCatalogCandidateIds(
+        capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
+      ).length;
+      noProgressCycles = uncoveredCount < previousUncoveredCount ? 0 : noProgressCycles + 1;
+      previousUncoveredCount = uncoveredCount;
+      return { noProgressCycles, uncoveredCount, stop: noProgressCycles >= budget.noProgressRetries };
+    },
+  };
+}
+
 export function capabilityTitlesShareOutcome(left: SystemCapability, right: SystemCapability): boolean {
   const tokens = (name: string) => name.toLowerCase()
     .replace(/^(?:lets|allows|enables)\s+users\s+(?:to\s+)?/, '')
