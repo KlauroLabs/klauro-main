@@ -99,6 +99,29 @@ test('streaming JSON matches JSON.stringify semantics for toJSON, undefined valu
   }
 });
 
+test('bounded atomic serialization reads accessors once and streams oversized children', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-json-bounded-'));
+  const file = path.join(directory, 'analysis.json.br');
+  let reads = 0;
+  const small = Object.defineProperty({ id: 'small' }, 'derived', {
+    enumerable: true,
+    get() { reads += 1; return 'value'; },
+  });
+  const value = {
+    nodes: [small, { id: 'large', documentation: 'x'.repeat(300_000), boxed: new String('y'.repeat(300_000)) }],
+  };
+  try {
+    const expected = JSON.stringify(value);
+    reads = 0;
+    await writeCompressedJsonAtomic(file, value, { spaces: 0 });
+    const bytes = (await brotliDecompress(await fs.readFile(file))).toString('utf8');
+    assert.equal(bytes, `${expected}\n`);
+    assert.equal(reads, 1);
+  } finally {
+    await fs.remove(directory);
+  }
+});
+
 test('zstd streaming preserves exact bytes and cleans up after serializer failure', { skip: !hasZstd }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-zstd-json-writer-'));
   const file = path.join(directory, 'analysis.json.zst');

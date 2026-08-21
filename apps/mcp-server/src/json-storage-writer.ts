@@ -11,6 +11,7 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 const brotliCompressAsync = promisify(zlib.brotliCompress);
 const STREAM_WRITE_BUFFER_CHARS = 1024 * 1024;
+const ATOMIC_JSON_BYTE_BUDGET = 256 * 1024;
 export type JsonStorageCodec = 'none' | 'brotli' | 'zstd';
 
 function atomicTempPath(filePath: string, suffix: string): string {
@@ -341,6 +342,12 @@ async function writeJsonToStream(stream: Writable, value: unknown, spaces = 0): 
       return;
     }
     if (ancestors.has(current as object)) throw new TypeError('Converting circular structure to JSON');
+    if (!pretty && canSerializeAtomically(current, ATOMIC_JSON_BYTE_BUDGET)) {
+      const serialized = JSON.stringify(current);
+      if (serialized === undefined) throw new TypeError('Value is not JSON serializable');
+      yield serialized;
+      return;
+    }
     ancestors.add(current as object);
     if (Array.isArray(current)) {
       yield '[';
@@ -379,4 +386,48 @@ async function writeJsonToStream(stream: Writable, value: unknown, spaces = 0): 
     buffered = '';
   }
   await write(`${buffered}\n`);
+}
+
+function canSerializeAtomically(value: object, byteBudget: number): boolean {
+  const ancestors = new Set<object>();
+  let remaining = byteBudget;
+  const visit = (current: unknown, depth: number): boolean => {
+    if (remaining < 0 || depth > 64) return false;
+    if (current === null || typeof current !== 'object') {
+      remaining -= typeof current === 'string' ? current.length * 6 + 2 : 32;
+      return remaining >= 0;
+    }
+    if (current instanceof Number || current instanceof String || current instanceof Boolean) {
+      return visit(current.valueOf(), depth);
+    }
+    if (hasToJSON(current)) return false;
+    if (ancestors.has(current)) return false;
+    ancestors.add(current);
+    if (Array.isArray(current)) {
+      remaining -= current.length * 5;
+      if (remaining < 0) return false;
+    }
+    const keys = Object.keys(current);
+    if (keys.length > 1_024) return false;
+    remaining -= keys.length * 2 + 2;
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (!descriptor || descriptor.get || descriptor.set) return false;
+      remaining -= key.length * 6 + 3;
+      if (!visit(descriptor.value, depth + 1)) return false;
+    }
+    ancestors.delete(current);
+    return remaining >= 0;
+  };
+  return visit(value, 0);
+}
+
+function hasToJSON(value: object): boolean {
+  let current: object | null = value;
+  while (current) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, 'toJSON');
+    if (descriptor) return Boolean(descriptor.get || descriptor.set || typeof descriptor.value === 'function');
+    current = Object.getPrototypeOf(current) as object | null;
+  }
+  return false;
 }
