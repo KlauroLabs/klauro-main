@@ -158,6 +158,12 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
 import {
+  executeHostedAnalysis,
+  reserveHostedAnalysisOrThrow,
+  type HostedAnalysisAdmissionMetadata,
+  type HostedAnalysisTicket,
+} from './hosted-analysis-admission';
+import {
   assertAnalysisVersionSupported,
   getAnalysisVersionInfo,
   saveAnalysis,
@@ -2621,7 +2627,6 @@ const WORKER_STDERR_TAIL_CHARS = 4096;
 
 let workerHandle: WorkerHandle | null = null;
 let nextWorkerJobId = 1;
-let workerJobChain: Promise<unknown> = Promise.resolve();
 
 const DEFAULT_ANALYSIS_WORKER_IDLE_MS = 60_000;
 
@@ -2937,35 +2942,11 @@ export interface RunLayeredAnalysisOptions {
   analysisFocus?: import('./analysis-focus').AnalysisFocus;
   repoFacts?: import('./remote-source').RepoFacts;
   repoFactsUnavailable?: boolean;
-
-
-
-
   onPhase?: (event: LayeredJobPhaseEvent) => void;
-
-
-
-
-
-
-
-
-
-
-
   forceAiRefresh?: boolean;
-
-
-
-
-
-
-
-
-
-
-
   forceFullRebuild?: boolean;
+  admission?: HostedAnalysisTicket;
+  onAdmissionUpdate?: (metadata: HostedAnalysisAdmissionMetadata) => void;
 }
 
 function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalysisOptions): Promise<LayeredRunSummary> {
@@ -3078,9 +3059,12 @@ function queueWorkerJob<T>(
   projectPath: string,
   label: string,
   dispatch: () => Promise<T>,
+  admission?: HostedAnalysisTicket,
+  onAdmissionUpdate?: (metadata: HostedAnalysisAdmissionMetadata) => void,
 ): Promise<T> {
   const queuedAt = Date.now();
-  const run = workerJobChain.then(() => withHostedForegroundPermit(async () => {
+  const ticket = admission ?? reserveHostedAnalysisOrThrow();
+  return executeHostedAnalysis(ticket, () => withHostedForegroundPermit(async () => {
     const queueWaitMs = Date.now() - queuedAt;
     const dispatchedAt = Date.now();
     const endForegroundAnalysis = beginForegroundAnalysis();
@@ -3096,9 +3080,7 @@ function queueWorkerJob<T>(
 
       error => { report('FAILED'); throw error; },
     ).finally(endForegroundAnalysis);
-  }));
-  workerJobChain = run.catch(() => undefined);
-  return run;
+  }), onAdmissionUpdate);
 }
 
 export async function runAnalysis(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {
@@ -3163,6 +3145,12 @@ export async function runLayeredAnalysis(
       else process.env.KLAURO_FORCE_AI_REFRESH = previousForceAiRefresh;
     }
   }
-  const run = queueWorkerJob(projectPath, 'layered', () => dispatchLayeredWorkerJob(projectPath, options));
+  const run = queueWorkerJob(
+    projectPath,
+    'layered',
+    () => dispatchLayeredWorkerJob(projectPath, options),
+    options.admission,
+    options.onAdmissionUpdate,
+  );
   return run;
 }

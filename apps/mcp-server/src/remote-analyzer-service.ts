@@ -70,6 +70,7 @@ import {
 import { z } from 'zod';
 import { analysisJobMetadata } from './analysis-job-metadata';
 import { IdempotentRequestStore, IdempotentSyncStore } from './idempotent-sync-store';
+import { reserveHostedAnalysis } from './hosted-analysis-admission';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -436,11 +437,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const acceptedAnalysisId = resolveStorageAnalysisId(rawAcceptedId, accountSaltFor(authorization.clientId));
           const visibleAnalysisId = clientVisibleAnalysisId(rawAcceptedId, acceptedAnalysisId, authorization.clientId);
           const acceptedWorkspace = workspacePath(dataDir, acceptedAnalysisId);
-          const admission = await admitAccountAnalysisWorkspace(dataDir, authorization.clientId, rawAcceptedId, acceptedAnalysisId);
-          if (!admission.admitted) {
+          const storageAdmission = await admitAccountAnalysisWorkspace(dataDir, authorization.clientId, rawAcceptedId, acceptedAnalysisId);
+          if (!storageAdmission.admitted) {
             writeJson(response, 403, {
               status: 'error',
-              error: `Storage limit reached: this account already has ${admission.count} distinct unbound analyses (limit ${admission.limit}). ` +
+              error: `Storage limit reached: this account already has ${storageAdmission.count} distinct unbound analyses (limit ${storageAdmission.limit}). ` +
                 `Bind this repo to an existing project (\`klauro init\`) instead of pushing another unbound checkout, or contact support to raise the limit.`,
             });
             return;
@@ -494,7 +495,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               manifest: body.snapshot.manifest,
               reused: true,
               analysis_type: 'unchanged',
-
               reuse_decision: {
                 reused: true,
                 reason: reuseReason,
@@ -505,7 +505,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             });
             return;
           }
-
           const analyzerUpgradeReanalysis = snapshotUnchanged && identityDecision?.reusable === false;
           if (analyzerUpgradeReanalysis && identityDecision) {
             await appendAuditLog(dataDir, {
@@ -521,13 +520,22 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               `(tier=${identityDecision.tier}) — re-analyzing. ${identityDecision.reason}`
             );
           }
-
+          const admission = reserveHostedAnalysis();
+          if (!admission.admitted) {
+            response.setHeader('Retry-After', String(Math.max(1, Math.ceil(admission.overload.retry_after_ms / 1000))));
+            writeJson(response, 503, {
+              ...admission.overload,
+              error: 'Hosted analysis capacity is full. Retry after an active analysis completes.',
+            });
+            return;
+          }
           if (snapshotIdentity) activeCommittedSnapshots.set(acceptedAnalysisId, snapshotIdentity);
           try {
             await fs.remove(acceptedWorkspace);
             await fs.ensureDir(acceptedWorkspace);
             await writeSnapshot(acceptedWorkspace, body.snapshot.files);
           } catch (error) {
+            admission.ticket.cancel();
             if (snapshotIdentity && activeCommittedSnapshots.get(acceptedAnalysisId) === snapshotIdentity) {
               activeCommittedSnapshots.delete(acceptedAnalysisId);
             }
@@ -536,15 +544,22 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const forcedOverReuse = Boolean(body.force) && !analysisAlreadyRunning
             && snapshotUnchanged && identityDecision?.reusable === true;
           const attemptRecordPath = projectAttemptRecordPath(acceptedWorkspace);
-          const attemptStartedAt = new Date().toISOString();
+          const attemptQueuedAt = new Date().toISOString();
           const acceptedRevision = Date.now();
           const attemptSnapshot: ReanalyzeAttemptRecord = {
             state: 'in-progress',
             trigger: 'analyze',
-            started_at: attemptStartedAt,
+            queued_at: attemptQueuedAt,
+            queue_position: admission.ticket.metadata.queue_position,
+            estimated_wait_ms: admission.ticket.metadata.estimated_wait_ms,
             analysis_revision: acceptedRevision,
           };
-          await writeAttemptRecord(attemptRecordPath, { ...attemptSnapshot, heartbeat_at: attemptStartedAt });
+          try {
+            await writeAttemptRecord(attemptRecordPath, { ...attemptSnapshot, heartbeat_at: attemptQueuedAt });
+          } catch (error) {
+            admission.ticket.cancel();
+            throw error;
+          }
           const backgroundAnalysis = analysisJobMetadata(body);
           writeJson(response, 202, {
             status: 'accepted',
@@ -554,6 +569,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             base_commit: body.snapshot.base_commit,
             manifest: body.snapshot.manifest,
             reused: false,
+            queue: admission.ticket.metadata,
             ...(forcedOverReuse
               ? { analysis_type: 'forced' as const }
               : analyzerUpgradeReanalysis && identityDecision
@@ -578,22 +594,24 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             const stopHeartbeat = startAttemptHeartbeat(attemptRecordPath, attemptSnapshot);
             try {
               const displayName = backgroundAnalysis.displayName;
-
               const doomed = await checkDoomedVersionRebuild(acceptedWorkspace);
               if (doomed) throw new Error(doomed);
-
               let l0Attach: Promise<void> | null = null;
               const summary = await runLayeredAnalysis(acceptedWorkspace, {
                 displayName,
                 analysisFocus: backgroundAnalysis.analysisFocus,
                 repoFacts: backgroundAnalysis.repoFacts,
                 repoFactsUnavailable: !backgroundAnalysis.repoFacts,
-
                 forceAiRefresh: backgroundAnalysis.force,
-
                 forceFullRebuild: backgroundAnalysis.force,
+                admission: admission.ticket,
+                onAdmissionUpdate: metadata => {
+                  attemptSnapshot.queue_position = metadata.queue_position;
+                  attemptSnapshot.estimated_wait_ms = metadata.estimated_wait_ms;
+                  if (metadata.queue_position === 0 && !attemptSnapshot.started_at) attemptSnapshot.started_at = new Date().toISOString();
+                  void writeAttemptRecord(attemptRecordPath, { ...attemptSnapshot, heartbeat_at: new Date().toISOString() });
+                },
                 onPhase: (event) => {
-
                   if (event.phase === 'l0' && event.status === 'succeeded' && !l0Attach) {
                     l0Attach = (async () => {
                       try {
@@ -609,7 +627,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 },
               });
               if (l0Attach) await l0Attach;
-
               await appendProjectRevision(dataDir, {
                 status: 'success',
                 analysis_id: acceptedAnalysisId,
@@ -621,7 +638,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 edges: summary.edges,
                 analysis_focus: backgroundAnalysis.analysisFocus || 'full',
               }, 'local_commit_submission');
-
               if (!attachedEarly) {
                 await linkAnalysisToAccountProject(accounts, backgroundClientId, backgroundAnalysis.projectId, acceptedAnalysisId, backgroundAnalysis.gitRemote, backgroundAnalysis.repoFacts);
               }
@@ -638,6 +654,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               });
               void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
               const attemptFinishedAt = new Date().toISOString();
+              const attemptStartedAt = attemptSnapshot.started_at || attemptQueuedAt;
               await writeAttemptRecord(attemptRecordPath, {
                 ...attemptSnapshot,
                 state: 'succeeded',
@@ -648,9 +665,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               const detail = error instanceof Error ? error.message : String(error);
               const diagnostic = error instanceof Error ? error.stack || detail : detail;
               console.error(`[Klauro] async analyze failed for ${acceptedAnalysisId}: ${diagnostic}`);
-
               await markBackgroundAnalysisFailed(acceptedWorkspace, detail);
               const attemptFinishedAt = new Date().toISOString();
+              const attemptStartedAt = attemptSnapshot.started_at || attemptQueuedAt;
               await writeAttemptRecord(attemptRecordPath, {
                 ...attemptSnapshot,
                 state: 'failed',
@@ -665,6 +682,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 error: detail.slice(0, 500),
               }).catch(() => {});
             } finally {
+              admission.ticket.cancel();
               stopHeartbeat();
               if (snapshotIdentity && activeCommittedSnapshots.get(acceptedAnalysisId) === snapshotIdentity) {
                 activeCommittedSnapshots.delete(acceptedAnalysisId);
@@ -673,9 +691,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
-
       }
-
       const rawAnalysisStatusMatch = route.match(/^\/v1\/analyses\/([^/]+)\/status$/);
       if (request.method === 'GET' && rawAnalysisStatusMatch) {
         const analysisId = await resolveAuthorizedAnalysisReadId(
@@ -3174,13 +3190,11 @@ async function handleAccountApi(
     const displayName = resolveDisplayName(undefined, project.name);
     const dataDirForBackground = dataDir;
     const workspaceIdForBackground = project.workspace_id;
-
     let manifestForResponse: SourceManifest;
     let baseCommitForResponse: string | undefined;
     if (sourceRoot === workspace) {
       manifestForResponse = await buildWorkspaceManifest(workspace);
     } else {
-
       const snapshot = await buildSourceSnapshot(sourceRoot);
       await fs.remove(workspace);
       await fs.ensureDir(workspace);
@@ -3188,58 +3202,69 @@ async function handleAccountApi(
       manifestForResponse = snapshot.manifest;
       baseCommitForResponse = snapshot.base_commit;
     }
-
     const attemptRecordPath = projectAttemptRecordPath(workspace);
-
+    const admission = reserveHostedAnalysis();
+    if (!admission.admitted) {
+      return {
+        statusCode: 503,
+        body: {
+          ...admission.overload,
+          error: 'Hosted analysis capacity is full. Retry after an active analysis completes.',
+        },
+      };
+    }
     const attemptQueuedAt = new Date().toISOString();
-    const attemptQueuePosition = inFlightReanalyzeCount;
-    inFlightReanalyzeCount += 1;
-    await writeAttemptRecord(attemptRecordPath, {
-      state: 'in-progress',
-      trigger: 'reanalyze',
-      queued_at: attemptQueuedAt,
-      queue_position: attemptQueuePosition,
-    });
-    setImmediate(async () => {
-      const attemptStartedAt = new Date().toISOString();
-
-      const doomedReason = await checkDoomedVersionRebuild(workspace).catch(() => null);
-      if (doomedReason) {
-        console.error(`[Klauro] async reanalyze REFUSED for ${analysisId}: ${doomedReason}`);
-        await markBackgroundAnalysisFailed(workspace, doomedReason);
-        await writeAttemptRecord(attemptRecordPath, {
-          state: 'failed',
-          trigger: 'reanalyze',
-          queued_at: attemptQueuedAt,
-          queue_position: attemptQueuePosition,
-          started_at: attemptStartedAt,
-          finished_at: attemptStartedAt,
-          duration_ms: 0,
-          reason: doomedReason.slice(0, 300),
-        });
-        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
-        if (dataDirForBackground) {
-          await appendAuditLog(dataDirForBackground, {
-            event: 'reanalyze_async_failed',
-            analysis_id: analysisId,
-            project_id: project.id,
-            error: doomedReason.slice(0, 500),
-          }).catch(() => {});
+    try {
+      await writeAttemptRecord(attemptRecordPath, {
+        state: 'in-progress',
+        trigger: 'reanalyze',
+        queued_at: attemptQueuedAt,
+        queue_position: admission.ticket.metadata.queue_position,
+        estimated_wait_ms: admission.ticket.metadata.estimated_wait_ms,
+      });
+    } catch (error) {
+      admission.ticket.cancel();
+      throw error;
+    }
+    setImmediate(() => {
+      let stopReanalyzeHeartbeat = (): void => undefined;
+      let attemptStartedAt = attemptQueuedAt;
+      void (async () => {
+        const doomedReason = await checkDoomedVersionRebuild(workspace).catch(() => null);
+        if (doomedReason) {
+          console.error(`[Klauro] async reanalyze REFUSED for ${analysisId}: ${doomedReason}`);
+          await markBackgroundAnalysisFailed(workspace, doomedReason);
+          await writeAttemptRecord(attemptRecordPath, {
+            state: 'failed',
+            trigger: 'reanalyze',
+            queued_at: attemptQueuedAt,
+            queue_position: admission.ticket.metadata.queue_position,
+            estimated_wait_ms: admission.ticket.metadata.estimated_wait_ms,
+            started_at: attemptStartedAt,
+            finished_at: attemptStartedAt,
+            duration_ms: 0,
+            reason: doomedReason.slice(0, 300),
+          });
+          admission.ticket.cancel();
+          if (dataDirForBackground) {
+            await appendAuditLog(dataDirForBackground, {
+              event: 'reanalyze_async_failed',
+              analysis_id: analysisId,
+              project_id: project.id,
+              error: doomedReason.slice(0, 500),
+            }).catch(() => {});
+          }
+          return;
         }
-        return;
-      }
-
       const reanalyzeAttemptSnapshot: ReanalyzeAttemptRecord = {
         state: 'in-progress',
         trigger: 'reanalyze',
         queued_at: attemptQueuedAt,
-        queue_position: attemptQueuePosition,
-        started_at: attemptStartedAt,
+        queue_position: admission.ticket.metadata.queue_position,
+        estimated_wait_ms: admission.ticket.metadata.estimated_wait_ms,
       };
       await writeAttemptRecord(attemptRecordPath, { ...reanalyzeAttemptSnapshot, heartbeat_at: attemptStartedAt });
-
-      const stopReanalyzeHeartbeat = startAttemptHeartbeat(attemptRecordPath, reanalyzeAttemptSnapshot);
-
+      stopReanalyzeHeartbeat = startAttemptHeartbeat(attemptRecordPath, reanalyzeAttemptSnapshot);
       const attemptSidecarName = path.basename(attemptRecordPath);
       const workspaceEntries = await fs.readdir(workspace).catch(() => [] as string[]);
       if (!workspaceEntries.some(name => name !== attemptSidecarName)) {
@@ -3251,13 +3276,14 @@ async function handleAccountApi(
           state: 'failed',
           trigger: 'reanalyze',
           queued_at: attemptQueuedAt,
-          queue_position: attemptQueuePosition,
+          queue_position: reanalyzeAttemptSnapshot.queue_position,
+          estimated_wait_ms: reanalyzeAttemptSnapshot.estimated_wait_ms,
           started_at: attemptStartedAt,
           finished_at: attemptFinishedAt,
           duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
           reason: detail.slice(0, 300),
         });
-        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
+        admission.ticket.cancel();
         if (dataDirForBackground) {
           await appendAuditLog(dataDirForBackground, {
             event: 'reanalyze_async_failed',
@@ -3269,20 +3295,28 @@ async function handleAccountApi(
         stopReanalyzeHeartbeat();
         return;
       }
-
       try {
-
         const summary = await runLayeredAnalysis(workspace, {
           displayName,
           repoFacts: project.repo_facts,
           repoFactsUnavailable: !project.repo_facts,
+          admission: admission.ticket,
+          onAdmissionUpdate: metadata => {
+            reanalyzeAttemptSnapshot.queue_position = metadata.queue_position;
+            reanalyzeAttemptSnapshot.estimated_wait_ms = metadata.estimated_wait_ms;
+            if (metadata.queue_position === 0 && !reanalyzeAttemptSnapshot.started_at) {
+              attemptStartedAt = new Date().toISOString();
+              reanalyzeAttemptSnapshot.started_at = attemptStartedAt;
+            }
+            void writeAttemptRecord(attemptRecordPath, { ...reanalyzeAttemptSnapshot, heartbeat_at: new Date().toISOString() });
+          },
           onPhase: (event) => {
-
             void writeAttemptRecord(attemptRecordPath, {
               state: event.status === 'succeeded' ? 'in-progress' : 'failed',
               trigger: 'reanalyze',
               queued_at: attemptQueuedAt,
-              queue_position: attemptQueuePosition,
+              queue_position: reanalyzeAttemptSnapshot.queue_position,
+              estimated_wait_ms: reanalyzeAttemptSnapshot.estimated_wait_ms,
               started_at: attemptStartedAt,
               ...(event.status === 'failed' ? {
                 finished_at: new Date().toISOString(),
@@ -3318,25 +3352,24 @@ async function handleAccountApi(
           state: 'succeeded',
           trigger: 'reanalyze',
           queued_at: attemptQueuedAt,
-          queue_position: attemptQueuePosition,
+          queue_position: reanalyzeAttemptSnapshot.queue_position,
+          estimated_wait_ms: reanalyzeAttemptSnapshot.estimated_wait_ms,
           started_at: attemptStartedAt,
           finished_at: attemptFinishedAt,
           duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
         });
-        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] async reanalyze failed for ${analysisId}: ${detail}`);
-
         await markBackgroundAnalysisFailed(workspace, detail);
-
         const existingAttempt = await readAttemptRecord(attemptRecordPath);
         const attemptFinishedAt = new Date().toISOString();
         await writeAttemptRecord(attemptRecordPath, {
           state: 'failed',
           trigger: 'reanalyze',
           queued_at: attemptQueuedAt,
-          queue_position: attemptQueuePosition,
+          queue_position: reanalyzeAttemptSnapshot.queue_position,
+          estimated_wait_ms: reanalyzeAttemptSnapshot.estimated_wait_ms,
           started_at: attemptStartedAt,
           finished_at: attemptFinishedAt,
           duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
@@ -3346,7 +3379,6 @@ async function handleAccountApi(
             current_version: existingAttempt.current_version,
           } : {}),
         });
-        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
         if (dataDirForBackground) {
           await appendAuditLog(dataDirForBackground, {
             event: 'reanalyze_async_failed',
@@ -3356,10 +3388,25 @@ async function handleAccountApi(
           }).catch(() => {});
         }
       } finally {
+        admission.ticket.cancel();
         stopReanalyzeHeartbeat();
       }
+      })().catch(async error => {
+        admission.ticket.cancel();
+        stopReanalyzeHeartbeat();
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[Klauro] async reanalyze setup failed for ${analysisId}: ${error instanceof Error ? error.stack || detail : detail}`);
+        const attemptFinishedAt = new Date().toISOString();
+        await markBackgroundAnalysisFailed(workspace, detail).catch(() => undefined);
+        await writeAttemptRecord(attemptRecordPath, {
+          state: 'failed', trigger: 'reanalyze', queued_at: attemptQueuedAt,
+          queue_position: admission.ticket.metadata.queue_position,
+          estimated_wait_ms: admission.ticket.metadata.estimated_wait_ms,
+          started_at: attemptStartedAt, finished_at: attemptFinishedAt,
+          duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt), reason: detail.slice(0, 300),
+        }).catch(() => undefined);
+      });
     });
-
     return {
       statusCode: 202,
       body: {
@@ -3367,6 +3414,7 @@ async function handleAccountApi(
         analysis_id: analysisId,
         base_commit: baseCommitForResponse,
         manifest: manifestForResponse,
+        queue: admission.ticket.metadata,
       },
     };
   }
@@ -4088,23 +4136,16 @@ type ReanalyzeAttemptState = 'in-progress' | 'succeeded' | 'failed';
 
 interface ReanalyzeAttemptRecord {
   state: ReanalyzeAttemptState;
-
   trigger: 'reanalyze' | 'sync' | 'analyze';
-
   analysis_revision?: number;
-
   queued_at?: string;
-
   queue_position?: number;
-
+  estimated_wait_ms?: number;
   started_at?: string;
   finished_at?: string;
-
   duration_ms?: number;
   reason?: string;
-
   heartbeat_at?: string;
-
   stored_version?: string;
   current_version?: string;
 }

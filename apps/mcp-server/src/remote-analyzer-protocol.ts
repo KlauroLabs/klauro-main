@@ -65,6 +65,14 @@ export interface RemoteAnalyzeAcceptedResponse {
   manifest: SourceManifest;
 
   reused?: boolean;
+  queue?: {
+    active: number;
+    queued: number;
+    active_limit: number;
+    queue_limit: number;
+    queue_position: number;
+    estimated_wait_ms: number;
+  };
 
 
 
