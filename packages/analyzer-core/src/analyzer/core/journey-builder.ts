@@ -18,7 +18,7 @@ import type { FlowConcept } from './flow-concepts';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
 
 export interface UserJourneyInput {
-  nodes: CASNode[];
+  nodes: CASNode[]; nodeLookup?: Map<string, CASNode>;
   edges: CASEdge[];
   entryPoints: CASEntryPoint[];
   exitPoints: CASExitPoint[];
@@ -424,7 +424,7 @@ function selectIncludedJourneys(sortedJourneys: CASUserJourney[], maxJourneys: n
 }
 
 function buildJourneyGraph(input: UserJourneyInput): JourneyGraph {
-  const nodesById = new Map(input.nodes.map(node => [node.id, node]));
+  const nodesById = input.nodeLookup ?? new Map(input.nodes.map(node => [node.id, node]));
 
   const traversalBySource = new Map<string, CASEdge[]>();
   const containsBySource = new Map<string, string[]>();

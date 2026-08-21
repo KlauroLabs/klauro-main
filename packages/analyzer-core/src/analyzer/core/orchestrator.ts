@@ -1574,7 +1574,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
-    const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
+    const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints); callGraphBuilder.release();
     this.stampChainCriticalityFromStructuralImportance(callChains, allNodes, allEntryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
     logTiming('pp_enhanceRisks', phaseStart);
@@ -1595,6 +1595,7 @@ export class AnalyzerOrchestrator {
     this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
     const userJourneyResult = buildUserJourneys({
       nodes: allNodes,
+      nodeLookup: this.getNodeLookup(allNodes),
       edges: allEdges,
       entryPoints: allEntryPoints,
       exitPoints: allExitPoints,
@@ -3030,6 +3031,7 @@ export class AnalyzerOrchestrator {
     );
 
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
+    callGraphBuilder.release();
     const flowsForJourneys = computeFlowConcepts({
       nodes,
       edges,
@@ -3044,6 +3046,7 @@ export class AnalyzerOrchestrator {
     this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
     const userJourneyResult = buildUserJourneys({
       nodes,
+      nodeLookup: this.getNodeLookup(nodes),
       edges,
       entryPoints,
       exitPoints,

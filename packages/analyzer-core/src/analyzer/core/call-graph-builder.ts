@@ -84,6 +84,8 @@ export class CallGraphBuilder {
     }
   }
 
+  release(): void { [this.callerIndex, this.calleeIndex, this.nodeIndex, this.edgeIndex, this.exitPointNodes, this.exitPointIndex].forEach(index => index.clear()); }
+
   private isCallEdge(edge: CASEdge): boolean {
     return edge.type === 'calls' ||
            edge.type === 'uses' ||

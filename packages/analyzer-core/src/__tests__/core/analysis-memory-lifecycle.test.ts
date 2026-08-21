@@ -5,6 +5,7 @@ import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { captureAnalysisMemorySample } from '../../analyzer/core/analysis-memory-profile';
 import { getActiveSourceCorpus } from '../../analyzer/core/source-corpus';
 import { TypeScriptJavaScriptAnalyzer } from '../../analyzer/languages/typescript-javascript-analyzer';
+import { CallGraphBuilder } from '../../analyzer/core/call-graph-builder';
 
 test('node lookup indexes use weak graph ownership', () => {
   const orchestrator = new AnalyzerOrchestrator() as any;
@@ -67,4 +68,17 @@ test('language analyzer lifecycle cleanup releases every per-job graph index', (
   analyzer.releaseAnalysisState();
   for (const field of fields) expect(analyzer[field].size).toBe(0);
   expect(analyzer.currentProjectPath).toBe('');
+});
+
+test('call graph indexes release their graph references after their final consumer', () => {
+  const builder = new CallGraphBuilder(
+    [{ id: 'source' }, { id: 'target' }] as any,
+    [{ id: 'edge', source: 'source', target: 'target', type: 'calls' }] as any,
+  ) as any;
+  expect(builder.nodeIndex.size).toBe(2);
+  expect(builder.edgeIndex.size).toBe(1);
+  builder.release();
+  for (const field of ['callerIndex', 'calleeIndex', 'nodeIndex', 'edgeIndex', 'exitPointNodes', 'exitPointIndex']) {
+    expect(builder[field].size).toBe(0);
+  }
 });
