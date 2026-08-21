@@ -5794,7 +5794,7 @@ export class AnalyzerOrchestrator {
   private static readonly VALID_ENTRY_POINT_TYPES: ReadonlySet<string> = new Set(ENTRY_POINT_TYPES);
 
   private removeTestEntryPoints(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[]): void {
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const nodesById = this.getNodeLookup(nodes);
     const removedEntryPointIds = new Set<string>();
     let writeIndex = 0;
 
@@ -7120,7 +7120,7 @@ export class AnalyzerOrchestrator {
     const productEntryPointIds = new Set(
       this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath).map(entryPoint => entryPoint.id)
     );
-    const nodeById = new Map(nodes.map(node => [node.id, node]));
+    const nodeById = this.getNodeLookup(nodes);
     return journeys.filter(journey => {
       if (journey.entry_point_id && entryPointById.has(journey.entry_point_id)) {
         return productEntryPointIds.has(journey.entry_point_id);
@@ -7419,7 +7419,7 @@ export class AnalyzerOrchestrator {
   }
 
   private filterArchitecturalClientPatternNodeIds(clientIds: string[], nodes: CASNode[]): string[] {
-    const byId = new Map(nodes.map(node => [node.id, node]));
+    const byId = this.getNodeLookup(nodes);
     return clientIds.filter(id => {
       const node = byId.get(id);
       if (!node) return false;
@@ -8526,7 +8526,7 @@ export class AnalyzerOrchestrator {
       'gateway', 'handler', 'factory', 'builder',
     ]);
     const classLike = nodes.filter(n => CLASS_LIKE_TYPES.has(n.type));
-    const byId = new Map(nodes.map(n => [n.id, n]));
+    const byId = this.getNodeLookup(nodes);
     const nameMatches = (re: RegExp) => classLike.filter(n => re.test(n.name));
     const add = (id: string, name: string, type: CASPattern['type'], description: string, instances: CASNode[], confidence: number, benefits?: string[]) => {
       if (instances.length === 0) return;
@@ -8722,7 +8722,7 @@ export class AnalyzerOrchestrator {
     _callGraph: CallGraphBuilder,
     systemCapabilities: SystemCapability[] = []
   ): CASCallChain[] {
-    const nodeById = new Map(nodes.map(node => [node.id, node]));
+    const nodeById = this.getNodeLookup(nodes);
 
     const realRootNodeIds = new Set(entryPoints.map(ep => ep.handler?.node_id || ep.source_node));
     const seededNodeIds = new Set<string>();
@@ -9913,7 +9913,7 @@ export class AnalyzerOrchestrator {
         (capability.operations || []).every(operation => operation.entry_point_type === 'page')
       ));
 
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const nodesById = this.getNodeLookup(nodes);
     const nodeTypeByEntryPointId = new Map<string, string>();
     for (const ep of entryPoints) {
       const sourceNode = ep.source_node ? nodesById.get(ep.source_node) : undefined;
@@ -15074,7 +15074,7 @@ export class AnalyzerOrchestrator {
         node.category === 'test' ||
         ['test', 'mock', 'test_double', 'test_fixture'].includes(node.type)
       );
-    const nodesById = new Map(nodes.map(n => [n.id, n]));
+    const nodesById = this.getNodeLookup(nodes);
     const callsBySource = new Map<string, string[]>();
     for (const edge of edges) {
       if (edge.type !== 'calls') continue;
@@ -15289,7 +15289,7 @@ export class AnalyzerOrchestrator {
   }
 
   private collapseChangeRisksByOwner(changeRisks: CASChangeRisk[], nodes: CASNode[]): CASChangeRisk[] {
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const nodesById = this.getNodeLookup(nodes);
     const grouped = new Map<string, CASChangeRisk[]>();
     for (const risk of changeRisks) {
       const node = nodesById.get(risk.node_id);
@@ -18763,7 +18763,7 @@ export class AnalyzerOrchestrator {
     projectPath?: string
   ): Promise<SystemCapability[]> {
     const maybeYield = createYieldBudget();
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const nodesById = this.getNodeLookup(nodes);
     const repoPlumbingProfile = this.repoPlumbingEvidenceProfile(nodes);
     const incoming = new Map<string, number>();
     const outgoing = new Map<string, number>();
@@ -19031,7 +19031,7 @@ export class AnalyzerOrchestrator {
     projectPath?: string
   ): Promise<SystemCapability[]> {
     const maybeYield = createYieldBudget();
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const nodesById = this.getNodeLookup(nodes);
 
     const genericNodeTypes = new Set([
       'function', 'method', 'class', 'module', 'file', 'component',
@@ -19365,7 +19365,7 @@ export class AnalyzerOrchestrator {
     dataEntities: CASDataEntity[],
   ): Promise<SystemCapability[]> {
     const maybeYield = createYieldBudget();
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const nodesById = this.getNodeLookup(nodes);
     const incoming = new Map<string, number>();
     for (const edge of edges) {
       incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
@@ -21409,7 +21409,7 @@ export class AnalyzerOrchestrator {
     }
     if (dtoByName.size === 0) return;
 
-    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const nodeById = this.getNodeLookup(nodes);
     const supported = new Set(['http', 'websocket', 'message', 'event']);
     const normalizeType = (raw: string | undefined): string =>
       (raw || '').replace(/\[\]$/, '').replace(/\s*\|\s*.*$/, '').replace(/<.*>/, '').trim();
@@ -21461,7 +21461,7 @@ export class AnalyzerOrchestrator {
   ): void {
     const functionNodesByFile = new Map<string, CASNode[]>();
     const functionNodesByName = new Map<string, CASNode[]>();
-    const nodeById = new Map(nodes.map(node => [node.id, node]));
+    const nodeById = this.getNodeLookup(nodes);
     for (const node of nodes) {
       if ((node.type === 'function' || node.type === 'method') && !this.isTestOrFixtureFileNode(node)) {
         const file = node.source?.file || '';
@@ -24616,7 +24616,7 @@ export class AnalyzerOrchestrator {
 
   private buildMethodCalls(nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[] = []): CASMethodCall[] {
     const methodCalls: CASMethodCall[] = [];
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const nodeMap = this.getNodeLookup(nodes);
     const callEdgeTypes = new Set(['calls', 'invokes', 'method_call', 'delegates_to']);
     const seen = new Set<string>();
 
@@ -24944,7 +24944,7 @@ export class AnalyzerOrchestrator {
   ): void {
     const entryNodeIds = new Set(entryPoints.map(ep => ep.source_node));
     const exitNodeIds = new Set(exitPoints.map(ep => ep.source_node));
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const nodeMap = this.getNodeLookup(nodes);
 
     for (const node of nodes) {
       if (node.type === 'file' || node.type === 'directory') continue;
@@ -25253,7 +25253,7 @@ export class AnalyzerOrchestrator {
   }
 
   private deriveParentFromContainsEdges(nodes: CASNode[], edges: CASEdge[]): void {
-    const nodeMap = new Map(nodes.map(node => [node.id, node] as const));
+    const nodeMap = this.getNodeLookup(nodes);
     const containsEdges = edges.filter(e => e.type === 'contains' && e.metadata?.attributes?.relationship !== 'structural_ownership');
     for (const edge of containsEdges) {
       const child = nodeMap.get(edge.target);
