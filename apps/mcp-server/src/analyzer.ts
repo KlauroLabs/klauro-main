@@ -187,15 +187,18 @@ import { TEST_FRAMEWORK_DETECTION_FILES } from './test-framework-detection';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
-function lazyAnalyzer(load: () => BaseAnalyzer): BaseAnalyzer {
+function lazyAnalyzerRegistration(load: () => BaseAnalyzer, incremental: boolean): Pick<AnalyzerRegistration, 'analyzer' | 'incremental'> {
   let analyzer: BaseAnalyzer | undefined;
-  return new Proxy({} as BaseAnalyzer, {
-    get(_target, property) {
-      analyzer ??= load();
-      const value = Reflect.get(analyzer, property, analyzer);
-      return typeof value === 'function' ? value.bind(analyzer) : value;
-    },
-  });
+  return {
+    incremental,
+    analyzer: new Proxy({} as BaseAnalyzer, {
+      get(_target, property) {
+        analyzer ??= load();
+        const value = Reflect.get(analyzer, property, analyzer);
+        return typeof value === 'function' ? value.bind(analyzer) : value;
+      },
+    }),
+  };
 }
 
 export function createOrchestrator(): AnalyzerOrchestrator {
@@ -212,7 +215,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['package.json', 'tsconfig.json', 'jsconfig.json'],
         content: [/\.ts$/, /\.js$/, /\.tsx$/, /\.jsx$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer').TypeScriptJavaScriptAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer').TypeScriptJavaScriptAnalyzer)(), true),
     },
     {
       id: 'python',
@@ -223,7 +226,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'],
         content: [/\.py$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/python-analyzer').PythonAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/python-analyzer').PythonAnalyzer)(), true),
     },
     {
       id: 'java',
@@ -234,7 +237,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['pom.xml', 'build.gradle', 'build.gradle.kts'],
         content: [/\.java$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/java-analyzer').JavaAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/java-analyzer').JavaAnalyzer)(), true),
     },
     {
       id: 'csharp',
@@ -245,7 +248,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['*.csproj', '*.sln'],
         content: [/\.cs$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/csharp-analyzer').CSharpAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/csharp-analyzer').CSharpAnalyzer)(), true),
     },
     {
       id: 'go',
@@ -256,7 +259,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['go.mod', 'go.sum'],
         content: [/\.go$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/go-analyzer').GoAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/go-analyzer').GoAnalyzer)(), true),
     },
     {
       id: 'rust',
@@ -267,7 +270,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['Cargo.toml', 'Cargo.lock'],
         content: [/\.rs$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/rust-analyzer').RustAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/rust-analyzer').RustAnalyzer)(), true),
     },
     {
       id: 'php',
@@ -278,7 +281,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['composer.json', 'composer.lock'],
         content: [/\.php$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/php-analyzer').PHPAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/php-analyzer').PHPAnalyzer)(), true),
     },
     {
       id: 'ruby',
@@ -289,7 +292,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['Gemfile', 'Gemfile.lock', 'Rakefile'],
         content: [/\.rb$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/ruby-analyzer').RubyAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/ruby-analyzer').RubyAnalyzer)(), true),
     },
     {
       id: 'shell',
@@ -333,7 +336,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['Package.swift'],
         content: [/\.swift$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/swift-analyzer').SwiftAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/swift-analyzer').SwiftAnalyzer)(), true),
     },
     {
       id: 'kotlin',
@@ -344,7 +347,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: [],
         content: [/\.(kt|kts)$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/kotlin-analyzer').KotlinAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/kotlin-analyzer').KotlinAnalyzer)(), true),
     },
     {
       id: 'elixir',
@@ -388,7 +391,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         files: ['pubspec.yaml'],
         content: [/\.dart$/],
       },
-      analyzer: lazyAnalyzer(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/dart-analyzer').DartAnalyzer)()),
+      ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/dart-analyzer').DartAnalyzer)(), true),
     },
     {
       id: 'terraform',

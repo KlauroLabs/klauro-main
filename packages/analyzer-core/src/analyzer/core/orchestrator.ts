@@ -320,9 +320,9 @@ export interface AnalyzerRegistration {
   requires?: string[];
   enhances?: string[];
   consumesExistingAnalysis?: boolean;
+  incremental?: boolean;
   analyzer: BaseAnalyzer;
 }
-
 interface AnalysisMergeTarget {
   allNodes: CASNode[];
   allEdges: CASEdge[];
@@ -502,7 +502,7 @@ export class AnalyzerOrchestrator {
           files: dp.files,
           content: (dp.content || []).map(c => (c instanceof RegExp ? c.source : String(c))),
         },
-        incremental: Boolean(reg.analyzer?.supportsIncrementalAnalysis?.()),
+        incremental: reg.incremental ?? Boolean(reg.analyzer?.supportsIncrementalAnalysis?.()),
       });
     }
     return out.sort((a, b) => a.type.localeCompare(b.type) || a.id.localeCompare(b.id));
