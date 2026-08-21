@@ -939,7 +939,6 @@ export class AnalyzerOrchestrator {
     }
     return patterns;
   }
-
   private applyLocalPackGlobs(globs: string[]): void {
     for (const registration of this.analyzers.values()) {
       if (!registration.acceptsLocalPackGlobs) continue;
