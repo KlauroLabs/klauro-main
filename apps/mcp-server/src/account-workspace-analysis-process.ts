@@ -111,5 +111,5 @@ export async function runAccountWorkspaceAnalysisWorker(
       if (error) finish(new Error(`Failed to dispatch workspace analysis for ${workspaceId}: ${error.message}`));
     });
     });
-  });
+  }, { releaseForegroundMemory: true });
 }

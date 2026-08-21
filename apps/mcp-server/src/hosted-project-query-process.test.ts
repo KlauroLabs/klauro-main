@@ -39,12 +39,12 @@ process.on('message', request => {
     assert.deepEqual((second.result as any).calls, 2);
     assert.equal((first.result as any).pid, (second.result as any).pid);
 
-    await withHostedBackgroundPermit(async () => undefined);
+    await withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
     const third = await runHostedProjectQueryWorker(request);
     assert.deepEqual((third.result as any).calls, 1);
     assert.notEqual((third.result as any).pid, (second.result as any).pid);
   } finally {
-    await withHostedBackgroundPermit(async () => undefined);
+    await withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
     if (previousEntry === undefined) delete process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
     else process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = previousEntry;
     if (previousIdle === undefined) delete process.env.KLAURO_HOSTED_QUERY_IDLE_MS;

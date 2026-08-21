@@ -34,10 +34,15 @@ export async function withHostedForegroundPermit<T>(run: () => Promise<T>): Prom
   }
 }
 
-export function withHostedBackgroundPermit<T>(run: () => Promise<T>): Promise<T> {
+export function withHostedBackgroundPermit<T>(
+  run: () => Promise<T>,
+  options: { releaseForegroundMemory?: boolean } = {},
+): Promise<T> {
   const result = backgroundWork.then(async () => {
     await waitForForegroundIdle();
-    for (const preflight of backgroundPreflights) await preflight();
+    if (options.releaseForegroundMemory) {
+      for (const preflight of backgroundPreflights) await preflight();
+    }
     return run();
   });
   backgroundWork = result.then(() => undefined, () => undefined);

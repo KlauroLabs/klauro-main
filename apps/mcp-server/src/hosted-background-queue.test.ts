@@ -33,7 +33,10 @@ test('background work waits for foreground queries and runs their memory-release
       order.push('foreground-end');
     });
     await new Promise(resolve => setImmediate(resolve));
-    const background = withHostedBackgroundPermit(async () => { order.push('background'); });
+    const background = withHostedBackgroundPermit(
+      async () => { order.push('background'); },
+      { releaseForegroundMemory: true },
+    );
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(order, ['foreground-start']);
     releaseForeground();
