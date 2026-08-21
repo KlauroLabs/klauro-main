@@ -52,6 +52,7 @@ for (const [query, options] of [
   ['q', {}],
   ['xy', {}],
   ['payment service', {}],
+  ['where is the payment service', {}],
   ['retention', {}],
   ['retention policy', {}],
   ['payment', { file: 'src/first.ts' }],

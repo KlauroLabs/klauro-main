@@ -46,11 +46,15 @@ export interface CompactCASSearchResult {
 export type CompactCASPostingReader = (keys: readonly string[]) => Promise<Map<string, Uint32Array>>;
 export const COMPACT_CAS_SEARCH_SHARDS = 256;
 
-const SEARCH_STOPWORDS = new Set([
+const SEARCH_CONNECTIVE_WORDS = new Set([
   'a', 'an', 'the', 'of', 'on', 'in', 'to', 'for', 'with', 'and', 'or', 'is',
   'are', 'that', 'this', 'where', 'do', 'we', 'from', 'into', 'until', 'by',
   'before', 'given', 'as', 'at', 'it', 'its', 'their', 'your', 'be', 'has',
 ]);
+
+export function isCASSearchContentWord(word: string): boolean {
+  return word.length > 1 && !SEARCH_CONNECTIVE_WORDS.has(word);
+}
 
 const SEARCH_TYPE_PRIORITY: Record<string, number> = {
   class: 0, service: 0, controller: 0, module: 0, gateway: 0,
@@ -298,7 +302,7 @@ export async function searchCompactCAS(
   }
   const queryLower = query.toLowerCase();
   const queryWords = queryLower.split(/\s+/).filter(Boolean);
-  const contentWords = queryWords.filter(word => word.length > 1 && !SEARCH_STOPWORDS.has(word));
+  const contentWords = queryWords.filter(isCASSearchContentWord);
   const literalGrams = queryGrams(queryLower);
   const camelGrams = queryWords.flatMap(queryGrams);
   const filterKeys = [

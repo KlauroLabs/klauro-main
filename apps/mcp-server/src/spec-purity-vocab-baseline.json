@@ -483,10 +483,6 @@
       "name": "LAYER_DEFINITIONS"
     },
     {
-      "file": "apps/mcp-server/src/query.ts",
-      "name": "SEARCH_STOPWORDS"
-    },
-    {
       "file": "apps/mcp-server/src/remote-source.ts",
       "name": "EXCLUDED_DIRECTORIES"
     },

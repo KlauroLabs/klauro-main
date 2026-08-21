@@ -18,6 +18,7 @@ import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, tel
 import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
+import { isCASSearchContentWord } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import { getQueryTraversalIndex } from './query-traversal-index';
@@ -539,12 +540,6 @@ function matchesWordBoundary(name: string, queryWords: string[]): boolean {
   return queryWords.every(qw => nameWords.some(nw => nw.includes(qw)));
 }
 
-const SEARCH_STOPWORDS = new Set([
-  'a', 'an', 'the', 'of', 'on', 'in', 'to', 'for', 'with', 'and', 'or', 'is',
-  'are', 'that', 'this', 'where', 'do', 'we', 'from', 'into', 'until', 'by',
-  'before', 'given', 'as', 'at', 'it', 'its', 'their', 'your', 'be', 'has',
-]);
-
 function searchTokens(text: string): string[] {
   return text
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -673,9 +668,7 @@ export function searchNodes(
   const queryLower = query.toLowerCase();
   const queryWords = queryLower.split(/\s+/).filter(Boolean);
   const isMultiWord = queryWords.length > 1;
-  const contentWords = queryWords.filter(
-    word => word.length > 1 && !SEARCH_STOPWORDS.has(word)
-  );
+  const contentWords = queryWords.filter(isCASSearchContentWord);
 
   const exact: CASNode[] = [];
   const overlapping: Array<{ node: CASNode; overlap: number }> = [];

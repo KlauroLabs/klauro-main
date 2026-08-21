@@ -1,6 +1,12 @@
 {
   "entries": [
     {
+      "file": "packages/analyzer-core/src/analyzer/core/compact-cas-search.ts",
+      "name": "SEARCH_CONNECTIVE_WORDS",
+      "category": "linguistic-noise",
+      "reason": "Common connective words are excluded only from fallback token-overlap ranking; every token remains indexed and exact name, qualified-name, description, and camel-case matching remain available."
+    },
+    {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:1w8tat8nc8w0>",
       "category": "closed-technical-taxonomy",
