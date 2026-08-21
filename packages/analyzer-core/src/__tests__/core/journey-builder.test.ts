@@ -1922,16 +1922,16 @@ describe('buildUserJourneys with partially materialized flows', () => {
     } : {}),
   } as FlowConcept);
 
-  it('keeps web, API, MCP, and system journeys when only parser CLI flows materialize', () => {
+  it('classifies mixed interactive, external-tool, worker, and parser journeys from structural evidence', () => {
     const surfaces = [
-      { id: 'ui', type: 'page', root: 'ui_route', next: 'ui_component' },
-      { id: 'api', type: 'http', root: 'api_route', next: 'api_service' },
-      { id: 'mcp', type: 'mcp-tool', root: 'mcp_handler', next: 'mcp_service' },
-      { id: 'parser_one', type: 'cli', root: 'parser_one_command', next: 'parser_one_service' },
-      { id: 'parser_two', type: 'cli', root: 'parser_two_command', next: 'parser_two_service' },
+      { id: 'ui', type: 'event', nodeType: 'component', root: 'ui_component', next: 'ui_service', name: 'submit' },
+      { id: 'api', type: 'http', nodeType: 'controller', root: 'api_route', next: 'api_service', name: 'POST /records' },
+      { id: 'tool', type: 'message', nodeType: 'mcp_tool', root: 'tool_handler', next: 'tool_service', name: 'inspect_record' },
+      { id: 'worker', type: 'message', nodeType: 'message_handler', root: 'worker_handler', next: 'worker_service', name: 'record.updated' },
+      { id: 'parser', type: 'cli', nodeType: 'function', root: 'parser_main', next: 'parser_service', name: 'main' },
     ];
     const nodes = surfaces.flatMap(surface => [
-      node(surface.root, `${surface.id} entry`, surface.type === 'page' ? 'page' : 'handler'),
+      node(surface.root, `${surface.id} entry`, surface.nodeType),
       node(surface.next, `${surface.id} behavior`, 'service'),
     ]);
     const edges = surfaces.map(surface => edge(
@@ -1943,8 +1943,8 @@ describe('buildUserJourneys with partially materialized flows', () => {
     const entryPoints = surfaces.map(surface => ({
       id: `entry_${surface.id}`,
       source_node: surface.root,
-      type: surface.type,
-      name: `${surface.id} entry`,
+      type: surface.type as CASEntryPoint['type'],
+      name: surface.name,
       handler: { node_id: surface.root, method_name: 'run' },
     } as CASEntryPoint));
     const callChains = surfaces.map(surface => chain(
@@ -1961,17 +1961,19 @@ describe('buildUserJourneys with partially materialized flows', () => {
       exitPoints: [],
       callChains,
       flows: [
-        flow('parser_one_flow', 'entry_parser_one', ['parser_one_command', 'parser_one_service']),
-        flow('parser_two_flow', 'entry_parser_two', ['parser_two_command', 'parser_two_service']),
+        flow('parser_flow', 'entry_parser', ['parser_main', 'parser_service']),
       ],
     });
 
     expect(summary.total_discovered).toBe(5);
-    expect(new Set(journeys.map(journey => journey.entry.type))).toEqual(
-      new Set(['page', 'http', 'mcp-tool', 'cli'])
-    );
-    expect(summary.by_kind.system).toBe(1);
-    expect(journeys.filter(journey => journey.entry.type === 'cli')).toHaveLength(2);
+    expect(summary.by_kind).toEqual({ 'user-facing': 3, system: 2, scheduled: 0 });
+    expect(journeys.find(journey => journey.entry_point_id === 'entry_ui')?.journey_kind).toBe('user-facing');
+    expect(journeys.find(journey => journey.entry_point_id === 'entry_api')?.journey_kind).toBe('user-facing');
+    expect(journeys.find(journey => journey.entry_point_id === 'entry_tool')?.journey_kind).toBe('user-facing');
+    expect(journeys.find(journey => journey.entry_point_id === 'entry_worker')?.journey_kind).toBe('system');
+    expect(journeys.find(journey => journey.entry_point_id === 'entry_parser')?.journey_kind).toBe('system');
+    const parserSteps = journeys.find(journey => journey.entry_point_id === 'entry_parser')?.steps || [];
+    expect(parserSteps[parserSteps.length - 1]?.node_id).toBe('parser_service');
   });
 
   it('uses matching flows as capability evidence without excluding unmatched structural journeys', () => {

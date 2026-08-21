@@ -65,17 +65,24 @@ const JUNK_CALL_TARGET_NAMES = new Set([
 ]);
 const METHOD_NAME_POPULARITY_LIMIT = 3;
 const METHOD_LIKE_TYPES = /(^|[_\s])(method|function|action)([_\s]|$)/;
-
-export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route', 'ipc', 'command', 'train', 'notebook-cell']);
+export const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route', 'api', 'rpc', 'graphql', 'ipc', 'command', 'train', 'notebook-cell']);
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
 const CRON_LINKABLE_ENTRY_TYPES = new Set(['cli']);
-
+const EXTERNAL_ENTRY_NODE_TYPES: Partial<Record<CASEntryPoint['type'], RegExp>> = { event: /(^|[_\s])(page|route|api_route|view|component|widget|screen)([_\s]|$)/, message: /(^|[_\s])(tool|tool_endpoint)([_\s]|$)/ };
 const OPERATIONAL_SCRIPT_ENTRY_FILE = /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i;
-function isOperationalScriptEntry(file: string | undefined): boolean {
-  return OPERATIONAL_SCRIPT_ENTRY_FILE.test(String(file || ''));
+function isOperationalScriptEntry(file: string | undefined): boolean { return OPERATIONAL_SCRIPT_ENTRY_FILE.test(String(file || '')); }
+function isUserFacingEntry(entryPoint: CASEntryPoint, graph: JourneyGraph): boolean {
+  if (entryPoint.interaction_reach === 'internal') return false;
+  if (entryPoint.interaction_reach === 'external') return true;
+  if (USER_FACING_ENTRY_TYPES.has(entryPoint.type)) return true;
+  const structuralType = EXTERNAL_ENTRY_NODE_TYPES[entryPoint.type];
+  if (!structuralType) return false;
+  return ([entryPoint.source_node, entryPoint.handler?.node_id].filter(Boolean) as string[]).some(id => {
+    const node = graph.nodesById.get(id);
+    return !!node && ([node.type, node.category, ...(node.subcategories || [])].filter(Boolean) as string[]).some(value => structuralType.test(value));
+  });
 }
-
 export function buildCronScheduleIndex(nodes: CASNode[]): Map<string, string> {
   const index = new Map<string, string>();
   for (const node of nodes) {
@@ -300,16 +307,11 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       : undefined;
 
     const genericBootstrapCli = entryPoint.type === 'cli' &&
-      /^(?:main|application|server|index)(?:\.[a-z0-9]+)?$/i.test(String(entryPoint.name || entryPoint.handler?.method_name || '').trim()) &&
-      effects.entitiesWritten.length === 0 &&
-      effects.entitiesRead.length === 0 &&
-      effects.messagesEmitted.length === 0 &&
-      effects.terminalEntities.length === 0 &&
-      steps.every(step => step.layer === 'entry' || step.layer === 'infrastructure');
+      /^(?:main|application|server|index)(?:\.[a-z0-9]+)?$/i.test(String(entryPoint.name || entryPoint.handler?.method_name || '').trim());
 
     const journeyKind: CASUserJourney['journey_kind'] = (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
       ? 'scheduled'
-      : (USER_FACING_ENTRY_TYPES.has(entryPoint.type) && !isOperationalScriptEntry(entryFile) && !genericBootstrapCli)
+      : (isUserFacingEntry(entryPoint, graph) && !isOperationalScriptEntry(entryFile) && !genericBootstrapCli)
         ? 'user-facing'
         : 'system';
 
