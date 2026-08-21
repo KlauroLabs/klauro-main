@@ -568,30 +568,35 @@ export function retainedContributionFieldsMatch(
 ): boolean {
   for (const field of fields) {
     const current = contribution[field];
-    if (current === undefined) continue;
+    const previous = retained[field];
+    if (current === undefined || previous === undefined) {
+      if (current !== previous) return false;
+      continue;
+    }
     if (field === 'provided_perspectives') {
       const perspectiveIds = new Set((contribution.perspectives || []).map(item => item.id));
       if (!(current as string[]).every(id => perspectiveIds.has(id))) return false;
+      if (!isDeepStrictEqual([...(current as string[])].sort(), [...(previous as string[])].sort())) return false;
       continue;
     }
-    const previous = retained[field];
     if (Array.isArray(current)) {
-      if (!Array.isArray(previous)) return current.length === 0;
+      if (!Array.isArray(previous) || current.length !== previous.length) return false;
+      if (current.some(item => !item || typeof item !== 'object' || !('id' in item)) ||
+        previous.some(item => !item || typeof item !== 'object' || !('id' in item))) {
+        if (!isDeepStrictEqual(current, previous)) return false;
+        continue;
+      }
       const previousById = new Map<string, unknown>();
       for (const item of previous as unknown[]) {
-        if (!item || typeof item !== 'object' || !('id' in item)) continue;
         previousById.set(String((item as { id: unknown }).id), item);
       }
-      if (!current.every(item => {
-        if (!item || typeof item !== 'object' || !('id' in item)) return false;
-        return isDeepStrictEqual(previousById.get(String((item as { id: unknown }).id)), item);
-      })) return false;
+      const currentById = new Map(current.map(item => [String((item as { id: unknown }).id), item]));
+      if (previousById.size !== previous.length || currentById.size !== current.length ||
+        ![...previousById].every(([id, item]) => isDeepStrictEqual(currentById.get(id), item))) return false;
       continue;
     }
     if (field === 'categories' && current && typeof current === 'object') {
-      const previousCategories = previous as Record<string, unknown> | undefined;
-      if (!previousCategories || !Object.entries(current).every(([key, value]) =>
-        isDeepStrictEqual(previousCategories[key], value))) return false;
+      if (!isDeepStrictEqual(current, previous)) return false;
       continue;
     }
     if (!isDeepStrictEqual(previous, current)) return false;

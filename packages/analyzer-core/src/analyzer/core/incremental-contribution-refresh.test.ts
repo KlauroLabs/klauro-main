@@ -12,6 +12,7 @@ import {
   removeFileScopedGraphItems,
   removeFileScopedGraphItemsBatch,
   removeReplaceableFileScopedGraphItems,
+  retainedContributionFieldsMatch,
   projectScopedFileAnalysisSnapshot,
   shouldPromoteIncrementalAnalyzerRefresh,
   shouldPreferFullRebuildForFanout,
@@ -297,6 +298,25 @@ test('project refresh accepts declared retained facts only when they match persi
 
   assert.ok(await run('stable'));
   assert.equal(await run('changed'), null);
+});
+
+test('retained category comparison rejects removed object keys', () => {
+  assert.equal(retainedContributionFieldsMatch(
+    { nodes: [], categories: { '1': { modules: { name: 'Modules', types: ['file'] } } } },
+    { categories: {
+      '1': { modules: { name: 'Modules', types: ['file'] } },
+      '2': { services: { name: 'Services', types: ['service'] } },
+    } },
+    new Set(['categories'])
+  ), false);
+});
+
+test('retained array comparison rejects removed identified items', () => {
+  assert.equal(retainedContributionFieldsMatch(
+    { nodes: [], libraries: [{ id: 'one', name: 'One' }] },
+    { libraries: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }] },
+    new Set(['libraries'])
+  ), false);
 });
 
 test('file replacement removes prior same-id facts before adding changed facts', () => {
