@@ -185,6 +185,8 @@ export async function withAnalyzerFileReadCache<T>(fn: () => Promise<T>): Promis
   } finally {
     lastDebugStats = { hits: run.hits, misses: run.misses };
     lastSourceCorpusStats = run.corpus.stats();
+    run.cache.clear();
+    run.corpus.clear();
     uninstallPatch();
   }
 }

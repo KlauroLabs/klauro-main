@@ -85,6 +85,8 @@ import {
 } from '../../types/cas.types';
 import { classifyArtifactType, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS } from './artifact-type';
 import { executeLanguageAnalyzers, type AnalysisAccumulators as LanguageAnalysisAccumulators } from './language-analyzer-execution';
+import { executeFrameworkAnalyzers, type FrameworkExecutionEvent } from './framework-analyzer-execution';
+import { clearEstreeParseCache } from './estree-parse-cache';
 import { buildFirstPartyProductEvidence } from './first-party-product-evidence';
 import { collectDeployableEvidence } from './deployable-evidence';
 import { attachDeployable } from './entry-point-deployable';
@@ -1238,114 +1240,98 @@ export class AnalyzerOrchestrator {
         }
       };
 
-      const parallelResults = await Promise.allSettled(
-        parallelAnalyzers.map(async (registration) => {
-          await yieldToEventLoop();
-          const analyzerStartTime = Date.now();
+      const recordFrameworkMemory = ({ registration, stage }: FrameworkExecutionEvent<AnalyzerRegistration>) => {
+        if (process.env.KLAURO_DEBUG_ANALYZER_MEMORY !== '1') return;
+        writeAnalyzerStatus('[Klauro] analyzer-memory', captureAnalysisMemorySample(`framework_${registration.id}_${stage}`));
+      };
+      await executeFrameworkAnalyzers({
+        registrations: parallelAnalyzers,
+        runAnalyzer: async registration => {
           const matchedRoot = this.analyzerRootMap.get(registration.id) || projectPath;
-
           const scopedFilters = this.getAnalyzerScopeFilters(projectPath, matchedRoot, registration);
           const analyzerContext: AnalysisContext = {
             ...context,
             projectPath: matchedRoot,
             analysisRootPath: projectPath,
-            filters: [
-              ...(context.filters || []),
-              ...scopedFilters
-            ],
+            filters: [...(context.filters || []), ...scopedFilters],
             existingAnalysis: [languageSnapshot]
           };
-
           const result = await this.analyzeWithContributionCache(registration, analyzerContext, projectPath);
-          const executionTime = Date.now() - analyzerStartTime;
-
           if (matchedRoot !== projectPath) {
-            const relPrefix = path.relative(projectPath, matchedRoot);
-            this.normalizeFilePaths(result, relPrefix);
+            this.normalizeFilePaths(result, path.relative(projectPath, matchedRoot));
           }
+          return result;
+        },
+        mergeResult: async (registration, result, executionTime) => {
+          await this.mergeAnalysisResult(
+            { allNodes, allEdges, allEntryPoints, allExitPoints },
+            result,
+            { analyzerId: registration.id, analysisErrors, mergeIndexes }
+          );
 
-          return { registration, result, executionTime };
-        })
-      );
+          if (result.behaviors) allBehaviors.push(...result.behaviors);
+          if (result.patterns) allPatterns.push(...result.patterns);
+          if (result.categories) this.mergeCategories(categories, result.categories);
+          if (result.tags) allTags.push(...result.tags);
+          if (result.perspectives) allPerspectives.push(...result.perspectives);
 
-      const successfulResults = parallelResults
-        .filter((r): r is PromiseFulfilledResult<{ registration: AnalyzerRegistration; result: CASContribution; executionTime: number }> =>
-          r.status === 'fulfilled'
-        )
-        .map(r => r.value);
+          const analyzerMeta = result.analyzer_metadata || {};
+          if (Array.isArray(analyzerMeta.warnings)) {
+            for (const warning of analyzerMeta.warnings) {
+              analysisErrors.push({
+                severity: 'warning',
+                code: 'PARTIAL_ANALYSIS',
+                message: String(warning),
+                analyzer: registration.id,
+                recoverable: true
+              });
+            }
+          }
+          const zeroYieldError = await this.detectZeroYieldForClaimedFiles(
+            registration,
+            result,
+            this.analyzerRootMap.get(registration.id) || projectPath
+          );
+          if (zeroYieldError) analysisErrors.push(zeroYieldError);
+          contributions.push({
+            analyzer_id: registration.id,
+            analyzer_name: registration.name,
+            analyzer_version: registration.version,
+            analyzer_type: registration.type,
+            contribution_type: registration.type,
+            execution_time_ms: executionTime,
+            cache_status: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
+            nodes_created: result.nodes?.length || 0,
+            files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
+            edges_created: result.edges?.length || 0,
+            confidence: 1.0,
+            contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
+            provided_perspectives: result.provided_perspectives || [],
+            framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
+            application_type: analyzerMeta.application_type,
+            project_name: analyzerMeta.project_name,
+            project_version: analyzerMeta.project_version,
+            warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
+          });
 
-      successfulResults.sort((a, b) => a.registration.id.localeCompare(b.registration.id));
-
-      parallelResults.forEach((r, i) => {
-        if (r.status === 'rejected') {
-          const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
-          console.error(`Error running analyzer ${parallelAnalyzers[i].id}:`, r.reason);
+          if (result.libraries) {
+            allLibraries.push(...result.libraries);
+          }
+        },
+        recordFailure: (registration, error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Error running analyzer ${registration.id}:`, error);
           analysisErrors.push({
             severity: 'error',
             code: 'ANALYZER_FAILURE',
-            message: `${parallelAnalyzers[i].name} failed: ${message}`,
-            analyzer: parallelAnalyzers[i].id,
+            message: `${registration.name} failed: ${message}`,
+            analyzer: registration.id,
             recoverable: true
           });
-        }
+        },
+        onExecutionEvent: recordFrameworkMemory,
+        yieldAfterAnalyzer: yieldToEventLoop,
       });
-
-      for (const { registration, result, executionTime } of successfulResults) {
-        await this.mergeAnalysisResult(
-          { allNodes, allEdges, allEntryPoints, allExitPoints },
-          result,
-          { analyzerId: registration.id, analysisErrors, mergeIndexes }
-        );
-
-        if (result.behaviors) allBehaviors.push(...result.behaviors);
-        if (result.patterns) allPatterns.push(...result.patterns);
-        if (result.categories) this.mergeCategories(categories, result.categories);
-        if (result.tags) allTags.push(...result.tags);
-        if (result.perspectives) allPerspectives.push(...result.perspectives);
-
-        const analyzerMeta = result.analyzer_metadata || {};
-        if (Array.isArray(analyzerMeta.warnings)) {
-          for (const warning of analyzerMeta.warnings) {
-            analysisErrors.push({
-              severity: 'warning',
-              code: 'PARTIAL_ANALYSIS',
-              message: String(warning),
-              analyzer: registration.id,
-              recoverable: true
-            });
-          }
-        }
-        const zeroYieldError = await this.detectZeroYieldForClaimedFiles(
-          registration,
-          result,
-          this.analyzerRootMap.get(registration.id) || projectPath
-        );
-        if (zeroYieldError) analysisErrors.push(zeroYieldError);
-        contributions.push({
-          analyzer_id: registration.id,
-          analyzer_name: registration.name,
-          analyzer_version: registration.version,
-          analyzer_type: registration.type,
-          contribution_type: registration.type,
-          execution_time_ms: executionTime,
-          cache_status: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
-          nodes_created: result.nodes?.length || 0,
-          files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
-          edges_created: result.edges?.length || 0,
-          confidence: 1.0,
-          contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
-          provided_perspectives: result.provided_perspectives || [],
-          framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
-          application_type: analyzerMeta.application_type,
-          project_name: analyzerMeta.project_name,
-          project_version: analyzerMeta.project_version,
-          warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
-        });
-
-        if (result.libraries) {
-          allLibraries.push(...result.libraries);
-        }
-      }
     }
 
     for (const registration of patternAnalyzers) {
@@ -1366,6 +1352,7 @@ export class AnalyzerOrchestrator {
     logTiming('frameworkAnalyzers', phaseStart);
     await yieldToEventLoop();
     });
+    clearEstreeParseCache();
     if (process.env.KLAURO_DEBUG_FILE_READ_CACHE === '1') {
       writeAnalyzerStatus('[Klauro] file-read-cache stats:', getDebugCacheStats());
     }

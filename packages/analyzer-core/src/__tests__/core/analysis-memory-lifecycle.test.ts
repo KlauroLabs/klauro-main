@@ -3,9 +3,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { captureAnalysisMemorySample } from '../../analyzer/core/analysis-memory-profile';
-import { getActiveSourceCorpus } from '../../analyzer/core/source-corpus';
+import { AnalyzerSourceCorpus, getActiveSourceCorpus } from '../../analyzer/core/source-corpus';
 import { TypeScriptJavaScriptAnalyzer } from '../../analyzer/languages/typescript-javascript-analyzer';
 import { CallGraphBuilder } from '../../analyzer/core/call-graph-builder';
+import { withAnalyzerFileReadCache } from '../../analyzer/core/analyzer-file-read-cache';
 
 test('node lookup indexes use weak graph ownership', () => {
   const orchestrator = new AnalyzerOrchestrator() as any;
@@ -33,6 +34,29 @@ test('orchestration does not retain a source corpus around the whole analysis jo
   } finally {
     await fs.remove(projectPath);
   }
+});
+
+test('source corpus releases captured content without losing completed statistics', () => {
+  const corpus = new AnalyzerSourceCorpus();
+  corpus.capture('/project/src/large.ts', `export const value = '${'x'.repeat(4096)}';`);
+  const completed = corpus.stats();
+
+  corpus.clear();
+
+  expect(corpus.get('/project/src/large.ts')).toBeUndefined();
+  expect(completed.files).toBe(1);
+  expect(corpus.stats().files).toBe(0);
+});
+
+test('analysis read-cache scope clears file and corpus ownership on exit', async () => {
+  let corpus: AnalyzerSourceCorpus | undefined;
+  await withAnalyzerFileReadCache(async () => {
+    corpus = getActiveSourceCorpus();
+    corpus?.capture('/project/src/large.ts', `export const value = '${'x'.repeat(4096)}';`);
+  });
+
+  expect(corpus?.get('/project/src/large.ts')).toBeUndefined();
+  expect(corpus?.stats().files).toBe(0);
 });
 
 test('phase memory samples expose resident and retained heap budgets in MiB', () => {

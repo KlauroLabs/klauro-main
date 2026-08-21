@@ -202,6 +202,12 @@ export class AnalyzerSourceCorpus {
     };
   }
 
+  clear(): void {
+    this.entriesByPath.clear();
+    this.entriesByContent.clear();
+    this.jsonByContent.clear();
+  }
+
   importsForContent(content: string, flavor: SourceImportFlavor = 'all'): readonly string[] | undefined {
     const entry = this.entriesByContent.get(content);
     if (entry) this.entryHits++;
