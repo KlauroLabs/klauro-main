@@ -115,6 +115,40 @@ test('binary posting runs deduplicate repeated text across run boundaries', asyn
   }
 });
 
+test('a bounded single posting run writes final shards directly', async () => {
+  const graph = encodeCompactCASGraph(cas);
+  const expected = encodeCompactCASSearchIndex(cas, graph);
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-postings-direct-'));
+  const mergedDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-postings-merged-'));
+  try {
+    const artifacts = await buildCompactCASPostingArtifacts(cas, graph, directory, 8);
+    const merged = await buildCompactCASPostingArtifacts(cas, graph, mergedDirectory, 8, 128);
+    assert.equal(artifacts.runCount, 1);
+    assert.ok(merged.runCount > 1);
+    assert.equal(await fs.stat(path.join(directory, 'search-posting-runs')).then(() => true, () => false), false);
+    assert.deepEqual(Object.keys(artifacts.columns), Object.keys(merged.columns));
+    for (const column of Object.keys(artifacts.columns)) {
+      assert.deepEqual(
+        await fs.readFile(path.join(directory, artifacts.columns[column].file)),
+        await fs.readFile(path.join(mergedDirectory, merged.columns[column].file)),
+      );
+    }
+    for (const key of ['t:payment', 't:retention', 'f:type:function']) {
+      const shard = compactCASPostingShard(key, artifacts.shardCount);
+      const descriptor = artifacts.columns[`postings.shard.${shard}`];
+      const decoded = decodeCompactCASPostingShard(
+        await fs.readFile(path.join(directory, descriptor.file)),
+        new Set([key]),
+        graph.nodeCount,
+      );
+      assert.deepEqual(decoded.get(key), expected.postings.get(key));
+    }
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(mergedDirectory, { recursive: true, force: true });
+  }
+});
+
 test('posting run memory is bounded by bytes under high key cardinality', async () => {
   const highCardinalityCas = {
     nodes: Array.from({ length: 200 }, (_, index) => ({

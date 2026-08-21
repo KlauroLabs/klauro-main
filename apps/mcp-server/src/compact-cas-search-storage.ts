@@ -158,6 +158,83 @@ async function writeRun(
   await handle.close();
 }
 
+async function writePostingMaps(
+  postings: readonly Map<string, number[]>[],
+  directory: string,
+): Promise<Record<string, CasRawColumnDescriptor>> {
+  const columns: Record<string, CasRawColumnDescriptor> = {};
+  for (let shard = 0; shard < postings.length; shard += 1) {
+    const postingMap = postings[shard];
+    if (postingMap.size === 0) continue;
+    const filePath = path.join(directory, `search.postings.${shard}.bin`);
+    const handle = await open(filePath, 'w');
+    let closed = false;
+    try {
+      const pending = Buffer.allocUnsafe(IO_BUFFER_BYTES);
+      let pendingBytes = 0;
+      let position = 0;
+      const flush = async (): Promise<void> => {
+        if (pendingBytes === 0) return;
+        await handle.write(pending, 0, pendingBytes, position);
+        position += pendingBytes;
+        pendingBytes = 0;
+      };
+      const append = async (bytes: Buffer): Promise<void> => {
+        if (bytes.length > pending.length) {
+          await flush();
+          await handle.write(bytes, 0, bytes.length, position);
+          position += bytes.length;
+          return;
+        }
+        if (pendingBytes + bytes.length > pending.length) await flush();
+        bytes.copy(pending, pendingBytes);
+        pendingBytes += bytes.length;
+      };
+      const header = Buffer.allocUnsafe(MAGIC.length + 4);
+      MAGIC.copy(header);
+      header.writeUInt32LE(postingMap.size, MAGIC.length);
+      await append(header);
+      for (const key of [...postingMap.keys()].sort()) {
+        const keyBytes = Buffer.from(key);
+        const denseIds = postingMap.get(key)!;
+        const entry = Buffer.allocUnsafe(8 + keyBytes.length);
+        entry.writeUInt32LE(keyBytes.length, 0);
+        keyBytes.copy(entry, 4);
+        entry.writeUInt32LE(denseIds.length, 4 + keyBytes.length);
+        await append(entry);
+        let previousDenseId = 0;
+        for (let index = 0; index < denseIds.length; index += 1) {
+          let delta = index === 0 ? denseIds[index] : denseIds[index] - previousDenseId;
+          if (!Number.isSafeInteger(delta) || delta < 0 || (index > 0 && delta === 0)) {
+            throw new RangeError(`Posting '${key}' ordinals are not strictly increasing`);
+          }
+          if (pendingBytes + 5 > pending.length) await flush();
+          do {
+            let byte = delta & 0x7f;
+            delta >>>= 7;
+            if (delta > 0) byte |= 0x80;
+            pending[pendingBytes++] = byte;
+          } while (delta > 0);
+          previousDenseId = denseIds[index];
+        }
+      }
+      await flush();
+      await handle.close();
+      closed = true;
+      const stat = await fs.stat(filePath);
+      columns[`postings.shard.${shard}`] = {
+        file: path.basename(filePath), encoding: 'uint8', length: stat.size, bytes: stat.size,
+        sha256: await checksumFile(filePath),
+      };
+    } catch (error) {
+      if (!closed) await handle.close().catch(() => undefined);
+      await fs.remove(filePath).catch(() => undefined);
+      throw error;
+    }
+  }
+  return columns;
+}
+
 async function mergeRuns(
   runPaths: readonly string[],
   directory: string,
@@ -253,7 +330,9 @@ async function mergeRuns(
       if (record.key !== key) await startKey(record.key);
       for (const denseId of record.denseIds) {
         let delta = postingCount === 0 ? denseId : denseId - previousDenseId;
-        if (!Number.isSafeInteger(delta) || delta < 0 || delta > 0xffffffff) throw new RangeError(`Posting delta ${delta} is outside uint32`);
+        if (!Number.isSafeInteger(delta) || delta < 0 || delta > 0xffffffff || (postingCount > 0 && delta === 0)) {
+          throw new RangeError(`Posting delta ${delta} is outside a strictly increasing uint32 sequence`);
+        }
         if (pendingBytes + 5 > pending.length) await flushBytes();
         do {
           let byte = delta & 0x7f;
@@ -315,14 +394,18 @@ export async function buildCompactCASPostingArtifacts(
     recordCount += 1;
     if (bufferedBytes >= runByteLimit) await flushRun();
   }
-  await flushRun();
-  process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_emitted', records: recordCount, runs: runPaths.length, ...phaseSnapshot(startedAt) })}\n`);
+  const singleRunPostings = runPaths.length === 0 && bufferedRecords > 0 ? postings : undefined;
+  if (!singleRunPostings) await flushRun();
+  const runCount = singleRunPostings ? 1 : runPaths.length;
+  process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_emitted', records: recordCount, runs: runCount, direct: Boolean(singleRunPostings), ...phaseSnapshot(startedAt) })}\n`);
 
   const mergeStartedAt = Date.now();
-  const columns = await mergeRuns(runPaths, directory);
-  process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_merged', runs: runPaths.length, ...phaseSnapshot(mergeStartedAt) })}\n`);
+  const columns = singleRunPostings
+    ? await writePostingMaps(singleRunPostings, directory)
+    : await mergeRuns(runPaths, directory);
+  process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_merged', runs: runCount, direct: Boolean(singleRunPostings), ...phaseSnapshot(mergeStartedAt) })}\n`);
   await fs.remove(runDir);
-  return { columns, shardCount, recordCount, runCount: runPaths.length };
+  return { columns, shardCount, recordCount, runCount };
 }
 
 export function decodeCompactCASPostingShard(
