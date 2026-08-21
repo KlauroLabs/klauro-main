@@ -10244,13 +10244,10 @@ export class AnalyzerOrchestrator {
     if (this.isBareNounCapabilityLabel(String(capability.name || ''))) return 'bare-noun-name';
     const description = String(capability.description || '').trim();
     const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
-    const recordedDescriptionDegradation = capability.description_generation?.status === 'ai_rejected';
-    const descriptionIsPublishable = recordedDescriptionDegradation || (
-      Boolean(description) &&
+    const descriptionIsPublishable = Boolean(description) &&
       !this.isStructuralPlaceholderCapabilityDescription(description) &&
       descriptionWordCount >= 6 &&
-      descriptionWordCount <= 32
-    );
+      descriptionWordCount <= 32;
     if (!descriptionIsPublishable) {
       if (!description) return 'missing-description';
       if (this.isStructuralPlaceholderCapabilityDescription(description)) return 'structural-placeholder-description';
@@ -10422,6 +10419,8 @@ export class AnalyzerOrchestrator {
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'internal' && candidate.id)
       .map(candidate => candidate.id);
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(evidenceCandidates);
+    const entityNamesById = new Map(args.dataEntities.map(entity => [entity.id, entity.name]));
+    const entityFieldsById = new Map(args.dataEntities.map(entity => [entity.id, (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`)]));
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let retainedQualityFailure: string | undefined;
@@ -10481,7 +10480,8 @@ export class AnalyzerOrchestrator {
         : [];
       const publishabilityFailures = new Map<string, number>();
       const cycleReconciled = reconciledCandidates.filter(capability => {
-        const failure = this.capabilityPublishabilityFailure(capability);
+        const descriptionValidation = this.validateElementDescription(capability.description || '', this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById));
+        const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return true;
         publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
         return false;

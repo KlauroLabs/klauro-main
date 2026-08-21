@@ -33,11 +33,11 @@ test('catalog quality repair targets and retains independently omitted evidence 
     criticality: 'medium',
     criticality_factors: [],
   }));
-  const authored = (candidate: any) => ({
+  const authored = (candidate: any, description = `Product area ${candidate.id.slice(7)} presents grounded activity for operator review before proposed updates.`) => ({
     ...candidate,
     name: `Review product area ${candidate.id.slice(7)}`,
     name_source: 'ai',
-    description: `Operators review grounded product activity for area ${candidate.id.slice(7)}.`,
+    description,
     description_source: 'ai',
     criticality_factors: [`catalog-candidate:${candidate.id}`],
   });
@@ -46,9 +46,11 @@ test('catalog quality repair targets and retains independently omitted evidence 
   jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async (input: any) => {
     requested.push(input.candidateCapabilities.map((candidate: any) => candidate.id));
     cycle++;
-    if (cycle === 1) return candidates.slice(0, 20).map(authored);
-    if (cycle === 2) return input.candidateCapabilities.filter((_: any, index: number) => index % 2 === 0).map(authored);
-    return input.candidateCapabilities.map(authored);
+    if (cycle === 1) return candidates.slice(0, 20).map(candidate => authored(candidate));
+    if (cycle === 2) return input.candidateCapabilities
+      .filter((_: any, index: number) => index % 2 === 0)
+      .map((candidate: any) => authored(candidate, candidate.id === 'family-20' ? 'Collaboration improves productivity.' : undefined));
+    return input.candidateCapabilities.map((candidate: any) => authored(candidate));
   });
   jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
 
@@ -73,7 +75,7 @@ test('catalog quality repair targets and retains independently omitted evidence 
     budgetMs: 30000,
   });
 
-  expect(requested.map(ids => ids.length)).toEqual([37, 17, 8]);
+  expect(requested.map(ids => ids.length)).toEqual([37, 17, 9]);
   expect(result).toHaveLength(37);
   expect(purpose.capability_catalog_coverage.status).toBe('accepted');
 });
