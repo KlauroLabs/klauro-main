@@ -158,6 +158,12 @@ async function writeRun(
   await handle.close();
 }
 
+function shardPostingMap(postings: ReadonlyMap<string, number[]>, shardCount: number): Map<string, number[]>[] {
+  const shards = Array.from({ length: shardCount }, () => new Map<string, number[]>());
+  for (const [key, denseIds] of postings) shards[compactCASPostingShard(key, shardCount)].set(key, denseIds);
+  return shards;
+}
+
 async function writePostingMaps(
   postings: readonly Map<string, number[]>[],
   directory: string,
@@ -370,25 +376,24 @@ export async function buildCompactCASPostingArtifacts(
   const runDir = path.join(directory, 'search-posting-runs');
   await fs.ensureDir(runDir);
   const runPaths: string[] = [];
-  let postings = Array.from({ length: shardCount }, () => new Map<string, number[]>());
+  let postings = new Map<string, number[]>();
   let bufferedRecords = 0;
   let bufferedBytes = 0;
   let recordCount = 0;
   const flushRun = async (): Promise<void> => {
     if (bufferedRecords === 0) return;
     const runPath = path.join(runDir, `run-${runPaths.length}.bin`);
-    await writeRun(postings, runPath);
+    await writeRun(shardPostingMap(postings, shardCount), runPath);
     runPaths.push(runPath);
-    postings = Array.from({ length: shardCount }, () => new Map<string, number[]>());
+    postings = new Map<string, number[]>();
     bufferedRecords = 0;
     bufferedBytes = 0;
   };
   for (const [key, denseId] of iterateCompactCASSearchPostings(cas, graph)) {
-    const shard = compactCASPostingShard(key, shardCount);
-    const ordinals = postings[shard].get(key) || [];
+    const ordinals = postings.get(key) || [];
     if (ordinals.length === 0) bufferedBytes += Buffer.byteLength(key, 'utf8') + 64;
     ordinals.push(denseId);
-    postings[shard].set(key, ordinals);
+    postings.set(key, ordinals);
     bufferedRecords += 1;
     bufferedBytes += 8;
     recordCount += 1;
@@ -401,7 +406,7 @@ export async function buildCompactCASPostingArtifacts(
 
   const mergeStartedAt = Date.now();
   const columns = singleRunPostings
-    ? await writePostingMaps(singleRunPostings, directory)
+    ? await writePostingMaps(shardPostingMap(singleRunPostings, shardCount), directory)
     : await mergeRuns(runPaths, directory);
   process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_merged', runs: runCount, direct: Boolean(singleRunPostings), ...phaseSnapshot(mergeStartedAt) })}\n`);
   await fs.remove(runDir);
