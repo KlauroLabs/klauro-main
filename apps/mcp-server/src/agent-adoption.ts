@@ -39,6 +39,7 @@ import {
   gateExpectation,
   type AnalysisProfile,
 } from './analysis-profile';
+import { casEdgeCount, casNodeCount, casSectionLoaded, projectedLayerEvidence } from './cas-projection';
 import { formatAgentContextCapsule } from './agent-context-codec';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { resolveSectionFilter, type ContextRuntimeMode } from './context-filter';
@@ -183,7 +184,6 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   const productOrientation = buildProductOrientationLine(cas);
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
   const analysisFreshness = summarizeAnalysisFreshness(path, cas.analysis_timestamp);
-
   const context = {
     path,
     generated_at: new Date().toISOString(),
@@ -220,6 +220,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       entry_points_by_type: summary.entry_points_by_type,
       database_entities: summary.database_entities,
       capabilities: summary.capabilities,
+      ...(summary.projection ? { projection: summary.projection } : {}),
       analysis_errors: summary.errors,
       analysis_warnings: summary.warnings,
       analysis_information: summary.information,
@@ -5575,6 +5576,8 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const summary = buildSummary(cas);
   const profile = classifyAnalysisProfile(cas, path);
   const answerPackGaps = masteryReadinessGaps(cas, profile, summary);
+  const callsLoaded = casSectionLoaded(cas, 'calls'), nodeCount = casNodeCount(cas);
+  const edgeCount = casEdgeCount(cas);
   const methodCalls = cas.method_calls?.length || cas.nodes.reduce((total, node) => total + (node.call_graph?.calls?.length || 0), 0);
   const tests = findTests(cas, { limit: 1 });
   const security = getSecurityOverview(cas);
@@ -5604,11 +5607,11 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const comprehension = evaluateComprehensionReadiness(cas);
   const rawGates: AgentReadinessGate[] = [
     gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors, ${analysisWarningCount} warnings`),
-    gate('nodes', cas.nodes.length > 0 ? 'pass' : 'fail', cas.nodes.length > 0 ? 100 : 0, `${cas.nodes.length} nodes`),
-    gate('edges', cas.edges.length > 0 ? 'pass' : 'fail', cas.edges.length > 0 ? 100 : 0, `${cas.edges.length} edges`),
+    gate('nodes', nodeCount > 0 ? 'pass' : 'fail', nodeCount > 0 ? 100 : 0, `${nodeCount} nodes`),
+    gate('edges', edgeCount > 0 ? 'pass' : 'fail', edgeCount > 0 ? 100 : 0, `${edgeCount} edges`),
     coverageGate('entry-points', cas.entry_points?.length || 0, minimumEntryPointCount(cas, profile)),
-    coverageGate('call-chains', cas.call_chains?.length || 0, minimumCallChainCount(cas, profile)),
-    relationshipDetailGate(cas, methodCalls, profile),
+    callsLoaded ? coverageGate('call-chains', cas.call_chains?.length || 0, minimumCallChainCount(cas, profile)) : { id: 'call-chains', ...projectedLayerEvidence(cas, 'L2', 'Call graph section is not loaded in this bounded projection') },
+    callsLoaded ? relationshipDetailGate(cas, methodCalls, profile) : { id: 'relationship-detail', ...projectedLayerEvidence(cas, 'L2', 'Relationship detail is not loaded in this bounded projection') },
     gate('answer-pack', answerPackGaps.length === 0 ? 'pass' : 'warn', answerPackGaps.length === 0 ? 100 : 75, answerPackGaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPackGaps.join('; ')),
     gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts`),
     gate('codebase-idioms', idioms > 0 ? 'pass' : 'warn', idioms > 0 ? 100 : 72, `${idioms} repo-local idioms`),
@@ -5703,8 +5706,8 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     analysis_only_understanding_ready: analysisOnlyUnderstandingReady,
     comprehension,
     summary: {
-      nodes: cas.nodes.length,
-      edges: cas.edges.length,
+      nodes: nodeCount,
+      edges: edgeCount,
       entry_points: cas.entry_points?.length || 0,
       exit_points: cas.exit_points?.length || 0,
       call_chains: cas.call_chains?.length || 0,
@@ -5766,7 +5769,7 @@ function masteryReadinessGaps(cas: CASOutput, profile: AnalysisProfile, summary:
   if ((cas.entry_points?.length || 0) === 0 && profile.expectations.entry_points === 'required') {
     gaps.push('entry-points: low confidence (0.6)');
   }
-  if ((cas.entry_points?.length || 0) > 0 && (cas.call_chains?.length || 0) === 0 && profile.expectations.call_chains === 'required') {
+  if (casSectionLoaded(cas, 'calls') && (cas.entry_points?.length || 0) > 0 && (cas.call_chains?.length || 0) === 0 && profile.expectations.call_chains === 'required') {
     gaps.push('representative-flow: low confidence (0.6)');
   }
   if ((cas.runtime_static_links?.length || 0) === 0 && profile.expectations.runtime_correlation === 'required') {

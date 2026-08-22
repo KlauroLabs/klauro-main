@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary } from './query';
+import { attachCasProjection } from './cas-projection';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
 // callers/callees than the default display limit, plus a handful of
@@ -53,6 +54,32 @@ function buildHighFanoutCas(opts: { callerCount: number; calleeCount: number }):
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
+
+test('buildSummary reports canonical inventory for a bounded projection without inventing graph rows', () => {
+  const cas = attachCasProjection({
+    cas_version: '3.0.0',
+    analysis_timestamp: '2026-08-22T00:00:00.000Z',
+    analysis_id: 'projected',
+    system: { name: 'Projected', type: 'service' },
+    nodes: [],
+    edges: [],
+    analyzer_contributions: [],
+  } as unknown as CASOutput, {
+    loaded_sections: ['identity', 'comprehension', 'quality'],
+    node_count: 62_375,
+    edge_count: 114_765,
+  });
+
+  const summary: any = buildSummary(cas);
+
+  assert.equal(summary.nodes, 62_375);
+  assert.equal(summary.edges, 114_765);
+  assert.deepEqual(summary.nodes_by_type, {});
+  assert.equal(summary.projection.graph_detail_loaded, false);
+  assert.equal(summary.projection.counts_source, 'canonical-compact-graph-manifest');
+  assert.equal(cas.nodes.length, 0);
+  assert.equal(cas.edges.length, 0);
+});
 
 test('getCodingContext reports truncated:true with real totals when a node has more callers/callees than the default limit', () => {
   const cas = buildHighFanoutCas({ callerCount: 45, calleeCount: 30 });

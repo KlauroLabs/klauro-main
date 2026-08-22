@@ -883,6 +883,45 @@ export async function loadAnalysisSections(
   return hydrateCasSections(parts);
 }
 
+export interface LoadedAnalysisProjection {
+  cas: Partial<CASOutput>;
+  manifest: CasSectionManifest;
+  inventory: { node_count: number; edge_count: number } | null;
+}
+
+export async function loadAnalysisProjection(
+  projectPath: string,
+  sections: readonly CasSectionName[],
+  options?: { track?: AnalysisTrack },
+): Promise<LoadedAnalysisProjection | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  const leased = await acquireSegmentedAnalysisLease(resolved);
+  if (leased) {
+    try {
+      const cas = await loadAnalysisSections(projectPath, sections, {
+        ...options,
+        pinned: { filePath: resolved, segmented: leased.segmented },
+      });
+      const graph = leased.segmented.manifest.compact_graph;
+      return cas ? {
+        cas,
+        manifest: leased.segmented.manifest,
+        inventory: graph ? { node_count: graph.node_count, edge_count: graph.edge_count } : null,
+      } : null;
+    } finally {
+      await leased.release();
+    }
+  }
+  const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
+  const requested = [...new Set<CasSectionName>(['identity', ...sections])];
+  return {
+    cas: hydrateCasSections(requested.map(section => selectExactCasSection(legacy, section))),
+    manifest: createCasSectionManifest(legacy),
+    inventory: { node_count: legacy.nodes.length, edge_count: legacy.edges.length },
+  };
+}
+
 export async function loadCompactAnalysisGraph(projectPath: string): Promise<CompactCASGraph | null> {
   const resolved = await resolveAnalysisFileForLoad(projectPath, 'main');
   return resolved ? loadCompactCASGraph(resolved) : null;

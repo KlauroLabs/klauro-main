@@ -23,6 +23,7 @@ import type { CASProductMap } from '../../../packages/analyzer-core/src/types/ca
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import { getQueryTraversalIndex } from './query-traversal-index';
 import { resolveCodingContextTarget } from './coding-target-resolution';
+import { casEdgeCount, casNodeCount, casProjectionSummary, casSectionLoaded } from './cas-projection';
 import {
   buildDomainConceptIndex,
   buildEntityRelationIndex,
@@ -73,10 +74,13 @@ export function analysisVersionNotice(
 
 export function buildOrientCapsule(cas: CASOutput) {
   const nodes = cas.nodes || [];
+  const graphLoaded = casSectionLoaded(cas, 'graph');
   const countType = (type: string) => nodes.filter(node => node.type === type).length;
   const seams = cas.communication_seams;
   const topology = (cas.product_map as any)?.runtime_topology;
-  const dimension = (available: boolean, count: number, tool: string) => ({ available, count, tool });
+  const dimension = (available: boolean, count: number, tool: string, measured = true) => measured
+    ? { available, count, tool, evidence_state: available ? 'present' as const : 'absent' as const }
+    : { available: null, count: null, tool, evidence_state: 'not-loaded' as const };
 
   return {
     system: cas.system?.name,
@@ -97,7 +101,7 @@ export function buildOrientCapsule(cas: CASOutput) {
       routes: dimension((cas.route_table?.length || 0) > 0, cas.route_table?.length || 0, 'get_route_table'),
       exit_points: dimension((cas.exit_points?.length || 0) > 0, cas.exit_points?.length || 0, 'get_exit_points'),
       communication_seams: dimension(Boolean(seams), seams?.seams?.length || 0, 'get_communication_seams'),
-      cicd_pipelines: dimension(countType('ci_pipeline') > 0, countType('ci_pipeline'), 'get_cicd_pipelines'),
+      cicd_pipelines: dimension(countType('ci_pipeline') > 0, countType('ci_pipeline'), 'get_cicd_pipelines', graphLoaded),
       runtime_topology: dimension(Boolean(topology?.deployables?.length), topology?.deployables?.length || 0, 'get_product_map'),
       runtime_node_metrics: dimension(
         (cas.runtime_static_links?.length || 0) > 0,
@@ -269,9 +273,10 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     architectural_inventory_counts: inventory ? Object.fromEntries(
       Object.entries(inventory).map(([key, values]) => [key, Array.isArray(values) ? values.length : 0])
     ) : {},
-    nodes: cas.nodes.length,
+    nodes: casNodeCount(cas),
     nodes_by_type: nodesByType,
-    edges: cas.edges.length,
+    edges: casEdgeCount(cas),
+    ...(casProjectionSummary(cas) ? { projection: casProjectionSummary(cas) } : {}),
     entry_points: cas.entry_points?.length || 0,
     entry_points_by_type: entryPointsByType,
     database_entities: (cas.entities?.length
@@ -342,7 +347,7 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
 
     ...(() => {
       const entryCount = cas.entry_points?.length || 0;
-      const nodeCount = cas.nodes?.length || 0;
+      const nodeCount = casNodeCount(cas);
 
       if (entryCount > 400 || nodeCount > 15000) {
         return { semantic_coverage_available: 'call get_semantic_coverage, or GET /api/projects/{id}/semantic-coverage over HTTP (omitted from summary: flow set too large to compute within the orient latency budget)' as const };
@@ -2076,7 +2081,7 @@ export function getModuleHealth(
   if (!health) {
     return {
       available: false,
-      reason: cas.nodes.length === 0
+      reason: casNodeCount(cas) === 0
         ? 'No nodes on this analysis.'
         : 'Below the statistical-signal floor (module_health requires at least 10 files with resolvable source locations) — too few files for "outlier" to be a meaningful concept, or this analysis predates module_health (re-run to populate it).',
       analysis_version_notice: analysisVersionNotice(cas, 'module health'),

@@ -4,6 +4,30 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { classifyAnalysisProfile } from './analysis-profile';
+import { attachCasProjection } from './cas-projection';
+
+test('analysis profile does not classify an unloaded graph projection as an empty codebase', () => {
+  const cas = attachCasProjection({
+    system: {
+      name: 'Projected API',
+      type: 'api',
+      technologies: { frameworks: [{ name: 'NestJS' }] },
+    },
+    nodes: [],
+    edges: [],
+    entry_points: [{ id: 'http', type: 'http', name: 'GET /health' }],
+    analyzer_contributions: [],
+  } as any, {
+    loaded_sections: ['identity', 'supplemental'],
+    node_count: 62_375,
+    edge_count: 114_765,
+  });
+
+  const profile = classifyAnalysisProfile(cas, '/tmp/projected-api');
+
+  assert.equal(profile.kind, 'backend-service');
+  assert.notEqual(profile.kind, 'empty');
+});
 
 test('analysis profile ignores fixture mobile code when classifying a product repo', () => {
   const cas: any = {

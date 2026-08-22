@@ -3,8 +3,9 @@ import * as path from 'node:path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { unavailableComprehensionResponse } from './analysis-response-readiness';
 import type { HostedProjectQueryWorkerRequest } from './hosted-project-query-process';
-import { getAnalysisFileFingerprint, loadAnalysisSections } from './storage';
+import { getAnalysisFileFingerprint, loadAnalysisProjection } from './storage';
 import type { CasSectionName } from './cas-sections';
+import { attachCasProjection } from './cas-projection';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -68,15 +69,19 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         cachedCas = undefined;
         cachedSections = new Set<CasSectionName>();
         const loadStartedAt = Date.now();
-        const loaded = await loadAnalysisSections(request.workspace, requiredSections);
+        const loaded = await loadAnalysisProjection(request.workspace, requiredSections);
         debugMemory('sections');
         if (!loaded) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
-        cachedCas = {
+        cachedCas = attachCasProjection({
           nodes: [],
           edges: [],
           analyzer_contributions: [],
-          ...loaded,
-        } as CASOutput;
+          ...loaded.cas,
+        } as CASOutput, {
+          loaded_sections: ['identity', ...requiredSections],
+          node_count: loaded.inventory?.node_count,
+          edge_count: loaded.inventory?.edge_count,
+        });
         cachedSections = new Set(requiredSections);
         cachedWorkspace = request.workspace;
         cachedFingerprint = fingerprint;

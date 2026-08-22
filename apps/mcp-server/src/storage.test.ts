@@ -14,6 +14,7 @@ import {
   loadCompactAnalysisGraph,
   loadCompactAnalysisSearch,
   loadAnalysisSectionManifest,
+  loadAnalysisProjection,
   loadAnalysisSections,
   loadCompleteAnalysisFromSections,
   loadAnalysis,
@@ -559,6 +560,27 @@ test('canonical segmented storage publishes a hashed generation without a whole-
     assert.match(exportArtifact?.filePath || '', /\.export-gen-[a-f0-9]{64}\.json(?:\.zst|\.br)?$/);
     assert.notEqual(exportArtifact?.filePath, wholePath);
     assert.deepEqual(await readExportArtifact(exportArtifact!.filePath), expectedExport);
+  });
+});
+
+test('bounded section loads return inventory from the same pinned canonical generation', async () => {
+  await withStoragePath(async () => {
+    const project = '/tmp/canonical-projection-project';
+    const cas = casFixture('canonical-projection');
+    cas.edges = [{ id: 'self', source: cas.nodes[0].id, target: cas.nodes[0].id, type: 'calls' }];
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+
+    const loaded = await loadAnalysisProjection(project, ['comprehension', 'quality']);
+
+    assert.ok(loaded);
+    assert.equal(loaded.cas.analysis_id, 'canonical-projection');
+    assert.equal(loaded.cas.nodes, undefined);
+    assert.equal(loaded.cas.edges, undefined);
+    assert.equal(loaded.manifest.analysis_id, loaded.cas.analysis_id);
+    assert.equal(loaded.manifest.analysis_timestamp, loaded.cas.analysis_timestamp);
+    assert.equal(loaded.manifest.compact_graph?.node_count, 1);
+    assert.equal(loaded.manifest.compact_graph?.edge_count, 1);
+    assert.deepEqual(loaded.inventory, { node_count: 1, edge_count: 1 });
   });
 });
 

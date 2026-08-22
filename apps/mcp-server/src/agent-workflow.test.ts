@@ -14,6 +14,43 @@ import {
 import { buildArchitectureContextForAgent, evaluateAgentReadiness, formatExecutionCapsule, getAgentStartContext, getAgentToolPlan, getAgentContext } from './agent-adoption';
 import { benchmarkAgentContextCodecs, parseAgentContextCapsule } from './agent-context-codec';
 import { ingestTelemetryBatch } from './telemetry-ingestion';
+import { attachCasProjection } from './cas-projection';
+
+test('bounded agent orientation uses canonical graph counts and persisted call-layer readiness', async () => {
+  await withWorkspace(async workspace => {
+    const full = fixtureCas();
+    const projected = attachCasProjection({
+      ...full,
+      nodes: [],
+      edges: [],
+      method_calls: undefined,
+      call_chains: undefined,
+      layers_ready: {
+        complete: true,
+        generated_at: '2026-08-22T00:00:00.000Z',
+        layers: [
+          { layer: 'L2', name: 'Call graph / edges', status: 'ready', fields: ['edges', 'method_calls', 'call_chains'] },
+        ],
+      },
+    }, {
+      loaded_sections: ['identity', 'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental'],
+      node_count: full.nodes.length,
+      edge_count: full.edges.length,
+    });
+
+    const readiness = evaluateAgentReadiness(projected, workspace);
+    const context = getAgentStartContext(projected, workspace);
+
+    assert.equal(readiness.profile.kind, 'backend-service');
+    assert.equal(readiness.summary.nodes, full.nodes.length);
+    assert.equal(readiness.summary.edges, full.edges.length);
+    assert.equal(readiness.gates.find(gate => gate.id === 'call-chains')?.status, 'pass');
+    assert.match(readiness.gates.find(gate => gate.id === 'call-chains')?.detail || '', /persisted L2 status is ready/);
+    assert.equal(context.scale.nodes, full.nodes.length);
+    assert.equal(context.scale.edges, full.edges.length);
+    assert.equal(context.scale.projection?.graph_detail_loaded, false);
+  });
+});
 
 test('openAgentWorkbench returns a product-level context for agent work', async () => {
   await withWorkspace(async workspace => {

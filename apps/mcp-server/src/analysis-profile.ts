@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { casNodeCount } from './cas-projection';
 
 export type AnalysisKind =
   | 'backend-service'
@@ -75,7 +76,7 @@ export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): An
   const hasTestsOnly = isTestOnly(cas, projectPath);
   const hasAppEntry = [...entryTypes].some(type => APP_ENTRY_TYPES.has(type));
 
-  if ((cas.nodes || []).length === 0) {
+  if (casNodeCount(cas) === 0) {
     evidence.push('0 CAS nodes');
     return profile('empty', 1, evidence);
   }
@@ -123,7 +124,7 @@ export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): An
 export function expectedEntryPointCount(profile: AnalysisProfile, cas: CASOutput): number {
   if (profile.expectations.entry_points === 'not-applicable') return 0;
   if (profile.expectations.entry_points === 'optional') return 0;
-  if ((cas.nodes || []).length < 10) return 0;
+  if (casNodeCount(cas) < 10) return 0;
   return 1;
 }
 
@@ -138,8 +139,8 @@ export function expectedCallChainCount(profile: AnalysisProfile, cas: CASOutput)
 
 export function expectedMethodCallCount(profile: AnalysisProfile, cas: CASOutput): number {
   if (profile.kind === 'empty' || profile.kind === 'infrastructure') return 0;
-  if (profile.kind === 'library-package' || profile.kind === 'test-package') return (cas.nodes || []).length > 25 ? 3 : 1;
-  return (cas.nodes || []).length > 25 ? 10 : 1;
+  if (profile.kind === 'library-package' || profile.kind === 'test-package') return casNodeCount(cas) > 25 ? 3 : 1;
+  return casNodeCount(cas) > 25 ? 10 : 1;
 }
 
 export function shouldSuppressAnswerGap(profile: AnalysisProfile, answerId: string): boolean {
@@ -266,7 +267,7 @@ function readManifestHints(projectPath: string, cas: CASOutput) {
   const pubspec = readText(path.join(projectPath, 'pubspec.yaml')).toLowerCase();
   const casInfrastructure = (cas.system?.technologies?.languages || []).some(language => /terraform|hcl/i.test(language.name)) ||
     cas.nodes.some(node => /\.(tf|tfvars|hcl)$/i.test(node.source?.file || '') || node.type === 'infrastructure_resource');
-  const terraform = casInfrastructure || (cas.nodes.length === 0 && hasTerraformSurface(projectPath));
+  const terraform = casInfrastructure || (casNodeCount(cas) === 0 && hasTerraformSurface(projectPath));
   return {
     hasFrontend: /\b(react|next|vue|angular|vite|svelte)\b/.test(packageText),
     hasDesktop: /\b(electron|electron-vite|electron-builder|tauri|@tauri-apps\/api)\b/.test(packageText) ||
