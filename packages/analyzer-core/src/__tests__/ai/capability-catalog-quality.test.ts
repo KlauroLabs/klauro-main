@@ -493,10 +493,45 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('fabric');
     expect(calls[1].qualityNudge).toContain('claim_work');
     expect(calls[1].qualityNudge).toContain('evidence_subject');
+    expect(calls[1].qualityNudge).toContain('evidence_subject_terms');
+    expect(calls[1].qualityNudge).toContain('MUST contain at least one exact evidence_subject_terms token');
     expect(out).toEqual(covered);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.candidate_dispositions).toEqual(
       expect.arrayContaining([expect.objectContaining({ candidate_id: 'fabric', role: 'unresolved' })]),
     );
+  });
+
+  it('constrains a history-family repair to its evidence subject instead of an unrelated global outcome', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.dataEntities = [{ id: 'entity_changehistoryentry', name: 'ChangeHistoryEntry', kind: 'record', fields: [] }];
+    args.candidateSnapshot.push(cap({
+      id: 'cap_history', name: 'History', structural_label: 'History Management',
+      description: 'Tracks changes to analyzed software over time.',
+      related_domains: ['history'], related_entities: ['entity_changehistoryentry'],
+      operations: anchorOp('history'),
+    }));
+    const accepted = ['Analyze codebases', 'Coordinate agent work', 'Correlate runtime signals', 'Assess change risk']
+      .map(name => cap({ id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name) }));
+    const repaired = cap({
+      id: 'review-history', name: 'Review codebase change history',
+      description: 'Lets engineers review how analyzed software changed across saved codebase revisions.',
+      operations: anchorOp('history'), criticality_factors: ['catalog-candidate:cap_history'],
+    });
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      return calls.length === 1 ? accepted : [repaired];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].qualityNudge).toContain('"candidate_id":"cap_history"');
+    expect(calls[1].qualityNudge).toContain('"evidence_subject_terms":["change","history"]');
+    expect(calls[1].qualityNudge).toContain('unrelated global product vocabulary is invalid');
+    expect(out.map(capability => capability.name)).toContain('Review codebase change history');
   });
 
   it('feeds description publishability failures into a grounded targeted repair', async () => {

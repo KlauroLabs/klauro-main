@@ -1,5 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityRequiresCatalogCoverage } from './capability-catalog-evidence';
+import { capabilityEvidenceSubjectTokens, capabilityRequiresCatalogCoverage } from './capability-catalog-evidence';
 
 export type CapabilityCatalogOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
@@ -103,14 +103,18 @@ export function capabilityCatalogRepairEvidenceFacts(
   candidates: SystemCapability[], repairCandidateIds: readonly string[], entityNamesById: ReadonlyMap<string, string>,
 ) {
   const repairIds = new Set(repairCandidateIds);
-  return candidates.filter(candidate => repairIds.has(candidate.id)).map(candidate => ({
-    candidate_id: candidate.id,
-    evidence_subject: candidate.structural_label || candidate.name,
-    related_domains: candidate.related_domains || [],
-    entity_names: (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId),
-    operations: (candidate.operations || []).slice(0, 8).map(operation => ({ action: operation.action, surface: operation.path_or_command })),
-    examples: (candidate.evidence_examples || []).slice(0, 8),
-  }));
+  return candidates.filter(candidate => repairIds.has(candidate.id)).map(candidate => {
+    const entityNames = (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId);
+    return {
+      candidate_id: candidate.id,
+      evidence_subject: candidate.structural_label || candidate.name,
+      evidence_subject_terms: capabilityEvidenceSubjectTokens(candidate, entityNames),
+      related_domains: candidate.related_domains || [],
+      entity_names: entityNames,
+      operations: (candidate.operations || []).slice(0, 8).map(operation => ({ action: operation.action, surface: operation.path_or_command })),
+      examples: (candidate.evidence_examples || []).slice(0, 8),
+    };
+  });
 }
 
 export function updateCapabilityCatalogPublishabilityRepairIds(

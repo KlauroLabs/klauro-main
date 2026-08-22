@@ -93,6 +93,22 @@ function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
   );
 }
 
+export function capabilityEvidenceSubjectTokens(
+  candidate: SystemCapability,
+  entityNames: readonly string[] = [],
+): string[] {
+  const ignored = new Set([
+    'entry', 'internal', 'model', 'record', 'supporting', 'system', 'value',
+  ]);
+  const tokens = outcomeIdentityTokens([
+    candidate.name,
+    candidate.structural_label,
+    ...(candidate.related_domains || []),
+    ...entityNames,
+  ].filter(Boolean).join(' ')).filter(token => !ignored.has(token));
+  return [...new Set(tokens)].sort();
+}
+
 export function capabilityOutcomeNameUnsupportedTokens(
   name: string,
   citedCandidates: SystemCapability[],

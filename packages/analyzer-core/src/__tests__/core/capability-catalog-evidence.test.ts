@@ -1,6 +1,7 @@
 import {
   capabilityCatalogAiPhaseStatus,
   capabilityCitesRequiredEvidence,
+  capabilityEvidenceSubjectTokens,
   capabilityEvidencePublicationFailure,
   capabilityOutcomeNameUnsupportedTokens,
   capabilityRequiresCatalogCoverage,
@@ -332,6 +333,15 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeNameUnsupportedTokens('Build trustworthy CAS relationship graphs', [cas], signal)).toEqual([]);
     expect(capabilityOutcomeNameUnsupportedTokens('Explain software behavior to AI agents', [agent], signal)).toEqual([]);
     expect(capabilityOutcomeNameUnsupportedTokens('Correlate static understanding with runtime evidence', [cas], signal)).toEqual([]);
+  });
+
+  test('derives repair subject terms from product evidence without leaking structural scaffolding', () => {
+    const history = candidate('cap_history', 'History', 'supporting', ['Read']);
+    history.structural_label = 'History Management';
+    history.related_domains = ['change history'];
+    history.related_entities = ['entity_change_history_entry'];
+
+    expect(capabilityEvidenceSubjectTokens(history, ['ChangeHistoryEntry'])).toEqual(['change', 'history']);
   });
 
   test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {
