@@ -301,6 +301,8 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeNameUnsupportedTokens('Get architectural conflicts', [architecture, agent], signal)).toContain('conflict');
     expect(capabilityOutcomeNameUnsupportedTokens('Route overview', [architecture, agent], signal)).toEqual(expect.arrayContaining(['overview']));
     expect(capabilityOutcomeNameUnsupportedTokens('Run analysis layer', [history], signal)).toEqual(['layer']);
+    history.related_entities = ['entity_change_history_entry'];
+    expect(capabilityOutcomeNameUnsupportedTokens('Surface codebase evolution history', [history], signal)).toEqual([]);
 
     expect(capabilityOutcomeNameUnsupportedTokens('Build trustworthy CAS relationship graphs', [cas], signal)).toEqual([]);
     expect(capabilityOutcomeNameUnsupportedTokens('Explain software behavior to AI agents', [agent], signal)).toEqual([]);

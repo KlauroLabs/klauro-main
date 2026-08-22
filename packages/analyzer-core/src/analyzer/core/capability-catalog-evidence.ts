@@ -80,6 +80,13 @@ function outcomeIdentityTokens(value: string): string[] {
 }
 
 function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
+  const equivalents: Record<string, string[]> = {
+    code: ['codebase', 'software', 'source'],
+    codebase: ['code', 'software', 'source'],
+    evolution: ['change', 'history'],
+    history: ['change', 'evolution'],
+  };
+  if ((equivalents[token] || []).some(candidate => evidence.has(candidate))) return true;
   return evidence.has(token) || [...evidence].some(candidate =>
     Math.min(token.length, candidate.length) >= 5 &&
     (token.startsWith(candidate) || candidate.startsWith(token) || token.slice(0, 5) === candidate.slice(0, 5))
