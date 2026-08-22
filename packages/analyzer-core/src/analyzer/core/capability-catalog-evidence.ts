@@ -98,7 +98,7 @@ export function capabilityEvidenceSubjectTokens(
   entityNames: readonly string[] = [],
 ): string[] {
   const ignored = new Set([
-    'entry', 'internal', 'model', 'record', 'supporting', 'system', 'value',
+    'entry', 'internal', 'mcp', 'model', 'record', 'supporting', 'system', 'value',
   ]);
   const tokens = outcomeIdentityTokens([
     candidate.name,
