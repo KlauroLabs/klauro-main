@@ -1,6 +1,7 @@
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 import {
   capabilityAudienceRepairFeedback,
+  capabilityPublishabilityRepairFeedback,
   capabilityCatalogIntegrationTerms,
   capabilityCatalogProductTerms,
   evaluateCapabilityCatalogAudience,
@@ -71,6 +72,19 @@ describe('capability catalog audience evaluation', () => {
     expect(feedback).toContain('concrete user outcome');
     expect(feedback).toContain('Remove every flagged token');
     expect(feedback).toContain('only cited evidence');
+  });
+
+  it('translates publishability failures into outcome-focused repair guidance', () => {
+    const feedback = capabilityPublishabilityRepairFeedback([{
+      name: 'Retrieve agent context',
+      description: 'The workspace surfaces agent context, capability maps, and entity maps for codebase understanding.',
+      reason: 'description-internal-analysis-vocabulary',
+    }]);
+
+    expect(feedback).toContain('description-internal-analysis-vocabulary');
+    expect(feedback).toContain('concrete software behavior, risk, relationship, or change context');
+    expect(feedback).toContain('Do not enumerate response objects');
+    expect(feedback).toContain('only its cited evidence');
   });
 
   it('excludes AI-authored purpose text from trusted product grounding', () => {

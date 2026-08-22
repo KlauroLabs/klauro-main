@@ -236,3 +236,15 @@ export function capabilityAudienceRepairFeedback(rejections: CapabilityAudienceR
   }));
   return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary, replace code-shaped terms with exact product nouns present in the evidence. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
 }
+
+export function capabilityPublishabilityRepairFeedback(
+  rejections: Array<{ name: string; description?: string; reason: string }>,
+): string | undefined {
+  if (rejections.length === 0) return undefined;
+  const rejectedItems = rejections.slice(0, 12).map(rejection => ({
+    name: rejection.name,
+    description: String(rejection.description || '').slice(0, 180),
+    reason: rejection.reason,
+  }));
+  return `Replace every non-publishable item using only its cited evidence: ${JSON.stringify(rejectedItems)}. For internal-analysis-vocabulary, translate inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. For generic-structural-phrase, state the evidence-specific outcome directly without implementation scaffolding. Do not enumerate response objects, graph structures, commands, or configuration fields.`;
+}

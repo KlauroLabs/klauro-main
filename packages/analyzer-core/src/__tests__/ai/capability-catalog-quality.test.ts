@@ -499,6 +499,53 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     );
   });
 
+  it('feeds description publishability failures into a grounded targeted repair', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['software understanding', 'agent context'], evidence: [] };
+    args.behaviorSurfaces = [{
+      id: 'workspace',
+      name: 'Workspace MCP Tool Surface',
+      category: 'internal',
+      evidence_kind: 'behavior-surface',
+      evidence_examples: ['get_agent_context', 'get_product_map', 'get_analysis_freshness'],
+      criticality_factors: ["3 message entry points form one cohesive behavior family ('workspace')"],
+      operations: ['get_agent_context', 'get_product_map', 'get_analysis_freshness'].map(entryPointId => ({
+        entry_point_id: entryPointId,
+        entry_point_type: 'message',
+        action: 'Retrieve',
+      })),
+      related_entities: [],
+      related_domains: [],
+    }];
+    const retained = ['Analyze codebases', 'Coordinate agent work', 'Correlate runtime signals', 'Assess change risk', 'Explain system behavior']
+      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) }));
+    const rejectedWorkspace = cap({
+      id: 'workspace-context',
+      name: 'Retrieve codebase context for agents',
+      description: 'The workspace surfaces agent context, capability maps, and entity maps for codebase understanding.',
+      operations: anchorOp('workspace-context'),
+      criticality_factors: ['catalog-candidate:workspace'],
+    });
+    const repairedWorkspace = {
+      ...rejectedWorkspace,
+      description: 'The workspace gives coding agents grounded software behavior, relationships, risks, and change context for the selected codebase.',
+    };
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      return calls.length === 1 ? [...retained, rejectedWorkspace] : [repairedWorkspace];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].qualityNudge).toContain('description-internal-analysis-vocabulary');
+    expect(calls[1].qualityNudge).toContain('entities, nodes, entry points, capability maps, and analysis results');
+    expect(out).toEqual([...retained, repairedWorkspace]);
+  });
+
   it('does not make an uncorroborated delivery surface a mandatory product family', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
