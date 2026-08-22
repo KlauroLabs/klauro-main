@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { SystemCapability } from '../../types/cas.types';
 import {
   capabilitiesWithoutDescriptionDisposition,
   scheduleRejectedCapabilityDescriptions,
   selectCapabilityCatalogPromptCandidates,
   uncoveredCapabilityCatalogCandidateIds,
+  capabilityTitlesShareOutcome,
 } from './capability-catalog-scheduling';
 
 test('prompt selection represents every required entity family beyond the baseline window', () => {
@@ -40,6 +42,29 @@ test('prompt selection retains nonmandatory supporting and verification surfaces
   ] as any[]);
 
   assert.deepEqual(selected.map(candidate => candidate.id), ['required', 'support', 'proof']);
+});
+
+test('prompt selection requires a first-party-backed internal surface to be mapped to an outcome', () => {
+  const selected = selectCapabilityCatalogPromptCandidates([
+    {
+      id: 'fabric', name: 'Fabric MCP Tool Surface', category: 'internal', evidence_kind: 'behavior-surface',
+      evidence_role: 'unresolved', evidence_role_reasons: ['first-party-product-delivery-surface-requires-outcome-mapping'],
+    },
+    { id: 'bootstrap', name: 'Bootstrap Surface', category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved' },
+  ] as any[]);
+
+  assert.equal(selected[0].id, 'fabric');
+});
+
+test('recognizes analysis verb variants as the same product outcome without merging other actions', () => {
+  assert.equal(capabilityTitlesShareOutcome(
+    { name: 'Analyze codebase' } as SystemCapability,
+    { name: 'Run codebase analysis' } as SystemCapability,
+  ), true);
+  assert.equal(capabilityTitlesShareOutcome(
+    { name: 'Generate codebase report' } as SystemCapability,
+    { name: 'Analyze codebase report' } as SystemCapability,
+  ), false);
 });
 
 test('description repair schedules only rejected capabilities on detached values', async () => {

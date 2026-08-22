@@ -1,4 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
+import { capabilityRequiresCatalogCoverage } from './capability-catalog-evidence';
 
 export type CapabilityCatalogOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
@@ -20,9 +21,7 @@ export function selectCapabilityCatalogPromptCandidates(
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>> = [],
 ): SystemCapability[] {
   const behaviorCandidates = rankedCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface');
-  const requiredBehaviorCandidates = behaviorCandidates.filter(candidate =>
-    candidate.category !== 'internal' &&
-    (candidate.evidence_role === undefined || candidate.evidence_role === 'product-outcome' || candidate.evidence_role === 'unresolved'));
+  const requiredBehaviorCandidates = behaviorCandidates.filter(capabilityRequiresCatalogCoverage);
   const requiredEntityCandidates = requiredEntityCandidateGroups
     .map(group => rankedCandidates.find(candidate => group.includes(candidate.id)))
     .filter((candidate): candidate is SystemCapability => Boolean(candidate));
@@ -133,6 +132,18 @@ export function capabilityTitlesShareOutcome(left: SystemCapability, right: Syst
     .split(/[^a-z0-9]+/).filter(Boolean);
   const leftTokens = tokens(left.name);
   const rightTokens = tokens(right.name);
+  const analysisIdentity = (parts: string[]): string | undefined => {
+    const direct = new Set(['analyze', 'analyse', 'assess', 'inspect']);
+    if (direct.has(parts[0])) return parts.slice(1).filter(token => token !== 'analysis').sort().join('|');
+    const execution = new Set(['execute', 'perform', 'run']);
+    if (execution.has(parts[0]) && parts.includes('analysis')) {
+      return parts.slice(1).filter(token => token !== 'analysis').sort().join('|');
+    }
+    return undefined;
+  };
+  const leftAnalysis = analysisIdentity(leftTokens);
+  const rightAnalysis = analysisIdentity(rightTokens);
+  if (leftAnalysis && leftAnalysis === rightAnalysis) return true;
   return leftTokens[0] === rightTokens[0] && leftTokens.filter(token => rightTokens.includes(token)).length >= 4;
 }
 

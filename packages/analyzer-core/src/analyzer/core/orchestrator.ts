@@ -169,6 +169,7 @@ import {
   catalogRequiredEvidenceCandidates,
   catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
   capabilityCatalogAiPhaseStatus, firstPartySupportsIdentityProduct as supportsIdentityProduct,
+  capabilityRequiresCatalogCoverage,
   hasFirstPartyCorroboratedCatalogOperations,
   summarizeCapabilityEvidenceRoles,
   synchronizeCapabilityCatalogCoverage,
@@ -9213,7 +9214,7 @@ export class AnalyzerOrchestrator {
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const behaviorCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind === 'behavior-surface');
     const requiredBehaviorCandidateAreas = requiredCandidatePool
-      .filter(candidate => candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'internal');
+      .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate));
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredCandidatePool);
     const promptCandidateAreas = selectCapabilityCatalogPromptCandidates(rankedCandidateAreas, requiredEntityCandidateGroups);
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);

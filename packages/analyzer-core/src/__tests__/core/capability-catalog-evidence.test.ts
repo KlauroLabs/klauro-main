@@ -3,6 +3,7 @@ import {
   capabilityCitesRequiredEvidence,
   capabilityEvidencePublicationFailure,
   capabilityOutcomeNameUnsupportedTokens,
+  capabilityRequiresCatalogCoverage,
   catalogCountBounds,
   catalogEntityCandidateGroups,
   catalogEvidenceCandidates,
@@ -147,6 +148,29 @@ describe('catalogEvidenceCandidates', () => {
     ]);
   });
 
+  test('keeps implementation-shaped entities as evidence unless first-party text makes them the product', () => {
+    const internalManifest = candidate('cas-manifest', 'CAS manifest', 'supporting', ['Generate']);
+    internalManifest.related_entities = ['entity_cas_manifest'];
+    const productManifest = candidate('shipping-manifest', 'Shipping manifest', 'supporting', ['Generate']);
+    productManifest.related_entities = ['entity_shipping_manifest'];
+
+    const selected = catalogEvidenceCandidates(
+      [internalManifest, productManifest],
+      [],
+      [
+        entity('entity_cas_manifest', 'CasSectionManifest', 'domain-shape', true),
+        entity('entity_shipping_manifest', 'ShippingManifest', 'domain-shape', true),
+      ],
+      'app',
+      { productDocSummary: 'A logistics product for generating and tracking shipping manifests.' },
+    );
+
+    expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
+      ['cas-manifest', 'supporting-mechanism'],
+      ['shipping-manifest', 'unresolved'],
+    ]);
+  });
+
   test('does not turn request contracts, unperformed models, or unrelated internal shapes into product evidence', () => {
     const request = candidate('request', 'Submit transfer', 'core', ['Submit']);
     request.related_entities = ['entity_transfer_request'];
@@ -266,6 +290,7 @@ describe('capability evidence roles', () => {
 
     expect(classified.evidence_role).toBe('unresolved');
     expect(classified.evidence_role_reasons).toEqual(['first-party-product-delivery-surface-requires-outcome-mapping']);
+    expect(capabilityRequiresCatalogCoverage(classified)).toBe(true);
   });
 
   test('rejects a single tool name masquerading as the outcome of a broader cited surface', () => {

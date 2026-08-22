@@ -152,10 +152,26 @@ function hasLifecycleEvidence(entity: CASDataEntity): boolean {
   return Object.values(entity.lifecycle || {}).some(nodeIds => nodeIds.length > 0);
 }
 
-function domainEntitySupportsCandidate(entity: CASDataEntity, candidate: SystemCapability): boolean {
+function domainEntityLooksLikeImplementationArtifact(entity: CASDataEntity): boolean {
+  const tokens = String(entity.name || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const suffix = tokens[tokens.length - 1] || '';
+  return new Set(['artifact', 'capture', 'config', 'digest', 'manifest', 'report', 'scenario']).has(suffix) ||
+    /(?:node)?indexentry$/.test(tokens.join(''));
+}
+
+function domainEntitySupportsCandidate(
+  entity: CASDataEntity,
+  candidate: SystemCapability,
+  signal?: CapabilityCatalogProjectSignal,
+): boolean {
   if (entity.kind !== 'domain-shape') return false;
   if (candidate.category === 'internal' || candidate.category === 'admin') return false;
   if ((candidate.operations || []).length === 0) return false;
+  if (domainEntityLooksLikeImplementationArtifact(entity) && !productTextCorroboratesCapability(candidate, signal)) return false;
   const entityTokens = normalizedSubjectTokens(entity.name);
   const candidateTokens = normalizedSubjectTokens([
     candidate.name,
@@ -168,12 +184,16 @@ function domainEntitySupportsCandidate(entity: CASDataEntity, candidate: SystemC
     hasLifecycleEvidence(entity);
 }
 
-function candidateHasProductEntity(candidate: SystemCapability, entityById: Map<string, CASDataEntity>): boolean {
+function candidateHasProductEntity(
+  candidate: SystemCapability,
+  entityById: Map<string, CASDataEntity>,
+  signal?: CapabilityCatalogProjectSignal,
+): boolean {
   return (candidate.related_entities || []).some(entityId => {
     const entity = entityById.get(entityId);
     if (!entity) return false;
     if (!entity.kind || entity.kind === 'persisted-entity' || entity.kind === 'api-response') return true;
-    return domainEntitySupportsCandidate(entity, candidate);
+    return domainEntitySupportsCandidate(entity, candidate, signal);
   });
 }
 
@@ -255,7 +275,7 @@ export function classifyCapabilityEvidence(
     } else {
       const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);
-      const productEntity = candidateHasProductEntity(candidate, entityById);
+      const productEntity = candidateHasProductEntity(candidate, entityById, projectTextSignal);
       const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []);
       const firstPartyCoreOutcome = firstParty && candidate.category === 'core';
       if (firstPartyCoreOutcome || userOutcomeJourney || (externalReach && productEntity)) {
@@ -279,11 +299,16 @@ export function classifyCapabilityEvidence(
 }
 
 export function catalogRequiredEvidenceCandidates(candidates: SystemCapability[]): SystemCapability[] {
-  return candidates.filter(candidate =>
-    candidate.evidence_role === undefined ||
+  return candidates.filter(capabilityRequiresCatalogCoverage);
+}
+
+export function capabilityRequiresCatalogCoverage(candidate: SystemCapability): boolean {
+  const requiredRole = candidate.evidence_role === undefined ||
     candidate.evidence_role === 'product-outcome' ||
-    candidate.evidence_role === 'unresolved'
-  );
+    candidate.evidence_role === 'unresolved';
+  if (!requiredRole) return false;
+  if (candidate.category !== 'internal') return true;
+  return (candidate.evidence_role_reasons || []).includes('first-party-product-delivery-surface-requires-outcome-mapping');
 }
 
 export function capabilityCitesRequiredEvidence(
