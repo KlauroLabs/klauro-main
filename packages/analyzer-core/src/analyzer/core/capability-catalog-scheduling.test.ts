@@ -7,6 +7,7 @@ import {
   selectCapabilityCatalogPromptCandidates,
   uncoveredCapabilityCatalogCandidateIds,
   capabilityTitlesShareOutcome,
+  capabilityCatalogTargetedRepairBatches,
 } from './capability-catalog-scheduling';
 
 test('prompt selection represents every required entity family beyond the baseline window', () => {
@@ -54,6 +55,13 @@ test('prompt selection requires a first-party-backed internal surface to be mapp
   ] as any[]);
 
   assert.equal(selected[0].id, 'fabric');
+});
+
+test('targeted repair isolates evidence families while a full pass remains one batch', () => {
+  const facts = [{ candidate_id: 'workspace' }, { candidate_id: 'fabric' }, { candidate_id: 'history' }];
+
+  assert.deepEqual(capabilityCatalogTargetedRepairBatches(facts, true), facts.map(fact => [fact]));
+  assert.deepEqual(capabilityCatalogTargetedRepairBatches(facts, false), [facts]);
 });
 
 test('recognizes analysis verb variants as the same product outcome without merging other actions', () => {

@@ -117,6 +117,10 @@ export function capabilityCatalogRepairEvidenceFacts(
   });
 }
 
+export function capabilityCatalogTargetedRepairBatches<T>(facts: readonly T[], targetedRepair: boolean): T[][] {
+  return targetedRepair && facts.length > 1 ? facts.map(fact => [fact]) : [[...facts]];
+}
+
 export function updateCapabilityCatalogPublishabilityRepairIds(
   pending: Set<string>, accepted: SystemCapability[], rejected: SystemCapability[],
 ): void {
