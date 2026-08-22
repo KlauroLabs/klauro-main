@@ -8,6 +8,7 @@ import {
   uncoveredCapabilityCatalogCandidateIds,
   capabilityTitlesShareOutcome,
   capabilityCatalogTargetedRepairBatches,
+  collectCapabilityCatalogEvidenceBatches,
 } from './capability-catalog-scheduling';
 
 test('prompt selection represents every required entity family beyond the baseline window', () => {
@@ -62,6 +63,22 @@ test('targeted repair isolates evidence families while a full pass remains one b
 
   assert.deepEqual(capabilityCatalogTargetedRepairBatches(facts, true), facts.map(fact => [fact]));
   assert.deepEqual(capabilityCatalogTargetedRepairBatches(facts, false), [facts]);
+});
+
+test('evidence batch collection preserves successful families when one focused call times out', async () => {
+  const calls: string[][] = [];
+  const values = await collectCapabilityCatalogEvidenceBatches({
+    facts: ['workspace', 'fabric', 'history'], evidenceScoped: true, batchBudgetMs: 100,
+    extract: async batch => {
+      calls.push(batch);
+      if (batch[0] === 'fabric') throw new Error('focused-deadline');
+      return batch.map(value => `authored:${value}`);
+    },
+    isDeadlineError: error => error instanceof Error && error.message === 'focused-deadline',
+  });
+
+  assert.deepEqual(calls, [['workspace'], ['fabric'], ['history']]);
+  assert.deepEqual(values, ['authored:workspace', 'authored:history']);
 });
 
 test('recognizes analysis verb variants as the same product outcome without merging other actions', () => {

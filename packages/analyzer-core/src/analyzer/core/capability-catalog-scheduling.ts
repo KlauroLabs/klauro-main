@@ -121,6 +121,30 @@ export function capabilityCatalogTargetedRepairBatches<T>(facts: readonly T[], t
   return targetedRepair && facts.length > 1 ? facts.map(fact => [fact]) : [[...facts]];
 }
 
+export async function collectCapabilityCatalogEvidenceBatches<TFact, TValue>(args: {
+  facts: readonly TFact[];
+  evidenceScoped: boolean;
+  hardDeadlineAt?: number;
+  batchBudgetMs: number;
+  extract: (facts: TFact[], deadlineAt?: number) => Promise<TValue[]>;
+  isDeadlineError: (error: unknown) => boolean;
+}): Promise<TValue[]> {
+  const values: TValue[] = [];
+  for (const batch of capabilityCatalogTargetedRepairBatches(args.facts, args.evidenceScoped)) {
+    if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) break;
+    const deadlineAt = args.evidenceScoped
+      ? Math.min(args.hardDeadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + args.batchBudgetMs)
+      : args.hardDeadlineAt;
+    try {
+      values.push(...await args.extract(batch, deadlineAt));
+    } catch (error) {
+      const globalDeadlineReached = args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt;
+      if (!args.evidenceScoped || !args.isDeadlineError(error) || globalDeadlineReached) throw error;
+    }
+  }
+  return values;
+}
+
 export function updateCapabilityCatalogPublishabilityRepairIds(
   pending: Set<string>, accepted: SystemCapability[], rejected: SystemCapability[],
 ): void {
