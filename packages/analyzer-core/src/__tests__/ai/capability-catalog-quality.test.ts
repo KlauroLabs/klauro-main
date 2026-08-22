@@ -543,6 +543,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls).toHaveLength(2);
     expect(calls[1].qualityNudge).toContain('description-internal-analysis-vocabulary');
     expect(calls[1].qualityNudge).toContain('entities, nodes, entry points, capability maps, and analysis results');
+    expect(calls[1].qualityNudge).toContain('Existing accepted outcomes');
+    expect(calls[1].qualityNudge).toContain('Use only recurring subject nouns from evidence_subject, related_domains, or top_down_signals');
     expect(out).toEqual([...retained, repairedWorkspace]);
   });
 
