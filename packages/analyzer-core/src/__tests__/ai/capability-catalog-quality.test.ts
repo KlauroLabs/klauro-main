@@ -465,6 +465,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     args.behaviorSurfaces = [{
       id: 'fabric',
       name: 'Concurrent Work Tool Surface',
+      category: 'internal',
       evidence_kind: 'behavior-surface',
       evidence_examples: ['claim_work', 'check_collision', 'update_claim', 'release_work'],
       criticality_factors: ["4 message entry points form one cohesive behavior family ('fabric')"],
@@ -491,6 +492,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls).toHaveLength(2);
     expect(calls[1].qualityNudge).toContain('fabric');
     expect(calls[1].qualityNudge).toContain('claim_work');
+    expect(calls[1].qualityNudge).toContain('evidence_subject');
     expect(out).toEqual(covered);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.candidate_dispositions).toEqual(
       expect.arrayContaining([expect.objectContaining({ candidate_id: 'fabric', role: 'unresolved' })]),

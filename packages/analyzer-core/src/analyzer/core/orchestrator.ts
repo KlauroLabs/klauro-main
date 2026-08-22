@@ -10377,7 +10377,7 @@ export class AnalyzerOrchestrator {
     const evidenceRoleSummary = summarizeCapabilityEvidenceRoles(evidenceCandidates);
     const distinctFamilyCount = this.catalogDistinctFamilyCount(requiredEvidenceCandidates);
     const requiredBehaviorCandidateIds = requiredEvidenceCandidates
-      .filter(candidate => candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'internal' && candidate.id)
+      .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id)
       .map(candidate => candidate.id);
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates);
     const entityNamesById = new Map(args.dataEntities.map(entity => [entity.id, entity.name]));
@@ -10400,8 +10400,17 @@ export class AnalyzerOrchestrator {
       const repairCandidateIds = uncoveredCapabilityCatalogCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups);
       const targetedRepair = cycle > 1 && reconciled.length > 0 && repairCandidateIds.length > 0;
       const repairCandidateIdSet = new Set(repairCandidateIds);
+      const repairEvidenceFacts = evidenceCandidates
+        .filter(candidate => repairCandidateIdSet.has(candidate.id))
+        .map(candidate => ({
+          candidate_id: candidate.id,
+          evidence_subject: candidate.structural_label || candidate.name,
+          entity_names: (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId),
+          operations: (candidate.operations || []).slice(0, 8).map(operation => operation.action || operation.path_or_command),
+          examples: (candidate.evidence_examples || []).slice(0, 8),
+        }));
       const cycleNudge = cycle === 1 ? undefined
-        : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} ${targetedRepair ? `Return only the missing evidence-grounded additions requested in this repair batch. Evidence examples: ${evidenceCandidates.filter(candidate => repairCandidateIdSet.has(candidate.id)).flatMap(candidate => candidate.evidence_examples || []).slice(0, 24).join(', ')}.` : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
+        : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} ${targetedRepair ? `Return only the missing evidence-grounded additions requested in this repair batch. Missing evidence facts: ${JSON.stringify(repairEvidenceFacts)}. Each result must cite one of these candidate_ids and name the specific user outcome of that evidence subject; do not restate an unrelated global product ability.` : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
       let extracted: SystemCapability[];
       let extractionRaw = '';
       try {
