@@ -493,11 +493,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('claim_work');
     expect(out).toEqual(covered);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.candidate_dispositions).toEqual(
-      expect.arrayContaining([expect.objectContaining({ candidate_id: 'fabric', role: 'product-outcome' })]),
+      expect.arrayContaining([expect.objectContaining({ candidate_id: 'fabric', role: 'unresolved' })]),
     );
   });
 
-  it('publishes grounded authored capabilities with partial coverage when retries omit a behavior family', async () => {
+  it('does not make an uncorroborated delivery surface a mandatory product family', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.behaviorSurfaces = [{
@@ -519,10 +519,12 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(out).toEqual(grounded);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      status: 'partial',
+      status: 'accepted',
       published_capabilities: grounded.length,
     });
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('catalog omitted');
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.candidate_dispositions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ candidate_id: 'notebook-execution', role: 'supporting-mechanism' })]),
+    );
   });
 
   it('does not force internal bootstrap and scheduling surfaces into the product capability catalog', async () => {

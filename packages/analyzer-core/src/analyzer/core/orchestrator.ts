@@ -161,6 +161,7 @@ import { buildCasTerminality } from './terminality';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
+  capabilityOutcomeNameUnsupportedTokens,
   capabilityEvidencePublicationFailure,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogCountBounds, catalogEntityCandidateGroups, catalogEvidenceCoverageFailure,
@@ -9273,9 +9274,12 @@ export class AnalyzerOrchestrator {
     const catalogTask = `${catalogTaskBase} DESCRIPTION CONTRACT: ${catalogDescriptionContract} SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract}`;
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
-      ...journeys.map(journey => journey.name),
-      ...candidateAreas,
-    ].map(term => String(term || '').trim()).filter(Boolean))).slice(0, 20);
+      signal?.productDocTitle,
+      signal?.productDocSummary,
+      signal?.manifestDescription,
+    ].flatMap(term => String(term || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/))
+      .map(term => term.toLowerCase().trim())
+      .filter(term => term.length >= 3))).slice(0, 80);
     const topDownSignals: Record<string, unknown> = {};
     if (signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle;
     if (signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary;
@@ -9580,6 +9584,11 @@ export class AnalyzerOrchestrator {
         .map((value: unknown) => String(value || ''))
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
       const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
+      const unsupportedOutcomeTokens = capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
+      if (candidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
+        debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`);
+        continue;
+      }
       const citedEvidenceTokens = new Set(
         citedCandidates
           .flatMap(candidate => [candidate.name, ...(candidate.evidence_examples || [])])

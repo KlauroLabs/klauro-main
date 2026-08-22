@@ -2,6 +2,7 @@ import {
   capabilityCatalogAiPhaseStatus,
   capabilityCitesRequiredEvidence,
   capabilityEvidencePublicationFailure,
+  capabilityOutcomeNameUnsupportedTokens,
   catalogCountBounds,
   catalogEntityCandidateGroups,
   catalogEvidenceCandidates,
@@ -246,6 +247,64 @@ describe('capability evidence roles', () => {
     });
 
     expect(classified.evidence_role).toBe('product-outcome');
+  });
+
+  test('keeps delivery surfaces as evidence even when their tools have terminal user journeys', () => {
+    const surface = candidate('agent-tools', 'Agent MCP Tool Surface', 'internal', ['Handle']);
+    surface.evidence_kind = 'behavior-surface';
+    surface.operations[0].entry_point_id = 'search-nodes';
+    const [classified] = classifyCapabilityEvidence([surface], [], {
+      productDocSummary: 'The product gives AI agents behavior-level software comprehension.',
+    }, {
+      userJourneys: [{
+        id: 'journey', name: 'Search nodes', journey_kind: 'user-facing', entry_point_id: 'search-nodes',
+        entry: { type: 'message', name: 'search_nodes' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: ['CASNode'], external_services: [], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high', call_chain_ids: [], exit_point_ids: [],
+      }],
+    });
+
+    expect(classified.evidence_role).toBe('unresolved');
+    expect(classified.evidence_role_reasons).toEqual(['first-party-product-delivery-surface-requires-outcome-mapping']);
+  });
+
+  test('rejects a single tool name masquerading as the outcome of a broader cited surface', () => {
+    const surface = candidate('agent-tools', 'Agent MCP Tool Surface', 'internal', ['Handle']);
+    surface.structural_label = 'Agent MCP Tool Surface';
+    surface.related_domains = ['software understanding'];
+
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Install agent default config',
+      [surface],
+      { productDocSummary: 'Turns software graphs into behavior-level comprehension for people and AI agents.' },
+    )).toEqual(expect.arrayContaining(['default', 'config']));
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Explain software behavior to agents',
+      [surface],
+      { productDocSummary: 'Turns software graphs into behavior-level comprehension for people and AI agents.' },
+    )).toEqual([]);
+  });
+
+  test('separates product outcomes from command, route, and analysis-layer names without deleting their evidence', () => {
+    const cas = candidate('cas', 'CAS relationship graph', 'core', ['Analyze']);
+    const agent = candidate('agent-tools', 'Agent MCP Tool Surface', 'internal', ['Handle']);
+    const architecture = candidate('architecture', 'Architecture review surface', 'supporting', ['Review']);
+    const history = candidate('history', 'Change history', 'supporting', ['Read']);
+    const signal = {
+      productDocTitle: 'Klauro',
+      productDocSummary: 'Klauro builds a trustworthy CAS relationship graph, turns it into behavior-level comprehension for people and AI agents, enables real-time collaboration through Fabric, and correlates static understanding with runtime evidence.',
+      manifestDescription: 'Software understanding through CAS analysis and agent context.',
+    };
+
+    expect(capabilityOutcomeNameUnsupportedTokens('Search nodes', [cas, agent], signal)).toContain('node');
+    expect(capabilityOutcomeNameUnsupportedTokens('Install agent default config', [agent], signal)).toEqual(expect.arrayContaining(['default', 'config']));
+    expect(capabilityOutcomeNameUnsupportedTokens('Get architectural conflicts', [architecture, agent], signal)).toContain('conflict');
+    expect(capabilityOutcomeNameUnsupportedTokens('Route overview', [architecture, agent], signal)).toEqual(expect.arrayContaining(['overview']));
+    expect(capabilityOutcomeNameUnsupportedTokens('Run analysis layer', [history], signal)).toEqual(['layer']);
+
+    expect(capabilityOutcomeNameUnsupportedTokens('Build trustworthy CAS relationship graphs', [cas], signal)).toEqual([]);
+    expect(capabilityOutcomeNameUnsupportedTokens('Explain software behavior to AI agents', [agent], signal)).toEqual([]);
+    expect(capabilityOutcomeNameUnsupportedTokens('Correlate static understanding with runtime evidence', [cas], signal)).toEqual([]);
   });
 
   test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {

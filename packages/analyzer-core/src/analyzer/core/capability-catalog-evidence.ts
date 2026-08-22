@@ -57,13 +57,58 @@ export function synchronizeCapabilityCatalogCoverage(
 }
 
 function normalizedSubjectTokens(value: string): Set<string> {
-  const scaffolding = new Set(['management', 'capability', 'workflow', 'handling', 'operation', 'operations']);
+  const scaffolding = new Set(['management', 'capability', 'workflow', 'handling', 'operation', 'operations', 'mcp', 'tool', 'tools', 'surface']);
   return new Set(String(value || '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(token => token.length >= 3 && !scaffolding.has(token))
     .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token));
+}
+
+function outcomeIdentityTokens(value: string): string[] {
+  const ignored = new Set([
+    'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'with',
+    'ability', 'behavior', 'capability', 'management', 'operation', 'operations', 'surface', 'tool', 'tools', 'workflow',
+  ]);
+  return String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !ignored.has(token))
+    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
+}
+
+function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
+  return evidence.has(token) || [...evidence].some(candidate =>
+    Math.min(token.length, candidate.length) >= 5 &&
+    (token.startsWith(candidate) || candidate.startsWith(token) || token.slice(0, 5) === candidate.slice(0, 5))
+  );
+}
+
+export function capabilityOutcomeNameUnsupportedTokens(
+  name: string,
+  citedCandidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
+): string[] {
+  const nameTokens = outcomeIdentityTokens(name);
+  if (nameTokens.length <= 1) return [];
+  const subjectTokens = nameTokens.slice(1);
+  const firstPartyTokens = new Set(outcomeIdentityTokens([
+    signal?.productDocTitle,
+    signal?.productDocSummary,
+    signal?.manifestDescription,
+    signal?.summary,
+  ].filter(Boolean).join(' ')));
+  const citedIdentityTokens = new Set(citedCandidates.flatMap(candidate => outcomeIdentityTokens([
+    candidate.name,
+    candidate.structural_label,
+    ...(candidate.related_domains || []),
+    ...(candidate.related_entities || []).map(entityId => entityId.replace(/^entity[_:-]?/i, '')),
+  ].filter(Boolean).join(' '))));
+  return subjectTokens.filter(token =>
+    !outcomeTokenMatches(token, firstPartyTokens) && !outcomeTokenMatches(token, citedIdentityTokens)
+  );
 }
 
 export function productTextCorroboratesCapability(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
@@ -76,7 +121,9 @@ export function productTextCorroboratesCapability(candidate: SystemCapability, s
     signal.summary,
   ].filter(Boolean).join(' '));
   const subjectTokens = normalizedSubjectTokens([candidate.structural_label, candidate.name].filter(Boolean).join(' '));
-  const matches = [...subjectTokens].filter(token => productTokens.has(token)).length;
+  const matches = [...subjectTokens].filter(token => productTokens.has(token) ||
+    [...productTokens].some(productToken => Math.min(token.length, productToken.length) >= 3 &&
+      (token.startsWith(productToken) || productToken.startsWith(token)))).length;
   return subjectTokens.size > 0 && matches >= Math.min(2, subjectTokens.size);
 }
 
@@ -192,6 +239,12 @@ export function classifyCapabilityEvidence(
     if (capabilityIsVerificationHarness(candidate, entryPointById, nodeById)) {
       evidenceRole = 'verification-harness';
       reasons.push('all-resolved-operation-anchors-are-test-or-scaffold');
+    } else if (candidate.evidence_kind === 'behavior-surface' || candidate.category === 'internal') {
+      const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
+      evidenceRole = firstParty ? 'unresolved' : 'supporting-mechanism';
+      reasons.push(firstParty
+        ? 'first-party-product-delivery-surface-requires-outcome-mapping'
+        : 'delivery-surface-is-evidence-not-product-outcome');
     } else {
       const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);

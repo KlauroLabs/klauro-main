@@ -8441,14 +8441,16 @@ describe('top-down capability evidence (C2)', () => {
       await orch.aiExtractCapabilityCatalog({
         systemName: 'mtg',
         enhancedSystemPurpose: { primary_domain: 'games', core_concepts: [] },
-        frameworks: [], userJourneys: [], dataEntities: [],
-        candidateCapabilities: [{ name: 'Game session', related_entities: [], operations: [] }],
+        frameworks: [], userJourneys: [{ name: 'Install Agent Default Config' }], dataEntities: [],
+        candidateCapabilities: [{ name: 'Search Nodes Tool Surface', related_entities: [], operations: [] }],
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: withSignal, budgetMs: 30000,
       });
       const withCtx = captured[captured.length - 1].additionalContext;
       expect(withCtx.facts.top_down_signals.product_title).toMatch(/Arcane Table/);
       expect(withCtx.facts.top_down_signals.product_overview).toMatch(/Commander/);
+      expect(withCtx.facts.top_down_signals.product_terminology).toEqual(expect.arrayContaining(['arcane', 'commander', 'multiplayer']));
+      expect(withCtx.facts.top_down_signals.product_terminology).not.toEqual(expect.arrayContaining(['search', 'nodes', 'install', 'default', 'config']));
       expect(withCtx.task).toMatch(/PURPOSE TEST/);
       expect(withCtx.task).toMatch(/access control/i);
       expect(withCtx.task).toMatch(/12-28 words and at least 55 characters/);
