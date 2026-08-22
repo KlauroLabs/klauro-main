@@ -573,7 +573,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.aiExtractCapabilityCatalog = async () => ++calls === 1 ? retained : [repaired];
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
-    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
     expect(calls).toBe(2);
     expect(out.map(capability => capability.name)).toEqual(retained.map(capability => capability.name));
