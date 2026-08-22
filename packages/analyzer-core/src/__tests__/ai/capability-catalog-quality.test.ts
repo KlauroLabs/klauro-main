@@ -502,7 +502,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
   it('feeds description publishability failures into a grounded targeted repair', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
-    args.projectTextSignal = { concepts: ['software understanding', 'agent context'], evidence: [] };
+    args.projectTextSignal = { concepts: ['workspace', 'software understanding', 'agent context'], evidence: [] };
     args.behaviorSurfaces = [{
       id: 'workspace',
       name: 'Workspace MCP Tool Surface',
