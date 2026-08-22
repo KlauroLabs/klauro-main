@@ -146,6 +146,18 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     assert.equal(failedUploadStatus.status, 'failed');
     assert.equal(failedUploadStatus.analysis_revision, 22);
     assert.equal(failedUploadStatus.last_attempt?.reason, 'analysis worker failed');
+    const failedProjectStatus = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token)).body);
+    assert.equal(failedProjectStatus.status, 'failed');
+    assert.equal(failedProjectStatus.summary, undefined, 'a stale prior generation must not masquerade as the failed commit');
+    const failedProjectAnalysis = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token)).body);
+    assert.equal(failedProjectAnalysis.status, 'failed');
+    assert.equal(failedProjectAnalysis.summary, undefined);
+    const failedProjectQuery = JSON.parse((await request(port, 'POST', `/api/projects/${project.id}/query`, {
+      tool: 'get_product_map',
+      args: {},
+    }, token)).body);
+    assert.equal(failedProjectQuery.status, 'failed');
+    assert.equal(failedProjectQuery.result?.status, 'failed', 'older installed clients still receive a compact serializable failure result');
 
     // Once the attempt resolves (succeeded), both routes go back to reading
     // the (now current) landed entry normally.

@@ -16,6 +16,12 @@ export interface AnalysisResponseIdentity {
   tool?: string;
 }
 
+export interface LatestAnalysisAttempt {
+  state?: string;
+  trigger?: string;
+  reason?: string;
+}
+
 export interface LegacyQueryFailureResult {
   status: Exclude<AnalysisResponseReadiness['status'], 'ready'>;
   error?: string;
@@ -85,6 +91,16 @@ export function unavailableComprehensionResponse(
   const response = { ...identity, ...responseReadiness };
   const legacyResult = { ...responseReadiness, status: responseReadiness.status as LegacyQueryFailureResult['status'] };
   return tool ? { ...response, result: legacyResult } : response;
+}
+
+export function unavailableLatestAnalyzeAttempt(
+  attempt: LatestAnalysisAttempt | null | undefined,
+  identity: AnalysisResponseIdentity,
+): (AnalysisResponseIdentity & { status: 'failed'; error: string; last_attempt: LatestAnalysisAttempt; result?: LegacyQueryFailureResult }) | undefined {
+  if (attempt?.state !== 'failed' || attempt.trigger !== 'analyze') return undefined;
+  const error = attempt.reason || 'The latest committed-source analysis failed.';
+  const response = { ...identity, status: 'failed' as const, error, last_attempt: attempt };
+  return identity.tool ? { ...response, result: { status: 'failed' as const, error } } : response;
 }
 
 export function parseConceptualCatalogPage(searchParams: URLSearchParams): ConceptualCatalogPage {

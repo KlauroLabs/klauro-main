@@ -59,7 +59,7 @@ import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type Hos
 import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker, warmHostedProjectAnalysisWorker, warmHostedProjectQueryWorker } from './hosted-project-query-process';
 
 export { prewarmHostedProjectQueryWorker };
-import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse } from './analysis-response-readiness';
+import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableLatestAnalyzeAttempt } from './analysis-response-readiness';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
 import {
@@ -625,7 +625,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                     })();
                   }
                 },
-              });
+              }); const failedComprehension = summary.failedLayers?.find(layer => layer.layer === 'L4'); if (failedComprehension) throw new Error(failedComprehension.error || summary.aiEnrichmentError || 'Capability comprehension did not reach readiness.');
               if (l0Attach) await l0Attach;
               await appendProjectRevision(dataDir, {
                 status: 'success',
@@ -2436,6 +2436,8 @@ async function handleAccountApi(
     try {
       const workspace = workspacePath(dataDir, project.analysis_id);
       const tool = body.tool as HostedProjectQueryTool;
+      const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+      const failedAttempt = unavailableLatestAnalyzeAttempt(lastAttempt, { project_id: project.id, analysis_id: project.analysis_id, tool }); if (failedAttempt) return { statusCode: 200, body: failedAttempt };
       const query = await runHostedProjectQueryWorker({
         workspace,
         tool,
@@ -2473,7 +2475,7 @@ async function handleAccountApi(
     await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
     const entry = await getAnalysisEntry(analysisWorkspace);
     const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
-
+    const failedAttempt = unavailableLatestAnalyzeAttempt(lastAttempt, { project_id: project.id, analysis_id: project.analysis_id }); if (failedAttempt) return { statusCode: 200, body: failedAttempt };
     if (lastAttempt?.state === 'in-progress') {
       prewarmHostedProjectQueryWorker();
       const structural = structuralReadinessDuringAttempt(entry, lastAttempt);
@@ -2605,6 +2607,7 @@ async function handleAccountApi(
     await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
 
     const earlyLastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
+    const failedAttempt = unavailableLatestAnalyzeAttempt(earlyLastAttempt, { project_id: project.id, analysis_id: project.analysis_id }); if (failedAttempt) return { statusCode: 200, body: failedAttempt };
     if (earlyLastAttempt?.state === 'in-progress') {
       prewarmHostedProjectQueryWorker();
 

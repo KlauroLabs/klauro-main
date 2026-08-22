@@ -2387,6 +2387,7 @@ export interface LayeredRunSummary {
   casVersion?: string;
   aiEnrichment: CASOutput['ai_enrichment'];
   aiEnrichmentError?: string;
+  failedLayers: Array<{ layer: string; error?: string }>;
 }
 
 export function summarizeLayeredAnalysis(projectPath: string, output: CASOutput): LayeredRunSummary {
@@ -2401,6 +2402,9 @@ export function summarizeLayeredAnalysis(projectPath: string, output: CASOutput)
     casVersion: base.casVersion,
     aiEnrichment: output.ai_enrichment,
     aiEnrichmentError: output.ai_enrichment_error,
+    failedLayers: (output.layers_ready?.layers || [])
+      .filter(layer => layer.status === 'error')
+      .map(layer => ({ layer: layer.layer, ...(layer.error ? { error: layer.error } : {}) })),
   };
 }
 

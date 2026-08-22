@@ -7,6 +7,7 @@ import {
   paginateConceptualCatalog,
   parseConceptualCatalogPage,
   unavailableComprehensionResponse,
+  unavailableLatestAnalyzeAttempt,
 } from './analysis-response-readiness';
 import { evaluateComprehensionReadiness } from './comprehension-readiness';
 
@@ -93,6 +94,20 @@ test('failed hosted queries include a compact legacy-client result without parti
   });
   assert.equal('product_map' in (response || {}), false);
   assert.doesNotThrow(() => JSON.stringify(response?.result).length, 'published clients must receive a serializable result');
+});
+
+test('a failed latest committed-source attempt cannot expose a prior ready generation as current', () => {
+  const response = unavailableLatestAnalyzeAttempt(
+    { state: 'failed', trigger: 'analyze', reason: 'capability catalog omitted cap_history' },
+    { project_id: 'project', analysis_id: 'analysis', tool: 'get_product_map' },
+  );
+  assert.equal(response?.status, 'failed');
+  assert.equal(response?.result?.status, 'failed');
+  assert.match(response?.error || '', /cap_history/);
+  assert.equal(unavailableLatestAnalyzeAttempt(
+    { state: 'failed', trigger: 'reanalyze', reason: 'retry failed' },
+    { project_id: 'project', analysis_id: 'analysis' },
+  ), undefined, 'a failed reanalysis may continue serving the explicitly stale prior generation as degraded');
 });
 
 test('legacy CAS without a layer manifest remains queryable', () => {
