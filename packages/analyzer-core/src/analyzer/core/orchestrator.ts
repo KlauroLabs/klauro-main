@@ -10462,15 +10462,10 @@ export class AnalyzerOrchestrator {
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return true;
         publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
-        publishabilityRejections.push({
-          name: capability.name,
-          description: capability.description,
-          reason: failure,
-        });
+        publishabilityRejections.push({ name: capability.name, description: capability.description, reason: failure });
         return false;
       });
-      const publishabilityRepairFeedback = capabilityPublishabilityRepairFeedback(publishabilityRejections);
-      audienceRepairFeedback = [audienceRepairFeedback, publishabilityRepairFeedback].filter(Boolean).join(' ') || undefined;
+      audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
       const combinedReconciled = targetedRepair
         ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled])
         : cycleReconciled;
