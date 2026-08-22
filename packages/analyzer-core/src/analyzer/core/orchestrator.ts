@@ -18325,8 +18325,7 @@ export class AnalyzerOrchestrator {
         : capability.category;
     }
 
-    const exactNameCapabilities = Array.from(byName.values());
-    return exactNamesOnly ? exactNameCapabilities : this.dedupeSystemCapabilitiesByEntitySet(exactNameCapabilities);
+    return exactNamesOnly ? Array.from(byName.values()) : this.dedupeSystemCapabilitiesByEntitySet(Array.from(byName.values()));
   }
 
   private dedupeSystemCapabilitiesByEntitySet(capabilities: SystemCapability[]): SystemCapability[] {
