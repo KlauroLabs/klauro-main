@@ -600,7 +600,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       id: 'review-change-risk', name: 'Review change risk', description: '', operations: anchorOp('review-change-risk'),
       criticality_factors: ['catalog-candidate:workspace'],
     });
-    const repaired = { ...rejected, description: 'Gives engineers workspace context for understanding codebase relationships before they coordinate changes.' };
+    const repaired = { ...rejected, description: 'Helps engineers review change risk using workspace context about connected codebase relationships.' };
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
