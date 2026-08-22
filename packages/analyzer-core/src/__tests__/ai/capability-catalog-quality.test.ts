@@ -548,6 +548,38 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out).toEqual([...retained, repairedWorkspace]);
   });
 
+  it('adds targeted evidence without collapsing distinct accepted outcomes', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['workspace', 'codebase relationships'], evidence: [] };
+    args.behaviorSurfaces = [{
+      id: 'workspace', name: 'Workspace MCP Tool Surface', category: 'internal', evidence_kind: 'behavior-surface',
+      evidence_examples: ['get_agent_context', 'get_product_map'],
+      criticality_factors: ["2 message entry points form one cohesive behavior family ('workspace')"],
+      operations: ['get_agent_context', 'get_product_map'].map(entry_point_id => ({ entry_point_id, entry_point_type: 'message', action: 'Retrieve' })),
+      related_entities: [], related_domains: ['workspace'],
+    }];
+    const retained = [
+      'Review codebase relationships before changes',
+      'Review codebase relationships during changes',
+      'Coordinate agent work',
+      'Correlate runtime signals',
+    ].map(name => cap({ id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name) }));
+    const repaired = cap({
+      ...retained[0],
+      criticality_factors: [...retained[0].criticality_factors, 'catalog-candidate:workspace'],
+    });
+    let calls = 0;
+    localOrch.aiExtractCapabilityCatalog = async () => ++calls === 1 ? retained : [repaired];
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toBe(2);
+    expect(out.map(capability => capability.name)).toEqual(retained.map(capability => capability.name));
+    expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
+  });
+
   it('does not make an uncorroborated delivery surface a mandatory product family', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);

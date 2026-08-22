@@ -10467,7 +10467,7 @@ export class AnalyzerOrchestrator {
       });
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
       const combinedReconciled = targetedRepair
-        ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled])
+        ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled], true)
         : cycleReconciled;
       const cycleQualityFailure = this.catalogQualityFailure(
         combinedReconciled,
@@ -18288,7 +18288,7 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  private dedupeSystemCapabilitiesByName(capabilities: SystemCapability[]): SystemCapability[] {
+  private dedupeSystemCapabilitiesByName(capabilities: SystemCapability[], exactNamesOnly = false): SystemCapability[] {
     const byName = new Map<string, SystemCapability>();
     const criticalityRank: Record<SystemCapability['criticality'], number> = {
       critical: 4,
@@ -18325,7 +18325,8 @@ export class AnalyzerOrchestrator {
         : capability.category;
     }
 
-    return this.dedupeSystemCapabilitiesByEntitySet(Array.from(byName.values()));
+    const exactNameCapabilities = Array.from(byName.values());
+    return exactNamesOnly ? exactNameCapabilities : this.dedupeSystemCapabilitiesByEntitySet(exactNameCapabilities);
   }
 
   private dedupeSystemCapabilitiesByEntitySet(capabilities: SystemCapability[]): SystemCapability[] {
