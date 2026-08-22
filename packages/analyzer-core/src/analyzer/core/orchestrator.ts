@@ -178,7 +178,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, capabilityTitlesShareOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, uncoveredCapabilityCatalogCandidateIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityTitlesShareOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10390,6 +10390,7 @@ export class AnalyzerOrchestrator {
     let cyclesRun = 0;
     let deadlineExceeded = false;
     let retainedInterpretationRaw = '';
+    const publishabilityRepairCandidateIds = new Set<string>();
     const repairProgress = trackCapabilityCatalogRepair(distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups);
     for (let cycle = 1; cycle <= repairProgress.maxCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
@@ -10398,23 +10399,12 @@ export class AnalyzerOrchestrator {
         break;
       }
       cyclesRun = cycle;
-      const repairCandidateIds = uncoveredCapabilityCatalogCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups);
+      const repairCandidateIds = capabilityCatalogRepairCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, publishabilityRepairCandidateIds);
       const targetedRepair = cycle > 1 && reconciled.length > 0 && repairCandidateIds.length > 0;
       const repairCandidateIdSet = new Set(repairCandidateIds);
-      const repairEvidenceFacts = evidenceCandidates
-        .filter(candidate => repairCandidateIdSet.has(candidate.id))
-        .map(candidate => ({
-          candidate_id: candidate.id,
-          evidence_subject: candidate.structural_label || candidate.name, related_domains: candidate.related_domains || [],
-          entity_names: (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId),
-          operations: (candidate.operations || []).slice(0, 8).map(operation => ({
-            action: operation.action,
-            surface: operation.path_or_command,
-          })),
-          examples: (candidate.evidence_examples || []).slice(0, 8),
-        }));
+      const repairEvidenceFacts = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, repairCandidateIds, entityNamesById);
       const cycleNudge = cycle === 1 ? undefined
-        : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} ${targetedRepair ? `Return only the missing evidence-grounded additions requested in this repair batch. Missing evidence facts: ${JSON.stringify(repairEvidenceFacts)}. Existing accepted outcomes: ${JSON.stringify(reconciled.slice(0, 12).map(capability => ({ name: capability.name, description: capability.description })))}. Each result must cite one or more of these candidate_ids and name the shared USER PURPOSE delivered by that evidence subject. A behavior-surface family label and its individual operation names are delivery evidence, never title templates: express their common purpose using first-party product language. Use only recurring subject nouns from evidence_subject, related_domains, or top_down_signals in the capability name; never promote a one-off operation suffix into the title. If a missing delivery surface supports an existing accepted outcome, return that exact outcome name with the missing candidate_id so its evidence is merged. If several missing surfaces deliver the same existing product outcome, return that outcome once and cite every supporting ID. Do not restate an unrelated global product ability and do not enumerate individual response objects, commands, or configuration fields.` : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
+        : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} ${targetedRepair ? `Return only the missing evidence-grounded additions requested in this repair batch. Missing evidence facts: ${JSON.stringify(repairEvidenceFacts)}. Existing accepted outcomes: ${JSON.stringify(reconciled.slice(0, 12).map(capability => ({ name: capability.name, description: capability.description })))}. Each result must cite one or more of these candidate_ids and name the shared USER PURPOSE delivered by that evidence subject. A behavior-surface family label and its individual operation names are delivery evidence, never title templates: express their common purpose using first-party product language. Use only recurring subject nouns from evidence_subject, related_domains, or top_down_signals in the capability name; never promote a one-off operation suffix into the title. Preserve each rejected item's distinct product outcome when rewriting it; overlapping evidence does not make two different outcomes equivalent. If a missing delivery surface supports an existing accepted outcome, return that exact outcome name with the missing candidate_id so its evidence is merged. If several missing surfaces deliver the same existing product outcome, return that outcome once and cite every supporting ID. Do not restate an unrelated global product ability and do not enumerate individual response objects, commands, or configuration fields.` : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
       let extracted: SystemCapability[];
       let extractionRaw = '';
       try {
@@ -10457,14 +10447,17 @@ export class AnalyzerOrchestrator {
         : [];
       const publishabilityFailures = new Map<string, number>();
       const publishabilityRejections: Array<{ name: string; description?: string; reason: string }> = [];
+      const rejectedCapabilities: SystemCapability[] = [];
       const cycleReconciled = reconciledCandidates.filter(capability => {
         const descriptionValidation = this.validateElementDescription(capability.description || '', this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById));
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return true;
+        rejectedCapabilities.push(capability);
         publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
         publishabilityRejections.push({ name: capability.name, description: capability.description, reason: failure });
         return false;
       });
+      updateCapabilityCatalogPublishabilityRepairIds(publishabilityRepairCandidateIds, cycleReconciled, rejectedCapabilities);
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
       const combinedReconciled = targetedRepair
         ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled], true)

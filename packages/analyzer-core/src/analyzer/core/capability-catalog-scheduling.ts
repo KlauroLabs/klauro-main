@@ -87,6 +87,42 @@ export function uncoveredCapabilityCatalogCandidateIds(
   ])];
 }
 
+export function capabilityCatalogRepairCandidateIds(
+  capabilities: SystemCapability[],
+  requiredBehaviorCandidateIds: readonly string[],
+  requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
+  pendingPublishabilityIds: ReadonlySet<string>,
+): string[] {
+  return [...new Set([
+    ...uncoveredCapabilityCatalogCandidateIds(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups),
+    ...pendingPublishabilityIds,
+  ])];
+}
+
+export function capabilityCatalogRepairEvidenceFacts(
+  candidates: SystemCapability[], repairCandidateIds: readonly string[], entityNamesById: ReadonlyMap<string, string>,
+) {
+  const repairIds = new Set(repairCandidateIds);
+  return candidates.filter(candidate => repairIds.has(candidate.id)).map(candidate => ({
+    candidate_id: candidate.id,
+    evidence_subject: candidate.structural_label || candidate.name,
+    related_domains: candidate.related_domains || [],
+    entity_names: (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId),
+    operations: (candidate.operations || []).slice(0, 8).map(operation => ({ action: operation.action, surface: operation.path_or_command })),
+    examples: (candidate.evidence_examples || []).slice(0, 8),
+  }));
+}
+
+export function updateCapabilityCatalogPublishabilityRepairIds(
+  pending: Set<string>, accepted: SystemCapability[], rejected: SystemCapability[],
+): void {
+  const ids = (capability: SystemCapability) => (capability.criticality_factors || [])
+    .filter(factor => factor.startsWith('catalog-candidate:'))
+    .map(factor => factor.slice('catalog-candidate:'.length));
+  accepted.flatMap(ids).forEach(candidateId => pending.delete(candidateId));
+  rejected.flatMap(ids).forEach(candidateId => pending.add(candidateId));
+}
+
 function capabilityCatalogRepairBudget(requiredFamilyCount: number): {
   maxCycles: number;
   noProgressRetries: number;

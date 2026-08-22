@@ -580,6 +580,42 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
   });
 
+  it('targets rejected outcomes even when their evidence family is already covered', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['workspace', 'software understanding'], evidence: [] };
+    args.behaviorSurfaces = [{
+      id: 'workspace', name: 'Workspace MCP Tool Surface', category: 'internal', evidence_kind: 'behavior-surface',
+      evidence_examples: ['get_agent_context', 'get_product_map'],
+      criticality_factors: ["2 message entry points form one cohesive behavior family ('workspace')"],
+      operations: anchorOp('workspace'), related_entities: [], related_domains: ['workspace'],
+    }];
+    const accepted = ['Understand software behavior', 'Coordinate agent work', 'Correlate runtime signals']
+      .map((name, index) => cap({
+        id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`,
+        operations: anchorOp(name),
+        criticality_factors: index === 0 ? ['catalog-candidate:workspace'] : [],
+      }));
+    const rejected = cap({
+      id: 'review-change-risk', name: 'Review change risk', description: '', operations: anchorOp('review-change-risk'),
+      criticality_factors: ['catalog-candidate:workspace'],
+    });
+    const repaired = { ...rejected, description: 'Shows engineers which connected behavior and tests may be affected before a software change.' };
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      return calls.length === 1 ? [...accepted, rejected] : [repaired];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].behaviorSurfaces.map((candidate: SystemCapability) => candidate.id)).toContain('workspace');
+    expect(calls[1].qualityNudge).toContain("Preserve each rejected item's distinct product outcome");
+    expect(out.map(capability => capability.name)).toEqual([...accepted.map(capability => capability.name), repaired.name]);
+  });
+
   it('does not make an uncorroborated delivery surface a mandatory product family', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
