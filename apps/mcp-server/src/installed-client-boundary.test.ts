@@ -10,6 +10,11 @@ import {
   INSTALLED_TOOL_NAMES,
   normalizeConceptualAnalysisParams,
 } from './installed-client-server';
+import {
+  iterateDeployableChildCas,
+  materializeDeployableCasTree,
+  prepareDeployableCasProjection,
+} from './installed-client-runtime';
 
 const root = path.resolve(__dirname, '..');
 const dist = path.join(root, 'dist');
@@ -33,6 +38,15 @@ test('installed package contains only the lightweight client artifacts', () => {
   assert.equal(existsSync(path.join(dist, 'grammars')), false);
   assert.equal(existsSync(path.join(dist, 'server.cjs')), true);
   assert.equal(existsSync(path.join(dist, 'cli.cjs')), true);
+});
+
+test('installed deployable-analysis boundary preserves the hosted root without constructing sub-CAS projections', () => {
+  const output = { id: 'root', children: [{ id: 'hosted-child' }] };
+  assert.equal(materializeDeployableCasTree(output), output);
+  const projection = prepareDeployableCasProjection(output);
+  assert.equal(projection.root, output);
+  assert.deepEqual(projection.analysis, { promoted: false, units: [] });
+  assert.deepEqual([...iterateDeployableChildCas(output, projection)], []);
 });
 
 test('installed bundle graph excludes hosted analyzer implementation', () => {

@@ -94,3 +94,19 @@ export function resolveDevGitSha(): string {
 export function materializeDeployableCasTree<T>(output: T): T {
   return output;
 }
+
+export interface InstalledDeployableCasProjection<T> {
+  root: T;
+  analysis: { promoted: false; units: never[] };
+}
+
+export function prepareDeployableCasProjection<T>(output: T): InstalledDeployableCasProjection<T> {
+  return { root: output, analysis: { promoted: false, units: [] } };
+}
+
+export function* iterateDeployableChildCas<T>(
+  _output: T,
+  _prepared?: InstalledDeployableCasProjection<T>,
+): Generator<T> {
+  return;
+}
