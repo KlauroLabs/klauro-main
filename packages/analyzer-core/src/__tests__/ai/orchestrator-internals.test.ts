@@ -8148,6 +8148,37 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('does not preserve an accepted delivery-surface title that still fails the product outcome contract', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Handle Fab work surfaces',
+        description: 'Coordinates overlapping work claims before collaborators change the same code.',
+        category: 'core', candidate_ids: ['fabric-surface'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Klauro',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['collaboration'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'fabric-surface', name: 'Fab MCP Tool Surface', structural_label: 'Fab MCP Tool Surface',
+          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved',
+          evidence_role_reasons: ['first-party-product-delivery-surface-requires-outcome-mapping'],
+          evidence_examples: ['claim_work', 'release_work'], related_domains: ['work'],
+          criticality_factors: [], operations: [],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['collaboration'], evidence: [] },
+        budgetMs: 30000, exactCapabilityLimit: 1, acceptedOutcomeNames: ['Handle Fab work surfaces'],
+      });
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('anchors product-language catalog entries to cited structural candidate ids', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
@@ -10955,7 +10986,7 @@ describe('enterprise AI semantic guards', () => {
       target,
     ).reason).toMatch(/unsupported-(?:marketing-language|target-value-claim)/);
     expect(orch.validateElementDescription(
-      'Access Enterprise Dashboard gives users one place to review EnterpriseOrder records and compare order details.',
+      'Access Enterprise Dashboard gives users one place to review enterprise orders and compare order details.',
       target,
     ).ok).toBe(true);
   });
@@ -10966,7 +10997,7 @@ describe('enterprise AI semantic guards', () => {
       operations: ['Process page Enterprise Dashboard'], relatedEntities: ['EnterpriseOrder'], relatedDomains: ['enterprise-orders'],
     };
     expect(orch.validateElementDescription(
-      'Access Enterprise Dashboard gives users a centralized interface for managing EnterpriseOrder workflows and order activity.',
+      'Access Enterprise Dashboard gives users a centralized interface for managing enterprise order workflows and order activity.',
       target,
     ).reason).toBe('read-only-capability-claims-mutation');
   });
@@ -10979,6 +11010,29 @@ describe('enterprise AI semantic guards', () => {
     const description = 'Track codebase change history records every analyzed revision and its changed nodes, edges, entry points, exit points, timestamps, commit messages, and authors so users can compare how software relationships evolve and review the resulting impact across the entire codebase.';
     expect(description.split(/\s+/)).toHaveLength(39);
     expect(orch.validateElementDescription(description, target).reason).toBe('description-too-long');
+  });
+
+  it('rejects implementation-shaped capability prose before publication', () => {
+    const target = {
+      id: 'cap_history', name: 'Track codebase change history', kind: 'capability',
+      operations: ['Read change history'], relatedEntities: ['ChangeHistoryEntry'], relatedDomains: ['change-history'],
+    };
+    expect(orch.validateElementDescription(
+      'Track codebase change history handles messages to preserve each ChangeHistoryEntry for later review.',
+      target,
+    ).reason).toBe('message-handler-scaffolding');
+    expect(orch.validateElementDescription(
+      'Track codebase change history preserves each ChangeHistoryEntry so engineers can compare analyzed revisions over time.',
+      target,
+    ).reason).toBe('raw-related-entity-identifier');
+    expect(orch.validateElementDescription(
+      'Track codebase change history compares entry points, method calls, and graph nodes across analyzed revisions.',
+      target,
+    ).reason).toBe('implementation-graph-inventory');
+    expect(orch.validateElementDescription(
+      'Track codebase change history compares analyzed revisions so engineers can see how software behavior changed over time.',
+      target,
+    ).ok).toBe(true);
   });
 
   it('rejects fallback prose that contradicts resolved capability evidence', () => {

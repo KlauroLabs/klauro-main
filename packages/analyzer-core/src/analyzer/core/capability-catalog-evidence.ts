@@ -132,11 +132,28 @@ export function capabilityOutcomeRestatesDeliveryOperation(
     signal?.productDocTitle, signal?.productDocSummary, signal?.manifestDescription, signal?.summary,
   ].filter(Boolean).join(' ')));
   const usesDeliveryScaffolding = /\b(?:mcp|tools?|surface)\b/i.test(name);
+  const usesGenericDeliveryAction = /^(?:handle|manage|process)(?:s|es|ing)?\b/i.test(name.trim());
   const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
   const copiesOperationPhrase = operationPhrases.some(operation =>
     operation.every((token, index) => outcomeTokenMatches(words[index] || '', new Set([token]))));
-  return words.length === 0 || usesDeliveryScaffolding || repeatsActionAsSubject ||
+  return words.length === 0 || usesDeliveryScaffolding || usesGenericDeliveryAction || repeatsActionAsSubject ||
     (copiesOperationPhrase && !outcomeTokenMatches(words[0], firstPartyTokens)) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
+}
+
+export function capabilityOutcomeMisusesCoordination(
+  name: string,
+  citedCandidates: SystemCapability[],
+): boolean {
+  if (!/^coordinate(?:s|d|ing)?\b/i.test(name.trim())) return false;
+  const coordinationEvidence = new Set(citedCandidates.flatMap(candidate => outcomeIdentityTokens([
+    candidate.name,
+    candidate.structural_label,
+    ...(candidate.related_domains || []),
+    ...(candidate.evidence_examples || []),
+  ].filter(Boolean).join(' '))));
+  return !['claim', 'collision', 'conflict', 'concurrent', 'collaborat', 'overlap', 'participant', 'reserv'].some(signal =>
+    [...coordinationEvidence].some(token => token.startsWith(signal))
+  );
 }
 
 export function capabilityOutcomeUsesDeliverySubject(name: string, citedCandidates: SystemCapability[]): boolean {
@@ -191,6 +208,32 @@ export function capabilityOutcomeNameUnsupportedTokens(
   return hasRecurringSubject && everyUnsupportedTokenIsOperationBacked && matchedOperations.size >= 2
     ? []
     : unsupportedTokens;
+}
+
+export function capabilityOutcomeScopeFailure(
+  name: string,
+  citedCandidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
+  acceptedOutcome = false,
+): string[] {
+  if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal)) return ['delivery-operation-restatement'];
+  if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
+  if (acceptedOutcome) return [];
+  if (!capabilityOutcomeUsesDeliverySubject(name, citedCandidates)) return ['delivery-subject-missing'];
+  return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
+}
+
+export function capabilityDescriptionProductLanguageFailure(
+  description: string,
+  relatedEntities: readonly string[],
+): string | undefined {
+  if (/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i.test(description)) return 'message-handler-scaffolding';
+  if (relatedEntities.some(entity =>
+    (/[a-z0-9][A-Z]|[_:$]/.test(entity) || /(?:Config|DTO|Entity|Entry|Model|Record|Schema)$/i.test(entity)) &&
+    new RegExp(`\\b${entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(description)
+  )) return 'raw-related-entity-identifier';
+  const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|method calls?|graph nodes?|graph edges?)\b/gi) || [];
+  return new Set(graphInventoryTerms.map(term => term.toLowerCase())).size >= 2 ? 'implementation-graph-inventory' : undefined;
 }
 
 export function productTextCorroboratesCapability(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {

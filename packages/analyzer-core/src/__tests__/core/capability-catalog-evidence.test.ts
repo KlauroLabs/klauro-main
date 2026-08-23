@@ -2,6 +2,7 @@ import {
   capabilityCatalogAiPhaseStatus,
   capabilityCitesRequiredEvidence,
   capabilityEvidenceSubjectTokens,
+  capabilityOutcomeMisusesCoordination,
   capabilityOutcomeRestatesDeliveryOperation,
   capabilityOutcomeUsesDeliverySubject,
   capabilityEvidencePublicationFailure,
@@ -376,6 +377,15 @@ describe('capability evidence roles', () => {
     expect(capabilityEvidenceSubjectTokens(fabric)).toEqual(['fab', 'work']);
     expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate overlapping work', [fabric])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Handle Fab work surfaces', [fabric])).toBe(true);
+    expect(capabilityOutcomeMisusesCoordination('Coordinate overlapping work', [fabric])).toBe(false);
+    expect(capabilityOutcomeMisusesCoordination('Coordinate CAS behavior relationships', [{
+      ...fabric,
+      name: 'CAS relationship graph',
+      structural_label: 'CAS relationship graph',
+      related_domains: ['codebase analysis'],
+      evidence_examples: ['get_relationships', 'trace_behavior'],
+    }])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate work with', [fabric])).toBe(true);
     fabric.evidence_examples = ['analyze_codebase', 'sync_codebase', 'get_codebase_summary'];
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(false);

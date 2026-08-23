@@ -161,7 +161,7 @@ import { buildCasTerminality } from './terminality';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
-  capabilityOutcomeNameUnsupportedTokens, capabilityOutcomeRestatesDeliveryOperation, capabilityOutcomeUsesDeliverySubject,
+  capabilityDescriptionProductLanguageFailure, capabilityOutcomeScopeFailure,
   capabilityEvidencePublicationFailure,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogCountBounds, catalogEntityCandidateGroups, catalogEvidenceCoverageFailure,
@@ -9588,7 +9588,7 @@ export class AnalyzerOrchestrator {
         .map((value: unknown) => String(value || ''))
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
       const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
-      const unsupportedOutcomeTokens = input.acceptedOutcomeNames?.some(existing => existing.toLowerCase() === name.toLowerCase()) ? [] : capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal) ? ['delivery-operation-restatement'] : !capabilityOutcomeUsesDeliverySubject(name, citedCandidates) ? ['delivery-subject-missing'] : capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
+      const unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedCandidates, signal, input.acceptedOutcomeNames?.some(existing => existing.toLowerCase() === name.toLowerCase()));
       if (candidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
         debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, candidateIds);
         continue;
@@ -12173,6 +12173,7 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'raw-route-restatement' };
     }
     if (target.kind === 'capability') {
+      const productLanguageFailure = capabilityDescriptionProductLanguageFailure(cleaned, target.relatedEntities || []); if (productLanguageFailure) return { ok: false, reason: productLanguageFailure };
       if (
         target.artifactType === 'infrastructure' &&
         /\b(?:shell|batch|powershell)\s+(?:scripts?|commands?)\b|\b(?:scripts?|source files?)\s+to\s+(?:provision|deploy|configure|manage|create|update)\b/i.test(cleaned)
@@ -13891,7 +13892,7 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): Record<string, unknown> {
     return {
-      version: 'klauro-ai-element-description-contract-v3-no-scaffold-templates',
+      version: 'klauro-ai-element-description-contract-v4-product-language',
       goal: 'Describe each item by what it MEANS in this product — what it lets the product\'s users or operators do, or what real concept it represents — grounded in the data entities and product domain. Describe product value, not CRUD plumbing or analysis terminology.',
       systemName,
       productDomain: enhancedSystemPurpose?.primary_domain,
@@ -13906,21 +13907,20 @@ export class AnalyzerOrchestrator {
         'One sentence (two only if needed for clarity); capability descriptions must contain no more than 32 words.',
         'Start directly with the item name or concrete product behavior; never prefix it with "The" plus an analysis label such as capability, feature, module, component, or functionality.',
         'Say what it lets the product\'s users or operators DO, or what concept it represents in THIS product, in plain product language a new engineer or PM would understand.',
-        'Ground the meaning in the related entities and the product domain — name the concrete user-facing concept (e.g. crypto holdings, invoices, access policies, market signals), not the database operation.',
+        'Ground the meaning in the related entities and the product domain — name the concrete user-facing concept (e.g. crypto holdings, invoices, access policies, market signals), not the database operation. Humanize code-shaped relatedEntities into ordinary words (ChangeHistoryEntry becomes change history); never copy identifiers or type names.',
         'Lead with product meaning/value. Do NOT lead with or center on create/update/delete, lifecycle, records, routes, or file mechanics.',
       ],
       forbidden_claims: [
         'Do not write no-information scaffolds: a bare "Lets users <verb> <noun>" whose verb/noun merely restate the item name, or "The X capability owns the Y lifecycle" — every sentence must add concrete records/decisions/workflows and why they matter, beyond what the name already says.',
-        'Do not describe the item as a CRUD lifecycle or as creating/updating/deleting records, and do not restate route counts or file paths — that is plumbing, not the capability. Describe what it MEANS to users.',
+        'Do not describe the item as a CRUD lifecycle or as creating/updating/deleting records, and do not restate route counts, file paths, entry points, method calls, nodes, or edges — that is plumbing, not the capability. Describe what it MEANS to users.',
         'Do not restate the supplied currentDescription; use it only for the underlying facts.',
         'Do not use marketing fluff: seamless, robust, efficient, compliant, productivity, business value, streamline, insights.',
-        'Do not invent behavior beyond the entities, domain, and item evidence.',
+        'Do not invent behavior beyond the entities, domain, and item evidence. Never say that an item handles or processes messages; translate message delivery into the product outcome it supports.',
       ],
       firstPartyProductOverview: projectTextSignal.productDocSummary,
       firstPartyProductTerminology: (projectTextSignal.productVocabulary || []).slice(0, 120),
     };
   }
-
   private buildProjectTextInterpretationFacts(projectTextSignal: ProjectTextSignal): Record<string, unknown> {
     const hasReadmeFraming = Boolean(projectTextSignal.productDocTitle || projectTextSignal.productDocSummary);
     if (!projectTextSignal.summary && projectTextSignal.concepts.length === 0 && !hasReadmeFraming) return {};
