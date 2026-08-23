@@ -324,6 +324,29 @@ describe('capability catalog audience evaluation', () => {
     }));
   });
 
+  it('rejects task management and synchronization claims absent from advisory evidence', () => {
+    const coordination = capability(
+      'Coordinate work across analysis agents',
+      'Coordinate work across analysis agents lets users manage and synchronize tasks between different analysis agents.',
+    );
+    coordination.operations = [
+      { entry_point_id: 'claim', entry_point_type: 'message', action: 'Claim work' },
+      { entry_point_id: 'detect', entry_point_type: 'message', action: 'Detect collisions' },
+      { entry_point_id: 'release', entry_point_type: 'message', action: 'Release work' },
+    ];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [coordination], [], [], ['Fabric advisory coordination', 'overlapping codebase work'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      target: 'description',
+      reasons: expect.arrayContaining(['unsupported-exclusivity-claim']),
+      flaggedTokens: expect.arrayContaining(['manage', 'synchronize tasks']),
+    }));
+  });
+
   it('rejects internal mechanisms in otherwise grounded product descriptions', () => {
     const evaluation = evaluateCapabilityCatalogAudience([
       capability(
