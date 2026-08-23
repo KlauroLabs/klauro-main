@@ -573,6 +573,21 @@ export function createServer(): McpServer {
     inputSchema: { path: z.string() },
   }, async ({ path }: any) => json(await hostedProjectQuery(path, 'get_framework_depth_report', {})));
 
+  register('get_cross_repo_contracts', {
+    description: 'Retrieve bounded, evidence-backed provider/consumer contracts, links, journeys, and gaps from a hosted workspace CAS.',
+    inputSchema: {
+      path: z.string().describe('Any bound project path, used to resolve the hosted server and account.'),
+      workspace_id: z.string().describe('Hosted account workspace id from list_workspaces.'),
+      limit: z.number().int().positive().max(500).optional(),
+      offset: z.number().int().nonnegative().optional(),
+      journey_limit: z.number().int().positive().max(100).optional(),
+    },
+  }, async ({ path: projectPath, workspace_id, ...params }: any) => json(await hostedCoordinationGet(
+    projectPath,
+    `/api/workspaces/${encodeURIComponent(workspace_id)}/contracts`,
+    params,
+  )));
+
   register('get_runtime_instrumentation_plan', {
     description: 'Turn hosted runtime/static links into concrete event contracts and instrumentation points.',
     inputSchema: { path: z.string(), limit: z.number().int().positive().max(500).optional() },

@@ -109,7 +109,7 @@ function assertCheck(condition, label, failures) {
 }
 
 const failures = [];
-const expectedInstalledToolCount = 46;
+const expectedInstalledToolCount = 47;
 const requiredInstalledTools = [
   'analyze_codebase',
   'resolve_agent_analysis',
@@ -126,6 +126,7 @@ const requiredInstalledTools = [
   'evaluate_analysis_truth',
   'get_semantic_map',
   'get_framework_depth_report',
+  'get_cross_repo_contracts',
   'get_runtime_instrumentation_plan',
   'evaluate_agent_task_proof',
   'evaluate_agent_readiness',

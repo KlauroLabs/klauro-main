@@ -8,7 +8,7 @@ export const INSTALLED_TOOL_NAMES = [
   'get_watch_status', 'list_watches', 'poll_watch_changes',
   'get_module_health',
   'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report',
-  'get_runtime_instrumentation_plan', 'evaluate_agent_task_proof', 'evaluate_agent_readiness',
+  'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'evaluate_agent_task_proof', 'evaluate_agent_readiness',
   'fab_claim_work', 'fab_extend', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work',
   'check_conceptual_conflicts', 'plan_intent_merge', 'plan_parallel_work',
   'list_workspaces', 'run_workspace_analysis', 'get_workspace_analysis',

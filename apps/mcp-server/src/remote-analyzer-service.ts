@@ -14,6 +14,7 @@ import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
+import { selectWorkspaceCrossRepoContracts } from './workspace-contracts';
 import { getClaimStreams, heartbeatClaimStream, publishClaimStream, releaseClaimStream, type AgentKind, type ConceptualCoordinate, type DeclaredContract } from './coordination';
 import { appendClaim, checkEditLock, describeCursorGap, extendClaim, getActiveClaims, getBoardInfo, getPresence, readClaimLog, releaseAgentWithReason, releaseClaimById, warnIfEphemeralCoordDir, type ClaimLogEntry } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
@@ -2330,6 +2331,29 @@ async function handleAccountApi(
 
   }
 
+  const workspaceContractsMatch = route.match(/^\/api\/workspaces\/([^/]+)\/contracts$/);
+  if (workspaceContractsMatch && request.method === 'GET') {
+    const workspaceId = decodeURIComponent(workspaceContractsMatch[1]);
+    await accounts.listProjects(userId, workspaceId);
+    if (!workspaceAnalyses) return { statusCode: 200, body: { status: 'none', workspace_id: workspaceId } };
+    const record = await workspaceAnalyses.load(workspaceId);
+    const pending = workspaceAnalyses.isPending(workspaceId);
+    if (!record) return { statusCode: 200, body: { status: pending ? 'pending' : 'none', workspace_id: workspaceId } };
+    const params = new URL(request.url || '', 'http://localhost').searchParams;
+    return {
+      statusCode: 200,
+      body: {
+        status: pending ? 'pending' : 'ready',
+        workspace_id: workspaceId,
+        contracts: selectWorkspaceCrossRepoContracts(record.graph, {
+          limit: parsePositiveBoundedInt(params.get('limit'), 100, 500),
+          offset: parseNonNegativeInt(params.get('offset'), 0),
+          journey_limit: parsePositiveBoundedInt(params.get('journey_limit'), 25, 100),
+        }),
+      },
+    };
+  }
+
   const workspaceAnalysisMatch = route.match(/^\/api\/workspaces\/([^/]+)\/analysis$/);
   if (workspaceAnalysisMatch && request.method === 'GET') {
     const workspaceId = decodeURIComponent(workspaceAnalysisMatch[1]);
@@ -3678,6 +3702,16 @@ function safeFileName(value: string): string {
 function clampActivityLimit(raw: string | null): number {
   const parsed = raw !== null ? Number(raw) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 200) : 50;
+}
+
+function parsePositiveBoundedInt(raw: string | null, fallback: number, maximum: number): number {
+  const parsed = raw !== null ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), maximum) : fallback;
+}
+
+function parseNonNegativeInt(raw: string | null, fallback: number): number {
+  const parsed = raw !== null ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
 const ACTIVITY_DURATION_MATCH_WINDOW_MS = 5 * 60 * 1000;

@@ -25,7 +25,7 @@ import { INSTALLED_TOOL_NAMES } from './installed-client-server';
  * tool surface is deliberately hosted-only (admin, benchmark, watcher-CLI,
  * and internal-analysis-debugging tools with no customer-facing consumer),
  * and copying all of it onto the client would trade a curated, agent-usable
- * 46-tool surface for an undefended ~200-tool one (task #130's own
+ * 47-tool surface for an undefended ~200-tool one (task #130's own
  * instructions: "I would rather have a defended 35 than an undefended 179").
  *
  * Instead this gate encodes the tools doctrine explicitly promises an agent
@@ -65,6 +65,7 @@ const DOCTRINE_REQUIRED_TOOLS: DoctrineTool[] = [
   { name: 'evaluate_analysis_truth', source: 'AGENTS.md agent operating loop' },
   { name: 'get_semantic_map', source: 'AGENTS.md agent operating loop' },
   { name: 'get_framework_depth_report', source: 'AGENTS.md agent operating loop' },
+  { name: 'get_cross_repo_contracts', source: 'AGENTS.md agent operating loop' },
   { name: 'get_runtime_instrumentation_plan', source: 'AGENTS.md agent operating loop' },
   { name: 'evaluate_agent_task_proof', source: 'AGENTS.md agent operating loop' },
   { name: 'evaluate_agent_readiness', source: 'AGENTS.md agent operating loop' },

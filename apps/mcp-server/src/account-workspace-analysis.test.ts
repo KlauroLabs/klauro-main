@@ -344,6 +344,15 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     assert.equal(readyBody.analysis.codebase_count, 2);
     assert.ok(readyBody.analysis.nodes || readyBody.analysis.codebases?.length === 2);
 
+    const contractsRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/contracts?limit=1&journey_limit=1`, undefined, token);
+    assert.equal(contractsRes.statusCode, 200);
+    const contractsBody = JSON.parse(contractsRes.body);
+    assert.equal(contractsBody.status, 'ready');
+    assert.equal(contractsBody.contracts.source, 'workspace-cas');
+    assert.equal(contractsBody.contracts.repository_count, 2);
+    assert.equal(contractsBody.contracts.interfaces.length <= 1, true);
+    assert.equal(contractsBody.contracts.journeys.length <= 1, true);
+
     // A brand-new, unrelated workspace (no linked/analyzed projects) must
     // never see this workspace's data — evidence-gated membership only.
     const otherRegisterRes = await request(port, 'POST', '/api/auth/register', {
@@ -361,6 +370,8 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     // Cross-workspace access must be denied (404), not leak data.
     const crossRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, otherToken);
     assert.equal(crossRes.statusCode, 404);
+    const crossContractsRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/contracts`, undefined, otherToken);
+    assert.equal(crossContractsRes.statusCode, 404);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
