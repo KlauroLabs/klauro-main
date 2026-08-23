@@ -389,7 +389,9 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate work with', [fabric])).toBe(true);
     fabric.evidence_examples = ['analyze_codebase', 'sync_codebase', 'get_codebase_summary'];
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(false);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Understand Fab work surfaces', [fabric])).toBe(true);
     fabric.evidence_examples = ['get_agent_context', 'get_agent_readiness', 'get_agent_tool_plan'];
     expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Review agent context', [fabric])).toBe(false);
