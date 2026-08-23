@@ -106,7 +106,31 @@ export function capabilityEvidenceSubjectTokens(
     ...(candidate.related_domains || []),
     ...entityNames,
   ].filter(Boolean).join(' ')).filter(token => !ignored.has(token));
-  return [...new Set(tokens)].sort();
+  const exampleCounts = new Map<string, number>();
+  for (const example of candidate.evidence_examples || []) {
+    for (const token of new Set(outcomeIdentityTokens(example).filter(value => !ignored.has(value)))) {
+      exampleCounts.set(token, (exampleCounts.get(token) || 0) + 1);
+    }
+  }
+  const recurringExampleTokens = [...exampleCounts.entries()]
+    .filter(([, count]) => count >= Math.min(2, candidate.evidence_examples?.length || 1))
+    .map(([token]) => token);
+  return [...new Set([...tokens, ...recurringExampleTokens])].sort();
+}
+
+const DELIVERY_OPERATION_VERBS = new Set([
+  'check', 'claim', 'extend', 'fetch', 'get', 'install', 'list', 'load', 'read',
+  'release', 'run', 'show', 'start', 'stop', 'sync',
+]);
+
+export function capabilityOutcomeRestatesDeliveryOperation(
+  name: string,
+  citedCandidates: SystemCapability[],
+): boolean {
+  if (!citedCandidates.some(candidate => candidate.evidence_kind === 'behavior-surface')) return false;
+  const words = String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.length === 0 || DELIVERY_OPERATION_VERBS.has(words[0])) return true;
+  return new Set(['at', 'by', 'for', 'from', 'in', 'of', 'on', 'to', 'via', 'with']).has(words[words.length - 1]);
 }
 
 export function capabilityOutcomeNameUnsupportedTokens(
@@ -128,6 +152,7 @@ export function capabilityOutcomeNameUnsupportedTokens(
     candidate.structural_label,
     ...(candidate.related_domains || []),
     ...(candidate.related_entities || []).map(entityId => entityId.replace(/^entity[_:-]?/i, '')),
+    ...(candidate.evidence_examples || []),
   ].filter(Boolean).join(' '))));
   return subjectTokens.filter(token =>
     !outcomeTokenMatches(token, firstPartyTokens) && !outcomeTokenMatches(token, citedIdentityTokens)

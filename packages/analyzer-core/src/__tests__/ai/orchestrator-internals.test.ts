@@ -42,15 +42,17 @@ test('catalog quality repair targets and retains independently omitted evidence 
     criticality_factors: [`catalog-candidate:${candidate.id}`],
   });
   const requested: string[][] = [];
-  let cycle = 0;
+  const requestedById = new Map<string, number>();
   jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async (input: any) => {
-    requested.push(input.candidateCapabilities.map((candidate: any) => candidate.id));
-    cycle++;
-    if (cycle === 1) return candidates.slice(0, 20).map(candidate => authored(candidate));
-    if (cycle < 5) return input.candidateCapabilities
-      .filter((_: any, index: number) => index % 2 === 0)
-      .map((candidate: any) => authored(candidate));
-    return input.candidateCapabilities.map((candidate: any) => authored(candidate));
+    const ids = input.candidateCapabilities.map((candidate: any) => candidate.id);
+    requested.push(ids);
+    return input.candidateCapabilities.flatMap((candidate: any) => {
+      const attempt = (requestedById.get(candidate.id) || 0) + 1;
+      requestedById.set(candidate.id, attempt);
+      const index = Number(candidate.id.slice('family-'.length));
+      const acceptedAttempt = index < 20 ? 1 : index < 29 ? 2 : index < 33 ? 3 : index < 35 ? 4 : 5;
+      return attempt >= acceptedAttempt ? [authored(candidate)] : [];
+    });
   });
   jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
 
@@ -75,7 +77,11 @@ test('catalog quality repair targets and retains independently omitted evidence 
     budgetMs: 30000,
   });
 
-  expect(requested.map(ids => ids.length)).toEqual([37, 17, 8, 4, 2]);
+  expect(requested).toHaveLength(68);
+  expect(requested.every(ids => ids.length === 1)).toBe(true);
+  expect([...requestedById.values()].sort((left, right) => left - right)).toEqual([
+    ...Array(20).fill(1), ...Array(9).fill(2), ...Array(4).fill(3), ...Array(2).fill(4), ...Array(2).fill(5),
+  ]);
   expect(result).toHaveLength(37);
   expect(purpose.capability_catalog_coverage.status).toBe('accepted');
 });
@@ -92,10 +98,11 @@ test('catalog repair stops after bounded no-progress retries', async () => {
     criticality: 'medium',
     criticality_factors: [],
   }));
-  let requests = 0;
-  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async () => {
-    requests++;
-    if (requests > 1) return [];
+  const requests: string[][] = [];
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async (input: any) => {
+    const ids = input.candidateCapabilities.map((candidate: any) => candidate.id);
+    requests.push(ids);
+    if (!ids.includes('stalled-0')) return [];
     return [{
       ...candidates[0],
       name: 'Review product family zero',
@@ -128,7 +135,8 @@ test('catalog repair stops after bounded no-progress retries', async () => {
     budgetMs: 30000,
   });
 
-  expect(requests).toBe(3);
+  expect(requests).toHaveLength(16);
+  expect(requests.every(ids => ids.length === 1)).toBe(true);
   expect(result).toHaveLength(1);
   expect(purpose.capability_catalog_coverage.status).toBe('partial');
   expect(purpose.capability_catalog_coverage.reason).toMatch(/omitted 5 product-entity evidence families/);

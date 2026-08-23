@@ -2,6 +2,7 @@ import {
   capabilityCatalogAiPhaseStatus,
   capabilityCitesRequiredEvidence,
   capabilityEvidenceSubjectTokens,
+  capabilityOutcomeRestatesDeliveryOperation,
   capabilityEvidencePublicationFailure,
   capabilityOutcomeNameUnsupportedTokens,
   capabilityRequiresCatalogCoverage,
@@ -342,6 +343,17 @@ describe('capability evidence roles', () => {
     history.related_entities = ['entity_change_history_entry'];
 
     expect(capabilityEvidenceSubjectTokens(history, ['ChangeHistoryEntry'])).toEqual(['change', 'history']);
+  });
+
+  test('derives recurring operation subjects while rejecting command-shaped delivery outcomes', () => {
+    const fabric = candidate('fabric', 'Fab MCP Tool Surface', 'internal', ['Handle']);
+    fabric.evidence_kind = 'behavior-surface';
+    fabric.evidence_examples = ['claim_work', 'extend_work', 'list_active_work', 'release_work'];
+
+    expect(capabilityEvidenceSubjectTokens(fabric)).toEqual(['fab', 'work']);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate overlapping work', [fabric])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate work with', [fabric])).toBe(true);
   });
 
   test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {
