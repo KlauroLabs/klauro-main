@@ -2334,7 +2334,6 @@ async function handleAccountApi(
   const workspaceAnalysisMatch = route.match(/^\/api\/workspaces\/([^/]+)\/analysis$/);
   if (workspaceAnalysisMatch && request.method === 'GET') {
     const workspaceId = decodeURIComponent(workspaceAnalysisMatch[1]);
-
     await accounts.listProjects(userId, workspaceId);
     if (!workspaceAnalyses) {
       return { statusCode: 200, body: { status: 'none', workspace_id: workspaceId } };
