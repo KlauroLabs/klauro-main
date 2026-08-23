@@ -68,7 +68,7 @@ function normalizedSubjectTokens(value: string): Set<string> {
 
 function outcomeIdentityTokens(value: string): string[] {
   const ignored = new Set([
-    'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'with',
+    'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'using', 'with',
     'ability', 'behavior', 'capability', 'management', 'operation', 'operations', 'surface', 'tool', 'tools', 'workflow',
   ]);
   return String(value || '')
@@ -76,7 +76,7 @@ function outcomeIdentityTokens(value: string): string[] {
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(token => token.length >= 3 && !ignored.has(token))
-    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
+    .map(token => token.length >= 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
 }
 
 function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {

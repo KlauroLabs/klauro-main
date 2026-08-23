@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
 import {
   capabilitiesWithoutDescriptionDisposition,
+  capabilityIdentityPendingDescriptionRepair,
   scheduleRejectedCapabilityDescriptions,
   selectCapabilityCatalogPromptCandidates,
   uncoveredCapabilityCatalogCandidateIds,
   capabilityTitlesShareOutcome,
   capabilityCatalogTargetedRepairBatches,
   collectCapabilityCatalogEvidenceBatches,
+  updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
 
 test('prompt selection represents every required entity family beyond the baseline window', () => {
@@ -143,6 +145,36 @@ test('description scheduling preserves catalog outcomes beyond the element budge
     ['undisposed'],
   );
   assert.equal(capabilities[1].description_generation.status, 'ai_rejected');
+});
+
+test('description rejection preserves the grounded identity but never the rejected prose', () => {
+  const capability = {
+    id: 'workspace', name: 'Understand workspace context', description: 'Unsupported tracking insights.',
+    description_source: 'ai', description_generation: { status: 'ai_applied', attempted: true },
+    criticality_factors: ['catalog-candidate:cap_workspace'],
+  } as SystemCapability;
+
+  const retained = capabilityIdentityPendingDescriptionRepair(capability, 'description-marketing-language');
+
+  assert.equal(retained?.name, capability.name);
+  assert.equal(retained?.description, '');
+  assert.equal(retained?.description_source, undefined);
+  assert.deepEqual(retained?.description_generation, {
+    status: 'ai_rejected', attempted: true, reason: 'description-marketing-language',
+  });
+  assert.equal(capabilityIdentityPendingDescriptionRepair(capability, 'bare-noun-name'), undefined);
+});
+
+test('accepted grounded identity clears an earlier description-repair request for the same family', () => {
+  const pending = new Set<string>();
+  const candidate = (description?: string) => ({
+    id: 'workspace', name: 'Understand workspace context', description,
+    criticality_factors: ['catalog-candidate:cap_workspace'],
+  }) as SystemCapability;
+
+  updateCapabilityCatalogPublishabilityRepairIds(pending, [candidate()], [candidate('bad')]);
+
+  assert.deepEqual([...pending], []);
 });
 
 test('targeted catalog repair converges when full passes omit different families', () => {

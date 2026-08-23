@@ -137,8 +137,8 @@ test('catalog repair stops after bounded no-progress retries', async () => {
 
   expect(requests).toHaveLength(16);
   expect(requests.every(ids => ids.length === 1)).toBe(true);
-  expect(result).toHaveLength(1);
-  expect(purpose.capability_catalog_coverage.status).toBe('partial');
+  expect(result).toHaveLength(0);
+  expect(purpose.capability_catalog_coverage.status).toBe('rejected');
   expect(purpose.capability_catalog_coverage.reason).toMatch(/omitted 5 product-entity evidence families/);
 });
 

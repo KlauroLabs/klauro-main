@@ -178,7 +178,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10416,10 +10416,10 @@ export class AnalyzerOrchestrator {
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
-          userJourneys: evidenceScoped ? [] : args.userJourneys, dataEntities: evidenceScoped ? args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
+          userJourneys: targetedRepair ? [] : args.userJourneys, dataEntities: targetedRepair ? args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
           candidateCapabilities: evidenceScoped ? catalogCandidates.filter(candidate => batchIds.has(candidate.id)) : catalogCandidates,
           behaviorSurfaces: evidenceScoped ? args.behaviorSurfaces.filter(candidate => batchIds.has(candidate.id)) : args.behaviorSurfaces,
-          externalServices: evidenceScoped ? [] : args.externalServices,
+          externalServices: targetedRepair ? [] : args.externalServices,
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
@@ -10455,16 +10455,16 @@ export class AnalyzerOrchestrator {
       const publishabilityFailures = new Map<string, number>();
       const publishabilityRejections: Array<{ name: string; description?: string; reason: string }> = [];
       const rejectedCapabilities: SystemCapability[] = [];
-      const cycleReconciled = reconciledCandidates.filter(capability => {
+      const cycleReconciled = reconciledCandidates.flatMap(capability => {
         const descriptionValidation = this.validateElementDescription(capability.description || '', this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById));
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
-        if (!failure) return true;
+        if (!failure) return [capability];
         rejectedCapabilities.push(capability);
         publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
         publishabilityRejections.push({ name: capability.name, description: capability.description, reason: failure });
-        return false;
-      });
-      updateCapabilityCatalogPublishabilityRepairIds(publishabilityRepairCandidateIds, cycleReconciled, rejectedCapabilities);
+        const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
+        return identity ? [identity] : [];
+      }); updateCapabilityCatalogPublishabilityRepairIds(publishabilityRepairCandidateIds, cycleReconciled, rejectedCapabilities);
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
       const combinedReconciled = targetedRepair
         ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled], true)
@@ -10506,7 +10506,7 @@ export class AnalyzerOrchestrator {
     const gateReason = deadlineExceeded
       ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
-    const publishGroundedPartial = reconciled.length > 0 && Boolean(qualityFailure);
+    const publishGroundedPartial = Boolean(qualityFailure) && reconciled.length >= catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length);
     if ((publishGroundedPartial || (!deadlineExceeded && !qualityFailure)) && retainedInterpretationRaw) {
       args.onInterpretationAccepted?.(retainedInterpretationRaw);
     }

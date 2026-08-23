@@ -366,7 +366,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
-    const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
     expect(out).toHaveLength(6);
     expect(calls).toHaveLength(2);
     expect(calls[0].qualityNudge).toBeUndefined();
@@ -404,7 +404,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) =>
       extracted.filter(capability => capability.description && !capability.description.includes('seamless'));
 
-    const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
     expect(out).toEqual(repaired);
     expect(calls).toHaveLength(2);
@@ -414,7 +414,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('missing');
   });
 
-  it('retries a catalog whose capability descriptions are not publishable', async () => {
+  it('preserves grounded capability identities for the dedicated description repair stage', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const extracted = [
       cap({ id: 'reports', name: 'View industry reports', description: 'Provides seamless insights into industry reports.', operations: anchorOp('reports') }),
@@ -428,10 +428,12 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       return extracted;
     };
 
-    const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
     expect(calls).toBe(2);
-    expect(out).toEqual([]);
+    expect(out).toHaveLength(4);
+    expect(out.every(capability => capability.description === '')).toBe(true);
+    expect(out.every(capability => capability.description_generation?.status === 'ai_rejected')).toBe(true);
   });
 
   it('rejects a catalog after bounded no-progress retries', async () => {
@@ -488,7 +490,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
-    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
     expect(calls).toHaveLength(2);
     expect(calls[1].qualityNudge).toContain('fabric');
     expect(calls[1].qualityNudge).toContain('claim_work');
@@ -541,7 +543,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out.map(capability => capability.name)).toContain('Review codebase change history');
   });
 
-  it('feeds description publishability failures into a grounded targeted repair', async () => {
+  it('preserves a cited behavior identity for the dedicated description repair stage', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['workspace', 'software understanding', 'agent context'], evidence: [] };
@@ -569,25 +571,22 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       operations: anchorOp('workspace-context'),
       criticality_factors: ['catalog-candidate:workspace'],
     });
-    const repairedWorkspace = {
-      ...rejectedWorkspace,
-      description: 'The workspace gives coding agents grounded software behavior, relationships, risks, and change context for the selected codebase.',
-    };
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
-      return calls.length === 1 ? [...retained, rejectedWorkspace] : [repairedWorkspace];
+      return [...retained, rejectedWorkspace];
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
-    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge).toContain('description-internal-analysis-vocabulary');
-    expect(calls[1].qualityNudge).toContain('entities, nodes, entry points, capability maps, and analysis results');
-    expect(calls[1].qualityNudge).toContain('Existing accepted outcomes');
-    expect(calls[1].qualityNudge).toContain('Use only recurring subject nouns from evidence_subject_terms or top_down_signals');
-    expect(out).toEqual([...retained, repairedWorkspace]);
+    expect(calls).toHaveLength(1);
+    expect(out).toHaveLength(6);
+    expect(out[out.length - 1]).toMatchObject({
+      name: rejectedWorkspace.name,
+      description_generation: { status: 'ai_rejected', reason: 'description-internal-analysis-vocabulary' },
+    });
+    expect(out[out.length - 1]?.description).toBe('');
   });
 
   it('adds targeted evidence without collapsing distinct accepted outcomes', async () => {
@@ -622,7 +621,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
   });
 
-  it('targets rejected outcomes even when their evidence family is already covered', async () => {
+  it('preserves a rejected description identity even when its evidence family is already covered', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['workspace', 'software understanding'], evidence: [] };
@@ -642,20 +641,18 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       id: 'review-change-risk', name: 'Review change risk', description: '', operations: anchorOp('review-change-risk'),
       criticality_factors: ['catalog-candidate:workspace'],
     });
-    const repaired = { ...rejected, description: 'Helps engineers review change risk using workspace context about connected codebase relationships.' };
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
-      return calls.length === 1 ? [...accepted, rejected] : [repaired];
+      return [...accepted, rejected];
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(2);
-    expect(calls[1].behaviorSurfaces.map((candidate: SystemCapability) => candidate.id)).toContain('workspace');
-    expect(calls[1].qualityNudge).toContain("Preserve each rejected item's distinct product outcome");
-    expect(out.map(capability => capability.name)).toEqual([...accepted.map(capability => capability.name), repaired.name]);
+    expect(calls).toHaveLength(1);
+    expect(out.map(capability => capability.name)).toEqual([...accepted.map(capability => capability.name), rejected.name]);
+    expect(out[out.length - 1]).toMatchObject({ description: '', description_generation: { status: 'ai_rejected' } });
   });
 
   it('does not make an uncorroborated delivery surface a mandatory product family', async () => {

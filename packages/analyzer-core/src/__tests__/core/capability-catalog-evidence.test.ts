@@ -362,6 +362,18 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Review agent context', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Support agents with codebase context', [fabric])).toBe(false);
+    expect(capabilityOutcomeNameUnsupportedTokens('Understand workspace behavior through capability and entity maps', [{
+      ...fabric,
+      name: 'Workspace MCP Tool Surface',
+      structural_label: 'Workspace MCP Tool Surface',
+      evidence_examples: ['get_workspace_capability_map', 'get_workspace_entity_map'],
+    }], {})).toEqual([]);
+    expect(capabilityOutcomeNameUnsupportedTokens('Assess agent readiness using agent context', [{
+      ...fabric,
+      name: 'Agent MCP Tool Surface',
+      structural_label: 'Agent MCP Tool Surface',
+      evidence_examples: ['evaluate_agent_readiness', 'get_agent_context'],
+    }], {})).toEqual([]);
     expect(capabilityOutcomeUsesDeliverySubject('Support agents with codebase context', [fabric])).toBe(true);
     expect(capabilityOutcomeUsesDeliverySubject('Build a relationship graph', [fabric])).toBe(false);
   });

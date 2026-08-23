@@ -151,8 +151,31 @@ export function updateCapabilityCatalogPublishabilityRepairIds(
   const ids = (capability: SystemCapability) => (capability.criticality_factors || [])
     .filter(factor => factor.startsWith('catalog-candidate:'))
     .map(factor => factor.slice('catalog-candidate:'.length));
-  accepted.flatMap(ids).forEach(candidateId => pending.delete(candidateId));
   rejected.flatMap(ids).forEach(candidateId => pending.add(candidateId));
+  accepted.flatMap(ids).forEach(candidateId => pending.delete(candidateId));
+}
+
+export function capabilityIdentityPendingDescriptionRepair(
+  capability: SystemCapability,
+  failure: string,
+): SystemCapability | undefined {
+  const descriptionFailure = failure === 'missing-description' ||
+    failure === 'structural-placeholder-description' ||
+    failure === 'description-too-short' ||
+    failure === 'description-too-long' ||
+    failure.startsWith('description-');
+  if (!descriptionFailure) return undefined;
+  return {
+    ...capability,
+    description: '',
+    description_source: undefined,
+    description_generation: {
+      ...(capability.description_generation || { attempted: true }),
+      status: 'ai_rejected',
+      attempted: true,
+      reason: failure,
+    },
+  };
 }
 
 function capabilityCatalogRepairBudget(requiredFamilyCount: number): {
