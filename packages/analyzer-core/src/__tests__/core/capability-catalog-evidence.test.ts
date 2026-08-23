@@ -354,6 +354,9 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate overlapping work', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate work with', [fabric])).toBe(true);
+    fabric.evidence_examples = ['get_agent_context', 'get_agent_readiness', 'get_agent_tool_plan'];
+    expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Support agents with codebase context', [fabric])).toBe(false);
   });
 
   test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {

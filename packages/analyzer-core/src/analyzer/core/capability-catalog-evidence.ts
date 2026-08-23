@@ -118,19 +118,15 @@ export function capabilityEvidenceSubjectTokens(
   return [...new Set([...tokens, ...recurringExampleTokens])].sort();
 }
 
-const DELIVERY_OPERATION_VERBS = new Set([
-  'check', 'claim', 'extend', 'fetch', 'get', 'install', 'list', 'load', 'read',
-  'release', 'run', 'show', 'start', 'stop', 'sync',
-]);
-
 export function capabilityOutcomeRestatesDeliveryOperation(
   name: string,
   citedCandidates: SystemCapability[],
 ): boolean {
   if (!citedCandidates.some(candidate => candidate.evidence_kind === 'behavior-surface')) return false;
   const words = String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  if (words.length === 0 || DELIVERY_OPERATION_VERBS.has(words[0])) return true;
-  return new Set(['at', 'by', 'for', 'from', 'in', 'of', 'on', 'to', 'via', 'with']).has(words[words.length - 1]);
+  const operationActions = new Set(citedCandidates.flatMap(candidate =>
+    (candidate.evidence_examples || []).map(example => outcomeIdentityTokens(example)[0]).filter(Boolean)));
+  return words.length === 0 || operationActions.has(words[0]) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
 }
 
 export function capabilityOutcomeNameUnsupportedTokens(
