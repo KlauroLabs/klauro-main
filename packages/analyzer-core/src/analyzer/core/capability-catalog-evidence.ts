@@ -94,6 +94,17 @@ function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
   );
 }
 
+function capabilityOutcomeCorroboratedByProductText(name: string, signal?: CapabilityCatalogProjectSignal): boolean {
+  const words = outcomeIdentityTokens(name);
+  const productTokens = new Set(outcomeIdentityTokens([
+    signal?.productDocTitle,
+    signal?.productDocSummary,
+    signal?.manifestDescription,
+    signal?.summary,
+  ].filter(Boolean).join(' ')));
+  return words.length > 1 && words.every(token => outcomeTokenMatches(token, productTokens));
+}
+
 export function capabilityEvidenceSubjectTokens(
   candidate: SystemCapability,
   entityNames: readonly string[] = [],
@@ -133,13 +144,7 @@ export function capabilityOutcomeRestatesDeliveryOperation(
     const operationPhrase = outcomeIdentityTokens(example).join(' ');
     return operationPhrase.split(' ').length >= 2 && (` ${namePhrase} `).includes(` ${operationPhrase} `);
   }));
-  const productTokens = new Set(outcomeIdentityTokens([
-    signal?.productDocTitle,
-    signal?.productDocSummary,
-    signal?.manifestDescription,
-    signal?.summary,
-  ].filter(Boolean).join(' ')));
-  const corroboratedProductOutcome = words.length > 1 && words.every(token => outcomeTokenMatches(token, productTokens));
+  const corroboratedProductOutcome = capabilityOutcomeCorroboratedByProductText(name, signal);
   const usesDeliveryScaffolding = /\b(?:mcp|tools?|surfaces?)\b/i.test(name);
   const usesGenericDeliveryAction = /^(?:handle|manage|process)(?:s|es|ing)?\b/i.test(name.trim());
   const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
@@ -227,7 +232,7 @@ export function capabilityOutcomeScopeFailure(
 ): string[] {
   if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal, acceptedOutcome)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
-  if (!capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
+  if (!capabilityOutcomeCorroboratedByProductText(name, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
 }

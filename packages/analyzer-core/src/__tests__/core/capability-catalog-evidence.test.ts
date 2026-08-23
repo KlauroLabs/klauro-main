@@ -4,6 +4,7 @@ import {
   capabilityEvidenceSubjectTokens,
   capabilityOutcomeMisusesCoordination,
   capabilityOutcomeRestatesDeliveryOperation,
+  capabilityOutcomeScopeFailure,
   capabilityOutcomeUsesDeliverySubject,
   capabilityEvidencePublicationFailure,
   capabilityOutcomeNameUnsupportedTokens,
@@ -429,6 +430,17 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeUsesDeliverySubject('Build a relationship graph', [fabric])).toBe(false);
     expect(capabilityOutcomeUsesDeliverySubject('Analyze codebase', [{ ...fabric, name: 'Analysis Tool Surface', structural_label: 'Analysis Tool Surface', related_domains: ['analysis'] }], 'Evaluates analysis truth for the selected codebase.')).toBe(true);
     expect(capabilityOutcomeUsesDeliverySubject('Understand workspace capability map', [fabric], 'Shows workspace capability relationships.')).toBe(false);
+    expect(capabilityOutcomeScopeFailure('Analyze codebase', [{
+      ...fabric,
+      name: 'Analysis Tool Surface',
+      structural_label: 'Analysis Tool Surface',
+      related_domains: ['analysis'],
+      evidence_examples: ['analyze_codebase'],
+    }], { productDocSummary: 'Klauro analyzes any codebase.' })).toEqual([]);
+    expect(capabilityOutcomeScopeFailure('Claim work in the fab', [{
+      ...fabric,
+      evidence_examples: ['claim_work'],
+    }], { productDocSummary: 'Fabric enables collaboration across overlapping work.' })).toEqual(['delivery-operation-restatement']);
     expect(capabilityOutcomeNameUnsupportedTokens('Coordinate work across overlapping codebase areas', [{
       ...fabric,
       evidence_examples: ['fab_claim_work', 'fab_check_collision', 'fab_release_work'],
