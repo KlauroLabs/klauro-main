@@ -161,7 +161,7 @@ import { buildCasTerminality } from './terminality';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
-  capabilityOutcomeNameUnsupportedTokens, capabilityOutcomeRestatesDeliveryOperation,
+  capabilityOutcomeNameUnsupportedTokens, capabilityOutcomeRestatesDeliveryOperation, capabilityOutcomeUsesDeliverySubject,
   capabilityEvidencePublicationFailure,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogCountBounds, catalogEntityCandidateGroups, catalogEvidenceCoverageFailure,
@@ -9586,7 +9586,7 @@ export class AnalyzerOrchestrator {
         .map((value: unknown) => String(value || ''))
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
       const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
-      const unsupportedOutcomeTokens = capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates) ? ['delivery-operation-restatement'] : capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
+      const unsupportedOutcomeTokens = capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal) ? ['delivery-operation-restatement'] : !capabilityOutcomeUsesDeliverySubject(name, citedCandidates) ? ['delivery-subject-missing'] : capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
       if (candidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
         debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`);
         continue;

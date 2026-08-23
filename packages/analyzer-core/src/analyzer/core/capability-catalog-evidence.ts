@@ -121,12 +121,23 @@ export function capabilityEvidenceSubjectTokens(
 export function capabilityOutcomeRestatesDeliveryOperation(
   name: string,
   citedCandidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
 ): boolean {
   if (!citedCandidates.some(candidate => candidate.evidence_kind === 'behavior-surface')) return false;
   const words = String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   const operationActions = new Set(citedCandidates.flatMap(candidate =>
     (candidate.evidence_examples || []).map(example => outcomeIdentityTokens(example)[0]).filter(Boolean)));
-  return words.length === 0 || operationActions.has(words[0]) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
+  const firstPartyTokens = new Set(outcomeIdentityTokens([
+    signal?.productDocTitle, signal?.productDocSummary, signal?.manifestDescription, signal?.summary,
+  ].filter(Boolean).join(' ')));
+  return words.length === 0 || (operationActions.has(words[0]) && !outcomeTokenMatches(words[0], firstPartyTokens)) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
+}
+
+export function capabilityOutcomeUsesDeliverySubject(name: string, citedCandidates: SystemCapability[]): boolean {
+  if (citedCandidates.length !== 1 || citedCandidates[0].evidence_kind !== 'behavior-surface') return true;
+  const nameTokens = outcomeIdentityTokens(name).slice(1);
+  const evidenceTokens = new Set(capabilityEvidenceSubjectTokens(citedCandidates[0]));
+  return nameTokens.some(token => outcomeTokenMatches(token, evidenceTokens));
 }
 
 export function capabilityOutcomeNameUnsupportedTokens(
