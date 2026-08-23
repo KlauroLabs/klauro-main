@@ -94,7 +94,11 @@ function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
   );
 }
 
-function capabilityOutcomeCorroboratedByProductText(name: string, signal?: CapabilityCatalogProjectSignal): boolean {
+function capabilityOutcomeCorroboratedByProductText(
+  name: string,
+  citedCandidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
+): boolean {
   const words = outcomeIdentityTokens(name);
   const productTokens = new Set(outcomeIdentityTokens([
     signal?.productDocTitle,
@@ -102,7 +106,12 @@ function capabilityOutcomeCorroboratedByProductText(name: string, signal?: Capab
     signal?.manifestDescription,
     signal?.summary,
   ].filter(Boolean).join(' ')));
-  return words.length > 1 && words.every(token => outcomeTokenMatches(token, productTokens));
+  if (words.length <= 1 || !outcomeTokenMatches(words[0], productTokens)) return false;
+  const subjects = words.slice(1);
+  if (!subjects.some(token => outcomeTokenMatches(token, productTokens))) return false;
+  const evidenceTokens = new Set(citedCandidates.flatMap(candidate => capabilityEvidenceSubjectTokens(candidate)));
+  return subjects.every(token =>
+    outcomeTokenMatches(token, productTokens) || outcomeTokenMatches(token, evidenceTokens));
 }
 
 export function capabilityEvidenceSubjectTokens(
@@ -144,7 +153,7 @@ export function capabilityOutcomeRestatesDeliveryOperation(
     const operationPhrase = outcomeIdentityTokens(example).join(' ');
     return operationPhrase.split(' ').length >= 2 && (` ${namePhrase} `).includes(` ${operationPhrase} `);
   }));
-  const corroboratedProductOutcome = capabilityOutcomeCorroboratedByProductText(name, signal);
+  const corroboratedProductOutcome = capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal);
   const usesDeliveryScaffolding = /\b(?:mcp|tools?|surfaces?)\b/i.test(name);
   const usesGenericDeliveryAction = /^(?:handle|manage|process)(?:s|es|ing)?\b/i.test(name.trim());
   const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
@@ -232,7 +241,7 @@ export function capabilityOutcomeScopeFailure(
 ): string[] {
   if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal, acceptedOutcome)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
-  if (!capabilityOutcomeCorroboratedByProductText(name, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
+  if (!capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
 }

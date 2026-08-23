@@ -399,6 +399,14 @@ describe('capability evidence roles', () => {
       ...fabric,
       evidence_examples: ['correlate_runtime_events_with_codebase_behavior'],
     }], { productDocSummary: 'Correlates runtime events with codebase behavior.' })).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Correlate runtime events with codebase behavior', [{
+      ...fabric,
+      evidence_examples: ['correlate_runtime_events_with_codebase_behavior'],
+    }], { productDocSummary: 'Correlates static understanding with runtime evidence.' })).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebase', [{
+      ...fabric,
+      evidence_examples: ['analyze_codebase'],
+    }], { productDocSummary: 'Turns codebase analysis into behavior-level comprehension.' })).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Claim work in the fab', [{
       ...fabric,
       evidence_examples: ['claim_work'],
