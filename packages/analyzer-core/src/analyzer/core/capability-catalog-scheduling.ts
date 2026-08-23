@@ -105,12 +105,13 @@ export function capabilityCatalogRepairEvidenceFacts(
   const repairIds = new Set(repairCandidateIds);
   return candidates.filter(candidate => repairIds.has(candidate.id)).map(candidate => {
     const entityNames = (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId);
+    const subjectEntityNames = candidate.evidence_kind === 'behavior-surface' ? [] : entityNames;
     return {
       candidate_id: candidate.id,
       evidence_subject: candidate.structural_label || candidate.name,
-      evidence_subject_terms: capabilityEvidenceSubjectTokens(candidate, entityNames),
+      evidence_subject_terms: capabilityEvidenceSubjectTokens(candidate, subjectEntityNames),
       related_domains: candidate.related_domains || [],
-      entity_names: candidate.evidence_kind === 'behavior-surface' ? [] : entityNames,
+      entity_names: subjectEntityNames,
       operations: (candidate.operations || []).slice(0, 8).map(operation => ({ action: operation.action, surface: operation.path_or_command })),
       examples: (candidate.evidence_examples || []).slice(0, 8),
     };

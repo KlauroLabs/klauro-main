@@ -98,7 +98,8 @@ export function capabilityEvidenceSubjectTokens(
   entityNames: readonly string[] = [],
 ): string[] {
   const ignored = new Set([
-    'entry', 'internal', 'mcp', 'model', 'record', 'supporting', 'system', 'value',
+    'analyze', 'check', 'entry', 'extend', 'fetch', 'get', 'install', 'internal', 'list', 'load', 'mcp', 'model',
+    'preview', 'read', 'record', 'release', 'run', 'show', 'start', 'stop', 'supporting', 'sync', 'system', 'validate', 'value',
   ]);
   const tokens = outcomeIdentityTokens([
     candidate.name,
@@ -156,13 +157,16 @@ export function capabilityOutcomeNameUnsupportedTokens(
     signal?.manifestDescription,
     signal?.summary,
   ].filter(Boolean).join(' ')));
-  const citedIdentityTokens = new Set(citedCandidates.flatMap(candidate => outcomeIdentityTokens([
-    candidate.name,
-    candidate.structural_label,
-    ...(candidate.related_domains || []),
-    ...(candidate.related_entities || []).map(entityId => entityId.replace(/^entity[_:-]?/i, '')),
-    ...(candidate.evidence_examples || []),
-  ].filter(Boolean).join(' '))));
+  const focusedBehaviorSurface = citedCandidates.length === 1 && citedCandidates[0].evidence_kind === 'behavior-surface';
+  const citedIdentityTokens = new Set(citedCandidates.flatMap(candidate => focusedBehaviorSurface
+    ? capabilityEvidenceSubjectTokens(candidate)
+    : outcomeIdentityTokens([
+      candidate.name,
+      candidate.structural_label,
+      ...(candidate.related_domains || []),
+      ...(candidate.related_entities || []).map(entityId => entityId.replace(/^entity[_:-]?/i, '')),
+      ...(candidate.evidence_examples || []),
+    ].filter(Boolean).join(' '))));
   return subjectTokens.filter(token =>
     !outcomeTokenMatches(token, firstPartyTokens) && !outcomeTokenMatches(token, citedIdentityTokens)
   );

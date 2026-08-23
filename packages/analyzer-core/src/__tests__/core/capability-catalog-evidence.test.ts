@@ -313,6 +313,26 @@ describe('capability evidence roles', () => {
     )).toEqual([]);
   });
 
+  test('keeps focused delivery titles on recurring family subjects instead of one operation or related entity', () => {
+    const surface = candidate('codebase-tools', 'Codebase MCP Tool Surface', 'internal', ['Handle']);
+    surface.evidence_kind = 'behavior-surface';
+    surface.structural_label = 'Codebase MCP Tool Surface';
+    surface.related_domains = ['codebase'];
+    surface.related_entities = ['entity_klauroconfig'];
+    surface.evidence_examples = [
+      'analyze_codebase',
+      'analyze_codebase_remote',
+      'get_codebase_agent_rules',
+      'get_codebase_idioms',
+      'preview_codebase_iteration',
+    ];
+
+    expect(capabilityEvidenceSubjectTokens(surface)).toEqual(['codebase']);
+    expect(capabilityOutcomeNameUnsupportedTokens('Analyze codebases', [surface], {})).toEqual([]);
+    expect(capabilityOutcomeNameUnsupportedTokens('Analyze codebase configuration', [surface], {})).toEqual(['configuration']);
+    expect(capabilityOutcomeNameUnsupportedTokens('Review codebase idioms', [surface], {})).toEqual(['idiom']);
+  });
+
   test('separates product outcomes from command, route, and analysis-layer names without deleting their evidence', () => {
     const cas = candidate('cas', 'CAS relationship graph', 'core', ['Analyze']);
     const agent = candidate('agent-tools', 'Agent MCP Tool Surface', 'internal', ['Handle']);
@@ -367,13 +387,13 @@ describe('capability evidence roles', () => {
       name: 'Workspace MCP Tool Surface',
       structural_label: 'Workspace MCP Tool Surface',
       evidence_examples: ['get_workspace_capability_map', 'get_workspace_entity_map'],
-    }], {})).toEqual([]);
+    }], {})).toEqual(['entity']);
     expect(capabilityOutcomeNameUnsupportedTokens('Assess agent readiness using agent context', [{
       ...fabric,
       name: 'Agent MCP Tool Surface',
       structural_label: 'Agent MCP Tool Surface',
       evidence_examples: ['evaluate_agent_readiness', 'get_agent_context'],
-    }], {})).toEqual([]);
+    }], {})).toEqual(['readiness', 'context']);
     expect(capabilityOutcomeUsesDeliverySubject('Support agents with codebase context', [fabric])).toBe(true);
     expect(capabilityOutcomeUsesDeliverySubject('Build a relationship graph', [fabric])).toBe(false);
   });

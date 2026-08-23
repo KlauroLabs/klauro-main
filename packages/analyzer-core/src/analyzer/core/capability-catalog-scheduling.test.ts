@@ -78,7 +78,9 @@ test('behavior-surface repair facts exclude internal entity names while entity e
   const facts = capabilityCatalogRepairEvidenceFacts(candidates, ['runtime', 'history'], entityNames);
 
   assert.deepEqual(facts.find(fact => fact.candidate_id === 'runtime')?.entity_names, []);
+  assert.deepEqual(facts.find(fact => fact.candidate_id === 'runtime')?.evidence_subject_terms, ['runtime']);
   assert.deepEqual(facts.find(fact => fact.candidate_id === 'history')?.entity_names, ['KlauroConfig']);
+  assert.ok(facts.find(fact => fact.candidate_id === 'history')?.evidence_subject_terms.includes('config'));
 });
 
 test('evidence batch collection preserves successful families when one focused call times out', async () => {
