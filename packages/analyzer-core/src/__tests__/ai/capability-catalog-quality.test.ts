@@ -621,6 +621,40 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
   });
 
+  it('carries a rejected focused title into the next repair instruction', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['codebase', 'software understanding'], evidence: [] };
+    args.behaviorSurfaces = [{
+      id: 'codebase', name: 'Codebase MCP Tool Surface', category: 'internal', evidence_kind: 'behavior-surface',
+      evidence_examples: ['analyze_codebase', 'get_codebase_idioms'],
+      criticality_factors: ["2 message entry points form one cohesive behavior family ('codebase')"],
+      operations: anchorOp('codebase'), related_entities: [], related_domains: ['codebase'],
+    }];
+    const retained = ['Review software relationships', 'Coordinate agent work', 'Correlate runtime signals']
+      .map(name => cap({ id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name) }));
+    const repaired = cap({
+      id: 'analyze-codebase', name: 'Analyze codebases', description: 'Analyzes codebase structure and behavior for people and software agents.',
+      operations: anchorOp('codebase'), criticality_factors: ['catalog-candidate:codebase'],
+    });
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      if (calls.length === 1) {
+        input.onRejection?.('The title "Analyze codebase configuration" was rejected (outcome-scope-unsupported:configuration).');
+        return retained;
+      }
+      return [repaired];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].qualityNudge).toContain('Analyze codebase configuration');
+    expect(out.some(capability => capability.name === 'Analyze codebases')).toBe(true);
+  });
+
   it('preserves a rejected description identity even when its evidence family is already covered', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
