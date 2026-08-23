@@ -942,9 +942,14 @@ Build a contract-level view across analyzed repositories.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `paths` | string[] | no | Repositories to include. Omit to use all stored analyses |
+| `path` | string | installed client | Any bound project path, used to resolve the hosted account |
+| `workspace_id` | string | installed client | Hosted workspace from `list_workspaces`; contracts come from its composed parent CAS |
+| `paths` | string[] | direct server | Repositories to include when using the local/direct server; omit to use all stored analyses |
+| `limit` | number | no | Maximum interfaces, links, and unmatched interfaces in the hosted page (max 500) |
+| `offset` | number | no | Hosted contract-page offset |
+| `journey_limit` | number | no | Maximum composed cross-repository journeys (max 100) |
 
-**Returns:** Provided HTTP/message/database contracts, consumed APIs/messages/databases, deterministic cross-repo links, and contract gaps.
+**Returns:** Provided and consumed contracts grouped by repository, normalized interfaces, deterministic cross-repository links, an evidence-bearing contract table, composed journeys, unmatched interfaces, validation, gaps, totals, and continuation metadata. The installed client reads this bounded projection from the hosted workspace CAS rather than downloading member CAS graphs.
 
 ### `get_runtime_instrumentation_plan`
 
