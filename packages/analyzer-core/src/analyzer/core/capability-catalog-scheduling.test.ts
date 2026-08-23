@@ -11,9 +11,85 @@ import {
   capabilityCatalogTargetedRepairBatches,
   collectCapabilityCatalogEvidenceBatches,
   capabilityCatalogRepairEvidenceFacts,
+  mergeUniquelyMatchedBehaviorEvidence,
   recordCapabilityCatalogRejection,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
+
+const catalogCapability = (overrides: Partial<SystemCapability>): SystemCapability => ({
+  id: 'capability',
+  name: 'Analyze Codebase',
+  description: 'Builds behavior-level understanding of a codebase.',
+  category: 'core',
+  operations: [],
+  related_entities: [],
+  related_domains: [],
+  criticality: 'high',
+  criticality_factors: [],
+  ...overrides,
+});
+
+test('uniquely matched behavior evidence enriches an accepted product outcome without replacing its authored identity', () => {
+  const accepted = catalogCapability({
+    id: 'accepted-analysis',
+    operations: [{ entry_point_id: 'existing', entry_point_type: 'command', action: 'analyze repository' }],
+    related_entities: ['entity_existing'],
+    related_domains: ['codebase'],
+    criticality_factors: ['catalog-candidate:cap_analysis_core'],
+  });
+  const surface = catalogCapability({
+    id: 'cap_analysis_mcp_tool_surface',
+    name: 'Analysis MCP Tool Surface',
+    description: '',
+    evidence_kind: 'behavior-surface',
+    operations: [{ entry_point_id: 'tool', entry_point_type: 'mcp_tool', action: 'analyze codebase' }],
+    related_entities: ['entity_tool'],
+    related_domains: ['analysis'],
+    evidence_examples: ['analyze codebase'],
+  });
+
+  const merged = mergeUniquelyMatchedBehaviorEvidence(
+    [accepted],
+    [surface],
+    [surface.id],
+  );
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].name, accepted.name);
+  assert.equal(merged[0].description, accepted.description);
+  assert.deepEqual(merged[0].operations.map(operation => operation.entry_point_id), ['existing', 'tool']);
+  assert.deepEqual(merged[0].related_entities, ['entity_existing', 'entity_tool']);
+  assert.deepEqual(merged[0].related_domains, ['codebase', 'analysis']);
+  assert.ok(merged[0].criticality_factors.includes(`catalog-candidate:${surface.id}`));
+  assert.deepEqual(merged[0].evidence_examples, ['analyze codebase']);
+});
+
+test('behavior evidence remains uncovered when its outcome match is ambiguous', () => {
+  const surface = catalogCapability({
+    id: 'cap_codebase_surface', name: 'Codebase Tool Surface', evidence_kind: 'behavior-surface',
+  });
+  const capabilities = [
+    catalogCapability({ id: 'analysis', name: 'Analyze Codebase' }),
+    catalogCapability({ id: 'history', name: 'Track Codebase History' }),
+  ];
+
+  const merged = mergeUniquelyMatchedBehaviorEvidence(capabilities, [surface], [surface.id]);
+
+  assert.ok(merged.every(capability => !capability.criticality_factors.includes(`catalog-candidate:${surface.id}`)));
+});
+
+test('automatic evidence merge never absorbs entity evidence or an unrequired surface', () => {
+  const entity = catalogCapability({ id: 'cap_analysis_entity', name: 'Analysis', evidence_kind: 'infrastructure' });
+  const optionalSurface = catalogCapability({ id: 'cap_analysis_optional', name: 'Analysis Tool Surface', evidence_kind: 'behavior-surface' });
+
+  const merged = mergeUniquelyMatchedBehaviorEvidence(
+    [catalogCapability({ id: 'analysis' })],
+    [entity, optionalSurface],
+    [entity.id],
+  );
+
+  assert.deepEqual(merged[0].criticality_factors, []);
+});
 
 test('prompt selection represents every required entity family beyond the baseline window', () => {
   const productCandidates = Array.from({ length: 37 }, (_, index) => ({

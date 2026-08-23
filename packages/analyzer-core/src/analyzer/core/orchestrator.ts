@@ -178,7 +178,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, recordCapabilityCatalogRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10466,28 +10466,27 @@ export class AnalyzerOrchestrator {
         return identity ? [identity] : [];
       }); updateCapabilityCatalogPublishabilityRepairIds(publishabilityRepairCandidateIds, cycleReconciled, rejectedCapabilities);
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
-      const combinedReconciled = targetedRepair
-        ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled], true)
-        : cycleReconciled;
+      const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled], true) : cycleReconciled;
+      const evidenceCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds);
       const cycleQualityFailure = this.catalogQualityFailure(
-        combinedReconciled,
+        evidenceCompleteReconciled,
         distinctFamilyCount,
         requiredBehaviorCandidateIds,
         requiredEntityCandidateGroups,
       );
       writeAnalyzerStatus(
-        `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${combinedReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
+        `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
       );
       if (!cycleQualityFailure) {
-        reconciled = combinedReconciled;
+        reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         qualityFailure = undefined;
         retainedQualityFailure = undefined;
         break;
       }
-      const progress = repairProgress.observe(combinedReconciled, learnedRejection);
-      if (targetedRepair || combinedReconciled.length > reconciled.length) {
-        reconciled = combinedReconciled;
+      const progress = repairProgress.observe(evidenceCompleteReconciled, learnedRejection);
+      if (targetedRepair || evidenceCompleteReconciled.length > reconciled.length) {
+        reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         retainedQualityFailure = cycleQualityFailure;
       }

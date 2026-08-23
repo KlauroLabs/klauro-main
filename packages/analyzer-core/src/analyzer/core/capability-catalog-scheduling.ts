@@ -113,6 +113,84 @@ export function capabilityCatalogRepairCandidateIds(
   ])];
 }
 
+function normalizedOutcomeNameTokens(name: string): string[] {
+  return String(name || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3)
+    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
+}
+
+function evidenceTokenMatchesOutcomeName(token: string, outcomeNameTokens: readonly string[]): boolean {
+  return outcomeNameTokens.some(outcomeToken =>
+    outcomeToken === token ||
+    (Math.min(outcomeToken.length, token.length) >= 5 &&
+      (outcomeToken.startsWith(token) || token.startsWith(outcomeToken) || outcomeToken.slice(0, 5) === token.slice(0, 5)))
+  );
+}
+
+function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapability): SystemCapability {
+  const operationKey = (operation: SystemCapability['operations'][number]) => [
+    operation.entry_point_id,
+    operation.entry_point_type,
+    operation.action,
+    operation.path_or_command || '',
+    operation.trigger?.method || '',
+    operation.trigger?.path || '',
+  ].join('|');
+  const operations = new Map((outcome.operations || []).map(operation => [operationKey(operation), operation]));
+  for (const operation of evidence.operations || []) operations.set(operationKey(operation), operation);
+  const criticalityRank: Record<SystemCapability['criticality'], number> = {
+    critical: 4,
+    high: 3,
+    medium: 2,
+    low: 1,
+  };
+  return {
+    ...outcome,
+    operations: [...operations.values()],
+    related_entities: [...new Set([...(outcome.related_entities || []), ...(evidence.related_entities || [])])],
+    related_domains: [...new Set([...(outcome.related_domains || []), ...(evidence.related_domains || [])])],
+    criticality: criticalityRank[evidence.criticality] > criticalityRank[outcome.criticality]
+      ? evidence.criticality
+      : outcome.criticality,
+    criticality_factors: [...new Set([
+      ...(outcome.criticality_factors || []),
+      ...(evidence.criticality_factors || []),
+      `catalog-candidate:${evidence.id}`,
+    ])],
+    evidence_examples: [...new Set([...(outcome.evidence_examples || []), ...(evidence.evidence_examples || [])])],
+  };
+}
+
+export function mergeUniquelyMatchedBehaviorEvidence(
+  capabilities: SystemCapability[],
+  evidenceCandidates: readonly SystemCapability[],
+  requiredCandidateIds: readonly string[],
+): SystemCapability[] {
+  const requiredIds = new Set(requiredCandidateIds);
+  const merged = capabilities.map(capability => ({ ...capability }));
+  const citedIds = new Set(merged.flatMap(capability =>
+    (capability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-candidate:'))
+      .map(factor => factor.slice('catalog-candidate:'.length))));
+  for (const evidence of evidenceCandidates) {
+    if (!requiredIds.has(evidence.id) || citedIds.has(evidence.id) || evidence.evidence_kind !== 'behavior-surface') continue;
+    const evidenceTokens = capabilityEvidenceSubjectTokens(evidence);
+    if (evidenceTokens.length === 0) continue;
+    const matchingIndexes = merged.flatMap((capability, index) =>
+      evidenceTokens.some(token => evidenceTokenMatchesOutcomeName(token, normalizedOutcomeNameTokens(capability.name)))
+        ? [index]
+        : []);
+    if (matchingIndexes.length !== 1) continue;
+    const index = matchingIndexes[0];
+    merged[index] = mergeCapabilityEvidence(merged[index], evidence);
+    citedIds.add(evidence.id);
+  }
+  return merged;
+}
+
 export function capabilityCatalogRepairEvidenceFacts(
   candidates: SystemCapability[], repairCandidateIds: readonly string[], entityNamesById: ReadonlyMap<string, string>,
   rejectionsByCandidate: ReadonlyMap<string, CapabilityCatalogPriorRejection[]> = new Map(),
