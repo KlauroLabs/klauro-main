@@ -9185,7 +9185,7 @@ export class AnalyzerOrchestrator {
     flowGraph: CASFlowGraph;
     projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
-    qualityNudge?: string;
+    qualityNudge?: string; exactCapabilityLimit?: number;
     hardDeadlineAt?: number;
     onResponse?: (raw: string) => void;
     entryPoints?: CASEntryPoint[];
@@ -9273,7 +9273,7 @@ export class AnalyzerOrchestrator {
         ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
         : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. Do not lead a name with Coordinate, Handle, Process, or Manage; choose a more specific verb only when operations, journeys, or first-party text supports it. (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database, build, test, release, or deployment work) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related candidate areas into real capabilities only when they express the same product outcome. Keep distinct user surfaces and distinct terminal outcomes separate even when they share data or implementation vocabulary. A capability spanning several evidence families must use the broader product outcome as its subject, never one entity label that narrows the whole aggregate. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability and at least one ID from every required group. (7) Every subject noun in a capability name and description must come from cited operations, a supplied journey, or top_down_signals. entity_names may be source-level type identifiers: use them only to connect evidence, never repeat a type, class, interface, schema, or graph-model identifier in customer-facing prose. Inflection is allowed; substituting an unsupported product noun is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
     const catalogNarrativeContract = 'The system_description must be exactly 4 concise, grammatical sentences for a non-technical reader: what the product or operational system is, what users or operators can do, one concrete action and result, and another evidenced behavior or operating property. Use concrete nouns from supplied evidence. Do not mention source files, routes, handlers, frameworks, libraries, tools, programming languages, prompt keys, or graph evidence. Never use marketing or generalized value claims such as seamless, robust, comprehensive, various, efficient, productivity, performance, compliant, compliance, advanced, modern, streamline, insights, metrics, decision-making, collaboration, scalable, user experience, business value, or best practices. domain must be a lowercase kebab-case label of 2 to 4 evidence-backed product nouns.';
-    const catalogTask = `${catalogTaskBase} DESCRIPTION CONTRACT: ${catalogDescriptionContract} SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract}`;
+    const catalogTask = `${catalogTaskBase} ${input.exactCapabilityLimit ? `CARDINALITY CONTRACT: Return exactly ${input.exactCapabilityLimit} capability object${input.exactCapabilityLimit === 1 ? '' : 's'}; additional alternatives are invalid.` : ''} DESCRIPTION CONTRACT: ${catalogDescriptionContract} SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract}`;
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
       signal?.productDocTitle,
@@ -9299,7 +9299,7 @@ export class AnalyzerOrchestrator {
       const additionalContextWithoutFacts = {
         ...toAIContextRoute(resolveCapabilityCatalogRoute(process.env, this.narrativeModel())),
         responseFormat: 'json',
-        maxTokens: Math.min(1900, Math.max(450, 260 + catalogCountMax * 80)),
+        maxTokens: input.exactCapabilityLimit ? Math.max(800, 260 + input.exactCapabilityLimit * 80) : Math.min(1900, Math.max(450, 260 + catalogCountMax * 80)),
         requestTimeoutMs: 65000,
         requestRetries: 0,
         ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
@@ -9838,7 +9838,7 @@ export class AnalyzerOrchestrator {
     });
 
     input.onResponse?.(raw);
-    return out.slice(0, Math.max(16, catalogCountMax));
+    return out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax));
   }
   private reconcileCatalogedCapabilities(
     cataloged: SystemCapability[],
@@ -10423,7 +10423,7 @@ export class AnalyzerOrchestrator {
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
-          hardDeadlineAt,
+          hardDeadlineAt, exactCapabilityLimit: evidenceScoped ? repairBatch.length : undefined,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
           onResponse: raw => { batchRaw = raw; },

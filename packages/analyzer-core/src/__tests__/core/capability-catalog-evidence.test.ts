@@ -360,6 +360,7 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(true);
     fabric.evidence_examples = ['get_agent_context', 'get_agent_readiness', 'get_agent_tool_plan'];
     expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Review agent context', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Support agents with codebase context', [fabric])).toBe(false);
     expect(capabilityOutcomeUsesDeliverySubject('Support agents with codebase context', [fabric])).toBe(true);
     expect(capabilityOutcomeUsesDeliverySubject('Build a relationship graph', [fabric])).toBe(false);

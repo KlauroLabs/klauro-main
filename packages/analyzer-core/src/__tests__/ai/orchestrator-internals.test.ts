@@ -8066,6 +8066,48 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
 });
 
 describe('top-down capability evidence (C2)', () => {
+  it('honors the evidence-derived maximum after validating an over-complete model response', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        {
+          name: 'Review change history',
+          description: 'Shows engineers how analyzed software changed between recorded revisions.',
+          category: 'core', entities: ['ChangeHistoryEntry'], journeys: [], candidate_ids: ['history'],
+        },
+        {
+          name: 'Track change history',
+          description: 'Keeps analyzed software revisions available for comparison over time.',
+          category: 'core', entities: ['ChangeHistoryEntry'], journeys: [], candidate_ids: ['history'],
+        },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'software-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['change history'] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_history', name: 'ChangeHistoryEntry', kind: 'persisted-entity' }],
+        candidateCapabilities: [{
+          id: 'history', name: 'Change History', category: 'core',
+          related_entities: ['entity_history'], related_domains: ['change history'],
+          operations: [{ entry_point_id: 'history', entry_point_type: 'message', action: 'Read' }],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: {
+          concepts: ['change history'], evidence: [],
+          productDocSummary: 'Tracks how analyzed software changes over time.',
+        },
+        budgetMs: 30000,
+        exactCapabilityLimit: 1,
+      });
+
+      expect(catalog.map((capability: any) => capability.name)).toEqual(['Review change history']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('anchors product-language catalog entries to cited structural candidate ids', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
