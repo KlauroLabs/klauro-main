@@ -149,11 +149,12 @@ export function capabilityOutcomeMisusesCoordination(
   );
 }
 
-export function capabilityOutcomeUsesDeliverySubject(name: string, citedCandidates: SystemCapability[]): boolean {
+export function capabilityOutcomeUsesDeliverySubject(name: string, citedCandidates: SystemCapability[], description = ''): boolean {
   if (citedCandidates.length !== 1 || citedCandidates[0].evidence_kind !== 'behavior-surface') return true;
   const nameTokens = outcomeIdentityTokens(name).slice(1);
   const evidenceTokens = new Set(capabilityEvidenceSubjectTokens(citedCandidates[0]));
-  return nameTokens.some(token => outcomeTokenMatches(token, evidenceTokens));
+  return nameTokens.some(token => outcomeTokenMatches(token, evidenceTokens)) ||
+    outcomeIdentityTokens(description).some(token => outcomeTokenMatches(token, evidenceTokens));
 }
 
 export function capabilityOutcomeNameUnsupportedTokens(
@@ -208,10 +209,11 @@ export function capabilityOutcomeScopeFailure(
   citedCandidates: SystemCapability[],
   signal?: CapabilityCatalogProjectSignal,
   acceptedOutcome = false,
+  description = '',
 ): string[] {
   if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
-  if (!capabilityOutcomeUsesDeliverySubject(name, citedCandidates)) return ['delivery-subject-missing'];
+  if (!capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
 }

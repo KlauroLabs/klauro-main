@@ -417,6 +417,8 @@ describe('capability evidence roles', () => {
     }], {})).toEqual([]);
     expect(capabilityOutcomeUsesDeliverySubject('Support agents with codebase context', [fabric])).toBe(true);
     expect(capabilityOutcomeUsesDeliverySubject('Build a relationship graph', [fabric])).toBe(false);
+    expect(capabilityOutcomeUsesDeliverySubject('Analyze codebase', [{ ...fabric, name: 'Analysis Tool Surface', structural_label: 'Analysis Tool Surface', related_domains: ['analysis'] }], 'Evaluates analysis truth for the selected codebase.')).toBe(true);
+    expect(capabilityOutcomeUsesDeliverySubject('Understand workspace capability map', [fabric], 'Shows workspace capability relationships.')).toBe(false);
   });
 
   test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {
