@@ -234,7 +234,7 @@ export function capabilityAudienceRepairFeedback(rejections: CapabilityAudienceR
     reasons: rejection.reasons,
     flagged_tokens: rejection.flaggedTokens.slice(0, 8),
   }));
-  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary, replace code-shaped terms with exact product nouns present in the evidence. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
+  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary, replace code-shaped terms with exact product nouns present in the evidence. For unsupported-exclusivity-claim, describe advisory detection or reporting; never claim prevention, exclusivity, ownership, assignment, reservation, universal coverage, or consistency guarantees unless cited evidence explicitly proves them. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
 }
 
 export function capabilityPublishabilityRepairFeedback(

@@ -74,6 +74,20 @@ describe('capability catalog audience evaluation', () => {
     expect(feedback).toContain('only cited evidence');
   });
 
+  it('directs unsupported guarantees toward advisory truth instead of synonym replacement', () => {
+    const feedback = capabilityAudienceRepairFeedback([{
+      name: 'Coordinate overlapping work',
+      description: 'Prevents conflicts and ensures consistent state.',
+      target: 'description',
+      reasons: ['unsupported-exclusivity-claim'],
+      flaggedTokens: ['prevents conflicts', 'ensures consistent state'],
+    }]);
+
+    expect(feedback).toContain('advisory detection or reporting');
+    expect(feedback).toContain('never claim prevention');
+    expect(feedback).toContain('unless cited evidence explicitly proves');
+  });
+
   it('translates publishability failures into outcome-focused repair guidance', () => {
     const feedback = capabilityPublishabilityRepairFeedback([{
       name: 'Retrieve agent context',
