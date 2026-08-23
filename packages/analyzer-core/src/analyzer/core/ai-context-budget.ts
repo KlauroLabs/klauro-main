@@ -135,6 +135,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     entities: (Array.isArray(facts.entities) ? facts.entities : []).slice(0, 18).map(compactEntity),
     candidate_route_areas: [] as Record<string, unknown>[],
     required_behavior_candidate_ids: [] as string[],
+    accepted_outcome_names: boundedTextArray(facts.accepted_outcome_names, 12, 180),
     required_entity_candidate_groups: requiredEntityGroups,
     external_services: boundedTextArray(facts.external_services, 12, 180),
     ...(topDownSignals ? { top_down_signals: topDownSignals } : {}),

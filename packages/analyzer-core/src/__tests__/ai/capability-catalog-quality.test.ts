@@ -537,7 +537,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls).toHaveLength(2);
     expect(calls[1].qualityNudge).toContain('"candidate_id":"cap_history"');
     expect(calls[1].qualityNudge).toContain('"evidence_subject_terms":["change","history"]');
-    expect(calls[1].qualityNudge).toContain('unrelated global product vocabulary is invalid');
+    expect(calls[1].qualityNudge).toContain('an exact reuse of an existing accepted outcome is exempt');
     expect(calls[1]).toMatchObject({ exactCapabilityLimit: 1, userJourneys: [], externalServices: [] });
     expect(calls[1].dataEntities.map((entity: any) => entity.id)).toEqual(['entity_changehistoryentry']);
     expect(out.map(capability => capability.name)).toContain('Review codebase change history');

@@ -8110,13 +8110,14 @@ describe('top-down capability evidence (C2)', () => {
 
   it('allows focused delivery evidence to attach to an existing product outcome', async () => {
     const original = (aiService as any).generateComponentDescription;
-    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+    let context: any;
+    (aiService as any).generateComponentDescription = async (input: any) => { context = input.additionalContext; return JSON.stringify({
       capabilities: [{
         name: 'Analyze codebase',
         description: 'Agents use grounded codebase context to understand software behavior and prepare safe changes.',
         category: 'core', candidate_ids: ['agent-surface'],
       }],
-    });
+    }); };
     try {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Klauro',
@@ -8139,6 +8140,9 @@ describe('top-down capability evidence (C2)', () => {
       });
 
       expect(catalog.map((capability: any) => capability.name)).toEqual(['Analyze codebase']);
+      expect(context.facts.accepted_outcome_names).toEqual(['Analyze codebase']);
+      expect(context.task).toMatch(/return that exact existing name/i);
+      expect(context.task).toMatch(/Coordinate is valid only when .* collaboration/i);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
