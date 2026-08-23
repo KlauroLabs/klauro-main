@@ -16,6 +16,20 @@ export type CapabilityDescriptionRepairOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
   | { status: 'rejected'; reason: unknown };
 
+export interface CapabilityCatalogRejection {
+  candidateIds: string[];
+  name: string;
+  reason: string;
+}
+
+export interface CapabilityCatalogPriorRejection {
+  name: string;
+  reason: string;
+  forbidden_subject_terms: string[];
+}
+
+export type CapabilityCatalogRejectionsByCandidate = Map<string, CapabilityCatalogPriorRejection[]>;
+
 export function selectCapabilityCatalogPromptCandidates(
   rankedCandidates: SystemCapability[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>> = [],
@@ -101,6 +115,7 @@ export function capabilityCatalogRepairCandidateIds(
 
 export function capabilityCatalogRepairEvidenceFacts(
   candidates: SystemCapability[], repairCandidateIds: readonly string[], entityNamesById: ReadonlyMap<string, string>,
+  rejectionsByCandidate: ReadonlyMap<string, CapabilityCatalogPriorRejection[]> = new Map(),
 ) {
   const repairIds = new Set(repairCandidateIds);
   return candidates.filter(candidate => repairIds.has(candidate.id)).map(candidate => {
@@ -114,8 +129,25 @@ export function capabilityCatalogRepairEvidenceFacts(
       entity_names: subjectEntityNames,
       operations: (candidate.operations || []).slice(0, 8).map(operation => ({ action: operation.action, surface: operation.path_or_command })),
       examples: (candidate.evidence_examples || []).slice(0, 8),
+      prior_rejections: rejectionsByCandidate.get(candidate.id) || [],
     };
   });
+}
+
+export function recordCapabilityCatalogRejection(
+  rejectionsByCandidate: CapabilityCatalogRejectionsByCandidate,
+  feedback: CapabilityCatalogRejection,
+): string {
+  const unsupported = feedback.reason.match(/^outcome-scope-unsupported:(.+)$/)?.[1]?.split(',') || [];
+  const forbiddenSubjectTerms = unsupported.filter(token => !['delivery-operation-restatement', 'delivery-subject-missing'].includes(token));
+  for (const candidateId of feedback.candidateIds) {
+    const prior = rejectionsByCandidate.get(candidateId) || [];
+    if (!prior.some(item => item.name === feedback.name && item.reason === feedback.reason)) {
+      prior.push({ name: feedback.name, reason: feedback.reason, forbidden_subject_terms: forbiddenSubjectTerms });
+      rejectionsByCandidate.set(candidateId, prior.slice(-4));
+    }
+  }
+  return `The title "${feedback.name}" was rejected (${feedback.reason}); do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome.`;
 }
 
 export function capabilityCatalogTargetedRepairBatches<T>(facts: readonly T[], targetedRepair: boolean): T[][] {

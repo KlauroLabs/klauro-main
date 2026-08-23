@@ -11,6 +11,7 @@ import {
   capabilityCatalogTargetedRepairBatches,
   collectCapabilityCatalogEvidenceBatches,
   capabilityCatalogRepairEvidenceFacts,
+  recordCapabilityCatalogRejection,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
 
@@ -81,6 +82,28 @@ test('behavior-surface repair facts exclude internal entity names while entity e
   assert.deepEqual(facts.find(fact => fact.candidate_id === 'runtime')?.evidence_subject_terms, ['runtime']);
   assert.deepEqual(facts.find(fact => fact.candidate_id === 'history')?.entity_names, ['KlauroConfig']);
   assert.ok(facts.find(fact => fact.candidate_id === 'history')?.evidence_subject_terms.includes('config'));
+});
+
+test('capability repair facts carry bounded candidate-specific rejection constraints', () => {
+  const candidates = [
+    { id: 'agent', name: 'Agent Tool Surface', category: 'core', evidence_kind: 'behavior-surface' },
+    { id: 'analysis', name: 'Analysis Tool Surface', category: 'core', evidence_kind: 'behavior-surface' },
+  ] as SystemCapability[];
+  const rejections = new Map();
+  recordCapabilityCatalogRejection(rejections, {
+    candidateIds: ['agent'],
+    name: 'Evaluate agent readiness and task proof',
+    reason: 'outcome-scope-unsupported:readiness,task,proof',
+  });
+
+  const facts = capabilityCatalogRepairEvidenceFacts(candidates, ['agent', 'analysis'], new Map(), rejections);
+
+  assert.deepEqual(facts[0].prior_rejections, [{
+    name: 'Evaluate agent readiness and task proof',
+    reason: 'outcome-scope-unsupported:readiness,task,proof',
+    forbidden_subject_terms: ['readiness', 'task', 'proof'],
+  }]);
+  assert.deepEqual(facts[1].prior_rejections, []);
 });
 
 test('evidence batch collection preserves successful families when one focused call times out', async () => {

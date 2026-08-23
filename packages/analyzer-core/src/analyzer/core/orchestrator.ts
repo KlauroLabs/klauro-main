@@ -178,7 +178,7 @@ import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-ev
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, recordCapabilityCatalogRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -9187,7 +9187,7 @@ export class AnalyzerOrchestrator {
     budgetMs: number;
     qualityNudge?: string; exactCapabilityLimit?: number;
     hardDeadlineAt?: number;
-    onResponse?: (raw: string) => void; onRejection?: (feedback: string) => void;
+    onResponse?: (raw: string) => void; onRejection?: (feedback: CapabilityCatalogRejection) => void;
     entryPoints?: CASEntryPoint[];
     nodes?: CASNode[];
   }): Promise<SystemCapability[]> {
@@ -9487,11 +9487,11 @@ export class AnalyzerOrchestrator {
       candidateIds: string[];
     };
     const staged: StagedCatalogItem[] = [];
-    let bareNounRejected = 0; const catalogRejectionFeedback: string[] = [];
+    let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
     const catalogRejectionReasons = new Map<string, number>();
-    const debugCatalogRejection = (name: string, reason: string): void => {
+    const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = []): void => {
       catalogRejectionReasons.set(reason, (catalogRejectionReasons.get(reason) || 0) + 1);
-      catalogRejectionFeedback.push(`The title "${name}" was rejected (${reason}); do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome.`);
+      catalogRejectionFeedback.push({ candidateIds, name, reason });
       if (process.env.KLAURO_DEBUG_CATALOG) {
         writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason });
       }
@@ -9590,7 +9590,7 @@ export class AnalyzerOrchestrator {
       const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
       const unsupportedOutcomeTokens = capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal) ? ['delivery-operation-restatement'] : !capabilityOutcomeUsesDeliverySubject(name, citedCandidates) ? ['delivery-subject-missing'] : capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
       if (candidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
-        debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`);
+        debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, candidateIds);
         continue;
       }
       const citedEvidenceTokens = new Set(
@@ -9839,7 +9839,8 @@ export class AnalyzerOrchestrator {
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
 
-    input.onRejection?.(catalogRejectionFeedback.slice(0, 4).join(' ')); input.onResponse?.(raw);
+    for (const feedback of catalogRejectionFeedback.slice(0, 4)) input.onRejection?.(feedback);
+    input.onResponse?.(raw);
     return out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax));
   }
   private reconcileCatalogedCapabilities(
@@ -10391,7 +10392,7 @@ export class AnalyzerOrchestrator {
     let audienceRepairFeedback: string | undefined;
     let cyclesRun = 0;
     let deadlineExceeded = false;
-    let retainedInterpretationRaw = '';
+    let retainedInterpretationRaw = ''; const catalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map();
     const publishabilityRepairCandidateIds = new Set<string>();
     const repairProgress = trackCapabilityCatalogRepair(distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups);
     for (let cycle = 1; cycle <= repairProgress.maxCycles; cycle++) {
@@ -10403,7 +10404,7 @@ export class AnalyzerOrchestrator {
       cyclesRun = cycle;
       const repairCandidateIds = capabilityCatalogRepairCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, publishabilityRepairCandidateIds);
       const targetedRepair = cycle > 1 && reconciled.length > 0 && repairCandidateIds.length > 0;
-      const repairEvidenceFacts = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, repairCandidateIds, entityNamesById); const evidenceScoped = repairEvidenceFacts.length > 0;
+      const repairEvidenceFacts = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, repairCandidateIds, entityNamesById, catalogRejectionsByCandidate); const evidenceScoped = repairEvidenceFacts.length > 0;
       const cycleNudge = (facts: typeof repairEvidenceFacts) => cycle === 1 && !evidenceScoped ? undefined
         : `${cycle === 1 ? 'Build the initial catalog from independently grounded evidence families.' : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''}`} ${evidenceScoped ? `Return only the evidence-grounded outcome requested in this family batch. Missing evidence facts: ${JSON.stringify(facts)}. Existing accepted outcomes: ${JSON.stringify(reconciled.slice(0, 12).map(capability => ({ name: capability.name, description: capability.description })))}. Each result must cite one or more of these candidate_ids and name the shared USER PURPOSE delivered by that evidence subject. Every new or rewritten capability name MUST contain at least one exact evidence_subject_terms token from its cited facts; a result that uses only unrelated global product vocabulary is invalid. A behavior-surface family label and its individual operation names are delivery evidence, never title templates: express their common purpose using first-party product language. Never begin a delivery-surface outcome with Get, List, Run, Release, Claim, Check, Extend, Install, Start, Stop, Sync, Fetch, Load, Read, or Show; those restate individual commands. Use a durable purpose verb such as Understand, Review, Assess, Coordinate, Correlate, Analyze, Explain, Explore, Track, or Visualize. Every subject noun after that verb must be a recurring evidence_subject_terms token or an explicit first-party product term; never narrow the title to a noun found in only one operation example. Preserve each rejected item's distinct product outcome when rewriting it; overlapping evidence does not make two different outcomes equivalent. If a missing delivery surface supports an existing accepted outcome, return that exact outcome name with the missing candidate_id so its evidence is merged. Do not restate an unrelated global product ability and do not enumerate individual response objects, commands, or configuration fields.` : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
       let extracted: SystemCapability[], extractionRaw = ''; const extractionRejections: string[] = [];
@@ -10427,7 +10428,7 @@ export class AnalyzerOrchestrator {
           hardDeadlineAt, exactCapabilityLimit: evidenceScoped ? repairBatch.length : undefined,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
-          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { if (feedback) extractionRejections.push(feedback); },
+          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => extractionRejections.push(recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback)),
           ...(cycleNudge(repairBatch) ? { qualityNudge: cycleNudge(repairBatch) } : {}),
           });
           if (!extractionRaw) extractionRaw = batchRaw;

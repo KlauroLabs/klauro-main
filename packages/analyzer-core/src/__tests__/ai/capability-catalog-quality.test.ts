@@ -641,7 +641,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
       if (calls.length === 1) {
-        input.onRejection?.('The title "Analyze codebase configuration" was rejected (outcome-scope-unsupported:configuration).');
+        input.onRejection?.({
+          candidateIds: ['codebase'],
+          name: 'Analyze codebase configuration',
+          reason: 'outcome-scope-unsupported:configuration',
+        });
         return retained;
       }
       return [repaired];
@@ -652,6 +656,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(calls).toHaveLength(2);
     expect(calls[1].qualityNudge).toContain('Analyze codebase configuration');
+    expect(calls[1].qualityNudge).toContain('"forbidden_subject_terms":["configuration"]');
     expect(out.some(capability => capability.name === 'Analyze codebases')).toBe(true);
   });
 
