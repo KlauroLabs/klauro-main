@@ -369,13 +369,14 @@ describe('capability evidence roles', () => {
     expect(capabilityEvidenceSubjectTokens(history, ['ChangeHistoryEntry'])).toEqual(['change', 'history']);
   });
 
-  test('derives recurring operation subjects while rejecting command-shaped delivery outcomes', () => {
+  test('derives recurring operation subjects while rejecting explicit delivery scaffolding', () => {
     const fabric = candidate('fabric', 'Fab MCP Tool Surface', 'internal', ['Handle']);
     fabric.evidence_kind = 'behavior-surface';
     fabric.evidence_examples = ['claim_work', 'extend_work', 'list_active_work', 'release_work'];
 
     expect(capabilityEvidenceSubjectTokens(fabric)).toEqual(['fab', 'work']);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Release work through MCP tools', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate overlapping work', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Handle Fab work surfaces', [fabric])).toBe(true);
     expect(capabilityOutcomeMisusesCoordination('Coordinate overlapping work', [fabric])).toBe(false);
@@ -393,7 +394,7 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Understand Fab work surfaces', [fabric])).toBe(true);
     fabric.evidence_examples = ['get_agent_context', 'get_agent_readiness', 'get_agent_tool_plan'];
-    expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Review agent context', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Support agents with codebase context', [fabric])).toBe(false);
     expect(capabilityOutcomeNameUnsupportedTokens('Understand workspace behavior through capability and entity maps', [{
