@@ -23,6 +23,14 @@ export interface ElementDescriptionValidationOptions {
   isGenericToken?: (token: string) => boolean;
 }
 
+export function capabilityDescriptionEvidenceFields(
+  fields: ReadonlyArray<{ name: string; type?: string }>,
+): string[] {
+  return fields
+    .filter(field => !/[\[\]{}]/.test(field.type || ''))
+    .map(field => `${field.name}:${field.type || 'unknown'}`);
+}
+
 const DEFAULT_GENERIC_SUBJECT_TOKENS = new Set([
   'management', 'service', 'services', 'system', 'systems', 'manager', 'module', 'modules',
   'component', 'components', 'handler', 'handlers', 'controller', 'controllers', 'data', 'api', 'the', 'and',

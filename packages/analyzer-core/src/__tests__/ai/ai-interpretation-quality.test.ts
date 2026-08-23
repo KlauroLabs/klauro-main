@@ -1,7 +1,7 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { aiService } from '../../ai/ai-service';
 import { aiConfig } from '../../config/ai.config';
-import { validateElementDescription } from '../../ai/element-description-validator';
+import { capabilityDescriptionEvidenceFields, validateElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isPlausibleExternalServiceName, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 
@@ -826,6 +826,26 @@ describe('element description grounding parity with the system validator', () =>
 
     const bare = localOrch.capabilityDescriptionTarget(capability);
     expect(bare.relatedEntities).toEqual(['entity-card']);
+  });
+
+  it('keeps nested graph inventory out of capability prose evidence without removing it from CAS', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const evidence = [{
+      id: 'entity-history', name: 'ChangeHistoryEntry', fields: [
+        { name: 'timestamp', type: 'string' },
+        { name: 'author', type: 'string' },
+        { name: 'nodes', type: 'NodeChange[]' },
+        { name: 'changes', type: '{ files: FileChange[]; edges: EdgeChange[] }' },
+      ],
+    }];
+    const fields = new Map(evidence.map(entity => [entity.id, capabilityDescriptionEvidenceFields(entity.fields)]));
+    const target = localOrch.capabilityDescriptionTarget({
+      id: 'history', name: 'Track codebase change history', category: 'core', description: '',
+      related_entities: ['entity-history'], related_domains: ['history'], criticality_factors: [], operations: [],
+    }, new Map([['entity-history', 'ChangeHistoryEntry']]), fields);
+
+    expect(target.fields).toEqual(['timestamp:string', 'author:string']);
+    expect(evidence[0].fields).toHaveLength(4);
   });
 
   it('humanizes an exact related-entity identifier before capability description validation', () => {
