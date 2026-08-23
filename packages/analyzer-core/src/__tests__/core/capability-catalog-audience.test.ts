@@ -275,4 +275,52 @@ describe('capability catalog audience evaluation', () => {
       flaggedTokens: expect.arrayContaining(['prevent conflicts', 'ensure consistent state', 'every']),
     }));
   });
+
+  it('rejects unsupported conflict reduction and alignment guarantees', () => {
+    const coordination = capability(
+      'Coordinate work across overlapping codebase areas',
+      'Developers collaborate in real time on shared code, ensuring alignment and reducing conflicts.',
+    );
+    coordination.operations = [
+      { entry_point_id: 'claim', entry_point_type: 'message', action: 'Claim work' },
+      { entry_point_id: 'detect', entry_point_type: 'message', action: 'Detect conflicts' },
+    ];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [coordination], [], [], ['advisory coordination', 'parallel overlapping work'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      reasons: expect.arrayContaining(['unsupported-exclusivity-claim']),
+      flaggedTokens: expect.arrayContaining([
+        'ensuring alignment',
+        'reducing conflicts',
+      ]),
+    }));
+  });
+
+  it('rejects internal mechanisms in otherwise grounded product descriptions', () => {
+    const evaluation = evaluateCapabilityCatalogAudience([
+      capability(
+        'Analyze codebases',
+        'Analyze codebases registers tools to inspect software behavior and assess change risk.',
+      ),
+      capability(
+        'Track codebase change history',
+        'Tracks codebase changes as history entries, coordinates with the analyzer, and reads from storage.',
+      ),
+      capability(
+        'Understand workspace relationships',
+        'Shows workspace configuration, including its projects, analyzers, and source settings.',
+      ),
+    ], [], [], ['analyze codebases', 'change history', 'workspace relationships']);
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Analyze codebases', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
+      expect.objectContaining({ name: 'Track codebase change history', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
+      expect.objectContaining({ name: 'Understand workspace relationships', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
+    ]));
+  });
 });

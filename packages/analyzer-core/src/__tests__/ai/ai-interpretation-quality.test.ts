@@ -844,6 +844,24 @@ describe('element description grounding parity with the system validator', () =>
     expect(localOrch.validateElementDescription(description, target).ok).toBe(true);
   });
 
+  it('rejects product descriptions that narrate internal analysis mechanisms', () => {
+    const subject = {
+      name: 'Analyze codebases',
+      kind: 'capability',
+      relatedDomains: ['codebase analysis', 'change risk'],
+      domainVocabulary: ['software understanding'],
+    };
+
+    expect(validateElementDescription(
+      'Analyze codebases registers tools to inspect software behavior and assess change risk.',
+      subject,
+    ).reason).toBe('generic-structural-phrase');
+    expect(validateElementDescription(
+      'Tracks codebase changes, coordinates with the analyzer, and reads from storage to maintain history.',
+      { ...subject, name: 'Track codebase change history', relatedDomains: ['codebase change history'] },
+    ).reason).toBe('generic-structural-phrase');
+  });
+
   it('carries observed read-only semantics into capability description prompts', () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const target = localOrch.capabilityDescriptionTarget({
