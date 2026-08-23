@@ -215,6 +215,12 @@ export function evaluateCapabilityCatalogAudience(
       dataEntities,
       [...capabilityProductTerms, capability.name],
     );
+    if (/\bmessage handling\b/i.test(capability.description || '') &&
+      !/\b(?:message|messaging)\b/i.test(productTerms.join(' '))) {
+      descriptionVerdict.failsAudienceTest = true;
+      descriptionVerdict.reasons.push('internal-mechanism-language');
+      descriptionVerdict.flaggedTokens.push('message handling');
+    }
     const unsupportedExclusivity = unsupportedCapabilityOperationalClaims(capability.description, capabilityProductTerms);
     if (unsupportedExclusivity.length > 0) {
       descriptionVerdict.failsAudienceTest = true;

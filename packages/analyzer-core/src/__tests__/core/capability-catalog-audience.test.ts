@@ -342,6 +342,10 @@ describe('capability catalog audience evaluation', () => {
         'Understand workspace relationships',
         'Shows workspace configuration, including its projects, analyzers, and source settings.',
       ),
+      capability(
+        'Assess agent readiness and task proof',
+        'Assess agent readiness and task proof verifies task completion through message handling.',
+      ),
     ], [], [], ['analyze codebases', 'change history', 'workspace relationships']);
 
     expect(evaluation.accepted).toEqual([]);
@@ -350,6 +354,18 @@ describe('capability catalog audience evaluation', () => {
       expect.objectContaining({ name: 'Track codebase change history', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
       expect.objectContaining({ name: 'Review codebase change history', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
       expect.objectContaining({ name: 'Understand workspace relationships', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
+      expect.objectContaining({ name: 'Assess agent readiness and task proof', reasons: expect.arrayContaining(['internal-mechanism-language']), flaggedTokens: ['message handling'] }),
     ]));
+  });
+
+  it('keeps message handling when first-party text establishes messaging as the product outcome', () => {
+    const subject = capability(
+      'Route customer messages',
+      'Route customer messages directs message handling between customer support queues.',
+    );
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject], [], [], ['customer messaging and support queues'],
+    );
+    expect(evaluation.accepted).toEqual([subject]);
   });
 });
