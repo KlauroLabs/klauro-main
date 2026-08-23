@@ -8127,15 +8127,15 @@ describe('top-down capability evidence (C2)', () => {
           id: 'agent-surface', name: 'Agent MCP Tool Surface', structural_label: 'Agent MCP Tool Surface',
           category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved',
           evidence_role_reasons: ['first-party-product-delivery-surface-requires-outcome-mapping'],
-          evidence_examples: ['evaluate_agent_readiness', 'get_agent_context'], related_domains: ['agent'],
+          evidence_examples: ['analyze_codebase', 'get_codebase_agent_rules'], related_domains: ['codebase'],
           criticality_factors: ["2 message entry points form one cohesive behavior family ('agent')"],
           operations: [
-            { entry_point_id: 'agent-context', entry_point_type: 'message', action: 'Get', path_or_command: 'get_agent_context' },
-            { entry_point_id: 'agent-readiness', entry_point_type: 'message', action: 'Evaluate', path_or_command: 'evaluate_agent_readiness' },
+            { entry_point_id: 'agent-context', entry_point_type: 'message', action: 'Analyze', path_or_command: 'analyze_codebase' },
+            { entry_point_id: 'agent-readiness', entry_point_type: 'message', action: 'Get', path_or_command: 'get_codebase_agent_rules' },
           ],
         }],
         externalServices: [], flowGraph: { capability_candidates: [] },
-        projectTextSignal: { concepts: ['codebase understanding', 'agent'], evidence: [], productDocSummary: 'Klauro helps agents understand software before changing it.' },
+        projectTextSignal: { concepts: ['codebase understanding', 'agent'], evidence: [], productDocSummary: 'Klauro analyzes codebases so agents understand software before changing it.' },
         budgetMs: 30000, exactCapabilityLimit: 1, acceptedOutcomeNames: ['Analyze codebase'],
       });
 
@@ -8172,6 +8172,35 @@ describe('top-down capability evidence (C2)', () => {
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: ['collaboration'], evidence: [] },
         budgetMs: 30000, exactCapabilityLimit: 1, acceptedOutcomeNames: ['Handle Fab work surfaces'],
+      });
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('does not attach an accepted outcome to a different delivery evidence family', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Understand workspace capability map',
+        description: 'Shows how product capabilities relate across a workspace.',
+        category: 'core', candidate_ids: ['fabric-surface'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Klauro', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['workspace', 'collaboration'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'fabric-surface', name: 'Fab MCP Tool Surface', structural_label: 'Fab MCP Tool Surface',
+          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved',
+          evidence_role_reasons: [], evidence_examples: ['claim_work', 'release_work'], related_domains: ['work'],
+          criticality_factors: [], operations: [],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['workspace', 'collaboration'], evidence: [] },
+        budgetMs: 30000, exactCapabilityLimit: 1, acceptedOutcomeNames: ['Understand workspace capability map'],
       });
       expect(catalog).toEqual([]);
     } finally {

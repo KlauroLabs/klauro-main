@@ -218,8 +218,8 @@ export function capabilityOutcomeScopeFailure(
 ): string[] {
   if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
-  if (acceptedOutcome) return [];
   if (!capabilityOutcomeUsesDeliverySubject(name, citedCandidates)) return ['delivery-subject-missing'];
+  if (acceptedOutcome) return [];
   return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
 }
 
@@ -232,7 +232,7 @@ export function capabilityDescriptionProductLanguageFailure(
     (/[a-z0-9][A-Z]|[_:$]/.test(entity) || /(?:Config|DTO|Entity|Entry|Model|Record|Schema)$/i.test(entity)) &&
     new RegExp(`\\b${entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(description)
   )) return 'raw-related-entity-identifier';
-  const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|method calls?|graph nodes?|graph edges?)\b/gi) || [];
+  const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|method calls?|nodes?|edges?)\b/gi) || [];
   return new Set(graphInventoryTerms.map(term => term.toLowerCase())).size >= 2 ? 'implementation-graph-inventory' : undefined;
 }
 

@@ -11811,7 +11811,7 @@ export class AnalyzerOrchestrator {
                 additionalContext: {
                   ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
                   entityIsolation: 'Describe each item independently. Use product nouns only from item.relatedEntities, never item.unrelatedEntities, and never say entity, entities, capability, or an implementation identifier.',
-                  task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item in plain PRODUCT language, grounded in item.relatedEntities, item.fields, and the product domain. When item.readOnly is true, describe only what users can retrieve, see, compare, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. Name the concrete user-facing concept and add supported information beyond the item name. Do not describe CRUD mechanisms, lifecycle, routes, files, or implementation symbols.',
+                  task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Treat each rejection_reason as mandatory: omit that claim or pattern rather than paraphrasing it. Rewrite each item in plain PRODUCT language, grounded in item.relatedEntities, item.fields, and the product domain. Humanize code-shaped names into ordinary words. When item.readOnly is true, describe only what users can retrieve, see, compare, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. Name the concrete user-facing concept and add supported information beyond the item name. Never say that the item handles or processes messages. Do not describe CRUD mechanisms, lifecycle, routes, files, graph inventory, or implementation symbols.',
                   style: 'No markdown. Use concrete nouns and actions copied from item.name, relatedEntities, fields, relatedDomains, operations, or evidenceSummary. State an outcome only when those facts contain it. Do not invent a user, benefit, quality, financial meaning, or operational result. Never use accurate, effective, efficient, organized, relevant, properly, transaction, expense, cost, metric, decision-making, collaboration, seamless, robust, business value, streamline, insight, productivity, or compliant unless the exact word appears in the item facts. Do not mention files, routes, operation counts, lifecycle, or implementation structures.',
                   system: {
                     name: context.systemName,
@@ -11857,7 +11857,7 @@ export class AnalyzerOrchestrator {
                 additionalContext: {
                   ...toAIContextRoute(resolveCapabilityDescriptionRoute(process.env, this.narrativeModel())),
                   entityIsolation: 'Describe this item independently. Use product nouns only from item.relatedEntities, never item.unrelatedEntities, and never say entity, entities, capability, or an implementation identifier.',
-                  task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite this one rejected item as one grounded product sentence. Use its related entities, fields, domains, and observed semantics to explain what users or operators can know or accomplish. When item.readOnly is true, describe only retrieval, presentation, comparison, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources: never infer that infrastructure handles, processes, or manages a business concept from a resource name, and never mention scripts, commands, files, handlers, or other source mechanics. Do not list operations, source files, routes, command verbs, or implementation mechanics.',
+                  task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite this one rejected item as one grounded product sentence. Treat rejection_reason and batch_rejection_reason as mandatory: omit those patterns rather than paraphrasing them. Humanize code-shaped entity and field names into ordinary words. Use its related entities, fields, domains, and observed semantics to explain what users or operators can know or accomplish. When item.readOnly is true, describe only retrieval, presentation, comparison, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources. Never say that the item handles or processes messages. Do not list operations, source files, routes, command verbs, graph inventory, implementation symbols, or mechanics.',
                   style: 'No markdown. Use only concrete nouns and actions copied from item.name, relatedEntities, fields, relatedDomains, operations, or evidenceSummary. State no benefit, quality, actor, financial meaning, or outcome absent from those facts. Do not use capability, lifecycle, supports, coordinates, handles, spans, paths, operations, functionality, accurate, effective, efficient, organized, relevant, properly, transaction, expense, cost, metric, insight, or other marketing language.',
                   system: {
                     name: context.systemName,
@@ -11869,6 +11869,7 @@ export class AnalyzerOrchestrator {
                   items: [target],
                   rejected_description: originalDescription,
                   rejection_reason: this.validateElementDescription(originalDescription || '', byId.get(target.id) || target).reason,
+                  rejected_batch_description: repairedDescription, batch_rejection_reason: repairedValidation.reason,
                 },
               }),
               'individual element description repair',
@@ -13933,7 +13934,6 @@ export class AnalyzerOrchestrator {
       projectTextInstruction: 'Human-authored project text is product framing. Use it to choose emphasis, but keep every claim grounded in the structural facts.',
     };
   }
-
   private buildAIInterpretationBaseFacts(
     systemName: string,
     frameworks: string[],
