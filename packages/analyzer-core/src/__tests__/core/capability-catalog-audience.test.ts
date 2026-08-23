@@ -238,4 +238,27 @@ describe('capability catalog audience evaluation', () => {
       flaggedTokens: expect.arrayContaining(['reserve', 'assign', 'ownership']),
     }));
   });
+
+  it('rejects conflict-prevention, consistency, and universal guarantees absent from evidence', () => {
+    const coordination = capability(
+      'Coordinate overlapping work',
+      'Coordinates claims to prevent conflicts and ensure consistent state across every active task.',
+    );
+    coordination.operations = [
+      { entry_point_id: 'claim', entry_point_type: 'message', action: 'Claim work' },
+      { entry_point_id: 'detect', entry_point_type: 'message', action: 'Detect conflicts' },
+      { entry_point_id: 'release', entry_point_type: 'message', action: 'Release work' },
+    ];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [coordination], [], [], ['advisory coordination', 'parallel overlapping work'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      target: 'description',
+      reasons: expect.arrayContaining(['unsupported-exclusivity-claim']),
+      flaggedTokens: expect.arrayContaining(['prevent conflicts', 'ensure consistent state', 'every']),
+    }));
+  });
 });

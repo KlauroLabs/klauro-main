@@ -68,7 +68,7 @@ function aggregateNameEntityNarrowing(capability: SystemCapability, entityNamesB
 }
 
 export function unsupportedCapabilityOperationalClaims(description: string, evidenceTerms: string[]): string[] {
-  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? concurrent|reserv(?:e|es|ed|ing|ation)|assign(?:s|ed|ing|ment)?|ownership)\b/gi) || [];
+  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? (?:concurrent|conflicts?|collisions?|overlaps?)|ensur(?:e|es|ed|ing) (?:a )?(?:consistent|conflict-free|exclusive|safe) state|reserv(?:e|es|ed|ing|ation)|assign(?:s|ed|ing|ment)?|ownership|every|all)\b/gi) || [];
   const evidence = normalizedEntityPhrase(evidenceTerms.join(' '));
   const evidenceIsAdvisory = /\b(?:advisory|non locking|non exclusive|never block)\b/.test(evidence);
   return claims.filter(claim => evidenceIsAdvisory || !evidence.includes(normalizedEntityPhrase(claim)));
