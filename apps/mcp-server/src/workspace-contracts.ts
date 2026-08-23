@@ -1,4 +1,5 @@
 import type { CrossCodebaseSystemGraph, SystemInterface } from './cross-codebase-analysis';
+import type { AccountStore } from './account-store';
 
 export interface WorkspaceContractQueryOptions {
   limit?: number;
@@ -97,4 +98,44 @@ export function selectWorkspaceCrossRepoContracts(
         : null,
     },
   };
+}
+
+export async function workspaceContractsHttpResponse(input: {
+  workspaceId: string;
+  userId: string;
+  requestUrl: string;
+  accounts: Pick<AccountStore, 'listProjects'>;
+  analyses?: {
+    load(workspaceId: string): Promise<{ graph: CrossCodebaseSystemGraph } | null>;
+    isPending(workspaceId: string): boolean;
+  };
+}) {
+  await input.accounts.listProjects(input.userId, input.workspaceId);
+  if (!input.analyses) return { statusCode: 200, body: { status: 'none', workspace_id: input.workspaceId } };
+  const record = await input.analyses.load(input.workspaceId);
+  const pending = input.analyses.isPending(input.workspaceId);
+  if (!record) return { statusCode: 200, body: { status: pending ? 'pending' : 'none', workspace_id: input.workspaceId } };
+  const params = new URL(input.requestUrl, 'http://localhost').searchParams;
+  return {
+    statusCode: 200,
+    body: {
+      status: pending ? 'pending' : 'ready',
+      workspace_id: input.workspaceId,
+      contracts: selectWorkspaceCrossRepoContracts(record.graph, {
+        limit: positiveBoundedInt(params.get('limit'), 100, 500),
+        offset: nonNegativeInt(params.get('offset'), 0),
+        journey_limit: positiveBoundedInt(params.get('journey_limit'), 25, 100),
+      }),
+    },
+  };
+}
+
+function positiveBoundedInt(raw: string | null, fallback: number, maximum: number): number {
+  const parsed = raw !== null ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), maximum) : fallback;
+}
+
+function nonNegativeInt(raw: string | null, fallback: number): number {
+  const parsed = raw !== null ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
