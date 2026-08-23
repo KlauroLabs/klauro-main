@@ -10971,6 +10971,16 @@ describe('enterprise AI semantic guards', () => {
     ).reason).toBe('read-only-capability-claims-mutation');
   });
 
+  it('applies the final capability word limit during description enrichment', () => {
+    const target = {
+      id: 'cap_history', name: 'Track codebase change history', kind: 'capability',
+      operations: ['Read change history'], relatedEntities: ['ChangeHistoryEntry'], relatedDomains: ['change-history'],
+    };
+    const description = 'Track codebase change history records every analyzed revision and its changed nodes, edges, entry points, exit points, timestamps, commit messages, and authors so users can compare how software relationships evolve and review the resulting impact across the entire codebase.';
+    expect(description.split(/\s+/)).toHaveLength(39);
+    expect(orch.validateElementDescription(description, target).reason).toBe('description-too-long');
+  });
+
   it('rejects fallback prose that contradicts resolved capability evidence', () => {
     const operationTarget = {
       id: 'cap_runtime', name: 'Correlate runtime evidence', kind: 'capability',

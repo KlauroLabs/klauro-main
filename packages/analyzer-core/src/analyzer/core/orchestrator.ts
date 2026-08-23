@@ -12168,7 +12168,7 @@ export class AnalyzerOrchestrator {
       normalizeToken: token => this.normalizeDomainToken(token),
       isGenericToken: token => this.isGenericCapabilityToken(token),
     });
-    if (!shared.ok) return shared;
+    if (!shared.ok) return shared; if (target.kind === 'capability' && cleaned.split(/\s+/).filter(Boolean).length > 32) return { ok: false, reason: 'description-too-long' };
     if (/\/(?:[A-Za-z0-9_.~-]+\/)*(?::|\{)[A-Za-z_][A-Za-z0-9_]*(?:\}|\b)/.test(cleaned)) {
       return { ok: false, reason: 'raw-route-restatement' };
     }
@@ -13903,7 +13903,7 @@ export class AnalyzerOrchestrator {
         'operations / evidenceSummary (supporting facts ONLY — never the headline)',
       ],
       sentence_contract: [
-        'One sentence (two only if needed for clarity).',
+        'One sentence (two only if needed for clarity); capability descriptions must contain no more than 32 words.',
         'Start directly with the item name or concrete product behavior; never prefix it with "The" plus an analysis label such as capability, feature, module, component, or functionality.',
         'Say what it lets the product\'s users or operators DO, or what concept it represents in THIS product, in plain product language a new engineer or PM would understand.',
         'Ground the meaning in the related entities and the product domain — name the concrete user-facing concept (e.g. crypto holdings, invoices, access policies, market signals), not the database operation.',
