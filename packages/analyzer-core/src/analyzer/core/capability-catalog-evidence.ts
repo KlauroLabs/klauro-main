@@ -170,9 +170,27 @@ export function capabilityOutcomeNameUnsupportedTokens(
       ...(candidate.related_entities || []).map(entityId => entityId.replace(/^entity[_:-]?/i, '')),
       ...(candidate.evidence_examples || []),
     ].filter(Boolean).join(' '))));
-  return subjectTokens.filter(token =>
+  const unsupportedTokens = subjectTokens.filter(token =>
     !outcomeTokenMatches(token, firstPartyTokens) && !outcomeTokenMatches(token, citedIdentityTokens)
   );
+  if (!focusedBehaviorSurface || unsupportedTokens.length < 2 || !/\band\b/i.test(name)) return unsupportedTokens;
+  const hasRecurringSubject = subjectTokens.some(token => outcomeTokenMatches(token, citedIdentityTokens));
+  const operationTokenSets = (citedCandidates[0].evidence_examples || []).map(example =>
+    new Set(outcomeIdentityTokens(example)));
+  const matchedOperations = new Set<number>();
+  const everyUnsupportedTokenIsOperationBacked = unsupportedTokens.every(token => {
+    let matched = false;
+    operationTokenSets.forEach((operationTokens, index) => {
+      if (outcomeTokenMatches(token, operationTokens)) {
+        matched = true;
+        matchedOperations.add(index);
+      }
+    });
+    return matched;
+  });
+  return hasRecurringSubject && everyUnsupportedTokenIsOperationBacked && matchedOperations.size >= 2
+    ? []
+    : unsupportedTokens;
 }
 
 export function productTextCorroboratesCapability(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {

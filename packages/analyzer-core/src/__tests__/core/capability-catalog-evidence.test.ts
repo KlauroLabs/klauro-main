@@ -396,6 +396,12 @@ describe('capability evidence roles', () => {
       structural_label: 'Agent MCP Tool Surface',
       evidence_examples: ['evaluate_agent_readiness', 'get_agent_context'],
     }], {})).toEqual(['readiness', 'context']);
+    expect(capabilityOutcomeNameUnsupportedTokens('Assess agent readiness and task proof', [{
+      ...fabric,
+      name: 'Agent MCP Tool Surface',
+      structural_label: 'Agent MCP Tool Surface',
+      evidence_examples: ['evaluate_agent_readiness', 'evaluate_agent_task_proof', 'get_agent_context'],
+    }], {})).toEqual([]);
     expect(capabilityOutcomeUsesDeliverySubject('Support agents with codebase context', [fabric])).toBe(true);
     expect(capabilityOutcomeUsesDeliverySubject('Build a relationship graph', [fabric])).toBe(false);
   });
