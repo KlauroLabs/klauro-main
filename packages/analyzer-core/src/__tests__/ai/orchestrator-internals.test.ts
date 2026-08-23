@@ -8108,6 +8108,42 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('allows focused delivery evidence to attach to an existing product outcome', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Analyze codebase',
+        description: 'Agents use grounded codebase context to understand software behavior and prepare safe changes.',
+        category: 'core', candidate_ids: ['agent-surface'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Klauro',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['codebase understanding'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        behaviorSurfaces: [{
+          id: 'agent-surface', name: 'Agent MCP Tool Surface', structural_label: 'Agent MCP Tool Surface',
+          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved',
+          evidence_role_reasons: ['first-party-product-delivery-surface-requires-outcome-mapping'],
+          evidence_examples: ['evaluate_agent_readiness', 'get_agent_context'], related_domains: ['agent'],
+          criticality_factors: ["2 message entry points form one cohesive behavior family ('agent')"],
+          operations: [
+            { entry_point_id: 'agent-context', entry_point_type: 'message', action: 'Get', path_or_command: 'get_agent_context' },
+            { entry_point_id: 'agent-readiness', entry_point_type: 'message', action: 'Evaluate', path_or_command: 'evaluate_agent_readiness' },
+          ],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['codebase understanding', 'agent'], evidence: [], productDocSummary: 'Klauro helps agents understand software before changing it.' },
+        budgetMs: 30000, exactCapabilityLimit: 1, acceptedOutcomeNames: ['Analyze codebase'],
+      });
+
+      expect(catalog.map((capability: any) => capability.name)).toEqual(['Analyze codebase']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('anchors product-language catalog entries to cited structural candidate ids', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({

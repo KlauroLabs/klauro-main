@@ -9185,7 +9185,7 @@ export class AnalyzerOrchestrator {
     flowGraph: CASFlowGraph;
     projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
-    qualityNudge?: string; exactCapabilityLimit?: number;
+    qualityNudge?: string; exactCapabilityLimit?: number; acceptedOutcomeNames?: string[];
     hardDeadlineAt?: number;
     onResponse?: (raw: string) => void; onRejection?: (feedback: CapabilityCatalogRejection) => void;
     entryPoints?: CASEntryPoint[];
@@ -9267,7 +9267,7 @@ export class AnalyzerOrchestrator {
       }
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, or blocking unless that exact claim appears in the cited evidence. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
-    const catalogTaskBase = input.exactCapabilityLimit ? `You are naming one evidence-grounded PRODUCT OUTCOME for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. The single missing evidence fact in retry_hint is authoritative. Name only the common user or operator purpose of that fact, include its exact candidate_id, and include at least one of its evidence_subject_terms in the name. Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
+    const catalogTaskBase = input.exactCapabilityLimit ? `You are naming one evidence-grounded PRODUCT OUTCOME for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. The single missing evidence fact in retry_hint is authoritative. First decide whether this delivery evidence implements one of accepted_outcome_names; when it does, return that exact existing name and its candidate_id instead of inventing another capability. Otherwise name only the common user or operator purpose of that fact, include its exact candidate_id, and include at least one of its evidence_subject_terms in the name. Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
       : artifactType === 'infrastructure'
       ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
@@ -9316,7 +9316,7 @@ export class AnalyzerOrchestrator {
       const budgetedContext = fitCapabilityCatalogContext(additionalContextWithoutFacts, {
         user_journeys: journeys, entities,
         candidate_route_areas: candidateAreaFacts,
-        required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id),
+        required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: input.acceptedOutcomeNames,
         required_entity_candidate_groups: requiredEntityCandidateGroups,
         external_services: services,
         ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
@@ -9588,7 +9588,7 @@ export class AnalyzerOrchestrator {
         .map((value: unknown) => String(value || ''))
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
       const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
-      const unsupportedOutcomeTokens = capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal) ? ['delivery-operation-restatement'] : !capabilityOutcomeUsesDeliverySubject(name, citedCandidates) ? ['delivery-subject-missing'] : capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
+      const unsupportedOutcomeTokens = input.acceptedOutcomeNames?.some(existing => existing.toLowerCase() === name.toLowerCase()) ? [] : capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal) ? ['delivery-operation-restatement'] : !capabilityOutcomeUsesDeliverySubject(name, citedCandidates) ? ['delivery-subject-missing'] : capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
       if (candidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
         debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, candidateIds);
         continue;
@@ -10425,7 +10425,7 @@ export class AnalyzerOrchestrator {
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
-          hardDeadlineAt, exactCapabilityLimit: evidenceScoped ? repairBatch.length : undefined,
+          hardDeadlineAt, exactCapabilityLimit: evidenceScoped ? repairBatch.length : undefined, acceptedOutcomeNames: targetedRepair ? reconciled.map(capability => capability.name) : undefined,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
           onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); learnedRejection ||= recorded.added; },
