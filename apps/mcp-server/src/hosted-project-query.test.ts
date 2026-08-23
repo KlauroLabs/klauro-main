@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { executeHostedProjectQuery, hostedProjectQuerySections, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+import * as analysisMastery from './analysis-mastery';
 import { getProductMap, searchNodes } from './query';
 import { HOSTED_SEARCH_NODES_SCHEMA } from './hosted-project-query-schema';
 
@@ -27,11 +28,18 @@ function cas(): CASOutput {
   } as unknown as CASOutput;
 }
 
+function withoutGeneratedAt(value: unknown): unknown {
+  const result = value as Record<string, unknown>;
+  return { ...result, generated_at: '<generated>' };
+}
+
 test('hosted project query exposes only the explicit read-only allowlist', () => {
   assert.deepEqual([...HOSTED_PROJECT_QUERY_TOOL_NAMES].sort(), [
-    'assess_change_risk', 'find_tests', 'get_agent_context', 'get_agent_start_context',
-    'get_agent_tool_plan', 'get_behavioral_invariants', 'get_codebase_idioms',
-    'get_coding_context', 'get_module_health', 'get_product_map', 'get_user_journeys', 'run_answer_pack', 'search_nodes',
+    'assess_change_risk', 'evaluate_agent_readiness', 'evaluate_agent_task_proof', 'evaluate_analysis_truth',
+    'find_tests', 'get_agent_context', 'get_agent_start_context', 'get_agent_tool_plan',
+    'get_behavioral_invariants', 'get_codebase_idioms', 'get_framework_depth_report',
+    'get_coding_context', 'get_module_health', 'get_product_map', 'get_runtime_instrumentation_plan',
+    'get_semantic_map', 'get_user_journeys', 'run_answer_pack', 'search_nodes',
     'validate_behavioral_invariants', 'validate_codebase_idioms',
   ]);
 });
@@ -61,6 +69,13 @@ test('hosted query tools load only the CAS sections they consume', () => {
   ]);
   assert.deepEqual(hostedProjectQuerySections('run_answer_pack', { section: 'security' }), ['graph', 'quality']);
   assert.deepEqual(hostedProjectQuerySections('run_answer_pack', { section: 'external-boundaries' }), ['supplemental']);
+  assert.deepEqual(hostedProjectQuerySections('evaluate_analysis_truth'), ['graph', 'calls', 'facts', 'runtime', 'supplemental']);
+  assert.deepEqual(hostedProjectQuerySections('get_semantic_map'), ['graph', 'calls', 'facts', 'supplemental']);
+  assert.deepEqual(hostedProjectQuerySections('get_framework_depth_report'), ['graph', 'facts', 'runtime', 'supplemental']);
+  assert.deepEqual(hostedProjectQuerySections('get_runtime_instrumentation_plan'), ['graph', 'runtime']);
+  assert.deepEqual(hostedProjectQuerySections('evaluate_agent_task_proof'), [
+    'graph', 'calls', 'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
+  ]);
   assert.equal(hostedProjectQuerySections('get_product_map').includes('graph'), false);
   assert.equal(hostedProjectQuerySections('get_agent_start_context').includes('calls'), false);
 });
@@ -121,6 +136,55 @@ test('hosted query results match the canonical pure query functions', async () =
     await executeHostedProjectQuery({ cas: fixture, tool: 'get_product_map', args: {}, projectPath: '/hosted/orders' }),
     getProductMap(fixture)
   );
+});
+
+test('hosted analysis-mastery queries preserve their complete contracts', async () => {
+  const fixture = cas();
+  const expectation = {
+    name: 'orders-truth', languages: ['TypeScript'], libraries: ['missing-library'],
+    method_calls: [{ caller: 'OrdersService', method: 'placeOrder' }],
+    exit_points: [{ type: 'api', target: 'billing' }], minimums: { nodes: 1, edges: 0 },
+  };
+  assert.deepEqual(
+    withoutGeneratedAt(
+    await executeHostedProjectQuery({ cas: fixture, tool: 'evaluate_analysis_truth', args: { expectation }, projectPath: '/hosted/orders' }),
+    ),
+    withoutGeneratedAt(analysisMastery.evaluateAnalysisTruth(fixture, expectation)),
+  );
+  assert.deepEqual(
+    withoutGeneratedAt(
+    await executeHostedProjectQuery({ cas: fixture, tool: 'get_semantic_map', args: { target: 'Orders', limit: 10 }, projectPath: '/hosted/orders' }),
+    ),
+    withoutGeneratedAt(analysisMastery.getSemanticMap(fixture, { target: 'Orders', limit: 10 })),
+  );
+  assert.deepEqual(
+    withoutGeneratedAt(
+    await executeHostedProjectQuery({ cas: fixture, tool: 'get_framework_depth_report', args: {}, projectPath: '/hosted/orders' }),
+    ),
+    withoutGeneratedAt(analysisMastery.getFrameworkDepthReport(fixture)),
+  );
+  assert.deepEqual(
+    withoutGeneratedAt(
+    await executeHostedProjectQuery({ cas: fixture, tool: 'get_runtime_instrumentation_plan', args: { limit: 20 }, projectPath: '/hosted/orders' }),
+    ),
+    withoutGeneratedAt(analysisMastery.getRuntimeInstrumentationPlan(fixture, { limit: 20 })),
+  );
+});
+
+test('hosted agent mastery evaluates targetless orientation without inventing an edit target', async () => {
+  const fixture = cas();
+  const result = await executeHostedProjectQuery({
+    cas: fixture, tool: 'evaluate_agent_task_proof', args: { tasks: [{ task_type: 'orient' }] }, projectPath: '/hosted/orders',
+  }) as any;
+  assert.equal(result.tasks.length, 1);
+  assert.equal(result.tasks[0].selected_node, null);
+  assert.equal(result.tasks[0].checks.some((check: any) => check.id === 'orientation-context'), true);
+
+  const readiness = await executeHostedProjectQuery({
+    cas: fixture, tool: 'evaluate_agent_readiness', args: {}, projectPath: '/hosted/orders',
+  }) as any;
+  assert.equal(readiness.path, '/hosted/orders');
+  assert.equal(typeof readiness.score, 'number');
 });
 
 test('hosted broad orientation is bounded and never becomes an internal edit target', async () => {

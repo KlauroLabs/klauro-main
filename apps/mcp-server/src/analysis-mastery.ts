@@ -379,13 +379,37 @@ export function getRuntimeInstrumentationPlan(cas: CASOutput, opts: { limit?: nu
 export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, tasks: AgentTask[]) {
   const taskReports = await Promise.all(tasks.map(async task => {
     const context = await getAgentContext(cas, pathValue, task);
+    const orientation = task.task_type === 'orient' && !task.target && !task.related_paths?.length;
+    const fileReadPlan = Array.isArray(context.file_read_plan) ? context.file_read_plan : [];
+    const nextCalls = Array.isArray(context.next_mcp_calls) ? context.next_mcp_calls : [];
+    const workContext = context.work_context as Record<string, unknown> | undefined;
     const checks: MasteryCheck[] = [
-      simpleCheck('target-resolved', Boolean(context.selected_node), context.selected_node?.id || 'no selected node'),
-      simpleCheck('file-read-plan', context.file_read_plan.length > 0, `${context.file_read_plan.length} files`),
-      simpleCheck('coding-context', Boolean(context.work_context.coding_context && !('error' in (context.work_context.coding_context as Record<string, unknown>))), 'coding context'),
-      simpleCheck('risk-context', Boolean(context.work_context.risk || context.work_context.risk_context), 'risk context'),
-      simpleCheck('test-context', Boolean(context.work_context.tests), 'test context'),
-      simpleCheck('mcp-followups', context.next_mcp_calls.length > 0, `${context.next_mcp_calls.length} calls`),
+      simpleCheck(
+        orientation ? 'orientation-context' : 'target-resolved',
+        orientation ? context.context_profile === 'read-only-orientation' && Boolean(context.system) : Boolean(context.selected_node),
+        orientation ? String(context.context_profile || 'missing orientation context') : context.selected_node?.id || 'no selected node',
+      ),
+      simpleCheck(
+        orientation ? 'source-reading-rule' : 'file-read-plan',
+        orientation ? Boolean(context.source_reading_rule) : fileReadPlan.length > 0,
+        orientation ? String(context.source_reading_rule || 'no source reading rule') : `${fileReadPlan.length} files`,
+      ),
+      simpleCheck(
+        orientation ? 'product-orientation' : 'coding-context',
+        orientation ? Boolean(context.product_orientation) : Boolean(workContext?.coding_context && !('error' in (workContext.coding_context as Record<string, unknown>))),
+        orientation ? 'product orientation' : 'coding context',
+      ),
+      simpleCheck(
+        orientation ? 'readiness-context' : 'risk-context',
+        orientation ? Boolean(context.readiness) : Boolean(workContext?.risk || workContext?.risk_context),
+        orientation ? 'readiness context' : 'risk context',
+      ),
+      simpleCheck(
+        orientation ? 'starting-points' : 'test-context',
+        orientation ? Array.isArray(context.starting_points) && context.starting_points.length > 0 : Boolean(workContext?.tests),
+        orientation ? `${context.starting_points?.length || 0} starting points` : 'test context',
+      ),
+      simpleCheck('mcp-followups', nextCalls.length > 0, `${nextCalls.length} calls`),
     ];
     const score = Math.round(checks.reduce((sum, check) => sum + check.score, 0) / checks.length);
     return {
@@ -394,7 +418,7 @@ export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, 
       score,
       checks,
       selected_node: context.selected_node,
-      file_read_plan: context.file_read_plan,
+      file_read_plan: fileReadPlan,
       gaps: context.gaps,
     };
   }));

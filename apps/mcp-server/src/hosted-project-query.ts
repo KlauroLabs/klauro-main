@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import * as agentAdoption from './agent-adoption';
+import * as analysisMastery from './analysis-mastery';
 import * as idiomQuery from './idiom-query';
 import * as invariantValidation from './invariant-validation';
 import * as query from './query';
@@ -19,6 +20,33 @@ const taskSchema = z.object({
   response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
   runtime: z.enum(['auto', 'include', 'exclude']).optional(),
   exclude_sections: z.array(z.string()).optional(),
+}).strict();
+
+const truthExpectationSchema = z.object({
+  name: z.string().optional(),
+  frameworks: z.array(z.string()).optional(),
+  languages: z.array(z.string()).optional(),
+  libraries: z.array(z.string()).optional(),
+  routes: z.array(z.object({
+    method: z.string().optional(), path: z.string(), handler: z.string().optional(), controller: z.string().optional(),
+  }).strict()).optional(),
+  nodes: z.array(z.object({ name: z.string(), type: z.string().optional(), file: z.string().optional() }).strict()).optional(),
+  entities: z.array(z.string()).optional(),
+  relationships: z.array(z.object({ source: z.string(), target: z.string(), type: z.string().optional() }).strict()).optional(),
+  method_calls: z.array(z.object({
+    caller: z.string(), target: z.string().optional(), method: z.string().optional(), resolution_type: z.string().optional(),
+  }).strict()).optional(),
+  exit_points: z.array(z.object({ type: z.string().optional(), name: z.string().optional(), target: z.string().optional() }).strict()).optional(),
+  runtime_signals: z.array(z.string()).optional(),
+  minimums: z.object({
+    nodes: z.number().int().nonnegative().optional(),
+    edges: z.number().int().nonnegative().optional(),
+    entry_points: z.number().int().nonnegative().optional(),
+    exit_points: z.number().int().nonnegative().optional(),
+    method_calls: z.number().int().nonnegative().optional(),
+    runtime_static_links: z.number().int().nonnegative().optional(),
+    analysis_facts: z.number().int().nonnegative().optional(),
+  }).strict().optional(),
 }).strict();
 
 export const HOSTED_PROJECT_QUERY_SCHEMAS = {
@@ -73,6 +101,16 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
     severity: z.enum(['info', 'warning', 'error']).optional(),
     limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
   }).strict(),
+  evaluate_analysis_truth: z.object({ expectation: truthExpectationSchema.optional() }).strict(),
+  get_semantic_map: z.object({
+    target: z.string().optional(), limit: z.number().int().positive().max(200).optional(),
+  }).strict(),
+  get_framework_depth_report: z.object({}).strict(),
+  get_runtime_instrumentation_plan: z.object({
+    limit: z.number().int().positive().max(500).optional(),
+  }).strict(),
+  evaluate_agent_task_proof: z.object({ tasks: z.array(taskSchema).min(1).max(20).optional() }).strict(),
+  evaluate_agent_readiness: z.object({}).strict(),
 } as const;
 
 export type HostedProjectQueryTool = keyof typeof HOSTED_PROJECT_QUERY_SCHEMAS;
@@ -99,6 +137,12 @@ export function hostedProjectQuerySections(tool: string, args: HostedQuerySectio
     case 'get_product_map': return ['facts', 'comprehension', 'runtime', 'quality', 'supplemental'];
     case 'get_user_journeys': return ['comprehension'];
     case 'get_module_health': return ['quality'];
+    case 'evaluate_analysis_truth': return ['graph', 'calls', 'facts', 'runtime', 'supplemental'];
+    case 'get_semantic_map': return ['graph', 'calls', 'facts', 'supplemental'];
+    case 'get_framework_depth_report': return ['graph', 'facts', 'runtime', 'supplemental'];
+    case 'get_runtime_instrumentation_plan': return ['graph', 'runtime'];
+    case 'evaluate_agent_task_proof': return ['graph', 'calls', ...ORIENTATION_SECTIONS];
+    case 'evaluate_agent_readiness': return ['graph', 'calls', ...ORIENTATION_SECTIONS];
     case 'get_codebase_idioms':
     case 'get_behavioral_invariants':
     case 'validate_codebase_idioms':
@@ -224,6 +268,28 @@ export async function executeHostedProjectQuery(input: {
       result = query.getModuleHealth(input.cas, {
         kind: args.kind, severity: args.severity, limit: args.limit, offset: args.offset,
       });
+      break;
+    case 'evaluate_analysis_truth': {
+      const expectation = args.expectation || await analysisMastery.loadTruthExpectation(input.projectPath);
+      result = expectation
+        ? analysisMastery.evaluateAnalysisTruth(input.cas, expectation)
+        : { error: 'No expectation provided and no repo-local analysis expectation file found.' };
+      break;
+    }
+    case 'get_semantic_map':
+      result = analysisMastery.getSemanticMap(input.cas, { target: args.target, limit: args.limit });
+      break;
+    case 'get_framework_depth_report':
+      result = analysisMastery.getFrameworkDepthReport(input.cas);
+      break;
+    case 'get_runtime_instrumentation_plan':
+      result = analysisMastery.getRuntimeInstrumentationPlan(input.cas, { limit: args.limit });
+      break;
+    case 'evaluate_agent_task_proof':
+      result = await analysisMastery.evaluateAgentTaskProof(input.cas, input.projectPath, args.tasks || [{ task_type: 'orient' }]);
+      break;
+    case 'evaluate_agent_readiness':
+      result = agentAdoption.evaluateAgentReadiness(input.cas, input.projectPath);
       break;
   }
 

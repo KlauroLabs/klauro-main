@@ -541,6 +541,53 @@ export function createServer(): McpServer {
     },
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'get_module_health', args)));
 
+  register('evaluate_analysis_truth', {
+    description: 'Compare hosted CAS against explicit ground-truth expectations. If omitted, Klauro uses a repo-local analysis expectation file when available.',
+    inputSchema: {
+      path: z.string(),
+      expectation: z.object({
+        name: z.string().optional(), frameworks: z.array(z.string()).optional(), languages: z.array(z.string()).optional(), libraries: z.array(z.string()).optional(),
+        routes: z.array(z.object({ method: z.string().optional(), path: z.string(), handler: z.string().optional(), controller: z.string().optional() })).optional(),
+        nodes: z.array(z.object({ name: z.string(), type: z.string().optional(), file: z.string().optional() })).optional(),
+        entities: z.array(z.string()).optional(),
+        relationships: z.array(z.object({ source: z.string(), target: z.string(), type: z.string().optional() })).optional(),
+        method_calls: z.array(z.object({ caller: z.string(), target: z.string().optional(), method: z.string().optional(), resolution_type: z.string().optional() })).optional(),
+        exit_points: z.array(z.object({ type: z.string().optional(), name: z.string().optional(), target: z.string().optional() })).optional(),
+        runtime_signals: z.array(z.string()).optional(),
+        minimums: z.object({
+          nodes: z.number().int().nonnegative().optional(), edges: z.number().int().nonnegative().optional(), entry_points: z.number().int().nonnegative().optional(),
+          exit_points: z.number().int().nonnegative().optional(), method_calls: z.number().int().nonnegative().optional(),
+          runtime_static_links: z.number().int().nonnegative().optional(), analysis_facts: z.number().int().nonnegative().optional(),
+        }).optional(),
+      }).optional(),
+    },
+  }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'evaluate_analysis_truth', args)));
+
+  register('get_semantic_map', {
+    description: 'Retrieve a hosted CAS-derived file, symbol, data, relationship, and method-call map.',
+    inputSchema: { path: z.string(), target: z.string().optional(), limit: z.number().int().positive().max(200).optional() },
+  }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'get_semantic_map', args)));
+
+  register('get_framework_depth_report', {
+    description: 'Score hosted framework analysis depth using analyzers, nodes, entries, evidence, and runtime links.',
+    inputSchema: { path: z.string() },
+  }, async ({ path }: any) => json(await hostedProjectQuery(path, 'get_framework_depth_report', {})));
+
+  register('get_runtime_instrumentation_plan', {
+    description: 'Turn hosted runtime/static links into concrete event contracts and instrumentation points.',
+    inputSchema: { path: z.string(), limit: z.number().int().positive().max(500).optional() },
+  }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'get_runtime_instrumentation_plan', args)));
+
+  register('evaluate_agent_task_proof', {
+    description: 'Prove that hosted CAS supplies target, risk, test, follow-up, and source-reading context for representative agent tasks.',
+    inputSchema: { path: z.string(), tasks: z.array(taskSchema).min(1).max(20).optional() },
+  }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'evaluate_agent_task_proof', args)));
+
+  register('evaluate_agent_readiness', {
+    description: 'Score whether the hosted analysis is ready for agents to use by default.',
+    inputSchema: { path: z.string() },
+  }, async ({ path }: any) => json(await hostedProjectQuery(path, 'evaluate_agent_readiness', {})));
+
 
 
 

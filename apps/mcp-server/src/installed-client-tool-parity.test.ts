@@ -25,7 +25,7 @@ import { INSTALLED_TOOL_NAMES } from './installed-client-server';
  * tool surface is deliberately hosted-only (admin, benchmark, watcher-CLI,
  * and internal-analysis-debugging tools with no customer-facing consumer),
  * and copying all of it onto the client would trade a curated, agent-usable
- * 40-tool surface for an undefended ~200-tool one (task #130's own
+ * 46-tool surface for an undefended ~200-tool one (task #130's own
  * instructions: "I would rather have a defended 35 than an undefended 179").
  *
  * Instead this gate encodes the tools doctrine explicitly promises an agent
@@ -47,7 +47,7 @@ interface DoctrineTool {
   name: string;
   /** Why this is a promised customer capability, independent of whether
    *  docs/mcp/TOOLS.md happens to document it yet. */
-  source: 'CLAUDE.md fabric doctrine' | 'task-130 defect list';
+  source: 'CLAUDE.md fabric doctrine' | 'task-130 defect list' | 'AGENTS.md agent operating loop';
 }
 
 const DOCTRINE_REQUIRED_TOOLS: DoctrineTool[] = [
@@ -62,6 +62,12 @@ const DOCTRINE_REQUIRED_TOOLS: DoctrineTool[] = [
   { name: 'get_module_health', source: 'task-130 defect list' },
   { name: 'run_workspace_analysis', source: 'task-130 defect list' },
   { name: 'get_workspace_analysis', source: 'task-130 defect list' },
+  { name: 'evaluate_analysis_truth', source: 'AGENTS.md agent operating loop' },
+  { name: 'get_semantic_map', source: 'AGENTS.md agent operating loop' },
+  { name: 'get_framework_depth_report', source: 'AGENTS.md agent operating loop' },
+  { name: 'get_runtime_instrumentation_plan', source: 'AGENTS.md agent operating loop' },
+  { name: 'evaluate_agent_task_proof', source: 'AGENTS.md agent operating loop' },
+  { name: 'evaluate_agent_readiness', source: 'AGENTS.md agent operating loop' },
 ];
 
 function toolsDocumentedInToolsMd(): Set<string> {
