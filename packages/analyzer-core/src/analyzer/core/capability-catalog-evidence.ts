@@ -123,7 +123,7 @@ export function capabilityEvidenceSubjectTokens(
 export function capabilityOutcomeRestatesDeliveryOperation(
   name: string,
   citedCandidates: SystemCapability[],
-  _signal?: CapabilityCatalogProjectSignal,
+  signal?: CapabilityCatalogProjectSignal,
   acceptedOutcome = false,
 ): boolean {
   if (!citedCandidates.some(candidate => candidate.evidence_kind === 'behavior-surface')) return false;
@@ -133,11 +133,18 @@ export function capabilityOutcomeRestatesDeliveryOperation(
     const operationPhrase = outcomeIdentityTokens(example).join(' ');
     return operationPhrase.split(' ').length >= 2 && (` ${namePhrase} `).includes(` ${operationPhrase} `);
   }));
+  const productTokens = new Set(outcomeIdentityTokens([
+    signal?.productDocTitle,
+    signal?.productDocSummary,
+    signal?.manifestDescription,
+    signal?.summary,
+  ].filter(Boolean).join(' ')));
+  const corroboratedProductOutcome = words.length > 1 && words.every(token => outcomeTokenMatches(token, productTokens));
   const usesDeliveryScaffolding = /\b(?:mcp|tools?|surfaces?)\b/i.test(name);
   const usesGenericDeliveryAction = /^(?:handle|manage|process)(?:s|es|ing)?\b/i.test(name.trim());
   const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
   return words.length === 0 || usesDeliveryScaffolding || usesGenericDeliveryAction || repeatsActionAsSubject ||
-    (!acceptedOutcome && copiesOperationPhrase) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
+    (!acceptedOutcome && !corroboratedProductOutcome && copiesOperationPhrase) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
 }
 
 export function capabilityOutcomeMisusesCoordination(

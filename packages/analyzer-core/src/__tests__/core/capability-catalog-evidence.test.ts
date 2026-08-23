@@ -389,11 +389,19 @@ describe('capability evidence roles', () => {
     }])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate work with', [fabric])).toBe(true);
     fabric.evidence_examples = ['analyze_codebase', 'sync_codebase', 'get_codebase_summary'];
-    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], undefined, true)).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }], undefined, true)).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Correlate runtime events with codebase behavior', [{
+      ...fabric,
+      evidence_examples: ['correlate_runtime_events_with_codebase_behavior'],
+    }], { productDocSummary: 'Correlates runtime events with codebase behavior.' })).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Claim work in the fab', [{
+      ...fabric,
+      evidence_examples: ['claim_work'],
+    }], { productDocSummary: 'Fabric enables collaboration across overlapping work.' })).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Understand Fab work surfaces', [fabric])).toBe(true);
     fabric.evidence_examples = ['get_agent_context', 'get_agent_readiness', 'get_agent_tool_plan'];
     expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
