@@ -31,6 +31,38 @@ export function capabilityDescriptionEvidenceFields(
     .map(field => `${field.name}:${field.type || 'unknown'}`);
 }
 
+export function capabilityDescriptionEvidenceMaps<T extends {
+  id: string;
+  name: string;
+  kind?: string;
+  fields?: ReadonlyArray<{ name: string; type?: string }>;
+}>(entities: readonly T[]): {
+  entityNamesById: Map<string, string>;
+  entityFieldsById: Map<string, string[]>;
+  entityEvidenceById: Map<string, T>;
+} {
+  return {
+    entityNamesById: new Map(entities.map(entity => [entity.id, entity.name])),
+    entityFieldsById: new Map(entities.map(entity => [entity.id, capabilityDescriptionEvidenceFields(entity.fields || [])])),
+    entityEvidenceById: new Map(entities.map(entity => [entity.id, entity])),
+  };
+}
+
+export function capabilityDescriptionEntityProvidesProductEvidence(
+  capabilityName: string,
+  entity: { name: string; kind?: string },
+): boolean {
+  if (!['domain-shape', 'request-dto', 'value-object'].includes(entity.kind || '')) return true;
+  const entityWords = entity.name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const implementationConfiguration = /^(?:config|configuration|options?|settings?|preferences?)$/.test(entityWords[entityWords.length - 1] || '');
+  if (!implementationConfiguration) return true;
+  return /\b(?:config(?:ure|uration)?|settings?|preferences?|options?|customiz(?:e|ation))\b/i.test(capabilityName);
+}
+
 const DEFAULT_GENERIC_SUBJECT_TOKENS = new Set([
   'management', 'service', 'services', 'system', 'systems', 'manager', 'module', 'modules',
   'component', 'components', 'handler', 'handlers', 'controller', 'controllers', 'data', 'api', 'the', 'and',

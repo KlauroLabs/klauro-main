@@ -1,7 +1,7 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { aiService } from '../../ai/ai-service';
 import { aiConfig } from '../../config/ai.config';
-import { capabilityDescriptionEvidenceFields, validateElementDescription } from '../../ai/element-description-validator';
+import { capabilityDescriptionEntityProvidesProductEvidence, capabilityDescriptionEvidenceFields, validateElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isPlausibleExternalServiceName, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 
@@ -848,19 +848,52 @@ describe('element description grounding parity with the system validator', () =>
     expect(evidence[0].fields).toHaveLength(4);
   });
 
-  it('humanizes an exact related-entity identifier before capability description validation', () => {
+  it('keeps implementation configuration out of non-configuration prose without removing it from CAS', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const config = {
+      id: 'entity-config', name: 'KlauroConfig', kind: 'domain-shape',
+      fields: [{ name: 'workspaceId', type: 'string' }, { name: 'serverUrl', type: 'string' }],
+    };
+    const names = new Map([[config.id, config.name]]);
+    const fields = new Map([[config.id, capabilityDescriptionEvidenceFields(config.fields)]]);
+    const evidence = new Map([[config.id, config]]);
+    const workspaceTarget = localOrch.capabilityDescriptionTarget({
+      id: 'workspace-map', name: 'Understand workspace capability map', category: 'core', description: '',
+      related_entities: [config.id], related_domains: ['workspace'], criticality_factors: [], operations: [],
+    }, names, fields, evidence);
+    const settingsTarget = localOrch.capabilityDescriptionTarget({
+      id: 'workspace-settings', name: 'View workspace settings', category: 'core', description: '',
+      related_entities: [config.id], related_domains: ['workspace'], criticality_factors: [], operations: [],
+    }, names, fields, evidence);
+
+    expect(workspaceTarget.relatedEntities).toEqual([]);
+    expect(workspaceTarget.fields).toEqual([]);
+    expect(workspaceTarget.unrelatedEntities).toContain('KlauroConfig');
+    expect(settingsTarget.relatedEntities).toEqual(['KlauroConfig']);
+    expect(settingsTarget.fields).toEqual(['workspaceId:string', 'serverUrl:string']);
+    expect(config.fields).toHaveLength(2);
+    expect(validateElementDescription(
+      'Understand workspace capability map presents relationships using Klauro Config settings for the analyzed workspace.',
+      workspaceTarget,
+    ).reason).toBe('unrelated-entity-vocabulary:KlauroConfig');
+    expect(capabilityDescriptionEntityProvidesProductEvidence('Track codebase change history', {
+      name: 'ChangeHistoryEntry', kind: 'domain-shape',
+    })).toBe(true);
+  });
+
+  it('humanizes an exact product entity identifier before capability description validation', () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const target = {
       id: 'workspace-map', name: 'Understand workspace capability map', kind: 'capability',
-      operations: ['show workspace relationships'], relatedEntities: ['KlauroConfig'], relatedDomains: ['workspace'],
+      operations: ['show workspace relationships'], relatedEntities: ['WorkspaceCapabilityMap'], relatedDomains: ['workspace'],
     };
     const description = localOrch.sanitizeElementDescriptionCandidate(
-      'Understand workspace capability map presents workspace relationships and uses KlauroConfig to identify the analyzed workspace configuration.',
+      'Understand workspace capability map presents WorkspaceCapabilityMap relationships for the analyzed workspace.',
       target,
     );
 
-    expect(description).toContain('Klauro Config');
-    expect(description).not.toContain('KlauroConfig');
+    expect(description).toContain('Workspace Capability Map');
+    expect(description).not.toContain('WorkspaceCapabilityMap');
     expect(localOrch.validateElementDescription(description, target).ok).toBe(true);
   });
 

@@ -245,7 +245,7 @@ import { aiService, isProviderUnavailableFailure } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig, getAIProviderChain } from '../../config/ai.config';
-import { capabilityDescriptionEvidenceFields, humanizeExactRelatedEntityIdentifiers, validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
+import { capabilityDescriptionEntityProvidesProductEvidence, capabilityDescriptionEvidenceMaps, humanizeExactRelatedEntityIdentifiers, validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain-recovery';
 import { containsGenericImplementationMechanicFiller, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
@@ -10384,8 +10384,7 @@ export class AnalyzerOrchestrator {
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id)
       .map(candidate => candidate.id);
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates);
-    const entityNamesById = new Map(args.dataEntities.map(entity => [entity.id, entity.name]));
-    const entityFieldsById = new Map(args.dataEntities.map(entity => [entity.id, (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`)]));
+    const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(args.dataEntities);
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let retainedQualityFailure: string | undefined;
@@ -10456,7 +10455,7 @@ export class AnalyzerOrchestrator {
       const publishabilityRejections: Array<{ name: string; description?: string; reason: string }> = [];
       const rejectedCapabilities: SystemCapability[] = [];
       const cycleReconciled = reconciledCandidates.flatMap(capability => {
-        const descriptionValidation = this.validateElementDescription(capability.description || '', this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById));
+        const descriptionValidation = this.validateElementDescription(capability.description || '', this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById));
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return [capability];
         rejectedCapabilities.push(capability);
@@ -10784,11 +10783,7 @@ export class AnalyzerOrchestrator {
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const elementLimit = Number.isFinite(configuredElementLimit) && configuredElementLimit > 0 ? configuredElementLimit : 8;
-    const entityNamesById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
-    const entityFieldsById = new Map(dataEntities.map(entity => [
-      entity.id,
-      (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`),
-    ]));
+    const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(dataEntities);
 
     const semanticEvidenceDigest = {
       systemName,
@@ -10839,7 +10834,7 @@ export class AnalyzerOrchestrator {
       elementsEnabled,
       elementLimit,
       reauthorDescriptions: false,
-      toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById),
+      toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById),
       authorDescriptions: authorCapabilityDescriptions,
     });
     const capabilityTargets = catalogApplication.targets;
@@ -11252,13 +11247,13 @@ export class AnalyzerOrchestrator {
         allCapabilitiesForEvidence: systemCapabilities, userJourneys, capabilityEntityEvidence: dataEntities,
       });
       const unresolvedAfterRepair = unresolvedCapabilities.filter(capability => {
-        const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById);
+        const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById);
         return !capability.description || capability.description_source !== 'ai' || !this.validateElementDescription(capability.description, target).ok;
       });
       if (unresolvedAfterRepair.length > 0) {
         const degraded: Array<{ id: string; name: string; reason: string; failure_class: 'provider-unavailable' | 'failed-grounding' }> = [];
         for (const capability of unresolvedAfterRepair) {
-          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById);
+          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById);
           const validation = capability.description
             ? this.validateElementDescription(capability.description, target)
             : { ok: false as const, reason: 'missing-description' };
@@ -11291,7 +11286,7 @@ export class AnalyzerOrchestrator {
     }
     if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
       const skippedCapabilities = capabilitiesWithoutDescriptionDisposition(systemCapabilities.slice(elementLimit));
-      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById));
+      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById));
       this.recordElementDescriptionGenerationByIds(
         skippedTargets.map(target => target.id),
         systemCapabilities,
@@ -11677,11 +11672,7 @@ export class AnalyzerOrchestrator {
         ...(context.projectTextSignal?.productVocabulary || []),
       ].filter((value): value is string => Boolean(value)),
     );
-    const entityNamesById = new Map((context.capabilityEntityEvidence || entities).map(entity => [entity.id, entity.name]));
-    const entityFieldsById = new Map((context.capabilityEntityEvidence || entities).map(entity => [
-      entity.id,
-      capabilityDescriptionEvidenceFields(entity.fields || []),
-    ]));
+    const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(context.capabilityEntityEvidence || entities);
     const entityTargetContext = context.includeEntities ? {
       relationsByName: this.buildEntityRelationsByName(context.nodes || [], context.edges || [], entities),
       capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
@@ -11693,7 +11684,7 @@ export class AnalyzerOrchestrator {
       : [];
     const capabilityOnly = capabilities.length > 0 && !context.includeEntities;
     const allTargets = [
-      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById)),
+      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById)),
       ...entityTargets,
     ];
     const configuredLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
@@ -11969,6 +11960,7 @@ export class AnalyzerOrchestrator {
     capability: SystemCapability,
     entityNamesById?: Map<string, string>,
     entityFieldsById?: Map<string, string[]>,
+    entityEvidenceById?: Map<string, Pick<CASDataEntity, 'name' | 'kind'>>,
   ): DescriptionTarget {
     const sourceAreas = this.capabilitySourceAreas([], capability.operations);
     const actionSummary = Array.from(new Set(
@@ -11982,6 +11974,10 @@ export class AnalyzerOrchestrator {
       .filter(Boolean);
     const readOnly = /^(?:view|access|list|read|show|retrieve)\b/i.test(capability.name) ||
       (observedHttpMethods.length > 0 && observedHttpMethods.every(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)));
+    const proseEntityIds = capability.related_entities.filter(id => {
+      const entity = entityEvidenceById?.get(id);
+      return !entity || capabilityDescriptionEntityProvidesProductEvidence(capability.name, entity);
+    });
     return {
       id: capability.id,
       name: capability.name,
@@ -11997,12 +11993,12 @@ export class AnalyzerOrchestrator {
         sourceAreas.length > 0 ? `owned by: ${sourceAreas.join(', ')}` : '',
         capability.criticality ? `criticality: ${capability.criticality}` : '',
       ].filter(Boolean),
-      relatedEntities: capability.related_entities.map(id => entityNamesById?.get(id) || id),
-      unrelatedEntities: entityNamesById ? [...entityNamesById].filter(([id]) => !capability.related_entities.includes(id)).map(([, name]) => name) : [],
+      relatedEntities: proseEntityIds.map(id => entityNamesById?.get(id) || id),
+      unrelatedEntities: entityNamesById ? [...entityNamesById].filter(([id]) => !proseEntityIds.includes(id)).map(([, name]) => name) : [],
       relatedDomains: capability.related_domains,
       readOnly,
       artifactType: this.elementDescriptionArtifactType,
-      fields: capability.related_entities.flatMap(id => entityFieldsById?.get(id) || []).slice(0, 24),
+      fields: proseEntityIds.flatMap(id => entityFieldsById?.get(id) || []).slice(0, 24),
     };
   }
 
