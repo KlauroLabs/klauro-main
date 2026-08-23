@@ -4,6 +4,7 @@ import type {
   SystemCapability,
 } from '../../types/cas.types';
 import {
+  splitIdentifierWords,
   testCapabilityDescriptionAgainstAudience,
   testCapabilityNameAgainstIdentifierVocabulary,
 } from './capability-audience-test';
@@ -65,6 +66,29 @@ function aggregateNameEntityNarrowing(capability: SystemCapability, entityNamesB
     const phrase = normalizedEntityPhrase(name);
     return phrase.length >= 5 && normalizedName.includes(` ${phrase} `);
   });
+}
+
+function capabilityNameProductLanguageFailures(name: string, productTerms: string[]): {
+  flaggedTokens: string[];
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  const flaggedTokens: string[] = [];
+  if (/\bwork context\b/i.test(name)) {
+    reasons.push('internal-context-name');
+    flaggedTokens.push('work context');
+  }
+  const trustedWords = new Set(productTerms.flatMap(splitIdentifierWords).map(word => word.toLowerCase()));
+  const ordinaryShortWords = new Set(['api', 'app', 'code', 'data', 'map', 'run', 'task', 'user', 'view', 'work']);
+  const shortenedTerms = splitIdentifierWords(name).filter(token => {
+    if (!/^[a-z]{2,4}$/.test(token) || ordinaryShortWords.has(token)) return false;
+    return [...trustedWords].some(word => word.length >= token.length + 2 && word.startsWith(token));
+  });
+  if (shortenedTerms.length > 0) {
+    reasons.push('shortened-product-term');
+    flaggedTokens.push(...shortenedTerms);
+  }
+  return { reasons, flaggedTokens };
 }
 
 export function unsupportedCapabilityOperationalClaims(description: string, evidenceTerms: string[]): string[] {
@@ -131,6 +155,17 @@ export function evaluateCapabilityCatalogAudience(
       .map(entityId => entityNamesById.get(entityId))
       .filter((value): value is string => Boolean(value));
     const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
+    const productLanguageFailures = capabilityNameProductLanguageFailures(capability.name, productTerms);
+    if (productLanguageFailures.reasons.length > 0) {
+      rejections.push({
+        name: capability.name,
+        description: capability.description,
+        target: 'name',
+        reasons: productLanguageFailures.reasons,
+        flaggedTokens: productLanguageFailures.flaggedTokens,
+      });
+      continue;
+    }
     const narrowingEntities = aggregateNameEntityNarrowing(capability, entityNamesById);
     if (narrowingEntities.length > 0) {
       rejections.push({
@@ -234,7 +269,7 @@ export function capabilityAudienceRepairFeedback(rejections: CapabilityAudienceR
     reasons: rejection.reasons,
     flagged_tokens: rejection.flaggedTokens.slice(0, 8),
   }));
-  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary, replace code-shaped terms with exact product nouns present in the evidence. For internal-mechanism-language, describe the observable user or operator outcome rather than tool registration, analyzers, storage reads, or source settings. For unsupported-exclusivity-claim, describe advisory detection or reporting; never claim prevention, conflict reduction, guaranteed alignment, exclusivity, ownership, assignment, reservation, universal coverage, or consistency guarantees unless cited evidence explicitly proves them. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
+  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary or shortened-product-term, use exact product nouns from first-party product text rather than source identifiers or operation prefixes. For internal-context-name, name the observable action and subject instead of internal work context. For internal-mechanism-language, describe the observable user or operator outcome rather than tool registration, analyzers, storage reads, or source settings. For unsupported-exclusivity-claim, describe advisory detection or reporting; never claim prevention, conflict reduction, guaranteed alignment, exclusivity, ownership, assignment, reservation, universal coverage, or consistency guarantees unless cited evidence explicitly proves them. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
 }
 
 export function capabilityPublishabilityRepairFeedback(

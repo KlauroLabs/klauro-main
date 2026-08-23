@@ -230,6 +230,30 @@ describe('capability catalog audience evaluation', () => {
     expect(evaluation.descriptionRepairCandidates).toHaveLength(1);
   });
 
+  it('rejects internal context labels and shortened product terminology', () => {
+    const subject = capability(
+      'Understand fab work context',
+      'Fabric reports overlapping codebase work and the active claims associated with each area.',
+    );
+    subject.operations = [
+      { entry_point_id: 'claim', entry_point_type: 'message', action: 'Claim work' },
+      { entry_point_id: 'detect', entry_point_type: 'message', action: 'Detect collisions' },
+      { entry_point_id: 'release', entry_point_type: 'message', action: 'Release work' },
+    ];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject], [], [], ['Fabric collaboration across overlapping codebase areas'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      target: 'name',
+      reasons: ['internal-context-name', 'shortened-product-term'],
+      flaggedTokens: ['work context', 'fab'],
+    }));
+    expect(capabilityAudienceRepairFeedback(evaluation.rejections)).toContain('observable action and subject');
+  });
+
   it('rejects invented reservation, assignment, and ownership semantics', () => {
     const subject = capability(
       'Coordinate overlapping work',
