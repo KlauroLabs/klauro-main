@@ -183,9 +183,9 @@ import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './f
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
   capabilityAudienceRepairFeedback,
-  capabilityPublishabilityRepairFeedback,
-  capabilityCatalogProductTerms,
+  capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms,
   evaluateCapabilityCatalogAudience,
+  unsupportedCapabilityOperationalClaims,
 } from './capability-catalog-audience';
 import {
   attachFlowContract,
@@ -12197,7 +12197,7 @@ export class AnalyzerOrchestrator {
           (normalizedClaim.startsWith('metric') && /\b(?:metric|prometheus|telemetry)\b/.test(ownEvidence));
         if (!evidenceSupportsClaim) return { ok: false, reason: `unsupported-target-value-claim:${claim.toLowerCase()}` };
       }
-      const unsupportedOperationalClaims = cleaned.match(/\b(?:high availability|resource utili[sz]ation|fault tolerance|auto[- ]scaling|scalability|resilien(?:ce|t))\b/gi) || [];
+      const unsupportedOperationalClaims = [...unsupportedCapabilityOperationalClaims(cleaned, target.operations || []), ...(cleaned.match(/\b(?:high availability|resource utili[sz]ation|fault tolerance|auto[- ]scaling|scalability|resilien(?:ce|t))\b/gi) || [])];
       for (const claim of unsupportedOperationalClaims) {
         const normalizedClaim = claim.toLowerCase().replace(/[- ]/g, '');
         if (!ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim)) {

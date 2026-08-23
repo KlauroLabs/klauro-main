@@ -11031,6 +11031,22 @@ describe('enterprise AI semantic guards', () => {
     ).reason).toBe('read-only-capability-claims-mutation');
   });
 
+  it('rejects coordination prose that invents exclusive work ownership', () => {
+    const target = {
+      id: 'cap_fabric', name: 'Coordinate overlapping work', kind: 'capability',
+      operations: ['Claim work', 'Detect conflicts', 'Release work', 'Advisory coordination'],
+      relatedEntities: [], relatedDomains: ['collaboration', 'overlapping work'],
+    };
+    expect(orch.validateElementDescription(
+      'Coordinate overlapping work lets collaborators reserve and assign tasks while ensuring clear ownership.',
+      target,
+    ).reason).toMatch(/^unsupported-target-operational-claim:/);
+    expect(orch.validateElementDescription(
+      'Coordinate overlapping work warns collaborators about conflicting changes while they continue working in parallel.',
+      target,
+    ).ok).toBe(true);
+  });
+
   it('applies the final capability word limit during description enrichment', () => {
     const target = {
       id: 'cap_history', name: 'Track codebase change history', kind: 'capability',

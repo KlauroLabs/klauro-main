@@ -67,8 +67,8 @@ function aggregateNameEntityNarrowing(capability: SystemCapability, entityNamesB
   });
 }
 
-function unsupportedExclusivityClaims(description: string, evidenceTerms: string[]): string[] {
-  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? concurrent)\b/gi) || [];
+export function unsupportedCapabilityOperationalClaims(description: string, evidenceTerms: string[]): string[] {
+  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? concurrent|reserv(?:e|es|ed|ing|ation)|assign(?:s|ed|ing|ment)?|ownership)\b/gi) || [];
   const evidence = normalizedEntityPhrase(evidenceTerms.join(' '));
   const evidenceIsAdvisory = /\b(?:advisory|non locking|non exclusive|never block)\b/.test(evidence);
   return claims.filter(claim => evidenceIsAdvisory || !evidence.includes(normalizedEntityPhrase(claim)));
@@ -180,7 +180,7 @@ export function evaluateCapabilityCatalogAudience(
       dataEntities,
       [...capabilityProductTerms, capability.name],
     );
-    const unsupportedExclusivity = unsupportedExclusivityClaims(capability.description, capabilityProductTerms);
+    const unsupportedExclusivity = unsupportedCapabilityOperationalClaims(capability.description, capabilityProductTerms);
     if (unsupportedExclusivity.length > 0) {
       descriptionVerdict.failsAudienceTest = true;
       descriptionVerdict.reasons.push('unsupported-exclusivity-claim');

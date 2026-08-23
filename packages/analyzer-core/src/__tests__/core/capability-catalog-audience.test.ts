@@ -215,4 +215,27 @@ describe('capability catalog audience evaluation', () => {
     expect(evaluation.rejections[0].reasons).toContain('unsupported-exclusivity-claim');
     expect(evaluation.descriptionRepairCandidates).toHaveLength(1);
   });
+
+  it('rejects invented reservation, assignment, and ownership semantics', () => {
+    const subject = capability(
+      'Coordinate overlapping work',
+      'Lets collaborators reserve and assign work areas while maintaining clear ownership.',
+    );
+    subject.operations = [
+      { entry_point_id: 'claim', entry_point_type: 'message', action: 'Claim work' },
+      { entry_point_id: 'detect', entry_point_type: 'message', action: 'Detect conflicts' },
+      { entry_point_id: 'release', entry_point_type: 'message', action: 'Release work' },
+    ];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject], [], [], ['advisory coordination', 'parallel overlapping work'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      target: 'description',
+      reasons: expect.arrayContaining(['unsupported-exclusivity-claim']),
+      flaggedTokens: expect.arrayContaining(['reserve', 'assign', 'ownership']),
+    }));
+  });
 });

@@ -69,14 +69,15 @@ function normalizedSubjectTokens(value: string): Set<string> {
 function outcomeIdentityTokens(value: string): string[] {
   const ignored = new Set([
     'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'using', 'with',
-    'ability', 'behavior', 'capability', 'management', 'operation', 'operations', 'surface', 'tool', 'tools', 'workflow',
+    'ability', 'across', 'area', 'behavior', 'capability', 'management', 'operation', 'operations', 'surface', 'tool', 'tools', 'workflow',
   ]);
   return String(value || '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 3 && !ignored.has(token))
-    .map(token => token.length >= 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
+    .filter(token => token.length >= 3)
+    .map(token => token.length >= 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
+    .filter(token => !ignored.has(token));
 }
 
 function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
@@ -123,14 +124,20 @@ export function capabilityOutcomeRestatesDeliveryOperation(
   name: string,
   citedCandidates: SystemCapability[],
   _signal?: CapabilityCatalogProjectSignal,
+  acceptedOutcome = false,
 ): boolean {
   if (!citedCandidates.some(candidate => candidate.evidence_kind === 'behavior-surface')) return false;
   const words = outcomeIdentityTokens(name);
+  const namePhrase = words.join(' ');
+  const copiesOperationPhrase = citedCandidates.some(candidate => (candidate.evidence_examples || []).some(example => {
+    const operationPhrase = outcomeIdentityTokens(example).join(' ');
+    return operationPhrase.split(' ').length >= 2 && (` ${namePhrase} `).includes(` ${operationPhrase} `);
+  }));
   const usesDeliveryScaffolding = /\b(?:mcp|tools?|surfaces?)\b/i.test(name);
   const usesGenericDeliveryAction = /^(?:handle|manage|process)(?:s|es|ing)?\b/i.test(name.trim());
   const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
   return words.length === 0 || usesDeliveryScaffolding || usesGenericDeliveryAction || repeatsActionAsSubject ||
-    /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
+    (!acceptedOutcome && copiesOperationPhrase) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
 }
 
 export function capabilityOutcomeMisusesCoordination(
@@ -211,7 +218,7 @@ export function capabilityOutcomeScopeFailure(
   acceptedOutcome = false,
   description = '',
 ): string[] {
-  if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal)) return ['delivery-operation-restatement'];
+  if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal, acceptedOutcome)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
   if (!capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];

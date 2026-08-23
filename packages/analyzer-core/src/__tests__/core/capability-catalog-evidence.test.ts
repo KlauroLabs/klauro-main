@@ -375,7 +375,7 @@ describe('capability evidence roles', () => {
     fabric.evidence_examples = ['claim_work', 'extend_work', 'list_active_work', 'release_work'];
 
     expect(capabilityEvidenceSubjectTokens(fabric)).toEqual(['fab', 'work']);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Release work through MCP tools', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate overlapping work', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Handle Fab work surfaces', [fabric])).toBe(true);
@@ -389,12 +389,14 @@ describe('capability evidence roles', () => {
     }])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate work with', [fabric])).toBe(true);
     fabric.evidence_examples = ['analyze_codebase', 'sync_codebase', 'get_codebase_summary'];
-    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(false);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(false);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], undefined, true)).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }], undefined, true)).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Understand Fab work surfaces', [fabric])).toBe(true);
     fabric.evidence_examples = ['get_agent_context', 'get_agent_readiness', 'get_agent_tool_plan'];
-    expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Review agent context', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Support agents with codebase context', [fabric])).toBe(false);
     expect(capabilityOutcomeNameUnsupportedTokens('Understand workspace behavior through capability and entity maps', [{
@@ -419,6 +421,10 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeUsesDeliverySubject('Build a relationship graph', [fabric])).toBe(false);
     expect(capabilityOutcomeUsesDeliverySubject('Analyze codebase', [{ ...fabric, name: 'Analysis Tool Surface', structural_label: 'Analysis Tool Surface', related_domains: ['analysis'] }], 'Evaluates analysis truth for the selected codebase.')).toBe(true);
     expect(capabilityOutcomeUsesDeliverySubject('Understand workspace capability map', [fabric], 'Shows workspace capability relationships.')).toBe(false);
+    expect(capabilityOutcomeNameUnsupportedTokens('Coordinate work across overlapping codebase areas', [{
+      ...fabric,
+      evidence_examples: ['fab_claim_work', 'fab_check_collision', 'fab_release_work'],
+    }], { productDocSummary: 'Fabric coordinates overlapping work across a codebase.' })).toEqual([]);
   });
 
   test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {
