@@ -10975,7 +10975,8 @@ export class AnalyzerOrchestrator {
       const originalCandidate = reauthorCatalogDescriptions
         ? combinedCandidate || (existingCatalogValidation.ok ? existingCatalogDescription : '')
         : existingCatalogValidation.ok ? existingCatalogDescription : combinedCandidate;
-      const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);
+      const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target) ||
+        (existingCatalogValidation.ok ? this.sanitizeElementDescriptionCandidate(existingCatalogDescription, target) : undefined);
       const elementValidation = candidate
         ? this.validateElementDescription(candidate, target)
         : originalCandidate

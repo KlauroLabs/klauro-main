@@ -9622,7 +9622,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('uses one accepted catalog response for narrative and capability prose', async () => {
+  it('uses accepted catalog prose when requested reauthoring would regress into implementation mechanics', async () => {
     const envKeys = [
       'OPENAI_API_KEY',
       'KLAURO_AI_INTERPRETATION',
@@ -9639,7 +9639,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'true';
     process.env.KLAURO_CAPABILITY_CATALOG_MODEL = 'catalog-model';
     process.env.KLAURO_CAPABILITY_DESCRIPTION_MODEL = 'prose-model';
-    process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'false';
+    process.env.KLAURO_REAUTHOR_CATALOG_DESCRIPTIONS = 'true';
 
     let catalogStarted = false;
     const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockImplementation(async (args: any) => {
@@ -9647,6 +9647,10 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       args.onInterpretationAccepted(JSON.stringify({
         system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It identifies code structure, product capabilities, flows, and change boundaries for engineering agents. Source enters deterministic analyzers, which connect code facts into navigable system context and produce grounded codebase intelligence. The resulting analysis is exposed through MCP for development work.',
         domain: 'codebase-intelligence',
+        descriptions: [{
+          id: 'cap_analyze',
+          description: 'The analyzer coordinates recording, and the storage reads the recorded analysis.',
+        }],
       }));
       return [{
         id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',

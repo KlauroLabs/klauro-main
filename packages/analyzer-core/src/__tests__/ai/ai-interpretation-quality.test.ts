@@ -860,6 +860,10 @@ describe('element description grounding parity with the system validator', () =>
       'Tracks codebase changes, coordinates with the analyzer, and reads from storage to maintain history.',
       { ...subject, name: 'Track codebase change history', relatedDomains: ['codebase change history'] },
     ).reason).toBe('generic-structural-phrase');
+    expect(validateElementDescription(
+      'Records changes to the codebase as history entries. The analyzer coordinates recording, and the storage reads the recorded changes.',
+      { ...subject, name: 'Track codebase change history', relatedDomains: ['codebase change history'] },
+    ).reason).toBe('generic-structural-phrase');
   });
 
   it('carries observed read-only semantics into capability description prompts', () => {

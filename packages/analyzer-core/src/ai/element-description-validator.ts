@@ -67,6 +67,8 @@ const FILLER_PHRASE_PATTERN = new RegExp([
   '\\bregisters? (?:mcp )?tools?\\b',
   '\\bcoordinates? with (?:the )?(?:analy[sz]er|storage)\\b',
   '\\breads? from (?:the )?storage\\b',
+  '\\b(?:the )?analy[sz]er\\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\\b',
+  '\\b(?:the )?storage\\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\\b',
   '\\bsource settings?\\b',
   '\\bprojects?, analy[sz]ers?, and (?:source )?settings?\\b',
   '\\binstallation and environment checks?\\b',

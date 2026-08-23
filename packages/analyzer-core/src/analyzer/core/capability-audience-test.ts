@@ -261,7 +261,7 @@ function descriptionCandidateTokens(description: string): string[] {
 const SOURCE_FILE_PATH_PATTERN = /(?:^|[\s"'(])[\w.\-/\\]*[\/\\][\w.\-]+\.(?:ts|tsx|js|jsx|py|rb|java|kt|swift|go|rs|cs|php|c|cpp|h|hpp|scala|ex|exs)\b/i;
 const VAGUE_MARKETING_PATTERN = /\b(?:insights?|comprehensive|accurate(?:ly)?|effective(?:ly)?|efficient(?:ly)?|organized|properly|relevant|seamless(?:ly)?|robust|best[- ]in[- ]class|world[- ]class|various operations?)\b/i;
 const IMPLEMENTATION_PROSE_PATTERN = /\b(?:cli|command[- ]line)\s+(?:entry\s+point|command|interface)\b|\b(?:source[- ]code|implementation)\s+(?:type|class|interface|structure|detail)s?\b|\b(?:route|handler|controller|ui\s+widget)\s+(?:class|interface|implementation)s?\b/i;
-const INTERNAL_MECHANISM_PROSE_PATTERN = /\bregisters?\s+(?:mcp\s+)?tools?\b|\bcoordinates?\s+with\s+(?:the\s+)?(?:analy[sz]er|storage)\b|\breads?\s+from\s+(?:the\s+)?storage\b|\bsource\s+settings?\b|\bprojects?,\s+analy[sz]ers?,\s+and\s+(?:source\s+)?settings?\b/i;
+const INTERNAL_MECHANISM_PROSE_PATTERN = /\bregisters?\s+(?:mcp\s+)?tools?\b|\bcoordinates?\s+with\s+(?:the\s+)?(?:analy[sz]er|storage)\b|\breads?\s+from\s+(?:the\s+)?storage\b|\b(?:the\s+)?analy[sz]er\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\b|\b(?:the\s+)?storage\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\b|\bsource\s+settings?\b|\bprojects?,\s+analy[sz]ers?,\s+and\s+(?:source\s+)?settings?\b/i;
 
 export interface AudienceDescriptionTestResult {
 

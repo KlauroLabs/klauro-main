@@ -311,6 +311,10 @@ describe('capability catalog audience evaluation', () => {
         'Tracks codebase changes as history entries, coordinates with the analyzer, and reads from storage.',
       ),
       capability(
+        'Review codebase change history',
+        'Records changes as history entries. The analyzer coordinates recording, and the storage reads the recorded changes.',
+      ),
+      capability(
         'Understand workspace relationships',
         'Shows workspace configuration, including its projects, analyzers, and source settings.',
       ),
@@ -320,6 +324,7 @@ describe('capability catalog audience evaluation', () => {
     expect(evaluation.rejections).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'Analyze codebases', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
       expect.objectContaining({ name: 'Track codebase change history', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
+      expect.objectContaining({ name: 'Review codebase change history', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
       expect.objectContaining({ name: 'Understand workspace relationships', reasons: expect.arrayContaining(['internal-mechanism-language']) }),
     ]));
   });
