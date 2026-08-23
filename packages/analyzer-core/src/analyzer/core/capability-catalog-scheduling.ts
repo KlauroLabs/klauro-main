@@ -110,7 +110,7 @@ export function capabilityCatalogRepairEvidenceFacts(
       evidence_subject: candidate.structural_label || candidate.name,
       evidence_subject_terms: capabilityEvidenceSubjectTokens(candidate, entityNames),
       related_domains: candidate.related_domains || [],
-      entity_names: entityNames,
+      entity_names: candidate.evidence_kind === 'behavior-surface' ? [] : entityNames,
       operations: (candidate.operations || []).slice(0, 8).map(operation => ({ action: operation.action, surface: operation.path_or_command })),
       examples: (candidate.evidence_examples || []).slice(0, 8),
     };

@@ -10,6 +10,7 @@ import {
   capabilityTitlesShareOutcome,
   capabilityCatalogTargetedRepairBatches,
   collectCapabilityCatalogEvidenceBatches,
+  capabilityCatalogRepairEvidenceFacts,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
 
@@ -65,6 +66,19 @@ test('targeted repair isolates evidence families while a full pass remains one b
 
   assert.deepEqual(capabilityCatalogTargetedRepairBatches(facts, true), facts.map(fact => [fact]));
   assert.deepEqual(capabilityCatalogTargetedRepairBatches(facts, false), [facts]);
+});
+
+test('behavior-surface repair facts exclude internal entity names while entity evidence retains them', () => {
+  const entityNames = new Map([['entity_config', 'KlauroConfig']]);
+  const candidates = [
+    { id: 'runtime', evidence_kind: 'behavior-surface', related_entities: ['entity_config'], name: 'Runtime Tool Surface' },
+    { id: 'history', evidence_kind: 'entity', related_entities: ['entity_config'], name: 'Change History' },
+  ] as SystemCapability[];
+
+  const facts = capabilityCatalogRepairEvidenceFacts(candidates, ['runtime', 'history'], entityNames);
+
+  assert.deepEqual(facts.find(fact => fact.candidate_id === 'runtime')?.entity_names, []);
+  assert.deepEqual(facts.find(fact => fact.candidate_id === 'history')?.entity_names, ['KlauroConfig']);
 });
 
 test('evidence batch collection preserves successful families when one focused call times out', async () => {

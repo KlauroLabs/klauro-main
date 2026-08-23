@@ -10416,7 +10416,7 @@ export class AnalyzerOrchestrator {
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
-          userJourneys: targetedRepair ? [] : args.userJourneys, dataEntities: targetedRepair ? args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
+          userJourneys: targetedRepair ? [] : args.userJourneys, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
           candidateCapabilities: evidenceScoped ? catalogCandidates.filter(candidate => batchIds.has(candidate.id)) : catalogCandidates,
           behaviorSurfaces: evidenceScoped ? args.behaviorSurfaces.filter(candidate => batchIds.has(candidate.id)) : args.behaviorSurfaces,
           externalServices: targetedRepair ? [] : args.externalServices,
