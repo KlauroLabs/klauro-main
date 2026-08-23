@@ -828,6 +828,22 @@ describe('element description grounding parity with the system validator', () =>
     expect(bare.relatedEntities).toEqual(['entity-card']);
   });
 
+  it('humanizes an exact related-entity identifier before capability description validation', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const target = {
+      id: 'workspace-map', name: 'Understand workspace capability map', kind: 'capability',
+      operations: ['show workspace relationships'], relatedEntities: ['KlauroConfig'], relatedDomains: ['workspace'],
+    };
+    const description = localOrch.sanitizeElementDescriptionCandidate(
+      'Understand workspace capability map presents workspace relationships and uses KlauroConfig to identify the analyzed workspace configuration.',
+      target,
+    );
+
+    expect(description).toContain('Klauro Config');
+    expect(description).not.toContain('KlauroConfig');
+    expect(localOrch.validateElementDescription(description, target).ok).toBe(true);
+  });
+
   it('carries observed read-only semantics into capability description prompts', () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const target = localOrch.capabilityDescriptionTarget({

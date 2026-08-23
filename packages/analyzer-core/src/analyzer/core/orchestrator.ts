@@ -245,7 +245,7 @@ import { aiService, isProviderUnavailableFailure } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig, getAIProviderChain } from '../../config/ai.config';
-import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
+import { humanizeExactRelatedEntityIdentifiers, validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain-recovery';
 import { containsGenericImplementationMechanicFiller, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
@@ -12021,7 +12021,7 @@ export class AnalyzerOrchestrator {
   }
 
   private sanitizeElementDescriptionCandidate(description: string, target: DescriptionTarget): string | undefined {
-    const cleaned = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(description));
+    const cleaned = humanizeExactRelatedEntityIdentifiers(this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(description)), target.kind === 'capability' ? target.relatedEntities : []);
     if (!cleaned) return undefined;
     const validation = this.validateElementDescription(cleaned, target);
     if (validation.ok) return cleaned;

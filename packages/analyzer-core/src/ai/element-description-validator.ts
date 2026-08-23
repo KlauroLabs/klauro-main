@@ -112,6 +112,25 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+export function humanizeExactRelatedEntityIdentifiers(
+  description: string,
+  relatedEntities: readonly string[] = [],
+): string {
+  let result = description;
+  for (const entityName of relatedEntities) {
+    if (!/[a-z0-9][A-Z]|[_:$]/.test(entityName)) continue;
+    const readableName = entityName
+      .replace(/^entity[_:-]?/i, '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!readableName || readableName === entityName) continue;
+    result = result.replace(new RegExp(`\\b${escapeRegExp(entityName)}\\b`, 'gi'), readableName);
+  }
+  return result;
+}
+
 function subjectGroundingTokens(
   subject: ElementDescriptionSubject,
   normalizeToken: (token: string) => string,
