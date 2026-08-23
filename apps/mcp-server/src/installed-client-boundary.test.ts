@@ -66,6 +66,8 @@ test('installed bundle graph excludes hosted analyzer implementation', () => {
   // analyzer/parsing code, just log-file path resolution.
   assert.deepEqual([...new Set(analyzerCoreInputs)].sort(), [
     '../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics.ts',
+    '../../packages/analyzer-core/src/analyzer/core/compact-cas-graph.ts',
+    '../../packages/analyzer-core/src/analyzer/core/compact-cas-search.ts',
     '../../packages/analyzer-core/src/analyzer/core/language-registry.ts',
     '../../packages/analyzer-core/src/analyzer/core/local-package-import-context.ts',
     '../../packages/analyzer-core/src/analyzer/core/run-log.ts',
